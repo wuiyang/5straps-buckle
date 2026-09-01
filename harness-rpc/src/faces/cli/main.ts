@@ -24,6 +24,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   if (command === 'skills') return printSkills(runtime, rest)
   if (command === 'approve') return approve(runtime, rest)
   if (command === 'grants') return grants(runtime, rest)
+  if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
   if (command === 'call') return callByName(runtime, rest)
   return callByCommand(runtime, command, rest)
@@ -48,10 +49,41 @@ function printUsage(): CliResult {
 
   buckle approve <token> [--scope once|session|always]
   buckle grants list | revoke <id>
+  buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
 
   buckle --version                   Print the version
 `)
+  return { exitCode: 0 }
+}
+
+/** The audit view. Every attempt appears, so a refusal is as visible as a success. */
+function printLog(runtime: BuckleRuntime, argv: string[]): CliResult {
+  const { values } = parseArgs({
+    args: argv,
+    options: { limit: { type: 'string' }, json: { type: 'boolean' } },
+    allowPositionals: false,
+  })
+  const limit = Number.parseInt(values.limit ?? '50', 10)
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    process.stderr.write('--limit must be a positive integer\n')
+    return { exitCode: 1 }
+  }
+
+  const entries = runtime.actions.read(limit)
+  if (values.json) return print(entries)
+  if (entries.length === 0) {
+    process.stdout.write('No actions recorded yet.\n')
+    return { exitCode: 0 }
+  }
+
+  for (const entry of entries) {
+    process.stdout.write(`${entry.at}  ${entry.outcome.padEnd(17)} ${entry.tool.padEnd(18)} ${entry.durationMs}ms\n`)
+    for (const effect of entry.effects) process.stdout.write(`    ${effect}\n`)
+    for (const ask of entry.asked ?? []) process.stdout.write(`    asked: ${ask}\n`)
+    for (const grant of entry.approvedBy ?? []) process.stdout.write(`    allowed by: ${grant}\n`)
+    if (entry.detail) process.stdout.write(`    ${entry.detail}\n`)
+  }
   return { exitCode: 0 }
 }
 

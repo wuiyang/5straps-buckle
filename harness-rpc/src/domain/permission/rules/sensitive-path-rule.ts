@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
 import { segments } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
-import { ask } from '../decision.js'
+import { allowedVia, ask } from '../decision.js'
 
 /** Directory names whose entire subtree holds credentials. */
 const SENSITIVE_DIRECTORIES = new Set([
@@ -52,7 +52,7 @@ export function createSensitivePathRule(): PermissionRule {
       if (!reason) return null
 
       // Matched on the exact path: a granted directory must never unlock a secret inside it.
-      if (grants.subjectsFor('sensitive_path').includes(effect.path)) return { kind: 'allow' }
+      if (grants.subjectsFor('sensitive_path').includes(effect.path)) return allowedVia('sensitive_path', effect.path)
       return ask('sensitive_path', effect.path, reason)
     },
   }

@@ -1,6 +1,6 @@
 import { reservedRangeOf } from '../../ip.js'
 import type { PermissionRule } from '../decision.js'
-import { ask, deny } from '../decision.js'
+import { allowedVia, ask, deny } from '../decision.js'
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:'])
 const LOCAL_HOSTNAMES = new Set(['localhost', 'localhost.localdomain', 'ip6-localhost', 'ip6-loopback'])
@@ -23,7 +23,7 @@ export function createNetworkEgressRule(): PermissionRule {
       if (!reason) return { kind: 'allow' }
 
       const subject = url.port ? `${url.hostname}:${url.port}` : url.hostname
-      if (grants.subjectsFor('network_egress').includes(subject)) return { kind: 'allow' }
+      if (grants.subjectsFor('network_egress').includes(subject)) return allowedVia('network_egress', subject)
       return ask('network_egress', subject, reason)
     },
   }

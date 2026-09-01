@@ -81,6 +81,10 @@ export function approvalsPath(config: BuckleConfig): string {
   return join(config.stateDirectory, 'approvals.json')
 }
 
+export function actionsPath(config: BuckleConfig): string {
+  return join(config.stateDirectory, 'actions.jsonl')
+}
+
 function parseSandboxMode(value: string | undefined): BuckleConfig['sandboxMode'] {
   if (!value || value === 'auto') return 'auto'
   const parsed = SandboxModeSchema.safeParse(value)

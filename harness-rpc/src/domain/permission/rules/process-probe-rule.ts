@@ -1,5 +1,5 @@
 import type { PermissionRule } from '../decision.js'
-import { ask } from '../decision.js'
+import { allowedVia, ask } from '../decision.js'
 
 const SUBJECT = 'process_list'
 
@@ -9,7 +9,7 @@ export function createProcessProbeRule(): PermissionRule {
     id: 'process_probe',
     evaluate({ effect, grants }) {
       if (effect.kind !== 'process_probe') return null
-      if (grants.subjectsFor('process_probe').includes(SUBJECT)) return { kind: 'allow' }
+      if (grants.subjectsFor('process_probe').includes(SUBJECT)) return allowedVia('process_probe', SUBJECT)
       return ask('process_probe', SUBJECT, 'Listing running processes exposes other users command lines', ['once', 'session'])
     },
   }

@@ -215,3 +215,39 @@ describe('engine behaviour', () => {
     expect(outcome.asks.map(ask => ask.subject).sort()).toEqual(['/etc', '/opt'])
   })
 })
+
+describe('what the engine reports as the reason for allowing a call', () => {
+  it('names the grant that carried a read outside the workspace', () => {
+    const outcome = evaluate([readEffect('/etc/hostname')], { read_scope: ['/etc'] })
+    expect(outcome).toEqual({ kind: 'allow', allowedBy: ['read_scope:/etc'] })
+  })
+
+  it('names no grant for a read that was always inside the workspace', () => {
+    const outcome = evaluate([readEffect(`${WORKSPACE}/src/app.ts`)])
+    expect(outcome).toEqual({ kind: 'allow', allowedBy: [] })
+  })
+
+  it('names the grant that carried a write', () => {
+    const outcome = evaluate([writeEffect('/work/other/out.txt')], { write_scope: ['/work/other'] })
+    expect(outcome).toEqual({ kind: 'allow', allowedBy: ['write_scope:/work/other'] })
+  })
+
+  it('names the grant that unlocked a destructive command', () => {
+    const effect: ResolvedEffect = { kind: 'exec', command: 'rm', args: ['-rf', 'build'] }
+    const outcome = evaluate([effect], { destructive_command: ['rm -rf build'] })
+    expect(outcome.kind).toBe('allow')
+    expect(outcome).toHaveProperty('allowedBy', ['destructive_command:rm -rf build'])
+  })
+
+  it('names every grant involved when one call leans on more than one', () => {
+    const outcome = evaluate(
+      [readEffect('/etc/hostname'), writeEffect('/work/other/out.txt')],
+      { read_scope: ['/etc'], write_scope: ['/work/other'] },
+    )
+    expect(outcome).toEqual({ kind: 'allow', allowedBy: ['read_scope:/etc', 'write_scope:/work/other'] })
+  })
+
+  it('reports no reason at all when the call was refused, since nothing allowed it', () => {
+    expect(evaluate([readEffect('/etc/shadow')], { read_scope: ['/etc'] }).kind).not.toBe('allow')
+  })
+})

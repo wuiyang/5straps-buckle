@@ -1,10 +1,11 @@
 import { arch, hostname, platform } from 'node:os'
 import { PROTOCOL_VERSION, type HarnessManifest, type InvokeRequest, type InvokeResponse } from '@5straps/protocol'
+import { createFileActionLog } from './adapters/action-log/file-action-log.js'
 import { createPluginRegistry, type PluginRegistry } from './adapters/plugin-registry.js'
 import { createFileGrantStore } from './adapters/grant-store/file-grant-store.js'
 import { runProcess } from './adapters/process-runner.js'
 import { resolveSandbox, type SandboxResolution } from './adapters/sandbox/create-sandbox.js'
-import { approvalsPath, grantsPath, pluginsPath, type BuckleConfig } from './config.js'
+import { actionsPath, approvalsPath, grantsPath, pluginsPath, type BuckleConfig } from './config.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from './domain/pack.js'
 import { createPermissionEngine } from './domain/permission/engine.js'
 import { createDestructiveCommandRule } from './domain/permission/rules/destructive-command-rule.js'
@@ -18,6 +19,7 @@ import { toDescriptor, type LoadedSkill } from './domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from './domain/tool-registry.js'
 import { createBuiltinPacks } from './packs/index.js'
 import { loadRootSkill } from './packs/pack-skill.js'
+import type { ActionLog } from './ports/action-log.js'
 import type { ApprovalChannel } from './ports/approval-channel.js'
 import type { GrantStore } from './ports/grant-store.js'
 import { createApprovalRegistry, type ApprovalRegistry } from './services/approval-registry.js'
@@ -30,6 +32,7 @@ export interface BuckleRuntime {
   skills(): LoadedSkill[]
   grants: GrantStore
   approvals: ApprovalRegistry
+  actions: ActionLog
   plugins: PluginRegistry
   invoke(input: { request: InvokeRequest; sessionId: string; channel?: ApprovalChannel }): Promise<InvokeResponse>
   reload(): Promise<void>
@@ -48,6 +51,7 @@ export async function createRuntime(input: {
 
   const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
   const approvals = createApprovalRegistry(grants, approvalsPath(config))
+  const actions = createFileActionLog(actionsPath(config))
   const permissions = buildPermissionEngine(config)
   const plugins = createPluginRegistry({
     filePath: pluginsPath(config),
@@ -65,6 +69,7 @@ export async function createRuntime(input: {
     skills: allSkills,
     grants,
     approvals,
+    actions,
     plugins,
 
     invoke: ({ request, sessionId, channel }) => createInvoker({
@@ -72,6 +77,7 @@ export async function createRuntime(input: {
       permissions,
       approvals,
       grants,
+      actions,
       channel: channel ?? input.channel,
       cwd: config.cwd,
       defaultTimeoutMs: config.defaultTimeoutMs,

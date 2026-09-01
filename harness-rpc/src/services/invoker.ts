@@ -1,8 +1,11 @@
 import type { InvokeRequest, InvokeResponse, JsonValue } from '@5straps/protocol'
+import { summarizeEffect, type ResolvedEffect } from '../domain/effect.js'
 import type { PermissionEngine } from '../domain/permission/engine.js'
 import type { GrantLookup } from '../domain/permission/decision.js'
+import { redactArguments } from '../domain/redact.js'
 import type { ToolRegistry } from '../domain/tool-registry.js'
 import { ToolExecutionError, ToolInputError, type ToolContext } from '../domain/tool.js'
+import type { ActionLog, ActionLogEntry } from '../ports/action-log.js'
 import type { ApprovalChannel } from '../ports/approval-channel.js'
 import type { GrantStore } from '../ports/grant-store.js'
 import { logger } from '../logger.js'
@@ -15,6 +18,7 @@ export interface InvokerOptions {
   approvals: ApprovalRegistry
   grants: GrantStore
   channel: ApprovalChannel
+  actions: ActionLog
   cwd: string
   defaultTimeoutMs: number
   maxTimeoutMs: number
@@ -24,56 +28,119 @@ export interface Invoker {
   invoke(input: { request: InvokeRequest; sessionId: string }): Promise<InvokeResponse>
 }
 
+/** What the permission step decided, carried through so the action log can report the reason. */
+interface GateOutcome {
+  response: InvokeResponse | null
+  asked: string[]
+  approvedBy: string[]
+}
+
 export function createInvoker(options: InvokerOptions): Invoker {
   return {
     async invoke({ request, sessionId }) {
       const startedAt = performance.now()
-      try {
-        const prepared = options.registry.get(request.tool).prepare(request.args)
-        const effects = await resolveEffects({ effects: prepared.effects, cwd: options.cwd })
+      let effects: ResolvedEffect[] = []
+      let gate: GateOutcome = { response: null, asked: [], approvedBy: [] }
 
-        const gate = await clearPermissions({ options, request, sessionId, effects })
-        if (gate) return gate
+      const response = await (async (): Promise<InvokeResponse> => {
+        try {
+          const prepared = options.registry.get(request.tool).prepare(request.args)
+          effects = await resolveEffects({ effects: prepared.effects, cwd: options.cwd })
 
-        const output = await executeWithTimeout({ options, request, sessionId, execute: prepared.execute })
-        return {
-          requestId: request.requestId,
-          outcome: 'ok',
-          output,
-          meta: { durationMs: Math.round(performance.now() - startedAt), truncated: inferTruncated(output) },
+          gate = await clearPermissions({ options, request, sessionId, effects })
+          if (gate.response) return gate.response
+
+          const output = await executeWithTimeout({ options, request, sessionId, execute: prepared.execute })
+          return {
+            requestId: request.requestId,
+            outcome: 'ok',
+            output,
+            meta: { durationMs: Math.round(performance.now() - startedAt), truncated: inferTruncated(output) },
+          }
+        } catch (error) {
+          return { requestId: request.requestId, outcome: 'error', error: shapeError(error, request.tool) }
         }
-      } catch (error) {
-        return { requestId: request.requestId, outcome: 'error', error: shapeError(error, request.tool) }
-      }
+      })()
+
+      options.actions.record(buildEntry({
+        request,
+        sessionId,
+        effects,
+        gate,
+        response,
+        durationMs: Math.round(performance.now() - startedAt),
+      }))
+      return response
     },
   }
 }
 
-/** Returns a response when the call cannot proceed, or null when it is cleared to run. */
+/** Every attempt is recorded, so a refusal leaves as much evidence as a success. */
+function buildEntry(input: {
+  request: InvokeRequest
+  sessionId: string
+  effects: ResolvedEffect[]
+  gate: GateOutcome
+  response: InvokeResponse
+  durationMs: number
+}): ActionLogEntry {
+  const { request, response, gate } = input
+  return {
+    at: new Date().toISOString(),
+    requestId: request.requestId,
+    sessionId: input.sessionId,
+    tool: request.tool,
+    outcome: describeOutcome(response),
+    durationMs: input.durationMs,
+    effects: input.effects.map(summarizeEffect),
+    args: redactArguments(request.args),
+    ...(gate.asked.length > 0 ? { asked: gate.asked } : {}),
+    ...(gate.approvedBy.length > 0 ? { approvedBy: gate.approvedBy } : {}),
+    ...(describeDetail(response) ? { detail: describeDetail(response) } : {}),
+  }
+}
+
+function describeOutcome(response: InvokeResponse): ActionLogEntry['outcome'] {
+  if (response.outcome === 'error' && response.error.code === 'PERMISSION_DENIED') return 'denied'
+  return response.outcome
+}
+
+function describeDetail(response: InvokeResponse): string | undefined {
+  if (response.outcome === 'error') return `${response.error.code}: ${response.error.message}`
+  return undefined
+}
+
+/** Returns a response when the call cannot proceed, or a null response when it is cleared to run. */
 async function clearPermissions(input: {
   options: InvokerOptions
   request: InvokeRequest
   sessionId: string
-  effects: Awaited<ReturnType<typeof resolveEffects>>
-}): Promise<InvokeResponse | null> {
+  effects: ResolvedEffect[]
+}): Promise<GateOutcome> {
   const { options, request, sessionId, effects } = input
   const consumed = options.approvals.consume(request.approvalTokens)
+  const approvedBy = consumed.map(subject => `${subject.rule}:${subject.subject}`)
   const lookup = buildLookup({ grants: options.grants, sessionId, consumed })
 
   const outcome = options.permissions.evaluate({ tool: request.tool, effects, grants: lookup })
-  if (outcome.kind === 'allow') return null
+  if (outcome.kind === 'allow') return { response: null, asked: [], approvedBy: [...approvedBy, ...outcome.allowedBy] }
   if (outcome.kind === 'deny') {
     return {
-      requestId: request.requestId,
-      outcome: 'error',
-      error: { code: 'PERMISSION_DENIED', message: outcome.denial.reason, retryable: false },
+      response: {
+        requestId: request.requestId,
+        outcome: 'error',
+        error: { code: 'PERMISSION_DENIED', message: outcome.denial.reason, retryable: false },
+      },
+      asked: [`${outcome.denial.rule}:${outcome.denial.subject ?? request.tool}`],
+      approvedBy,
     }
   }
 
   const approvals = options.approvals.issue({ tool: request.tool, sessionId, asks: outcome.asks })
+  const asked = approvals.map(approval => `${approval.rule}:${approval.subject}`)
   const decisions = await options.channel.request(approvals)
   if (!decisions) {
-    return { requestId: request.requestId, outcome: 'approval_required', approvals }
+    return { response: { requestId: request.requestId, outcome: 'approval_required', approvals }, asked, approvedBy }
   }
 
   for (const decision of decisions) {
@@ -81,21 +148,25 @@ async function clearPermissions(input: {
     if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
   }
 
+  const granted = options.approvals.consume(approvals.map(approval => approval.token))
   const rechecked = options.permissions.evaluate({
     tool: request.tool,
     effects,
-    grants: buildLookup({
-      grants: options.grants,
-      sessionId,
-      consumed: [...consumed, ...options.approvals.consume(approvals.map(approval => approval.token))],
-    }),
+    grants: buildLookup({ grants: options.grants, sessionId, consumed: [...consumed, ...granted] }),
   })
-  if (rechecked.kind === 'allow') return null
+  const resolvedBy = [...approvedBy, ...granted.map(subject => `${subject.rule}:${subject.subject}`)]
+  if (rechecked.kind === 'allow') {
+    return { response: null, asked, approvedBy: [...new Set([...resolvedBy, ...rechecked.allowedBy])] }
+  }
 
   return {
-    requestId: request.requestId,
-    outcome: 'error',
-    error: { code: 'PERMISSION_DENIED', message: 'Approval was declined', retryable: false },
+    response: {
+      requestId: request.requestId,
+      outcome: 'error',
+      error: { code: 'PERMISSION_DENIED', message: 'Approval was declined', retryable: false },
+    },
+    asked,
+    approvedBy: resolvedBy,
   }
 }
 

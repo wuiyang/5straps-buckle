@@ -2,9 +2,15 @@ import type { GrantScope, PermissionRuleId } from '@5straps/protocol'
 import type { ResolvedEffect } from '../effect.js'
 
 export type PermissionDecision =
-  | { kind: 'allow' }
+  | { kind: 'allow'; via?: GrantReference }
   | { kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[] }
   | { kind: 'deny'; rule: PermissionRuleId; subject: string; reason: string }
+
+/** The standing grant a rule relied on, so the action log can say why a call was permitted. */
+export interface GrantReference {
+  rule: PermissionRuleId
+  subject: string
+}
 
 export interface GrantLookup {
   subjectsFor(rule: PermissionRuleId): string[]
@@ -33,4 +39,8 @@ export function ask(
 
 export function deny(rule: PermissionRuleId, subject: string, reason: string): PermissionDecision {
   return { kind: 'deny', rule, subject, reason }
+}
+
+export function allowedVia(rule: PermissionRuleId, subject: string): PermissionDecision {
+  return { kind: 'allow', via: { rule, subject } }
 }

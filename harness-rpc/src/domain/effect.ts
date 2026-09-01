@@ -15,3 +15,14 @@ export type ResolvedEffect =
   | { kind: 'network'; url: URL }
   | { kind: 'exec'; command: string; args: string[] }
   | { kind: 'process_probe' }
+
+/** One line naming what an effect touches, for the action log and for approval prompts. */
+export function summarizeEffect(effect: ResolvedEffect): string {
+  switch (effect.kind) {
+    case 'read_path': return `read ${effect.path}`
+    case 'write_path': return `write ${effect.path}`
+    case 'network': return `network ${effect.url.href}`
+    case 'exec': return `exec ${[effect.command, ...effect.args].join(' ')}`
+    case 'process_probe': return 'process probe'
+  }
+}

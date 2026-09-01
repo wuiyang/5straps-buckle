@@ -1,7 +1,7 @@
-import { isInsideAny } from '../../paths.js'
+import { isInside, isInsideAny } from '../../paths.js'
 import type { GrantScope } from '@5straps/protocol'
 import type { PermissionRule } from '../decision.js'
-import { ask } from '../decision.js'
+import { allowedVia, ask } from '../decision.js'
 
 export interface WriteScopeOptions {
   /** Directories writable without asking. Empty by default, so the first write anywhere asks. */
@@ -17,8 +17,10 @@ export function createWriteScopeRule({ scratchRoots, strict }: WriteScopeOptions
     id: 'write_scope',
     evaluate({ effect, grants }) {
       if (effect.kind !== 'write_path') return null
-      const allowed = [...scratchRoots, ...grants.subjectsFor('write_scope')]
-      if (isInsideAny(allowed, effect.path)) return { kind: 'allow' }
+      if (isInsideAny(scratchRoots, effect.path)) return { kind: 'allow' }
+
+      const granted = grants.subjectsFor('write_scope').find(root => isInside(root, effect.path))
+      if (granted) return allowedVia('write_scope', granted)
       return ask('write_scope', effect.directory, `Writing to ${effect.directory} is not yet approved`, offeredScopes)
     },
   }

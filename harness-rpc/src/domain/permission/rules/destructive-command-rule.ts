@@ -1,7 +1,7 @@
 import type { ParsedArgv } from '../../argv.js'
 import { argvSignature, hasFlag, parseArgv } from '../../argv.js'
 import type { PermissionRule } from '../decision.js'
-import { ask } from '../decision.js'
+import { allowedVia, ask } from '../decision.js'
 
 const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'])
 const PRIVILEGE_COMMANDS = new Set(['sudo', 'su', 'doas', 'pkexec'])
@@ -28,7 +28,7 @@ export function createDestructiveCommandRule(): PermissionRule {
       if (!reason) return null
 
       const subject = argvSignature(argv, effect.args)
-      if (grants.subjectsFor('destructive_command').includes(subject)) return { kind: 'allow' }
+      if (grants.subjectsFor('destructive_command').includes(subject)) return allowedVia('destructive_command', subject)
       // No 'always': a standing grant for a destructive signature defeats the gate.
       return ask('destructive_command', subject, reason, ['once', 'session'])
     },
