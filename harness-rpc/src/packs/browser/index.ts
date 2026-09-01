@@ -19,6 +19,8 @@ export interface BrowserPackOptions {
   cwd: string
   runProcess: ProcessRunner
   agentBrowserCommand: string
+  /** Launch a visible window instead of headless. A per-call --headed flag still wins. */
+  headed: boolean
   available: boolean
 }
 
@@ -41,8 +43,9 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           args: [input.command, ...input.args],
         }],
         run: async (input, context): Promise<JsonValue> => {
-          // agent-browser takes the subcommand first; --json and --session are global flags.
+          // agent-browser takes the subcommand first; --json, --headed and --session are global flags.
           const args = [input.command, ...input.args, '--json']
+          if (options.headed && !input.args.includes('--headed')) args.push('--headed')
           if (input.session) args.push('--session', input.session)
 
           const result = await options.runProcess({

@@ -24,6 +24,8 @@ export interface BuckleConfig {
   allowedHosts: string[]
   braveSearchApiKey?: string
   agentBrowserCommand: string
+  /** Show the browser window. Headless by default, because a Buckle node usually has no display. */
+  browserHeaded: boolean
   skillDirectories: string[]
   stateDirectory: string
   maxRequestBytes: number
@@ -55,6 +57,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     allowedHosts: parseList(environment.BUCKLE_ALLOWED_HOSTS),
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,
     agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND ?? 'agent-browser',
+    browserHeaded: environment.BUCKLE_BROWSER_HEADED === 'true',
     skillDirectories: parseList(environment.BUCKLE_SKILLS_DIRS),
     stateDirectory,
     maxRequestBytes: parsePositiveInteger(environment.BUCKLE_MAX_REQUEST_BYTES, DEFAULT_MAX_REQUEST_BYTES),

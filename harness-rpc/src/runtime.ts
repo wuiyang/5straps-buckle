@@ -114,6 +114,7 @@ async function buildPacks(input: {
     braveSearchApiKey: input.config.braveSearchApiKey,
     allowedHosts: input.config.allowedHosts,
     agentBrowserCommand: input.config.agentBrowserCommand,
+    browserHeaded: input.config.browserHeaded,
     enableShell: input.config.enableShell,
   })
   return [...builtin, ...await input.plugins.load()]

@@ -17,6 +17,7 @@ export interface BuiltinPackOptions {
   braveSearchApiKey?: string
   allowedHosts: string[]
   agentBrowserCommand: string
+  browserHeaded: boolean
   enableShell: boolean
   /** Why commands cannot be sandboxed here, if they cannot. */
   sandboxUnavailableReason: string | null
@@ -33,6 +34,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       cwd: options.cwd,
       runProcess: options.runProcess,
       agentBrowserCommand: options.agentBrowserCommand,
+      headed: options.browserHeaded,
       available: hasExecutable(options.agentBrowserCommand),
     }),
   ]
