@@ -1,8 +1,9 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { ApprovalDecisionSchema, InvokeRequestSchema } from '@5straps/protocol'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import type { BuckleConfig } from '../../config.js'
+import { requireBearerToken } from './auth.js'
 import { toDescriptor } from '../../domain/skill.js'
 import { logger } from '../../logger.js'
 import type { BuckleRuntime } from '../../runtime.js'
@@ -22,12 +23,7 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
     protocolVersion: runtime.manifest().protocolVersion,
   }))
 
-  app.use('/v1/*', async (context, next) => {
-    if (!tokenMatches(context.req.header('authorization'), authToken)) {
-      return context.json({ error: 'Unauthorized' }, 401)
-    }
-    await next()
-  })
+  app.use('/v1/*', requireBearerToken(authToken))
 
   app.use('/v1/invoke', bodyLimit({
     maxSize: config.maxRequestBytes,
@@ -75,10 +71,3 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
   return app
 }
 
-function tokenMatches(authorization: string | undefined, expected: string): boolean {
-  if (!authorization?.startsWith('Bearer ')) return false
-  const supplied = Buffer.from(authorization.slice('Bearer '.length))
-  const expectedBuffer = Buffer.from(expected)
-  if (supplied.byteLength !== expectedBuffer.byteLength) return false
-  return timingSafeEqual(supplied, expectedBuffer)
-}

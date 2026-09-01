@@ -6,6 +6,7 @@ import type { Pack } from '../../domain/pack.js'
 import { defineTool, ToolExecutionError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
+import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'git'
 /** Unit separator: safe inside commit subjects and branch names, unlike any printable delimiter. */
@@ -50,7 +51,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       signal: input.signal,
     })
     if (result.exitCode !== 0) {
-      throw new ToolExecutionError(`git failed: ${result.stderr.trim() || result.stdout.trim()}`, { code: 'GIT_FAILED' })
+      throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
     }
     return result.stdout
   }

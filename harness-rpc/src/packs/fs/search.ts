@@ -2,6 +2,7 @@ import { resolve } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
 import { z } from 'zod'
 import { ToolExecutionError } from '../../domain/tool.js'
+import { describeProcessFailure } from '../process-failure.js'
 import { buildChildEnvironment } from '../../domain/environment.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import type * as schemas from './schemas.js'
@@ -42,7 +43,7 @@ export async function searchContent(input: {
   })
 
   if (result.exitCode !== 0 && result.exitCode !== RIPGREP_NO_MATCHES_EXIT_CODE) {
-    throw new ToolExecutionError(`ripgrep failed: ${result.stderr.trim()}`, { code: 'SEARCH_FAILED' })
+    throw new ToolExecutionError(describeProcessFailure('ripgrep', result), { code: 'SEARCH_FAILED' })
   }
 
   const matches = parseMatches(result.stdout, input.args.limit)

@@ -5,6 +5,7 @@ import type { Pack } from '../../domain/pack.js'
 import { defineTool, ToolExecutionError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
+import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
 
@@ -53,7 +54,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             signal: context.signal,
           })
           if (result.exitCode !== 0) {
-            throw new ToolExecutionError(`agent-browser failed: ${result.stderr.trim()}`, { code: 'BROWSER_COMMAND_FAILED' })
+            throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
           }
           return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated }
         },

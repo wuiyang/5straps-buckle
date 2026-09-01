@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 import { serve } from '@hono/node-server'
-import { createMcpHandler } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
-import { Hono } from 'hono'
 import { createDeferredApprovalChannel } from './adapters/approval/deferred-approval-channel.js'
 import { loadConfig, requireAuthToken, type BuckleConfig } from './config.js'
-import { createRpcApp } from './faces/rpc/app.js'
+import { createHttpApp } from './faces/http-app.js'
 import { createMcpServer } from './faces/mcp/server.js'
 import { runCli } from './faces/cli/main.js'
 import { logger } from './logger.js'
@@ -39,16 +37,7 @@ async function serveHttp(config: BuckleConfig): Promise<void> {
   const runtime = await createRuntime({ config, channel: createDeferredApprovalChannel() })
   const manifest = runtime.manifest()
 
-  const app = new Hono()
-  app.route('/', createRpcApp({ config, runtime, authToken }))
-
-  const mcpHandler = createMcpHandler(() => createMcpServer({
-    runtime,
-    serverName: config.serverName,
-    version: manifest.version,
-  }))
-  app.all('/mcp', context => mcpHandler.fetch(context.req.raw))
-  runtime.onToolsChanged(() => mcpHandler.notify.toolsChanged())
+  const app = createHttpApp({ config, runtime, authToken })
 
   serve({ fetch: app.fetch, hostname: config.host, port: config.port }, info => {
     logger.info('5straps Buckle listening', {
