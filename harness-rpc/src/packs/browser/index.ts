@@ -2,9 +2,10 @@ import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../domain/environment.js'
 import type { Pack } from '../../domain/pack.js'
-import { defineTool, ToolExecutionError } from '../../domain/tool.js'
+import { defineTool, ToolExecutionError, ToolInputError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
+import { browserEffects, refusedFlag } from './effects.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
@@ -37,12 +38,16 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
         risk: 'execute',
         tags: ['browser', 'agent-browser', 'network'],
         input: commandInput,
-        effects: input => [{
-          kind: 'exec',
-          command: options.agentBrowserCommand,
-          args: [input.command, ...input.args],
-        }],
+        effects: input => [
+          { kind: 'exec', command: options.agentBrowserCommand, args: [input.command, ...input.args] },
+          ...browserEffects(input.command, input.args),
+        ],
         run: async (input, context): Promise<JsonValue> => {
+          const refused = refusedFlag(input.args)
+          if (refused) {
+            throw new ToolInputError(`${refused} is not allowed: it would give the browser access Buckle cannot see`)
+          }
+
           // agent-browser takes the subcommand first; --json, --headed and --session are global flags.
           const args = [input.command, ...input.args, '--json']
           if (options.headed && !input.args.includes('--headed')) args.push('--headed')

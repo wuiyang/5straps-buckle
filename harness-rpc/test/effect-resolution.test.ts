@@ -5,6 +5,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { isInside } from '../src/domain/paths.js'
 import { resolveEffects } from '../src/services/resolve-effects.js'
 
+import { createPermissionEngine } from '../src/domain/permission/engine.js'
+import { createNetworkEgressRule } from '../src/domain/permission/rules/network-egress-rule.js'
+import { browserEffects } from '../src/packs/browser/effects.js'
 describe('isInside', () => {
   it('accepts the directory itself and its descendants', () => {
     expect(isInside('/work', '/work')).toBe(true)
@@ -78,5 +81,51 @@ describe('resolveEffects', () => {
   it('rejects a malformed URL at resolution time', async () => {
     await expect(resolveEffects({ effects: [{ kind: 'network', url: 'not a url' }], cwd: root }))
       .rejects.toThrow(/Not a valid URL/)
+  })
+})
+
+describe('a browser command reaching for a local file', () => {
+  it('is refused by the egress rule, because navigation is declared as a network effect', async () => {
+    const declared = browserEffects('open', ['file:///etc/shadow'])
+    const resolved = await resolveEffects({ effects: declared, cwd: process.cwd() })
+    const engine = createPermissionEngine([createNetworkEgressRule()])
+
+    const outcome = engine.evaluate({
+      tool: 'browser_command',
+      effects: resolved,
+      grants: { subjectsFor: () => [] },
+    })
+
+    expect(outcome.kind).toBe('deny')
+  })
+
+  it('cannot be unlocked by granting the subject, since a denial is not a question', async () => {
+    const resolved = await resolveEffects({
+      effects: browserEffects('open', ['file:///etc/shadow']),
+      cwd: process.cwd(),
+    })
+    const engine = createPermissionEngine([createNetworkEgressRule()])
+
+    const outcome = engine.evaluate({
+      tool: 'browser_command',
+      effects: resolved,
+      grants: { subjectsFor: () => ['file:', '/etc/shadow', 'etc'] },
+    })
+
+    expect(outcome.kind).toBe('deny')
+  })
+
+  it('lets an ordinary public page through untouched', async () => {
+    const resolved = await resolveEffects({
+      effects: browserEffects('open', ['https://example.com']),
+      cwd: process.cwd(),
+    })
+    const engine = createPermissionEngine([createNetworkEgressRule()])
+
+    expect(engine.evaluate({
+      tool: 'browser_command',
+      effects: resolved,
+      grants: { subjectsFor: () => [] },
+    }).kind).toBe('allow')
   })
 })

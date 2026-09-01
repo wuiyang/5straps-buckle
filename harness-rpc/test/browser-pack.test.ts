@@ -1,5 +1,6 @@
 import type { JsonObject } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
+import { browserEffects, refusedFlag } from '../src/packs/browser/effects.js'
 import { createBrowserPack, type BrowserPackOptions } from '../src/packs/browser/index.js'
 import type { ProcessRequest, ProcessResult } from '../src/ports/process-runner.js'
 
@@ -85,5 +86,69 @@ describe('how the browser pack reports trouble', () => {
       runProcess: async () => stubResult(),
     })
     expect(pack.unavailableReason).toBe('agent-browser is not installed on this node')
+  })
+})
+
+describe('what the browser pack declares it will touch', () => {
+  function effectsFor(command: string, args: string[]) {
+    return browserEffects(command, args)
+  }
+
+  it('declares navigation as a network effect, so the egress rule judges the URL', () => {
+    expect(effectsFor('open', ['https://example.com']))
+      .toEqual([{ kind: 'network', url: 'https://example.com' }])
+  })
+
+  it('declares a file URL too, which is what puts it in front of the rule that refuses it', () => {
+    expect(effectsFor('open', ['file:///etc/shadow']))
+      .toEqual([{ kind: 'network', url: 'file:///etc/shadow' }])
+  })
+
+  it('does not mistake a Windows drive letter for a URL scheme', () => {
+    expect(effectsFor('open', ['C:/Users/someone/page.html'])).toEqual([])
+  })
+
+  it('declares a screenshot destination as a write, so it cannot land outside the sandbox', () => {
+    expect(effectsFor('screenshot', ['out/page.png']))
+      .toEqual([{ kind: 'write_path', path: 'out/page.png' }])
+  })
+
+  it('declares nothing for a screenshot that only carries flags', () => {
+    expect(effectsFor('screenshot', ['--full'])).toEqual([])
+  })
+
+  it('declares uploaded files as reads, since upload sends local files to a remote page', () => {
+    expect(effectsFor('upload', ['@e3', 'a.pdf', 'b.pdf'])).toEqual([
+      { kind: 'read_path', path: 'a.pdf' },
+      { kind: 'read_path', path: 'b.pdf' },
+    ])
+  })
+
+  it('declares a download destination as a write, skipping the selector', () => {
+    expect(effectsFor('download', ['@e1', 'out/report.csv']))
+      .toEqual([{ kind: 'write_path', path: 'out/report.csv' }])
+  })
+})
+
+describe('flags the browser pack refuses outright', () => {
+  it('refuses the flag that lets an open page read local files', () => {
+    expect(refusedFlag(['--allow-file-access'])).toBe('--allow-file-access')
+  })
+
+  it('refuses the flag that would launch an arbitrary binary as the browser', () => {
+    expect(refusedFlag(['--executable-path', '/bin/sh'])).toBe('--executable-path')
+  })
+
+  it('catches the equals form as well as the separated form', () => {
+    expect(refusedFlag(['--executable-path=/bin/sh'])).toBe('--executable-path')
+  })
+
+  it('leaves ordinary arguments alone', () => {
+    expect(refusedFlag(['https://example.com', '--headed'])).toBeNull()
+  })
+
+  it('refuses the call rather than running it', async () => {
+    await expect(run({ command: 'open', args: ['https://x.com', '--allow-file-access'] }))
+      .rejects.toThrow('--allow-file-access is not allowed')
   })
 })

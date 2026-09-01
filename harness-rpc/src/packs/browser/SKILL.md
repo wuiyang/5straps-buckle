@@ -15,6 +15,25 @@ buckle browser command click @e2
 buckle browser command screenshot page.png
 ```
 
+## First run on a node
+
+The CLI ships without a browser. If every command fails, run `browser command install` once to
+download Chrome. `browser command doctor` reports what is missing.
+
+The browser runs headless unless the node sets `BUCKLE_BROWSER_HEADED=true`, and it is held by a
+background daemon that outlives each call, so a later command reuses the browser already running.
+Close the session to force a fresh launch after changing that setting.
+
+## What the browser may not reach
+
+Navigation is judged like any other network access. `file://` and other non-HTTP schemes are
+refused, so the browser cannot be used to read local files around the path rules. A private or
+loopback address asks first.
+
+Paths given to `screenshot`, `pdf`, `upload` and `download` are judged by the same path rules as
+`fs` tools, so writing outside the workspace asks. `--allow-file-access` and `--executable-path`
+are refused outright.
+
 ## The loop
 
 1. `open <url>` to navigate.
