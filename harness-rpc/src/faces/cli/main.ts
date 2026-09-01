@@ -1,0 +1,204 @@
+import { randomUUID } from 'node:crypto'
+import { parseArgs } from 'node:util'
+import type { GrantScope, InvokeResponse } from '@5straps/protocol'
+import { GrantScopeSchema } from '@5straps/protocol'
+import type { BuckleConfig } from '../../config.js'
+import { createRuntime, type BuckleRuntime } from '../../runtime.js'
+import { createCliApprovalChannel } from '../../adapters/approval/cli-approval-channel.js'
+import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
+import { BUCKLE_VERSION } from '../../version.js'
+
+export interface CliResult {
+  exitCode: number
+}
+
+export async function runCli(input: { argv: string[]; config: BuckleConfig }): Promise<CliResult> {
+  const [command, ...rest] = input.argv
+  if (!command || command === 'help' || command === '--help' || command === '-h') return printUsage()
+  if (command === '--version' || command === '-v') return printVersion()
+
+  const runtime = await createRuntime({ config: input.config, channel: createCliApprovalChannel() })
+
+  if (command === 'tools') return printTools(runtime)
+  if (command === 'manifest') return print(runtime.manifest())
+  if (command === 'skills') return printSkills(runtime, rest)
+  if (command === 'approve') return approve(runtime, rest)
+  if (command === 'grants') return grants(runtime, rest)
+  if (command === 'plugin') return plugin(runtime, rest)
+  if (command === 'call') return callByName(runtime, rest)
+  return callByCommand(runtime, command, rest)
+}
+
+function printVersion(): CliResult {
+  process.stdout.write(`${BUCKLE_VERSION}\n`)
+  return { exitCode: 0 }
+}
+
+function printUsage(): CliResult {
+  process.stdout.write(`buckle ${BUCKLE_VERSION}, the 5straps execution node
+
+  buckle serve                       Serve the native RPC and MCP HTTP faces
+  buckle mcp                         Serve MCP over stdio
+  buckle tools                       List available tools
+  buckle manifest                    Print the full manifest
+  buckle skills [name]               List skills, or print one
+
+  buckle <group> <verb> [args]       Run a tool, e.g. buckle fs read src/app.ts
+  buckle call <tool> --json '{...}'  Run a tool with raw JSON arguments
+
+  buckle approve <token> [--scope once|session|always]
+  buckle grants list | revoke <id>
+  buckle plugin list | add <id> <specifier> | remove <id>
+
+  buckle --version                   Print the version
+`)
+  return { exitCode: 0 }
+}
+
+function printTools(runtime: BuckleRuntime): CliResult {
+  for (const capability of runtime.registry().capabilities()) {
+    const { group, verb } = toolNameToCommand(capability.name)
+    process.stdout.write(`${`${group} ${verb}`.padEnd(24)} ${capability.risk.padEnd(8)} ${capability.description}\n`)
+  }
+  return { exitCode: 0 }
+}
+
+function printSkills(runtime: BuckleRuntime, argv: string[]): CliResult {
+  const [name] = argv
+  const skills = runtime.skills()
+  if (!name) {
+    for (const skill of skills) process.stdout.write(`${skill.name.padEnd(24)} ${skill.description}\n`)
+    return { exitCode: 0 }
+  }
+  const skill = skills.find(candidate => candidate.name === name)
+  if (!skill) return fail(`Unknown skill: ${name}`)
+  process.stdout.write(`${skill.content}\n`)
+  return { exitCode: 0 }
+}
+
+function approve(runtime: BuckleRuntime, argv: string[]): CliResult {
+  const { positionals, values } = parseArgs({
+    args: argv,
+    options: { scope: { type: 'string' }, deny: { type: 'boolean' } },
+    allowPositionals: true,
+  })
+  const token = positionals[0]
+  if (!token) return fail('Usage: buckle approve <token> [--scope once|session|always] [--deny]')
+
+  const scope = GrantScopeSchema.safeParse(values.scope ?? 'once')
+  if (!scope.success) return fail(`Invalid scope: ${values.scope}`)
+
+  const result = runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data })
+  if (!result.ok) return fail(result.reason)
+  process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token}\n`)
+  return { exitCode: 0 }
+}
+
+function grants(runtime: BuckleRuntime, argv: string[]): CliResult {
+  const [action, id] = argv
+  if (action === 'revoke') {
+    if (!id) return fail('Usage: buckle grants revoke <id>')
+    if (!runtime.grants.revoke(id)) return fail(`Grant not found: ${id}`)
+    process.stdout.write(`Revoked ${id}\n`)
+    return { exitCode: 0 }
+  }
+  for (const grant of runtime.grants.list()) {
+    process.stdout.write(`${grant.id}  ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${grant.subject}\n`)
+  }
+  return { exitCode: 0 }
+}
+
+async function plugin(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
+  const [action, id, specifier] = argv
+  if (action === 'add') {
+    if (!id || !specifier) return fail('Usage: buckle plugin add <id> <module-specifier>')
+    runtime.plugins.add({ id, specifier })
+    await runtime.reload()
+    process.stdout.write(`Added plugin ${id}\n`)
+    return { exitCode: 0 }
+  }
+  if (action === 'remove') {
+    if (!id) return fail('Usage: buckle plugin remove <id>')
+    if (!runtime.plugins.remove(id)) return fail(`Plugin not found: ${id}`)
+    await runtime.reload()
+    process.stdout.write(`Removed plugin ${id}\n`)
+    return { exitCode: 0 }
+  }
+  for (const entry of runtime.plugins.list()) {
+    process.stdout.write(`${entry.id.padEnd(24)} ${entry.enabled ? 'enabled ' : 'disabled'} ${entry.specifier}\n`)
+  }
+  return { exitCode: 0 }
+}
+
+async function callByName(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
+  const { positionals, values } = parseArgs({
+    args: argv,
+    options: { json: { type: 'string' } },
+    allowPositionals: true,
+  })
+  const toolName = positionals[0]
+  if (!toolName) return fail("Usage: buckle call <tool> --json '{...}'")
+  if (!runtime.registry().has(toolName)) return fail(`Unknown tool: ${toolName}`)
+
+  return invoke(runtime, toolName, JSON.parse(values.json ?? '{}'))
+}
+
+async function callByCommand(runtime: BuckleRuntime, group: string, argv: string[]): Promise<CliResult> {
+  const [verb, ...rest] = argv
+  const toolName = commandToToolName(group, verb ?? '')
+  if (!runtime.registry().has(toolName)) return fail(`Unknown command: ${group} ${verb ?? ''}`.trim())
+
+  const capability = runtime.registry().get(toolName).capability
+  const { positionals, values } = parseArgs({
+    args: rest,
+    options: parseArgsOptions(capability),
+    allowPositionals: true,
+  })
+  return invoke(runtime, toolName, buildToolArgs({
+    capability,
+    positionals,
+    flags: values as Record<string, string | boolean | string[]>,
+  }))
+}
+
+/** Stable across invocations: each CLI run is its own process, so a per-pid id would make
+ * every 'session' grant single-use. `buckle grants revoke` ends it. */
+const CLI_SESSION_ID = 'cli'
+
+async function invoke(runtime: BuckleRuntime, tool: string, args: unknown): Promise<CliResult> {
+  const response = await runtime.invoke({
+    request: { requestId: randomUUID(), tool, args: args as Record<string, never>, approvalTokens: [] },
+    sessionId: CLI_SESSION_ID,
+  })
+  return reportResponse(response)
+}
+
+function reportResponse(response: InvokeResponse): CliResult {
+  if (response.outcome === 'ok') return print(response.output)
+
+  if (response.outcome === 'approval_required') {
+    for (const approval of response.approvals) {
+      process.stderr.write(
+        `Approval required: ${approval.reason}\n  subject: ${approval.subject}\n  buckle approve ${approval.token} --scope ${defaultScope(approval.offeredScopes)}\n`,
+      )
+    }
+    return { exitCode: 3 }
+  }
+
+  process.stderr.write(`${response.error.code}: ${response.error.message}\n`)
+  return { exitCode: 1 }
+}
+
+function defaultScope(offered: GrantScope[]): GrantScope {
+  return offered.includes('session') ? 'session' : (offered[0] ?? 'once')
+}
+
+function print(value: unknown): CliResult {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`)
+  return { exitCode: 0 }
+}
+
+function fail(message: string): CliResult {
+  process.stderr.write(`${message}\n`)
+  return { exitCode: 1 }
+}

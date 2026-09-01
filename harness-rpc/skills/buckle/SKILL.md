@@ -1,0 +1,102 @@
+---
+name: buckle
+description: Run filesystem, shell, git, web, browser, and language-server operations on a remote or local machine through a 5straps Buckle node. Use when work must happen on a specific machine such as a dev box, a laptop, or a build server, rather than wherever you are running.
+---
+
+# Buckle
+
+A Buckle node exposes one machine's capabilities. Every call runs there, with that machine's
+files, network, and processes.
+
+Discover what a node offers before assuming:
+
+```
+buckle tools            # available tools, with risk level
+buckle manifest         # platform, sandbox mode, workspace roots, packs
+buckle skills           # per-pack guides
+buckle skills buckle-fs # print one
+```
+
+`buckle manifest` carries a `usage` string describing what the node is for. Read it when
+choosing between nodes.
+
+## Approvals, and why you cannot route around them
+
+Buckle decides what needs a human's permission. Not you, and not the harness you are running
+in. A gated call returns `approval_required` and exits with code 3:
+
+```
+Approval required: /etc/hostname is outside the sandbox
+  subject: /etc
+  buckle approve 21bff0bf-... --scope session
+```
+
+When you see this, relay it to the person you are working with. Tell them what you were trying
+to do and why, then give them the command. Reaching for a different tool, a shell one-liner, or
+a rephrased path hits the same gate, because the gate is on the effect rather than the wording.
+
+Scopes are `once`, `session`, and `always`. Some gates deliberately do not offer `always`.
+
+Four things are gated:
+
+1. **Reading outside the workspace.** Approval adds that directory to the sandbox.
+2. **Writing.** The first write to any directory asks. Remembered afterwards.
+3. **Credential files.** `.env`, `.ssh/`, `*.pem`, `.aws/credentials` and similar. Asked every
+   time until granted for that exact file. A granted directory never unlocks these.
+4. **Destructive commands.** Recursive `rm`, `dd of=`, `mkfs`, `sudo`, `git push --force`,
+   `git reset --hard`, and similar. Gated whether or not they are inside the sandbox.
+
+Private-network and loopback URLs are also refused until approved, per host and port.
+
+## Packs
+
+| Group | What it does | Skill |
+|---|---|---|
+| `fs` | read, write, patch, list, find, search | `buckle-fs` |
+| `shell` | run programs and scripts, sandboxed | `buckle-shell` |
+| `git` | status, diff, log, blame, branches as structured data | `buckle-git` |
+| `web` | fetch and search, with SSRF filtering | `buckle-web` |
+| `lsp` | definitions, references, hover, diagnostics, rename | `buckle-dev` |
+| `browser` | drive a real browser via agent-browser | `buckle-browser` |
+
+A pack that cannot run here is withheld rather than failing at call time, so `buckle tools` is
+always an honest list. `buckle manifest` names each absent pack and the reason. Shell tools are
+the common absence: they stay hidden until the machine has a working sandbox.
+
+## Passing arguments
+
+Positionals fill a tool's required fields in order, and a trailing list absorbs the rest:
+
+```
+buckle fs read src/app.ts --limit 40
+buckle shell exec -- pnpm build --filter web
+```
+
+When the shape is awkward, pass it exactly:
+
+```
+buckle call shell_exec --json '{"command":"pnpm","args":["build"]}'
+```
+
+## Two ways in
+
+As a CLI, through this skill, which works in any harness with a shell.
+
+As an MCP server, where tools appear natively:
+
+```
+claude mcp add buckle -- buckle mcp
+```
+
+Both drive the same registry and the same permission engine. In MCP hosts that support
+elicitation, approvals appear as an inline prompt. Elsewhere they come back as the same relay
+text.
+
+## Running a node
+
+```
+buckle serve    # HTTP: native RPC on /v1, MCP on /mcp
+buckle mcp      # MCP over stdio
+```
+
+`serve` requires `BUCKLE_AUTH_TOKEN`. Bind to localhost unless the network is trusted.

@@ -1,0 +1,64 @@
+{
+  "name": "@5straps/buckle",
+  "version": "0.1.0",
+  "description": "Buckle: a sandboxed tool-execution node any AI harness can drive over CLI, MCP, or HTTP.",
+  "license": "MIT",
+  "keywords": [
+    "5straps",
+    "buckle",
+    "mcp",
+    "agent",
+    "tools",
+    "sandbox",
+    "llm",
+    "claude",
+    "skills"
+  ],
+  "homepage": "https://github.com/wuiyang/buckle#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wuiyang/buckle.git",
+    "directory": "harness-rpc"
+  },
+  "bugs": {
+    "url": "https://github.com/wuiyang/buckle/issues"
+  },
+  "type": "module",
+  "bin": {
+    "buckle": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "skills",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "pnpm run build",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-pack-assets.mjs",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "buckle": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@5straps/protocol": "workspace:*",
+    "@hono/node-server": "2.1.1",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "hono": "4.13.5",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "tsx": "4.23.12",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}

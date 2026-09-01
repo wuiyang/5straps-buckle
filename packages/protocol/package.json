@@ -1,0 +1,52 @@
+{
+  "name": "@5straps/protocol",
+  "version": "0.1.0",
+  "description": "Wire schemas shared by the 5straps chat server and its Buckle execution nodes.",
+  "license": "MIT",
+  "keywords": [
+    "5straps",
+    "protocol",
+    "zod",
+    "schema"
+  ],
+  "homepage": "https://github.com/wuiyang/buckle#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wuiyang/buckle.git",
+    "directory": "packages/protocol"
+  },
+  "bugs": {
+    "url": "https://github.com/wuiyang/buckle/issues"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepack": "pnpm run build",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
+  }
+}
