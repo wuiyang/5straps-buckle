@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
-import { buildChildEnvironment } from '../../domain/environment.js'
+import { buildChildEnvironment, collectPrefixed } from '../../domain/environment.js'
 import type { Pack } from '../../domain/pack.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
@@ -9,6 +9,13 @@ import { browserEffects, refusedFlag } from './effects.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
+
+/**
+ * agent-browser is configured almost entirely through these, and the child environment allowlist
+ * would otherwise strip every one. Forwarding the prefix keeps that configuration working without
+ * widening what any other pack inherits.
+ */
+const CONFIG_PREFIX = 'AGENT_BROWSER_'
 
 const commandInput = z.object({
   command: z.string().min(1).max(100),
@@ -58,7 +65,10 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             args,
             cwd: options.cwd,
             timeoutMs: context.timeoutMs,
-            environment: buildChildEnvironment({ parent: process.env, extra: {} }),
+            environment: buildChildEnvironment({
+              parent: process.env,
+              extra: collectPrefixed(process.env, CONFIG_PREFIX),
+            }),
             signal: context.signal,
           })
           if (result.exitCode !== 0) {

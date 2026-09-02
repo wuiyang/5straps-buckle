@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createFileActionLog } from '../src/adapters/action-log/file-action-log.js'
 import { summarizeEffect } from '../src/domain/effect.js'
+import { collectPrefixed } from '../src/domain/environment.js'
 import { redactArguments } from '../src/domain/redact.js'
 import type { ActionLogEntry } from '../src/ports/action-log.js'
 
@@ -118,5 +119,21 @@ describe('summarizeEffect', () => {
       .toBe('network https://example.com/x')
     expect(summarizeEffect({ kind: 'exec', command: 'rm', args: ['-rf', 'build'] })).toBe('exec rm -rf build')
     expect(summarizeEffect({ kind: 'process_probe' })).toBe('process probe')
+  })
+})
+
+describe('collectPrefixed', () => {
+  it('takes every variable under the prefix and nothing else', () => {
+    expect(collectPrefixed({ AGENT_BROWSER_HEADED: 'true', AGENT_BROWSER_PROXY: 'p', OTHER: 'x' }, 'AGENT_BROWSER_'))
+      .toEqual({ AGENT_BROWSER_HEADED: 'true', AGENT_BROWSER_PROXY: 'p' })
+  })
+
+  it('anchors at the start, so a variable merely containing the prefix is left out', () => {
+    expect(collectPrefixed({ MY_AGENT_BROWSER_X: 'x' }, 'AGENT_BROWSER_')).toEqual({})
+  })
+
+  it('skips variables with no value rather than forwarding undefined', () => {
+    expect(collectPrefixed({ AGENT_BROWSER_A: undefined, AGENT_BROWSER_B: 'b' }, 'AGENT_BROWSER_'))
+      .toEqual({ AGENT_BROWSER_B: 'b' })
   })
 })

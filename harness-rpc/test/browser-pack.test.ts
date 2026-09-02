@@ -152,3 +152,56 @@ describe('flags the browser pack refuses outright', () => {
       .rejects.toThrow('--allow-file-access is not allowed')
   })
 })
+
+describe('the environment the browser is spawned with', () => {
+  async function environmentFor(overrides: Record<string, string>) {
+    const saved = { ...process.env }
+    Object.assign(process.env, overrides)
+    try {
+      const calls: ProcessRequest[] = []
+      const pack = createBrowserPack({
+        cwd: '/work',
+        agentBrowserCommand: 'agent-browser',
+        headed: false,
+        available: true,
+        runProcess: async request => {
+          calls.push(request)
+          return stubResult()
+        },
+      })
+      const tool = pack.tools[0]
+      if (!tool) throw new Error('the browser pack registered no tool')
+      await tool.prepare({ command: 'session', args: [] }).execute({
+        requestId: 'r1',
+        sessionId: 's1',
+        timeoutMs: 1000,
+        signal: new AbortController().signal,
+      })
+      return calls[0]?.environment ?? {}
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]
+      Object.assign(process.env, saved)
+    }
+  }
+
+  it('forwards agent-browser settings, which the allowlist would otherwise strip', async () => {
+    const environment = await environmentFor({ AGENT_BROWSER_SCREENSHOT_DIR: 'C:/shots' })
+    expect(environment.AGENT_BROWSER_SCREENSHOT_DIR).toBe('C:/shots')
+  })
+
+  it('still withholds Buckle\'s own token from the browser', async () => {
+    const environment = await environmentFor({ BUCKLE_AUTH_TOKEN: 'super-secret' })
+    expect(environment.BUCKLE_AUTH_TOKEN).toBeUndefined()
+  })
+
+  it('forwards nothing that merely mentions the tool without the prefix', async () => {
+    const environment = await environmentFor({ MY_AGENT_BROWSER_HACK: 'no', AI_GATEWAY_API_KEY: 'sk-live' })
+    expect(environment.MY_AGENT_BROWSER_HACK).toBeUndefined()
+    expect(environment.AI_GATEWAY_API_KEY).toBeUndefined()
+  })
+
+  it('keeps passing the variables a child genuinely needs', async () => {
+    const environment = await environmentFor({})
+    expect(environment.PATH).toBeDefined()
+  })
+})
