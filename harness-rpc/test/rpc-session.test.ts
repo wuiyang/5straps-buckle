@@ -19,7 +19,7 @@ beforeEach(async () => {
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-rpc-')),
     BUCKLE_ALLOW_SHELL: 'false',
   })
-  runtime = await createRuntime({ config, channel: createDeferredApprovalChannel() })
+  runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
   app = createHttpApp({ config, runtime, authToken: TOKEN })
 })
 

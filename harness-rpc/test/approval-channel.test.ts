@@ -1,0 +1,190 @@
+import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
+import { describe, expect, it, vi } from 'vitest'
+import { createCliApprovalChannel } from '../src/adapters/approval/cli-approval-channel.js'
+import { createWaitingApprovalChannel } from '../src/adapters/approval/waiting-approval-channel.js'
+import { createSerialQueue } from '../src/domain/serial-queue.js'
+import type { ApprovalChannel } from '../src/ports/approval-channel.js'
+import type { ApprovalRegistry } from '../src/services/approval-registry.js'
+
+function request(token: string): ApprovalRequest {
+  return {
+    token,
+    rule: 'read_scope',
+    subject: '/shots',
+    reason: 'outside the sandbox',
+    tool: 'fs_read',
+    offeredScopes: ['once', 'session', 'always'],
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  }
+}
+
+/** Only `pending` is consulted by the waiting channel; the rest of the registry is not its concern. */
+function registry(pending: () => ApprovalRequest[]): ApprovalRegistry {
+  return { pending } as unknown as ApprovalRegistry
+}
+
+describe('the grace period before a gated call gives up', () => {
+  it('returns as soon as another route resolves the approval', async () => {
+    let resolved = false
+    setTimeout(() => { resolved = true }, 50)
+
+    const channel = createWaitingApprovalChannel({
+      approvals: registry(() => resolved ? [] : [request('t1')]),
+      timeoutMs: 5_000,
+    })
+
+    const started = Date.now()
+    expect(await channel.request([request('t1')])).toEqual([])
+    expect(Date.now() - started).toBeLessThan(2_000)
+  })
+
+  it('gives up once the grace period passes, so a call is not held forever', async () => {
+    const channel = createWaitingApprovalChannel({
+      approvals: registry(() => [request('t1')]),
+      timeoutMs: 600,
+    })
+
+    expect(await channel.request([request('t1')])).toBeNull()
+  })
+
+  it('refuses at once when the grace period is turned off', async () => {
+    const pending = vi.fn(() => [request('t1')])
+    const channel = createWaitingApprovalChannel({ approvals: registry(pending), timeoutMs: 0 })
+
+    expect(await channel.request([request('t1')])).toBeNull()
+    expect(pending).not.toHaveBeenCalled()
+  })
+
+  it('waits for every token, not just the first one answered', async () => {
+    let answered = 0
+    const channel = createWaitingApprovalChannel({
+      approvals: registry(() => [request('t1'), request('t2')].slice(answered)),
+      timeoutMs: 3_000,
+    })
+
+    setTimeout(() => { answered = 1 }, 50)
+    setTimeout(() => { answered = 2 }, 300)
+
+    expect(await channel.request([request('t1'), request('t2')])).toEqual([])
+  })
+
+  it('announces the request before waiting, so someone can be reached in time', async () => {
+    const notify = vi.fn(async () => undefined)
+    const channel = createWaitingApprovalChannel({
+      approvals: registry(() => []),
+      timeoutMs: 1_000,
+      notify,
+    })
+
+    await channel.request([request('t1')])
+    expect(notify).toHaveBeenCalledOnce()
+  })
+
+  it('still waits when announcing fails, rather than failing the call itself', async () => {
+    const channel = createWaitingApprovalChannel({
+      approvals: registry(() => []),
+      timeoutMs: 1_000,
+      notify: async () => { throw new Error('telegram is down') },
+    })
+
+    expect(await channel.request([request('t1')])).toEqual([])
+  })
+
+  it('takes a terminal answer when one arrives first', async () => {
+    const decision: ApprovalDecision = { token: 't1', approved: true, scope: 'session' }
+    const prompt: ApprovalChannel = { id: 'stub', request: async () => [decision] }
+
+    const channel = createWaitingApprovalChannel({
+      approvals: registry(() => [request('t1')]),
+      timeoutMs: 5_000,
+      prompt,
+    })
+
+    expect(await channel.request([request('t1')])).toEqual([decision])
+  })
+
+  it('tells the terminal to let go once another route has answered', async () => {
+    let aborted = false
+    const prompt: ApprovalChannel = {
+      id: 'stub',
+      request: (_requests, signal) => new Promise(resolve => {
+        signal?.addEventListener('abort', () => {
+          aborted = true
+          resolve(null)
+        })
+      }),
+    }
+
+    const channel = createWaitingApprovalChannel({
+      approvals: registry(() => []),
+      timeoutMs: 2_000,
+      prompt,
+    })
+
+    await channel.request([request('t1')])
+    expect(aborted).toBe(true)
+  })
+})
+
+describe('the terminal prompt queue', () => {
+  it('answers nothing without a terminal, rather than blocking on a pipe', async () => {
+    const wasTty = process.stdin.isTTY
+    process.stdin.isTTY = false
+    try {
+      expect(await createCliApprovalChannel().request([request('t1')])).toBeNull()
+    } finally {
+      process.stdin.isTTY = wasTty
+    }
+  })
+
+  it('declines a queued question that was cancelled while it waited its turn', async () => {
+    const wasTty = process.stdin.isTTY
+    process.stdin.isTTY = true
+    try {
+      const channel = createCliApprovalChannel()
+      const controller = new AbortController()
+      controller.abort()
+
+      // Already aborted, so it must return without ever touching stdin.
+      expect(await channel.request([request('t1')], controller.signal)).toBeNull()
+    } finally {
+      process.stdin.isTTY = wasTty
+    }
+  })
+})
+
+describe('the queue that keeps one question on screen at a time', () => {
+  it('never runs two tasks at once, which is what stops an answer landing on the wrong request', async () => {
+    const queue = createSerialQueue()
+    let running = 0
+    let overlapped = false
+
+    const task = () => queue(async () => {
+      running += 1
+      if (running > 1) overlapped = true
+      await new Promise(resolve => setTimeout(resolve, 5))
+      running -= 1
+    })
+
+    await Promise.all([task(), task(), task(), task()])
+    expect(overlapped).toBe(false)
+  })
+
+  it('keeps submission order, so the person answers questions as they arrived', async () => {
+    const queue = createSerialQueue()
+    const order: number[] = []
+
+    await Promise.all([1, 2, 3].map(n => queue(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10 - n))
+      order.push(n)
+    })))
+
+    expect(order).toEqual([1, 2, 3])
+  })
+
+  it('keeps serving the queue after a task throws', async () => {
+    const queue = createSerialQueue()
+    await expect(queue(async () => { throw new Error('declined') })).rejects.toThrow('declined')
+    await expect(queue(async () => 'next one still runs')).resolves.toBe('next one still runs')
+  })
+})

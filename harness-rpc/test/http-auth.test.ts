@@ -24,7 +24,7 @@ beforeAll(async () => {
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-auth-')),
     BUCKLE_ALLOW_SHELL: 'false',
   })
-  const runtime = await createRuntime({ config, channel: createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
   app = createHttpApp({ config, runtime, authToken: TOKEN })
 })
 

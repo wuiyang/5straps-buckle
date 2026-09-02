@@ -41,7 +41,8 @@ export interface BuckleRuntime {
 
 export async function createRuntime(input: {
   config: BuckleConfig
-  channel: ApprovalChannel
+  /** Built here because a channel that waits for a decision needs the registry holding it. */
+  channel: (approvals: ApprovalRegistry) => ApprovalChannel
 }): Promise<BuckleRuntime> {
   const { config } = input
   const sandbox = resolveSandbox({
@@ -52,6 +53,7 @@ export async function createRuntime(input: {
   const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
   const approvals = createApprovalRegistry(grants, approvalsPath(config))
   const actions = createFileActionLog(actionsPath(config))
+  const defaultChannel = input.channel(approvals)
   const permissions = buildPermissionEngine(config)
   const plugins = createPluginRegistry({
     filePath: pluginsPath(config),
@@ -78,7 +80,7 @@ export async function createRuntime(input: {
       approvals,
       grants,
       actions,
-      channel: channel ?? input.channel,
+      channel: channel ?? defaultChannel,
       cwd: config.cwd,
       defaultTimeoutMs: config.defaultTimeoutMs,
       maxTimeoutMs: config.maxTimeoutMs,

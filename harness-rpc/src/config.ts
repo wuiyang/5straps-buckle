@@ -5,6 +5,7 @@ import { SandboxModeSchema } from '@5straps/protocol'
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_TIMEOUT_MS = 300_000
+const DEFAULT_APPROVAL_TIMEOUT_MS = 15_000
 
 export interface BuckleConfig {
   host: string
@@ -26,6 +27,10 @@ export interface BuckleConfig {
   agentBrowserCommand: string
   /** Show the browser window. Headless by default, because a Buckle node usually has no display. */
   browserHeaded: boolean
+  /** How long a gated call waits for a decision before reporting back. Zero refuses at once. */
+  approvalTimeoutMs: number
+  /** Where to announce a pending approval, so a person can be reached away from the machine. */
+  approvalWebhook?: string
   skillDirectories: string[]
   stateDirectory: string
   maxRequestBytes: number
@@ -58,6 +63,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,
     agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND ?? 'agent-browser',
     browserHeaded: environment.BUCKLE_BROWSER_HEADED === 'true',
+    approvalTimeoutMs: parseTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_TIMEOUT_MS),
+    approvalWebhook: environment.BUCKLE_APPROVAL_WEBHOOK || undefined,
     skillDirectories: parseList(environment.BUCKLE_SKILLS_DIRS),
     stateDirectory,
     maxRequestBytes: parsePositiveInteger(environment.BUCKLE_MAX_REQUEST_BYTES, DEFAULT_MAX_REQUEST_BYTES),
@@ -93,6 +100,14 @@ function parseSandboxMode(value: string | undefined): BuckleConfig['sandboxMode'
   const parsed = SandboxModeSchema.safeParse(value)
   if (!parsed.success) throw new Error(`Invalid BUCKLE_SANDBOX: ${value}`)
   return parsed.data
+}
+
+/** Unlike the other durations, zero is meaningful here: it turns the grace period off. */
+function parseTimeout(value: string | undefined, fallback: number): number {
+  if (value === undefined || value === '') return fallback
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`Invalid BUCKLE_APPROVAL_TIMEOUT_MS: ${value}`)
+  return parsed
 }
 
 function parseList(value: string | undefined): string[] {

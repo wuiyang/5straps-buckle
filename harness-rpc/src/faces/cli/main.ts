@@ -17,7 +17,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   if (!command || command === 'help' || command === '--help' || command === '-h') return printUsage()
   if (command === '--version' || command === '-v') return printVersion()
 
-  const runtime = await createRuntime({ config: input.config, channel: createCliApprovalChannel() })
+  const runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
 
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
