@@ -12,7 +12,8 @@ export function createReadScopeRule(workspaceRoots: string[]): PermissionRule {
 
       const granted = grants.subjectsFor('read_scope').find(root => isInside(root, effect.path))
       if (granted) return allowedVia('read_scope', granted)
-      return ask('read_scope', effect.directory, `${effect.path} is outside the sandbox`)
+      // Naming the roots turns a refusal into directions, for a caller that cannot read the manifest.
+      return ask('read_scope', effect.directory, `${effect.path} is outside the sandbox. Readable without asking: ${workspaceRoots.join(', ')}`)
     },
   }
 }

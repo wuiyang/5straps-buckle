@@ -21,7 +21,8 @@ export function createWriteScopeRule({ scratchRoots, strict }: WriteScopeOptions
 
       const granted = grants.subjectsFor('write_scope').find(root => isInside(root, effect.path))
       if (granted) return allowedVia('write_scope', granted)
-      return ask('write_scope', effect.directory, `Writing to ${effect.directory} is not yet approved`, offeredScopes)
+      const free = scratchRoots.length > 0 ? `. Writable without asking: ${scratchRoots.join(', ')}` : ''
+      return ask('write_scope', effect.directory, `Writing to ${effect.directory} is not yet approved${free}`, offeredScopes)
     },
   }
 }

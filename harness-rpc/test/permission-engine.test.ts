@@ -251,3 +251,12 @@ describe('what the engine reports as the reason for allowing a call', () => {
     expect(evaluate([readEffect('/etc/shadow')], { read_scope: ['/etc'] }).kind).not.toBe('allow')
   })
 })
+
+describe('what a refusal tells a caller that cannot read the manifest', () => {
+  it('names the readable roots, so the caller learns where it may go instead', () => {
+    const outcome = evaluate([readEffect('/elsewhere/file.txt')])
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind !== 'ask') return
+    expect(outcome.asks[0]?.reason).toContain(WORKSPACE)
+  })
+})
