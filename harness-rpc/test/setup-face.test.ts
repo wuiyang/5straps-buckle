@@ -26,7 +26,7 @@ beforeEach(async () => {
     BUCKLE_STATE_DIR: stateDirectory,
     BUCKLE_WORKSPACE_ROOT: workspace,
     BUCKLE_ALLOW_SHELL: 'false',
-    BUCKLE_COMMAND_DENY: '^wget\\b',
+    BUCKLE_COMMAND_DENY: 'wget *',
   })
   runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
   app = createHttpApp({ config, runtime, authToken: AGENT })
@@ -73,7 +73,7 @@ describe('pushing a policy', () => {
     const put = await app.request('/setup/policy', {
       method: 'PUT',
       headers: bearer(SETUP),
-      body: JSON.stringify({ version: 1, network: { allow: ['example.com'] }, commands: { deny: ['^curl\\b'] } }),
+      body: JSON.stringify({ version: 1, network: { allow: ['example.com'] }, commands: { deny: ['curl *'] } }),
     })
     expect(put.status).toBe(200)
     // The same three-part view as a read, so a pusher never has to read back to learn the result.
@@ -84,10 +84,10 @@ describe('pushing a policy', () => {
       stored: { commands: { deny: string[] }; updatedAt: string | null }
       effective: { commands: { deny: string[] }; network: { allow: string[] } }
     }
-    expect(body.base.commands.deny).toEqual(['^wget\\b'])
-    expect(body.stored.commands.deny).toEqual(['^curl\\b'])
+    expect(body.base.commands.deny).toEqual(['wget *'])
+    expect(body.stored.commands.deny).toEqual(['curl *'])
     expect(body.stored.updatedAt).not.toBeNull()
-    expect(body.effective.commands.deny).toEqual(['^wget\\b', '^curl\\b'])
+    expect(body.effective.commands.deny).toEqual(['wget *', 'curl *'])
     expect(body.effective.network.allow).toEqual(['example.com'])
   })
 
@@ -103,21 +103,21 @@ describe('pushing a policy', () => {
     expect(refused.error?.message).toContain('approved list')
   })
 
-  it('refuses a bad pattern before storing anything', async () => {
+  it('refuses a regular expression before storing anything', async () => {
     const put = await app.request('/setup/policy', {
       method: 'PUT',
       headers: bearer(SETUP),
-      body: JSON.stringify({ version: 1, commands: { allow: ['^pnpm ('] } }),
+      body: JSON.stringify({ version: 1, commands: { allow: ['^pnpm (build|test)'] } }),
     })
     expect(put.status).toBe(400)
     expect(runtime.policy.stored()).toBeNull()
   })
 
   it('can be cleared, which leaves the environment share standing', async () => {
-    await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, commands: { deny: ['^curl'] } }) })
+    await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, commands: { deny: ['curl'] } }) })
     const cleared = await app.request('/setup/policy', { method: 'DELETE', headers: bearer(SETUP) })
     expect(cleared.status).toBe(200)
-    expect(runtime.policy.effective().commands.deny).toEqual(['^wget\\b'])
+    expect(runtime.policy.effective().commands.deny).toEqual(['wget *'])
   })
 })
 

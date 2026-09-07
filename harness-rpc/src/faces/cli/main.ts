@@ -6,7 +6,7 @@ import type { BuckleConfig } from '../../config.js'
 import { createRuntime, type BuckleRuntime } from '../../runtime.js'
 import { createCliApprovalChannel } from '../../adapters/approval/cli-approval-channel.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
-import { policyCommand } from './policy.js'
+import { policyCommand, policyMigrateCommand } from './policy.js'
 import { BUCKLE_VERSION } from '../../version.js'
 
 export interface CliResult {
@@ -17,6 +17,9 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   const [command, ...rest] = input.argv
   if (!command || command === 'help' || command === '--help' || command === '-h') return printUsage()
   if (command === '--version' || command === '-v') return printVersion()
+  // Before the runtime, because a stored pattern the runtime refuses to compile is what sends
+  // the owner here in the first place.
+  if (command === 'policy' && rest[0] === 'migrate') return policyMigrateCommand({ config: input.config, argv: rest.slice(1) })
 
   const runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
 
@@ -54,7 +57,7 @@ function printUsage(): CliResult {
   buckle grants list | revoke <id>
   buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
-  buckle policy show | allow-command | deny-command | allow-url | mount | ...
+  buckle policy show | allow-command | deny-command | allow-url | mount | migrate | ...
 
   buckle --version                   Print the version
 `)

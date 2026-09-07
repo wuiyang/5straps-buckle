@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { emptyWorkspacePolicy, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
+import { createFilePolicyStore } from '../../adapters/policy-store/file-policy-store.js'
+import { policyPath, type BuckleConfig } from '../../config.js'
 import { PolicyError } from '../../domain/policy.js'
+import { migrateCommandPattern, type PatternMigration } from '../../domain/policy-migration.js'
 import type { BuckleRuntime } from '../../runtime.js'
 
 export interface CliResult {
@@ -10,14 +13,19 @@ export interface CliResult {
 
 const USAGE = `Usage:
   buckle policy show [--json]                 The effective policy and where each part came from
-  buckle policy allow-command <regex>         Only matching command lines may run
-  buckle policy deny-command <regex>          Matching command lines are refused; deny wins
+  buckle policy allow-command <glob>          Only matching command lines may run
+  buckle policy deny-command <glob>           Matching command lines are refused; deny wins
   buckle policy allow-url <host|url-prefix>   Only listed hosts and URLs may be reached
   buckle policy mount <path> | unmount        Show the workspace to the agent as this path
   buckle policy remove <pattern>              Drop a pattern from every list
   buckle policy import <file.json>            Replace the stored policy from a file
   buckle policy export                        Print the stored policy as JSON
   buckle policy clear                         Drop the stored policy, leaving the environment's
+  buckle policy migrate [--write]             Turn stored regular expressions into globs
+
+A command glob is matched one shell word at a time. 'pnpm {build,test} *' allows 'pnpm build'
+with any arguments after it: * stands for one word, and a trailing * for the rest of the line.
+An allow glob must cover the whole line; a deny glob covers every line starting with it.
 `
 
 /**
@@ -64,6 +72,82 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
     }
     throw error
   }
+}
+
+/** The lists a command pattern can sit in, in the order `buckle policy show` prints them. */
+const COMMAND_LISTS = ['allow', 'deny'] as const
+
+type CommandList = typeof COMMAND_LISTS[number]
+
+interface ListedMigration extends PatternMigration {
+  list: CommandList
+}
+
+/**
+ * Reads the stored and environment patterns straight from disk, because a stored regular
+ * expression is exactly what stops the runtime from being built. Writes nothing without
+ * `--write`, and never writes a pattern it could not read.
+ */
+export function policyMigrateCommand(input: { config: BuckleConfig; argv: string[] }): CliResult {
+  const { values } = parseArgs({ args: input.argv, options: { write: { type: 'boolean' } }, allowPositionals: false })
+  const store = createFilePolicyStore({ filePath: policyPath(input.config), workspace: input.config.cwd })
+  const stored = store.read()
+  const storedMigrations = migrationsOf(stored)
+  const environmentMigrations = migrationsOf(input.config.policy)
+
+  if (storedMigrations.length === 0 && environmentMigrations.length === 0) {
+    process.stdout.write('No command patterns are stored or configured; there is nothing to migrate.\n')
+    return { exitCode: 0 }
+  }
+
+  printMigrations(`Stored policy (${policyPath(input.config)})`, storedMigrations)
+  printMigrations('Environment (BUCKLE_COMMAND_ALLOW, BUCKLE_COMMAND_DENY)', environmentMigrations)
+
+  const unreadable = [...storedMigrations, ...environmentMigrations].filter(migration => migration.glob === null)
+  if (unreadable.length > 0) {
+    const subject = unreadable.length === 1 ? '1 pattern needs' : `${unreadable.length} patterns need`
+    process.stderr.write(`\n${subject} a person. Rewrite each as a glob, then run this again.\n`)
+    return { exitCode: 1 }
+  }
+  if (environmentMigrations.length > 0) {
+    process.stdout.write('\nEnvironment patterns live in the environment file; paste the globs above over them.\n')
+  }
+  if (!values.write) {
+    process.stdout.write('\nNothing written. Run `buckle policy migrate --write` to store the conversions above.\n')
+    return { exitCode: 0 }
+  }
+  if (!stored) {
+    process.stdout.write('\nNo stored policy to write.\n')
+    return { exitCode: 0 }
+  }
+
+  store.write(applyMigrations(stored, storedMigrations))
+  process.stdout.write('\nStored policy rewritten as globs.\n')
+  return { exitCode: 0 }
+}
+
+function migrationsOf(policy: WorkspacePolicy | null): ListedMigration[] {
+  if (!policy) return []
+  return COMMAND_LISTS.flatMap(list => policy.commands[list].map(source => ({ list, ...migrateCommandPattern(source) })))
+}
+
+function printMigrations(title: string, migrations: ListedMigration[]): void {
+  if (migrations.length === 0) return
+  process.stdout.write(`${title}\n`)
+  for (const migration of migrations) {
+    const target = migration.glob === null ? 'cannot convert' : migration.glob
+    process.stdout.write(`  ${migration.list.padEnd(6)} ${migration.source.padEnd(40)} -> ${target}\n`)
+    if (migration.note) process.stdout.write(`  ${' '.repeat(6)} ${' '.repeat(40)}    (${migration.note})\n`)
+  }
+}
+
+function applyMigrations(policy: WorkspacePolicy, migrations: ListedMigration[]): WorkspacePolicy {
+  return edit(policy, next => {
+    for (const list of COMMAND_LISTS) {
+      next.commands[list] = migrations.flatMap(migration => (migration.list === list && migration.glob ? [migration.glob] : []))
+    }
+    next.updatedAt = new Date().toISOString()
+  })
 }
 
 class UsageError extends Error {}

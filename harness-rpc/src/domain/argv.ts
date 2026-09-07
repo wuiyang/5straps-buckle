@@ -76,6 +76,26 @@ export function shellStatements(argv: ParsedArgv): string[] {
     .filter(Boolean)
 }
 
+/** Splits on whitespace, keeping a quoted run together and dropping the quotes. */
+const STATEMENT_WORD = /"[^"]*"|'[^']*'|\S+/g
+
+/**
+ * One statement of a script body as words, normalised like `parseArgv` does, so a command glob
+ * judges what runs inside `bash -c` the way it judges an argument list.
+ */
+export function statementWords(statement: string): string[] {
+  const words = (statement.match(STATEMENT_WORD) ?? []).map(unquote)
+  const [command, ...rest] = words
+  if (command === undefined) return []
+  return [baseCommand(command), ...rest]
+}
+
+function unquote(word: string): string {
+  const quote = word.charAt(0)
+  if (word.length >= 2 && (quote === '"' || quote === "'") && word.endsWith(quote)) return word.slice(1, -1)
+  return word
+}
+
 function baseCommand(command: string): string {
   const withoutDirectory = command.split(/[\\/]/).pop() ?? command
   return withoutDirectory.toLowerCase()

@@ -1,4 +1,5 @@
 import { emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
+import { compileCommandGlob, CommandGlobError, type CommandGlob } from './command-glob.js'
 import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-pattern.js'
 
 /**
@@ -7,7 +8,7 @@ import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-patt
  */
 export interface CompiledPolicy {
   policy: WorkspacePolicy
-  commands: { allow: RegExp[]; deny: RegExp[] }
+  commands: { allow: CommandGlob[]; deny: CommandGlob[] }
   /** Null when the owner set no approved list, which leaves the network rule to its defaults. */
   network: UrlMatcher | null
   mount: string | null
@@ -25,8 +26,8 @@ export function compilePolicy(policy: WorkspacePolicy): CompiledPolicy {
   return {
     policy,
     commands: {
-      allow: policy.commands.allow.map(compileRegExp),
-      deny: policy.commands.deny.map(compileRegExp),
+      allow: compileGlobs(policy.commands.allow),
+      deny: compileGlobs(policy.commands.deny),
     },
     network: policy.network.allow.length > 0 ? compileNetwork(policy.network.allow) : null,
     mount: validateMount(policy.mount),
@@ -57,12 +58,15 @@ export function isRestrictive(policy: WorkspacePolicy): boolean {
     || policy.mount !== null
 }
 
-function compileRegExp(source: string): RegExp {
-  try {
-    return new RegExp(source)
-  } catch (error) {
-    throw new PolicyError(`Invalid command pattern ${JSON.stringify(source)}: ${error instanceof Error ? error.message : 'bad regular expression'}`)
-  }
+function compileGlobs(sources: string[]): CommandGlob[] {
+  return sources.map(source => {
+    try {
+      return compileCommandGlob(source)
+    } catch (error) {
+      if (error instanceof CommandGlobError) throw new PolicyError(`Invalid command pattern ${JSON.stringify(source)}: ${error.message}`)
+      throw error
+    }
+  })
 }
 
 function compileNetwork(patterns: string[]): UrlMatcher {

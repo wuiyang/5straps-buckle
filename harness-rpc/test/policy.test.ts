@@ -14,9 +14,9 @@ function policy(overrides: Partial<{ allow: string[]; deny: string[]; network: s
 
 describe('merging the environment share with the stored share', () => {
   it('unions every list, so neither source can loosen the other', () => {
-    const merged = mergePolicies(policy({ deny: ['^curl'], allow: ['^pnpm'] }), policy({ deny: ['^wget', '^curl'], network: ['example.com'] }))
-    expect(merged.commands.deny).toEqual(['^curl', '^wget'])
-    expect(merged.commands.allow).toEqual(['^pnpm'])
+    const merged = mergePolicies(policy({ deny: ['curl'], allow: ['pnpm *'] }), policy({ deny: ['wget', 'curl'], network: ['example.com'] }))
+    expect(merged.commands.deny).toEqual(['curl', 'wget'])
+    expect(merged.commands.allow).toEqual(['pnpm *'])
     expect(merged.network.allow).toEqual(['example.com'])
   })
 
@@ -28,9 +28,15 @@ describe('merging the environment share with the stored share', () => {
 })
 
 describe('compiling', () => {
-  it('refuses a pattern that is not a regular expression, naming it', () => {
-    expect(() => compilePolicy(policy({ allow: ['^pnpm ('] }))).toThrow(PolicyError)
-    expect(() => compilePolicy(policy({ allow: ['^pnpm ('] }))).toThrow('^pnpm (')
+  it('refuses a pattern that is a regular expression, naming it and the migration', () => {
+    expect(() => compilePolicy(policy({ allow: ['^pnpm (build|test)'] }))).toThrow(PolicyError)
+    expect(() => compilePolicy(policy({ allow: ['^pnpm (build|test)'] }))).toThrow('^pnpm (build|test)')
+    expect(() => compilePolicy(policy({ deny: ['^curl\\b'] }))).toThrow('buckle policy migrate')
+  })
+
+  it('compiles a glob into a matcher the rules can run', () => {
+    const compiled = compilePolicy(policy({ allow: ['pnpm {build,test} *'] }))
+    expect(compiled.commands.allow[0]?.matchesLine(['pnpm', 'build'])).toBe(true)
   })
 
   it('refuses a network entry that is neither a host nor a URL prefix', () => {
@@ -53,7 +59,7 @@ describe('compiling', () => {
 describe('what counts as restrictive', () => {
   it('is any list or a mount', () => {
     expect(isRestrictive(policy({}))).toBe(false)
-    expect(isRestrictive(policy({ deny: ['^curl'] }))).toBe(true)
+    expect(isRestrictive(policy({ deny: ['curl'] }))).toBe(true)
     expect(isRestrictive(policy({ mount: '/workspace' }))).toBe(true)
   })
 })

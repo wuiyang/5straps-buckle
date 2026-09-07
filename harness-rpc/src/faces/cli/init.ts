@@ -79,7 +79,7 @@ Next:
   2. Register it in Rings with both tokens, or drive it directly:
        agent token   ${authToken}
        setup token   ${setupToken}
-  3. Restrict it:               buckle policy allow-command '^pnpm (build|test)\\b'
+  3. Restrict it:               buckle policy allow-command 'pnpm {build,test} *'
                                 buckle policy allow-url localhost:3000
 
 The agent token runs tools. The setup token reads and pushes the policy at /setup and nothing
@@ -120,9 +120,10 @@ ${input.mount ? `BUCKLE_WORKSPACE_MOUNT=${input.mount}` : '# BUCKLE_WORKSPACE_MO
 BUCKLE_SANDBOX=auto
 BUCKLE_ALLOW_SHELL=true
 
-# The owner's constraints. One pattern per line inside double quotes, or separated by ;;
-# BUCKLE_COMMAND_ALLOW="^docker compose (up|down|restart)\\b;;^pnpm (build|test)\\b"
-# BUCKLE_COMMAND_DENY="^(sh|bash|node|python3?|curl|wget)\\b"
+# The owner's constraints, as shell-word globs. One pattern per line inside double quotes, or
+# separated by ;;  An allow glob covers the whole line, a deny glob everything starting with it.
+# BUCKLE_COMMAND_ALLOW="docker compose {up,down,restart} *;;pnpm {build,test} *"
+# BUCKLE_COMMAND_DENY="{sh,bash,node,python,python3,curl,wget}"
 # BUCKLE_NETWORK_ALLOW=localhost:3000,*.example.com
 
 # Where refused calls are reported as they happen (Rings: <rings>/api/v1/buckle-reports).
