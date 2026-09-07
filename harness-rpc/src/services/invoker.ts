@@ -1,5 +1,6 @@
-import type { InvokeRequest, InvokeResponse, JsonValue } from '@5straps/protocol'
+import type { DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId } from '@5straps/protocol'
 import { summarizeEffect, type ResolvedEffect } from '../domain/effect.js'
+import type { PathView } from '../domain/path-view.js'
 import type { PermissionEngine } from '../domain/permission/engine.js'
 import type { GrantLookup } from '../domain/permission/decision.js'
 import { redactArguments } from '../domain/redact.js'
@@ -8,6 +9,7 @@ import { ToolExecutionError, ToolInputError, type ToolContext } from '../domain/
 import type { ActionLog, ActionLogEntry } from '../ports/action-log.js'
 import type { ApprovalChannel } from '../ports/approval-channel.js'
 import type { GrantStore } from '../ports/grant-store.js'
+import type { Reporter } from '../ports/reporter.js'
 import { logger } from '../logger.js'
 import { resolveEffects } from './resolve-effects.js'
 import { subjectsByRule, type ApprovalRegistry } from './approval-registry.js'
@@ -19,7 +21,9 @@ export interface InvokerOptions {
   grants: GrantStore
   channel: ApprovalChannel
   actions: ActionLog
-  cwd: string
+  reporter: Reporter
+  paths: PathView
+  serverId: string
   defaultTimeoutMs: number
   maxTimeoutMs: number
 }
@@ -33,6 +37,8 @@ interface GateOutcome {
   response: InvokeResponse | null
   asked: string[]
   approvedBy: string[]
+  /** Set when the call was refused rather than run, whoever refused it. */
+  denial?: { rule: PermissionRuleId; subject: string; reason: string }
 }
 
 export function createInvoker(options: InvokerOptions): Invoker {
@@ -45,7 +51,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const response = await (async (): Promise<InvokeResponse> => {
         try {
           const prepared = options.registry.get(request.tool).prepare(request.args)
-          effects = await resolveEffects({ effects: prepared.effects, cwd: options.cwd })
+          effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
           gate = await clearPermissions({ options, request, sessionId, effects })
           if (gate.response) return gate.response
@@ -62,14 +68,16 @@ export function createInvoker(options: InvokerOptions): Invoker {
         }
       })()
 
-      options.actions.record(buildEntry({
+      const entry = buildEntry({
         request,
         sessionId,
         effects,
         gate,
         response,
         durationMs: Math.round(performance.now() - startedAt),
-      }))
+      })
+      options.actions.record(entry)
+      if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
       return response
     },
   }
@@ -100,6 +108,31 @@ function buildEntry(input: {
   }
 }
 
+/**
+ * Told as it happens, and never awaited: the refusal already stands, and a report endpoint
+ * that is slow or down must not hold the caller's answer.
+ */
+function announceDenial(input: { options: InvokerOptions; entry: ActionLogEntry; denial: NonNullable<GateOutcome['denial']> }): void {
+  if (!input.options.reporter.configured) return
+  const report: DeniedRunReport = {
+    event: 'denied_run',
+    serverId: input.options.serverId,
+    workspace: input.options.paths.root,
+    at: input.entry.at,
+    requestId: input.entry.requestId,
+    sessionId: input.entry.sessionId,
+    tool: input.entry.tool,
+    rule: input.denial.rule,
+    subject: input.denial.subject,
+    reason: input.denial.reason,
+    effects: input.entry.effects,
+    args: input.entry.args,
+  }
+  void input.options.reporter.report(report).catch((error: unknown) => {
+    logger.warn('Could not report a denied run', { message: error instanceof Error ? error.message : 'Unknown error' })
+  })
+}
+
 function describeOutcome(response: InvokeResponse): ActionLogEntry['outcome'] {
   if (response.outcome === 'error' && response.error.code === 'PERMISSION_DENIED') return 'denied'
   return response.outcome
@@ -126,13 +159,10 @@ async function clearPermissions(input: {
   if (outcome.kind === 'allow') return { response: null, asked: [], approvedBy: [...approvedBy, ...outcome.allowedBy] }
   if (outcome.kind === 'deny') {
     return {
-      response: {
-        requestId: request.requestId,
-        outcome: 'error',
-        error: { code: 'PERMISSION_DENIED', message: outcome.denial.reason, retryable: false },
-      },
+      response: denied(request, outcome.denial.reason),
       asked: [`${outcome.denial.rule}:${outcome.denial.subject ?? request.tool}`],
       approvedBy,
+      denial: { rule: outcome.denial.rule, subject: outcome.denial.subject, reason: outcome.denial.reason },
     }
   }
 
@@ -159,14 +189,24 @@ async function clearPermissions(input: {
     return { response: null, asked, approvedBy: [...new Set([...resolvedBy, ...rechecked.allowedBy])] }
   }
 
+  const first = approvals[0]
   return {
-    response: {
-      requestId: request.requestId,
-      outcome: 'error',
-      error: { code: 'PERMISSION_DENIED', message: 'Approval was declined', retryable: false },
-    },
+    response: denied(request, 'Approval was declined'),
     asked,
     approvedBy: resolvedBy,
+    denial: {
+      rule: first?.rule ?? 'write_scope',
+      subject: approvals.map(approval => approval.subject).join(', '),
+      reason: 'Approval was declined',
+    },
+  }
+}
+
+function denied(request: InvokeRequest, message: string): InvokeResponse {
+  return {
+    requestId: request.requestId,
+    outcome: 'error',
+    error: { code: 'PERMISSION_DENIED', message, retryable: false },
   }
 }
 

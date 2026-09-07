@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
-import { segments } from '../../paths.js'
+import { isInsideAny, segments } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
-import { allowedVia, ask } from '../decision.js'
+import { allowedVia, ask, deny } from '../decision.js'
 
 /** Directory names whose entire subtree holds credentials. */
 const SENSITIVE_DIRECTORIES = new Set([
@@ -43,11 +43,22 @@ const SENSITIVE_FILENAME_PATTERNS = [
   /_rsa$/,
 ]
 
-export function createSensitivePathRule(): PermissionRule {
+export interface SensitivePathOptions {
+  /**
+   * Buckle's own state: grants, pending approvals, the policy, the action log. No grant can
+   * open these, because a tool that read or rewrote them would be judging itself.
+   */
+  protectedRoots: string[]
+}
+
+export function createSensitivePathRule(options: SensitivePathOptions = { protectedRoots: [] }): PermissionRule {
   return {
     id: 'sensitive_path',
     evaluate({ effect, grants }) {
       if (effect.kind !== 'read_path' && effect.kind !== 'write_path') return null
+      if (isInsideAny(options.protectedRoots, effect.path)) {
+        return deny('sensitive_path', effect.path, "Buckle's own state and policy are not reachable from a tool")
+      }
       const reason = classify(effect.path)
       if (!reason) return null
 

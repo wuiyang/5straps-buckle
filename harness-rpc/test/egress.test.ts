@@ -45,7 +45,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(),
+      allowedHosts: allowLocal(), approved: null,
     })
     expect(await response.text()).toBe('arrived')
   })
@@ -56,7 +56,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: [],
+      allowedHosts: [], approved: null,
     })).rejects.toThrow(/loopback/)
   })
 
@@ -66,7 +66,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(),
+      allowedHosts: allowLocal(), approved: null,
     })).rejects.toThrow(/link-local/)
   })
 
@@ -76,7 +76,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(),
+      allowedHosts: allowLocal(), approved: null,
     })).rejects.toThrow(/private/)
   })
 
@@ -86,7 +86,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(),
+      allowedHosts: allowLocal(), approved: null,
     })).rejects.toThrow(/non-HTTP scheme/)
   })
 
@@ -97,7 +97,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(),
+      allowedHosts: allowLocal(), approved: null,
     })).resolves.toBeDefined()
   })
 })

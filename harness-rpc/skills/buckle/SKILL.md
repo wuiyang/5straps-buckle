@@ -48,6 +48,14 @@ Four things are gated:
 
 Private-network and loopback URLs are also refused until approved, per host and port.
 
+Some things are refused outright, with the reason, and no approval is offered: a command the
+owner's policy denies or leaves off its allow list, a URL off the owner's approved list, any
+non-HTTP scheme, and Buckle's own state directory. The refusal names what is allowed instead
+where that helps. Do not try to route around it; the owner already answered.
+
+A workspace may be mounted: then `buckle manifest` names `/workspace` (or similar) as the root,
+and that is the path to use. Relative paths work the same either way.
+
 ## Packs
 
 | Group | What it does | Skill |

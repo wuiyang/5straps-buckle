@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { TOOL_NAME_PATTERN } from '@5straps/protocol'
+import { createPathView } from '../src/domain/path-view.js'
 import { createBuiltinPacks } from '../src/packs/index.js'
 import { availableTools } from '../src/domain/pack.js'
 import { createToolRegistry } from '../src/domain/tool-registry.js'
@@ -11,6 +12,10 @@ import { toolNameToCommand, commandToToolName, buildToolArgs, parseArgsOptions }
 function builtinRegistry() {
   const packs = createBuiltinPacks({
     cwd: '/work/project',
+    paths: createPathView({ root: '/work/project', mount: null }),
+    hiddenPaths: [],
+    mountReadOnlyPaths: [],
+    approvedUrls: null,
     runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
     sandbox: createNoneSandbox(),
     writableRoots: ['/work/project'],

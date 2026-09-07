@@ -1,6 +1,6 @@
-import { resolve } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
 import { z } from 'zod'
+import type { PathView } from '../../domain/path-view.js'
 import { ToolExecutionError } from '../../domain/tool.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { buildChildEnvironment } from '../../domain/environment.js'
@@ -21,12 +21,12 @@ const matchSchema = z.object({
 
 export async function searchContent(input: {
   args: z.output<typeof schemas.searchInput>
-  cwd: string
+  paths: PathView
   runProcess: ProcessRunner
   timeoutMs: number
   signal: AbortSignal
 }): Promise<JsonValue> {
-  const root = resolve(input.cwd, input.args.path)
+  const root = input.paths.resolve(input.args.path)
   // --max-count bounds work per file; the global limit is applied while parsing.
   const commandArgs = ['--json', '--line-number', '--column', '--max-count', String(input.args.limit)]
   if (!input.args.caseSensitive) commandArgs.push('--ignore-case')

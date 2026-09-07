@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment, collectPrefixed } from '../../domain/environment.js'
 import type { Pack } from '../../domain/pack.js'
+import type { PathView } from '../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -25,6 +26,7 @@ const commandInput = z.object({
 
 export interface BrowserPackOptions {
   cwd: string
+  paths: PathView
   runProcess: ProcessRunner
   agentBrowserCommand: string
   /** Launch a visible window instead of headless. A per-call --headed flag still wins. */
@@ -56,7 +58,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           }
 
           // agent-browser takes the subcommand first; --json, --headed and --session are global flags.
-          const args = [input.command, ...input.args, '--json']
+          // A path the agent named under the mount is handed to the browser as the real one.
+          const args = [input.command, ...input.args.map(argument => realPath(argument, options.paths)), '--json']
           if (options.headed && !input.args.includes('--headed')) args.push('--headed')
           if (input.session) args.push('--session', input.session)
 
@@ -79,6 +82,11 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
       }),
     ],
   }
+}
+
+function realPath(argument: string, paths: PathView): string {
+  if (argument.startsWith('-') || !paths.mount) return argument
+  return argument === paths.mount || argument.startsWith(`${paths.mount}/`) ? paths.resolve(argument) : argument
 }
 
 /** Most agent-browser commands honour --json; a few (screenshot paths) print plain text. */

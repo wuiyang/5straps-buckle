@@ -1,6 +1,7 @@
 import type { JsonObject } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
 import { browserEffects, refusedFlag } from '../src/packs/browser/effects.js'
+import { createPathView } from '../src/domain/path-view.js'
 import { createBrowserPack, type BrowserPackOptions } from '../src/packs/browser/index.js'
 import type { ProcessRequest, ProcessResult } from '../src/ports/process-runner.js'
 
@@ -12,6 +13,7 @@ async function run(input: JsonObject, options: Partial<BrowserPackOptions> = {},
   const calls: ProcessRequest[] = []
   const pack = createBrowserPack({
     cwd: '/work',
+    paths: createPathView({ root: '/work', mount: null }),
     agentBrowserCommand: 'agent-browser',
     headed: false,
     available: true,
@@ -80,6 +82,7 @@ describe('how the browser pack reports trouble', () => {
   it('reports why the pack is missing rather than pretending it is installed', () => {
     const pack = createBrowserPack({
       cwd: '/work',
+    paths: createPathView({ root: '/work', mount: null }),
       agentBrowserCommand: 'agent-browser',
       headed: false,
       available: false,
@@ -161,6 +164,7 @@ describe('the environment the browser is spawned with', () => {
       const calls: ProcessRequest[] = []
       const pack = createBrowserPack({
         cwd: '/work',
+    paths: createPathView({ root: '/work', mount: null }),
         agentBrowserCommand: 'agent-browser',
         headed: false,
         available: true,

@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import type { Pack } from '../../domain/pack.js'
 import { defineTool, ToolExecutionError } from '../../domain/tool.js'
+import type { UrlMatcher } from '../../domain/url-pattern.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { guardedFetch } from './egress.js'
 
@@ -30,6 +31,8 @@ export interface WebPackOptions {
   braveSearchApiKey?: string
   /** Hosts an operator pre-approved, so a private address can be reached on purpose. */
   allowedHosts: string[]
+  /** The owner's approved list. When set, every hop of every fetch must be on it. */
+  approved: UrlMatcher | null
 }
 
 export function createWebPack(options: WebPackOptions): Pack {
@@ -49,6 +52,7 @@ export function createWebPack(options: WebPackOptions): Pack {
           body: input.body,
           signal: context.signal,
           allowedHosts: options.allowedHosts,
+          approved: options.approved,
         })
         const { body, truncated } = await readBounded(response)
         return {

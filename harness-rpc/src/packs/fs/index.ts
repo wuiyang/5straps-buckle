@@ -1,4 +1,5 @@
 import type { Pack } from '../../domain/pack.js'
+import type { PathView } from '../../domain/path-view.js'
 import { defineTool } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -9,13 +10,13 @@ import { searchContent } from './search.js'
 const PACK_ID = 'fs'
 
 export interface FsPackOptions {
-  cwd: string
+  paths: PathView
   runProcess: ProcessRunner
   hasRipgrep: boolean
 }
 
 export function createFsPack(options: FsPackOptions): Pack {
-  const context = { cwd: options.cwd }
+  const context = { paths: options.paths }
 
   const tools = [
     defineTool(PACK_ID, {
@@ -95,7 +96,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       effects: input => [{ kind: 'read_path', path: input.path }],
       run: (input, toolContext) => searchContent({
         args: input,
-        cwd: options.cwd,
+        paths: options.paths,
         runProcess: options.runProcess,
         timeoutMs: toolContext.timeoutMs,
         signal: toolContext.signal,

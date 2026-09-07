@@ -1,3 +1,6 @@
+/** Interpreters whose positional is a script body rather than an argument list. */
+export const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'])
+
 export interface ParsedArgv {
   command: string
   shortFlags: Set<string>
@@ -58,6 +61,19 @@ const MAX_SIGNATURE_LENGTH = 300
 export function argvSignature(argv: ParsedArgv, args: string[]): string {
   const signature = [argv.command, ...args].join(' ')
   return signature.length > MAX_SIGNATURE_LENGTH ? `${signature.slice(0, MAX_SIGNATURE_LENGTH)}…` : signature
+}
+
+/**
+ * The statements of a shell script body, split where a shell would start a new command, so a
+ * pattern written for a command line also meets `curl` inside `bash -c "... | curl ..."`.
+ */
+export function shellStatements(argv: ParsedArgv): string[] {
+  if (!SHELL_COMMANDS.has(argv.command)) return []
+  return argv.positionals
+    .join('\n')
+    .split(/\n|;|&&|\|\||\|/)
+    .map(statement => statement.trim())
+    .filter(Boolean)
 }
 
 function baseCommand(command: string): string {

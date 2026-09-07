@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, symlink, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createPathView } from '../src/domain/path-view.js'
 import { isInside } from '../src/domain/paths.js'
 import { resolveEffects } from '../src/services/resolve-effects.js'
 
@@ -40,7 +41,7 @@ describe('resolveEffects', () => {
   it('resolves a relative path against the workspace', async () => {
     const [effect] = await resolveEffects({
       effects: [{ kind: 'read_path', path: 'notes.md' }],
-      cwd: join(root, 'workspace'),
+      paths: createPathView({ root: join(root, 'workspace'), mount: null }),
     })
     expect(effect).toMatchObject({ kind: 'read_path', path: join(root, 'workspace', 'notes.md') })
   })
@@ -48,7 +49,7 @@ describe('resolveEffects', () => {
   it('follows a symlinked file to its real target, so the jail sees where it lands', async () => {
     const [effect] = await resolveEffects({
       effects: [{ kind: 'read_path', path: 'link.txt' }],
-      cwd: join(root, 'workspace'),
+      paths: createPathView({ root: join(root, 'workspace'), mount: null }),
     })
     expect(effect?.kind === 'read_path' && effect.path).toBe(join(root, 'outside', 'secret.txt'))
   })
@@ -56,7 +57,7 @@ describe('resolveEffects', () => {
   it('follows a symlinked directory, so a new file cannot be smuggled outside', async () => {
     const [effect] = await resolveEffects({
       effects: [{ kind: 'write_path', path: 'escape/planted.txt' }],
-      cwd: join(root, 'workspace'),
+      paths: createPathView({ root: join(root, 'workspace'), mount: null }),
     })
     expect(effect?.kind === 'write_path' && effect.path).toBe(join(root, 'outside', 'planted.txt'))
     expect(effect?.kind === 'write_path' && effect.directory).toBe(join(root, 'outside'))
@@ -65,7 +66,7 @@ describe('resolveEffects', () => {
   it('rejects traversal above the workspace', async () => {
     const [effect] = await resolveEffects({
       effects: [{ kind: 'read_path', path: '../outside/secret.txt' }],
-      cwd: join(root, 'workspace'),
+      paths: createPathView({ root: join(root, 'workspace'), mount: null }),
     })
     expect(isInside(join(root, 'workspace'), effect?.kind === 'read_path' ? effect.path : '')).toBe(false)
   })
@@ -73,13 +74,13 @@ describe('resolveEffects', () => {
   it('parses network effects into a URL', async () => {
     const [effect] = await resolveEffects({
       effects: [{ kind: 'network', url: 'https://example.com/a?b=1' }],
-      cwd: root,
+      paths: createPathView({ root, mount: null }),
     })
     expect(effect?.kind === 'network' && effect.url.hostname).toBe('example.com')
   })
 
   it('rejects a malformed URL at resolution time', async () => {
-    await expect(resolveEffects({ effects: [{ kind: 'network', url: 'not a url' }], cwd: root }))
+    await expect(resolveEffects({ effects: [{ kind: 'network', url: 'not a url' }], paths: createPathView({ root, mount: null }) }))
       .rejects.toThrow(/Not a valid URL/)
   })
 })
@@ -87,7 +88,7 @@ describe('resolveEffects', () => {
 describe('a browser command reaching for a local file', () => {
   it('is refused by the egress rule, because navigation is declared as a network effect', async () => {
     const declared = browserEffects('open', ['file:///etc/shadow'])
-    const resolved = await resolveEffects({ effects: declared, cwd: process.cwd() })
+    const resolved = await resolveEffects({ effects: declared, paths: createPathView({ root: process.cwd(), mount: null }) })
     const engine = createPermissionEngine([createNetworkEgressRule()])
 
     const outcome = engine.evaluate({
@@ -102,7 +103,7 @@ describe('a browser command reaching for a local file', () => {
   it('cannot be unlocked by granting the subject, since a denial is not a question', async () => {
     const resolved = await resolveEffects({
       effects: browserEffects('open', ['file:///etc/shadow']),
-      cwd: process.cwd(),
+      paths: createPathView({ root: process.cwd(), mount: null }),
     })
     const engine = createPermissionEngine([createNetworkEgressRule()])
 
@@ -118,7 +119,7 @@ describe('a browser command reaching for a local file', () => {
   it('lets an ordinary public page through untouched', async () => {
     const resolved = await resolveEffects({
       effects: browserEffects('open', ['https://example.com']),
-      cwd: process.cwd(),
+      paths: createPathView({ root: process.cwd(), mount: null }),
     })
     const engine = createPermissionEngine([createNetworkEgressRule()])
 

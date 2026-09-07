@@ -5,10 +5,12 @@ import type { BuckleRuntime } from '../runtime.js'
 import { createMcpServer } from './mcp/server.js'
 import { createRpcApp } from './rpc/app.js'
 import { requireBearerToken } from './rpc/auth.js'
+import { createSetupApp } from './setup/app.js'
 
 /**
  * The whole HTTP surface: native RPC under /v1 and MCP under /mcp, both behind the same bearer
- * gate. Only /health is open, and it reports nothing a caller could act on.
+ * gate, and the owner's /setup behind a different one when a setup token is configured. Only
+ * /health is open, and it reports nothing a caller could act on.
  */
 export function createHttpApp(input: {
   config: BuckleConfig
@@ -27,6 +29,8 @@ export function createHttpApp(input: {
   app.use('/mcp', requireBearerToken(authToken))
   app.all('/mcp', context => mcpHandler.fetch(context.req.raw))
   runtime.onToolsChanged(() => mcpHandler.notify.toolsChanged())
+
+  if (config.setupToken) app.route('/setup', createSetupApp({ config, runtime, setupToken: config.setupToken }))
 
   return app
 }

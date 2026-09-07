@@ -1,8 +1,8 @@
-import { resolve } from 'node:path'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../domain/environment.js'
 import type { Pack } from '../../domain/pack.js'
+import type { PathView } from '../../domain/path-view.js'
 import { defineTool, ToolExecutionError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -30,7 +30,7 @@ const blameInput = repoInput.extend({
 })
 
 export interface GitPackOptions {
-  cwd: string
+  paths: PathView
   runProcess: ProcessRunner
   hasGit: boolean
 }
@@ -45,7 +45,7 @@ export function createGitPack(options: GitPackOptions): Pack {
     const result = await options.runProcess({
       command: 'git',
       args: input.args,
-      cwd: resolve(options.cwd, input.repo),
+      cwd: options.paths.resolve(input.repo),
       timeoutMs: input.timeoutMs,
       environment: buildChildEnvironment({ parent: process.env, extra: { GIT_TERMINAL_PROMPT: '0' } }),
       signal: input.signal,

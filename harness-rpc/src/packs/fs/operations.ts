@@ -1,7 +1,8 @@
 import { lstat, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, matchesGlob, relative, resolve } from 'node:path'
+import { basename, dirname, join, matchesGlob, relative } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
+import type { PathView } from '../../domain/path-view.js'
 import { ToolInputError } from '../../domain/tool.js'
 import { isIgnoredDirectory } from './ignore.js'
 import type * as schemas from './schemas.js'
@@ -10,21 +11,21 @@ const MAX_FILE_BYTES = 10 * 1_048_576
 const MAX_TREE_ENTRIES = 5_000
 
 export interface FsContext {
-  cwd: string
+  paths: PathView
 }
 
 export async function readFileEntry(
   input: z.output<typeof schemas.readInput>,
   context: FsContext,
 ): Promise<JsonValue> {
-  const path = resolve(context.cwd, input.path)
+  const path = context.paths.resolve(input.path)
   const info = await stat(path)
   if (!info.isFile()) throw new ToolInputError(`Not a file: ${input.path}`)
   if (info.size > MAX_FILE_BYTES) throw new ToolInputError(`File exceeds ${MAX_FILE_BYTES} bytes`)
 
   const buffer = await readFile(path)
   if (input.encoding === 'base64') {
-    return { path: display(path, context), encoding: 'base64', content: buffer.toString('base64'), size: info.size }
+    return { path: context.paths.display(path), encoding: 'base64', content: buffer.toString('base64'), size: info.size }
   }
 
   const lines = buffer.toString('utf8').split('\n')
@@ -33,7 +34,7 @@ export async function readFileEntry(
   const slice = lines.slice(start, end)
 
   return {
-    path: display(path, context),
+    path: context.paths.display(path),
     encoding: 'utf8',
     content: slice.join('\n'),
     size: info.size,
@@ -48,19 +49,19 @@ export async function writeFileEntry(
   input: z.output<typeof schemas.writeInput>,
   context: FsContext,
 ): Promise<JsonValue> {
-  const path = resolve(context.cwd, input.path)
+  const path = context.paths.resolve(input.path)
   const content = Buffer.from(input.content, input.encoding)
   if (content.byteLength > MAX_FILE_BYTES) throw new ToolInputError(`Content exceeds ${MAX_FILE_BYTES} bytes`)
   if (input.createParents) await mkdir(dirname(path), { recursive: true })
   await writeFile(path, content)
-  return { path: display(path, context), size: content.byteLength }
+  return { path: context.paths.display(path), size: content.byteLength }
 }
 
 export async function patchFile(
   input: z.output<typeof schemas.patchInput>,
   context: FsContext,
 ): Promise<JsonValue> {
-  const path = resolve(context.cwd, input.path)
+  const path = context.paths.resolve(input.path)
   let content = await readFile(path, 'utf8')
   const replacements: number[] = []
 
@@ -76,27 +77,27 @@ export async function patchFile(
 
   if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw new ToolInputError(`Patched file exceeds ${MAX_FILE_BYTES} bytes`)
   await writeFile(path, content, 'utf8')
-  return { path: display(path, context), replacements, size: Buffer.byteLength(content) }
+  return { path: context.paths.display(path), replacements, size: Buffer.byteLength(content) }
 }
 
 export async function listTree(
   input: z.output<typeof schemas.listInput>,
   context: FsContext,
 ): Promise<JsonValue> {
-  const root = resolve(context.cwd, input.path)
+  const root = context.paths.resolve(input.path)
   const entries: JsonValue[] = []
   await walkTree({ root, current: root, depth: input.depth, includeIgnored: input.includeIgnored, entries })
-  return { path: display(root, context), entries, truncated: entries.length >= MAX_TREE_ENTRIES }
+  return { path: context.paths.display(root), entries, truncated: entries.length >= MAX_TREE_ENTRIES }
 }
 
 export async function findNames(
   input: z.output<typeof schemas.findInput>,
   context: FsContext,
 ): Promise<JsonValue> {
-  const root = resolve(context.cwd, input.path)
+  const root = context.paths.resolve(input.path)
   const matches: string[] = []
   await walkNames({ root, current: root, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches })
-  return { path: display(root, context), matches, truncated: matches.length >= input.limit }
+  return { path: context.paths.display(root), matches, truncated: matches.length >= input.limit }
 }
 
 async function walkTree(input: {
@@ -161,9 +162,3 @@ function countOccurrences(content: string, needle: string): number {
   return count
 }
 
-/** Workspace-relative where that reads clearly, absolute once the path escapes it. */
-function display(path: string, context: FsContext): string {
-  const fromCwd = relative(context.cwd, path)
-  if (fromCwd === '') return '.'
-  return fromCwd.startsWith('..') ? path : fromCwd
-}

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync } from 'node:fs'
+import { parseEnv } from 'node:util'
 import { serve } from '@hono/node-server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { createCliApprovalChannel } from './adapters/approval/cli-approval-channel.js'
@@ -7,6 +9,7 @@ import { createWebhookNotifier } from './adapters/approval/webhook-notifier.js'
 import { loadConfig, requireAuthToken, type BuckleConfig } from './config.js'
 import { createHttpApp } from './faces/http-app.js'
 import { createMcpServer } from './faces/mcp/server.js'
+import { runInit } from './faces/cli/init.js'
 import { runCli } from './faces/cli/main.js'
 import { logger } from './logger.js'
 import { createRuntime } from './runtime.js'
@@ -25,6 +28,12 @@ function exitQuietlyOnClosedPipe(): void {
 async function main(): Promise<void> {
   exitQuietlyOnClosedPipe()
   const [command, ...rest] = process.argv.slice(2)
+  if (command === 'init') {
+    process.exitCode = (await runInit(rest)).exitCode
+    return
+  }
+
+  loadEnvironmentFile()
   const config = loadConfig()
 
   if (command === 'serve') return serveHttp(config)
@@ -32,6 +41,19 @@ async function main(): Promise<void> {
 
   const result = await runCli({ argv: command ? [command, ...rest] : [], config })
   process.exitCode = result.exitCode
+}
+
+/**
+ * `buckle init` writes `.env` beside the workspace, so the node reads it back from its working
+ * directory. Only BUCKLE_* names are taken, and a variable already in the environment wins, so
+ * a project's own `.env` never leaks into the node and an operator override still applies.
+ */
+function loadEnvironmentFile(): void {
+  const path = process.env.BUCKLE_ENV_FILE ?? '.env'
+  if (!existsSync(path)) return
+  for (const [name, value] of Object.entries(parseEnv(readFileSync(path, 'utf8')))) {
+    if (name.startsWith('BUCKLE_') && process.env[name] === undefined) process.env[name] = value
+  }
 }
 
 async function serveHttp(config: BuckleConfig): Promise<void> {
@@ -55,6 +77,9 @@ async function serveHttp(config: BuckleConfig): Promise<void> {
       skills: manifest.skills.length,
       approvalGraceMs: config.approvalTimeoutMs,
       approvalWebhook: config.approvalWebhook ? 'configured' : 'none',
+      setupFace: config.setupToken ? 'configured' : 'none',
+      deniedRunReports: runtime.reporter.configured ? 'configured' : 'none',
+      mount: runtime.paths().mount ?? 'none',
     })
   })
 }
@@ -71,7 +96,9 @@ function buildServerChannel(input: {
   return createWaitingApprovalChannel({
     approvals: input.approvals,
     timeoutMs: input.config.approvalTimeoutMs,
-    notify: input.config.approvalWebhook ? createWebhookNotifier(input.config.approvalWebhook) : undefined,
+    notify: input.config.approvalWebhook
+      ? createWebhookNotifier({ url: input.config.approvalWebhook, serverId: input.config.serverId, token: input.config.reportToken })
+      : undefined,
     prompt: input.prompt ? createCliApprovalChannel() : undefined,
   })
 }

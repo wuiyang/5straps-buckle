@@ -6,6 +6,7 @@ import type { BuckleConfig } from '../../config.js'
 import { createRuntime, type BuckleRuntime } from '../../runtime.js'
 import { createCliApprovalChannel } from '../../adapters/approval/cli-approval-channel.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
+import { policyCommand } from './policy.js'
 import { BUCKLE_VERSION } from '../../version.js'
 
 export interface CliResult {
@@ -26,6 +27,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   if (command === 'grants') return grants(runtime, rest)
   if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
+  if (command === 'policy') return policyCommand(runtime, rest)
   if (command === 'call') return callByName(runtime, rest)
   return callByCommand(runtime, command, rest)
 }
@@ -38,6 +40,7 @@ function printVersion(): CliResult {
 function printUsage(): CliResult {
   process.stdout.write(`buckle ${BUCKLE_VERSION}, the 5straps execution node
 
+  buckle init                        Write an environment file for a workspace, with fresh tokens
   buckle serve                       Serve the native RPC and MCP HTTP faces
   buckle mcp                         Serve MCP over stdio
   buckle tools                       List available tools
@@ -51,6 +54,7 @@ function printUsage(): CliResult {
   buckle grants list | revoke <id>
   buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
+  buckle policy show | allow-command | deny-command | allow-url | mount | ...
 
   buckle --version                   Print the version
 `)

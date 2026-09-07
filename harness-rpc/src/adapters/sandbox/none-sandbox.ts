@@ -4,6 +4,7 @@ import type { Sandbox } from '../../ports/sandbox.js'
 export function createNoneSandbox(): Sandbox {
   return {
     mode: 'none',
+    supportsMount: false,
     wrap: ({ command, args }) => ({ command, args }),
   }
 }

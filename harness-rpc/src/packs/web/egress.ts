@@ -1,6 +1,7 @@
 import { lookup } from 'node:dns/promises'
 import { reservedRangeOf } from '../../domain/ip.js'
 import { ToolExecutionError } from '../../domain/tool.js'
+import type { UrlMatcher } from '../../domain/url-pattern.js'
 
 const MAX_REDIRECTS = 5
 
@@ -16,11 +17,13 @@ export async function guardedFetch(input: {
   body?: string
   signal: AbortSignal
   allowedHosts: string[]
+  /** The owner's approved list. When set, every hop must be on it, and a listed private address is fine. */
+  approved: UrlMatcher | null
 }): Promise<Response> {
   let current = input.url
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    await assertPublicHost(current, input.allowedHosts)
+    await assertReachable(current, input.allowedHosts, input.approved)
     const response = await fetch(current, {
       method: input.method,
       headers: input.headers,
@@ -41,7 +44,11 @@ export async function guardedFetch(input: {
   throw new ToolExecutionError(`Exceeded ${MAX_REDIRECTS} redirects`, { code: 'TOO_MANY_REDIRECTS' })
 }
 
-async function assertPublicHost(url: URL, allowedHosts: string[]): Promise<void> {
+async function assertReachable(url: URL, allowedHosts: string[], approved: UrlMatcher | null): Promise<void> {
+  if (approved) {
+    if (approved.matches(url)) return
+    throw new ToolExecutionError(`${url.origin} is not on the workspace's approved list`, { code: 'EGRESS_BLOCKED' })
+  }
   const host = url.hostname.replace(/^\[|\]$/g, '')
   const subject = url.port ? `${host}:${url.port}` : host
   if (allowedHosts.includes(subject) || allowedHosts.includes(host)) return

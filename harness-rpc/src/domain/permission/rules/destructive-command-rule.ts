@@ -1,9 +1,8 @@
 import type { ParsedArgv } from '../../argv.js'
-import { argvSignature, hasFlag, parseArgv } from '../../argv.js'
+import { argvSignature, hasFlag, parseArgv, SHELL_COMMANDS } from '../../argv.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
 
-const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'])
 const PRIVILEGE_COMMANDS = new Set(['sudo', 'su', 'doas', 'pkexec'])
 const DISK_COMMANDS = new Set(['mkfs', 'fdisk', 'parted', 'wipefs', 'blkdiscard', 'shred', 'sgdisk'])
 

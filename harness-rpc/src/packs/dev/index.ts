@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import type { Pack } from '../../domain/pack.js'
+import type { PathView } from '../../domain/path-view.js'
 import { defineTool } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -30,6 +31,7 @@ const diagnosticsInput = z.object({
 
 export interface DevPackOptions {
   cwd: string
+  paths: PathView
   runProcess: ProcessRunner
 }
 
@@ -45,7 +47,7 @@ export function createDevPack(options: DevPackOptions): Pack {
     extra?: Record<string, unknown>
   }): Promise<unknown> => {
     const session = await pool.get(input.language, input.attachPort ? { port: input.attachPort, host: '127.0.0.1' } : null)
-    const uri = await ensureFileOpen(session, { path: input.path, cwd: options.cwd, language: input.language })
+    const uri = await ensureFileOpen(session, { path: options.paths.resolve(input.path), cwd: options.cwd, language: input.language })
     return session.connection.request(input.method, {
       textDocument: { uri },
       ...(input.position ? { position: { line: input.position.line - 1, character: input.position.character } } : {}),
@@ -146,7 +148,7 @@ export function createDevPack(options: DevPackOptions): Pack {
         effects: input => [{ kind: 'read_path', path: input.path }],
         run: async (input): Promise<JsonValue> => {
           const session = await pool.get(input.language, input.attachPort ? { port: input.attachPort, host: '127.0.0.1' } : null)
-          const uri = await ensureFileOpen(session, { path: input.path, cwd: options.cwd, language: input.language })
+          const uri = await ensureFileOpen(session, { path: options.paths.resolve(input.path), cwd: options.cwd, language: input.language })
           return { uri, diagnostics: session.connection.diagnosticsFor(uri) as JsonValue }
         },
       }),

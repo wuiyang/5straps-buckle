@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
-import { resolve } from 'node:path'
 import { buildChildEnvironment } from '../../domain/environment.js'
 import type { Pack } from '../../domain/pack.js'
+import type { PathView } from '../../domain/path-view.js'
 import { defineTool } from '../../domain/tool.js'
 import type { ProcessRunner, ProcessResult } from '../../ports/process-runner.js'
 import type { Sandbox } from '../../ports/sandbox.js'
@@ -33,10 +33,14 @@ const scriptInput = z.object({
 })
 
 export interface ShellPackOptions {
-  cwd: string
+  paths: PathView
   runProcess: ProcessRunner
   sandbox: Sandbox
   writableRoots: string[]
+  /** Host paths no command may see, Buckle's own state above all. */
+  hiddenPaths: string[]
+  /** Host directories a mounted command may still read. */
+  readOnlyPaths: string[]
   /** Set when there is no usable sandbox or shell was turned off, which withholds these tools. */
   unavailableReason: string | null
 }
@@ -51,13 +55,16 @@ export function createShellPack(options: ShellPackOptions): Pack {
     timeoutMs: number
     signal: AbortSignal
   }): Promise<JsonValue> => {
-    const cwd = resolve(options.cwd, input.cwd)
+    const cwd = options.paths.resolve(input.cwd)
     const wrapped = options.sandbox.wrap({
       command: input.command,
       args: input.args,
       cwd,
       writableRoots: options.writableRoots,
       allowNetwork: input.allowNetwork,
+      mount: options.paths.mount ? { root: options.paths.root, at: options.paths.mount } : null,
+      hiddenPaths: options.hiddenPaths,
+      readOnlyPaths: options.readOnlyPaths,
     })
     return toJson(await options.runProcess({
       command: wrapped.command,

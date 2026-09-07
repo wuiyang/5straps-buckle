@@ -1,0 +1,99 @@
+import { describe, expect, it } from 'vitest'
+import { createBubblewrapSandbox } from '../src/adapters/sandbox/bubblewrap-sandbox.js'
+import { createNoneSandbox } from '../src/adapters/sandbox/none-sandbox.js'
+import { createSeatbeltSandbox } from '../src/adapters/sandbox/seatbelt-sandbox.js'
+import { createPathView } from '../src/domain/path-view.js'
+import { createBuiltinPacks } from '../src/packs/index.js'
+import type { SandboxCommand } from '../src/ports/sandbox.js'
+
+const STATE = '/home/me/.5straps/buckle'
+
+function command(overrides: Partial<SandboxCommand> = {}): SandboxCommand {
+  return {
+    command: 'pnpm',
+    args: ['build'],
+    cwd: '/work/project/apps/web',
+    writableRoots: ['/work/project', '/tmp/scratch'],
+    allowNetwork: true,
+    mount: null,
+    hiddenPaths: [STATE],
+    readOnlyPaths: [],
+    ...overrides,
+  }
+}
+
+function pairs(args: string[], flag: string): string[][] {
+  return args.flatMap((argument, index) => argument === flag ? [args.slice(index + 1, index + 3)] : [])
+}
+
+describe('bubblewrap without a mount', () => {
+  const sandbox = createBubblewrapSandbox('/usr/bin/bwrap', { nodePrefix: '/opt/node' })
+
+  it('shows the whole host read-only, as before, but masks Buckle state', () => {
+    const { args } = sandbox.wrap(command())
+    expect(pairs(args, '--ro-bind')).toContainEqual(['/', '/'])
+    expect(args).toContain('--tmpfs')
+    expect(pairs(args, '--tmpfs')).toContainEqual([STATE, '--chdir'])
+    expect(args.slice(-4)).toEqual(['/work/project/apps/web', '--', 'pnpm', 'build'])
+  })
+})
+
+describe('bubblewrap with the workspace mounted', () => {
+  const sandbox = createBubblewrapSandbox('/usr/bin/bwrap', { nodePrefix: '/opt/node' })
+  const mounted = command({ mount: { root: '/work/project', at: '/workspace' }, readOnlyPaths: ['/home/me/.local/share/pnpm'] })
+  const { args } = sandbox.wrap(mounted)
+
+  it('binds the workspace at the virtual path and nothing of the host root', () => {
+    expect(pairs(args, '--bind')).toContainEqual(['/work/project', '/workspace'])
+    expect(pairs(args, '--ro-bind')).toEqual([])
+  })
+
+  it('keeps the system directories, the node install and the named extras readable', () => {
+    const readOnly = pairs(args, '--ro-bind-try').map(([from]) => from)
+    expect(readOnly).toEqual(expect.arrayContaining(['/usr', '/etc', '/opt/node', '/home/me/.local/share/pnpm']))
+    expect(readOnly).not.toContain('/home')
+  })
+
+  it('gives commands a scratch home and the virtual working directory', () => {
+    expect(pairs(args, '--setenv')).toContainEqual(['HOME', '/tmp/home'])
+    expect(pairs(args, '--chdir')[0]?.[0]).toBe('/workspace/apps/web')
+  })
+
+  it('still binds other writable roots at their real path', () => {
+    expect(pairs(args, '--bind-try')).toContainEqual(['/tmp/scratch', '/tmp/scratch'])
+  })
+
+  it('reports that it honours mounts', () => {
+    expect(sandbox.supportsMount).toBe(true)
+  })
+})
+
+describe('the other sandboxes', () => {
+  it('seatbelt denies Buckle state to commands and does not honour a mount', () => {
+    const sandbox = createSeatbeltSandbox()
+    const { args } = sandbox.wrap(command())
+    expect(args[1]).toContain(`(deny file-read* file-write* (subpath "${STATE}"))`)
+    expect(sandbox.supportsMount).toBe(false)
+  })
+
+  it('withholds shell rather than showing a mounted agent a different view', () => {
+    const packs = createBuiltinPacks({
+      cwd: '/work/project',
+      paths: createPathView({ root: '/work/project', mount: '/workspace' }),
+      runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
+      sandbox: createNoneSandbox(),
+      writableRoots: ['/work/project'],
+      hiddenPaths: [],
+      mountReadOnlyPaths: [],
+      approvedUrls: null,
+      allowedHosts: [],
+      agentBrowserCommand: 'agent-browser',
+      browserHeaded: false,
+      enableShell: true,
+      sandboxUnavailableReason: null,
+    })
+    const shell = packs.find(pack => pack.id === 'shell')
+    expect(shell?.unavailableReason).toContain('/workspace')
+    expect(shell?.unavailableReason).toContain('bubblewrap')
+  })
+})
