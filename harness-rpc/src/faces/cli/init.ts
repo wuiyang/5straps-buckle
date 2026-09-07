@@ -124,6 +124,8 @@ BUCKLE_ALLOW_SHELL=true
 # separated by ;;  An allow glob covers the whole line, a deny glob everything starting with it.
 # BUCKLE_COMMAND_ALLOW="docker compose {up,down,restart} *;;pnpm {build,test} *"
 # BUCKLE_COMMAND_DENY="{sh,bash,node,python,python3,curl,wget}"
+# Commands that ask first, added to the built-in destructive list, which nothing removes.
+# BUCKLE_COMMAND_DESTRUCTIVE="terraform destroy *"
 # BUCKLE_NETWORK_ALLOW=localhost:3000,*.example.com
 
 # Where refused calls are reported as they happen (Rings: <rings>/api/v1/buckle-reports).

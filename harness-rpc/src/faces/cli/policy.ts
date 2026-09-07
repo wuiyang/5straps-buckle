@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
-import { emptyWorkspacePolicy, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
+import { destructivePatterns, emptyWorkspacePolicy, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createFilePolicyStore } from '../../adapters/policy-store/file-policy-store.js'
 import { policyPath, type BuckleConfig } from '../../config.js'
 import { PolicyError } from '../../domain/policy.js'
@@ -15,6 +15,7 @@ const USAGE = `Usage:
   buckle policy show [--json]                 The effective policy and where each part came from
   buckle policy allow-command <glob>          Only matching command lines may run
   buckle policy deny-command <glob>           Matching command lines are refused; deny wins
+  buckle policy destructive-command <glob>    Matching command lines ask first, once or per session
   buckle policy allow-url <host|url-prefix>   Only listed hosts and URLs may be reached
   buckle policy mount <path> | unmount        Show the workspace to the agent as this path
   buckle policy remove <pattern>              Drop a pattern from every list
@@ -45,6 +46,8 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
         return await save(runtime, edit(current(), policy => policy.commands.allow.push(required(rest[0], action))))
       case 'deny-command':
         return await save(runtime, edit(current(), policy => policy.commands.deny.push(required(rest[0], action))))
+      case 'destructive-command':
+        return await save(runtime, edit(current(), policy => { policy.commands.destructive = [...destructivePatterns(policy), required(rest[0], action)] }))
       case 'allow-url':
         return await save(runtime, edit(current(), policy => policy.network.allow.push(required(rest[0], action))))
       case 'mount':
@@ -75,7 +78,7 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
 }
 
 /** The lists a command pattern can sit in, in the order `buckle policy show` prints them. */
-const COMMAND_LISTS = ['allow', 'deny'] as const
+const COMMAND_LISTS = ['allow', 'deny', 'destructive'] as const
 
 type CommandList = typeof COMMAND_LISTS[number]
 
@@ -101,7 +104,7 @@ export function policyMigrateCommand(input: { config: BuckleConfig; argv: string
   }
 
   printMigrations(`Stored policy (${policyPath(input.config)})`, storedMigrations)
-  printMigrations('Environment (BUCKLE_COMMAND_ALLOW, BUCKLE_COMMAND_DENY)', environmentMigrations)
+  printMigrations('Environment (BUCKLE_COMMAND_ALLOW and friends)', environmentMigrations)
 
   const unreadable = [...storedMigrations, ...environmentMigrations].filter(migration => migration.glob === null)
   if (unreadable.length > 0) {
@@ -128,7 +131,11 @@ export function policyMigrateCommand(input: { config: BuckleConfig; argv: string
 
 function migrationsOf(policy: WorkspacePolicy | null): ListedMigration[] {
   if (!policy) return []
-  return COMMAND_LISTS.flatMap(list => policy.commands[list].map(source => ({ list, ...migrateCommandPattern(source) })))
+  return COMMAND_LISTS.flatMap(list => patternsOf(policy, list).map(source => ({ list, ...migrateCommandPattern(source) })))
+}
+
+function patternsOf(policy: WorkspacePolicy, list: CommandList): string[] {
+  return list === 'destructive' ? destructivePatterns(policy) : policy.commands[list]
 }
 
 function printMigrations(title: string, migrations: ListedMigration[]): void {
@@ -136,8 +143,8 @@ function printMigrations(title: string, migrations: ListedMigration[]): void {
   process.stdout.write(`${title}\n`)
   for (const migration of migrations) {
     const target = migration.glob === null ? 'cannot convert' : migration.glob
-    process.stdout.write(`  ${migration.list.padEnd(6)} ${migration.source.padEnd(40)} -> ${target}\n`)
-    if (migration.note) process.stdout.write(`  ${' '.repeat(6)} ${' '.repeat(40)}    (${migration.note})\n`)
+    process.stdout.write(`  ${migration.list.padEnd(11)} ${migration.source.padEnd(40)} -> ${target}\n`)
+    if (migration.note) process.stdout.write(`  ${' '.repeat(11)} ${' '.repeat(40)}    (${migration.note})\n`)
   }
 }
 
@@ -167,6 +174,7 @@ function remove(policy: WorkspacePolicy, pattern: string): WorkspacePolicy {
   return edit(policy, next => {
     next.commands.allow = next.commands.allow.filter(item => item !== pattern)
     next.commands.deny = next.commands.deny.filter(item => item !== pattern)
+    next.commands.destructive = destructivePatterns(next).filter(item => item !== pattern)
     next.network.allow = next.network.allow.filter(item => item !== pattern)
   })
 }
@@ -198,6 +206,7 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   process.stdout.write(`Mount     ${effective.mount ?? '(none: the real path shows through)'}\n\n`)
   section('Command allow list (only these may run)', effective.commands.allow, policy => policy.commands.allow)
   section('Command deny list (refused outright)', effective.commands.deny, policy => policy.commands.deny)
+  section('Destructive additions (these ask, on top of the built-in floor)', destructivePatterns(effective), destructivePatterns)
   section('Approved hosts and URLs (only these may be reached)', effective.network.allow, policy => policy.network.allow)
   process.stdout.write(`\nStored ${stored?.updatedAt ? `at ${stored.updatedAt}` : 'nothing'}; environment and stored parts are unioned.\n`)
   return { exitCode: 0 }

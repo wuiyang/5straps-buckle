@@ -124,11 +124,15 @@ export function policyPath(config: BuckleConfig): string {
   return join(config.stateDirectory, 'policy.json')
 }
 
-/** The environment's share of the policy. Patterns are one per line, or separated by `;;`. */
+/**
+ * The environment's share of the policy. Patterns are shell-word globs, one per line or
+ * separated by `;;`.
+ */
 function parsePolicy(environment: NodeJS.ProcessEnv): WorkspacePolicy {
   const policy = emptyWorkspacePolicy()
   policy.commands.allow = parsePatterns(environment.BUCKLE_COMMAND_ALLOW)
   policy.commands.deny = parsePatterns(environment.BUCKLE_COMMAND_DENY)
+  policy.commands.destructive = parsePatterns(environment.BUCKLE_COMMAND_DESTRUCTIVE)
   policy.network.allow = parseList(environment.BUCKLE_NETWORK_ALLOW)
   policy.mount = environment.BUCKLE_WORKSPACE_MOUNT?.trim() || null
   return policy

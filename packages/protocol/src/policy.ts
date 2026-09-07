@@ -6,10 +6,11 @@ import { JsonValueSchema } from './json.js'
  * What the owner of a workspace lets an agent do there. Buckle enforces it. Rings may hold a
  * copy and push it under a setup credential no agent can reach.
  *
- * Every list is a set of patterns. Command entries are JavaScript regular expressions tested
- * against the parsed command line (`docker compose up`), with the deny list also tested against
- * each statement of a shell script body. Network entries are hosts (`example.com`,
- * `*.example.com`, `localhost:3000`) or http(s) URL prefixes (`https://app.example.com/admin`).
+ * Every list is a set of patterns. Command entries are shell-word globs matched against the
+ * parsed command line one word at a time (`docker compose {up,down,restart} *`), with the deny
+ * list also matched against each statement of a shell script body. Network entries are hosts
+ * (`example.com`, `*.example.com`, `localhost:3000`) or http(s) URL prefixes
+ * (`https://app.example.com/admin`).
  */
 export const PatternListSchema = z.array(z.string().min(1).max(500)).max(200)
 
@@ -18,6 +19,12 @@ export const CommandPolicySchema = z.object({
   allow: PatternListSchema.default([]),
   /** A matching command line is refused outright. Deny wins over allow. */
   deny: PatternListSchema.default([]),
+  /**
+   * Commands that ask before they run, on top of the node's built-in destructive floor. The
+   * floor cannot be lowered, and neither these nor the built-ins ever offer a standing grant.
+   * Absent in a document written before the list existed, which reads as empty.
+   */
+  destructive: PatternListSchema.optional(),
 })
 
 export const NetworkPolicySchema = z.object({
@@ -38,7 +45,12 @@ export const WorkspacePolicySchema = z.object({
 export type WorkspacePolicy = z.infer<typeof WorkspacePolicySchema>
 
 export function emptyWorkspacePolicy(): WorkspacePolicy {
-  return { version: 1, commands: { allow: [], deny: [] }, network: { allow: [] }, mount: null, updatedAt: null }
+  return { version: 1, commands: { allow: [], deny: [], destructive: [] }, network: { allow: [] }, mount: null, updatedAt: null }
+}
+
+/** The owner's destructive additions, absent in a policy document written before they existed. */
+export function destructivePatterns(policy: WorkspacePolicy): string[] {
+  return policy.commands.destructive ?? []
 }
 
 /** One refused tool call, sent to Rings as it happens so the owner sees what an agent tried. */

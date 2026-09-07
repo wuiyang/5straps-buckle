@@ -1,4 +1,4 @@
-import { emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
+import { destructivePatterns, emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { compileCommandGlob, CommandGlobError, type CommandGlob } from './command-glob.js'
 import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-pattern.js'
 
@@ -8,7 +8,7 @@ import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-patt
  */
 export interface CompiledPolicy {
   policy: WorkspacePolicy
-  commands: { allow: CommandGlob[]; deny: CommandGlob[] }
+  commands: { allow: CommandGlob[]; deny: CommandGlob[]; destructive: CommandGlob[] }
   /** Null when the owner set no approved list, which leaves the network rule to its defaults. */
   network: UrlMatcher | null
   mount: string | null
@@ -28,6 +28,7 @@ export function compilePolicy(policy: WorkspacePolicy): CompiledPolicy {
     commands: {
       allow: compileGlobs(policy.commands.allow),
       deny: compileGlobs(policy.commands.deny),
+      destructive: compileGlobs(destructivePatterns(policy)),
     },
     network: policy.network.allow.length > 0 ? compileNetwork(policy.network.allow) : null,
     mount: validateMount(policy.mount),
@@ -44,6 +45,7 @@ export function mergePolicies(...policies: Array<WorkspacePolicy | null>): Works
     if (!policy) continue
     merged.commands.allow = unique([...merged.commands.allow, ...policy.commands.allow])
     merged.commands.deny = unique([...merged.commands.deny, ...policy.commands.deny])
+    merged.commands.destructive = unique([...destructivePatterns(merged), ...destructivePatterns(policy)])
     merged.network.allow = unique([...merged.network.allow, ...policy.network.allow])
     if (policy.mount) merged.mount = policy.mount
     if (policy.updatedAt && (!merged.updatedAt || policy.updatedAt > merged.updatedAt)) merged.updatedAt = policy.updatedAt
@@ -54,6 +56,7 @@ export function mergePolicies(...policies: Array<WorkspacePolicy | null>): Works
 export function isRestrictive(policy: WorkspacePolicy): boolean {
   return policy.commands.allow.length > 0
     || policy.commands.deny.length > 0
+    || destructivePatterns(policy).length > 0
     || policy.network.allow.length > 0
     || policy.mount !== null
 }

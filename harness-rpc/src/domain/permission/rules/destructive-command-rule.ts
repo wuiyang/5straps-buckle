@@ -1,5 +1,6 @@
 import type { ParsedArgv } from '../../argv.js'
-import { argvSignature, hasFlag, parseArgv, SHELL_COMMANDS } from '../../argv.js'
+import { argvSignature, hasFlag, parseArgv, shellStatements, statementWords, SHELL_COMMANDS } from '../../argv.js'
+import type { CommandGlob } from '../../command-glob.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
 
@@ -17,13 +18,19 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bchmod\s+(-[a-z]*r[a-z]*\s+)*777\b/, reason: 'Grants world-writable permissions' },
 ]
 
-export function createDestructiveCommandRule(): PermissionRule {
+/**
+ * The built-in list is a floor. `added` holds the globs the owner raised it with for this
+ * workspace, which widen what asks and can never narrow it.
+ */
+export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[] } = {}): PermissionRule {
+  const added = input.added ?? []
   return {
     id: 'destructive_command',
     evaluate({ effect, grants }) {
       if (effect.kind !== 'exec') return null
       const argv = parseArgv(effect.command, effect.args)
-      const reason = classifyArgv(argv) ?? classifyShellScript(argv)
+      const words = [argv.command, ...effect.args]
+      const reason = classifyArgv(argv) ?? classifyShellScript(argv) ?? classifyAdded({ added, argv, words })
       if (!reason) return null
 
       const subject = argvSignature(argv, effect.args)
@@ -61,6 +68,12 @@ function classifyGit(argv: ParsedArgv): string | null {
   if (argv.subcommand === 'clean' && hasFlag(argv, 'f', 'force')) return 'git clean deletes untracked files'
   if (argv.subcommand === 'checkout' && hasFlag(argv, 'f', 'force')) return 'git checkout --force discards local changes'
   return null
+}
+
+function classifyAdded(input: { added: readonly CommandGlob[]; argv: ParsedArgv; words: string[] }): string | null {
+  const statements = shellStatements(input.argv).map(statementWords)
+  const matched = input.added.find(glob => glob.matchesPrefix(input.words) || statements.some(statement => glob.matchesPrefix(statement)))
+  return matched ? `On the workspace destructive list: ${matched.source}` : null
 }
 
 function classifyShellScript(argv: ParsedArgv): string | null {

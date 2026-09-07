@@ -6,11 +6,16 @@ import { createCommandPolicyRule } from '../src/domain/permission/rules/command-
 import { createDestructiveCommandRule } from '../src/domain/permission/rules/destructive-command-rule.js'
 import { compilePolicy } from '../src/domain/policy.js'
 
-function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[] } = {}) {
+function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[]; destructive?: string[] } = {}) {
   const policy = emptyWorkspacePolicy()
   policy.commands.allow = commands.allow ?? []
   policy.commands.deny = commands.deny ?? []
-  const engine = createPermissionEngine([createCommandPolicyRule(compilePolicy(policy)), createDestructiveCommandRule()])
+  policy.commands.destructive = commands.destructive ?? []
+  const compiled = compilePolicy(policy)
+  const engine = createPermissionEngine([
+    createCommandPolicyRule(compiled),
+    createDestructiveCommandRule({ added: compiled.commands.destructive }),
+  ])
   const effect: ResolvedEffect = { kind: 'exec', command, args }
   return engine.evaluate({ tool: 'shell_exec', effects: [effect], grants: { subjectsFor: () => [] } })
 }
@@ -103,6 +108,37 @@ describe('a shell wrapper', () => {
 
   it('leaves a shell handed a script file to the ordinary rules', () => {
     expect(evaluate('bash', ['build.sh']).kind).toBe('allow')
+  })
+})
+
+describe('the destructive floor the owner raised', () => {
+  const destructive = ['terraform destroy *']
+
+  it('asks before running what the owner added, naming the glob', () => {
+    const outcome = evaluate('terraform', ['destroy', '-auto-approve'], { destructive })
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind !== 'ask') return
+    expect(outcome.asks[0]?.rule).toBe('destructive_command')
+    expect(outcome.asks[0]?.reason).toContain('terraform destroy *')
+  })
+
+  it('never offers a standing grant for one', () => {
+    const outcome = evaluate('terraform', ['destroy'], { destructive })
+    if (outcome.kind !== 'ask') throw new Error('expected ask')
+    expect(outcome.asks[0]?.offeredScopes).toEqual(['once', 'session'])
+  })
+
+  it('leaves the rest of that binary alone', () => {
+    expect(evaluate('terraform', ['plan'], { destructive }).kind).toBe('allow')
+  })
+
+  it('reaches what an allowed wrapper runs', () => {
+    expect(evaluate('bash', ['-c', 'cd infra && terraform destroy'], { allow: ['bash -c *'], destructive }).kind).toBe('ask')
+  })
+
+  it('cannot lower the built-in floor, whatever the owner lists', () => {
+    expect(evaluate('sudo', ['ls'], { destructive, allow: ['sudo *'] }).kind).toBe('ask')
+    expect(evaluate('rm', ['-rf', 'build'], { destructive }).kind).toBe('ask')
   })
 })
 
