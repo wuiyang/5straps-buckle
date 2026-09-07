@@ -44,7 +44,8 @@ Four things are gated:
 3. **Credential files.** `.env`, `.ssh/`, `*.pem`, `.aws/credentials` and similar. Asked every
    time until granted for that exact file. A granted directory never unlocks these.
 4. **Destructive commands.** Recursive `rm`, `dd of=`, `mkfs`, `sudo`, `git push --force`,
-   `git reset --hard`, and similar. Gated whether or not they are inside the sandbox.
+   `git reset --hard`, and similar, plus whatever the owner added to that list. Gated whether
+   or not they are inside the sandbox, and never grantable beyond the session.
 
 Private-network and loopback URLs are also refused until approved, per host and port.
 
@@ -52,6 +53,12 @@ Some things are refused outright, with the reason, and no approval is offered: a
 owner's policy denies or leaves off its allow list, a URL off the owner's approved list, any
 non-HTTP scheme, and Buckle's own state directory. The refusal names what is allowed instead
 where that helps. Do not try to route around it; the owner already answered.
+
+The owner's command rules are shell-word globs read a word at a time, so `pnpm {build,test} *`
+allows `pnpm build` with any arguments and refuses `pnpm install`. Wrapping a command in a
+shell does not get past them: `bash -c ...` and `script_run` with the `bash` runtime are
+refused unless the owner allowed the wrapper itself. Run the program directly with
+`shell_exec` instead, one command per call.
 
 A workspace may be mounted: then `buckle manifest` names `/workspace` (or similar) as the root,
 and that is the path to use. Relative paths work the same either way.
