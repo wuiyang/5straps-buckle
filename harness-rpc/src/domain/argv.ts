@@ -63,6 +63,11 @@ export function argvSignature(argv: ParsedArgv, args: string[]): string {
   return signature.length > MAX_SIGNATURE_LENGTH ? `${signature.slice(0, MAX_SIGNATURE_LENGTH)}…` : signature
 }
 
+/** `bash -c "..."` and its equivalents, whose script body hides the real command from a word glob. */
+export function isShellWrapper(argv: ParsedArgv): boolean {
+  return SHELL_COMMANDS.has(argv.command) && argv.shortFlags.has('c')
+}
+
 /**
  * The statements of a shell script body, split where a shell would start a new command, so a
  * pattern written for a command line also meets `curl` inside `bash -c "... | curl ..."`.

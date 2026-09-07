@@ -1,4 +1,4 @@
-import { parseArgv, shellStatements, statementWords } from '../../argv.js'
+import { isShellWrapper, parseArgv, shellStatements, statementWords } from '../../argv.js'
 import type { CommandGlob } from '../../command-glob.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
@@ -17,6 +17,10 @@ const SELF_ADMINISTRATION = /(^|\s)buckle\s+(approve|grants|policy|init|plugin|s
  * wins, then an allow list, when one exists, admits only what it names. A refusal here is a
  * denial rather than a question: the owner already answered. The destructive-command gate still
  * runs afterwards, so an allowed `rm -rf build` asks before it deletes.
+ *
+ * A shell wrapper is the exception to needing no allow list: `bash -c` carries a script body
+ * rather than argv, so the globs cannot read what it runs and the wrapper itself has to be
+ * named before it runs at all.
  */
 export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>): PermissionRule {
   return {
@@ -37,7 +41,11 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       if (denied) return deny('command_policy', subject, `Refused by the workspace command policy: ${denied.source}`)
 
       const allow = policy.commands.allow
-      if (allow.length > 0 && !allow.some(glob => glob.matchesLine(words))) {
+      const admitted = allow.some(glob => glob.matchesLine(words))
+      if (isShellWrapper(argv) && !admitted) {
+        return deny('command_policy', subject, `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${argv.command} -c *'`)
+      }
+      if (allow.length > 0 && !admitted) {
         return deny('command_policy', subject, `Not on the workspace command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
       }
       return null

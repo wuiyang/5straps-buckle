@@ -79,6 +79,33 @@ describe('the deny list', () => {
   })
 })
 
+describe('a shell wrapper', () => {
+  it('is refused where there is no allow list at all, because its body is not argv', () => {
+    const outcome = evaluate('bash', ['-c', 'pnpm build'])
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain("allow-command 'bash -c *'")
+  })
+
+  it('runs once an allow glob names the wrapper itself', () => {
+    expect(evaluate('bash', ['-c', 'pnpm build'], { allow: ['bash -c *'] }).kind).toBe('allow')
+    expect(evaluate('/bin/sh', ['-c', 'pnpm build'], { allow: ['sh -c *'] }).kind).toBe('allow')
+  })
+
+  it('still has every statement of its body judged by the deny list', () => {
+    const outcome = evaluate('bash', ['-c', 'pnpm build && curl https://x.test'], { allow: ['bash -c *'], deny: ['curl'] })
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain('command policy')
+  })
+
+  it('does not name a wrapper an allow glob for another shell admits', () => {
+    expect(evaluate('zsh', ['-c', 'pnpm build'], { allow: ['bash -c *'] }).kind).toBe('deny')
+  })
+
+  it('leaves a shell handed a script file to the ordinary rules', () => {
+    expect(evaluate('bash', ['build.sh']).kind).toBe('allow')
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')
