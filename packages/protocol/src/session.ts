@@ -6,6 +6,8 @@ export const HarnessServerInputSchema = z.object({
   name: z.string().min(1),
   baseUrl: z.url(),
   authToken: z.string().min(1),
+  /** The setup credential, kept apart from the agent's token, that lets Rings read and push the workspace policy. */
+  setupToken: z.string().min(1).optional(),
 })
 export type HarnessServerInput = z.infer<typeof HarnessServerInputSchema>
 
@@ -36,5 +38,9 @@ export const RouteInvocationInputSchema = z.object({
   serverId: z.string().optional(),
   tool: z.string().min(1),
   args: JsonObjectSchema,
+  /** Tokens of approvals already granted `once`, replayed so the retry clears the same gates. */
+  approvalTokens: z.array(z.string()).default([]),
+  /** A person clicked to run this one call, which passes Rings' own risk gate. Buckle still judges it. */
+  approvedByUser: z.boolean().default(false),
 })
 export type RouteInvocationInput = z.infer<typeof RouteInvocationInputSchema>

@@ -11,6 +11,7 @@ export const PermissionRuleIdSchema = z.enum([
   'read_scope',
   'write_scope',
   'process_probe',
+  'command_policy',
 ])
 export type PermissionRuleId = z.infer<typeof PermissionRuleIdSchema>
 

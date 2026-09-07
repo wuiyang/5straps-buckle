@@ -7,6 +7,7 @@ export const SessionFeatureSchema = z.enum([
   'harness.rpc',
   'mcp',
   'skills',
+  'padding',
 ])
 export type SessionFeature = z.infer<typeof SessionFeatureSchema>
 
