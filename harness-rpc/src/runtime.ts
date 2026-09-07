@@ -23,6 +23,7 @@ import { compilePolicy, mergePolicies, type CompiledPolicy } from './domain/poli
 import { loadSkills } from './domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from './domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from './domain/tool-registry.js'
+import { resolveBrowserProfile } from './packs/browser/profile.js'
 import { createBuiltinPacks } from './packs/index.js'
 import { loadRootSkill } from './packs/pack-skill.js'
 import type { ActionLog } from './ports/action-log.js'
@@ -75,6 +76,8 @@ export async function createRuntime(input: {
   const { config } = input
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true })
+  const browserProfile = resolveBrowserProfile({ stateDirectory: config.stateDirectory, workspaceRoot: config.cwd })
+  mkdirSync(browserProfile, { recursive: true })
 
   const sandbox = resolveSandbox({
     requested: config.sandboxMode,
@@ -100,7 +103,7 @@ export async function createRuntime(input: {
   let compiled = compileEffective()
   let paths = createPathView({ root: config.cwd, mount: compiled.mount })
   let permissions = buildPermissionEngine({ config, compiled, paths })
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths })
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserProfile })
   let registry = createToolRegistry(availableTools(packs))
 
   const runtime: BuckleRuntime = {
@@ -150,7 +153,7 @@ export async function createRuntime(input: {
       compiled = compileEffective()
       paths = createPathView({ root: config.cwd, mount: compiled.mount })
       permissions = buildPermissionEngine({ config, compiled, paths })
-      packs = await buildPacks({ config, sandbox, plugins, compiled, paths })
+      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserProfile })
       registry = createToolRegistry(availableTools(packs))
       for (const listener of listeners) listener()
     },
@@ -175,6 +178,7 @@ async function buildPacks(input: {
   plugins: PluginRegistry
   compiled: CompiledPolicy
   paths: PathView
+  browserProfile: string
 }): Promise<Pack[]> {
   const builtin = createBuiltinPacks({
     cwd: input.config.cwd,
@@ -189,6 +193,7 @@ async function buildPacks(input: {
     braveSearchApiKey: input.config.braveSearchApiKey,
     allowedHosts: input.config.allowedHosts,
     agentBrowserCommand: input.config.agentBrowserCommand,
+    browserProfile: input.browserProfile,
     browserHeaded: input.config.browserHeaded,
     enableShell: input.config.enableShell,
   })

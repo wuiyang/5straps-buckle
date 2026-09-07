@@ -88,6 +88,7 @@ describe('the other sandboxes', () => {
       approvedUrls: null,
       allowedHosts: [],
       agentBrowserCommand: 'agent-browser',
+      browserProfile: '/state/browser-profiles/project',
       browserHeaded: false,
       enableShell: true,
       sandboxUnavailableReason: null,

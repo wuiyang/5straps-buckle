@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { browserEffects, refusedFlag } from '../src/packs/browser/effects.js'
 import { createPathView } from '../src/domain/path-view.js'
 import { createBrowserPack, type BrowserPackOptions } from '../src/packs/browser/index.js'
+import { resolveBrowserProfile, workspaceProfileKey } from '../src/packs/browser/profile.js'
 import type { ProcessRequest, ProcessResult } from '../src/ports/process-runner.js'
+
+const PROFILE = '/state/browser-profiles/work'
 
 function stubResult(overrides: Partial<ProcessResult> = {}): ProcessResult {
   return { exitCode: 0, signal: null, stdout: '{"success":true}', stderr: '', truncated: false, timedOut: false, ...overrides }
@@ -15,6 +18,7 @@ async function run(input: JsonObject, options: Partial<BrowserPackOptions> = {},
     cwd: '/work',
     paths: createPathView({ root: '/work', mount: null }),
     agentBrowserCommand: 'agent-browser',
+    profileDirectory: PROFILE,
     headed: false,
     available: true,
     runProcess: async request => {
@@ -59,7 +63,7 @@ describe('the arguments the browser pack builds', () => {
   it('lets a per-call flag override the configured default, rather than passing it twice', async () => {
     const { args } = await run({ command: 'open', args: ['https://example.com', '--headed', 'false'] }, { headed: true })
     expect(args.filter(argument => argument === '--headed')).toHaveLength(1)
-    expect(args).toEqual(['open', 'https://example.com', '--headed', 'false', '--json'])
+    expect(args).toEqual(['open', 'https://example.com', '--headed', 'false', '--json', '--profile', PROFILE])
   })
 
   it('passes a session through as a flag, keeping browser state isolated per caller', async () => {
@@ -82,8 +86,9 @@ describe('how the browser pack reports trouble', () => {
   it('reports why the pack is missing rather than pretending it is installed', () => {
     const pack = createBrowserPack({
       cwd: '/work',
-    paths: createPathView({ root: '/work', mount: null }),
+      paths: createPathView({ root: '/work', mount: null }),
       agentBrowserCommand: 'agent-browser',
+      profileDirectory: PROFILE,
       headed: false,
       available: false,
       runProcess: async () => stubResult(),
@@ -146,13 +151,63 @@ describe('flags the browser pack refuses outright', () => {
     expect(refusedFlag(['--executable-path=/bin/sh'])).toBe('--executable-path')
   })
 
+  it('refuses a flag it simply does not know, naming it', () => {
+    expect(refusedFlag(['--user-data-dir=/tmp/x'])).toBe('--user-data-dir')
+  })
+
+  it('refuses the flag that would hand the browser the owner\'s own profile', () => {
+    expect(refusedFlag(['--profile', 'Default'])).toBe('--profile')
+  })
+
+  it('refuses a write flag that would land output where the path rules never look', () => {
+    expect(refusedFlag(['--screenshot-dir', '/home/someone'])).toBe('--screenshot-dir')
+  })
+
   it('leaves ordinary arguments alone', () => {
     expect(refusedFlag(['https://example.com', '--headed'])).toBeNull()
+  })
+
+  it('admits the flags agent-browser documents and Buckle can judge', () => {
+    expect(refusedFlag(['-i'])).toBeNull()
+    expect(refusedFlag(['--full', '--annotate'])).toBeNull()
+    expect(refusedFlag(['--timeout=5s'])).toBeNull()
+  })
+
+  it('does not mistake a negative number for a flag', () => {
+    expect(refusedFlag(['down', '-100'])).toBeNull()
   })
 
   it('refuses the call rather than running it', async () => {
     await expect(run({ command: 'open', args: ['https://x.com', '--allow-file-access'] }))
       .rejects.toThrow('--allow-file-access is not allowed')
+  })
+})
+
+describe('the profile the browser is given', () => {
+  it('passes Buckle\'s own profile on every call, whatever the command', async () => {
+    const { args } = await run({ command: 'open', args: ['https://example.com'] })
+    expect(args).toContain('--profile')
+    expect(args[args.indexOf('--profile') + 1]).toBe(PROFILE)
+  })
+
+  it('keeps one profile per workspace, so two workspaces never share a login', () => {
+    const one = resolveBrowserProfile({ stateDirectory: '/state', workspaceRoot: '/work/one', environment: {} })
+    const two = resolveBrowserProfile({ stateDirectory: '/state', workspaceRoot: '/work/two', environment: {} })
+    expect(one).not.toBe(two)
+    expect(one.startsWith('/state/browser-profiles/one-')).toBe(true)
+  })
+
+  it('names the same workspace the same way every start', () => {
+    expect(workspaceProfileKey('/work/one')).toBe(workspaceProfileKey('/work/one/'))
+  })
+
+  it('lets the owner point at a directory of their own', () => {
+    const profile = resolveBrowserProfile({
+      stateDirectory: '/state',
+      workspaceRoot: '/work/one',
+      environment: { BUCKLE_BROWSER_PROFILE: '/browsers/shared' },
+    })
+    expect(profile).toBe('/browsers/shared')
   })
 })
 
@@ -164,8 +219,9 @@ describe('the environment the browser is spawned with', () => {
       const calls: ProcessRequest[] = []
       const pack = createBrowserPack({
         cwd: '/work',
-    paths: createPathView({ root: '/work', mount: null }),
+        paths: createPathView({ root: '/work', mount: null }),
         agentBrowserCommand: 'agent-browser',
+        profileDirectory: PROFILE,
         headed: false,
         available: true,
         runProcess: async request => {
@@ -202,6 +258,11 @@ describe('the environment the browser is spawned with', () => {
     const environment = await environmentFor({ MY_AGENT_BROWSER_HACK: 'no', AI_GATEWAY_API_KEY: 'sk-live' })
     expect(environment.MY_AGENT_BROWSER_HACK).toBeUndefined()
     expect(environment.AI_GATEWAY_API_KEY).toBeUndefined()
+  })
+
+  it('withholds the one setting that would replace the profile Buckle owns', async () => {
+    const environment = await environmentFor({ AGENT_BROWSER_PROFILE: '/home/someone/.config/chrome' })
+    expect(environment.AGENT_BROWSER_PROFILE).toBeUndefined()
   })
 
   it('keeps passing the variables a child genuinely needs', async () => {

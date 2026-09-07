@@ -26,6 +26,8 @@ export interface BuiltinPackOptions {
   braveSearchApiKey?: string
   allowedHosts: string[]
   agentBrowserCommand: string
+  /** The profile directory Buckle owns for this workspace's browser. */
+  browserProfile: string
   browserHeaded: boolean
   enableShell: boolean
   /** Why commands cannot be sandboxed here, if they cannot. */
@@ -44,6 +46,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       paths: options.paths,
       runProcess: options.runProcess,
       agentBrowserCommand: options.agentBrowserCommand,
+      profileDirectory: options.browserProfile,
       headed: options.browserHeaded,
       available: hasExecutable(options.agentBrowserCommand),
     }),

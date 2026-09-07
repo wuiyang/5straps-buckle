@@ -6,7 +6,8 @@ description: Drive a real browser from a 5straps Buckle node via agent-browser. 
 # Buckle browser
 
 Wraps [agent-browser](https://agent-browser.dev). The browser lives on the Buckle node, so
-its cookies, logins, and profile stay on that machine.
+its cookies, logins, and profile stay on that machine. The profile is Buckle's own, one per
+workspace, never the profile a person signs into on that machine.
 
 ```
 buckle browser command open example.com
@@ -31,8 +32,17 @@ refused, so the browser cannot be used to read local files around the path rules
 loopback address asks first.
 
 Paths given to `screenshot`, `pdf`, `upload` and `download` are judged by the same path rules as
-`fs` tools, so writing outside the workspace asks. `--allow-file-access` and `--executable-path`
-are refused outright.
+`fs` tools, so writing outside the workspace asks. Name such a path as a positional argument,
+which is where the rules look.
+
+Flags are an allowlist: anything Buckle does not know is refused by name, so read the refusal
+rather than guessing a second spelling. Refused on purpose are `--profile`, `--executable-path`,
+`--args`, `--extension`, `--init-script`, `--config`, `--cdp`, `--auto-connect`, `--provider`,
+`--ca-cert`, `--allow-file-access`, and the flags that read or write an unjudged path,
+`--screenshot-dir`, `--download-path`, `--params` and `--payload`.
+
+The node's own `AGENT_BROWSER_*` settings still reach the browser, but `AGENT_BROWSER_PROFILE`
+is withheld: nothing in the environment or in a flag can replace the profile Buckle owns.
 
 ## The loop
 

@@ -21,7 +21,8 @@ function builtinRegistry() {
     writableRoots: ['/work/project'],
     allowedHosts: [],
     agentBrowserCommand: 'agent-browser',
-  browserHeaded: false,
+    browserProfile: '/state/browser-profiles/project',
+    browserHeaded: false,
     enableShell: true,
     sandboxUnavailableReason: null,
   })

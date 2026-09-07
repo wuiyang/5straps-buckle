@@ -29,6 +29,8 @@ export interface BrowserPackOptions {
   paths: PathView
   runProcess: ProcessRunner
   agentBrowserCommand: string
+  /** The profile Buckle owns for this workspace, passed on every call. */
+  profileDirectory: string
   /** Launch a visible window instead of headless. A per-call --headed flag still wins. */
   headed: boolean
   available: boolean
@@ -54,12 +56,13 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
         run: async (input, context): Promise<JsonValue> => {
           const refused = refusedFlag(input.args)
           if (refused) {
-            throw new ToolInputError(`${refused} is not allowed: it would give the browser access Buckle cannot see`)
+            throw new ToolInputError(`${refused} is not allowed: Buckle passes only the agent-browser flags it can judge, and never one that changes the profile, the binary, or where output lands`)
           }
 
-          // agent-browser takes the subcommand first; --json, --headed and --session are global flags.
-          // A path the agent named under the mount is handed to the browser as the real one.
+          // agent-browser takes the subcommand first; --json, --profile, --headed and --session
+          // are global flags. A path the agent named under the mount is handed over as the real one.
           const args = [input.command, ...input.args.map(argument => realPath(argument, options.paths)), '--json']
+          args.push('--profile', options.profileDirectory)
           if (options.headed && !input.args.includes('--headed')) args.push('--headed')
           if (input.session) args.push('--session', input.session)
 
@@ -68,10 +71,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             args,
             cwd: options.cwd,
             timeoutMs: context.timeoutMs,
-            environment: buildChildEnvironment({
-              parent: process.env,
-              extra: collectPrefixed(process.env, CONFIG_PREFIX),
-            }),
+            environment: buildChildEnvironment({ parent: process.env, extra: browserSettings(process.env) }),
             signal: context.signal,
           })
           if (result.exitCode !== 0) {
@@ -82,6 +82,13 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
       }),
     ],
   }
+}
+
+/** The tool's own settings, minus the profile: that one Buckle owns, and the flag carries it. */
+function browserSettings(parent: NodeJS.ProcessEnv): Record<string, string> {
+  const settings = collectPrefixed(parent, CONFIG_PREFIX)
+  delete settings[`${CONFIG_PREFIX}PROFILE`]
+  return settings
 }
 
 function realPath(argument: string, paths: PathView): string {
