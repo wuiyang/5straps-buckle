@@ -8,6 +8,8 @@ import { resolveEffects } from '../src/services/resolve-effects.js'
 
 import { createPermissionEngine } from '../src/domain/permission/engine.js'
 import { createNetworkEgressRule } from '../src/domain/permission/rules/network-egress-rule.js'
+import { createReadScopeRule } from '../src/domain/permission/rules/read-scope-rule.js'
+import { createWriteScopeRule } from '../src/domain/permission/rules/write-scope-rule.js'
 import { browserEffects } from '../src/packs/browser/effects.js'
 describe('isInside', () => {
   it('accepts the directory itself and its descendants', () => {
@@ -82,6 +84,66 @@ describe('resolveEffects', () => {
   it('rejects a malformed URL at resolution time', async () => {
     await expect(resolveEffects({ effects: [{ kind: 'network', url: 'not a url' }], paths: createPathView({ root, mount: null }) }))
       .rejects.toThrow(/Not a valid URL/)
+  })
+})
+
+describe('a path leaving a mounted workspace', () => {
+  let root: string
+  let mounted: ReturnType<typeof createPathView>
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'buckle-mount-'))
+    await mkdir(join(root, 'workspace'), { recursive: true })
+    await mkdir(join(root, 'outside'), { recursive: true })
+    await writeFile(join(root, 'outside', 'secret.txt'), 'secret')
+    await symlink(join(root, 'outside'), join(root, 'workspace', 'escape'))
+    await symlink(join(root, 'outside', 'secret.txt'), join(root, 'workspace', 'link.txt'))
+    mounted = createPathView({ root: join(root, 'workspace'), mount: '/workspace' })
+  })
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  function scopeEngine() {
+    return createPermissionEngine([
+      createReadScopeRule({ paths: mounted }),
+      createWriteScopeRule({ paths: mounted, strict: false }),
+    ])
+  }
+
+  it('is refused when the agent names a real host path, before any rule runs', async () => {
+    await expect(resolveEffects({ effects: [{ kind: 'read_path', path: '/etc/hosts' }], paths: mounted }))
+      .rejects.toThrow('/etc/hosts is outside the mounted workspace')
+  })
+
+  it('is refused when a symlink inside the workspace lands outside it', async () => {
+    const effects = await resolveEffects({ effects: [{ kind: 'read_path', path: 'link.txt' }], paths: mounted })
+    const outcome = scopeEngine().evaluate({ tool: 'fs_read', effects, grants: { subjectsFor: () => [] } })
+    expect(outcome.kind).toBe('deny')
+  })
+
+  it('names the mount when it refuses, and hides the host path the symlink landed on', async () => {
+    const effects = await resolveEffects({ effects: [{ kind: 'read_path', path: 'link.txt' }], paths: mounted })
+    const outcome = scopeEngine().evaluate({ tool: 'fs_read', effects, grants: { subjectsFor: () => [] } })
+    if (outcome.kind !== 'deny') throw new Error('expected a refusal')
+    expect(outcome.denial.reason).toContain('/workspace')
+    expect(outcome.denial.reason).not.toContain(root)
+  })
+
+  it('cannot be unlocked by a standing grant, since a denial is not a question', async () => {
+    const effects = await resolveEffects({ effects: [{ kind: 'write_path', path: 'escape/planted.txt' }], paths: mounted })
+    const outcome = scopeEngine().evaluate({
+      tool: 'fs_write',
+      effects,
+      grants: { subjectsFor: () => [join(root, 'outside')] },
+    })
+    expect(outcome.kind).toBe('deny')
+  })
+
+  it('still asks, rather than refusing, for a write inside the workspace', async () => {
+    const effects = await resolveEffects({ effects: [{ kind: 'write_path', path: 'notes.md' }], paths: mounted })
+    expect(scopeEngine().evaluate({ tool: 'fs_write', effects, grants: { subjectsFor: () => [] } }).kind).toBe('ask')
   })
 })
 

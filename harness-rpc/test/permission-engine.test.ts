@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { PermissionRuleId } from '@5straps/protocol'
 import type { ResolvedEffect } from '../src/domain/effect.js'
 import type { GrantLookup } from '../src/domain/permission/decision.js'
+import { createPathView } from '../src/domain/path-view.js'
 import { createPermissionEngine } from '../src/domain/permission/engine.js'
 import { createDestructiveCommandRule } from '../src/domain/permission/rules/destructive-command-rule.js'
 import { createNetworkEgressRule } from '../src/domain/permission/rules/network-egress-rule.js'
@@ -17,14 +18,15 @@ function lookup(granted: Partial<Record<PermissionRuleId, string[]>> = {}): Gran
 }
 
 /** Mirrors the order in runtime.ts; that order is the security model. */
-function engine(options: { scratchRoots?: string[]; strict?: boolean } = {}) {
+function engine(options: { scratchRoots?: string[]; strict?: boolean; mount?: string } = {}) {
+  const paths = createPathView({ root: WORKSPACE, mount: options.mount ?? null, scratchRoots: options.scratchRoots ?? [] })
   return createPermissionEngine([
     createSensitivePathRule(),
     createDestructiveCommandRule(),
     createNetworkEgressRule(),
     createProcessProbeRule(),
-    createReadScopeRule([WORKSPACE]),
-    createWriteScopeRule({ scratchRoots: options.scratchRoots ?? [], strict: options.strict ?? false }),
+    createReadScopeRule({ paths }),
+    createWriteScopeRule({ paths, strict: options.strict ?? false }),
   ])
 }
 
@@ -36,7 +38,7 @@ function writeEffect(path: string): ResolvedEffect {
   return { kind: 'write_path', path, directory: path.slice(0, path.lastIndexOf('/')) || '/' }
 }
 
-function evaluate(effects: ResolvedEffect[], granted?: Partial<Record<PermissionRuleId, string[]>>, options?: { scratchRoots?: string[]; strict?: boolean }) {
+function evaluate(effects: ResolvedEffect[], granted?: Partial<Record<PermissionRuleId, string[]>>, options?: { scratchRoots?: string[]; strict?: boolean; mount?: string }) {
   return engine(options).evaluate({ tool: 'test_tool', effects, grants: lookup(granted) })
 }
 

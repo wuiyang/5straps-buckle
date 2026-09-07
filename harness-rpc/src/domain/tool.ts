@@ -38,7 +38,13 @@ export interface PreparedCall {
 }
 
 export class ToolInputError extends Error {
-  readonly code = 'INVALID_TOOL_INPUT'
+  readonly code: string
+
+  /** A refusal the caller may not retry differently carries `PERMISSION_DENIED` instead. */
+  constructor(message: string, options?: { code?: string }) {
+    super(message)
+    this.code = options?.code ?? 'INVALID_TOOL_INPUT'
+  }
 }
 
 export class ToolExecutionError extends Error {

@@ -138,12 +138,21 @@ describe('mounting the workspace', () => {
     expect(read.output?.content).toBe('hello\n')
   })
 
-  it('names the mount, not the real root, when refusing a read elsewhere', async () => {
+  it('refuses a read elsewhere outright, with no approval on offer', async () => {
     const outside = await invoke('fs_read', { path: '/etc/hostname' })
-    expect(outside.outcome).toBe('approval_required')
-    const approvals = (outside as unknown as { approvals: Array<{ reason: string }> }).approvals
-    expect(approvals[0]?.reason).toContain('/workspace')
-    expect(approvals[0]?.reason).not.toContain(workspace)
+    expect(outside.outcome).toBe('error')
+    expect(outside.error?.code).toBe('PERMISSION_DENIED')
+  })
+
+  it('names the mount, not the real root, when it refuses', async () => {
+    const outside = await invoke('fs_read', { path: '/etc/hostname' })
+    expect(outside.error?.message).toContain('/workspace')
+    expect(outside.error?.message).not.toContain(workspace)
+  })
+
+  it('records the refusal as a denial, so it is as visible in the log as a run', async () => {
+    await invoke('fs_read', { path: '/etc/hostname' })
+    expect(runtime.actions.read(1)[0]?.outcome).toBe('denied')
   })
 })
 

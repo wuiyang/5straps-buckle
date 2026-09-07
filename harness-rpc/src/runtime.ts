@@ -101,7 +101,7 @@ export async function createRuntime(input: {
   const listeners: Array<() => void> = []
 
   let compiled = compileEffective()
-  let paths = createPathView({ root: config.cwd, mount: compiled.mount })
+  let paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
   let permissions = buildPermissionEngine({ config, compiled, paths })
   let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserProfile })
   let registry = createToolRegistry(availableTools(packs))
@@ -151,7 +151,7 @@ export async function createRuntime(input: {
 
     async reload() {
       compiled = compileEffective()
-      paths = createPathView({ root: config.cwd, mount: compiled.mount })
+      paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
       permissions = buildPermissionEngine({ config, compiled, paths })
       packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserProfile })
       registry = createToolRegistry(availableTools(packs))
@@ -210,11 +210,11 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
   return createPermissionEngine([
     createSensitivePathRule({ protectedRoots: [config.stateDirectory] }),
     createCommandPolicyRule(compiled),
-    createDestructiveCommandRule(),
+    createDestructiveCommandRule({ added: compiled.commands.destructive }),
     createNetworkEgressRule({ approved: compiled.network }),
     createProcessProbeRule(),
-    createReadScopeRule([config.cwd], [paths.displayRoot]),
-    createWriteScopeRule({ scratchRoots: config.scratchRoots, strict: config.strictWrites }),
+    createReadScopeRule({ paths }),
+    createWriteScopeRule({ paths, strict: config.strictWrites }),
   ])
 }
 

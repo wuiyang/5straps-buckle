@@ -18,6 +18,10 @@ buckle dev rename src/app.ts --language typescript --line 42 --new-name createIn
 
 Lines are 1-based on the way in and converted to the LSP's 0-based positions for you.
 
+Every file the answers name is given in the paths this node uses, so a location can be handed
+straight back to `fs_read`. A definition that lands outside the workspace is named
+`/outside-the-workspace` rather than by its place on the host.
+
 ## Attaching to a running server
 
 `lsp_discover` lists language servers already running on the machine. It asks for approval
