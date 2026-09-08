@@ -29,6 +29,7 @@ export interface BuckleConfig {
   enabledPacks?: string[]
   historyMaxBytes: number
   historyRetentionDays: number
+  allowHostLsp: boolean
   enableShell: boolean
   shellNetwork: boolean
   isolateShell: boolean
@@ -89,6 +90,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     enabledPacks: environment.BUCKLE_PACKS ? parseList(environment.BUCKLE_PACKS) : undefined,
     historyMaxBytes: parsePositiveInteger(environment.BUCKLE_HISTORY_MAX_BYTES, 1_073_741_824),
     historyRetentionDays: parsePositiveInteger(environment.BUCKLE_HISTORY_RETENTION_DAYS, 30),
+    allowHostLsp: environment.BUCKLE_ALLOW_HOST_LSP === 'true',
     enableShell: environment.BUCKLE_ALLOW_SHELL !== 'false',
     shellNetwork: environment.BUCKLE_SHELL_NETWORK === 'true',
     isolateShell: environment.BUCKLE_SHELL_ISOLATION !== 'false',

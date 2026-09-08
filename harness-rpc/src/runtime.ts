@@ -208,6 +208,7 @@ async function buildPacks(input: {
     browserStateDirectory: input.browserStateDirectory,
     browserHeaded: input.config.browserHeaded,
     enableShell: input.config.enableShell,
+    allowHostLsp: input.config.allowHostLsp,
     shellNetwork: input.config.shellNetwork,
     shellIsolation: input.config.isolateShell ? { directory: join(input.config.stateDirectory, 'isolated-shell', workspaceStateKey(input.config.cwd)), maxBytes: input.config.isolationMaxBytes, history: input.history } : undefined,
     environmentValidator: input.config.environmentValidator,

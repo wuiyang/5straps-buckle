@@ -31,6 +31,7 @@ export interface BuiltinPackOptions {
   /** Protected browser configuration and daemon identities for this workspace. */
   browserStateDirectory: string
   browserHeaded: boolean
+  allowHostLsp?: boolean
   enableShell: boolean
   shellNetwork?: boolean
   shellIsolation?: IsolatedShellOptions
@@ -45,7 +46,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     createFsPack({ paths: options.paths, runProcess: options.runProcess, hasRipgrep: hasExecutable('rg') }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, allowedHosts: options.allowedHosts, approved: options.approvedUrls }),
     createGitPack({ paths: options.paths, runProcess: options.runProcess, hasGit: hasExecutable('git') }),
-    createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess }),
+    createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess, allowHostLsp: options.allowHostLsp }),
     createBrowserPack({
       cwd: options.cwd,
       paths: options.paths,

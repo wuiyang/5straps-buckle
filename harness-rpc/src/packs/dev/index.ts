@@ -32,6 +32,7 @@ const diagnosticsInput = z.object({
 
 export interface DevPackOptions {
   cwd: string
+  allowHostLsp?: boolean
   paths: PathView
   runProcess: ProcessRunner
 }
@@ -62,7 +63,7 @@ export function createDevPack(options: DevPackOptions): Pack {
     id: PACK_ID,
     version: '1.0.0',
     skills: [loadPackSkill(PACK_ID)],
-    unavailableReason: null,
+    unavailableReason: options.allowHostLsp === true ? null : 'Host language servers are outside shell isolation; BUCKLE_ALLOW_HOST_LSP=true explicitly permits host processes and local server attachment',
     tools: [
       defineTool(PACK_ID, {
         name: 'lsp_discover',

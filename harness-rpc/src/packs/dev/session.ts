@@ -1,3 +1,4 @@
+import { logger } from '../../logger.js'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { resolve } from 'node:path'
@@ -24,36 +25,42 @@ export function createSessionPool(cwd: string) {
       ? await connectLspSocket(attach)
       : spawnLspServer({ command: known.binaries[0] ?? language, args: known.spawnArgs, cwd })
 
-    await connection.request('initialize', {
-      processId: process.pid,
-      rootUri: pathToFileURL(cwd).href,
-      workspaceFolders: [{ uri: pathToFileURL(cwd).href, name: 'workspace' }],
-      capabilities: {
-        textDocument: {
-          definition: { dynamicRegistration: false },
-          references: { dynamicRegistration: false },
-          hover: { contentFormat: ['plaintext', 'markdown'] },
-          rename: { dynamicRegistration: false },
-          publishDiagnostics: { relatedInformation: true },
+    try {
+      await connection.request('initialize', {
+        processId: process.pid,
+        rootUri: pathToFileURL(cwd).href,
+        workspaceFolders: [{ uri: pathToFileURL(cwd).href, name: 'workspace' }],
+        capabilities: {
+          textDocument: {
+            definition: { dynamicRegistration: false },
+            references: { dynamicRegistration: false },
+            hover: { contentFormat: ['plaintext', 'markdown'] },
+            rename: { dynamicRegistration: false },
+            publishDiagnostics: { relatedInformation: true },
+          },
         },
-      },
-    }, INITIALIZE_TIMEOUT_MS)
-    connection.notify('initialized', {})
+      }, INITIALIZE_TIMEOUT_MS)
+      connection.notify('initialized', {})
+    } catch (error) { connection.close(); throw error }
 
     return { connection, openedFiles: new Set<string>() }
   }
 
   return {
     get(language: string, attach: { port: number; host: string } | null): Promise<LspSession> {
-      const existing = sessions.get(language)
+      const key = JSON.stringify([language, attach?.host ?? null, attach?.port ?? null])
+      const existing = sessions.get(key)
       if (existing) return existing
-      const created = open(language, attach)
-      sessions.set(language, created)
+      const created = open(language, attach).catch(error => {
+        if (sessions.get(key) === created) sessions.delete(key)
+        throw error
+      })
+      sessions.set(key, created)
       return created
     },
 
     closeAll(): void {
-      for (const session of sessions.values()) session.then(({ connection }) => connection.close()).catch(() => undefined)
+      for (const session of sessions.values()) session.then(({ connection }) => connection.close()).catch(() => logger.warn('Language server initialization failed during shutdown'))
       sessions.clear()
     },
   }
