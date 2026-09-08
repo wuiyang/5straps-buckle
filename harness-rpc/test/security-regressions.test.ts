@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../src/config.js'
+import { hasExecutable } from '../src/domain/executable.js'
 import { createHttpApp } from '../src/faces/http-app.js'
 import { createRuntime } from '../src/runtime.js'
 
@@ -41,7 +42,10 @@ describe('owner approval authority', () => {
   })
 })
 
-describe('recursive credential search', () => {
+// fs_search_content is only registered when a real ripgrep binary is on PATH, so on a host
+// without one this block would fail with "Unknown tool" and prove nothing. Skipping keeps the
+// skip visible in the run summary. To run it here, put a ripgrep binary on PATH first.
+describe.skipIf(!hasExecutable('rg'))('recursive credential search', () => {
   it('searches permitted content but excludes protected credentials before reading', async () => {
     const { runtime, workspace } = await fixture()
     writeFileSync(join(workspace, 'credentials.json'), '{"synthetic":"private-marker"}')
