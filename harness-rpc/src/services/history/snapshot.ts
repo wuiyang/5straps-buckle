@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { z } from 'zod'
@@ -66,16 +66,30 @@ export function applySnapshot(input: { target: Snapshot; current: Snapshot; path
   for (const path of [...input.paths].sort((a, b) => a.length - b.length)) {
     const entry = input.target[path]
     if (!entry) continue
-    if (entry.kind === 'directory') mkdirSync(path, { recursive: true, mode: 0o700 })
+    if (entry.kind === 'directory') {
+      mkdirSync(path, { recursive: true, mode: 0o700 })
+      chmodSync(path, entry.mode | 0o700)
+    }
     else if (entry.kind === 'symlink') symlinkSync(entry.target!, path)
     else {
       mkdirSync(dirname(path), { recursive: true })
-      const temporary = `${path}.buckle-restore-${createHash('sha256').update(path).digest('hex').slice(0, 12)}`
-      try { writeFileSync(temporary, input.content(entry.hash!), { flag: 'wx', mode: entry.mode }); renameSync(temporary, path) }
-      finally { rmSync(temporary, { force: true }) }
+      writeRestoredFile({ path, content: input.content(entry.hash!), mode: entry.mode })
     }
-    if (entry.kind !== 'symlink') chmodSync(path, entry.mode)
+    if (entry.kind === 'file') chmodSync(path, entry.mode)
   }
+  for (const path of [...input.paths].sort((a, b) => b.length - a.length)) {
+    const entry = input.target[path]
+    if (entry?.kind === 'directory') chmodSync(path, entry.mode)
+  }
+}
+
+function writeRestoredFile(input: { path: string; content: Buffer; mode: number }): void {
+  const temporary = `${input.path}.buckle-restore-${randomUUID()}`
+  const descriptor = openSync(temporary, 'wx', input.mode)
+  try {
+    try { writeFileSync(descriptor, input.content) } finally { closeSync(descriptor) }
+    renameSync(temporary, input.path)
+  } finally { rmSync(temporary, { force: true }) }
 }
 
 export function isMissing(error: unknown): boolean {

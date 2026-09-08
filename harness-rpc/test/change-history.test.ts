@@ -153,3 +153,14 @@ it('preserves the before-state when the after-snapshot exceeds the budget', asyn
   await expanded.restore(history.list()[0]!.id)
   expect(existsSync(join(workspace, 'large-output'))).toBe(false)
 })
+
+it('restores read-only directory modes after restoring their children', async () => {
+  const { workspace, history, details } = fixture()
+  const directory = join(workspace, 'readonly'); mkdirSync(directory)
+  writeFileSync(join(directory, 'file'), 'original'); chmodSync(directory, 0o500)
+  await history.run(details, async () => { chmodSync(directory, 0o700); rmSync(directory, { recursive: true }) })
+  await history.restore(history.list()[0]!.id)
+  expect(readFileSync(join(directory, 'file'), 'utf8')).toBe('original')
+  expect(statSync(directory).mode & 0o777).toBe(0o500)
+  chmodSync(directory, 0o700)
+})
