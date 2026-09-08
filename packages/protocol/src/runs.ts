@@ -1,7 +1,11 @@
 import { z } from 'zod'
 import { JsonValueSchema } from './json.js'
 
-export const AgentRunStatusSchema = z.enum(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted'])
+/**
+ * `waiting_approval` is a run held inside a turn until a person answers a node's prompt. It
+ * holds no lease, so no worker is running it and no later turn in the chat may overtake it.
+ */
+export const AgentRunStatusSchema = z.enum(['queued', 'running', 'waiting_approval', 'succeeded', 'failed', 'cancelled', 'interrupted'])
 export const AgentRunSchema = z.object({
   id: z.string(), chatId: z.string(), input: z.string(), status: AgentRunStatusSchema,
   generation: z.number().int().nonnegative(), workerId: z.string().nullable(), leaseUntil: z.number().nullable(),
@@ -13,10 +17,12 @@ export const RunStepKindSchema = z.enum(['approval_wait', 'child_run', 'model', 
 
 /**
  * How a step stands, in the same words a run uses. `running` is written before a tool is
- * dispatched and `waiting` when a call is held for a person. Stored rows stay plain text, so a
- * row written before this vocabulary existed still reads back.
+ * dispatched and `waiting` when a call is held for a person. `uncertain` is a dispatched call
+ * whose result was lost and whose effect is known to have happened, so it is never repeated
+ * automatically. Stored rows stay plain text, so a row written before this vocabulary existed
+ * still reads back.
  */
-export const RunStepStatusSchema = z.enum(['failed', 'running', 'succeeded', 'waiting'])
+export const RunStepStatusSchema = z.enum(['failed', 'running', 'succeeded', 'uncertain', 'waiting'])
 export type RunStepStatus = z.infer<typeof RunStepStatusSchema>
 
 /**
