@@ -108,7 +108,7 @@ export async function createRuntime(input: {
   let compiled = compileEffective()
   let paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
   let permissions = buildPermissionEngine({ config, compiled, paths })
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory })
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history })
   let registry = createToolRegistry(availableTools(packs))
 
   const runtime: BuckleRuntime = {
@@ -161,7 +161,7 @@ export async function createRuntime(input: {
       compiled = compileEffective()
       paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
       permissions = buildPermissionEngine({ config, compiled, paths })
-      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory })
+      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history })
       registry = createToolRegistry(availableTools(packs))
       for (const listener of listeners) listener()
     },
@@ -187,6 +187,7 @@ async function buildPacks(input: {
   compiled: CompiledPolicy
   paths: PathView
   browserStateDirectory: string
+  history: ChangeHistory
 }): Promise<Pack[]> {
   const builtin = createBuiltinPacks({
     cwd: input.config.cwd,
@@ -205,6 +206,7 @@ async function buildPacks(input: {
     browserHeaded: input.config.browserHeaded,
     enableShell: input.config.enableShell,
     shellNetwork: input.config.shellNetwork,
+    shellIsolation: input.config.isolateShell ? { directory: join(input.config.stateDirectory, 'isolated-shell', workspaceStateKey(input.config.cwd)), maxBytes: input.config.isolationMaxBytes, history: input.history } : undefined,
     environmentValidator: input.config.environmentValidator,
   })
   const selected = input.config.enabledPacks

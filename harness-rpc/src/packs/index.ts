@@ -1,3 +1,4 @@
+import type { IsolatedShellOptions } from '../services/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
 import { hasExecutable } from '../domain/executable.js'
 import type { Pack } from '../domain/pack.js'
@@ -32,6 +33,7 @@ export interface BuiltinPackOptions {
   browserHeaded: boolean
   enableShell: boolean
   shellNetwork?: boolean
+  shellIsolation?: IsolatedShellOptions
   environmentValidator?: string
   /** Why commands cannot be sandboxed here, if they cannot. */
   sandboxUnavailableReason: string | null
@@ -64,6 +66,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     hiddenPaths: options.hiddenPaths,
     readOnlyPaths: options.mountReadOnlyPaths,
     unavailableReason: shellUnavailableReason(options),
+    isolation: options.shellIsolation,
     allowNetwork: options.shellNetwork === true && !options.approvedUrls && options.allowedHosts.length === 0,
   }))
 
@@ -73,6 +76,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
 
 function shellUnavailableReason(options: BuiltinPackOptions): string | null {
   if (!options.enableShell) return 'Shell tools are turned off by BUCKLE_ALLOW_SHELL=false'
+  if (options.shellIsolation && options.sandbox.mode !== 'bubblewrap') return 'Isolated shell execution requires bubblewrap; BUCKLE_SHELL_ISOLATION=false opts into shared-workspace checkpoints'
   if (options.sandboxUnavailableReason) return options.sandboxUnavailableReason
   if (options.paths.mount && !options.sandbox.supportsMount) {
     return `The workspace is mounted at ${options.paths.mount}, which needs bubblewrap; shell tools are withheld under the ${options.sandbox.mode} sandbox rather than shown a different view`

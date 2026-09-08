@@ -65,7 +65,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
-          const output = options.history && tracksChanges
+          const output = options.history && tracksChanges && !prepared.managesHistory
             ? await options.history.run({ sessionId, stageId: request.context?.stageId ?? request.context?.runId ?? request.requestId, tool: request.tool, roots: [...new Set(roots)] }, execute)
             : await execute()
           return {

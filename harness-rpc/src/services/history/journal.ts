@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
-import { applySnapshot, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
+import { applySnapshot, assertSnapshotMatches, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
 
 const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), roots: z.array(z.string()), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional() })
 type Checkpoint = z.infer<typeof checkpointSchema>
@@ -76,11 +76,7 @@ export function createChangeHistory(input: { directory: string; excluded: string
     if (!record.after) throw new Error('Completed checkpoint not found')
     const current = capture(record.roots)
     const paths = changedPaths(record.before, record.after)
-    if (paths.some(path => !sameEntry(current[path], record.after![path]))) throw new Error('Restore conflict: a changed path no longer matches the checkpoint')
-    // New descendants also conflict when a restore removes or replaces their parent.
-    for (const path of paths) if (record.after[path]?.kind === 'directory' && record.before[path]?.kind !== 'directory') {
-      if (Object.keys(current).some(child => child.startsWith(`${path}/`) && !Object.hasOwn(record.after!, child))) throw new Error('Restore conflict: a directory contains newer files')
-    }
+    assertSnapshotMatches({ current, expected: record.after, target: record.before, paths, operation: 'Restore' })
     const restore = begin({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore', roots: record.roots }, record.id)
     try {
       applySnapshot({ target: record.before, current, paths, content(hash) {
@@ -97,6 +93,18 @@ export function createChangeHistory(input: { directory: string; excluded: string
       return locked(async () => {
         const record = begin(details)
         try { return await execute() } finally { finish(record) }
+      })
+    },
+    async promote(details: HistoryInput, expected: Snapshot, target: Snapshot, content: (hash: string) => Buffer) {
+      return locked(async () => {
+        const paths = changedPaths(expected, target)
+        if (!paths.length) return null
+        const current = capture(details.roots)
+        assertSnapshotMatches({ current, expected, target, paths, operation: 'Promotion' })
+        const record = begin(details)
+        try { applySnapshot({ target, current, paths, content }) }
+        finally { finish(record) }
+        return summary(record)
       })
     },
     async recover(id: string) {
@@ -118,7 +126,7 @@ export function createChangeHistory(input: { directory: string; excluded: string
       return locked(async () => {
         const selected = records().filter(record => record.stageId === stageId && record.sessionId === sessionId && !record.restores)
         if (!selected.length || selected.some(record => !record.after)) throw new Error('Completed stage not found')
-        const before: Snapshot = {}; const after: Snapshot = {}; const seen = new Set<string>()
+        const before: Snapshot = { ...selected[0]!.before }; const after: Snapshot = { ...selected[0]!.before }; const seen = new Set<string>()
         for (const record of selected) for (const path of changedPaths(record.before, record.after!)) {
           if (seen.has(path) && !sameEntry(after[path], record.before[path])) throw new Error('Restore conflict: changes from another stage are interleaved')
           if (!seen.has(path) && record.before[path]) before[path] = record.before[path]!

@@ -13,6 +13,7 @@ export interface ToolContext {
 }
 
 export interface ToolDefinition<TInput> {
+  managesHistory?: boolean
   name: string
   description: string
   risk: CapabilityRisk
@@ -35,6 +36,7 @@ export interface RegisteredTool {
 }
 
 export interface PreparedCall {
+  managesHistory?: boolean
   effects: ToolEffect[]
   execute(context: ToolContext): Promise<JsonValue>
 }
@@ -81,6 +83,7 @@ export function defineTool<TInput>(pack: string, definition: ToolDefinition<TInp
       if (!parsed.success) throw new ToolInputError(z.prettifyError(parsed.error))
       const input = parsed.data
       return {
+        managesHistory: definition.managesHistory,
         effects: definition.effects(input),
         execute: context => definition.run(input, context),
       }

@@ -31,6 +31,8 @@ export interface BuckleConfig {
   historyRetentionDays: number
   enableShell: boolean
   shellNetwork: boolean
+  isolateShell: boolean
+  isolationMaxBytes: number
   environmentValidator?: string
   allowedHosts: string[]
   braveSearchApiKey?: string
@@ -89,6 +91,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     historyRetentionDays: parsePositiveInteger(environment.BUCKLE_HISTORY_RETENTION_DAYS, 30),
     enableShell: environment.BUCKLE_ALLOW_SHELL !== 'false',
     shellNetwork: environment.BUCKLE_SHELL_NETWORK === 'true',
+    isolateShell: environment.BUCKLE_SHELL_ISOLATION !== 'false',
+    isolationMaxBytes: parsePositiveInteger(environment.BUCKLE_ISOLATION_MAX_BYTES, 268_435_456),
     environmentValidator: environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined,
     allowedHosts: parseList(environment.BUCKLE_ALLOWED_HOSTS),
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,

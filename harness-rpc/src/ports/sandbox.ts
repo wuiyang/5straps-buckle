@@ -8,6 +8,7 @@ export interface SandboxCommand {
   /** Directories the process may write to. Everything else is read-only or hidden. */
   writableRoots: string[]
   allowNetwork: boolean
+  commandIsPid1?: boolean
   /** Present the workspace root at a virtual path and hide the rest of the host. */
   mount: { root: string; at: string } | null
   /** Host paths a command must not see, Buckle's own state above all. */

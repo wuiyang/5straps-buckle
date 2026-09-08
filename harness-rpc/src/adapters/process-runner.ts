@@ -7,6 +7,7 @@ const KILL_GRACE_MS = 1_000
 /** Returns whatever the process produced, including on timeout. A killed build still has output. */
 export const runProcess: ProcessRunner = (request: ProcessRequest): Promise<ProcessResult> => {
   return new Promise((resolvePromise, rejectPromise) => {
+    if (request.signal?.aborted) { rejectPromise(new Error('Process request was already cancelled')); return }
     const child = spawn(request.command, request.args, {
       cwd: request.cwd,
       env: request.environment,
@@ -22,20 +23,23 @@ export const runProcess: ProcessRunner = (request: ProcessRequest): Promise<Proc
     child.stdout.on('data', (chunk: Buffer) => stdout.append(chunk))
     child.stderr.on('data', (chunk: Buffer) => stderr.append(chunk))
 
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined
+    const terminate = (): void => {
+      child.kill('SIGTERM')
+      forceKillTimer ??= setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS)
+      forceKillTimer.unref()
+    }
     const killTimer = setTimeout(() => {
       timedOut = true
-      child.kill('SIGTERM')
-      setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS).unref()
+      terminate()
     }, request.timeoutMs)
-
-    const abort = (): void => {
-      child.kill('SIGTERM')
-    }
-    request.signal?.addEventListener('abort', abort, { once: true })
+    request.signal?.addEventListener('abort', terminate, { once: true })
+    if (request.signal?.aborted) terminate()
 
     const cleanup = (): void => {
       clearTimeout(killTimer)
-      request.signal?.removeEventListener('abort', abort)
+      clearTimeout(forceKillTimer)
+      request.signal?.removeEventListener('abort', terminate)
     }
 
     child.once('error', error => {

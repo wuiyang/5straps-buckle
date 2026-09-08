@@ -10,6 +10,7 @@ const SYSTEM_PATHS = ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc/ld.so.cac
 
 function buildArgs(command: SandboxCommand, nodePrefix: string): string[] {
   const args = ['--die-with-parent', '--unshare-user', '--unshare-pid', '--unshare-uts', '--unshare-ipc']
+  if (command.commandIsPid1) args.push('--as-pid-1')
   if (!command.allowNetwork) args.push('--unshare-net')
   for (const path of new Set([...SYSTEM_PATHS, nodePrefix, ...command.readOnlyPaths])) args.push('--ro-bind-try', path, path)
   args.push('--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--dir', '/tmp/home', '--setenv', 'HOME', '/tmp/home')

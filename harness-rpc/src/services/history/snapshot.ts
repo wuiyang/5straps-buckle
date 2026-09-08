@@ -95,3 +95,15 @@ function writeRestoredFile(input: { path: string; content: Buffer; mode: number 
 export function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
 }
+
+export function assertSnapshotMatches(input: { current: Snapshot; expected: Snapshot; target: Snapshot; paths: string[]; operation: 'Restore' | 'Promotion' }): void {
+  if (input.paths.some(path => !sameEntry(input.current[path], input.expected[path]))) throw new Error(`${input.operation} conflict: a changed path no longer matches the checkpoint`)
+  for (const path of input.paths) {
+    for (let parent = dirname(path); parent !== dirname(parent); parent = dirname(parent)) {
+      if (!sameEntry(input.current[parent], input.expected[parent])) throw new Error(`${input.operation} conflict: a parent directory changed since the checkpoint`)
+    }
+  }
+  for (const path of input.paths) if (input.expected[path]?.kind === 'directory' && input.target[path]?.kind !== 'directory') {
+    if (Object.keys(input.current).some(child => child.startsWith(`${path}/`) && !Object.hasOwn(input.expected, child))) throw new Error(`${input.operation} conflict: a directory contains newer files`)
+  }
+}
