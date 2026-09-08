@@ -46,7 +46,8 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
-    "buckle": "tsx src/index.ts"
+    "buckle": "tsx src/index.ts",
+    "acceptance": "pnpm run build && node scripts/acceptance.mjs"
   },
   "dependencies": {
     "@5straps/protocol": "workspace:*",
