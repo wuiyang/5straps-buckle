@@ -1,3 +1,4 @@
+import { createShellWorkspaceRecovery } from './services/isolated-shell.js'
 import { join, dirname } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
 import { createChangeHistory, type ChangeHistory } from './services/history/journal.js'
@@ -62,6 +63,7 @@ export interface BuckleRuntime {
   grants: GrantStore
   approvals: ApprovalRegistry
   history: ChangeHistory
+  shellWorkspaces: ReturnType<typeof createShellWorkspaceRecovery>
   actions: ActionLog
   plugins: PluginRegistry
   reporter: Reporter
@@ -120,6 +122,7 @@ export async function createRuntime(input: {
     approvals,
     actions,
     history,
+    shellWorkspaces: createShellWorkspaceRecovery({ directory: join(config.stateDirectory, 'isolated-shell', workspaceStateKey(config.cwd)), sourceRoot: config.cwd, maxBytes: config.isolationMaxBytes, retentionDays: config.historyRetentionDays, history }),
     plugins,
     reporter,
 

@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createChangeHistory } from '../src/services/history/journal.js'
-import { runIsolatedShell } from '../src/services/isolated-shell.js'
+import { createShellWorkspaceRecovery, runIsolatedShell } from '../src/services/isolated-shell.js'
 import { createShellPack } from '../src/packs/shell/index.js'
 import { createPathView } from '../src/domain/path-view.js'
 import { createBubblewrapSandbox } from '../src/adapters/sandbox/bubblewrap-sandbox.js'
@@ -158,4 +158,75 @@ it('mounts only the private copy as writable and uses the command as namespace P
   expect(calls[0]!.args[binding + 2]).toBe('/workspace')
   expect(readFileSync(join(sourceRoot, 'file'), 'utf8')).toBe('sandbox result')
   expect(history.list()[0]!.stageId).toBe('message')
+})
+
+describe('owner retained workspace recovery', () => {
+  function recoveryFixture() {
+    const base = fixture()
+    const recovery = createShellWorkspaceRecovery({ ...base.isolation, sourceRoot: base.sourceRoot, retentionDays: 30 })
+    return { ...base, recovery }
+  }
+
+  it('publishes an interrupted copy into an undoable checkpoint', async () => {
+    const { input, sourceRoot, recovery, history } = recoveryFixture()
+    await expect(runIsolatedShell({ ...input, execute: async copy => {
+      writeFileSync(join(copy, 'recovered'), 'partial work')
+      throw new Error('interrupted')
+    } })).rejects.toThrow('owner review')
+    const record = recovery.list()[0]!
+    expect((await recovery.inspect(record.id)).paths).toEqual([join(sourceRoot, 'recovered')])
+    const result = await recovery.publish(record.id)
+    expect(result.checkpoint?.tool).toBe('owner_workspace_publish')
+    expect(readFileSync(join(sourceRoot, 'recovered'), 'utf8')).toBe('partial work')
+    expect(recovery.list()).toEqual([])
+    await history.restore(result.checkpoint!.id)
+    expect(existsSync(join(sourceRoot, 'recovered'))).toBe(false)
+  })
+
+  it('refuses inspect, publish and discard while another runtime holds the workspace', async () => {
+    const { input, recovery } = recoveryFixture()
+    await runIsolatedShell({ ...input, execute: async () => {
+      const id = recovery.list()[0]!.id
+      await expect(recovery.inspect(id)).rejects.toThrow('active')
+      await expect(recovery.publish(id)).rejects.toThrow('active')
+      await expect(recovery.discard(id)).rejects.toThrow('active')
+      expect(await recovery.prune()).toEqual({ removed: [] })
+    } })
+  })
+
+  it('keeps owner conflicts unchanged until the retained copy is explicitly discarded', async () => {
+    const { input, recovery, sourceRoot } = recoveryFixture()
+    writeFileSync(join(sourceRoot, 'file'), 'before')
+    await expect(runIsolatedShell({ ...input, execute: async copy => {
+      writeFileSync(join(copy, 'file'), 'agent')
+      writeFileSync(join(sourceRoot, 'file'), 'owner')
+    } })).rejects.toThrow('owner review')
+    const id = recovery.list()[0]!.id
+    await expect(recovery.publish(id)).rejects.toThrow('conflict')
+    await recovery.discard(id)
+    expect(readFileSync(join(sourceRoot, 'file'), 'utf8')).toBe('owner')
+    expect(recovery.list()).toEqual([])
+  })
+
+  it('refuses replay of uncertain publication and never prunes unresolved work', async () => {
+    const { input, recovery, isolation } = recoveryFixture()
+    await expect(runIsolatedShell({ ...input, execute: async () => { throw new Error('interrupted') } })).rejects.toThrow('owner review')
+    const record = recovery.list()[0]!
+    const metadata = join(isolation.directory, record.id, 'run.json')
+    writeFileSync(metadata, JSON.stringify({ ...record, status: 'publishing', createdAt: '2000-01-01T00:00:00.000Z' }))
+    await expect(recovery.publish(record.id)).rejects.toThrow('uncertain')
+    expect(await recovery.prune()).toEqual({ removed: [] })
+    writeFileSync(metadata, JSON.stringify({ ...record, status: 'published', createdAt: '2000-01-01T00:00:00.000Z' }))
+    expect(await recovery.prune()).toEqual({ removed: [record.id] })
+  })
+
+  it('rejects traversal and cross-workspace metadata before touching files', async () => {
+    const { input, recovery, isolation } = recoveryFixture()
+    await expect(recovery.discard('../outside')).rejects.toThrow()
+    await expect(runIsolatedShell({ ...input, execute: async () => { throw new Error('interrupted') } })).rejects.toThrow('owner review')
+    const record = recovery.list()[0]!
+    writeFileSync(join(isolation.directory, record.id, 'run.json'), JSON.stringify({ ...record, sourceRoot: '/outside' }))
+    await expect(recovery.discard(record.id)).rejects.toThrow('does not belong')
+    expect(existsSync(join(isolation.directory, record.id))).toBe(true)
+  })
 })

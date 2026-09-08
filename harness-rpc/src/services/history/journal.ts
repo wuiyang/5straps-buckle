@@ -95,14 +95,14 @@ export function createChangeHistory(input: { directory: string; excluded: string
         try { return await execute() } finally { finish(record) }
       })
     },
-    async promote(details: HistoryInput, expected: Snapshot, target: Snapshot, content: (hash: string) => Buffer) {
+    async promote(details: HistoryInput, expected: Snapshot, target: Snapshot, content: (hash: string) => Buffer, onCheckpoint?: () => void) {
       return locked(async () => {
         const paths = changedPaths(expected, target)
         if (!paths.length) return null
         const current = capture(details.roots)
         assertSnapshotMatches({ current, expected, target, paths, operation: 'Promotion' })
         const record = begin(details)
-        try { applySnapshot({ target, current, paths, content }) }
+        try { onCheckpoint?.(); applySnapshot({ target, current, paths, content }) }
         finally { finish(record) }
         return summary(record)
       })

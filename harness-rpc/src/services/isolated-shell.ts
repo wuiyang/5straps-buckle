@@ -1,11 +1,13 @@
+import { DatabaseSync } from 'node:sqlite'
+import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { isInsideAny, isInside } from '../domain/paths.js'
 import { sensitivePathReason } from '../domain/permission/rules/sensitive-path-rule.js'
 import { ToolExecutionError } from '../domain/tool.js'
 import { logger } from '../logger.js'
-import { applySnapshot, changedPaths, snapshot, type Snapshot } from './history/snapshot.js'
+import { applySnapshot, changedPaths, snapshot, snapshotSchema, type Snapshot } from './history/snapshot.js'
 import type { ChangeHistory, HistoryInput } from './history/journal.js'
 
 export interface IsolatedShellOptions {
@@ -14,26 +16,33 @@ export interface IsolatedShellOptions {
   history: ChangeHistory
 }
 
-export async function runIsolatedShell<T>(input: {
+interface ShellRunInput<T> {
   isolation: IsolatedShellOptions
   sourceRoot: string
   writableRoots: string[]
   excluded: string[]
   details: Omit<HistoryInput, 'roots'>
   execute: (copyRoot: string) => Promise<T>
-}): Promise<T> {
+}
+
+export async function runIsolatedShell<T>(input: ShellRunInput<T>): Promise<T> {
   const id = `shell-${randomUUID()}`
+  return withWorkspaceLock(input.isolation.directory, id, () => executeIsolatedShell(input, id))
+}
+
+async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Promise<T> {
   const directory = join(input.isolation.directory, id)
   const copyRoot = join(directory, 'workspace')
   const objects = join(directory, 'objects')
   mkdirSync(objects, { recursive: true, mode: 0o700 })
-  const metadata = { id, ...input.details, sourceRoot: input.sourceRoot, copyRoot }
-  const record = (status: string) => writeFileSync(join(directory, 'run.json'), JSON.stringify({ ...metadata, status }), { mode: 0o600 })
+  const metadata = { id, ...input.details, sourceRoot: input.sourceRoot, copyRoot, writableRoots: input.writableRoots, excluded: input.excluded, createdAt: new Date().toISOString() }
+  const record = (status: string) => writeWorkspaceRecord(directory, { ...metadata, status })
   const content = (hash: string) => readFileSync(join(objects, hash))
   const save = (hash: string, buffer: Buffer) => {
     const path = join(objects, hash)
     if (!existsSync(path)) writeFileSync(path, buffer, { mode: 0o600, flag: 'wx' })
   }
+  let publishing = false
   let started = false
   try {
     record('preparing')
@@ -44,10 +53,9 @@ export async function runIsolatedShell<T>(input: {
     record('running')
     started = true
     const result = await input.execute(copyRoot)
-    record('publishing')
     const after = relocate(snapshot({ roots: [copyRoot], excluded: [], maxBytes: input.isolation.maxBytes, save }), copyRoot, input.sourceRoot)
     assertPublishable({ before, after, sourceRoot: input.sourceRoot, writableRoots: input.writableRoots, excluded: input.excluded })
-    await input.isolation.history.promote({ ...input.details, roots: [input.sourceRoot] }, before, after, content)
+    await input.isolation.history.promote({ ...input.details, roots: [input.sourceRoot] }, before, after, content, () => { publishing = true; record('publishing') })
     record('published')
     try { removePrivateWorkspace(directory) } catch (error) {
       logger.warn('Published shell workspace cleanup failed', { id, directory, message: error instanceof Error ? error.message : 'Unknown error' })
@@ -59,7 +67,7 @@ export async function runIsolatedShell<T>(input: {
       removePrivateWorkspace(directory)
     }
     else {
-      record('needs_review')
+      record(publishing ? 'publication_uncertain' : 'needs_review')
       logger.warn('Isolated shell changes retained for owner review', { id, directory, message: error instanceof Error ? error.message : 'Unknown error' })
     }
     throw new ToolExecutionError(started ? `Isolated shell changes need owner review (${id}); inspect the retained copy and checkpoint history` : 'Could not prepare an isolated workspace; inspect owner logs', { code: 'ISOLATED_WORKSPACE_FAILED' })
@@ -88,3 +96,105 @@ function removePrivateWorkspace(directory: string): void {
   for (const name of readdirSync(directory)) removePrivateWorkspace(join(directory, name))
   rmSync(directory, { recursive: true })
 }
+
+const workspaceIdSchema = z.string().regex(/^shell-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+const workspaceRecordSchema = z.object({
+  id: workspaceIdSchema, sessionId: z.string(), stageId: z.string(), tool: z.string(),
+  sourceRoot: z.string(), copyRoot: z.string(), writableRoots: z.array(z.string()), excluded: z.array(z.string()),
+  createdAt: z.iso.datetime(), status: z.enum(['preparing', 'running', 'needs_review', 'publishing', 'publication_uncertain', 'published']),
+})
+
+export function createShellWorkspaceRecovery(input: IsolatedShellOptions & { sourceRoot: string; retentionDays: number }) {
+  function read(id: string) {
+    workspaceIdSchema.parse(id)
+    const directory = join(input.directory, id)
+    if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error('Invalid retained workspace directory')
+    const record = workspaceRecordSchema.parse(JSON.parse(readFileSync(join(directory, 'run.json'), 'utf8')))
+    if (record.id !== id || record.sourceRoot !== input.sourceRoot || record.copyRoot !== join(directory, 'workspace')) throw new Error('Retained workspace does not belong to this workspace')
+    return record
+  }
+  function capture(record: z.infer<typeof workspaceRecordSchema>) {
+    const before = snapshotSchema.parse(JSON.parse(readFileSync(join(input.directory, record.id, 'before.json'), 'utf8')))
+    if (Object.keys(before).some(path => !isInside(input.sourceRoot, path))) throw new Error('Retained snapshot escapes its workspace')
+    const objects = new Map<string, Buffer>()
+    const after = relocate(snapshot({ roots: [record.copyRoot], excluded: [], maxBytes: input.maxBytes, save: (hash, content) => { objects.set(hash, content) } }), record.copyRoot, input.sourceRoot)
+    return { before, after, objects }
+  }
+  return {
+    list() {
+      if (!existsSync(input.directory)) return []
+      return readdirSync(input.directory).filter(id => workspaceIdSchema.safeParse(id).success).map(read)
+    },
+    async inspect(id: string) {
+      return withWorkspaceLock(input.directory, id, async () => {
+        const record = read(id)
+        const { before, after } = capture(record)
+        return { ...record, paths: changedPaths(before, after) }
+      })
+    },
+    async publish(id: string) {
+      return withWorkspaceLock(input.directory, id, async () => {
+        const record = read(id)
+        if (!['needs_review', 'running'].includes(record.status)) throw new Error('Publication state is uncertain; inspect checkpoint history before discarding or manually recovering files')
+        const { before, after, objects } = capture(record)
+        assertPublishable({ before, after, sourceRoot: input.sourceRoot, writableRoots: record.writableRoots, excluded: record.excluded })
+        const saveStatus = (status: string) => writeWorkspaceRecord(join(input.directory, id), { ...record, status })
+        const checkpoint = await input.history.promote({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_workspace_publish', roots: [input.sourceRoot] }, before, after, hash => {
+          const content = objects.get(hash)
+          if (!content) throw new Error('Retained workspace content is missing')
+          return content
+        }, () => saveStatus('publishing'))
+        saveStatus('published')
+        removePrivateWorkspace(join(input.directory, id))
+        return { id, checkpoint }
+      })
+    },
+    async discard(id: string) {
+      return withWorkspaceLock(input.directory, id, async () => { read(id); removePrivateWorkspace(join(input.directory, id)); return { id, discarded: true } })
+    },
+    async prune() {
+      const removed: string[] = []
+      if (!existsSync(input.directory)) return { removed }
+      for (const id of readdirSync(input.directory).filter(id => workspaceIdSchema.safeParse(id).success)) {
+        try {
+          await withWorkspaceLock(input.directory, id, async () => {
+            const record = read(id)
+            if (record.status !== 'published' || Date.parse(record.createdAt) >= Date.now() - input.retentionDays * 86_400_000) return
+            removePrivateWorkspace(join(input.directory, id)); removed.push(id)
+          })
+        } catch (error) {
+          if (!(error instanceof WorkspaceActiveError)) throw error
+          logger.info('Skipped active shell workspace during prune', { id })
+        }
+      }
+      return { removed }
+    },
+  }
+}
+
+async function withWorkspaceLock<T>(directory: string, id: string, operation: () => Promise<T>): Promise<T> {
+  workspaceIdSchema.parse(id)
+  const locks = `${directory}.locks`
+  mkdirSync(locks, { recursive: true, mode: 0o700 })
+  const lockPath = join(locks, `${id}.sqlite`)
+  const lock = new DatabaseSync(lockPath, { timeout: 0 })
+  try {
+    try { lock.exec('BEGIN IMMEDIATE') } catch (error) {
+      if (error instanceof Error && /locked|busy/i.test(error.message)) throw new WorkspaceActiveError('Shell workspace is active; wait for execution or recovery to finish')
+      throw error
+    }
+    return await operation()
+  } finally {
+    lock.close()
+    if (!existsSync(join(directory, id))) rmSync(lockPath, { force: true })
+  }
+}
+
+function writeWorkspaceRecord(directory: string, record: unknown): void {
+  const temporary = join(directory, `run-${randomUUID()}.json`)
+  writeFileSync(temporary, JSON.stringify(record), { mode: 0o600, flag: 'wx' })
+  try { renameSync(temporary, join(directory, 'run.json')) }
+  finally { rmSync(temporary, { force: true }) }
+}
+
+class WorkspaceActiveError extends Error {}

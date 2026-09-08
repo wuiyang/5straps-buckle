@@ -28,6 +28,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   if (command === 'skills') return printSkills(runtime, rest)
   if (command === 'approve') return approve(runtime, rest)
   if (command === 'grants') return grants(runtime, rest)
+  if (command === 'workspaces') return workspaceCommand(runtime, rest)
   if (command === 'history') return historyCommand(runtime, rest)
   if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
@@ -56,6 +57,7 @@ function printUsage(): CliResult {
 
   buckle approve <token> [--scope once|session|always]
   buckle grants list | revoke <id>
+  buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune
   buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune
   buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
@@ -252,4 +254,14 @@ async function historyCommand(runtime: BuckleRuntime, argv: string[]): Promise<C
   if (command === 'restore' && id) return print(await runtime.history.restore(id))
   if (command === 'recover' && id) return print(await runtime.history.recover(id))
   return fail('Usage: buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune')
+}
+
+async function workspaceCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
+  const [command = 'list', id] = argv
+  if (command === 'list') return print(runtime.shellWorkspaces.list())
+  if (command === 'prune') return print(await runtime.shellWorkspaces.prune())
+  if (command === 'inspect' && id) return print(await runtime.shellWorkspaces.inspect(id))
+  if (command === 'publish' && id) return print(await runtime.shellWorkspaces.publish(id))
+  if (command === 'discard' && id) return print(await runtime.shellWorkspaces.discard(id))
+  return fail('Usage: buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune')
 }
