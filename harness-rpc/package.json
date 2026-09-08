@@ -47,7 +47,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "buckle": "tsx src/index.ts",
-    "acceptance": "pnpm run build && node scripts/acceptance.mjs"
+    "acceptance": "pnpm run build && node scripts/acceptance.mjs",
+    "mcp-probe": "node scripts/mcp-probe.mjs"
   },
   "dependencies": {
     "@5straps/protocol": "workspace:*",
@@ -57,6 +58,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "24.10.1",
     "tsx": "4.23.12",
     "typescript": "5.9.3",

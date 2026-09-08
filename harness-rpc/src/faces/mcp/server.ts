@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer } from '@modelcontextprotocol/server'
+import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
 import { logger } from '../../logger.js'
 import type { BuckleRuntime } from '../../runtime.js'
@@ -27,6 +27,8 @@ export function createMcpServer(input: { runtime: BuckleRuntime; serverName: str
 }
 
 function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprovalResponses: boolean): void {
+  const readers = capabilityReaders(server)
+
   for (const name of runtime.registry().capabilities().map(capability => capability.name)) {
     const tool = runtime.registry().get(name)
 
@@ -53,7 +55,7 @@ function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprova
         })
 
         if (response.outcome === 'approval_required') {
-          return trustedApprovalResponses && supportsElicitation(context)
+          return trustedApprovalResponses && supportsElicitation(readers, context)
             ? askForApproval(response.approvals)
             : relayApproval(response.approvals)
         }
@@ -85,9 +87,40 @@ function relayApproval(approvals: ApprovalRequest[]) {
   }
 }
 
-function supportsElicitation(context: { mcpReq?: { _meta?: Record<string, unknown> } }): boolean {
-  const capabilities = context.mcpReq?._meta?.[CLIENT_CAPABILITIES_META_KEY]
-  return typeof capabilities === 'object' && capabilities !== null && 'elicitation' in capabilities
+/**
+ * Reads whatever the connected client declared. Where that lives depends on the protocol
+ * revision it speaks, so there is one reader per place a declaration can appear rather than a
+ * revision test: revision 2026-07-28 repeats the capabilities in every request envelope, while a
+ * 2025 era connection states them once in its `initialize` handshake. A connection fills exactly
+ * one of the two, so the first reader with an answer is the answer.
+ */
+type CapabilityReader = (context: ServerContext) => unknown
+
+function capabilityReaders(server: McpServer): CapabilityReader[] {
+  return [
+    // The envelope narrows through isRecord because the SDK ships its key set as an empty type.
+    context => isRecord(context.mcpReq.envelope) ? context.mcpReq.envelope[CLIENT_CAPABILITIES_META_KEY] : undefined,
+    // Deprecated in favour of the envelope, and still the only answer a 2025 era client gives.
+    () => server.server.getClientCapabilities(),
+  ]
+}
+
+function supportsElicitation(readers: CapabilityReader[], context: ServerContext): boolean {
+  return readers.some(read => acceptsFormElicitation(read(context)))
+}
+
+/**
+ * A bare `elicitation` declaration means form support, which is how the SDK itself reads it. A
+ * client that declared URL mode alone cannot answer an approval form, so it keeps the relay text
+ * rather than drawing a refusal from the SDK's own capability gate.
+ */
+function acceptsFormElicitation(capabilities: unknown): boolean {
+  const elicitation = isRecord(capabilities) ? capabilities['elicitation'] : undefined
+  return isRecord(elicitation) && ('form' in elicitation || !('url' in elicitation))
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 function askForApproval(approvals: ApprovalRequest[]) {
