@@ -12,6 +12,14 @@ export type AgentRun = z.infer<typeof AgentRunSchema>
 export const RunStepKindSchema = z.enum(['approval_wait', 'child_run', 'model', 'tool'])
 
 /**
+ * How a step stands, in the same words a run uses. `running` is written before a tool is
+ * dispatched and `waiting` when a call is held for a person. Stored rows stay plain text, so a
+ * row written before this vocabulary existed still reads back.
+ */
+export const RunStepStatusSchema = z.enum(['failed', 'running', 'succeeded', 'waiting'])
+export type RunStepStatus = z.infer<typeof RunStepStatusSchema>
+
+/**
  * One durable step of a run. `input`, `output` and `usage` stay opaque JSON so model message
  * parts and tool call IDs survive a round trip unchanged.
  */
