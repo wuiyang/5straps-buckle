@@ -1,53 +1,30 @@
 import { dirname, relative } from 'node:path'
 import type { Sandbox, SandboxCommand } from '../../ports/sandbox.js'
 
-/**
- * Linux namespace isolation. Unmounted: the whole filesystem read-only with the writable roots
- * bound back in. Mounted: only the system directories, the workspace at its virtual path and
- * the named extras exist at all, so `/home` and the rest of the host are not there to be read.
- */
 export function createBubblewrapSandbox(bwrapPath: string, options: { nodePrefix?: string } = {}): Sandbox {
   const nodePrefix = options.nodePrefix ?? dirname(dirname(process.execPath))
-  return {
-    mode: 'bubblewrap',
-    supportsMount: true,
-    wrap: command => ({ command: bwrapPath, args: buildArgs(command, nodePrefix) }),
-  }
+  return { mode: 'bubblewrap', supportsMount: true, wrap: command => ({ command: bwrapPath, args: buildArgs(command, nodePrefix) }) }
 }
 
-/** What a mounted command still needs of the host: binaries, libraries, configuration. */
-const SYSTEM_DIRECTORIES = ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/opt', '/var', '/nix', '/snap']
-
-/** Everything writable that a home directory would normally absorb goes to a scratch home instead. */
-const SCRATCH_HOME = '/tmp/home'
+const SYSTEM_PATHS = ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc/ld.so.cache', '/etc/nsswitch.conf', '/etc/resolv.conf', '/etc/hosts', '/etc/ssl/certs', '/etc/passwd', '/etc/group', '/etc/localtime']
 
 function buildArgs(command: SandboxCommand, nodePrefix: string): string[] {
   const args = ['--die-with-parent', '--unshare-user', '--unshare-pid', '--unshare-uts', '--unshare-ipc']
   if (!command.allowNetwork) args.push('--unshare-net')
-
-  if (command.mount) {
-    for (const directory of SYSTEM_DIRECTORIES) args.push('--ro-bind-try', directory, directory)
-    for (const directory of [nodePrefix, ...command.readOnlyPaths]) args.push('--ro-bind-try', directory, directory)
-    args.push('--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--dir', SCRATCH_HOME, '--setenv', 'HOME', SCRATCH_HOME)
-    args.push('--bind', command.mount.root, command.mount.at)
-    for (const root of command.writableRoots) {
-      if (root !== command.mount.root) args.push('--bind-try', root, root)
-    }
-  } else {
-    args.push('--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp')
-    for (const root of command.writableRoots) args.push('--bind', root, root)
-  }
-
-  // Masked after the binds, so a hidden path inside a writable root stays hidden.
-  for (const path of command.hiddenPaths) args.push('--tmpfs', path)
-
-  args.push('--chdir', workingDirectory(command), '--', command.command, ...command.args)
+  for (const path of new Set([...SYSTEM_PATHS, nodePrefix, ...command.readOnlyPaths])) args.push('--ro-bind-try', path, path)
+  args.push('--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--dir', '/tmp/home', '--setenv', 'HOME', '/tmp/home')
+  const root = command.workspaceRoot ?? command.mount?.root ?? command.writableRoots[0] ?? command.cwd
+  args.push('--ro-bind', root, sandboxPath(root, command))
+  for (const path of command.writableRoots) args.push('--bind', path, sandboxPath(path, command))
+  for (const path of command.hiddenPaths) args.push('--tmpfs', sandboxPath(path, command))
+  for (const path of command.hiddenFiles ?? []) args.push('--ro-bind', '/dev/null', sandboxPath(path, command))
+  args.push('--chdir', sandboxPath(command.cwd, command), '--', command.command, ...command.args)
   return args
 }
 
-function workingDirectory(command: SandboxCommand): string {
-  if (!command.mount) return command.cwd
-  const fromRoot = relative(command.mount.root, command.cwd)
-  if (fromRoot === '') return command.mount.at
-  return fromRoot.startsWith('..') ? command.cwd : `${command.mount.at}/${fromRoot}`
+function sandboxPath(path: string, command: SandboxCommand): string {
+  if (!command.mount) return path
+  const relativePath = relative(command.mount.root, path)
+  if (!relativePath) return command.mount.at
+  return relativePath === '..' || relativePath.startsWith('../') ? path : `${command.mount.at}/${relativePath}`
 }

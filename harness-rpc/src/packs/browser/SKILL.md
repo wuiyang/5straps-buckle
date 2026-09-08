@@ -5,9 +5,8 @@ description: Drive a real browser from a 5straps Buckle node via agent-browser. 
 
 # Buckle browser
 
-Wraps [agent-browser](https://agent-browser.dev). The browser lives on the Buckle node, so
-its cookies, logins, and profile stay on that machine. The profile is Buckle's own, one per
-workspace, never the profile a person signs into on that machine.
+Wraps [agent-browser](https://agent-browser.dev). Each caller/session alias gets a fresh browser.
+Commands reuse it until `close`; the next launch has no cookies or saved authentication.
 
 ```
 buckle browser command open example.com
@@ -18,8 +17,8 @@ buckle browser command screenshot page.png
 
 ## First run on a node
 
-The CLI ships without a browser. If every command fails, run `browser command install` once to
-download Chrome. `browser command doctor` reports what is missing.
+The owner installs agent-browser and runs `agent-browser install` outside the agent interface.
+The browser tool cannot install browsers, attach an existing browser or import saved state.
 
 The browser runs headless unless the node sets `BUCKLE_BROWSER_HEADED=true`, and it is held by a
 background daemon that outlives each call, so a later command reuses the browser already running.
@@ -41,8 +40,8 @@ rather than guessing a second spelling. Refused on purpose are `--profile`, `--e
 `--ca-cert`, `--allow-file-access`, and the flags that read or write an unjudged path,
 `--screenshot-dir`, `--download-path`, `--params` and `--payload`.
 
-The node's own `AGENT_BROWSER_*` settings still reach the browser, but `AGENT_BROWSER_PROFILE`
-is withheld: nothing in the environment or in a flag can replace the profile Buckle owns.
+The runtime ignores ambient `AGENT_BROWSER_*` settings and uses an explicit empty configuration.
+Browser file operations require explicit paths; screenshots and downloads are checkpointed.
 
 ## The loop
 
@@ -55,5 +54,6 @@ Never guess a ref. Take a snapshot and use what it returns.
 
 ## Sessions
 
-Pass `session` to keep isolated browser state across calls. Without it, calls share the
-node's default session, so a second task can inherit the first one's logged-in state.
+Pass `session` to name a browser within the current caller. Buckle scopes the alias to the supplied caller and optional stage ID. A new stage starts
+a separate browser; labels group work and are not authentication identities. Close each browser when the
+task ends. State expires after five idle minutes; close explicitly when running headed.

@@ -55,13 +55,13 @@ describe('a grant made while a server is already running', () => {
     expect(approver.activeSubjects({ sessionId: 'mcp', rule: 'read_scope' })).toEqual([])
   })
 
-  it('replaces rather than duplicates when the same subject is granted twice', () => {
+  it('keeps a standing grant separate from a session grant', () => {
     const { approver, server } = storePair()
     approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'session' })
     server.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
 
-    expect(approver.list()).toHaveLength(1)
-    expect(approver.list()[0]?.scope).toBe('always')
+    expect(approver.list()).toHaveLength(2)
+    expect(approver.list().map(grant => grant.scope).sort()).toEqual(['always', 'session'])
   })
 
   it('keeps one process from clobbering a grant the other made', () => {

@@ -29,9 +29,10 @@ function pairs(args: string[], flag: string): string[][] {
 describe('bubblewrap without a mount', () => {
   const sandbox = createBubblewrapSandbox('/usr/bin/bwrap', { nodePrefix: '/opt/node' })
 
-  it('shows the whole host read-only, as before, but masks Buckle state', () => {
+  it('exposes the workspace and toolchain without exposing the host root', () => {
     const { args } = sandbox.wrap(command())
-    expect(pairs(args, '--ro-bind')).toContainEqual(['/', '/'])
+    expect(pairs(args, '--ro-bind')).not.toContainEqual(['/', '/'])
+    expect(pairs(args, '--ro-bind')).toContainEqual(['/work/project', '/work/project'])
     expect(args).toContain('--tmpfs')
     expect(pairs(args, '--tmpfs')).toContainEqual([STATE, '--chdir'])
     expect(args.slice(-4)).toEqual(['/work/project/apps/web', '--', 'pnpm', 'build'])
@@ -45,12 +46,12 @@ describe('bubblewrap with the workspace mounted', () => {
 
   it('binds the workspace at the virtual path and nothing of the host root', () => {
     expect(pairs(args, '--bind')).toContainEqual(['/work/project', '/workspace'])
-    expect(pairs(args, '--ro-bind')).toEqual([])
+    expect(pairs(args, '--ro-bind')).toEqual([['/work/project', '/workspace']])
   })
 
   it('keeps the system directories, the node install and the named extras readable', () => {
     const readOnly = pairs(args, '--ro-bind-try').map(([from]) => from)
-    expect(readOnly).toEqual(expect.arrayContaining(['/usr', '/etc', '/opt/node', '/home/me/.local/share/pnpm']))
+    expect(readOnly).toEqual(expect.arrayContaining(['/usr', '/etc/hosts', '/opt/node', '/home/me/.local/share/pnpm']))
     expect(readOnly).not.toContain('/home')
   })
 
@@ -60,7 +61,7 @@ describe('bubblewrap with the workspace mounted', () => {
   })
 
   it('still binds other writable roots at their real path', () => {
-    expect(pairs(args, '--bind-try')).toContainEqual(['/tmp/scratch', '/tmp/scratch'])
+    expect(pairs(args, '--bind')).toContainEqual(['/tmp/scratch', '/tmp/scratch'])
   })
 
   it('reports that it honours mounts', () => {
@@ -88,7 +89,7 @@ describe('the other sandboxes', () => {
       approvedUrls: null,
       allowedHosts: [],
       agentBrowserCommand: 'agent-browser',
-      browserProfile: '/state/browser-profiles/project',
+      browserStateDirectory: '/state/browser-profiles/project',
       browserHeaded: false,
       enableShell: true,
       sandboxUnavailableReason: null,

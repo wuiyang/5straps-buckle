@@ -4,6 +4,7 @@ export interface ProcessRequest {
   cwd: string
   timeoutMs: number
   environment: NodeJS.ProcessEnv
+  stdin?: number
   signal?: AbortSignal
 }
 

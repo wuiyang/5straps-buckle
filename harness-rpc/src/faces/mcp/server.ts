@@ -13,20 +13,20 @@ interface ApprovalAnswer extends Record<string, unknown> {
  * Wraps the tool registry as an MCP server. Approvals ride MCP's own elicitation round-trip:
  * a gated call returns `inputRequired`, and the retried request carries the answers.
  */
-export function createMcpServer(input: { runtime: BuckleRuntime; serverName: string; version: string }): McpServer {
+export function createMcpServer(input: { runtime: BuckleRuntime; serverName: string; version: string; trustedApprovalResponses?: boolean }): McpServer {
   const server = new McpServer({ name: input.serverName, version: input.version })
-  registerTools(server, input.runtime)
+  registerTools(server, input.runtime, input.trustedApprovalResponses === true)
   registerSkills(server, input.runtime)
 
   input.runtime.onToolsChanged(() => {
-    registerTools(server, input.runtime)
+    registerTools(server, input.runtime, input.trustedApprovalResponses === true)
     logger.info('MCP tool list refreshed')
   })
 
   return server
 }
 
-function registerTools(server: McpServer, runtime: BuckleRuntime): void {
+function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprovalResponses: boolean): void {
   for (const name of runtime.registry().capabilities().map(capability => capability.name)) {
     const tool = runtime.registry().get(name)
 
@@ -38,7 +38,7 @@ function registerTools(server: McpServer, runtime: BuckleRuntime): void {
         annotations: { readOnlyHint: tool.capability.risk === 'read' },
       },
       async (args, context) => {
-        const responses = context.mcpReq?.inputResponses
+        const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
         const approvalTokens = resolveAnswers({ runtime, responses })
 
         const response = await runtime.invoke({
@@ -47,12 +47,13 @@ function registerTools(server: McpServer, runtime: BuckleRuntime): void {
             tool: tool.capability.name,
             args: args as JsonObject,
             approvalTokens,
+            context: { stageId: typeof context.mcpReq?._meta?.['5straps/stageId'] === 'string' ? String(context.mcpReq._meta['5straps/stageId']).slice(0, 200) : undefined },
           },
           sessionId: mcpSessionId(context),
         })
 
         if (response.outcome === 'approval_required') {
-          return supportsElicitation(context)
+          return trustedApprovalResponses && supportsElicitation(context)
             ? askForApproval(response.approvals)
             : relayApproval(response.approvals)
         }

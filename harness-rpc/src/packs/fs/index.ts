@@ -100,6 +100,7 @@ export function createFsPack(options: FsPackOptions): Pack {
         runProcess: options.runProcess,
         timeoutMs: toolContext.timeoutMs,
         signal: toolContext.signal,
+        authorizeRead: toolContext.authorizeRead ?? (async () => false),
       }),
     }))
   }

@@ -11,13 +11,14 @@ export const runProcess: ProcessRunner = (request: ProcessRequest): Promise<Proc
       cwd: request.cwd,
       env: request.environment,
       shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [request.stdin ?? 'ignore', 'pipe', 'pipe'],
     })
 
     const stdout = createBoundedBuffer()
     const stderr = createBoundedBuffer()
     let timedOut = false
 
+    if (!child.stdout || !child.stderr) throw new Error('Process output pipes were not created')
     child.stdout.on('data', (chunk: Buffer) => stdout.append(chunk))
     child.stderr.on('data', (chunk: Buffer) => stderr.append(chunk))
 

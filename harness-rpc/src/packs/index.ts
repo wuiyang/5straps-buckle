@@ -1,3 +1,4 @@
+import { createEnvironmentPack } from './environment/index.js'
 import { hasExecutable } from '../domain/executable.js'
 import type { Pack } from '../domain/pack.js'
 import type { PathView } from '../domain/path-view.js'
@@ -26,10 +27,12 @@ export interface BuiltinPackOptions {
   braveSearchApiKey?: string
   allowedHosts: string[]
   agentBrowserCommand: string
-  /** The profile directory Buckle owns for this workspace's browser. */
-  browserProfile: string
+  /** Protected browser configuration and daemon identities for this workspace. */
+  browserStateDirectory: string
   browserHeaded: boolean
   enableShell: boolean
+  shellNetwork?: boolean
+  environmentValidator?: string
   /** Why commands cannot be sandboxed here, if they cannot. */
   sandboxUnavailableReason: string | null
 }
@@ -46,7 +49,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       paths: options.paths,
       runProcess: options.runProcess,
       agentBrowserCommand: options.agentBrowserCommand,
-      profileDirectory: options.browserProfile,
+      sessionDirectory: options.browserStateDirectory,
       headed: options.browserHeaded,
       available: hasExecutable(options.agentBrowserCommand),
     }),
@@ -61,8 +64,10 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     hiddenPaths: options.hiddenPaths,
     readOnlyPaths: options.mountReadOnlyPaths,
     unavailableReason: shellUnavailableReason(options),
+    allowNetwork: options.shellNetwork === true && !options.approvedUrls && options.allowedHosts.length === 0,
   }))
 
+  if (options.environmentValidator) packs.push(createEnvironmentPack({ command: options.environmentValidator, cwd: options.cwd, runProcess: options.runProcess }))
   return packs
 }
 

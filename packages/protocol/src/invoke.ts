@@ -6,6 +6,7 @@ export const InvokeContextSchema = z.object({
   sessionId: z.string().optional(),
   chatId: z.string().optional(),
   runId: z.string().optional(),
+  stageId: z.string().min(1).max(200).optional(),
   invocationId: z.string().optional(),
 })
 export type InvokeContext = z.infer<typeof InvokeContextSchema>

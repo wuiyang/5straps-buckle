@@ -25,31 +25,28 @@ interface PluginModule {
 
 export function createPluginRegistry(input: { filePath: string; packOptions: Record<string, unknown> }): PluginRegistry {
   const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, plugins: [] } })
-  let plugins = store.read().plugins
-
-  const persist = (): void => store.write({ version: 1, plugins })
 
   return {
-    list: () => plugins,
+    list: () => store.read().plugins,
 
     add(entry) {
       const record: PluginEntry = { ...entry, enabled: true }
-      plugins = [...plugins.filter(plugin => plugin.id !== entry.id), record]
-      persist()
+      store.update(state => { state.plugins = [...state.plugins.filter(plugin => plugin.id !== entry.id), record] })
       return record
     },
 
     remove(id) {
-      const next = plugins.filter(plugin => plugin.id !== id)
-      if (next.length === plugins.length) return false
-      plugins = next
-      persist()
-      return true
+      return store.update(state => {
+        const next = state.plugins.filter(plugin => plugin.id !== id)
+        const changed = next.length !== state.plugins.length
+        state.plugins = next
+        return changed
+      })
     },
 
     async load() {
       const packs: Pack[] = []
-      for (const plugin of plugins.filter(entry => entry.enabled)) {
+      for (const plugin of store.read().plugins.filter(entry => entry.enabled)) {
         packs.push(await loadOne(plugin, input.packOptions))
       }
       return packs

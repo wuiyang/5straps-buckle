@@ -6,8 +6,10 @@ import type { ToolEffect } from './effect.js'
 export interface ToolContext {
   requestId: string
   sessionId: string
+  stageId?: string
   timeoutMs: number
   signal: AbortSignal
+  authorizeRead?: (path: string) => Promise<boolean>
 }
 
 export interface ToolDefinition<TInput> {

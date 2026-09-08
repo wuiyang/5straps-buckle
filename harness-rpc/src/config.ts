@@ -26,7 +26,12 @@ export interface BuckleConfig {
   strictWrites: boolean
   sandboxMode: 'auto' | 'none' | 'bubblewrap' | 'seatbelt'
   acknowledgedUnsandboxed: boolean
+  enabledPacks?: string[]
+  historyMaxBytes: number
+  historyRetentionDays: number
   enableShell: boolean
+  shellNetwork: boolean
+  environmentValidator?: string
   allowedHosts: string[]
   braveSearchApiKey?: string
   agentBrowserCommand: string
@@ -79,7 +84,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
     sandboxMode,
     acknowledgedUnsandboxed: sandboxMode === 'none',
+    enabledPacks: environment.BUCKLE_PACKS ? parseList(environment.BUCKLE_PACKS) : undefined,
+    historyMaxBytes: parsePositiveInteger(environment.BUCKLE_HISTORY_MAX_BYTES, 1_073_741_824),
+    historyRetentionDays: parsePositiveInteger(environment.BUCKLE_HISTORY_RETENTION_DAYS, 30),
     enableShell: environment.BUCKLE_ALLOW_SHELL !== 'false',
+    shellNetwork: environment.BUCKLE_SHELL_NETWORK === 'true',
+    environmentValidator: environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined,
     allowedHosts: parseList(environment.BUCKLE_ALLOWED_HOSTS),
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,
     agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND ?? 'agent-browser',

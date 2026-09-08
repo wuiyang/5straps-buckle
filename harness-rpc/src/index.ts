@@ -86,7 +86,7 @@ async function serveHttp(config: BuckleConfig): Promise<void> {
 
 /**
  * Holds a gated call open for the grace period, so an approval can arrive from a prompt here, a
- * `buckle approve` elsewhere, a POST to /v1/approvals, or whatever a webhook reached.
+ * `buckle approve` elsewhere, a POST to /setup/approvals, or whatever a webhook reached.
  */
 function buildServerChannel(input: {
   config: BuckleConfig
@@ -111,7 +111,7 @@ async function serveMcpStdio(config: BuckleConfig): Promise<void> {
     channel: approvals => buildServerChannel({ config, approvals, prompt: false }),
   })
   const version = runtime.manifest().version
-  serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, version }))
+  serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, version, trustedApprovalResponses: true }))
   logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, tools: runtime.registry().capabilities().length })
 }
 

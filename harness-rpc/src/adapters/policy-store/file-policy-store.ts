@@ -20,15 +20,11 @@ export function createFilePolicyStore(input: { filePath: string; workspace: stri
     read: () => store.read().workspaces[input.workspace] ?? null,
 
     write(policy) {
-      const state = store.read()
-      state.workspaces[input.workspace] = policy
-      store.write(state)
+      store.update(state => { state.workspaces[input.workspace] = policy })
     },
 
     clear() {
-      const state = store.read()
-      delete state.workspaces[input.workspace]
-      store.write(state)
+      store.update(state => { delete state.workspaces[input.workspace] })
     },
   }
 }

@@ -19,7 +19,6 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
   const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, grants: [] } })
 
   const load = (): GrantRecord[] => store.read().grants
-  const save = (grants: GrantRecord[]): void => store.write({ version: 1, grants: grants.filter(isPersistable) })
 
   return {
     activeSubjects({ sessionId, rule }) {
@@ -42,33 +41,30 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
         createdAt: new Date().toISOString(),
         expiresAt: null,
       }
-      save([...load().filter(existing => !isSameSubject(existing, record)), record])
+      if (scope === 'once') throw new Error('Once grants belong to the approval registry')
+      store.update(state => { state.grants = [...state.grants.filter(existing => !isSameSubject(existing, record)), record] })
       return record
     },
 
     list: () => load().filter(grant => grant.workspace === input.workspace),
 
     revoke(id) {
-      const grants = load()
-      const next = grants.filter(grant => grant.id !== id)
-      if (next.length === grants.length) return false
-      save(next)
-      return true
+      return store.update(state => {
+        const next = state.grants.filter(grant => grant.id !== id || grant.workspace !== input.workspace)
+        const changed = next.length !== state.grants.length
+        state.grants = next
+        return changed
+      })
     },
 
     endSession(sessionId) {
-      save(load().filter(grant => grant.sessionId !== sessionId))
+      store.update(state => { state.grants = state.grants.filter(grant => grant.workspace !== input.workspace || grant.sessionId !== sessionId) })
     },
   }
 }
 
-/** 'once' never reaches this store, but the filter keeps that invariant true if it ever did. */
-function isPersistable(grant: GrantRecord): boolean {
-  return grant.scope === 'always' || grant.scope === 'session'
-}
-
 function isSameSubject(left: GrantRecord, right: GrantRecord): boolean {
-  return left.workspace === right.workspace && left.rule === right.rule && left.subject === right.subject
+  return left.workspace === right.workspace && left.rule === right.rule && left.subject === right.subject && left.scope === right.scope && left.sessionId === right.sessionId
 }
 
 export function createGrantLookup(store: GrantStore, sessionId: string): { subjectsFor(rule: PermissionRuleId): string[] } {

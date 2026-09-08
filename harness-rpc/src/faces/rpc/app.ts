@@ -1,4 +1,4 @@
-import { ApprovalDecisionSchema, InvokeRequestSchema } from '@5straps/protocol'
+import { InvokeRequestSchema } from '@5straps/protocol'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import type { BuckleConfig } from '../../config.js'
@@ -47,24 +47,6 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
     const sessionId = parsed.data.context?.sessionId ?? ANONYMOUS_SESSION_ID
     const response = await runtime.invoke({ request: parsed.data, sessionId })
     return context.json(response, response.outcome === 'error' ? 422 : 200)
-  })
-
-  app.get('/v1/approvals', context => context.json({ approvals: runtime.approvals.pending() }))
-
-  app.post('/v1/approvals', async context => {
-    const parsed = ApprovalDecisionSchema.safeParse(await context.req.json().catch(() => null))
-    if (!parsed.success) return context.json({ error: 'Invalid approval decision', issues: parsed.error.issues }, 400)
-
-    const result = runtime.approvals.resolve(parsed.data)
-    if (!result.ok) return context.json({ error: result.reason }, 409)
-    return context.json({ resolved: true })
-  })
-
-  app.get('/v1/grants', context => context.json({ grants: runtime.grants.list() }))
-
-  app.delete('/v1/grants/:grantId', context => {
-    if (!runtime.grants.revoke(context.req.param('grantId'))) return context.json({ error: 'Grant not found' }, 404)
-    return context.body(null, 204)
   })
 
   app.onError((error, context) => {

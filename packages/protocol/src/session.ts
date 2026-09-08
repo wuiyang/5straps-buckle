@@ -40,7 +40,5 @@ export const RouteInvocationInputSchema = z.object({
   args: JsonObjectSchema,
   /** Tokens of approvals already granted `once`, replayed so the retry clears the same gates. */
   approvalTokens: z.array(z.string()).default([]),
-  /** A person clicked to run this one call, which passes Rings' own risk gate. Buckle still judges it. */
-  approvedByUser: z.boolean().default(false),
 })
 export type RouteInvocationInput = z.infer<typeof RouteInvocationInputSchema>

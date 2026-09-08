@@ -59,7 +59,7 @@ export function createSensitivePathRule(options: SensitivePathOptions = { protec
       if (isInsideAny(options.protectedRoots, effect.path)) {
         return deny('sensitive_path', effect.path, "Buckle's own state and policy are not reachable from a tool")
       }
-      const reason = classify(effect.path)
+      const reason = sensitivePathReason(effect.path)
       if (!reason) return null
 
       // Matched on the exact path: a granted directory must never unlock a secret inside it.
@@ -69,7 +69,7 @@ export function createSensitivePathRule(options: SensitivePathOptions = { protec
   }
 }
 
-function classify(path: string): string | null {
+export function sensitivePathReason(path: string): string | null {
   const parts = segments(path)
   const name = basename(path).toLowerCase()
 

@@ -1,12 +1,15 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import type { JsonObject } from '@5straps/protocol'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { browserEffects, refusedFlag } from '../src/packs/browser/effects.js'
 import { createPathView } from '../src/domain/path-view.js'
 import { createBrowserPack, type BrowserPackOptions } from '../src/packs/browser/index.js'
-import { resolveBrowserProfile, workspaceProfileKey } from '../src/packs/browser/profile.js'
+import { workspaceStateKey } from '../src/domain/workspace-key.js'
 import type { ProcessRequest, ProcessResult } from '../src/ports/process-runner.js'
 
-const PROFILE = '/state/browser-profiles/work'
+const PROFILE = mkdtempSync('/tmp/buckle-browser-pack-')
+afterAll(() => rmSync(PROFILE, { recursive: true, force: true }))
 
 function stubResult(overrides: Partial<ProcessResult> = {}): ProcessResult {
   return { exitCode: 0, signal: null, stdout: '{"success":true}', stderr: '', truncated: false, timedOut: false, ...overrides }
@@ -18,7 +21,7 @@ async function run(input: JsonObject, options: Partial<BrowserPackOptions> = {},
     cwd: '/work',
     paths: createPathView({ root: '/work', mount: null }),
     agentBrowserCommand: 'agent-browser',
-    profileDirectory: PROFILE,
+    sessionDirectory: PROFILE,
     headed: false,
     available: true,
     runProcess: async request => {
@@ -63,12 +66,13 @@ describe('the arguments the browser pack builds', () => {
   it('lets a per-call flag override the configured default, rather than passing it twice', async () => {
     const { args } = await run({ command: 'open', args: ['https://example.com', '--headed', 'false'] }, { headed: true })
     expect(args.filter(argument => argument === '--headed')).toHaveLength(1)
-    expect(args).toEqual(['open', 'https://example.com', '--headed', 'false', '--json', '--profile', PROFILE])
+    expect(args.slice(0, 5)).toEqual(['open', 'https://example.com', '--headed', 'false', '--json'])
   })
 
   it('passes a session through as a flag, keeping browser state isolated per caller', async () => {
     const { args } = await run({ command: 'open', args: ['https://example.com'], session: 'tester' })
-    expect(args.slice(-2)).toEqual(['--session', 'tester'])
+    expect(args[args.indexOf('--session') + 1]).toMatch(/^buckle-/)
+    expect(args).not.toContain('tester')
   })
 })
 
@@ -79,7 +83,7 @@ describe('how the browser pack reports trouble', () => {
   })
 
   it('names the exit code even when the command said nothing at all', async () => {
-    await expect(run({ command: 'doctor', args: [] }, {}, stubResult({ exitCode: 2, stdout: '' })))
+    await expect(run({ command: 'snapshot', args: [] }, {}, stubResult({ exitCode: 2, stdout: '' })))
       .rejects.toThrow('agent-browser failed (exit 2) with no output')
   })
 
@@ -88,7 +92,7 @@ describe('how the browser pack reports trouble', () => {
       cwd: '/work',
       paths: createPathView({ root: '/work', mount: null }),
       agentBrowserCommand: 'agent-browser',
-      profileDirectory: PROFILE,
+      sessionDirectory: PROFILE,
       headed: false,
       available: false,
       runProcess: async () => stubResult(),
@@ -183,31 +187,17 @@ describe('flags the browser pack refuses outright', () => {
   })
 })
 
-describe('the profile the browser is given', () => {
-  it('passes Buckle\'s own profile on every call, whatever the command', async () => {
+describe('workspace browser isolation', () => {
+  it('uses explicit configuration without a persistent profile', async () => {
     const { args } = await run({ command: 'open', args: ['https://example.com'] })
-    expect(args).toContain('--profile')
-    expect(args[args.indexOf('--profile') + 1]).toBe(PROFILE)
+    expect(args).not.toContain('--profile')
+    expect(args[args.indexOf('--config') + 1]).toBe(join(PROFILE, 'fresh-config.json'))
   })
-
-  it('keeps one profile per workspace, so two workspaces never share a login', () => {
-    const one = resolveBrowserProfile({ stateDirectory: '/state', workspaceRoot: '/work/one', environment: {} })
-    const two = resolveBrowserProfile({ stateDirectory: '/state', workspaceRoot: '/work/two', environment: {} })
-    expect(one).not.toBe(two)
-    expect(one.startsWith('/state/browser-profiles/one-')).toBe(true)
+  it('keeps different workspace state keys separate', () => {
+    expect(workspaceStateKey('/work/one')).not.toBe(workspaceStateKey('/work/two'))
   })
-
   it('names the same workspace the same way every start', () => {
-    expect(workspaceProfileKey('/work/one')).toBe(workspaceProfileKey('/work/one/'))
-  })
-
-  it('lets the owner point at a directory of their own', () => {
-    const profile = resolveBrowserProfile({
-      stateDirectory: '/state',
-      workspaceRoot: '/work/one',
-      environment: { BUCKLE_BROWSER_PROFILE: '/browsers/shared' },
-    })
-    expect(profile).toBe('/browsers/shared')
+    expect(workspaceStateKey('/work/one')).toBe(workspaceStateKey('/work/one/'))
   })
 })
 
@@ -221,7 +211,7 @@ describe('the environment the browser is spawned with', () => {
         cwd: '/work',
         paths: createPathView({ root: '/work', mount: null }),
         agentBrowserCommand: 'agent-browser',
-        profileDirectory: PROFILE,
+        sessionDirectory: PROFILE,
         headed: false,
         available: true,
         runProcess: async request => {
@@ -231,7 +221,7 @@ describe('the environment the browser is spawned with', () => {
       })
       const tool = pack.tools[0]
       if (!tool) throw new Error('the browser pack registered no tool')
-      await tool.prepare({ command: 'session', args: [] }).execute({
+      await tool.prepare({ command: 'snapshot', args: [] }).execute({
         requestId: 'r1',
         sessionId: 's1',
         timeoutMs: 1000,
@@ -244,9 +234,9 @@ describe('the environment the browser is spawned with', () => {
     }
   }
 
-  it('forwards agent-browser settings, which the allowlist would otherwise strip', async () => {
+  it('withholds ambient browser settings so fresh isolation cannot be overridden', async () => {
     const environment = await environmentFor({ AGENT_BROWSER_SCREENSHOT_DIR: 'C:/shots' })
-    expect(environment.AGENT_BROWSER_SCREENSHOT_DIR).toBe('C:/shots')
+    expect(environment.AGENT_BROWSER_SCREENSHOT_DIR).toBeUndefined()
   })
 
   it('still withholds Buckle\'s own token from the browser', async () => {

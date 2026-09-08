@@ -1,4 +1,7 @@
-import type { DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId } from '@5straps/protocol'
+import { existsSync, realpathSync } from 'node:fs'
+import { dirname } from 'node:path'
+import type { ChangeHistory } from './history/journal.js'
+import type { DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { summarizeEffect, type ResolvedEffect } from '../domain/effect.js'
 import type { PathView } from '../domain/path-view.js'
 import type { PermissionEngine } from '../domain/permission/engine.js'
@@ -20,6 +23,8 @@ export interface InvokerOptions {
   approvals: ApprovalRegistry
   grants: GrantStore
   channel: ApprovalChannel
+  history?: ChangeHistory
+  historyRoots?: string[]
   actions: ActionLog
   reporter: Reporter
   paths: PathView
@@ -56,7 +61,13 @@ export function createInvoker(options: InvokerOptions): Invoker {
           gate = await clearPermissions({ options, request, sessionId, effects })
           if (gate.response) return gate.response
 
-          const output = await executeWithTimeout({ options, request, sessionId, execute: prepared.execute })
+          const execute = () => executeWithTimeout({ options, request, sessionId, execute: prepared.execute })
+          const writes = effects.filter(effect => effect.kind === 'write_path')
+          const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
+          const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
+          const output = options.history && tracksChanges
+            ? await options.history.run({ sessionId, stageId: request.context?.stageId ?? request.context?.runId ?? request.requestId, tool: request.tool, roots: [...new Set(roots)] }, execute)
+            : await execute()
           return {
             requestId: request.requestId,
             outcome: 'ok',
@@ -151,11 +162,15 @@ async function clearPermissions(input: {
   effects: ResolvedEffect[]
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects } = input
-  const consumed = options.approvals.consume(request.approvalTokens)
-  const approvedBy = consumed.map(subject => `${subject.rule}:${subject.subject}`)
-  const lookup = buildLookup({ grants: options.grants, sessionId, consumed })
-
-  const outcome = options.permissions.evaluate({ tool: request.tool, effects, grants: lookup })
+  const approvedBy: string[] = []
+  const evaluate = (tokens: string[]) => options.approvals.evaluate({
+    tokens, sessionId, tool: request.tool,
+    check: subjects => {
+      approvedBy.push(...subjects.map(subject => `${subject.rule}:${subject.subject}`))
+      return options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: subjects }) })
+    },
+  })
+  const outcome = evaluate(request.approvalTokens)
   if (outcome.kind === 'allow') return { response: null, asked: [], approvedBy: [...approvedBy, ...outcome.allowedBy] }
   if (outcome.kind === 'deny') {
     return {
@@ -178,13 +193,8 @@ async function clearPermissions(input: {
     if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
   }
 
-  const granted = options.approvals.consume(approvals.map(approval => approval.token))
-  const rechecked = options.permissions.evaluate({
-    tool: request.tool,
-    effects,
-    grants: buildLookup({ grants: options.grants, sessionId, consumed: [...consumed, ...granted] }),
-  })
-  const resolvedBy = [...approvedBy, ...granted.map(subject => `${subject.rule}:${subject.subject}`)]
+  const rechecked = evaluate([...request.approvalTokens, ...approvals.map(approval => approval.token)])
+  const resolvedBy = [...new Set(approvedBy)]
   if (rechecked.kind === 'allow') {
     return { response: null, asked, approvedBy: [...new Set([...resolvedBy, ...rechecked.allowedBy])] }
   }
@@ -213,7 +223,7 @@ function denied(request: InvokeRequest, message: string): InvokeResponse {
 function buildLookup(input: {
   grants: GrantStore
   sessionId: string
-  consumed: ReturnType<ApprovalRegistry['consume']>
+  consumed: GrantSubject[]
 }): GrantLookup {
   return {
     subjectsFor: rule => [
@@ -236,8 +246,16 @@ async function executeWithTimeout(input: {
     return await input.execute({
       requestId: input.request.requestId,
       sessionId: input.sessionId,
+      stageId: input.request.context?.stageId ?? input.request.context?.runId,
       timeoutMs,
       signal: controller.signal,
+      authorizeRead: async path => {
+        const effects = await resolveEffects({ effects: [{ kind: 'read_path', path }], paths: input.options.paths })
+        return input.options.permissions.evaluate({
+          tool: input.request.tool, effects,
+          grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: [] }),
+        }).kind === 'allow'
+      },
     })
   } finally {
     clearTimeout(timer)

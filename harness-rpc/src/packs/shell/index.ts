@@ -1,9 +1,11 @@
+import { collectShellHiddenPaths } from '../../services/shell-filesystem.js'
+import { isInsideAny } from '../../domain/paths.js'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../domain/environment.js'
 import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
-import { defineTool } from '../../domain/tool.js'
+import { defineTool, ToolInputError } from '../../domain/tool.js'
 import type { ProcessRunner, ProcessResult } from '../../ports/process-runner.js'
 import type { Sandbox } from '../../ports/sandbox.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -21,7 +23,7 @@ const execInput = z.object({
   args: z.array(z.string().max(100_000)).max(1_000).default([]),
   cwd: z.string().default('.'),
   env: z.record(z.string(), z.string()).default({}),
-  allowNetwork: z.boolean().default(true),
+  allowNetwork: z.boolean().default(false),
 })
 
 const scriptInput = z.object({
@@ -29,7 +31,7 @@ const scriptInput = z.object({
   script: z.string().min(1).max(1_048_576),
   cwd: z.string().default('.'),
   env: z.record(z.string(), z.string()).default({}),
-  allowNetwork: z.boolean().default(true),
+  allowNetwork: z.boolean().default(false),
 })
 
 export interface ShellPackOptions {
@@ -37,6 +39,7 @@ export interface ShellPackOptions {
   runProcess: ProcessRunner
   sandbox: Sandbox
   writableRoots: string[]
+  allowNetwork?: boolean
   /** Host paths no command may see, Buckle's own state above all. */
   hiddenPaths: string[]
   /** Host directories a mounted command may still read. */
@@ -56,14 +59,21 @@ export function createShellPack(options: ShellPackOptions): Pack {
     signal: AbortSignal
   }): Promise<JsonValue> => {
     const cwd = options.paths.resolve(input.cwd)
+    if (!isInsideAny(options.writableRoots, cwd)) throw new ToolInputError('Shell working directory must be in the workspace or an owner-configured writable root', { code: 'PERMISSION_DENIED' })
+    if (input.allowNetwork && !options.allowNetwork) throw new ToolInputError('Shell networking is disabled by the owner; use the web tools for scoped network access', { code: 'PERMISSION_DENIED' })
+    const hidden = options.sandbox.mode === 'none' ? { directories: options.hiddenPaths, files: [] } : await collectShellHiddenPaths({
+      roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths], protectedPaths: options.hiddenPaths, signal: input.signal,
+    })
     const wrapped = options.sandbox.wrap({
       command: input.command,
       args: input.args,
       cwd,
-      writableRoots: options.writableRoots,
+      writableRoots: [cwd, ...options.paths.scratchRoots],
+      workspaceRoot: options.paths.root,
       allowNetwork: input.allowNetwork,
       mount: options.paths.mount ? { root: options.paths.root, at: options.paths.mount } : null,
-      hiddenPaths: options.hiddenPaths,
+      hiddenPaths: hidden.directories,
+      hiddenFiles: hidden.files,
       readOnlyPaths: options.readOnlyPaths,
     })
     return toJson(await options.runProcess({

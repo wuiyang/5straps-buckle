@@ -28,6 +28,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   if (command === 'skills') return printSkills(runtime, rest)
   if (command === 'approve') return approve(runtime, rest)
   if (command === 'grants') return grants(runtime, rest)
+  if (command === 'history') return historyCommand(runtime, rest)
   if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
   if (command === 'policy') return policyCommand(runtime, rest)
@@ -55,6 +56,7 @@ function printUsage(): CliResult {
 
   buckle approve <token> [--scope once|session|always]
   buckle grants list | revoke <id>
+  buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune
   buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
   buckle policy show | allow-command | deny-command | allow-url | mount | migrate | ...
@@ -206,7 +208,7 @@ const CLI_SESSION_ID = 'cli'
 
 async function invoke(runtime: BuckleRuntime, tool: string, args: unknown): Promise<CliResult> {
   const response = await runtime.invoke({
-    request: { requestId: randomUUID(), tool, args: args as Record<string, never>, approvalTokens: [] },
+    request: { requestId: randomUUID(), tool, args: args as Record<string, never>, approvalTokens: [], context: { stageId: process.env.BUCKLE_STAGE_ID } },
     sessionId: CLI_SESSION_ID,
   })
   return reportResponse(response)
@@ -240,4 +242,14 @@ function print(value: unknown): CliResult {
 function fail(message: string): CliResult {
   process.stderr.write(`${message}\n`)
   return { exitCode: 1 }
+}
+
+async function historyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
+  const [command = 'list', id] = argv
+  if (command === 'list') return print(runtime.history.list())
+  if (command === 'prune') return print(await runtime.history.prune())
+  if (command === 'restore-stage' && id && argv[2]) return print(await runtime.history.restoreStage(id, argv[2]))
+  if (command === 'restore' && id) return print(await runtime.history.restore(id))
+  if (command === 'recover' && id) return print(await runtime.history.recover(id))
+  return fail('Usage: buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune')
 }

@@ -1,3 +1,6 @@
+import { join, dirname } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { createChangeHistory, type ChangeHistory } from './services/history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
 import { PROTOCOL_VERSION, type HarnessManifest, type InvokeRequest, type InvokeResponse, type WorkspacePolicy } from '@5straps/protocol'
@@ -23,7 +26,7 @@ import { compilePolicy, mergePolicies, type CompiledPolicy } from './domain/poli
 import { loadSkills } from './domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from './domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from './domain/tool-registry.js'
-import { resolveBrowserProfile } from './packs/browser/profile.js'
+import { workspaceStateKey } from './domain/workspace-key.js'
 import { createBuiltinPacks } from './packs/index.js'
 import { loadRootSkill } from './packs/pack-skill.js'
 import type { ActionLog } from './ports/action-log.js'
@@ -58,6 +61,7 @@ export interface BuckleRuntime {
   policy: PolicyHandle
   grants: GrantStore
   approvals: ApprovalRegistry
+  history: ChangeHistory
   actions: ActionLog
   plugins: PluginRegistry
   reporter: Reporter
@@ -76,8 +80,9 @@ export async function createRuntime(input: {
   const { config } = input
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true })
-  const browserProfile = resolveBrowserProfile({ stateDirectory: config.stateDirectory, workspaceRoot: config.cwd })
-  mkdirSync(browserProfile, { recursive: true })
+  const history = createChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: [config.stateDirectory], maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays })
+  const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
+  mkdirSync(browserStateDirectory, { recursive: true })
 
   const sandbox = resolveSandbox({
     requested: config.sandboxMode,
@@ -85,7 +90,7 @@ export async function createRuntime(input: {
   })
 
   const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
-  const approvals = createApprovalRegistry(grants, approvalsPath(config))
+  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd)
   const actions = createFileActionLog(actionsPath(config))
   const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
@@ -103,7 +108,7 @@ export async function createRuntime(input: {
   let compiled = compileEffective()
   let paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
   let permissions = buildPermissionEngine({ config, compiled, paths })
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserProfile })
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory })
   let registry = createToolRegistry(availableTools(packs))
 
   const runtime: BuckleRuntime = {
@@ -114,6 +119,7 @@ export async function createRuntime(input: {
     grants,
     approvals,
     actions,
+    history,
     plugins,
     reporter,
 
@@ -141,6 +147,8 @@ export async function createRuntime(input: {
       approvals,
       grants,
       actions,
+      history,
+      historyRoots: [realpathSync(config.cwd), ...config.scratchRoots.map(root => { let existing = root; while (!existsSync(existing)) existing = dirname(existing); return realpathSync(existing) })],
       reporter,
       paths,
       serverId: config.serverId,
@@ -153,7 +161,7 @@ export async function createRuntime(input: {
       compiled = compileEffective()
       paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
       permissions = buildPermissionEngine({ config, compiled, paths })
-      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserProfile })
+      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory })
       registry = createToolRegistry(availableTools(packs))
       for (const listener of listeners) listener()
     },
@@ -178,7 +186,7 @@ async function buildPacks(input: {
   plugins: PluginRegistry
   compiled: CompiledPolicy
   paths: PathView
-  browserProfile: string
+  browserStateDirectory: string
 }): Promise<Pack[]> {
   const builtin = createBuiltinPacks({
     cwd: input.config.cwd,
@@ -193,10 +201,18 @@ async function buildPacks(input: {
     braveSearchApiKey: input.config.braveSearchApiKey,
     allowedHosts: input.config.allowedHosts,
     agentBrowserCommand: input.config.agentBrowserCommand,
-    browserProfile: input.browserProfile,
+    browserStateDirectory: input.browserStateDirectory,
     browserHeaded: input.config.browserHeaded,
     enableShell: input.config.enableShell,
+    shellNetwork: input.config.shellNetwork,
+    environmentValidator: input.config.environmentValidator,
   })
+  const selected = input.config.enabledPacks
+  if (selected) {
+    const unknown = selected.filter(id => !builtin.some(pack => pack.id === id))
+    if (unknown.length) throw new Error(`Unknown BUCKLE_PACKS: ${unknown.join(', ')}`)
+    return builtin.filter(pack => selected.includes(pack.id))
+  }
   return [...builtin, ...await input.plugins.load()]
 }
 
