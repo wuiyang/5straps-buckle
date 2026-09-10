@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { createJsonFileStore } from '../src/adapters/json-file-store.js'
 import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
+import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -24,7 +25,7 @@ describe('cross-process state updates', () => {
     `)
     await Promise.all(Array.from({ length: 4 }, () => promisify(execFile)(process.execPath, ['--import', import.meta.resolve('tsx'), script, filePath])))
     expect(JSON.parse(readFileSync(filePath, 'utf8'))).toEqual({ count: 80 })
-  }, 20_000)
+  }, SPAWN_TEST_TIMEOUT_MS)
 
   it('fails closed on corrupt state instead of resetting policy', () => {
     const filePath = join(directory(), 'policy.json')

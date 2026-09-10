@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createChangeHistory } from '../src/services/history/journal.js'
+import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
 const roots: string[] = []
 afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -133,7 +134,7 @@ describe('Git-independent file history', () => {
     await history.recover(history.list()[0]!.id)
     await history.restore(history.list()[0]!.id)
     expect(existsSync(join(workspace, 'partial'))).toBe(false)
-  })
+  }, SPAWN_TEST_TIMEOUT_MS)
 })
 
 it('counts checkpoint metadata toward the history disk budget', async () => {
