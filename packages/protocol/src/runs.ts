@@ -2,10 +2,12 @@ import { z } from 'zod'
 import { JsonValueSchema } from './json.js'
 
 /**
- * `waiting_approval` is a run held inside a turn until a person answers a node's prompt. It
- * holds no lease, so no worker is running it and no later turn in the chat may overtake it.
+ * `waiting_approval` is a run held inside a turn until a person answers a node's prompt.
+ * `waiting_child` is a run held until the subagent runs it spawned reach a resting status.
+ * Both hold no lease, so no worker is running them and no later turn in the chat may overtake
+ * them.
  */
-export const AgentRunStatusSchema = z.enum(['queued', 'running', 'waiting_approval', 'succeeded', 'failed', 'cancelled', 'interrupted'])
+export const AgentRunStatusSchema = z.enum(['queued', 'running', 'waiting_approval', 'waiting_child', 'succeeded', 'failed', 'cancelled', 'interrupted'])
 export const AgentRunSchema = z.object({
   id: z.string(), chatId: z.string(), input: z.string(), status: AgentRunStatusSchema,
   generation: z.number().int().nonnegative(), workerId: z.string().nullable(), leaseUntil: z.number().nullable(),
@@ -13,6 +15,7 @@ export const AgentRunSchema = z.object({
 })
 export type AgentRun = z.infer<typeof AgentRunSchema>
 
+/** `child_run` is one spawned subagent, held on the parent until that child's run rests. */
 export const RunStepKindSchema = z.enum(['approval_wait', 'child_run', 'model', 'tool'])
 
 /**

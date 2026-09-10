@@ -19,6 +19,17 @@ export const BindingContractSchema = z.object({
 })
 export type BindingContract = z.infer<typeof BindingContractSchema>
 
+/**
+ * A request to change a binding, feature by feature and resource by resource. It is applied by
+ * AND, so what it names can only be turned off; what it asks to turn on is a question for the
+ * owner rather than a change.
+ */
+export const BindingPatchSchema = z.object({
+  features: z.partialRecord(SessionFeatureSchema, z.boolean()).optional(),
+  resources: z.record(z.string(), z.boolean()).optional(),
+})
+export type BindingPatch = z.infer<typeof BindingPatchSchema>
+
 export function harnessToolResourceId(serverId: string, tool: string): string {
   return `harness:${serverId}:tool:${tool}`
 }
