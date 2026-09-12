@@ -1,0 +1,142 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
+import { serveStdio, type ServeStdioOptions } from '@modelcontextprotocol/server/stdio'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../src/config.js'
+import { createStdioWire } from '../src/faces/mcp/stdio-wire.js'
+import { createAuditedStdioTransport } from '../src/faces/mcp/audited-stdio-transport.js'
+import { createMcpServer } from '../src/faces/mcp/server.js'
+import type { ActionLog, ActionLogEntry } from '../src/ports/action-log.js'
+import { createRuntime } from '../src/runtime.js'
+
+type Transport = NonNullable<ServeStdioOptions['transport']>
+type Message = Parameters<Transport['send']>[0]
+const cleanup: Array<() => unknown | Promise<unknown>> = []
+afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); vi.restoreAllMocks() })
+
+async function sdkFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-mcp-audit-'))
+  cleanup.push(() => rmSync(root, { recursive: true, force: true }))
+  writeFileSync(join(root, 'private-filename-fixture.txt'), 'private-output-fixture')
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' })
+  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const invoke = vi.spyOn(runtime, 'invoke')
+  const stdin = new PassThrough()
+  const stdout = new PassThrough()
+  const replies: Record<string, unknown>[] = []
+  stdout.on('data', (chunk: Buffer) => {
+    for (const line of chunk.toString('utf8').trim().split('\n')) replies.push(JSON.parse(line) as Record<string, unknown>)
+  })
+  const transport = createAuditedStdioTransport({ transport: createStdioWire({ stdin, stdout, maxBufferBytes: 1_048_576 }), actions: runtime.actions, workspaceId: 'default', isKnownTool: name => runtime.registry().has(name) })
+  const handle = serveStdio(() => createMcpServer({ runtime, serverName: 'audit-test', version: '0.0.0' }), { transport })
+  cleanup.push(async () => { await handle.close(); stdin.destroy(); stdout.destroy() })
+  const call = async (id: string | number, method: string, params: Record<string, unknown>) => {
+    stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+    await vi.waitFor(() => expect(replies.some(reply => reply['id'] === id)).toBe(true))
+    return replies.find(reply => reply['id'] === id)!
+  }
+  await call(0, 'initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'audit-test', version: '0.0.0' } })
+  stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
+  return { runtime, invoke, call, stdin, replies, entries: () => runtime.actions.read(100) }
+}
+
+describe('stdio audit before MCP SDK validation', () => {
+  it('records schema and unknown-tool rejections without invoking tools or exposing request payloads', async () => {
+    const fixture = await sdkFixture()
+    await fixture.call('private-request-id-fixture', 'tools/call', { name: 'fs_read', arguments: { path: 42, secret: 'private-arg-fixture' } })
+    await fixture.call(2, 'tools/call', { name: 'private-unknown-tool-fixture', arguments: { secret: 'private-arg-fixture' } })
+    expect(fixture.invoke).not.toHaveBeenCalled()
+    const entries = fixture.entries().filter(entry => entry.tool === 'mcp_stdio_tools_call')
+    expect(entries.map(entry => entry.event)).toEqual(['attempt', 'result', 'attempt', 'result'])
+    expect(entries.filter(entry => entry.event === 'result').every(entry => entry.outcome === 'error')).toBe(true)
+    expect(entries[0]?.auditId).toBe(entries[1]?.auditId)
+    expect(entries[2]?.auditId).toBe(entries[3]?.auditId)
+    expect(entries[0]?.auditId).not.toBe(entries[2]?.auditId)
+    for (const secret of ['private-request-id-fixture', 'private-arg-fixture', 'private-unknown-tool-fixture']) expect(JSON.stringify(entries)).not.toContain(secret)
+  })
+
+  it('keeps correlated transport and semantic audit records for a valid call without output contents', async () => {
+    const fixture = await sdkFixture()
+    await fixture.call(1, 'tools/call', { name: 'fs_read', arguments: { path: 'private-filename-fixture.txt' } })
+    expect(fixture.invoke).toHaveBeenCalledOnce()
+    const entries = fixture.entries()
+    const transport = entries.filter(entry => entry.tool === 'mcp_stdio_tools_call')
+    const semantic = entries.filter(entry => entry.tool === 'fs_read')
+    expect(transport.map(entry => entry.outcome)).toEqual(['started', 'ok'])
+    expect(semantic.map(entry => entry.outcome)).toEqual(['started', 'ok'])
+    expect(transport[0]?.auditId).toBe(transport[1]?.auditId)
+    expect(transport[0]?.auditId).not.toBe(semantic[0]?.auditId)
+    expect(JSON.stringify(entries)).not.toContain('private-filename-fixture')
+    expect(JSON.stringify(entries)).not.toContain('private-output-fixture')
+  })
+
+  it('records malformed framing generically and never retains parser error text', async () => {
+    const fixture = await sdkFixture()
+    fixture.stdin.write('{"private-parser-fixture": invalid}\n')
+    await vi.waitFor(() => expect(fixture.entries().some(entry => entry.tool === 'mcp_stdio_transport_error' && entry.event === 'result')).toBe(true))
+    expect(fixture.invoke).not.toHaveBeenCalled()
+    expect(JSON.stringify(fixture.entries())).not.toContain('private-parser-fixture')
+  })
+})
+
+function fakeFixture(record?: (entry: ActionLogEntry) => void) {
+  const entries: ActionLogEntry[] = []
+  const actions: ActionLog = { record: entry => { record?.(entry); entries.push(entry) }, recoverInterrupted: async () => 0, read: () => entries, page: () => ({ entries, nextCursor: null }) }
+  const wire: Transport = { start: vi.fn(async () => undefined), close: vi.fn(async () => { wire.onclose?.() }), send: vi.fn(async () => undefined) }
+  const transport = createAuditedStdioTransport({ transport: wire, actions, workspaceId: 'default', isKnownTool: name => name === 'fs_read' })
+  const forwarded = vi.fn()
+  transport.onmessage = forwarded
+  const request = (id: string | number): Message => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'fs_read', arguments: { path: 'never-record-this' } } })
+  return { wire, transport, forwarded, entries, request }
+}
+
+describe('stdio audit failure and correlation bounds', () => {
+  it('closes before dispatch if an attempt cannot be durably recorded', () => {
+    const fixture = fakeFixture(() => { throw new Error('fixture failure') })
+    fixture.wire.onmessage?.(fixture.request(1))
+    expect(fixture.forwarded).not.toHaveBeenCalled()
+    expect(fixture.wire.close).toHaveBeenCalledOnce()
+    fixture.wire.onmessage?.(fixture.request(2))
+    expect(fixture.forwarded).not.toHaveBeenCalled()
+  })
+
+  it('withholds a response and closes if the terminal audit write fails', async () => {
+    const fixture = fakeFixture(entry => { if (entry.event === 'result') throw new Error('fixture failure') })
+    fixture.wire.onmessage?.(fixture.request(1))
+    await expect(fixture.transport.send({ jsonrpc: '2.0', id: 1, result: { content: [] } })).rejects.toThrow('audit persistence failed')
+    expect(fixture.wire.send).not.toHaveBeenCalled()
+    expect(fixture.wire.close).toHaveBeenCalledOnce()
+  })
+
+  it('correlates overlapping request replies even when responses arrive out of order', async () => {
+    const fixture = fakeFixture()
+    fixture.wire.onmessage?.(fixture.request(1))
+    fixture.wire.onmessage?.(fixture.request(2))
+    await fixture.transport.send({ jsonrpc: '2.0', id: 2, error: { code: -32602, message: 'private-server-error-fixture' } })
+    await fixture.transport.send({ jsonrpc: '2.0', id: 1, result: { content: [] } })
+    expect(fixture.entries[0]?.auditId).toBe(fixture.entries[3]?.auditId)
+    expect(fixture.entries[1]?.auditId).toBe(fixture.entries[2]?.auditId)
+    expect(JSON.stringify(fixture.entries)).not.toContain('private-server-error-fixture')
+  })
+
+  it('rejects duplicate in-flight identifiers and marks the earlier request interrupted', () => {
+    const fixture = fakeFixture()
+    fixture.wire.onmessage?.(fixture.request(1))
+    fixture.wire.onmessage?.(fixture.request(1))
+    expect(fixture.forwarded).toHaveBeenCalledOnce()
+    expect(fixture.entries.map(entry => entry.outcome)).toEqual(['started', 'started', 'denied', 'interrupted'])
+  })
+
+  it('bounds pending requests and rejects tool notifications without an identifier', () => {
+    const fixture = fakeFixture()
+    fixture.wire.onmessage?.({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'fs_read' } })
+    expect(fixture.forwarded).not.toHaveBeenCalled()
+    for (let id = 0; id <= 256; id += 1) fixture.wire.onmessage?.(fixture.request(id))
+    expect(fixture.forwarded).toHaveBeenCalledTimes(256)
+    expect(fixture.wire.close).toHaveBeenCalledOnce()
+    expect(fixture.entries.filter(entry => entry.outcome === 'interrupted')).toHaveLength(256)
+  })
+})

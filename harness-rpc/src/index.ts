@@ -5,6 +5,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { parseEnv } from 'node:util'
 import { serve } from '@hono/node-server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
+import { createStdioWire } from './faces/mcp/stdio-wire.js'
+import { createAuditedStdioTransport } from './faces/mcp/audited-stdio-transport.js'
 import { createCliApprovalChannel } from './adapters/approval/cli-approval-channel.js'
 import { createWaitingApprovalChannel } from './adapters/approval/waiting-approval-channel.js'
 import { createWebhookNotifier } from './adapters/approval/webhook-notifier.js'
@@ -113,7 +115,11 @@ async function serveMcpStdio(config: BuckleConfig): Promise<void> {
     channel: approvals => buildServerChannel({ config, approvals, prompt: false }),
   })
   const version = runtime.manifest().version
-  serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, version, trustedApprovalResponses: true }))
+  const transport = createAuditedStdioTransport({
+    transport: createStdioWire({ stdin: process.stdin, stdout: process.stdout, maxBufferBytes: config.maxRequestBytes }),
+    actions: runtime.actions, workspaceId: runtime.workspaceId, isKnownTool: name => runtime.registry().has(name),
+  })
+  serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, version, trustedApprovalResponses: true }), { transport })
   logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, tools: runtime.registry().capabilities().length })
 }
 
