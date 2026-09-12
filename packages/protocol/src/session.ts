@@ -54,3 +54,6 @@ export const SessionPatchSchema = z.object({
   archived: z.boolean().optional(),
 })
 export type SessionPatch = z.infer<typeof SessionPatchSchema>
+
+export const AgentSettingsPatchSchema = SessionPatchSchema.pick({ model: true, reasoningEffort: true }).strict()
+export type AgentSettingsPatch = z.infer<typeof AgentSettingsPatchSchema>
