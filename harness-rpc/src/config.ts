@@ -53,6 +53,7 @@ export interface BuckleConfig {
   reportToken?: string
   skillDirectories: string[]
   stateDirectory: string
+  nodeStateDirectory?: string
   maxRequestBytes: number
   defaultTimeoutMs: number
   maxTimeoutMs: number

@@ -5,6 +5,7 @@ import type { BuckleRuntime } from '../runtime.js'
 import { createMcpServer } from './mcp/server.js'
 import { createRpcApp } from './rpc/app.js'
 import { requireBearerToken } from './rpc/auth.js'
+import { createWorkspaceApp } from './workspace-app.js'
 import { createSetupApp } from './setup/app.js'
 
 /**
@@ -19,6 +20,7 @@ export function createHttpApp(input: {
 }): Hono {
   const { config, runtime, authToken } = input
   const app = new Hono()
+  app.route('/', createWorkspaceApp({ config, runtime }))
   app.route('/', createRpcApp({ config, runtime, authToken }))
 
   const mcpHandler = createMcpHandler(() => createMcpServer({

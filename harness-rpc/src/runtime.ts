@@ -82,8 +82,8 @@ export async function createRuntime(input: {
 }): Promise<BuckleRuntime> {
   const { config } = input
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
-  mkdirSync(config.stateDirectory, { recursive: true })
-  const history = createChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: [config.stateDirectory], maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays })
+  mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
+  const history = createChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: [config.nodeStateDirectory ?? config.stateDirectory], maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays })
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
 
@@ -201,7 +201,7 @@ async function buildPacks(input: {
     sandbox: input.sandbox.sandbox,
     sandboxUnavailableReason: input.sandbox.unavailableReason,
     writableRoots: [input.config.cwd, ...input.config.scratchRoots],
-    hiddenPaths: [input.config.stateDirectory],
+    hiddenPaths: [input.config.nodeStateDirectory ?? input.config.stateDirectory],
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
     approvedUrls: input.compiled.network,
     braveSearchApiKey: input.config.braveSearchApiKey,
@@ -232,7 +232,7 @@ async function buildPacks(input: {
 function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; paths: PathView }): PermissionEngine {
   const { config, compiled, paths } = input
   return createPermissionEngine([
-    createSensitivePathRule({ protectedRoots: [config.stateDirectory] }),
+    createSensitivePathRule({ protectedRoots: [config.nodeStateDirectory ?? config.stateDirectory] }),
     createCommandPolicyRule(compiled),
     createDestructiveCommandRule({ added: compiled.commands.destructive }),
     createNetworkEgressRule({ approved: compiled.network }),
