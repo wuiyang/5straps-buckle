@@ -50,7 +50,7 @@ describe('a refused call', () => {
       rule: 'network_egress',
       subject: 'file:',
     })
-    expect(reports[0]?.effects[0]).toContain('file:///etc/passwd')
+    expect(reports[0]?.effects).toEqual(['network'])
   })
 })
 

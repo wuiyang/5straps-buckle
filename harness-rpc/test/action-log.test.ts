@@ -54,6 +54,8 @@ describe('the file action log', () => {
     writeFileSync(path, `${readFileSync(path, 'utf8')}{"requestId":"r2","tru`)
 
     expect(log.read(10).map(item => item.requestId)).toEqual(['r1'])
+    log.record(entry({ requestId: 'r3' }))
+    expect(log.read(10).map(item => item.requestId)).toEqual(['r1', 'r3'])
   })
 
   it('records a refusal as fully as a success, so a denial leaves evidence', () => {

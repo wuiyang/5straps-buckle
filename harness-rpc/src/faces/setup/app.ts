@@ -3,6 +3,7 @@ import { ApprovalDecisionSchema, WorkspacePolicySchema } from '@5straps/protocol
 import { Hono, type Context } from 'hono'
 import type { BuckleConfig } from '../../config.js'
 import { isRestrictive, PolicyError } from '../../domain/policy.js'
+import { redactAuditArguments } from '../../domain/redact.js'
 import { logger } from '../../logger.js'
 import type { BuckleRuntime } from '../../runtime.js'
 import { requireBearerToken } from '../rpc/auth.js'
@@ -26,7 +27,11 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
   app.get('/audit', context => {
     const parsed = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50), before: z.coerce.number().int().nonnegative().optional() }).safeParse(context.req.query())
     if (!parsed.success) return context.json({ error: 'Invalid audit page' }, 400)
-    return context.json(runtime.actions.page(parsed.data))
+    const page = runtime.actions.page(parsed.data)
+    return context.json({ ...page, entries: page.entries.map(entry => entry.event ? entry : {
+      at: entry.at, requestId: entry.requestId, sessionId: entry.sessionId, tool: entry.tool,
+      outcome: entry.outcome, durationMs: entry.durationMs, effects: ['legacy details withheld'], args: redactAuditArguments(entry.args),
+    }) })
   })
   app.get('/history', context => context.json({ checkpoints: runtime.history.list() }))
   app.post('/history/:id/restore', async context => historyResponse(context, () => runtime.history.restore(context.req.param('id'))))

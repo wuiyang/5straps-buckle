@@ -1,4 +1,4 @@
-import { closeSync, fsyncSync, fstatSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, fchmodSync, fstatSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { logger } from '../../logger.js'
@@ -16,12 +16,21 @@ export function createFileActionLog(filePath: string): ActionLog {
     record(entry) {
       try {
         mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
-        const descriptor = openSync(filePath, 'a', 0o600)
+        const descriptor = openSync(filePath, 'a+', 0o600)
         try {
-          const data = Buffer.from(`${JSON.stringify(entry)}\n`)
+          fchmodSync(descriptor, 0o600)
+          const size = fstatSync(descriptor).size
+          const tail = Buffer.alloc(1)
+          if (size > 0) readSync(descriptor, tail, 0, 1, size - 1)
+          const prefix = size > 0 && tail[0] !== 10 ? '\n' : ''
+          const data = Buffer.from(`${prefix}${JSON.stringify(entry)}\n`)
           if (data.length > 65_536) throw new Error('Audit entry exceeds the size limit')
           if (writeSync(descriptor, data) !== data.length) throw new Error('Incomplete audit write')
           fsyncSync(descriptor)
+          if (process.platform !== 'win32') {
+            const directory = openSync(dirname(filePath), 'r')
+            try { fsyncSync(directory) } finally { closeSync(directory) }
+          }
         } finally { closeSync(descriptor) }
       } catch (error) {
         logger.error('Could not durably write the action log', { filePath })
