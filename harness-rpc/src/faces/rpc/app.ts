@@ -51,6 +51,12 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
     skills: runtime.skills().map(skill => ({ ...toDescriptor(skill), content: skill.content })),
   }))
 
+  app.get('/v1/skills/:id', context => {
+    const skill = runtime.skills().find(item => item.id === context.req.param('id'))
+    if (!skill) return context.json({ error: 'Skill not found' }, 404)
+    return context.json({ skill: { ...toDescriptor(skill), content: skill.content } })
+  })
+
   app.post('/v1/invoke', async context => {
     const parsed = InvokeRequestSchema.safeParse(await context.req.json().catch(() => null))
     if (!parsed.success) return context.json({ error: 'Invalid invoke request', issues: parsed.error.issues }, 400)
