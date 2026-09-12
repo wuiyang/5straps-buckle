@@ -12,6 +12,7 @@ export const HarnessServerInputSchema = z.object({
 export type HarnessServerInput = z.infer<typeof HarnessServerInputSchema>
 
 export const CreateSessionInputSchema = z.object({
+  clientRequestId: z.string().uuid().optional(),
   projectId: z.string().min(1).optional(),
   maxActiveChildren: z.number().int().min(0).max(32).optional(),
   title: z.string().min(1).max(200),
