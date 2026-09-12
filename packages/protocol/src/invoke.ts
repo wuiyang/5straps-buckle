@@ -3,6 +3,9 @@ import { ApprovalRequestSchema } from './approval.js'
 import { JsonObjectSchema, JsonValueSchema } from './json.js'
 
 export const InvokeContextSchema = z.object({
+  projectId: z.string().min(1).max(200).optional(),
+  actorId: z.string().min(1).max(200).optional(),
+  agentId: z.string().min(1).max(200).optional(),
   sessionId: z.string().optional(),
   chatId: z.string().optional(),
   runId: z.string().optional(),

@@ -1,25 +1,32 @@
+import { randomUUID } from 'node:crypto'
+import { createPendingAudit } from './pending-audit.js'
 import { closeSync, fsyncSync, fchmodSync, fstatSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { logger } from '../../logger.js'
 import type { ActionLog, ActionLogEntry } from '../../ports/action-log.js'
 
+const PROCESS_INSTANCE_ID = randomUUID()
 const MAX_PAGE_BYTES = 1_048_576
 const entrySchema = z.object({
   at: z.string(), requestId: z.string(), sessionId: z.string(), tool: z.string(),
-  outcome: z.enum(['started', 'ok', 'error', 'denied', 'approval_required']),
+  outcome: z.enum(['interrupted', 'started', 'ok', 'error', 'denied', 'approval_required']),
   durationMs: z.number(), effects: z.array(z.string()), args: z.json(),
 }).passthrough()
 
 export function createFileActionLog(filePath: string): ActionLog {
+  const pending = createPendingAudit({ filePath, processInstanceId: PROCESS_INSTANCE_ID, record: entry => log.record(entry) })
   const log: ActionLog = {
+    recoverInterrupted: () => pending.recover(),
     record(entry) {
       try {
         mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
+        let offset = 0
         const descriptor = openSync(filePath, 'a+', 0o600)
         try {
           fchmodSync(descriptor, 0o600)
           const size = fstatSync(descriptor).size
+          offset = size
           const tail = Buffer.alloc(1)
           if (size > 0) readSync(descriptor, tail, 0, 1, size - 1)
           const prefix = size > 0 && tail[0] !== 10 ? '\n' : ''
@@ -32,6 +39,7 @@ export function createFileActionLog(filePath: string): ActionLog {
             try { fsyncSync(directory) } finally { closeSync(directory) }
           }
         } finally { closeSync(descriptor) }
+        pending.track(entry, offset)
       } catch (error) {
         logger.error('Could not durably write the action log', { filePath })
         throw new Error('Audit storage unavailable; tool execution cannot continue', { cause: error })

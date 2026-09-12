@@ -1,5 +1,6 @@
 import { createMcpHandler } from '@modelcontextprotocol/server'
 import { createMcpServer } from './mcp/server.js'
+import { auditHttpRequest } from '../services/audit-operation.js'
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -16,6 +17,11 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
   const manager = createWorkspaceManager(input)
   const app = new Hono()
   const faces = new Map<string, Hono>()
+  const nodeAudit = auditHttpRequest({ actions: input.runtime.actions, workspaceId: 'default', face: 'http_workspace_registry' })
+  app.use('*', async (context, next) => {
+    if (context.req.path === '/setup/workspaces' || context.req.path.startsWith('/setup/workspaces/')) return nodeAudit(context, next)
+    await next()
+  })
 
   if (input.config.setupToken) {
     app.use('/setup/workspaces', requireBearerToken(input.config.setupToken))
@@ -47,10 +53,10 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     const credentials = manager.credentials(id)
     const credential = path.startsWith('/setup/') ? credentials?.setupToken : credentials?.authToken
     if (!credential || !tokenMatches(context.req.header('authorization'), credential)) {
-      if (path === '/v1/invoke') {
+      if (path === '/v1/invoke' || path === '/mcp' || path.startsWith('/setup/')) {
         const auditId = randomUUID()
         input.runtime.actions.record({ auditId, event: 'result', workspaceId: credentials ? id : 'unresolved',
-          at: new Date().toISOString(), requestId: auditId, sessionId: 'rpc-untrusted', tool: 'workspace_invoke_rejected',
+          at: new Date().toISOString(), requestId: auditId, sessionId: 'http-untrusted', tool: path === '/mcp' ? 'workspace_mcp_auth_rejected' : path.startsWith('/setup/') ? 'workspace_setup_auth_rejected' : 'workspace_invoke_rejected',
           outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: 'HTTP 401',
         })
       }
@@ -61,6 +67,8 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     if (!face) {
       face = createRpcApp({ config, runtime, authToken: config.authToken })
       const mcpHandler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, version: runtime.manifest().version }))
+      face.use('/mcp', auditHttpRequest({ actions: runtime.actions, workspaceId: runtime.workspaceId, face: 'http_mcp' }))
+      face.use('/mcp', bodyLimit({ maxSize: config.maxRequestBytes }))
       face.use('/mcp', requireBearerToken(config.authToken))
       face.all('/mcp', context => mcpHandler.fetch(context.req.raw))
       runtime.onToolsChanged(() => mcpHandler.notify.toolsChanged())

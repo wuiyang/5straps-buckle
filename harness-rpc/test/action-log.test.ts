@@ -157,3 +157,47 @@ describe('durable audit pages', () => {
     expect(() => createFileActionLog(join(file, 'actions.jsonl')).record(entry())).toThrow('Audit storage unavailable')
   })
 })
+
+describe('audit recovery after process interruption', () => {
+  function orphan(path: string) {
+    const pendingPath = `${path}.pending.json`
+    const value = JSON.parse(readFileSync(pendingPath, 'utf8')) as { pending: Record<string, { processId: number; processInstanceId: string }> }
+    for (const record of Object.values(value.pending)) {
+      record.processId = 2_000_000_000
+      record.processInstanceId = 'terminated-fixture-process'
+    }
+    writeFileSync(pendingPath, JSON.stringify(value))
+    return value
+  }
+
+  it('records an interrupted outcome once when the attempt owner has stopped', async () => {
+    const path = logPath()
+    const log = createFileActionLog(path)
+    log.record(entry({ auditId: 'stopped-call', event: 'attempt', outcome: 'started' }))
+    orphan(path)
+    expect(await createFileActionLog(path).recoverInterrupted()).toBe(1)
+    expect(await log.recoverInterrupted()).toBe(0)
+    expect(log.read(1)[0]).toMatchObject({ auditId: 'stopped-call', event: 'result', outcome: 'interrupted' })
+    expect(log.read(1)[0]?.detail).toContain('effects are unknown')
+  })
+
+  it('does not mark attempts from a live process interrupted', async () => {
+    const path = logPath()
+    const log = createFileActionLog(path)
+    log.record(entry({ auditId: 'live-call', event: 'attempt', outcome: 'started' }))
+    expect(await createFileActionLog(path).recoverInterrupted()).toBe(0)
+    expect(log.read(1)[0]?.outcome).toBe('started')
+  })
+
+  it('reconciles a durable terminal record if interruption preceded pending-index cleanup', async () => {
+    const path = logPath()
+    const log = createFileActionLog(path)
+    log.record(entry({ auditId: 'completed-call', event: 'attempt', outcome: 'started' }))
+    const pending = orphan(path)
+    log.record(entry({ auditId: 'completed-call', event: 'result', outcome: 'ok' }))
+    writeFileSync(`${path}.pending.json`, JSON.stringify(pending))
+    expect(await log.recoverInterrupted()).toBe(0)
+    expect(log.read(10).map(item => item.outcome)).toEqual(['started', 'ok'])
+    expect(JSON.parse(readFileSync(`${path}.pending.json`, 'utf8')).pending).toEqual({})
+  })
+})

@@ -7,11 +7,15 @@ export interface ActionLogEntry {
   workspaceId?: string
   runId?: string
   stageId?: string
+  chatId?: string
+  projectId?: string
+  actorId?: string
+  agentId?: string
   at: string
   requestId: string
   sessionId: string
   tool: string
-  outcome: 'started' | 'ok' | 'error' | 'denied' | 'approval_required'
+  outcome: 'interrupted' | 'started' | 'ok' | 'error' | 'denied' | 'approval_required'
   durationMs: number
   /** What the call actually touched, after symlinks were resolved. */
   effects: string[]
@@ -25,6 +29,7 @@ export interface ActionLogEntry {
 
 export interface ActionLog {
   record(entry: ActionLogEntry): void
+  recoverInterrupted(): Promise<number>
   /** Most recent entries last, so the tail of the file reads in the order things happened. */
   read(limit: number): ActionLogEntry[]
   page(input: { limit: number; before?: number }): { entries: ActionLogEntry[]; nextCursor: string | null }

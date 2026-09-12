@@ -1,3 +1,6 @@
+import { auditOperation } from '../../services/audit-operation.js'
+import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
+import { actionsPath } from '../../config.js'
 import { randomUUID } from 'node:crypto'
 import { parseArgs } from 'node:util'
 import type { GrantScope, InvokeResponse } from '@5straps/protocol'
@@ -19,10 +22,19 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   if (command === '--version' || command === '-v') return printVersion()
   // Before the runtime, because a stored pattern the runtime refuses to compile is what sends
   // the owner here in the first place.
-  if (command === 'policy' && rest[0] === 'migrate') return policyMigrateCommand({ config: input.config, argv: rest.slice(1) })
+  if (command === 'policy' && rest[0] === 'migrate') return auditOperation({ actions: createFileActionLog(actionsPath(input.config)), workspaceId: 'default', tool: 'cli_policy_migrate', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => policyMigrateCommand({ config: input.config, argv: rest.slice(1) }) })
 
   const runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
 
+  if (['approve', 'grants', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
+    return auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0,
+      operation: () => dispatchRuntimeCommand(runtime, command, rest),
+    })
+  }
+  return dispatchRuntimeCommand(runtime, command, rest)
+}
+
+function dispatchRuntimeCommand(runtime: BuckleRuntime, command: string, rest: string[]): CliResult | Promise<CliResult> {
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
   if (command === 'skills') return printSkills(runtime, rest)

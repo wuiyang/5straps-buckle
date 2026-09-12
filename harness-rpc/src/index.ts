@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { auditOperation } from './services/audit-operation.js'
+import { createFileActionLog } from './adapters/action-log/file-action-log.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { parseEnv } from 'node:util'
 import { serve } from '@hono/node-server'
@@ -6,7 +8,7 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { createCliApprovalChannel } from './adapters/approval/cli-approval-channel.js'
 import { createWaitingApprovalChannel } from './adapters/approval/waiting-approval-channel.js'
 import { createWebhookNotifier } from './adapters/approval/webhook-notifier.js'
-import { loadConfig, requireAuthToken, type BuckleConfig } from './config.js'
+import { actionsPath, loadConfig, requireAuthToken, type BuckleConfig } from './config.js'
 import { createHttpApp } from './faces/http-app.js'
 import { createMcpServer } from './faces/mcp/server.js'
 import { runInit } from './faces/cli/init.js'
@@ -29,7 +31,7 @@ async function main(): Promise<void> {
   exitQuietlyOnClosedPipe()
   const [command, ...rest] = process.argv.slice(2)
   if (command === 'init') {
-    process.exitCode = (await runInit(rest)).exitCode
+    process.exitCode = (await auditOperation({ actions: createFileActionLog(actionsPath(loadConfig())), workspaceId: 'default', tool: 'cli_init', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => runInit(rest) })).exitCode
     return
   }
 

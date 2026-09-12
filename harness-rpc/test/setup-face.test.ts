@@ -169,10 +169,11 @@ describe('workspace audit inspection', () => {
   it('records attempt and result while hiding content and restricting reads to setup', async () => {
     await invoke('fs_read', { path: 'hello.txt' })
     expect((await app.request('/setup/audit', { headers: bearer(AGENT) })).status).toBe(401)
-    const response = await app.request('/setup/audit?limit=2', { headers: bearer(SETUP) })
-    const body = await response.json() as { entries: Array<{ event: string; auditId: string; workspaceId: string }> }
-    expect(body.entries.map(item => item.event)).toEqual(['result', 'attempt'])
-    expect(body.entries[0]?.auditId).toBe(body.entries[1]?.auditId)
+    const response = await app.request('/setup/audit?limit=20', { headers: bearer(SETUP) })
+    const body = await response.json() as { entries: Array<{ event: string; auditId: string; workspaceId: string; tool: string }> }
+    const toolEntries = body.entries.filter(item => item.tool === 'fs_read')
+    expect(toolEntries.map(item => item.event)).toEqual(['result', 'attempt'])
+    expect(toolEntries[0]?.auditId).toBe(toolEntries[1]?.auditId)
     expect(body.entries.every(item => item.workspaceId === 'default')).toBe(true)
     expect(JSON.stringify(body)).not.toContain('hello.txt')
     expect((await app.request('/setup/audit?limit=9999', { headers: bearer(SETUP) })).status).toBe(400)
@@ -207,4 +208,22 @@ describe('audit coverage outside tool execution', () => {
     await app.request('/setup/audit', { headers: bearer(SETUP) })
     expect(runtime.actions.read(1)[0]).toMatchObject({ tool: 'setup_get_audit', outcome: 'ok' })
   })
+})
+
+it('persists project and agent correlation without changing authorization', async () => {
+  await app.request('/v1/invoke', { method: 'POST', headers: bearer(AGENT), body: JSON.stringify({
+    requestId: 'correlated-call', tool: 'fs_read', args: { path: 'hello.txt' },
+    context: { sessionId: 'session-fixture', chatId: 'chat-fixture', projectId: 'project-fixture', actorId: 'owner-fixture', agentId: 'agent-fixture' },
+  }) })
+  expect(runtime.actions.read(1)[0]).toMatchObject({ chatId: 'chat-fixture', projectId: 'project-fixture', actorId: 'owner-fixture', agentId: 'agent-fixture' })
+})
+
+it('records MCP transport failures and setup authentication rejection without submitted secrets', async () => {
+  expect((await app.request('/mcp', { method: 'POST', headers: bearer('wrong-private-token'), body: JSON.stringify({ secret: 'private-content' }) })).status).toBe(401)
+  await app.request('/setup/policy', { headers: bearer('wrong-private-token') })
+  const entries = runtime.actions.read(20)
+  expect(entries.some(entry => entry.tool === 'http_mcp_post' && entry.outcome === 'denied')).toBe(true)
+  expect(entries.some(entry => entry.tool === 'setup_auth_rejected')).toBe(true)
+  expect(JSON.stringify(entries)).not.toContain('wrong-private-token')
+  expect(JSON.stringify(entries)).not.toContain('private-content')
 })

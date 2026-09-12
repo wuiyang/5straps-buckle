@@ -7,7 +7,7 @@ import { isRestrictive, PolicyError } from '../../domain/policy.js'
 import { redactAuditArguments } from '../../domain/redact.js'
 import { logger } from '../../logger.js'
 import type { BuckleRuntime } from '../../runtime.js'
-import { requireBearerToken } from '../rpc/auth.js'
+import { tokenMatches, requireBearerToken } from '../rpc/auth.js'
 
 /**
  * The owner's face. It reads and replaces the workspace policy and reports how the node is set
@@ -18,6 +18,16 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
   const { config, runtime, setupToken } = input
   const app = new Hono()
 
+  app.use('/*', async (context, next) => {
+    if (!tokenMatches(context.req.header('authorization'), setupToken)) {
+      const auditId = randomUUID()
+      runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
+        at: new Date().toISOString(), sessionId: 'http-untrusted', tool: 'setup_auth_rejected',
+        outcome: 'denied', durationMs: 0, effects: [], args: {},
+      })
+    }
+    await next()
+  })
   app.use('/*', requireBearerToken(setupToken))
   app.use('/*', async (context, next) => {
     const auditId = randomUUID()
@@ -41,9 +51,10 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     if (!parsed.success) return context.json({ error: 'stageId and sessionId are required' }, 400)
     return historyResponse(context, () => runtime.history.restoreStage(parsed.data.stageId, parsed.data.sessionId))
   })
-  app.get('/audit', context => {
+  app.get('/audit', async context => {
     const parsed = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50), before: z.coerce.number().int().nonnegative().optional() }).safeParse(context.req.query())
     if (!parsed.success) return context.json({ error: 'Invalid audit page' }, 400)
+    await runtime.actions.recoverInterrupted()
     const page = runtime.actions.page(parsed.data)
     return context.json({ ...page, entries: page.entries.map(entry => entry.event ? entry : {
       at: entry.at, requestId: entry.requestId, sessionId: entry.sessionId, tool: entry.tool,

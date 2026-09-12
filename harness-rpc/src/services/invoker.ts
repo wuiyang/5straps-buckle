@@ -57,8 +57,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
         auditId, event: 'attempt', workspaceId: options.workspaceId ?? 'default',
         at: new Date().toISOString(), requestId: request.requestId.slice(0, 200), sessionId: sessionId.slice(0, 200),
         tool: request.tool.slice(0, 200), outcome: 'started', durationMs: 0, effects: [], args: redactAuditArguments(request.args),
-        ...(request.context?.runId ? { runId: request.context.runId.slice(0, 200) } : {}),
-        ...(request.context?.stageId ? { stageId: request.context.stageId.slice(0, 200) } : {}),
+        ...auditContext(request),
+
       })
       let effects: ResolvedEffect[] = []
       let gate: GateOutcome = { response: null, asked: [], approvedBy: [] }
@@ -98,8 +98,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
         durationMs: Math.round(performance.now() - startedAt),
       })
       options.actions.record({ ...entry, auditId, event: 'result', workspaceId: options.workspaceId ?? 'default',
-        ...(request.context?.runId ? { runId: request.context.runId.slice(0, 200) } : {}),
-        ...(request.context?.stageId ? { stageId: request.context.stageId.slice(0, 200) } : {}),
+        ...auditContext(request),
+
       })
       if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
       return response
@@ -287,4 +287,13 @@ function shapeError(error: unknown, tool: string): { code: string; message: stri
 
 function inferTruncated(output: unknown): boolean {
   return typeof output === 'object' && output !== null && 'truncated' in output && output.truncated === true
+}
+
+function auditContext(request: InvokeRequest): Pick<ActionLogEntry, 'runId' | 'stageId' | 'chatId' | 'projectId' | 'actorId' | 'agentId'> {
+  const context = request.context
+  return {
+    runId: context?.runId?.slice(0, 200), stageId: context?.stageId?.slice(0, 200),
+    chatId: context?.chatId?.slice(0, 200), projectId: context?.projectId?.slice(0, 200),
+    actorId: context?.actorId?.slice(0, 200), agentId: context?.agentId?.slice(0, 200),
+  }
 }

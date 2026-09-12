@@ -1,3 +1,5 @@
+import { bodyLimit } from 'hono/body-limit'
+import { auditHttpRequest } from '../services/audit-operation.js'
 import { createMcpHandler } from '@modelcontextprotocol/server'
 import { Hono } from 'hono'
 import type { BuckleConfig } from '../config.js'
@@ -28,6 +30,8 @@ export function createHttpApp(input: {
     serverName: config.serverName,
     version: runtime.manifest().version,
   }))
+  app.use('/mcp', auditHttpRequest({ actions: runtime.actions, workspaceId: runtime.workspaceId, face: 'http_mcp' }))
+  app.use('/mcp', bodyLimit({ maxSize: config.maxRequestBytes }))
   app.use('/mcp', requireBearerToken(authToken))
   app.all('/mcp', context => mcpHandler.fetch(context.req.raw))
   runtime.onToolsChanged(() => mcpHandler.notify.toolsChanged())

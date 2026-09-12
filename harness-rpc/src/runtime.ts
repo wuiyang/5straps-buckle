@@ -96,6 +96,7 @@ export async function createRuntime(input: {
   const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
   const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd)
   const actions = createFileActionLog(actionsPath(config))
+  await actions.recoverInterrupted()
   const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken })
