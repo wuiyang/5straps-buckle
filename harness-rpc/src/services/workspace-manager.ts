@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from 'node:fs'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { z } from 'zod'
 import { WorkspacePolicySchema, emptyWorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore } from '../adapters/json-file-store.js'
@@ -39,6 +39,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
   const defaultRoot = realpathSync(input.config.cwd)
   const stateRoot = realpathSync(input.config.stateDirectory)
   const store = createJsonFileStore({ filePath: join(stateRoot, 'workspaces.json'), schema: RegistrySchema, fallback: { version: 1 as const, workspaces: [] } })
+  const exposedRoots = [...input.config.mountReadOnlyPaths, dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return realpathSync(path) } catch { return path } })
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
   const defaultDescriptor = (): WorkspaceDescriptor => ({ id: 'default', name: input.config.serverName, root: defaultRoot, enabled: true, default: true })
 
@@ -46,6 +47,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
     list(): WorkspaceDescriptor[] { return [defaultDescriptor(), ...store.read().workspaces.map(describe)] },
     register(value: z.infer<typeof WorkspaceRegistrationSchema>): WorkspaceDescriptor {
       const root = canonicalDirectory(value.root)
+      assertNoHostExposure(root, exposedRoots)
       compilePolicy(mergePolicies(input.config.policy, value.policy))
       return store.update(state => {
         if (state.workspaces.some(workspace => workspace.id === value.id)) throw new WorkspaceError('Workspace ID already exists', 409)
@@ -80,6 +82,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       const workspace = store.read().workspaces.find(item => item.id === id)
       if (!workspace) throw new WorkspaceError('Workspace not found', 404)
       if (!workspace.enabled) throw new WorkspaceError('Workspace is disabled', 409)
+      assertNoHostExposure(workspace.root, exposedRoots)
       if (canonicalDirectory(workspace.root) !== workspace.root) throw new WorkspaceError('Workspace root changed; owner repair is required', 409)
       let pending = runtimes.get(id)
       if (!pending) {
@@ -124,4 +127,10 @@ function overlaps(left: string, right: string): boolean {
     return path === '' || !path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path)
   }
   return contains(left, right) || contains(right, left)
+}
+
+function assertNoHostExposure(root: string, exposedRoots: string[]): void {
+  if (exposedRoots.some(exposed => overlaps(exposed, root))) {
+    throw new WorkspaceError('Workspace overlaps a host toolchain or read-only mount; narrow the host exposure first', 409)
+  }
 }

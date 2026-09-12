@@ -100,3 +100,11 @@ describe('multiple workspaces on one Buckle', () => {
     expect(body).toContain('error')
   })
 })
+
+it('rejects workspaces exposed by inherited host read-only mounts', async () => {
+  config.mountReadOnlyPaths = [root]
+  app = createHttpApp({ config, runtime: await createRuntime({ config, channel: () => createDeferredApprovalChannel() }), authToken: NODE_AGENT })
+  const response = await register('one')
+  expect(response.status).toBe(409)
+  expect(await response.text()).toContain('read-only mount')
+})
