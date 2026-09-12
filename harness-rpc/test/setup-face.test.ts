@@ -164,3 +164,27 @@ describe("Buckle's own state", () => {
     expect(read.error?.message).toContain('not reachable')
   })
 })
+
+describe('workspace audit inspection', () => {
+  it('records attempt and result while hiding content and restricting reads to setup', async () => {
+    await invoke('fs_read', { path: 'hello.txt' })
+    expect((await app.request('/setup/audit', { headers: bearer(AGENT) })).status).toBe(401)
+    const response = await app.request('/setup/audit?limit=2', { headers: bearer(SETUP) })
+    const body = await response.json() as { entries: Array<{ event: string; auditId: string; workspaceId: string }> }
+    expect(body.entries.map(item => item.event)).toEqual(['result', 'attempt'])
+    expect(body.entries[0]?.auditId).toBe(body.entries[1]?.auditId)
+    expect(body.entries.every(item => item.workspaceId === 'default')).toBe(true)
+    expect(JSON.stringify(body)).not.toContain('hello.txt')
+    expect((await app.request('/setup/audit?limit=9999', { headers: bearer(SETUP) })).status).toBe(400)
+  })
+
+  it('does not execute a tool if the attempt cannot be persisted', async () => {
+    const before = runtime.actions.read(200).length
+    runtime.actions.record = () => { throw new Error('Audit storage unavailable') }
+    const response = await app.request('/v1/invoke', { method: 'POST', headers: bearer(AGENT), body: JSON.stringify({ requestId: 'audit-failed', tool: 'fs_write', args: { path: 'new.txt', content: 'must not be written' } }) })
+    expect(response.status).toBe(500)
+    expect(runtime.actions.read(200)).toHaveLength(before)
+    const { existsSync } = await import('node:fs')
+    expect(existsSync(join(workspace, 'new.txt'))).toBe(false)
+  })
+})

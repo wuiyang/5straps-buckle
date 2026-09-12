@@ -137,3 +137,21 @@ describe('collectPrefixed', () => {
       .toEqual({ AGENT_BROWSER_B: 'b' })
   })
 })
+
+describe('durable audit pages', () => {
+  it('pages newest first without skipping records across cursors', () => {
+    const log = createFileActionLog(logPath())
+    for (const requestId of ['r1', 'r2', 'r3', 'r4', 'r5']) log.record(entry({ requestId }))
+    const first = log.page({ limit: 2 })
+    const second = log.page({ limit: 2, before: Number(first.nextCursor) })
+    const third = log.page({ limit: 2, before: Number(second.nextCursor) })
+    expect([...first.entries, ...second.entries, ...third.entries].map(item => item.requestId)).toEqual(['r5', 'r4', 'r3', 'r2', 'r1'])
+    expect(third.nextCursor).toBeNull()
+  })
+
+  it('refuses recording when durable storage is unavailable', () => {
+    const file = logPath()
+    writeFileSync(file, 'not a directory')
+    expect(() => createFileActionLog(join(file, 'actions.jsonl')).record(entry())).toThrow('Audit storage unavailable')
+  })
+})

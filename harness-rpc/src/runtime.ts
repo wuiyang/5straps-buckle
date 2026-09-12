@@ -74,6 +74,7 @@ export interface BuckleRuntime {
 
 export async function createRuntime(input: {
   config: BuckleConfig
+  workspaceId?: string
   /** Built here because a channel that waits for a decision needs the registry holding it. */
   channel: (approvals: ApprovalRegistry) => ApprovalChannel
   /** Where refusals are announced. Defaults to the configured webhook, or to nothing. */
@@ -155,6 +156,7 @@ export async function createRuntime(input: {
       reporter,
       paths,
       serverId: config.serverId,
+      workspaceId: input.workspaceId ?? 'default',
       channel: channel ?? defaultChannel,
       defaultTimeoutMs: config.defaultTimeoutMs,
       maxTimeoutMs: config.maxTimeoutMs,

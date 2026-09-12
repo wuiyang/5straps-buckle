@@ -2,11 +2,16 @@ import type { JsonValue } from '@5straps/protocol'
 
 /** One attempted tool call, recorded whether it ran, was gated, or failed. */
 export interface ActionLogEntry {
+  auditId?: string
+  event?: 'attempt' | 'result'
+  workspaceId?: string
+  runId?: string
+  stageId?: string
   at: string
   requestId: string
   sessionId: string
   tool: string
-  outcome: 'ok' | 'error' | 'denied' | 'approval_required'
+  outcome: 'started' | 'ok' | 'error' | 'denied' | 'approval_required'
   durationMs: number
   /** What the call actually touched, after symlinks were resolved. */
   effects: string[]
@@ -22,4 +27,5 @@ export interface ActionLog {
   record(entry: ActionLogEntry): void
   /** Most recent entries last, so the tail of the file reads in the order things happened. */
   read(limit: number): ActionLogEntry[]
+  page(input: { limit: number; before?: number }): { entries: ActionLogEntry[]; nextCursor: string | null }
 }

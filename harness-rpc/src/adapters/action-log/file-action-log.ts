@@ -1,58 +1,68 @@
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { closeSync, fsyncSync, fstatSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { z } from 'zod'
 import { logger } from '../../logger.js'
 import type { ActionLog, ActionLogEntry } from '../../ports/action-log.js'
 
-/**
- * Append-only JSONL. Writes are synchronous and one line at a time, because every CLI
- * invocation is its own process: a line torn by a killed process costs one entry, not the file.
- *
- * The file grows without bound on purpose. Rotating an audit log means deciding which evidence
- * to destroy, which is the operator's call rather than Buckle's.
- */
+const MAX_PAGE_BYTES = 1_048_576
+const entrySchema = z.object({
+  at: z.string(), requestId: z.string(), sessionId: z.string(), tool: z.string(),
+  outcome: z.enum(['started', 'ok', 'error', 'denied', 'approval_required']),
+  durationMs: z.number(), effects: z.array(z.string()), args: z.json(),
+}).passthrough()
+
 export function createFileActionLog(filePath: string): ActionLog {
-  return {
+  const log: ActionLog = {
     record(entry) {
       try {
-        mkdirSync(dirname(filePath), { recursive: true })
-        appendFileSync(filePath, `${JSON.stringify(entry)}\n`)
+        mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
+        const descriptor = openSync(filePath, 'a', 0o600)
+        try {
+          const data = Buffer.from(`${JSON.stringify(entry)}\n`)
+          if (data.length > 65_536) throw new Error('Audit entry exceeds the size limit')
+          if (writeSync(descriptor, data) !== data.length) throw new Error('Incomplete audit write')
+          fsyncSync(descriptor)
+        } finally { closeSync(descriptor) }
       } catch (error) {
-        // Losing the record must not also lose the call it describes, so this reports and returns.
-        logger.error('Could not write the action log', {
-          filePath,
-          message: error instanceof Error ? error.message : 'Unknown error',
-        })
+        logger.error('Could not durably write the action log', { filePath })
+        throw new Error('Audit storage unavailable; tool execution cannot continue', { cause: error })
       }
     },
-
-    read(limit) {
-      const lines = readLines(filePath)
-      const entries: ActionLogEntry[] = []
-      let unreadable = 0
-
-      for (const line of lines.slice(-limit)) {
-        const entry = parseEntry(line)
-        if (entry) entries.push(entry)
-        else unreadable += 1
+    read(limit) { return log.page({ limit: Math.min(limit, 200) }).entries.reverse() },
+    page({ limit, before }) {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new Error('Audit limit must be between 1 and 200')
+      if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new Error('Invalid audit cursor')
+      let descriptor: number
+      try { descriptor = openSync(filePath, 'r') }
+      catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { entries: [], nextCursor: null }
+        throw error
       }
-      if (unreadable > 0) logger.warn('Skipped unreadable action log lines', { filePath, unreadable })
-      return entries
+      try {
+        const end = Math.min(before ?? fstatSync(descriptor).size, fstatSync(descriptor).size)
+        const start = Math.max(0, end - MAX_PAGE_BYTES)
+        const bytes = Buffer.alloc(end - start)
+        readSync(descriptor, bytes, 0, bytes.length, start)
+        const entries: ActionLogEntry[] = []
+        let cursor = bytes.length
+        while (cursor > 0 && entries.length < limit) {
+          const lineEnd = bytes[cursor - 1] === 10 ? cursor - 1 : cursor
+          const previous = bytes.lastIndexOf(10, lineEnd - 1)
+          if (previous < 0 && start > 0) { cursor = 0; break }
+          const lineStart = previous + 1
+          const line = bytes.subarray(lineStart, lineEnd).toString('utf8')
+          cursor = lineStart
+          if (!line) continue
+          try {
+            const value = entrySchema.parse(JSON.parse(line))
+            // Legacy JSONL records are checked at this boundary before retaining optional metadata.
+            entries.push(value as ActionLogEntry)
+          } catch { logger.warn('Skipped an unreadable action log record', { filePath }) }
+        }
+        const next = start + cursor
+        return { entries, nextCursor: next > 0 ? String(next) : null }
+      } finally { closeSync(descriptor) }
     },
   }
-}
-
-function readLines(filePath: string): string[] {
-  try {
-    return readFileSync(filePath, 'utf8').split('\n').filter(Boolean)
-  } catch {
-    return []
-  }
-}
-
-function parseEntry(line: string): ActionLogEntry | null {
-  try {
-    return JSON.parse(line) as ActionLogEntry
-  } catch {
-    return null
-  }
+  return log
 }

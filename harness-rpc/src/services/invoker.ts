@@ -1,12 +1,13 @@
+import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { ChangeHistory } from './history/journal.js'
 import type { DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
-import { summarizeEffect, type ResolvedEffect } from '../domain/effect.js'
+import { type ResolvedEffect } from '../domain/effect.js'
 import type { PathView } from '../domain/path-view.js'
 import type { PermissionEngine } from '../domain/permission/engine.js'
 import type { GrantLookup } from '../domain/permission/decision.js'
-import { redactArguments } from '../domain/redact.js'
+import { redactAuditArguments } from '../domain/redact.js'
 import type { ToolRegistry } from '../domain/tool-registry.js'
 import { ToolExecutionError, ToolInputError, type ToolContext } from '../domain/tool.js'
 import type { ActionLog, ActionLogEntry } from '../ports/action-log.js'
@@ -29,6 +30,7 @@ export interface InvokerOptions {
   reporter: Reporter
   paths: PathView
   serverId: string
+  workspaceId?: string
   defaultTimeoutMs: number
   maxTimeoutMs: number
 }
@@ -50,6 +52,14 @@ export function createInvoker(options: InvokerOptions): Invoker {
   return {
     async invoke({ request, sessionId }) {
       const startedAt = performance.now()
+      const auditId = randomUUID()
+      options.actions.record({
+        auditId, event: 'attempt', workspaceId: options.workspaceId ?? 'default',
+        at: new Date().toISOString(), requestId: request.requestId.slice(0, 200), sessionId: sessionId.slice(0, 200),
+        tool: request.tool.slice(0, 200), outcome: 'started', durationMs: 0, effects: [], args: redactAuditArguments(request.args),
+        ...(request.context?.runId ? { runId: request.context.runId.slice(0, 200) } : {}),
+        ...(request.context?.stageId ? { stageId: request.context.stageId.slice(0, 200) } : {}),
+      })
       let effects: ResolvedEffect[] = []
       let gate: GateOutcome = { response: null, asked: [], approvedBy: [] }
 
@@ -87,7 +97,10 @@ export function createInvoker(options: InvokerOptions): Invoker {
         response,
         durationMs: Math.round(performance.now() - startedAt),
       })
-      options.actions.record(entry)
+      options.actions.record({ ...entry, auditId, event: 'result', workspaceId: options.workspaceId ?? 'default',
+        ...(request.context?.runId ? { runId: request.context.runId.slice(0, 200) } : {}),
+        ...(request.context?.stageId ? { stageId: request.context.stageId.slice(0, 200) } : {}),
+      })
       if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
       return response
     },
@@ -106,15 +119,15 @@ function buildEntry(input: {
   const { request, response, gate } = input
   return {
     at: new Date().toISOString(),
-    requestId: request.requestId,
-    sessionId: input.sessionId,
-    tool: request.tool,
+    requestId: request.requestId.slice(0, 200),
+    sessionId: input.sessionId.slice(0, 200),
+    tool: request.tool.slice(0, 200),
     outcome: describeOutcome(response),
     durationMs: input.durationMs,
-    effects: input.effects.map(summarizeEffect),
-    args: redactArguments(request.args),
-    ...(gate.asked.length > 0 ? { asked: gate.asked } : {}),
-    ...(gate.approvedBy.length > 0 ? { approvedBy: gate.approvedBy } : {}),
+    effects: [...new Set(input.effects.map(effect => effect.kind))],
+    args: redactAuditArguments(request.args),
+    ...(gate.asked.length > 0 ? { asked: gate.asked.map(value => value.split(':')[0] ?? 'permission') } : {}),
+    ...(gate.approvedBy.length > 0 ? { approvedBy: gate.approvedBy.map(value => value.split(':')[0] ?? 'permission') } : {}),
     ...(describeDetail(response) ? { detail: describeDetail(response) } : {}),
   }
 }
@@ -150,7 +163,7 @@ function describeOutcome(response: InvokeResponse): ActionLogEntry['outcome'] {
 }
 
 function describeDetail(response: InvokeResponse): string | undefined {
-  if (response.outcome === 'error') return `${response.error.code}: ${response.error.message}`
+  if (response.outcome === 'error') return response.error.code
   return undefined
 }
 

@@ -23,6 +23,11 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     if (!parsed.success) return context.json({ error: 'stageId and sessionId are required' }, 400)
     return historyResponse(context, () => runtime.history.restoreStage(parsed.data.stageId, parsed.data.sessionId))
   })
+  app.get('/audit', context => {
+    const parsed = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50), before: z.coerce.number().int().nonnegative().optional() }).safeParse(context.req.query())
+    if (!parsed.success) return context.json({ error: 'Invalid audit page' }, 400)
+    return context.json(runtime.actions.page(parsed.data))
+  })
   app.get('/history', context => context.json({ checkpoints: runtime.history.list() }))
   app.post('/history/:id/restore', async context => historyResponse(context, () => runtime.history.restore(context.req.param('id'))))
   app.post('/history/:id/recover', async context => historyResponse(context, () => runtime.history.recover(context.req.param('id'))))

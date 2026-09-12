@@ -38,3 +38,16 @@ function redactObject(value: JsonObject, depth: number): JsonValue {
   }
   return result
 }
+
+/** Audit keeps argument shape; arbitrary strings can contain credentials even under innocent keys. */
+export function redactAuditArguments(value: JsonValue, depth = 0): JsonValue {
+  if (depth >= MAX_DEPTH) return '[nested]'
+  if (typeof value === 'string') return `[${value.length} characters]`
+  if (Array.isArray(value)) return value.slice(0, MAX_ARRAY_ITEMS).map(item => redactAuditArguments(item, depth + 1))
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).slice(0, 40).map(([key, item]) => [
+      key.slice(0, 100), isSecretName(key) ? '[redacted]' : redactAuditArguments(item ?? null, depth + 1),
+    ]))
+  }
+  return value
+}
