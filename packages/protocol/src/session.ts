@@ -12,6 +12,8 @@ export const HarnessServerInputSchema = z.object({
 export type HarnessServerInput = z.infer<typeof HarnessServerInputSchema>
 
 export const CreateSessionInputSchema = z.object({
+  projectId: z.string().min(1).optional(),
+  maxActiveChildren: z.number().int().min(0).max(32).optional(),
   title: z.string().min(1).max(200),
   defaultServerId: z.string().nullable().optional(),
   model: z.string().optional(),
@@ -34,6 +36,7 @@ export const CreateSubchatInputSchema = z.object({
 export type CreateSubchatInput = z.infer<typeof CreateSubchatInputSchema>
 
 export const RouteInvocationInputSchema = z.object({
+  workspaceId: z.string().min(1).optional(),
   chatId: z.string().min(1),
   serverId: z.string().optional(),
   tool: z.string().min(1),
@@ -42,3 +45,12 @@ export const RouteInvocationInputSchema = z.object({
   approvalTokens: z.array(z.string()).default([]),
 })
 export type RouteInvocationInput = z.infer<typeof RouteInvocationInputSchema>
+
+export const SessionPatchSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  model: z.string().trim().min(1).max(300).optional(),
+  reasoningEffort: z.string().trim().max(100).nullable().optional(),
+  maxActiveChildren: z.number().int().min(0).max(32).optional(),
+  archived: z.boolean().optional(),
+})
+export type SessionPatch = z.infer<typeof SessionPatchSchema>
