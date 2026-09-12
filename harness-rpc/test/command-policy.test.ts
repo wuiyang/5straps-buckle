@@ -148,6 +148,11 @@ describe('what no pattern can change', () => {
     expect(evaluate('bash', ['-c', 'cd /x && buckle grants revoke 1']).kind).toBe('deny')
   })
 
+  it.each(['workspaces', 'history'])('rejects %s administration directly and through a wrapper', command => {
+    expect(evaluate('buckle', [command, 'list'], { allow: ['*'] }).kind).toBe('deny')
+    expect(evaluate('bash', ['-c', `buckle ${command} list`], { allow: ['bash -c *'] }).kind).toBe('deny')
+  })
+
   it('still lets a tool drive the node the ordinary way', () => {
     expect(evaluate('buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
   })
