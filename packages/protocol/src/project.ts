@@ -18,7 +18,7 @@ export const ProjectInputSchema = z.object({
   allowedSkills: z.array(z.string().min(1).max(500)).max(500).default([]),
   skills: z.array(ProjectSkillSchema).max(100).default([]),
 })
-export const ProjectPatchSchema = ProjectInputSchema.partial()
+export const ProjectPatchSchema = ProjectInputSchema.partial().extend({ expectedUpdatedAt: z.iso.datetime().optional() })
 export const ProjectSchema = ProjectInputSchema.extend({
   id: z.string(), createdAt: z.string(), updatedAt: z.string(),
 })
