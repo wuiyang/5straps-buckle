@@ -8,7 +8,7 @@ import { readInput, writeInput } from '../src/packs/fs/schemas.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function fixture(content: string) {
+async function fixture(content: string | Buffer) {
   const root = await mkdtemp(join(tmpdir(), 'buckle-editor-'))
   roots.push(root)
   await writeFile(join(root, 'note.txt'), content)
@@ -47,4 +47,11 @@ it('omits credential and denied symlink names from directory listing and file se
     expect(output).not.toContain('outside-link')
     expect(output).not.toContain('actions.jsonl')
   }
+})
+
+it('marks invalid UTF-8 as unsafe to edit without rejecting a valid replacement character', async () => {
+  const invalid = await fixture(Buffer.from([0x61, 0xc3, 0x28]))
+  expect(await readFileEntry(readInput.parse({ path: 'note.txt' }), invalid.context)).toMatchObject({ encoding: 'utf8', validUtf8: false })
+  const valid = await fixture('valid \uFFFD text')
+  expect(await readFileEntry(readInput.parse({ path: 'note.txt' }), valid.context)).toMatchObject({ encoding: 'utf8', validUtf8: true })
 })

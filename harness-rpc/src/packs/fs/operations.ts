@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { isUtf8 } from 'node:buffer'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { lstat, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, matchesGlob, relative } from 'node:path'
@@ -40,6 +41,7 @@ export async function readFileEntry(
   return {
     path: context.paths.display(path),
     encoding: 'utf8',
+    validUtf8: isUtf8(buffer),
     hash,
     content: slice.join('\n'),
     size: info.size,
