@@ -76,8 +76,8 @@ describe('pushing a policy', () => {
       body: JSON.stringify({ version: 1, network: { allow: ['example.com'] }, commands: { deny: ['curl *'] } }),
     })
     expect(put.status).toBe(200)
-    // The same three-part view as a read, so a pusher never has to read back to learn the result.
-    expect(Object.keys(await put.json() as object).sort()).toEqual(['base', 'effective', 'stored'])
+    // Writes return the same policy view as reads.
+    expect(Object.keys(await put.json() as object).sort()).toEqual(['base', 'ceiling', 'effective', 'stored'])
 
     const body = await (await app.request('/setup/policy', { headers: bearer(SETUP) })).json() as {
       base: { commands: { deny: string[] } }

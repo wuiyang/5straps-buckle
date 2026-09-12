@@ -67,3 +67,14 @@ function effectivePort(url: URL): string {
   if (url.port) return url.port
   return url.protocol === 'https:' ? '443' : '80'
 }
+
+/** A request must satisfy every configured boundary, including on each redirect hop. */
+export function intersectUrlMatchers(...matchers: Array<UrlMatcher | null | undefined>): UrlMatcher | null {
+  const configured = matchers.filter((matcher): matcher is UrlMatcher => matcher != null)
+  if (configured.length === 0) return null
+  if (configured.length === 1) return configured[0]!
+  return {
+    patterns: [configured.map(matcher => `(${matcher.patterns.join(' OR ')})`).join(' AND ')],
+    matches: url => configured.every(matcher => matcher.matches(url)),
+  }
+}

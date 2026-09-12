@@ -22,7 +22,7 @@ const SELF_ADMINISTRATION = /(^|\s)buckle\s+(approve|grants|policy|init|plugin|s
  * rather than argv, so the globs cannot read what it runs and the wrapper itself has to be
  * named before it runs at all.
  */
-export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>): PermissionRule {
+export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean } = {}): PermissionRule {
   return {
     id: 'command_policy',
     evaluate({ effect }) {
@@ -42,7 +42,7 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
 
       const allow = policy.commands.allow
       const admitted = allow.some(glob => glob.matchesLine(words))
-      if (isShellWrapper(argv) && !admitted) {
+      if (options.enforceWrapperAllow !== false && isShellWrapper(argv) && !admitted) {
         return deny('command_policy', subject, `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${argv.command} -c *'`)
       }
       if (allow.length > 0 && !admitted) {

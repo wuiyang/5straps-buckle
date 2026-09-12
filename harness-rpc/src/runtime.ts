@@ -27,6 +27,7 @@ import { compilePolicy, mergePolicies, type CompiledPolicy } from './domain/poli
 import { loadSkills } from './domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from './domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from './domain/tool-registry.js'
+import { intersectUrlMatchers } from './domain/url-pattern.js'
 import { workspaceStateKey } from './domain/workspace-key.js'
 import { createBuiltinPacks } from './packs/index.js'
 import { loadRootSkill } from './packs/pack-skill.js'
@@ -41,8 +42,8 @@ import { BUCKLE_VERSION } from './version.js'
 
 /**
  * The owner's policy as the runtime holds it. `base` came from the environment, `stored` from
- * `buckle policy` or a push through the setup face, and `effective` is their union: what the
- * rules enforce right now.
+ * `buckle policy` or a push through setup. Managed children replace their initial policy;
+ * the separate immutable installation ceiling always applies. Legacy default policy merges.
  */
 export interface PolicyHandle {
   base(): WorkspacePolicy
@@ -82,6 +83,7 @@ export async function createRuntime(input: {
   reporter?: Reporter
 }): Promise<BuckleRuntime> {
   const { config } = input
+  const ceiling = config.nodePolicy ? compilePolicy(config.nodePolicy) : null
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
   const history = createChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: [config.nodeStateDirectory ?? config.stateDirectory], maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays })
@@ -112,8 +114,8 @@ export async function createRuntime(input: {
 
   let compiled = compileEffective()
   let paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
-  let permissions = buildPermissionEngine({ config, compiled, paths })
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history })
+  let permissions = buildPermissionEngine({ config, compiled, ceiling, paths })
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history })
   let registry = createToolRegistry(availableTools(packs))
 
   const runtime: BuckleRuntime = {
@@ -135,8 +137,7 @@ export async function createRuntime(input: {
       stored: () => policyStore.read(),
       effective: () => compiled.policy,
       async apply(policy) {
-        // Compiling the union first means a bad pattern is refused before anything is stored.
-        compilePolicy(mergePolicies(config.policy, policy))
+        compileEffective(policy)
         policyStore.write({ ...policy, updatedAt: new Date().toISOString() })
         await runtime.reload()
         return compiled.policy
@@ -168,8 +169,8 @@ export async function createRuntime(input: {
     async reload() {
       compiled = compileEffective()
       paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
-      permissions = buildPermissionEngine({ config, compiled, paths })
-      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history })
+      permissions = buildPermissionEngine({ config, compiled, ceiling, paths })
+      packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history })
       registry = createToolRegistry(availableTools(packs))
       for (const listener of listeners) listener()
     },
@@ -177,8 +178,11 @@ export async function createRuntime(input: {
     onToolsChanged: listener => void listeners.push(listener),
   }
 
-  function compileEffective(): CompiledPolicy {
-    return compilePolicy(mergePolicies(config.policy, policyStore.read()))
+  function compileEffective(stored = policyStore.read()): CompiledPolicy {
+    const policy = ceiling
+      ? { ...(stored ?? config.policy), mount: config.policy.mount }
+      : mergePolicies(config.policy, stored)
+    return compilePolicy(policy)
   }
 
   function allSkills(): LoadedSkill[] {
@@ -193,6 +197,7 @@ async function buildPacks(input: {
   sandbox: SandboxResolution
   plugins: PluginRegistry
   compiled: CompiledPolicy
+  ceiling: CompiledPolicy | null
   paths: PathView
   browserStateDirectory: string
   history: ChangeHistory
@@ -206,7 +211,7 @@ async function buildPacks(input: {
     writableRoots: [input.config.cwd, ...input.config.scratchRoots],
     hiddenPaths: [input.config.nodeStateDirectory ?? input.config.stateDirectory],
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
-    approvedUrls: input.compiled.network,
+    approvedUrls: intersectUrlMatchers(input.ceiling?.network, input.compiled.network),
     braveSearchApiKey: input.config.braveSearchApiKey,
     allowedHosts: input.config.allowedHosts,
     agentBrowserCommand: input.config.agentBrowserCommand,
@@ -232,13 +237,14 @@ async function buildPacks(input: {
  * can never unlock a credential file or a destructive command inside it. The owner's command
  * policy sits first among the floors, because its answer is a denial rather than a question.
  */
-function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; paths: PathView }): PermissionEngine {
-  const { config, compiled, paths } = input
+function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; ceiling: CompiledPolicy | null; paths: PathView }): PermissionEngine {
+  const { config, compiled, ceiling, paths } = input
   return createPermissionEngine([
     createSensitivePathRule({ protectedRoots: [config.nodeStateDirectory ?? config.stateDirectory] }),
-    createCommandPolicyRule(compiled),
-    createDestructiveCommandRule({ added: compiled.commands.destructive }),
-    createNetworkEgressRule({ approved: compiled.network }),
+    ...(ceiling ? [createCommandPolicyRule(ceiling, { enforceWrapperAllow: false })] : []),
+    createCommandPolicyRule(compiled, { enforceWrapperAllow: !ceiling?.commands.allow.length }),
+    createDestructiveCommandRule({ added: [...(ceiling?.commands.destructive ?? []), ...compiled.commands.destructive] }),
+    createNetworkEgressRule({ approved: intersectUrlMatchers(ceiling?.network, compiled.network) }),
     createProcessProbeRule(),
     createReadScopeRule({ paths }),
     createWriteScopeRule({ paths, strict: config.strictWrites }),

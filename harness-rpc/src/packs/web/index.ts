@@ -80,6 +80,7 @@ export function createWebPack(options: WebPackOptions): Pack {
         url.searchParams.set('q', input.query)
         url.searchParams.set('count', String(input.count))
         const response = await fetch(url, {
+          redirect: 'error',
           headers: { Accept: 'application/json', 'X-Subscription-Token': apiKey },
           signal: context.signal,
         })

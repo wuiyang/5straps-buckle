@@ -46,6 +46,8 @@ export interface BuckleConfig {
   approvalWebhook?: string
   /** The owner's constraints from the environment. Merged with what `buckle policy` or Rings stored. */
   policy: WorkspacePolicy
+  /** Immutable installation policy, enforced independently for managed child workspaces. */
+  nodePolicy?: WorkspacePolicy
   /** Host directories still readable inside a mounted sandbox, for toolchains outside /usr. */
   mountReadOnlyPaths: string[]
   /** Where every refused call is posted as it happens. Rings, usually. */

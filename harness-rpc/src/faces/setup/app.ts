@@ -97,6 +97,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     effective: runtime.policy.effective(),
     stored: runtime.policy.stored(),
     base: runtime.policy.base(),
+    ceiling: config.nodePolicy ?? null,
   }))
 
   app.put('/policy', async context => {
@@ -105,7 +106,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     try {
       const effective = await runtime.policy.apply(parsed.data)
       logger.info('Workspace policy replaced through the setup face', { workspace: config.cwd })
-      return context.json({ effective, stored: runtime.policy.stored(), base: runtime.policy.base() })
+      return context.json({ effective, stored: runtime.policy.stored(), base: runtime.policy.base(), ceiling: config.nodePolicy ?? null })
     } catch (error) {
       if (error instanceof PolicyError) return context.json({ error: error.message }, 400)
       throw error
@@ -114,7 +115,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
 
   app.delete('/policy', async context => {
     const effective = await runtime.policy.clear()
-    return context.json({ effective, stored: null, base: runtime.policy.base() })
+    return context.json({ effective, stored: null, base: runtime.policy.base(), ceiling: config.nodePolicy ?? null })
   })
 
   return app

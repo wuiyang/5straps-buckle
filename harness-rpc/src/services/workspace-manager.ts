@@ -5,7 +5,7 @@ import { WorkspacePolicySchema, emptyWorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore } from '../adapters/json-file-store.js'
 import { createDeferredApprovalChannel } from '../adapters/approval/deferred-approval-channel.js'
 import type { BuckleConfig } from '../config.js'
-import { compilePolicy, mergePolicies } from '../domain/policy.js'
+import { compilePolicy } from '../domain/policy.js'
 import { createRuntime, type BuckleRuntime } from '../runtime.js'
 
 export const WorkspaceRegistrationSchema = z.object({
@@ -48,7 +48,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
     register(value: z.infer<typeof WorkspaceRegistrationSchema>): WorkspaceDescriptor {
       const root = canonicalDirectory(value.root)
       assertNoHostExposure(root, exposedRoots)
-      compilePolicy(mergePolicies(input.config.policy, value.policy))
+      compilePolicy(value.policy)
       return store.update(state => {
         if (state.workspaces.some(workspace => workspace.id === value.id)) throw new WorkspaceError('Workspace ID already exists', 409)
         if ([defaultRoot, stateRoot, ...state.workspaces.map(workspace => workspace.root)].some(existing => overlaps(existing, root))) {
@@ -102,7 +102,8 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           approvalWebhook: undefined,
           strictWrites: true,
           // Every registered workspace has a hard path boundary, independent of grants.
-          policy: { ...mergePolicies(input.config.policy, workspace.policy), mount: '/workspace' },
+          policy: { ...workspace.policy, mount: '/workspace' },
+          nodePolicy: structuredClone(input.config.policy),
         }
         pending = createRuntime({ config, workspaceId: id, channel: () => createDeferredApprovalChannel() }).then(runtime => ({ config, runtime }))
         runtimes.set(id, pending)
