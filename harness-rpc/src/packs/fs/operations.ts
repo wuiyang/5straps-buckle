@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { lstat, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, matchesGlob, relative } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
@@ -12,6 +14,7 @@ const MAX_TREE_ENTRIES = 5_000
 
 export interface FsContext {
   paths: PathView
+  authorizeRead?: (path: string) => Promise<boolean>
 }
 
 export async function readFileEntry(
@@ -24,8 +27,9 @@ export async function readFileEntry(
   if (info.size > MAX_FILE_BYTES) throw new ToolInputError(`File exceeds ${MAX_FILE_BYTES} bytes`)
 
   const buffer = await readFile(path)
+  const hash = createHash('sha256').update(buffer).digest('hex')
   if (input.encoding === 'base64') {
-    return { path: context.paths.display(path), encoding: 'base64', content: buffer.toString('base64'), size: info.size }
+    return { path: context.paths.display(path), encoding: 'base64', hash, content: buffer.toString('base64'), size: info.size }
   }
 
   const lines = buffer.toString('utf8').split('\n')
@@ -36,6 +40,7 @@ export async function readFileEntry(
   return {
     path: context.paths.display(path),
     encoding: 'utf8',
+    hash,
     content: slice.join('\n'),
     size: info.size,
     firstLine: start + 1,
@@ -53,8 +58,16 @@ export async function writeFileEntry(
   const content = Buffer.from(input.content, input.encoding)
   if (content.byteLength > MAX_FILE_BYTES) throw new ToolInputError(`Content exceeds ${MAX_FILE_BYTES} bytes`)
   if (input.createParents) await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, content)
-  return { path: context.paths.display(path), size: content.byteLength }
+  if (input.expectedHash) {
+    // Keep Buckle's comparison and write in one event-loop turn; host editors remain independent.
+    let previous: Buffer
+    try { previous = readFileSync(path) } catch { throw new ToolInputError('File changed or is unavailable. Reload before saving.') }
+    if (createHash('sha256').update(previous).digest('hex') !== input.expectedHash) throw new ToolInputError('File changed since it was opened. Reload before saving.')
+    writeFileSync(path, content)
+  } else {
+    await writeFile(path, content)
+  }
+  return { path: context.paths.display(path), size: content.byteLength, hash: createHash('sha256').update(content).digest('hex') }
 }
 
 export async function patchFile(
@@ -86,7 +99,7 @@ export async function listTree(
 ): Promise<JsonValue> {
   const root = context.paths.resolve(input.path)
   const entries: JsonValue[] = []
-  await walkTree({ root, current: root, depth: input.depth, includeIgnored: input.includeIgnored, entries })
+  await walkTree({ root, current: root, depth: input.depth, includeIgnored: input.includeIgnored, entries, authorizeRead: context.authorizeRead })
   return { path: context.paths.display(root), entries, truncated: entries.length >= MAX_TREE_ENTRIES }
 }
 
@@ -96,7 +109,7 @@ export async function findNames(
 ): Promise<JsonValue> {
   const root = context.paths.resolve(input.path)
   const matches: string[] = []
-  await walkNames({ root, current: root, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches })
+  await walkNames({ root, current: root, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches, authorizeRead: context.authorizeRead })
   return { path: context.paths.display(root), matches, truncated: matches.length >= input.limit }
 }
 
@@ -106,6 +119,7 @@ async function walkTree(input: {
   depth: number
   includeIgnored: boolean
   entries: JsonValue[]
+  authorizeRead?: (path: string) => Promise<boolean>
 }): Promise<void> {
   if (input.entries.length >= MAX_TREE_ENTRIES) return
   const children = (await readdir(input.current, { withFileTypes: true }))
@@ -116,6 +130,7 @@ async function walkTree(input: {
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
 
     const childPath = join(input.current, child.name)
+    if (input.authorizeRead && !await input.authorizeRead(childPath)) continue
     const info = await lstat(childPath)
     input.entries.push({
       path: relative(input.root, childPath),
@@ -137,6 +152,7 @@ async function walkNames(input: {
   limit: number
   includeIgnored: boolean
   matches: string[]
+  authorizeRead?: (path: string) => Promise<boolean>
 }): Promise<void> {
   if (input.matches.length >= input.limit) return
   for (const child of await readdir(input.current, { withFileTypes: true })) {
@@ -144,6 +160,7 @@ async function walkNames(input: {
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
 
     const childPath = join(input.current, child.name)
+    if (input.authorizeRead && !await input.authorizeRead(childPath)) continue
     const relativePath = relative(input.root, childPath)
     if (matchesGlob(relativePath, input.pattern) || matchesGlob(basename(relativePath), input.pattern)) {
       input.matches.push(relativePath)

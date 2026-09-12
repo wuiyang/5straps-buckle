@@ -23,6 +23,7 @@ export const writeInput = z.object({
   content: z.string(),
   encoding: encodingInput,
   createParents: z.boolean().default(false),
+  expectedHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 })
 
 export const writeBatchInput = z.object({ files: z.array(writeInput).min(1).max(MAX_BATCH_FILES) })

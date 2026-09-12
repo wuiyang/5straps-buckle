@@ -73,7 +73,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem'],
       input: schemas.listInput,
       effects: input => [{ kind: 'read_path', path: input.path }],
-      run: input => listTree(input, context),
+      run: (input, toolContext) => listTree(input, { ...context, authorizeRead: toolContext.authorizeRead }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_find_names',
@@ -82,7 +82,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem', 'search'],
       input: schemas.findInput,
       effects: input => [{ kind: 'read_path', path: input.path }],
-      run: input => findNames(input, context),
+      run: (input, toolContext) => findNames(input, { ...context, authorizeRead: toolContext.authorizeRead }),
     }),
   ]
 

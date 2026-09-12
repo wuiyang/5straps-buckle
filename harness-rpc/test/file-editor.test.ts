@@ -1,0 +1,50 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, expect, it } from 'vitest'
+import { createPathView } from '../src/domain/path-view.js'
+import { readFileEntry, writeFileEntry } from '../src/packs/fs/operations.js'
+import { readInput, writeInput } from '../src/packs/fs/schemas.js'
+
+const roots: string[] = []
+afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+async function fixture(content: string) {
+  const root = await mkdtemp(join(tmpdir(), 'buckle-editor-'))
+  roots.push(root)
+  await writeFile(join(root, 'note.txt'), content)
+  const context = { paths: createPathView({ root, mount: '/workspace' }) }
+  const result = await readFileEntry(readInput.parse({ path: 'note.txt' }), context) as { hash: string }
+  return { root, context, hash: result.hash }
+}
+it('rejects an editor save when the file has changed', async () => {
+  const { root, context, hash } = await fixture('original')
+  await writeFile(join(root, 'note.txt'), 'owner edit')
+  await expect(writeFileEntry(writeInput.parse({ path: 'note.txt', content: 'agent edit', expectedHash: hash }), context)).rejects.toThrow('changed since')
+  expect(await readFile(join(root, 'note.txt'), 'utf8')).toBe('owner edit')
+})
+it('supports saving an empty file using its read revision', async () => {
+  const { root, context, hash } = await fixture('')
+  await writeFileEntry(writeInput.parse({ path: 'note.txt', content: 'new text', expectedHash: hash }), context)
+  expect(await readFile(join(root, 'note.txt'), 'utf8')).toBe('new text')
+})
+
+it('omits credential and denied symlink names from directory listing and file search', async () => {
+  const { root } = await fixture('visible')
+  const { mkdir, symlink } = await import('node:fs/promises')
+  const { createRuntime } = await import('../src/runtime.js')
+  const { loadConfig } = await import('../src/config.js')
+  const { createDeferredApprovalChannel } = await import('../src/adapters/approval/deferred-approval-channel.js')
+  await mkdir(join(root, 'state'))
+  await writeFile(join(root, '.env'), 'PRIVATE_FIXTURE=value')
+  await symlink('/etc/passwd', join(root, 'outside-link'))
+  const runtime = await createRuntime({ config: loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_WORKSPACE_MOUNT: '/workspace', BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' }), channel: () => createDeferredApprovalChannel() })
+  for (const tool of ['fs_list', 'fs_find_names']) {
+    const response = await runtime.invoke({ request: { requestId: tool, tool, args: { path: '.', pattern: '*', includeIgnored: true }, approvalTokens: [] }, sessionId: 'editor' })
+    expect(response.outcome).toBe('ok')
+    const output = JSON.stringify(response)
+    expect(output).toContain('note.txt')
+    expect(output).not.toContain('.env')
+    expect(output).not.toContain('outside-link')
+    expect(output).not.toContain('actions.jsonl')
+  }
+})
