@@ -92,7 +92,7 @@ export function createWorkbenchTerminals(options: TerminalManagerOptions) {
       options.checkBudget(record)
       if (record.terminals.filter(item => ['running', 'stopping'].includes(item.status)).length >= 4) throw new WorkbenchError('At most four terminals can run in one workbench')
       const terminal: WorkbenchTerminal = { id: randomUUID(), status: 'running', createdAt: new Date(now()).toISOString(), exitedAt: null, exitCode: null,
-        controllerId: actorId, generation: 1, leaseExpiresAt: new Date(now() + LEASE_MS).toISOString(), cols: request.cols, rows: request.rows, lastSequence: 0 }
+        controllerId: actorId, lastControllerId: actorId, generation: 1, leaseExpiresAt: new Date(now() + LEASE_MS).toISOString(), cols: request.cols, rows: request.rows, lastSequence: 0 }
       const auditId = options.audit(record, 'terminal_lifetime', actorId, { terminalId: terminal.id }, 'attempt')
       let process: PtyProcess
       try { process = await options.spawn(request) }
@@ -125,13 +125,13 @@ export function createWorkbenchTerminals(options: TerminalManagerOptions) {
       if (terminal.status !== 'running') throw new WorkbenchError('Terminal is not running')
       const expires = terminal.leaseExpiresAt ? Date.parse(terminal.leaseExpiresAt) : 0
       if (input.action === 'acquire' && (!terminal.controllerId || expires <= now())) {
-        terminal.controllerId = input.actorId; terminal.generation++; terminal.lastSequence = 0
+        terminal.controllerId = input.actorId; terminal.lastControllerId = input.actorId; terminal.generation++; terminal.lastSequence = 0
       } else {
         requireController(terminal, input.actorId, input.generation ?? -1)
         if (input.action === 'release') { terminal.controllerId = null; terminal.generation++; terminal.lastSequence = 0 }
         if (input.action === 'handoff') {
           if (!input.nextActorId) throw new WorkbenchError('A handoff recipient is required', 400)
-          terminal.controllerId = input.nextActorId; terminal.generation++; terminal.lastSequence = 0
+          terminal.controllerId = input.nextActorId; terminal.lastControllerId = input.nextActorId; terminal.generation++; terminal.lastSequence = 0
         }
       }
       terminal.leaseExpiresAt = terminal.controllerId ? new Date(now() + LEASE_MS).toISOString() : null

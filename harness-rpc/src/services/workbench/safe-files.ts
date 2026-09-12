@@ -108,8 +108,10 @@ export function invokePinnedWorkbenchFile(input: SafeFilesInput): JsonValue {
     const entries = walk(path, 10, false)
     const matches: Array<{ path: string; line: number; text: string }> = []
     const pattern = args.caseSensitive ? args.pattern : args.pattern.toLowerCase()
+    let scannedBytes = 0, budgetExhausted = false
     for (const entry of entries) {
       if (entry.type !== 'file' || args.glob && !matchesGlob(entry.path, args.glob) || entry.size > MAX_BYTES) continue
+      if ((scannedBytes += entry.size) > 64 * 1_048_576) { budgetExhausted = true; break }
       const buffer = file(join(path, entry.path), false, content)
       if (!isUtf8(buffer) || buffer.includes(0)) continue
       for (const [index, line] of buffer.toString('utf8').split('\n').entries()) {
@@ -118,7 +120,7 @@ export function invokePinnedWorkbenchFile(input: SafeFilesInput): JsonValue {
       }
       if (matches.length >= args.limit) break
     }
-    return { path, matches, truncated: matches.length >= args.limit || entries.length >= 5000, literal: true }
+    return { path, matches, truncated: budgetExhausted || matches.length >= args.limit || entries.length >= 5000, literal: true }
   }
   throw new WorkbenchError('Tool is unavailable in the staged workbench', 400)
 }

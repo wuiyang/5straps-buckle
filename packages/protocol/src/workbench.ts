@@ -15,7 +15,7 @@ export const WorkbenchTerminalStatusSchema = z.enum(['running', 'stopping', 'exi
 export const WorkbenchTerminalSchema = z.object({
   id: z.string().uuid(), status: WorkbenchTerminalStatusSchema,
   createdAt: z.string(), exitedAt: z.string().nullable(), exitCode: z.number().nullable(),
-  controllerId: WorkbenchActorSchema.nullable(), generation: z.number().int(), leaseExpiresAt: z.string().nullable(),
+  controllerId: WorkbenchActorSchema.nullable(), lastControllerId: WorkbenchActorSchema.nullable().optional(), generation: z.number().int(), leaseExpiresAt: z.string().nullable(),
   cols: z.number().int(), rows: z.number().int(), lastSequence: z.number().int(),
 })
 export type WorkbenchTerminal = z.infer<typeof WorkbenchTerminalSchema>
@@ -44,3 +44,19 @@ export interface WorkbenchTerminalEvent { sequence: number; type: 'output' | 'ex
 export interface WorkbenchTerminalEvents { events: WorkbenchTerminalEvent[]; nextSequence: number; truncated: boolean; terminal: WorkbenchTerminal }
 export interface WorkbenchChange { path: string; kind: 'created' | 'modified' | 'deleted'; before: string | null; after: string | null; binary: boolean }
 export interface WorkbenchReview { id: string; workbenchId: string; revision: number; createdAt: string; changes: WorkbenchChange[] }
+
+export function mergeWorkbenchTerminal(current: WorkbenchTerminal | undefined, incoming: WorkbenchTerminal): WorkbenchTerminal {
+  if (!current || incoming.generation > current.generation) return incoming
+  if (incoming.generation < current.generation || incoming.lastSequence < current.lastSequence) return current
+  if (incoming.lastSequence === current.lastSequence && (incoming.leaseExpiresAt ?? '') < (current.leaseExpiresAt ?? '')) return current
+  return incoming
+}
+
+export function mergeWorkbenchState(current: WorkbenchRecord | null, incoming: WorkbenchRecord): WorkbenchRecord {
+  if (!current || current.id !== incoming.id) return incoming
+  if (incoming.revision < current.revision) return current
+  if (incoming.revision === current.revision && (incoming.updatedAt < current.updatedAt || ['applied', 'discarded'].includes(current.status))) return current
+  const terminals = new Map(current.terminals.map(terminal => [terminal.id, terminal]))
+  for (const terminal of incoming.terminals) terminals.set(terminal.id, mergeWorkbenchTerminal(terminals.get(terminal.id), terminal))
+  return { ...incoming, terminals: [...terminals.values()] }
+}

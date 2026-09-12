@@ -210,6 +210,10 @@ describe('terminal control and recovery', () => {
     await expect(f.manager.terminalInput(f.grant.id, terminal.id, { ...request, sequence: 2 })).rejects.toThrow('another user')
     await f.manager.terminalInput(f.grant.id, terminal.id, { actorId: 'bob', generation: handoff.terminal.generation, sequence: 1, data: 'pwd\r' })
     expect(f.processes[0]!.input).toEqual(['echo fixture\r', 'pwd\r'])
+    const released = await f.manager.controlTerminal(f.grant.id, terminal.id, { actorId: 'bob', generation: handoff.terminal.generation, action: 'release' })
+    expect(released.terminal).toMatchObject({ controllerId: null, lastControllerId: 'bob' })
+    await f.restart()
+    expect(f.manager.get(f.grant.id).terminals[0]?.lastControllerId).toBe('bob')
     expect(JSON.stringify(f.audit)).not.toContain('echo fixture')
   })
 
