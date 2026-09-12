@@ -8,6 +8,7 @@ export const PermissionRuleIdSchema = z.enum([
   'sensitive_path',
   'destructive_command',
   'network_egress',
+  'filesystem_policy',
   'read_scope',
   'write_scope',
   'process_probe',

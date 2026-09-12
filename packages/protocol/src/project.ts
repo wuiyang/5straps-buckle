@@ -20,7 +20,7 @@ export const ProjectInputSchema = z.object({
 })
 export const ProjectPatchSchema = ProjectInputSchema.partial().extend({ expectedUpdatedAt: z.iso.datetime().optional() })
 export const ProjectSchema = ProjectInputSchema.extend({
-  id: z.string(), createdAt: z.string(), updatedAt: z.string(),
+  id: z.string(), retiredAt: z.string().nullable().optional(), createdAt: z.string(), updatedAt: z.string(),
 })
 export type ProjectInput = z.infer<typeof ProjectInputSchema>
 export type ProjectPatch = z.infer<typeof ProjectPatchSchema>
