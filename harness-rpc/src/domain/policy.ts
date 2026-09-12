@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { destructivePatterns, emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { compileCommandGlob, CommandGlobError, type CommandGlob } from './command-glob.js'
 import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-pattern.js'
@@ -15,6 +16,10 @@ export interface CompiledPolicy {
 }
 
 export class PolicyError extends Error {}
+export class PolicyConflictError extends PolicyError {}
+export function policyRevision(policy: WorkspacePolicy | null): string {
+  return createHash('sha256').update(JSON.stringify(policy)).digest('hex')
+}
 
 /** Mounting over one of these would hide the tools the sandbox needs to run anything. */
 const RESERVED_MOUNTS = new Set([
@@ -43,6 +48,7 @@ export function mergePolicies(...policies: Array<WorkspacePolicy | null>): Works
   const merged = emptyWorkspacePolicy()
   for (const policy of policies) {
     if (!policy) continue
+    if (policy.filesystem) merged.filesystem = { rules: [...merged.filesystem?.rules ?? [], ...policy.filesystem.rules] }
     merged.commands.allow = unique([...merged.commands.allow, ...policy.commands.allow])
     merged.commands.deny = unique([...merged.commands.deny, ...policy.commands.deny])
     merged.commands.destructive = unique([...destructivePatterns(merged), ...destructivePatterns(policy)])
@@ -54,7 +60,8 @@ export function mergePolicies(...policies: Array<WorkspacePolicy | null>): Works
 }
 
 export function isRestrictive(policy: WorkspacePolicy): boolean {
-  return policy.commands.allow.length > 0
+  return Boolean(policy.filesystem?.rules.length)
+    || policy.commands.allow.length > 0
     || policy.commands.deny.length > 0
     || destructivePatterns(policy).length > 0
     || policy.network.allow.length > 0

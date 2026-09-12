@@ -21,6 +21,7 @@ interface ShellRunInput<T> {
   sourceRoot: string
   writableRoots: string[]
   excluded: string[]
+  readOnlyPaths?: string[]
   details: Omit<HistoryInput, 'roots'>
   execute: (copyRoot: string) => Promise<T>
 }
@@ -35,7 +36,7 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
   const copyRoot = join(directory, 'workspace')
   const objects = join(directory, 'objects')
   mkdirSync(objects, { recursive: true, mode: 0o700 })
-  const metadata = { id, ...input.details, sourceRoot: input.sourceRoot, copyRoot, writableRoots: input.writableRoots, excluded: input.excluded, createdAt: new Date().toISOString() }
+  const metadata = { id, ...input.details, sourceRoot: input.sourceRoot, copyRoot, writableRoots: input.writableRoots, excluded: input.excluded, readOnlyPaths: input.readOnlyPaths ?? [], createdAt: new Date().toISOString() }
   const record = (status: string) => writeWorkspaceRecord(directory, { ...metadata, status })
   const content = (hash: string) => readFileSync(join(objects, hash))
   const save = (hash: string, buffer: Buffer) => {
@@ -54,7 +55,7 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     started = true
     const result = await input.execute(copyRoot)
     const after = relocate(snapshot({ roots: [copyRoot], excluded: [], maxBytes: input.isolation.maxBytes, save }), copyRoot, input.sourceRoot)
-    assertPublishable({ before, after, sourceRoot: input.sourceRoot, writableRoots: input.writableRoots, excluded: input.excluded })
+    assertPublishable({ before, after, sourceRoot: input.sourceRoot, writableRoots: input.writableRoots, excluded: input.excluded, readOnlyPaths: input.readOnlyPaths })
     await input.isolation.history.promote({ ...input.details, roots: [input.sourceRoot] }, before, after, content, () => { publishing = true; record('publishing') })
     record('published')
     try { removePrivateWorkspace(directory) } catch (error) {
@@ -81,8 +82,9 @@ function relocate(source: Snapshot, from: string, to: string): Snapshot {
   }))
 }
 
-function assertPublishable(input: { before: Snapshot; after: Snapshot; sourceRoot: string; writableRoots: string[]; excluded: string[] }): void {
+function assertPublishable(input: { before: Snapshot; after: Snapshot; sourceRoot: string; writableRoots: string[]; excluded: string[]; readOnlyPaths?: string[] }): void {
   for (const path of changedPaths(input.before, input.after)) {
+    if (isInsideAny(input.readOnlyPaths ?? [], path)) throw new Error('Workspace policy refuses publication to this read-only path')
     const entry = input.after[path]
     if (!isInsideAny(input.writableRoots, path) || isInsideAny(input.excluded, path)) throw new Error('A shell change is outside its approved writable roots')
     if (sensitivePathReason(path) || entry?.kind === 'directory' && sensitivePathReason(join(path, 'entry'))) throw new Error('Credential paths cannot be published from a shell')
@@ -100,7 +102,7 @@ function removePrivateWorkspace(directory: string): void {
 const workspaceIdSchema = z.string().regex(/^shell-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
 const workspaceRecordSchema = z.object({
   id: workspaceIdSchema, sessionId: z.string(), stageId: z.string(), tool: z.string(),
-  sourceRoot: z.string(), copyRoot: z.string(), writableRoots: z.array(z.string()), excluded: z.array(z.string()),
+  sourceRoot: z.string(), copyRoot: z.string(), writableRoots: z.array(z.string()), excluded: z.array(z.string()), readOnlyPaths: z.array(z.string()).default([]),
   createdAt: z.iso.datetime(), status: z.enum(['preparing', 'running', 'needs_review', 'publishing', 'publication_uncertain', 'published']),
 })
 
@@ -137,7 +139,7 @@ export function createShellWorkspaceRecovery(input: IsolatedShellOptions & { sou
         const record = read(id)
         if (!['needs_review', 'running'].includes(record.status)) throw new Error('Publication state is uncertain; inspect checkpoint history before discarding or manually recovering files')
         const { before, after, objects } = capture(record)
-        assertPublishable({ before, after, sourceRoot: input.sourceRoot, writableRoots: record.writableRoots, excluded: record.excluded })
+        assertPublishable({ before, after, sourceRoot: input.sourceRoot, writableRoots: record.writableRoots, excluded: record.excluded, readOnlyPaths: record.readOnlyPaths })
         const saveStatus = (status: string) => writeWorkspaceRecord(join(input.directory, id), { ...record, status })
         const checkpoint = await input.history.promote({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_workspace_publish', roots: [input.sourceRoot] }, before, after, hash => {
           const content = objects.get(hash)

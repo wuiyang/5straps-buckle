@@ -1,3 +1,11 @@
+import { createWorkbenchManager } from './services/workbench/manager.js'
+import { WorkbenchError, workbenchHash } from './services/workbench/storage.js'
+import { spawnPtyProcess } from './adapters/pty-process.js'
+import { buildChildEnvironment } from './domain/environment.js'
+import { hasExecutable } from './domain/executable.js'
+import { isInside } from './domain/paths.js'
+import { collectShellHiddenPaths } from './services/shell-filesystem.js'
+import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox, resolveFilesystemPermission } from './domain/filesystem-policy.js'
 import { createShellWorkspaceRecovery } from './services/isolated-shell.js'
 import { join, dirname } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
@@ -23,7 +31,7 @@ import { createProcessProbeRule } from './domain/permission/rules/process-probe-
 import { createReadScopeRule } from './domain/permission/rules/read-scope-rule.js'
 import { createSensitivePathRule } from './domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from './domain/permission/rules/write-scope-rule.js'
-import { compilePolicy, mergePolicies, type CompiledPolicy } from './domain/policy.js'
+import { compilePolicy, mergePolicies, policyRevision, PolicyConflictError, type CompiledPolicy } from './domain/policy.js'
 import { loadSkills } from './domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from './domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from './domain/tool-registry.js'
@@ -50,13 +58,16 @@ export interface PolicyHandle {
   stored(): WorkspacePolicy | null
   effective(): WorkspacePolicy
   /** Validates against the base, stores, and rebuilds the rules and packs. Throws PolicyError. */
-  apply(policy: WorkspacePolicy): Promise<WorkspacePolicy>
+  revision(): string
+  apply(policy: WorkspacePolicy, expectedRevision?: string): Promise<WorkspacePolicy>
   /** Drops the stored policy, leaving the environment's. */
-  clear(): Promise<WorkspacePolicy>
+  clear(expectedRevision?: string): Promise<WorkspacePolicy>
 }
 
 export interface BuckleRuntime {
   readonly workspaceId: string
+  workbenches: ReturnType<typeof createWorkbenchManager>
+  hasActiveWork(): boolean
   manifest(): HarnessManifest
   registry(): ToolRegistry
   skills(): LoadedSkill[]
@@ -118,8 +129,37 @@ export async function createRuntime(input: {
   let packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history })
   let registry = createToolRegistry(availableTools(packs))
 
+  let activeInvocations = 0
+  const workbenches = createWorkbenchManager({
+    directory: join(config.stateDirectory, 'workbenches', workspaceStateKey(config.cwd)),
+    sourceRoot: config.cwd, workspaceId: input.workspaceId ?? 'default', maxBytes: config.isolationMaxBytes,
+    protectedRoots: [config.nodeStateDirectory ?? config.stateDirectory], actions, history,
+    hasRipgrep: hasExecutable('rg'), spawnPty: spawnPtyProcess,
+    policyHash: () => workbenchHash(JSON.stringify([compiled.policy, ceiling?.policy ?? null])),
+    authorizePath: (path, operation) => !['deny', 'ask'].includes(resolveFilesystemPermission({ path, operation, policy: compiled.policy, ceiling: ceiling?.policy })),
+    async prepareTerminal(request) {
+      if (!config.enableShell || config.enabledPacks && !config.enabledPacks.includes('shell') || sandbox.sandbox.mode !== 'bubblewrap') throw new WorkbenchError('Interactive terminals require an enabled bubblewrap sandbox', 403)
+      const policies = [compiled.policy, ...(ceiling ? [ceiling.policy] : [])]
+      if (policies.some(policy => policy.commands.allow.length || policy.commands.deny.length || policy.commands.destructive?.length)) throw new WorkbenchError('Interactive shells cannot enforce command allowlists, denylists or command approval rules', 403)
+      const signal = AbortSignal.timeout(15_000)
+      const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, ceiling: ceiling?.policy, signal })
+      const hidden = await collectShellHiddenPaths({ roots: [request.root, ...config.mountReadOnlyPaths], protectedPaths: [], signal })
+      if (projection.hiddenPaths.some(path => isInside(path, request.cwd))) throw new WorkbenchError('Filesystem restrictions hide this terminal working directory', 403)
+      const wrapped = sandbox.sandbox.wrap({ command: 'bash', args: ['--noprofile', '--norc', '-i'], cwd: request.cwd,
+        workspaceRoot: request.root, writableRoots: [request.root], mount: { root: request.root, at: '/workspace' }, commandIsPid1: true,
+        allowNetwork: config.shellNetwork && !policies.some(policy => policy.network.allow.length) && config.allowedHosts.length === 0,
+        hiddenPaths: [...hidden.directories, ...projection.hiddenPaths], hiddenFiles: [...hidden.files, ...projection.hiddenFiles],
+        readOnlyPaths: config.mountReadOnlyPaths, readOnlyWorkspacePaths: projection.readOnlyWorkspacePaths,
+      })
+      const environment = Object.fromEntries(Object.entries(buildChildEnvironment({ parent: process.env, extra: { TERM: 'xterm-256color' } })).filter((entry): entry is [string, string] => entry[1] !== undefined))
+      return { ...wrapped, cwd: request.cwd, environment, cols: request.cols, rows: request.rows }
+    },
+  })
+
   const runtime: BuckleRuntime = {
     workspaceId: input.workspaceId ?? 'default',
+    workbenches,
+    hasActiveWork: () => activeInvocations > 0 || workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     manifest: () => buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }),
     registry: () => registry,
     skills: allSkills,
@@ -136,20 +176,25 @@ export async function createRuntime(input: {
       base: () => config.policy,
       stored: () => policyStore.read(),
       effective: () => compiled.policy,
-      async apply(policy) {
+      revision: () => policyRevision(policyStore.read()),
+      async apply(policy, expectedRevision) {
+        if (runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
         compileEffective(policy)
-        policyStore.write({ ...policy, updatedAt: new Date().toISOString() })
+        policyStore.write({ ...policy, updatedAt: new Date().toISOString() }, expectedRevision)
         await runtime.reload()
         return compiled.policy
       },
-      async clear() {
-        policyStore.clear()
+      async clear(expectedRevision) {
+        if (runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
+        policyStore.clear(expectedRevision)
         await runtime.reload()
         return compiled.policy
       },
     },
 
-    invoke: ({ request, sessionId, channel }) => createInvoker({
+    async invoke({ request, sessionId, channel }) {
+      activeInvocations++
+      try { return await createInvoker({
       registry,
       permissions,
       approvals,
@@ -164,9 +209,11 @@ export async function createRuntime(input: {
       channel: channel ?? defaultChannel,
       defaultTimeoutMs: config.defaultTimeoutMs,
       maxTimeoutMs: config.maxTimeoutMs,
-    }).invoke({ request, sessionId }),
+    }).invoke({ request, sessionId }) } finally { activeInvocations-- }
+    },
 
     async reload() {
+      await workbenches.policyChanged()
       compiled = compileEffective()
       paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
       permissions = buildPermissionEngine({ config, compiled, ceiling, paths })
@@ -220,6 +267,7 @@ async function buildPacks(input: {
     enableShell: input.config.enableShell,
     allowHostLsp: input.config.allowHostLsp,
     shellNetwork: input.config.shellNetwork,
+    filesystemPolicy: { policy: input.compiled.policy, ceiling: input.ceiling?.policy },
     shellIsolation: input.config.isolateShell ? { directory: join(input.config.stateDirectory, 'isolated-shell', workspaceStateKey(input.config.cwd)), maxBytes: input.config.isolationMaxBytes, history: input.history } : undefined,
     environmentValidator: input.config.environmentValidator,
   })
@@ -229,7 +277,8 @@ async function buildPacks(input: {
     if (unknown.length) throw new Error(`Unknown BUCKLE_PACKS: ${unknown.join(', ')}`)
     return builtin.filter(pack => selected.includes(pack.id))
   }
-  return [...builtin, ...await input.plugins.load()]
+  const filesystemRestricted = Boolean(input.compiled.policy.filesystem?.rules.length || input.ceiling?.policy.filesystem?.rules.length)
+  return [...builtin, ...(filesystemRestricted ? [] : await input.plugins.load())]
 }
 
 /**
@@ -246,8 +295,9 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
     createDestructiveCommandRule({ added: [...(ceiling?.commands.destructive ?? []), ...compiled.commands.destructive] }),
     createNetworkEgressRule({ approved: intersectUrlMatchers(ceiling?.network, compiled.network) }),
     createProcessProbeRule(),
+    createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy, ceiling: ceiling?.policy }),
     createReadScopeRule({ paths }),
-    createWriteScopeRule({ paths, strict: config.strictWrites }),
+    createWriteScopeRule({ paths, strict: config.strictWrites, pathDecision: path => filesystemPathDecision({ root: config.cwd, path, operation: 'write', policy: compiled.policy, ceiling: ceiling?.policy }) }),
   ])
 }
 

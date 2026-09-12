@@ -118,3 +118,40 @@ it('does not inherit node callbacks without a workspace identity', async () => {
   expect(response.status).toBe(200)
   expect(await response.json()).toMatchObject({ reporting: false })
 })
+
+it('retains setup history and audit after workspace retirement and requires explicit reactivation', async () => {
+  await register('one')
+  await invoke('one', agent('one'))
+  expect((await app.request('/setup/workspaces/one', { method: 'DELETE', headers: headers(NODE_SETUP) })).status).toBe(204)
+  expect((await invoke('one', agent('one'))).status).toBe(409)
+  expect((await app.request('/workspaces/one/setup/audit', { headers: headers(setup('one')) })).status).toBe(200)
+  expect((await app.request('/workspaces/one/setup/history', { headers: headers(setup('one')) })).status).toBe(200)
+  expect((await app.request('/setup/workspaces/one', { method: 'PATCH', headers: headers(NODE_SETUP), body: JSON.stringify({ enabled: true }) })).status).toBe(409)
+  expect((await app.request('/setup/workspaces/one/reactivate', { method: 'POST', headers: headers(NODE_SETUP) })).status).toBe(200)
+  expect(await (await invoke('one', agent('one'))).text()).toContain('workspace one')
+})
+
+it('shows real host directory entries only under setup authority', async () => {
+  const path = `/setup/directories?path=${encodeURIComponent(root)}&limit=1`
+  expect((await app.request(path, { headers: headers(NODE_AGENT) })).status).toBe(401)
+  const first = await (await app.request(path, { headers: headers(NODE_SETUP) })).json() as { path: string; entries: Array<{ name: string }>; nextCursor: string }
+  expect(first.path).toBe(root)
+  expect(first.entries).toHaveLength(1)
+  expect(first.nextCursor).toBeTruthy()
+  const second = await (await app.request(`${path}&cursor=${first.nextCursor}`, { headers: headers(NODE_SETUP) })).json() as { entries: Array<{ name: string }> }
+  expect(second.entries[0]?.name).not.toBe(first.entries[0]?.name)
+})
+
+it('checks policy revisions and applies read-denied paths to filesystem tools', async () => {
+  await register('one')
+  const path = '/workspaces/one/setup/policy'
+  const before = await (await app.request(path, { headers: headers(setup('one')) })).json() as { effective: Record<string, unknown>; revision: string }
+  const body = { ...before.effective, filesystem: { rules: [{ path: 'hello.txt', read: 'deny' }] }, expectedRevision: before.revision }
+  expect((await app.request(path, { method: 'PUT', headers: headers(setup('one')), body: JSON.stringify(body) })).status).toBe(200)
+  expect((await app.request(path, { method: 'PUT', headers: headers(setup('one')), body: JSON.stringify(body) })).status).toBe(409)
+  const response = await (await invoke('one', agent('one'))).text()
+  expect(response).not.toContain('workspace one')
+  expect(response).toContain('PERMISSION_DENIED')
+  const listing = await (await app.request('/workspaces/one/setup/files?path=.', { headers: headers(setup('one')) })).json() as { entries: Array<{ name: string; read: string }> }
+  expect(listing.entries.find(entry => entry.name === 'hello.txt')?.read).toBe('deny')
+})

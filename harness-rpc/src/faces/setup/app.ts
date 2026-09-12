@@ -1,6 +1,11 @@
+import { createWorkbenchSetupApp } from '../workbench-app.js'
+import { browseDirectories, DirectoryQuerySchema } from '../../services/directory-browser.js'
+import { resolveFilesystemAccess, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
+import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
+import { PolicyConflictError } from '../../domain/policy.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { ApprovalDecisionSchema, WorkspacePolicySchema } from '@5straps/protocol'
+import { ApprovalDecisionSchema, WorkspacePolicyUpdateSchema } from '@5straps/protocol'
 import { Hono, type Context } from 'hono'
 import type { BuckleConfig } from '../../config.js'
 import { isRestrictive, PolicyError } from '../../domain/policy.js'
@@ -34,7 +39,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     const at = new Date().toISOString()
     const start = performance.now()
     const mutation = !['GET', 'HEAD'].includes(context.req.method)
-    const resource = context.req.path.split('/').find(part => ['policy', 'history', 'history-stages', 'approvals', 'grants', 'audit', 'status'].includes(part)) ?? 'unknown'
+    const resource = context.req.path.split('/').find(part => ['policy', 'history', 'history-stages', 'approvals', 'grants', 'audit', 'status', 'files', 'workbenches'].includes(part)) ?? 'unknown'
     const entry = {
       auditId, workspaceId: runtime.workspaceId, at, requestId: auditId, sessionId: 'workspace-admin',
       tool: `setup_${context.req.method.toLowerCase()}_${resource}`, durationMs: 0, effects: [], args: {},
@@ -44,6 +49,25 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     runtime.actions.record({ ...entry, event: 'result', outcome: context.res.ok ? 'ok' : 'error',
       durationMs: Math.round(performance.now() - start), detail: `HTTP ${context.res.status}`,
     })
+  })
+
+  app.route('/workbenches', createWorkbenchSetupApp(runtime))
+  app.get('/files', async context => {
+    const parsed = DirectoryQuerySchema.safeParse({ ...context.req.query(), path: context.req.query('path') ?? '.' })
+    if (!parsed.success) return context.json({ error: 'Invalid directory request' }, 400)
+    const page = await browseDirectories({ ...parsed.data, workspaceRoot: runtime.paths().root, includeFiles: true })
+    const policy = runtime.policy.effective()
+    const ceiling = config.nodePolicy ?? null
+    return context.json({ ...page, entries: page.entries.map(entry => {
+      const protectedFile = Boolean(sensitivePathReason(entry.path))
+      const access = resolveFilesystemAccess({ path: entry.path, policy, ceiling })
+      const baseline = resolveFilesystemAccess({ path: entry.path, policy: ceiling ?? config.policy })
+      return { ...entry, baseRead: protectedFile && baseline.read !== 'deny' ? 'ask' : baseline.read, baseWrite: protectedFile && baseline.write !== 'deny' ? 'ask' : baseline.write,
+        read: protectedFile && access.read !== 'deny' ? 'ask' : access.read, write: protectedFile && access.write !== 'deny' ? 'ask' : access.write,
+        readLocked: protectedFile || ['deny', 'ask'].includes(resolveFilesystemPermission({ path: entry.path, operation: 'read', policy: ceiling ?? config.policy })),
+        writeLocked: protectedFile || ['deny', 'ask'].includes(resolveFilesystemPermission({ path: entry.path, operation: 'write', policy: ceiling ?? config.policy })),
+      }
+    }) })
   })
 
   app.post('/history-stages/restore', async context => {
@@ -90,24 +114,28 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
       packs: manifest.packs,
       policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },
       reporting: runtime.reporter.configured,
+      activeWork: runtime.hasActiveWork(),
     })
   })
 
   app.get('/policy', context => context.json({
     effective: runtime.policy.effective(),
+    revision: runtime.policy.revision(),
     stored: runtime.policy.stored(),
     base: runtime.policy.base(),
     ceiling: config.nodePolicy ?? null,
   }))
 
   app.put('/policy', async context => {
-    const parsed = WorkspacePolicySchema.safeParse(await context.req.json().catch(() => null))
+    const parsed = WorkspacePolicyUpdateSchema.safeParse(await context.req.json().catch(() => null))
     if (!parsed.success) return context.json({ error: 'Invalid workspace policy', issues: parsed.error.issues }, 400)
     try {
-      const effective = await runtime.policy.apply(parsed.data)
+      const { expectedRevision, ...policy } = parsed.data
+      const effective = await runtime.policy.apply(policy, expectedRevision)
       logger.info('Workspace policy replaced through the setup face', { workspace: config.cwd })
-      return context.json({ effective, stored: runtime.policy.stored(), base: runtime.policy.base(), ceiling: config.nodePolicy ?? null })
+      return context.json({ effective, revision: runtime.policy.revision(), stored: runtime.policy.stored(), base: runtime.policy.base(), ceiling: config.nodePolicy ?? null })
     } catch (error) {
+      if (error instanceof PolicyConflictError) return context.json({ error: error.message }, 409)
       if (error instanceof PolicyError) return context.json({ error: error.message }, 400)
       throw error
     }
@@ -115,7 +143,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
 
   app.delete('/policy', async context => {
     const effective = await runtime.policy.clear()
-    return context.json({ effective, stored: null, base: runtime.policy.base(), ceiling: config.nodePolicy ?? null })
+    return context.json({ effective, revision: runtime.policy.revision(), stored: null, base: runtime.policy.base(), ceiling: config.nodePolicy ?? null })
   })
 
   return app

@@ -1,3 +1,4 @@
+import type { WorkspacePolicy } from '@5straps/protocol'
 import type { IsolatedShellOptions } from '../services/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
 import { hasExecutable } from '../domain/executable.js'
@@ -14,6 +15,7 @@ import { createShellPack } from './shell/index.js'
 import { createWebPack } from './web/index.js'
 
 export interface BuiltinPackOptions {
+  filesystemPolicy?: { policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null }
   cwd: string
   paths: PathView
   runProcess: ProcessRunner
@@ -68,10 +70,16 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     readOnlyPaths: options.mountReadOnlyPaths,
     unavailableReason: shellUnavailableReason(options),
     isolation: options.shellIsolation,
+    filesystemPolicy: options.filesystemPolicy,
     allowNetwork: options.shellNetwork === true && !options.approvedUrls && options.allowedHosts.length === 0,
   }))
 
   if (options.environmentValidator) packs.push(createEnvironmentPack({ command: options.environmentValidator, cwd: options.cwd, runProcess: options.runProcess }))
+  const restricted = [options.filesystemPolicy?.policy, options.filesystemPolicy?.ceiling]
+    .some(policy => policy?.filesystem?.rules.some(rule => rule.read === 'deny' || rule.read === 'ask' || rule.write === 'deny' || rule.write === 'ask'))
+  if (restricted) for (const pack of packs) {
+    if (pack.id === 'git' || pack.id === 'dev') pack.unavailableReason = 'Host Git and language-server tools do not enforce per-path policy; use the sandboxed shell or filesystem tools'
+  }
   return packs
 }
 

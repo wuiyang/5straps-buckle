@@ -1,3 +1,4 @@
+import { createWorkbenchApp } from './workbench-app.js'
 import { bodyLimit } from 'hono/body-limit'
 import { auditHttpRequest } from '../services/audit-operation.js'
 import { createMcpHandler } from '@modelcontextprotocol/server'
@@ -23,6 +24,7 @@ export function createHttpApp(input: {
   const { config, runtime, authToken } = input
   const app = new Hono()
   app.route('/', createWorkspaceApp({ config, runtime }))
+  app.route('/v1/workbenches', createWorkbenchApp(runtime))
   app.route('/', createRpcApp({ config, runtime, authToken }))
 
   const mcpHandler = createMcpHandler(() => createMcpServer({

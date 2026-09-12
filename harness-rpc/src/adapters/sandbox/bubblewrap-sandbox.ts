@@ -17,6 +17,7 @@ function buildArgs(command: SandboxCommand, nodePrefix: string): string[] {
   const root = command.workspaceRoot ?? command.mount?.root ?? command.writableRoots[0] ?? command.cwd
   args.push('--ro-bind', root, sandboxPath(root, command))
   for (const path of command.writableRoots) args.push('--bind', path, sandboxPath(path, command))
+  for (const path of command.readOnlyWorkspacePaths ?? []) args.push('--ro-bind', path, sandboxPath(path, command))
   for (const path of command.hiddenPaths) args.push('--tmpfs', sandboxPath(path, command))
   for (const path of command.hiddenFiles ?? []) args.push('--ro-bind', '/dev/null', sandboxPath(path, command))
   args.push('--chdir', sandboxPath(command.cwd, command), '--', command.command, ...command.args)

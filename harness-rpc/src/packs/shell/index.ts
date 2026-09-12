@@ -1,3 +1,5 @@
+import { projectFilesystemSandbox } from '../../domain/filesystem-policy.js'
+import type { WorkspacePolicy } from '@5straps/protocol'
 import { relative, resolve } from 'node:path'
 import { runIsolatedShell, type IsolatedShellOptions } from '../../services/isolated-shell.js'
 import { collectShellHiddenPaths } from '../../services/shell-filesystem.js'
@@ -37,6 +39,7 @@ const scriptInput = z.object({
 })
 
 export interface ShellPackOptions {
+  filesystemPolicy?: { policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null }
   paths: PathView
   runProcess: ProcessRunner
   sandbox: Sandbox
@@ -69,6 +72,12 @@ export function createShellPack(options: ShellPackOptions): Pack {
     const hidden = options.sandbox.mode === 'none' ? { directories: options.hiddenPaths, files: [] } : await collectShellHiddenPaths({
       roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths], protectedPaths: options.hiddenPaths, signal: input.signal,
     })
+    if (options.sandbox.mode === 'none' && [options.filesystemPolicy?.policy, options.filesystemPolicy?.ceiling].some(policy => policy?.filesystem?.rules.length)) throw new ToolInputError('Filesystem policy requires an operating-system sandbox', { code: 'PERMISSION_DENIED' })
+    const restrictions = options.filesystemPolicy
+      ? await projectFilesystemSandbox({ root: options.paths.root, ...options.filesystemPolicy, signal: input.signal })
+      : { hiddenPaths: [], hiddenFiles: [], readOnlyWorkspacePaths: [] }
+    hidden.directories.push(...restrictions.hiddenPaths)
+    hidden.files.push(...restrictions.hiddenFiles)
     const writableRoots = [cwd, ...options.paths.scratchRoots]
     const run = (copyRoot?: string) => {
       const mapped = (path: string) => copyRoot ? resolve(copyRoot, relative(options.paths.root, path)) : path
@@ -84,6 +93,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
         hiddenPaths: copyRoot ? hidden.directories.filter(path => !isInsideAny([options.paths.root], path)) : hidden.directories,
         hiddenFiles: copyRoot ? hidden.files.filter(path => !isInsideAny([options.paths.root], path)) : hidden.files,
         readOnlyPaths: options.readOnlyPaths,
+        readOnlyWorkspacePaths: restrictions.readOnlyWorkspacePaths.map(mapped),
       })
       return options.runProcess({
         command: wrapped.command, args: wrapped.args, cwd: mapped(cwd), timeoutMs: input.timeoutMs,
@@ -96,6 +106,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     const result = await runIsolatedShell({
       isolation: options.isolation, sourceRoot: options.paths.root, writableRoots,
       excluded: [...hidden.directories, ...hidden.files],
+      readOnlyPaths: restrictions.readOnlyWorkspacePaths,
       details: { sessionId: input.context.sessionId, stageId: input.context.stageId ?? input.context.requestId, tool: input.tool },
       execute: run,
     })

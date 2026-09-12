@@ -9,9 +9,10 @@ export interface WriteScopeOptions {
   paths: PathView
   /** Strict mode refuses to persist write grants, so every directory asks every session. */
   strict: boolean
+  pathDecision?: (path: string) => 'inherit' | 'allow' | 'ask' | 'deny'
 }
 
-export function createWriteScopeRule({ paths, strict }: WriteScopeOptions): PermissionRule {
+export function createWriteScopeRule({ paths, strict, pathDecision }: WriteScopeOptions): PermissionRule {
   const offeredScopes: GrantScope[] = strict ? ['once'] : ['once', 'session', 'always']
   const reachable = [paths.root, ...paths.scratchRoots]
 
@@ -25,6 +26,7 @@ export function createWriteScopeRule({ paths, strict }: WriteScopeOptions): Perm
         return deny('write_scope', effect.path, outsideMountReason({ named: null, displayRoots: paths.displayRoots }))
       }
 
+      if (isInside(paths.root, effect.path) && pathDecision?.(effect.path) === 'allow') return { kind: 'allow' }
       const granted = grants.subjectsFor('write_scope').find(root => isInside(root, effect.path))
       if (granted) return allowedVia('write_scope', granted)
       const free = paths.scratchRoots.length > 0 ? `. Writable without asking: ${paths.scratchRoots.join(', ')}` : ''

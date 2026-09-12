@@ -12,6 +12,7 @@ function buildProfile(command: SandboxCommand): string {
     '(version 1)', '(deny default)', '(allow process-exec process-fork sysctl-read mach-lookup)',
     `(allow file-read* ${readable.map(path => `(subpath ${quote(path)})`).join(' ')})`,
     `(allow file-write* (subpath "/private/tmp") (subpath "/tmp")${writable ? ` ${writable}` : ''})`,
+    ...(command.readOnlyWorkspacePaths ?? []).map(path => `(deny file-write* (subpath ${quote(path)}))`),
     ...hidden,
     command.allowNetwork ? '(allow network*)' : '(deny network*)',
   ].join('\n')

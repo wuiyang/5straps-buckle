@@ -1,3 +1,4 @@
+import { policyRevision, PolicyConflictError } from '../../domain/policy.js'
 import { z } from 'zod'
 import { WorkspacePolicySchema } from '@5straps/protocol'
 import type { PolicyStore } from '../../ports/policy-store.js'
@@ -19,12 +20,18 @@ export function createFilePolicyStore(input: { filePath: string; workspace: stri
   return {
     read: () => store.read().workspaces[input.workspace] ?? null,
 
-    write(policy) {
-      store.update(state => { state.workspaces[input.workspace] = policy })
+    write(policy, expectedRevision) {
+      store.update(state => {
+        if (expectedRevision !== undefined && policyRevision(state.workspaces[input.workspace] ?? null) !== expectedRevision) throw new PolicyConflictError('Workspace policy changed; reload before saving')
+        state.workspaces[input.workspace] = policy
+      })
     },
 
-    clear() {
-      store.update(state => { delete state.workspaces[input.workspace] })
+    clear(expectedRevision) {
+      store.update(state => {
+        if (expectedRevision !== undefined && policyRevision(state.workspaces[input.workspace] ?? null) !== expectedRevision) throw new PolicyConflictError('Workspace policy changed; reload before saving')
+        delete state.workspaces[input.workspace]
+      })
     },
   }
 }

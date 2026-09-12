@@ -14,6 +14,7 @@ export interface SandboxCommand {
   /** Host paths a command must not see, Buckle's own state above all. */
   hiddenPaths: string[]
   hiddenFiles?: string[]
+  readOnlyWorkspacePaths?: string[]
   workspaceRoot?: string
   /** Host directories a mounted command may still read, for toolchains living outside the system directories. */
   readOnlyPaths: string[]
