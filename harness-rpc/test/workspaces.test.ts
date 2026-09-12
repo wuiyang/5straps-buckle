@@ -108,3 +108,13 @@ it('rejects workspaces exposed by inherited host read-only mounts', async () => 
   expect(response.status).toBe(409)
   expect(await response.text()).toContain('read-only mount')
 })
+
+it('does not inherit node callbacks without a workspace identity', async () => {
+  config.reportUrl = 'https://reports.example.test/events'
+  config.reportToken = 'node-report-fixture'
+  config.approvalWebhook = 'https://reports.example.test/approvals'
+  await register('one')
+  const response = await app.request('/workspaces/one/setup/status', { headers: headers(setup('one')) })
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({ reporting: false })
+})

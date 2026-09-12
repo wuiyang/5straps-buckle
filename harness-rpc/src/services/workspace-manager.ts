@@ -96,6 +96,10 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           nodeStateDirectory: stateRoot,
           scratchRoots: [],
           skillDirectories: [],
+          // Legacy callbacks lack workspace identity; Rings routes scoped invocation approvals.
+          reportUrl: undefined,
+          reportToken: undefined,
+          approvalWebhook: undefined,
           strictWrites: true,
           // Every registered workspace has a hard path boundary, independent of grants.
           policy: { ...mergePolicies(input.config.policy, workspace.policy), mount: '/workspace' },
