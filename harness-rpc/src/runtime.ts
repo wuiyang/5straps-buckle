@@ -55,6 +55,7 @@ export interface PolicyHandle {
 }
 
 export interface BuckleRuntime {
+  readonly workspaceId: string
   manifest(): HarnessManifest
   registry(): ToolRegistry
   skills(): LoadedSkill[]
@@ -115,6 +116,7 @@ export async function createRuntime(input: {
   let registry = createToolRegistry(availableTools(packs))
 
   const runtime: BuckleRuntime = {
+    workspaceId: input.workspaceId ?? 'default',
     manifest: () => buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }),
     registry: () => registry,
     skills: allSkills,

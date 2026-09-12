@@ -29,18 +29,14 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     app.post('/setup/workspaces', async context => {
       const parsed = WorkspaceRegistrationSchema.safeParse(await context.req.json().catch(() => null))
       if (!parsed.success) return context.json({ error: 'Invalid workspace registration' }, 400)
-      const auditId = auditAdmin(input.runtime, 'workspace_register', parsed.data.id)
-      const workspace = manager.register(parsed.data)
-      auditAdmin(input.runtime, 'workspace_register', workspace.id, auditId)
+      const workspace = auditAdminOperation(input.runtime, 'workspace_register', parsed.data.id, () => manager.register(parsed.data))
       return context.json({ workspace }, 201)
     })
     app.patch('/setup/workspaces/:id', async context => {
       const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(await context.req.json().catch(() => null))
       if (!parsed.success) return context.json({ error: 'enabled is required' }, 400)
       const id = context.req.param('id')
-      const auditId = auditAdmin(input.runtime, 'workspace_enabled', id)
-      const workspace = manager.setEnabled(id, parsed.data.enabled)
-      auditAdmin(input.runtime, 'workspace_enabled', id, auditId)
+      const workspace = auditAdminOperation(input.runtime, parsed.data.enabled ? 'workspace_enable' : 'workspace_disable', id, () => manager.setEnabled(id, parsed.data.enabled))
       return context.json({ workspace })
     })
   }
@@ -50,7 +46,16 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     const path = context.req.path.slice(`/workspaces/${id}`.length)
     const credentials = manager.credentials(id)
     const credential = path.startsWith('/setup/') ? credentials?.setupToken : credentials?.authToken
-    if (!credential || !tokenMatches(context.req.header('authorization'), credential)) return context.json({ error: 'Unauthorized' }, 401)
+    if (!credential || !tokenMatches(context.req.header('authorization'), credential)) {
+      if (path === '/v1/invoke') {
+        const auditId = randomUUID()
+        input.runtime.actions.record({ auditId, event: 'result', workspaceId: credentials ? id : 'unresolved',
+          at: new Date().toISOString(), requestId: auditId, sessionId: 'rpc-untrusted', tool: 'workspace_invoke_rejected',
+          outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: 'HTTP 401',
+        })
+      }
+      return context.json({ error: 'Unauthorized' }, 401)
+    }
     const { config, runtime } = await manager.resolve(id)
     let face = faces.get(id)
     if (!face) {
@@ -75,12 +80,24 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
   return app
 }
 
-function auditAdmin(runtime: BuckleRuntime, tool: string, workspaceId: string, auditId?: string): string {
+function auditAdminOperation<T>(runtime: BuckleRuntime, tool: string, workspaceId: string, operation: () => T): T {
+  const auditId = auditAdmin(runtime, tool, workspaceId)
+  let result: T
+  try { result = operation() }
+  catch (error) {
+    auditAdmin(runtime, tool, workspaceId, auditId, 'error')
+    throw error
+  }
+  auditAdmin(runtime, tool, workspaceId, auditId)
+  return result
+}
+
+function auditAdmin(runtime: BuckleRuntime, tool: string, workspaceId: string, auditId?: string, outcome: 'ok' | 'error' = 'ok'): string {
   const id = auditId ?? randomUUID()
   runtime.actions.record({
     auditId: id, event: auditId ? 'result' : 'attempt', workspaceId,
     at: new Date().toISOString(), requestId: id, sessionId: 'node-admin', tool,
-    outcome: auditId ? 'ok' : 'started', durationMs: 0, effects: [], args: {},
+    outcome: auditId ? outcome : 'started', durationMs: 0, effects: [], args: {},
   })
   return id
 }

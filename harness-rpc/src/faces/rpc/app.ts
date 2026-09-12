@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { InvokeRequestSchema } from '@5straps/protocol'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -25,6 +26,18 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
     protocolVersion: runtime.manifest().protocolVersion,
   }))
 
+  const dispatched = new WeakSet<Request>()
+  app.use('/v1/invoke', async (context, next) => {
+    await next()
+    if (context.res.status < 400 || dispatched.has(context.req.raw)) return
+    const auditId = randomUUID()
+    runtime.actions.record({
+      auditId, event: 'result', workspaceId: runtime.workspaceId, at: new Date().toISOString(),
+      requestId: auditId, sessionId: 'rpc-untrusted', tool: 'rpc_invoke_rejected',
+      outcome: [401, 403].includes(context.res.status) ? 'denied' : 'error', durationMs: 0,
+      effects: [], args: {}, detail: `HTTP ${context.res.status}`,
+    })
+  })
   app.use('/v1/*', requireBearerToken(authToken))
 
   app.use('/v1/invoke', bodyLimit({
@@ -45,6 +58,7 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
     // A caller that supplies no session shares one, so a grant it was just given still applies
     // to its next call. A fresh id per request made every session grant dead on arrival.
     const sessionId = parsed.data.context?.sessionId ?? ANONYMOUS_SESSION_ID
+    dispatched.add(context.req.raw)
     const response = await runtime.invoke({ request: parsed.data, sessionId })
     return context.json(response, response.outcome === 'error' ? 422 : 200)
   })

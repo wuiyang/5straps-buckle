@@ -188,3 +188,23 @@ describe('workspace audit inspection', () => {
     expect(existsSync(join(workspace, 'new.txt'))).toBe(false)
   })
 })
+
+describe('audit coverage outside tool execution', () => {
+  it('records rejected RPC requests without storing supplied payload or credentials', async () => {
+    const response = await app.request('/v1/invoke', { method: 'POST', headers: bearer('not-authorized-secret'), body: JSON.stringify({ secret: 'private-payload' }) })
+    expect(response.status).toBe(401)
+    const entries = runtime.actions.read(20)
+    expect(entries.at(-1)).toMatchObject({ tool: 'rpc_invoke_rejected', outcome: 'denied' })
+    expect(JSON.stringify(entries)).not.toContain('private-payload')
+    expect(JSON.stringify(entries)).not.toContain('not-authorized-secret')
+  })
+
+  it('records setup changes and audit inspection', async () => {
+    await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, commands: { deny: ['curl *'] } }) })
+    const changes = runtime.actions.read(20).filter(entry => entry.tool === 'setup_put_policy')
+    expect(changes.map(entry => entry.event)).toEqual(['attempt', 'result'])
+    expect(changes[0]?.auditId).toBe(changes[1]?.auditId)
+    await app.request('/setup/audit', { headers: bearer(SETUP) })
+    expect(runtime.actions.read(1)[0]).toMatchObject({ tool: 'setup_get_audit', outcome: 'ok' })
+  })
+})

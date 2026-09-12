@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { ApprovalDecisionSchema, WorkspacePolicySchema } from '@5straps/protocol'
 import { Hono, type Context } from 'hono'
@@ -18,6 +19,22 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
   const app = new Hono()
 
   app.use('/*', requireBearerToken(setupToken))
+  app.use('/*', async (context, next) => {
+    const auditId = randomUUID()
+    const at = new Date().toISOString()
+    const start = performance.now()
+    const mutation = !['GET', 'HEAD'].includes(context.req.method)
+    const resource = context.req.path.split('/').find(part => ['policy', 'history', 'history-stages', 'approvals', 'grants', 'audit', 'status'].includes(part)) ?? 'unknown'
+    const entry = {
+      auditId, workspaceId: runtime.workspaceId, at, requestId: auditId, sessionId: 'workspace-admin',
+      tool: `setup_${context.req.method.toLowerCase()}_${resource}`, durationMs: 0, effects: [], args: {},
+    }
+    if (mutation) runtime.actions.record({ ...entry, event: 'attempt', outcome: 'started' })
+    await next()
+    runtime.actions.record({ ...entry, event: 'result', outcome: context.res.ok ? 'ok' : 'error',
+      durationMs: Math.round(performance.now() - start), detail: `HTTP ${context.res.status}`,
+    })
+  })
 
   app.post('/history-stages/restore', async context => {
     const parsed = z.object({ stageId: z.string().min(1), sessionId: z.string().min(1) }).safeParse(await context.req.json().catch(() => null))
