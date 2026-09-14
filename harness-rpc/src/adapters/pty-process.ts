@@ -1,9 +1,19 @@
 import type { PtySpawner } from '../ports/pty-process.js'
 import { WorkbenchError } from '../services/workbench/storage.js'
 
+interface NodePtyModule {
+  spawn(file: string, args: string[], options: { name: string, cwd: string, env: Record<string, string>, cols: number, rows: number }): {
+    write(data: string): void
+    resize(columns: number, rows: number): void
+    onData(listener: (data: string) => void): { dispose(): void }
+    onExit(listener: (event: { exitCode: number, signal?: number }) => void): { dispose(): void }
+    kill(signal?: string): void
+  }
+}
+
 export const spawnPtyProcess: PtySpawner = async request => {
-  let module: typeof import('node-pty')
-  try { module = await import('node-pty') } catch { throw new WorkbenchError('Interactive terminal support is unavailable on this Buckle installation', 503) }
+  let module: NodePtyModule
+  try { module = await import('node-pty') as unknown as NodePtyModule } catch { throw new WorkbenchError('Interactive terminal support is unavailable on this Buckle installation', 503) }
   const process = module.spawn(request.command, request.args, { name: 'xterm-256color', cwd: request.cwd, env: request.environment, cols: request.cols, rows: request.rows })
   let exited = false
   let finish: (() => void) | undefined
