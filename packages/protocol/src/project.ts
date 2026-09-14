@@ -14,6 +14,8 @@ export const ProjectSkillSchema = z.object({
 export const ProjectInputSchema = z.object({
   name: z.string().trim().min(1).max(200),
   instructions: z.string().max(100_000).default(''),
+  /** The Padding project this Rings project works from, so a Ready ticket maps back here. */
+  boardCode: z.string().trim().max(120).nullable().optional(),
   mounts: z.array(ProjectMountSchema).max(100).default([]),
   allowedSkills: z.array(z.string().min(1).max(500)).max(500).default([]),
   skills: z.array(ProjectSkillSchema).max(100).default([]),
