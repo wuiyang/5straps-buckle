@@ -9,6 +9,7 @@ import type { ToolEffect } from '../src/domain/effect.js'
 import { createWebPack } from '../src/packs/web/index.js'
 import { createRuntime, type BuckleRuntime } from '../src/runtime.js'
 import { createWorkspaceManager } from '../src/services/workspace-manager.js'
+import { createMcpServer } from '../src/faces/mcp/server.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -127,4 +128,16 @@ it('keeps node tool denials across child policy replacement and exposes disabled
   expect(prepare).not.toHaveBeenCalled()
   await runtime.policy.apply({ ...policy(), tools: { allow: [], deny: [] } })
   expect(runtime.manifest().tools).toEqual([])
+})
+
+it('refreshes MCP registrations when a workspace disables and re-enables tools', async () => {
+  const runtime = await workspace(policy())
+  const server = createMcpServer({ runtime, serverName: 'policy-test', version: '1.0.0' })
+  const names = () => Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools)
+  expect(names()).toContain('fs_read')
+  await runtime.policy.apply({ ...policy(), tools: { allow: [], deny: [] } })
+  expect(names()).toEqual([])
+  await runtime.policy.clear()
+  expect(names()).toContain('fs_read')
+  await server.close()
 })
