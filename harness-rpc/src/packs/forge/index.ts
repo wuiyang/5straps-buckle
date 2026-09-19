@@ -80,12 +80,12 @@ export function createForgePack(options: ForgePackOptions): Pack {
     })
   }
 
+  const scrub = (text: string): string => credentialForms(forge.token).reduce(stripSecret, text)
+
   const gitOutput = async (input: { repository: string; args: string[]; extra?: Record<string, string>; context: ToolContext }): Promise<string> => {
     const result = await runGit(input)
-    if (result.exitCode !== 0) {
-      throw new ToolExecutionError(stripSecret(describeProcessFailure('git', result), forge.token), { code: 'GIT_FAILED' })
-    }
-    return stripSecret(result.stdout, forge.token)
+    if (result.exitCode !== 0) throw new ToolExecutionError(scrub(describeProcessFailure('git', result)), { code: 'GIT_FAILED' })
+    return scrub(result.stdout)
   }
 
   /** The remote git itself would push to, which is what settles any rewrite rule config carries. */
@@ -237,8 +237,21 @@ function credentialEnvironment(input: { remote: ForgeRemote; forge: ForgePackOpt
   return {
     GIT_CONFIG_COUNT: '1',
     GIT_CONFIG_KEY_0: 'http.extraheader',
-    GIT_CONFIG_VALUE_0: `Authorization: Bearer ${input.forge.token}`,
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${basicCredential(input.forge.token)}`,
   }
+}
+
+/**
+ * GitHub's git endpoint authenticates a personal access token as Basic auth and refuses a bearer
+ * there, while its REST API takes the bearer. The encoded form is a credential in its own right,
+ * so both forms are stripped from anything a caller sees.
+ */
+function basicCredential(token: string): string {
+  return Buffer.from(`x-access-token:${token}`).toString('base64')
+}
+
+function credentialForms(token: string): string[] {
+  return token ? [token, basicCredential(token)] : []
 }
 
 function assertRemoteAllowed(input: { remote: ForgeRemote; gitHost: string; approved: UrlMatcher | null }): void {

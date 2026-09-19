@@ -192,9 +192,10 @@ describe('git_push', () => {
     expect(push?.args).toEqual(['push', '--set-upstream', 'origin', 'forge-live-check'])
     expect(push?.environment.GIT_CONFIG_COUNT).toBe('1')
     expect(push?.environment.GIT_CONFIG_KEY_0).toBe('http.extraheader')
-    expect(push?.environment.GIT_CONFIG_VALUE_0).toBe(`Authorization: Bearer ${TOKEN}`)
+    expect(push?.environment.GIT_CONFIG_VALUE_0).toBe(`Authorization: Basic ${Buffer.from(`x-access-token:${TOKEN}`).toString('base64')}`)
+    const encoded = Buffer.from(`x-access-token:${TOKEN}`).toString('base64')
     expect(JSON.stringify(calls.map(request => request.args))).not.toContain(TOKEN)
-    expect(JSON.stringify(output)).not.toContain(TOKEN)
+    for (const form of [TOKEN, encoded]) expect(JSON.stringify(output)).not.toContain(form)
   })
 
   it('refuses force by name rather than asking about it', async () => {
