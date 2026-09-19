@@ -51,3 +51,13 @@ export function redactAuditArguments(value: JsonValue, depth = 0): JsonValue {
   }
   return value
 }
+
+/**
+ * Removes a credential from text on its way out. Process output and upstream error bodies are
+ * written by something Buckle does not control, so the token is stripped rather than trusted
+ * to be absent.
+ */
+export function stripSecret(value: string, secret: string | undefined): string {
+  if (!secret) return value
+  return value.split(secret).join('[redacted]')
+}

@@ -6,6 +6,9 @@ const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_TIMEOUT_MS = 300_000
 const DEFAULT_APPROVAL_TIMEOUT_MS = 15_000
+const DEFAULT_FORGE_API_URL = 'https://api.github.com'
+const DEFAULT_FORGE_GIT_AUTHOR = '5straps agent <agent@5straps.local>'
+const GIT_AUTHOR_PATTERN = /^(.+?)\s*<([^<>\s]+@[^<>\s]+)>$/
 
 export interface BuckleConfig {
   host: string
@@ -37,6 +40,15 @@ export interface BuckleConfig {
   environmentValidator?: string
   allowedHosts: string[]
   braveSearchApiKey?: string
+  /**
+   * The owner's forge credential. Absent withholds the forge pack, naming the variable, rather
+   * than failing partway through a commit-push-review sequence.
+   */
+  forgeGithubToken?: string
+  /** The forge API root. Configurable so a test server and an Enterprise install take one path. */
+  forgeApiUrl: string
+  /** The identity forge commits carry, without writing anything into the workspace's git config. */
+  forgeGitAuthor: { name: string; email: string }
   agentBrowserCommand: string
   /** Show the browser window. Headless by default, because a Buckle node usually has no display. */
   browserHeaded: boolean
@@ -101,6 +113,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     environmentValidator: environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined,
     allowedHosts: parseList(environment.BUCKLE_ALLOWED_HOSTS),
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,
+    forgeGithubToken: environment.BUCKLE_FORGE_GITHUB_TOKEN || undefined,
+    forgeApiUrl: parseForgeApiUrl(environment.BUCKLE_FORGE_GITHUB_API_URL),
+    forgeGitAuthor: parseGitAuthor(environment.BUCKLE_FORGE_GIT_AUTHOR),
     agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND ?? 'agent-browser',
     browserHeaded: environment.BUCKLE_BROWSER_HEADED === 'true',
     approvalTimeoutMs: parseTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_TIMEOUT_MS),
@@ -175,6 +190,27 @@ function parseTimeout(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value, 10)
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`Invalid BUCKLE_APPROVAL_TIMEOUT_MS: ${value}`)
   return parsed
+}
+
+function parseForgeApiUrl(value: string | undefined): string {
+  const raw = value?.trim() || DEFAULT_FORGE_API_URL
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new Error(`Invalid BUCKLE_FORGE_GITHUB_API_URL: ${raw}`)
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`Invalid BUCKLE_FORGE_GITHUB_API_URL: ${raw} is not an http or https URL`)
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+}
+
+function parseGitAuthor(value: string | undefined): { name: string; email: string } {
+  const raw = value?.trim() || DEFAULT_FORGE_GIT_AUTHOR
+  const match = GIT_AUTHOR_PATTERN.exec(raw)
+  if (!match) throw new Error(`Invalid BUCKLE_FORGE_GIT_AUTHOR: ${raw}; expected "Name <email>"`)
+  return { name: match[1]!.trim(), email: match[2]! }
 }
 
 function parseList(value: string | undefined): string[] {
