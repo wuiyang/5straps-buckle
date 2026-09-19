@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { PermissionRuleIdSchema } from './approval.js'
 import { JsonValueSchema } from './json.js'
+import { ToolNameSchema } from './tool.js'
 
 /**
  * What the owner of a workspace lets an agent do there. Buckle enforces it. Rings may hold a
@@ -43,9 +44,16 @@ export const FilesystemRuleSchema = z.object({
 export const FilesystemPolicySchema = z.object({ rules: z.array(FilesystemRuleSchema).max(1000) }).strict()
 export type FilesystemPermission = z.infer<typeof FilesystemPermissionSchema>
 
+export const WorkspaceToolPolicySchema = z.object({
+  /** Omitted inherits all tools; an empty list explicitly disables every tool. */
+  allow: z.array(ToolNameSchema).max(1000).optional(),
+  deny: z.array(ToolNameSchema).max(1000).default([]),
+}).strict()
+
 export const WorkspacePolicySchema = z.object({
   version: z.literal(1),
   filesystem: FilesystemPolicySchema.optional(),
+  tools: WorkspaceToolPolicySchema.optional(),
   commands: CommandPolicySchema.default({ allow: [], deny: [] }),
   network: NetworkPolicySchema.default({ allow: [] }),
   /** Where the agent sees the workspace, e.g. `/workspace`. Null shows the real path. */
@@ -54,6 +62,10 @@ export const WorkspacePolicySchema = z.object({
 })
 export const WorkspacePolicyUpdateSchema = WorkspacePolicySchema.extend({ expectedRevision: z.string().regex(/^[a-f0-9]{64}$/).optional() })
 export type WorkspacePolicy = z.infer<typeof WorkspacePolicySchema>
+
+export function isWorkspaceToolAllowed(policy: Pick<WorkspacePolicy, 'tools'>, tool: string): boolean {
+  return !policy.tools?.deny.includes(tool) && (policy.tools?.allow === undefined || policy.tools.allow.includes(tool))
+}
 
 export function emptyWorkspacePolicy(): WorkspacePolicy {
   return { version: 1, commands: { allow: [], deny: [], destructive: [] }, network: { allow: [] }, mount: null, updatedAt: null }

@@ -34,6 +34,7 @@ function gatedServer(): McpServer {
   }])
   const runtime = {
     registry: () => registry,
+    manifest: () => ({ tools: registry.capabilities() }),
     skills: () => [],
     onToolsChanged: () => undefined,
     invoke: async () => gatedResponse,

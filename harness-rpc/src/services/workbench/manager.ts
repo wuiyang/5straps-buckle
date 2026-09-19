@@ -23,6 +23,7 @@ export interface WorkbenchManagerOptions extends WorkbenchFileOptions {
   history: ChangeHistory
   spawnPty: PtySpawner
   policyHash(): string
+  authorizeTool?(tool: string): boolean
   prepareTerminal(input: { root: string; cwd: string; cols: number; rows: number }): Promise<PtySpawnRequest>
   now?: () => number
 }
@@ -63,6 +64,9 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
   }
   function purge(record: StoredWorkbench): void {
     for (const name of readdirSync(storage.location(record.id))) if (name !== 'state.json') rmSync(join(storage.location(record.id), name), { recursive: true, force: true })
+  }
+  function assertTool(tool: string): void {
+    if (options.authorizeTool && !options.authorizeTool(tool)) throw new WorkbenchError('Tool disabled by workspace policy', 403)
   }
   function assertOpen(record: StoredWorkbench): void {
     if (CLOSED.has(record.status) || ['preparing', 'applying', 'apply_uncertain'].includes(record.status)) throw new WorkbenchError('Workbench is not available for this operation')
@@ -112,7 +116,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       })
       records.set(record.id, record); save(record)
       return operation(record.id, 'create', 'workspace-setup', {}, async () => {
-        try { files.prepare(record.id); record.status = 'open'; save(record); return publicWorkbench(record) }
+        try { assertTool('fs_read'); files.prepare(record.id); record.status = 'open'; save(record); return publicWorkbench(record) }
         catch (error) { record.status = 'interrupted'; save(record); throw error }
       })
     },
@@ -120,6 +124,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       const parsed = WorkbenchInvokeSchema.parse(input)
       return operation(id, 'invoke', parsed.actorId, { tool: parsed.tool }, async record => {
         assertOpen(record)
+        assertTool(parsed.tool)
         const result = await files.invoke(id, record.chatId, parsed.tool, parsed.args)
         if (parsed.tool === 'fs_write') { record.status = 'open'; record.reviewId = null; record.revision++; save(record) }
         return { result, workbench: publicWorkbench(record) }
@@ -129,6 +134,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       const parsed = WorkbenchTerminalStartSchema.parse(input)
       return operation(id, 'terminal_start', parsed.actorId, { cwd: parsed.cwd }, async record => {
         assertOpen(record)
+        assertTool('shell_exec')
         if (!record.allowShell) throw new WorkbenchError('This workbench has no interactive shell authority', 403)
         if (record.policyHash !== options.policyHash()) throw new WorkbenchError('Workspace policy changed; apply or discard this workbench before opening a new terminal', 403)
         const cwd = await files.authorize(id, parsed.cwd, 'read')
@@ -152,6 +158,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       const parsed = WorkbenchTerminalInputSchema.parse(input)
       return operation(id, 'terminal_input', parsed.actorId, { terminalId, generation: parsed.generation, sequence: parsed.sequence, bytes: Buffer.byteLength(parsed.data) }, record => {
         assertOpen(record)
+        assertTool('shell_exec')
         return { terminal: structuredClone(terminals.input(record, terminalId, parsed)) }
       })
     },
@@ -168,6 +175,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     review(id: string, actorId: string) {
       return operation(id, 'review', actorId, {}, record => {
         assertStopped(record)
+        assertTool('fs_read')
         const before = files.base(id)
         const target = files.capture(id)
         files.assertWritableChanges(before, target)
@@ -183,6 +191,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       const parsed = WorkbenchApplySchema.parse(input)
       return operation(id, 'apply', parsed.actorId, { reviewId: parsed.reviewId }, async record => {
         assertStopped(record)
+        assertTool('fs_write')
         if (record.status !== 'reviewing' || record.reviewId !== parsed.reviewId) throw new WorkbenchError('Review is stale; review the current working copy before applying')
         const review = reviewStorageSchema.parse(JSON.parse(readFileSync(join(storage.location(id), 'review.json'), 'utf8')))
         const target = files.capture(id)

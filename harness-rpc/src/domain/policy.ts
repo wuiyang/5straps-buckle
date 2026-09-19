@@ -48,6 +48,13 @@ export function mergePolicies(...policies: Array<WorkspacePolicy | null>): Works
   const merged = emptyWorkspacePolicy()
   for (const policy of policies) {
     if (!policy) continue
+    if (policy.tools) {
+      const previous = merged.tools
+      const currentAllow = policy.tools.allow
+      const allow = previous?.allow === undefined ? currentAllow
+        : currentAllow === undefined ? previous.allow : previous.allow.filter(name => currentAllow.includes(name))
+      merged.tools = { ...(allow !== undefined ? { allow: unique(allow) } : {}), deny: unique([...previous?.deny ?? [], ...policy.tools.deny]) }
+    }
     if (policy.filesystem) merged.filesystem = { rules: [...merged.filesystem?.rules ?? [], ...policy.filesystem.rules] }
     merged.commands.allow = unique([...merged.commands.allow, ...policy.commands.allow])
     merged.commands.deny = unique([...merged.commands.deny, ...policy.commands.deny])
@@ -60,7 +67,8 @@ export function mergePolicies(...policies: Array<WorkspacePolicy | null>): Works
 }
 
 export function isRestrictive(policy: WorkspacePolicy): boolean {
-  return Boolean(policy.filesystem?.rules.length)
+  return policy.tools?.allow !== undefined || Boolean(policy.tools?.deny.length)
+    || Boolean(policy.filesystem?.rules.length)
     || policy.commands.allow.length > 0
     || policy.commands.deny.length > 0
     || destructivePatterns(policy).length > 0

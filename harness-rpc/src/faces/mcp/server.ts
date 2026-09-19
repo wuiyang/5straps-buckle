@@ -15,24 +15,26 @@ interface ApprovalAnswer extends Record<string, unknown> {
  */
 export function createMcpServer(input: { runtime: BuckleRuntime; serverName: string; version: string; trustedApprovalResponses?: boolean }): McpServer {
   const server = new McpServer({ name: input.serverName, version: input.version })
-  registerTools(server, input.runtime, input.trustedApprovalResponses === true)
+  let registrations = registerTools(server, input.runtime, input.trustedApprovalResponses === true)
   registerSkills(server, input.runtime)
 
   input.runtime.onToolsChanged(() => {
-    registerTools(server, input.runtime, input.trustedApprovalResponses === true)
+    for (const registration of registrations) registration.remove()
+    registrations = registerTools(server, input.runtime, input.trustedApprovalResponses === true)
     logger.info('MCP tool list refreshed')
   })
 
   return server
 }
 
-function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprovalResponses: boolean): void {
+function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprovalResponses: boolean): Array<ReturnType<McpServer['registerTool']>> {
   const readers = capabilityReaders(server)
+  const registrations: Array<ReturnType<McpServer['registerTool']>> = []
 
-  for (const name of runtime.registry().capabilities().map(capability => capability.name)) {
+  for (const name of runtime.manifest().tools.map(capability => capability.name)) {
     const tool = runtime.registry().get(name)
 
-    server.registerTool(
+    registrations.push(server.registerTool(
       tool.capability.name,
       {
         description: tool.capability.description,
@@ -61,8 +63,9 @@ function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprova
         }
         return toCallToolResult(response)
       },
-    )
+    ))
   }
+  return registrations
 }
 
 /**

@@ -33,6 +33,7 @@ export interface InvokerOptions {
   workspaceId?: string
   defaultTimeoutMs: number
   maxTimeoutMs: number
+  toolDenial?(tool: string): string | null
 }
 
 export interface Invoker {
@@ -65,6 +66,12 @@ export function createInvoker(options: InvokerOptions): Invoker {
 
       const response = await (async (): Promise<InvokeResponse> => {
         try {
+          const reason = options.toolDenial?.(request.tool)
+          if (reason) {
+            const response = denied(request, reason)
+            gate = { response, asked: [], approvedBy: [], denial: { rule: 'tool_policy', subject: request.tool, reason } }
+            return response
+          }
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 

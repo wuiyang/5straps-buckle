@@ -111,3 +111,20 @@ it('rejects automatic search redirects instead of forwarding its configured API 
   await search.prepare({ query: 'test' }).execute({ requestId: 'search', sessionId: 'search', timeoutMs: 1000, signal: AbortSignal.timeout(1000) })
   expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ redirect: 'error' }))
 })
+
+it('keeps node tool denials across child policy replacement and exposes disabled installed tools for setup', async () => {
+  const node = { ...policy(), tools: { allow: ['fs_read'], deny: ['fs_write'] } }
+  const child = { ...policy(), tools: { allow: ['fs_read', 'fs_write'], deny: [] } }
+  const runtime = await workspace(node, child)
+  expect(runtime.manifest().tools.map(tool => tool.name)).toEqual(['fs_read'])
+  expect(runtime.toolCatalog().tools.some(tool => tool.name === 'fs_write')).toBe(true)
+  expect(runtime.toolCatalog().unavailable.some(tool => tool.name === 'fs_write')).toBe(true)
+  await runtime.policy.apply(policy())
+  expect(runtime.manifest().tools.map(tool => tool.name)).toEqual(['fs_read'])
+  const prepare = vi.spyOn(runtime.registry().get('fs_write'), 'prepare')
+  const result = await runtime.invoke({ request: { requestId: 'denied-tool', tool: 'fs_write', args: { path: 'test.txt', content: 'blocked' }, approvalTokens: [] }, sessionId: 'tool-policy' })
+  expect(result.outcome).toBe('error')
+  expect(prepare).not.toHaveBeenCalled()
+  await runtime.policy.apply({ ...policy(), tools: { allow: [], deny: [] } })
+  expect(runtime.manifest().tools).toEqual([])
+})

@@ -12,7 +12,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { createChangeHistory, type ChangeHistory } from './services/history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
-import { PROTOCOL_VERSION, type HarnessManifest, type InvokeRequest, type InvokeResponse, type WorkspacePolicy } from '@5straps/protocol'
+import { PROTOCOL_VERSION, isWorkspaceToolAllowed, type HarnessManifest, type InvokeRequest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
 import { createFileActionLog } from './adapters/action-log/file-action-log.js'
 import { createPluginRegistry, type PluginRegistry } from './adapters/plugin-registry.js'
 import { createFileGrantStore } from './adapters/grant-store/file-grant-store.js'
@@ -69,6 +69,7 @@ export interface BuckleRuntime {
   workbenches: ReturnType<typeof createWorkbenchManager>
   hasActiveWork(): boolean
   manifest(): HarnessManifest
+  toolCatalog(): { tools: ToolCapability[]; unavailable: Array<{ name: string; reason: string }> }
   registry(): ToolRegistry
   skills(): LoadedSkill[]
   paths(): PathView
@@ -136,8 +137,11 @@ export async function createRuntime(input: {
     protectedRoots: [config.nodeStateDirectory ?? config.stateDirectory], actions, history,
     hasRipgrep: hasExecutable('rg'), spawnPty: spawnPtyProcess,
     policyHash: () => workbenchHash(JSON.stringify([compiled.policy, ceiling?.policy ?? null])),
+    authorizeTool: tool => toolDenial(tool) === null,
     authorizePath: (path, operation) => !['deny', 'ask'].includes(resolveFilesystemPermission({ path, operation, policy: compiled.policy, ceiling: ceiling?.policy })),
     async prepareTerminal(request) {
+      const denial = toolDenial('shell_exec')
+      if (denial) throw new WorkbenchError(denial, 403)
       if (!config.enableShell || config.enabledPacks && !config.enabledPacks.includes('shell') || sandbox.sandbox.mode !== 'bubblewrap') throw new WorkbenchError('Interactive terminals require an enabled bubblewrap sandbox', 403)
       const policies = [compiled.policy, ...(ceiling ? [ceiling.policy] : [])]
       if (policies.some(policy => policy.commands.allow.length || policy.commands.deny.length || policy.commands.destructive?.length)) throw new WorkbenchError('Interactive shells cannot enforce command allowlists, denylists or command approval rules', 403)
@@ -160,7 +164,11 @@ export async function createRuntime(input: {
     workspaceId: input.workspaceId ?? 'default',
     workbenches,
     hasActiveWork: () => activeInvocations > 0 || workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
-    manifest: () => buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }),
+    manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: registry.capabilities().filter(tool => toolDenial(tool.name) === null) }),
+    toolCatalog: () => ({ tools: registry.capabilities(), unavailable: registry.capabilities().flatMap(tool => {
+      const reason = toolDenial(tool.name)
+      return reason ? [{ name: tool.name, reason }] : []
+    }) }),
     registry: () => registry,
     skills: allSkills,
     paths: () => paths,
@@ -209,6 +217,7 @@ export async function createRuntime(input: {
       channel: channel ?? defaultChannel,
       defaultTimeoutMs: config.defaultTimeoutMs,
       maxTimeoutMs: config.maxTimeoutMs,
+      toolDenial,
     }).invoke({ request, sessionId }) } finally { activeInvocations-- }
     },
 
@@ -234,6 +243,12 @@ export async function createRuntime(input: {
 
   function allSkills(): LoadedSkill[] {
     return [...availableSkills(packs), ...localSkills]
+  }
+
+  function toolDenial(tool: string): string | null {
+    if (ceiling && !isWorkspaceToolAllowed(ceiling.policy, tool)) return 'Disabled by node tool policy'
+    if (!isWorkspaceToolAllowed(compiled.policy, tool)) return 'Disabled by workspace tool policy'
+    return null
   }
 
   return runtime

@@ -118,6 +118,8 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     })
   })
 
+  app.get('/tools', context => context.json(runtime.toolCatalog()))
+
   app.get('/policy', context => context.json({
     effective: runtime.policy.effective(),
     revision: runtime.policy.revision(),

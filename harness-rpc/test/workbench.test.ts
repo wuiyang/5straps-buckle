@@ -36,6 +36,7 @@ async function fixture() {
   let clock = Date.now()
   let policy = 'initial'
   let denyWrites = false
+  const disabledTools = new Set<string>()
   const processes: ReturnType<typeof fakePty>[] = []
   const spawned: PtySpawnRequest[] = []
   const options = {
@@ -44,6 +45,7 @@ async function fixture() {
     history, now: () => clock,
     authorizePath: (path: string, operation: 'read' | 'write') => !path.startsWith('private') && !(operation === 'write' && denyWrites),
     policyHash: () => policy,
+    authorizeTool: (tool: string) => !disabledTools.has(tool),
     async prepareTerminal(input: { root: string; cwd: string; cols: number; rows: number }) {
       return { command: 'fixture-shell', args: [], cwd: input.cwd, cols: input.cols, rows: input.rows, environment: {} }
     },
@@ -58,7 +60,7 @@ async function fixture() {
   async function edit(content: string) {
     await manager.invoke(grant.id, { actorId: 'alice', tool: 'fs_write', args: { path: 'note.txt', content, expectedHash: workbenchHash(readFileSync(join(copyRoot, 'note.txt'))) } })
   }
-  return { root, sourceRoot, state, copyRoot, grant, audit, history, processes, spawned, options, read, edit,
+  return { root, sourceRoot, state, copyRoot, grant, audit, history, processes, spawned, options, read, edit, disabledTools,
     get manager() { return manager },
     denyWrites() { denyWrites = true }, changePolicy() { policy = 'changed' }, advance(ms: number) { clock += ms },
     async restart() { await manager.close(); manager = createWorkbenchManager(options) },
@@ -270,4 +272,20 @@ describe('terminal control and recovery', () => {
     await f.manager.policyChanged()
     expect(f.manager.get(f.grant.id)).toMatchObject({ status: 'interrupted', terminals: [{ status: 'exited', controllerId: null }] })
   })
+})
+
+ it('enforces tool policy for staged reads, terminal startup and reviewed publication', async () => {
+  const f = await fixture()
+  await f.edit('staged')
+  const { review } = await f.manager.review(f.grant.id, 'alice')
+  f.disabledTools.add('fs_write')
+  await expect(f.manager.apply(f.grant.id, { actorId: 'alice', reviewId: review.id })).rejects.toThrow('Tool disabled')
+  expect(readFileSync(join(f.sourceRoot, 'note.txt'), 'utf8')).toBe('original')
+  f.disabledTools.add('fs_read')
+  await expect(f.read()).rejects.toThrow('Tool disabled')
+  await expect(f.manager.review(f.grant.id, 'alice')).rejects.toThrow('Tool disabled')
+  f.disabledTools.add('shell_exec')
+  await expect(f.manager.startTerminal(f.grant.id, { actorId: 'alice', cwd: '.', cols: 80, rows: 24 })).rejects.toThrow('Tool disabled')
+  expect(f.spawned).toHaveLength(0)
+  expect(f.audit.filter(event => event.outcome === 'error').length).toBe(4)
 })

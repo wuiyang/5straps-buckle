@@ -1,10 +1,12 @@
 import { z } from 'zod'
+import { ToolNameSchema } from './tool.js'
 
 export const ProjectMountSchema = z.object({
   serverId: z.string().min(1),
   workspaceId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/).default('default'),
   role: z.string().max(100).default(''),
   responsibility: z.string().max(10_000).default(''),
+  allowedTools: z.array(ToolNameSchema).max(500).refine(names => new Set(names).size === names.length, 'Tool names must be unique').optional(),
 })
 export const ProjectSkillSchema = z.object({
   id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/),
