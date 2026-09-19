@@ -1,0 +1,105 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
+import { forgeGitHost } from '../src/domain/forge.js'
+import { classifyRemote, readOriginUrl, repositoryOf } from '../src/packs/forge/remote.js'
+
+const roots: string[] = []
+afterAll(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+
+function repositoryWithOrigin(url: string): string {
+  const root = mkdtempSync('/tmp/buckle-forge-remote-')
+  roots.push(root)
+  const repository = join(root, 'work')
+  execFileSync('git', ['init', '-b', 'main', repository])
+  execFileSync('git', ['-C', repository, 'remote', 'add', 'origin', url])
+  return repository
+}
+
+describe('the host a forge API belongs to', () => {
+  it('reads github.com behind api.github.com, which is where git is served', () => {
+    expect(forgeGitHost(new URL('https://api.github.com'))).toBe('github.com')
+  })
+
+  it('leaves an enterprise host alone, where the API and git share one name', () => {
+    expect(forgeGitHost(new URL('https://ghe.example.com/api/v3'))).toBe('ghe.example.com')
+  })
+})
+
+describe('classifying an origin remote', () => {
+  it('reads an https remote as a network reach, carrying the host the rules judge', () => {
+    const remote = classifyRemote('https://github.com/wuiyang/demo.git')
+    expect(remote.kind).toBe('https')
+    if (remote.kind !== 'https') return
+    expect(remote.host).toBe('github.com')
+  })
+
+  it('drops userinfo from the display, so a credential in the config never reaches a result', () => {
+    const remote = classifyRemote('https://someone:secret-token@github.com/wuiyang/demo.git')
+    expect(remote.display).toBe('https://github.com/wuiyang/demo.git')
+    expect(remote.display).not.toContain('secret-token')
+  })
+
+  it('refuses an scp-style remote, because ssh would push under a key Buckle never judged', () => {
+    expect(() => classifyRemote('git@github.com:wuiyang/demo.git')).toThrow(/ssh/)
+  })
+
+  it('refuses an ssh scheme for the same reason', () => {
+    expect(() => classifyRemote('ssh://git@github.com/wuiyang/demo.git')).toThrow(/ssh/)
+  })
+
+  it('reads an absolute path as a repository on this filesystem', () => {
+    expect(classifyRemote('/srv/origin.git')).toEqual({ kind: 'local', path: '/srv/origin.git', display: '/srv/origin.git' })
+  })
+
+  it('reads a file URL the same way', () => {
+    expect(classifyRemote('file:///srv/origin.git').kind).toBe('local')
+  })
+
+  it('refuses an empty remote rather than guessing one', () => {
+    expect(() => classifyRemote('  ')).toThrow(/no origin remote URL/)
+  })
+})
+
+describe('the repository an https remote names', () => {
+  it('reads owner and name, with or without the .git suffix', () => {
+    expect(repositoryOf(classifyRemote('https://github.com/wuiyang/demo.git'))).toEqual({ owner: 'wuiyang', name: 'demo' })
+    expect(repositoryOf(classifyRemote('https://github.com/wuiyang/demo'))).toEqual({ owner: 'wuiyang', name: 'demo' })
+  })
+
+  it('refuses a local remote, which names no forge', () => {
+    expect(() => repositoryOf(classifyRemote('/srv/origin.git'))).toThrow(/names no forge repository/)
+  })
+})
+
+describe('reading the origin URL without running git', () => {
+  it('finds it in the repository config', () => {
+    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    expect(readOriginUrl(repository)).toBe('https://github.com/wuiyang/demo.git')
+  })
+
+  it('follows a linked worktree back to the repository holding the remotes', () => {
+    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    writeFileSync(join(repository, 'README.md'), '# demo\n')
+    execFileSync('git', ['-C', repository, 'add', 'README.md'])
+    execFileSync('git', ['-C', repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-m', 'first'])
+    const worktree = join(repository, '..', 'linked')
+    execFileSync('git', ['-C', repository, 'worktree', 'add', worktree, '-b', 'side'])
+    expect(readOriginUrl(worktree)).toBe('https://github.com/wuiyang/demo.git')
+  })
+
+  it('refuses a directory that is not a repository', () => {
+    const root = mkdtempSync('/tmp/buckle-forge-plain-')
+    roots.push(root)
+    expect(() => readOriginUrl(root)).toThrow(/not a git repository/)
+  })
+
+  it('refuses a repository with no origin', () => {
+    const root = mkdtempSync('/tmp/buckle-forge-noremote-')
+    roots.push(root)
+    const repository = join(root, 'work')
+    execFileSync('git', ['init', '-b', 'main', repository])
+    expect(() => readOriginUrl(repository)).toThrow(/has no origin remote/)
+  })
+})

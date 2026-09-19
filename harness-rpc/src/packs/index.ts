@@ -4,11 +4,14 @@ import { createEnvironmentPack } from './environment/index.js'
 import { hasExecutable } from '../domain/executable.js'
 import type { Pack } from '../domain/pack.js'
 import type { PathView } from '../domain/path-view.js'
+import { forgeGitHost } from '../domain/forge.js'
+import { createGitHubForgeClient } from '../adapters/forge/github.js'
 import type { UrlMatcher } from '../domain/url-pattern.js'
 import type { ProcessRunner } from '../ports/process-runner.js'
 import type { Sandbox } from '../ports/sandbox.js'
 import { createBrowserPack } from './browser/index.js'
 import { createDevPack } from './dev/index.js'
+import { createForgePack } from './forge/index.js'
 import { createFsPack } from './fs/index.js'
 import { createGitPack } from './git/index.js'
 import { createShellPack } from './shell/index.js'
@@ -28,6 +31,8 @@ export interface BuiltinPackOptions {
   /** The owner's approved list, or null for the default egress rules. */
   approvedUrls: UrlMatcher | null
   braveSearchApiKey?: string
+  /** The owner's forge credential and where it may be spent. */
+  forge: { token?: string; apiUrl: string; author: { name: string; email: string } }
   allowedHosts: string[]
   agentBrowserCommand: string
   /** Protected browser configuration and daemon identities for this workspace. */
@@ -48,6 +53,19 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     createFsPack({ paths: options.paths, runProcess: options.runProcess, hasRipgrep: hasExecutable('rg') }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, allowedHosts: options.allowedHosts, approved: options.approvedUrls }),
     createGitPack({ paths: options.paths, runProcess: options.runProcess, hasGit: hasExecutable('git') }),
+    createForgePack({
+      paths: options.paths,
+      runProcess: options.runProcess,
+      forge: {
+        client: options.forge.token ? createGitHubForgeClient({ token: options.forge.token, apiUrl: options.forge.apiUrl }) : null,
+        apiUrl: options.forge.apiUrl,
+        gitHost: forgeGitHost(new URL(options.forge.apiUrl)),
+        token: options.forge.token ?? '',
+      },
+      author: options.forge.author,
+      approved: options.approvedUrls,
+      unavailableReason: forgeUnavailableReason(options),
+    }),
     createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess, allowHostLsp: options.allowHostLsp }),
     createBrowserPack({
       cwd: options.cwd,
@@ -78,9 +96,15 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const restricted = [options.filesystemPolicy?.policy, options.filesystemPolicy?.ceiling]
     .some(policy => policy?.filesystem?.rules.some(rule => rule.read === 'deny' || rule.read === 'ask' || rule.write === 'deny' || rule.write === 'ask'))
   if (restricted) for (const pack of packs) {
-    if (pack.id === 'git' || pack.id === 'dev') pack.unavailableReason = 'Host Git and language-server tools do not enforce per-path policy; use the sandboxed shell or filesystem tools'
+    if (pack.id === 'git' || pack.id === 'dev' || pack.id === 'forge') pack.unavailableReason = 'Host Git and language-server tools do not enforce per-path policy; use the sandboxed shell or filesystem tools'
   }
   return packs
+}
+
+function forgeUnavailableReason(options: BuiltinPackOptions): string | null {
+  if (!options.forge.token) return 'BUCKLE_FORGE_GITHUB_TOKEN is not set, so this node holds no forge credential and cannot commit, push or open a pull request'
+  if (!hasExecutable('git')) return 'git is not installed on this node'
+  return null
 }
 
 function shellUnavailableReason(options: BuiltinPackOptions): string | null {

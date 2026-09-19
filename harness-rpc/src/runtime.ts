@@ -275,6 +275,7 @@ async function buildPacks(input: {
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
     approvedUrls: intersectUrlMatchers(input.ceiling?.network, input.compiled.network),
     braveSearchApiKey: input.config.braveSearchApiKey,
+    forge: { token: input.config.forgeGithubToken, apiUrl: input.config.forgeApiUrl, author: input.config.forgeGitAuthor },
     allowedHosts: input.config.allowedHosts,
     agentBrowserCommand: input.config.agentBrowserCommand,
     browserStateDirectory: input.browserStateDirectory,
