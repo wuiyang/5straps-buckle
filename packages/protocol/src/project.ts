@@ -34,6 +34,14 @@ export type ProjectMount = z.infer<typeof ProjectMountSchema>
 export function workspaceToolResourceId(serverId: string, workspaceId: string, tool: string): string {
   return workspaceId === 'default' ? `harness:${serverId}:tool:${tool}` : `harness:${serverId}:workspace:${workspaceId}:tool:${tool}`
 }
+
+/** Both shapes `workspaceToolResourceId` mints, read back: the default one and the workspace one. */
+const TOOL_RESOURCE_PATTERN = /^harness:.+:tool:([^:]+)$/
+
+/** The tool a harness resource id names, or null where the id names anything else. */
+export function toolNameFromResourceId(resourceId: string): string | null {
+  return TOOL_RESOURCE_PATTERN.exec(resourceId)?.[1] ?? null
+}
 export function projectSkillResourceId(projectId: string, skillId: string): string {
   return `project:${projectId}:skill:${skillId}`
 }
