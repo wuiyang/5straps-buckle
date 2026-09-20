@@ -15,9 +15,16 @@ buckle pr read 7 --include diff --include files
 ## The token is never yours to see
 
 The forge credential is owner configuration. It is injected into git's environment for the one
-push that needs it and sent as a bearer header to the API; it never appears in a result, an
-error, a log line, or the remote URL. Do not ask for it, and do not add it to a remote yourself.
-Without it the whole pack is withheld, and the manifest says which variable is missing.
+push that needs it, scoped to the exact origin URL, and sent as a bearer header to the API; it
+never appears in a result, an error, a log line, or the remote URL. Do not ask for it, and do not
+add it to a remote yourself. Without it the whole pack is withheld, and the manifest says which
+variable is missing.
+
+Because git hands its environment to anything it runs, every git call here runs with hooks and
+configs disabled: `core.hooksPath` points at an empty directory Buckle owns, the system and
+global configs are out of reach, and a repository's `credential.helper` is reset. No workspace
+code runs while the credential is in reach. A `pre-commit` or `pre-push` hook in the workspace
+will not run for these tools; run it yourself with `shell_exec` if you want it.
 
 ## What each tool is for
 

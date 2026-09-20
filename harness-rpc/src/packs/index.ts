@@ -31,8 +31,8 @@ export interface BuiltinPackOptions {
   /** The owner's approved list, or null for the default egress rules. */
   approvedUrls: UrlMatcher | null
   braveSearchApiKey?: string
-  /** The owner's forge credential and where it may be spent. */
-  forge: { token?: string; apiUrl: string; author: { name: string; email: string } }
+  /** The owner's forge credential, where it may be spent, and Buckle's state directory for git's isolation. */
+  forge: { token?: string; apiUrl: string; author: { name: string; email: string }; stateDirectory: string }
   allowedHosts: string[]
   agentBrowserCommand: string
   /** Protected browser configuration and daemon identities for this workspace. */
@@ -56,6 +56,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     createForgePack({
       paths: options.paths,
       runProcess: options.runProcess,
+      stateDirectory: options.forge.stateDirectory,
       forge: {
         client: options.forge.token ? createGitHubForgeClient({ token: options.forge.token, apiUrl: options.forge.apiUrl }) : null,
         apiUrl: options.forge.apiUrl,

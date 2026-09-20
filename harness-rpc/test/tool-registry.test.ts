@@ -20,7 +20,7 @@ function builtinRegistry() {
     sandbox: createNoneSandbox(),
     writableRoots: ['/work/project'],
     allowedHosts: [],
-    forge: { apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } },
+    forge: { apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' }, stateDirectory: '/state/forge' },
     agentBrowserCommand: 'agent-browser',
     browserStateDirectory: '/state/browser-profiles/project',
     browserHeaded: false,

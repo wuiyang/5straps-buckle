@@ -1,9 +1,10 @@
-import { isAbsolute, resolve } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { isAbsolute, join, resolve } from 'node:path'
 import { z } from 'zod'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../domain/environment.js'
 import type { ToolEffect } from '../../domain/effect.js'
-import type { ForgeClient } from '../../domain/forge.js'
+import type { ForgeClient, ForgeRepository } from '../../domain/forge.js'
 import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
@@ -13,10 +14,21 @@ import type { UrlMatcher } from '../../domain/url-pattern.js'
 import type { ProcessResult, ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { classifyRemote, readOriginUrl, repositoryOf, type ForgeRemote } from './remote.js'
+import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
 const PACK_ID = 'forge'
 const MAX_DIFF_BYTES = 524_288
+/** Empty, Buckle-owned, and where `core.hooksPath` points, so no hook the workspace wrote runs. */
+const HOOKS_DIRECTORY = 'forge-hooks'
+/**
+ * The system and global configs are made invisible, and the terminal prompt is closed. What is
+ * left is the repository config, whose executable knobs are overridden below.
+ */
+const ISOLATION_ENVIRONMENT: Record<string, string> = {
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+}
 /** Unit separator: safe inside a commit subject, unlike any printable delimiter. */
 const FIELD_SEPARATOR = '\x1f'
 /** No leading dash, so a branch can never be read as a flag, and no `..` or ref-name punctuation. */
@@ -50,6 +62,8 @@ const readInput = repoInput.extend({
 export interface ForgePackOptions {
   paths: PathView
   runProcess: ProcessRunner
+  /** Buckle's own state directory, which is where the empty hooks directory git is pointed at lives. */
+  stateDirectory: string
   forge: {
     /** Null when the node holds no credential; the pack is withheld and the tools never run. */
     client: ForgeClient | null
@@ -68,38 +82,88 @@ export interface ForgePackOptions {
 
 export function createForgePack(options: ForgePackOptions): Pack {
   const { forge, paths } = options
+  const hooksDirectory = join(options.stateDirectory, HOOKS_DIRECTORY)
 
-  const runGit = async (input: { repository: string; args: string[]; extra?: Record<string, string>; context: ToolContext }): Promise<ProcessResult> => {
+  /** Without it there is nothing to point git's hooks at, so git is not run at all. */
+  const ensureHooksDirectory = (): string => {
+    try {
+      mkdirSync(hooksDirectory, { recursive: true, mode: 0o700 })
+    } catch {
+      throw new ToolExecutionError(`Buckle could not create its empty hooks directory at ${hooksDirectory}; git is not run with the workspace's hooks in reach`, { code: 'FORGE_ISOLATION_UNAVAILABLE' })
+    }
+    return hooksDirectory
+  }
+
+  const runGit = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; context: ToolContext }): Promise<ProcessResult> => {
+    const config = [...isolationConfig(ensureHooksDirectory()), ...(input.config ?? [])]
     return await options.runProcess({
       command: 'git',
       args: input.args,
       cwd: input.repository,
       timeoutMs: input.context.timeoutMs,
-      environment: buildChildEnvironment({ parent: process.env, extra: { GIT_TERMINAL_PROMPT: '0', ...input.extra } }),
+      environment: buildChildEnvironment({ parent: process.env, extra: { ...ISOLATION_ENVIRONMENT, ...gitConfigEnvironment(config), ...input.extra } }),
       signal: input.context.signal,
     })
   }
 
   const scrub = (text: string): string => credentialForms(forge.token).reduce(stripSecret, text)
 
-  const gitOutput = async (input: { repository: string; args: string[]; extra?: Record<string, string>; context: ToolContext }): Promise<string> => {
+  const gitOutput = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; context: ToolContext }): Promise<string> => {
     const result = await runGit(input)
     if (result.exitCode !== 0) throw new ToolExecutionError(scrub(describeProcessFailure('git', result)), { code: 'GIT_FAILED' })
     return scrub(result.stdout)
   }
 
+  /** Absent config is exit 1, which is an answer rather than a failure. */
+  const configValues = async (input: { repository: string; key: string; context: ToolContext }): Promise<string[]> => {
+    const result = await runGit({ repository: input.repository, args: ['config', '--get-all', input.key], context: input.context })
+    if (result.exitCode === 1) return []
+    if (result.exitCode !== 0) throw new ToolExecutionError(scrub(describeProcessFailure('git', result)), { code: 'GIT_FAILED' })
+    return nonEmptyLines(scrub(result.stdout))
+  }
+
+  /** What the config names, before any rewrite rule reaches it. `pushurl` replaces `url` for a push. */
+  const readConfiguredPushUrl = async (input: { repository: string; context: ToolContext }): Promise<PushUrl> => {
+    const pushUrls = await configValues({ ...input, key: 'remote.origin.pushurl' })
+    if (pushUrls.length > 1) {
+      throw new ToolInputError(`origin has ${pushUrls.length} remote.origin.pushurl values and git pushes to every one of them; the forge tools push to a single judged target`, { code: 'PERMISSION_DENIED' })
+    }
+    const urls = pushUrls.length ? pushUrls : await configValues({ ...input, key: 'remote.origin.url' })
+    if (urls.length !== 1) {
+      throw new ToolInputError(`origin names ${urls.length} URLs, and the forge tools push to a single judged target`, { code: 'PERMISSION_DENIED' })
+    }
+    const raw = urls[0] ?? ''
+    return { raw, remote: classifyRemote(raw) }
+  }
+
+  /** What git would really push to: every push URL, rewrite rules already applied. */
+  const readResolvedPushUrl = async (input: { repository: string; context: ToolContext }): Promise<PushUrl> => {
+    const urls = nonEmptyLines(await gitOutput({ ...input, args: ['remote', 'get-url', '--push', '--all', 'origin'] }))
+    if (urls.length !== 1) {
+      throw new ToolInputError(`origin resolves to ${urls.length} push URLs and git pushes to every one of them; the forge tools push to a single judged target`, { code: 'PERMISSION_DENIED' })
+    }
+    const raw = urls[0] ?? ''
+    return { raw, remote: classifyRemote(raw) }
+  }
+
   /** The remote git itself would push to, which is what settles any rewrite rule config carries. */
   const resolvePushRemote = async (input: { repository: string; context: ToolContext }): Promise<ForgeRemote> => {
     const declared = classifyRemote(readOriginUrl(input.repository))
-    const actual = classifyRemote(await gitOutput({ ...input, args: ['remote', 'get-url', '--push', 'origin'] }))
-    if (remoteSubject(actual) !== remoteSubject(declared)) {
-      throw new ToolInputError(`origin resolves to ${actual.display}, not the ${declared.display} the permission rules judged; the push is refused rather than sent somewhere unjudged`, { code: 'PERMISSION_DENIED' })
+    const configured = await readConfiguredPushUrl(input)
+    const actual = await readResolvedPushUrl(input)
+    assertNoRewrite({ configured, actual })
+    if (remoteSubject(actual.remote) !== remoteSubject(declared)) {
+      throw new ToolInputError(`origin resolves to ${actual.remote.display}, not the ${declared.display} the permission rules judged; the push is refused rather than sent somewhere unjudged`, { code: 'PERMISSION_DENIED' })
     }
-    assertRemoteAllowed({ remote: actual, gitHost: forge.gitHost, approved: options.approved })
-    return actual
+    assertRemoteAllowed({ remote: actual.remote, gitHost: forge.gitHost, approved: options.approved })
+    return actual.remote
   }
 
-  const forgeRepository = (repository: string) => repositoryOf(classifyRemote(readOriginUrl(repository)))
+  const forgeRepository = (repository: string): ForgeRepository => {
+    const remote = classifyRemote(readOriginUrl(repository))
+    assertForgeHost({ remote, gitHost: forge.gitHost })
+    return repositoryOf(remote)
+  }
 
   const requireClient = (): ForgeClient => {
     if (!forge.client) throw new ToolExecutionError('This node holds no forge credential; BUCKLE_FORGE_GITHUB_TOKEN is unset', { code: 'FORGE_UNCONFIGURED' })
@@ -146,7 +210,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
         const repository = paths.resolve(input.repo)
         const remote = await resolvePushRemote({ repository, context })
         const args = ['push', ...(input.setUpstream ? ['--set-upstream'] : []), 'origin', branch]
-        await gitOutput({ repository, args, extra: credentialEnvironment({ remote, forge }), context })
+        await gitOutput({ repository, args, config: credentialConfig({ remote, forge }), context })
         const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
         return { branch, remote: remote.display, headSha }
       },
@@ -227,18 +291,62 @@ function remoteEffect(repository: string): ToolEffect {
     : { kind: 'write_path', path: remote.path }
 }
 
-function remoteSubject(remote: ForgeRemote): string {
-  return remote.kind === 'https' ? `${remote.host}:${remote.url.port}` : remote.path
+interface GitConfig {
+  key: string
+  value: string
 }
 
-/** The credential reaches the forge host alone, and only through git's environment. */
-function credentialEnvironment(input: { remote: ForgeRemote; forge: ForgePackOptions['forge'] }): Record<string, string> {
-  if (input.remote.kind !== 'https' || input.remote.host !== input.forge.gitHost) return {}
-  return {
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.extraheader',
-    GIT_CONFIG_VALUE_0: `Authorization: Basic ${basicCredential(input.forge.token)}`,
-  }
+interface PushUrl {
+  /** The URL as written, so a rewrite shows up as a value git changed. */
+  raw: string
+  remote: ForgeRemote
+}
+
+/**
+ * Git hands a hook its whole environment, credential included, and a workspace can write
+ * `.git/hooks/pre-push` or a `credential.helper` with an ordinary file write. Every forge git
+ * call therefore runs with hooks pointed at an empty Buckle-owned directory and with the
+ * repository's executable config knobs overridden, so no workspace code runs while the credential
+ * is in reach. Git reads this scope last, so a repository config cannot win it back, and an
+ * `include` the config pulls in can only set what is overridden here.
+ */
+function isolationConfig(hooksDirectory: string): GitConfig[] {
+  return [
+    { key: 'core.hooksPath', value: hooksDirectory },
+    // An empty value resets the helper list, so a repository's `!sh -c …` helper never runs.
+    { key: 'credential.helper', value: '' },
+    { key: 'core.fsmonitor', value: 'false' },
+  ]
+}
+
+/** Config git reads after every file, so nothing the workspace wrote can override it. */
+function gitConfigEnvironment(entries: GitConfig[]): Record<string, string> {
+  const environment: Record<string, string> = { GIT_CONFIG_COUNT: String(entries.length) }
+  entries.forEach((entry, index) => {
+    environment[`GIT_CONFIG_KEY_${index}`] = entry.key
+    environment[`GIT_CONFIG_VALUE_${index}`] = entry.value
+  })
+  return environment
+}
+
+/**
+ * A rewrite rule is config deciding where a push lands, which is the decision the permission
+ * rules were asked about. Rewritten or not, the target has to be the one the config names.
+ */
+function assertNoRewrite(input: { configured: PushUrl; actual: PushUrl }): void {
+  if (input.configured.raw.trim() === input.actual.raw.trim()) return
+  throw new ToolInputError(`an insteadOf or pushInsteadOf rule rewrites origin ${input.configured.remote.display} before the push; the push is refused rather than sent to a target the permission rules never saw`, { code: 'PERMISSION_DENIED' })
+}
+
+/**
+ * The credential is scoped to the one origin URL it belongs to, so a redirect to another
+ * repository — even on the same host — is served no header at all.
+ */
+function credentialConfig(input: { remote: ForgeRemote; forge: ForgePackOptions['forge'] }): GitConfig[] {
+  if (input.remote.kind !== 'https' || input.remote.host !== input.forge.gitHost) return []
+  // `display` is the URL without userinfo, which is the form git matches a request against.
+  const scope = input.remote.display.replace(/\/+$/, '')
+  return [{ key: `http.${scope}.extraheader`, value: `Authorization: Basic ${basicCredential(input.forge.token)}` }]
 }
 
 /**
@@ -252,6 +360,16 @@ function basicCredential(token: string): string {
 
 function credentialForms(token: string): string[] {
   return token ? [token, basicCredential(token)] : []
+}
+
+/** A pull request is opened and read on the forge the credential belongs to, wherever origin points. */
+function assertForgeHost(input: { remote: ForgeRemote; gitHost: string }): void {
+  if (input.remote.kind === 'https' && input.remote.host === input.gitHost) return
+  throw new ToolInputError(`origin is ${input.remote.display}, and the configured forge is ${input.gitHost}; the pull-request tools act on that forge alone, so this repository is refused`, { code: 'PERMISSION_DENIED' })
+}
+
+function nonEmptyLines(text: string): string[] {
+  return text.split('\n').map(line => line.trim()).filter(Boolean)
 }
 
 function assertRemoteAllowed(input: { remote: ForgeRemote; gitHost: string; approved: UrlMatcher | null }): void {

@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { forgeGitHost } from '../src/domain/forge.js'
-import { classifyRemote, readOriginUrl, repositoryOf } from '../src/packs/forge/remote.js'
+import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf } from '../src/packs/forge/remote.js'
 
 const roots: string[] = []
 afterAll(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -62,6 +62,25 @@ describe('classifying an origin remote', () => {
   })
 })
 
+describe('the subject two remotes are compared on', () => {
+  it('reads the same repository through the default port and the .git suffix', () => {
+    expect(remoteSubject(classifyRemote('https://github.com/wuiyang/demo.git')))
+      .toBe(remoteSubject(classifyRemote('https://github.com:443/wuiyang/demo/')))
+  })
+
+  it('separates another repository on the same host, which host and port alone would miss', () => {
+    expect(remoteSubject(classifyRemote('https://github.com/wuiyang/demo.git')))
+      .not.toBe(remoteSubject(classifyRemote('https://github.com/attacker/demo.git')))
+  })
+
+  it('separates another scheme and another port on the same host', () => {
+    expect(remoteSubject(classifyRemote('https://github.com/wuiyang/demo')))
+      .not.toBe(remoteSubject(classifyRemote('http://github.com/wuiyang/demo')))
+    expect(remoteSubject(classifyRemote('https://github.com/wuiyang/demo')))
+      .not.toBe(remoteSubject(classifyRemote('https://github.com:8443/wuiyang/demo')))
+  })
+})
+
 describe('the repository an https remote names', () => {
   it('reads owner and name, with or without the .git suffix', () => {
     expect(repositoryOf(classifyRemote('https://github.com/wuiyang/demo.git'))).toEqual({ owner: 'wuiyang', name: 'demo' })
@@ -101,5 +120,32 @@ describe('reading the origin URL without running git', () => {
     const repository = join(root, 'work')
     execFileSync('git', ['init', '-b', 'main', repository])
     expect(() => readOriginUrl(repository)).toThrow(/has no origin remote/)
+  })
+
+  it('refuses a config that includes another file rather than following it', () => {
+    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    const included = join(repository, '..', 'included-config')
+    writeFileSync(included, '[remote "origin"]\n\turl = https://github.com/attacker/demo.git\n')
+    appendFileSync(join(repository, '.git', 'config'), `[include]\n\tpath = ${included}\n`)
+    expect(() => readOriginUrl(repository)).toThrow(/includes another file/)
+  })
+
+  it('refuses a conditional include the same way', () => {
+    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    appendFileSync(join(repository, '.git', 'config'), '[includeIf "gitdir:/"]\n\tpath = /tmp/anything\n')
+    expect(() => readOriginUrl(repository)).toThrow(/includes another file/)
+  })
+
+  it('refuses a config larger than it will read, rather than pulling all of it into memory', () => {
+    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    appendFileSync(join(repository, '.git', 'config'), `# ${'padding '.repeat(40_000)}\n`)
+    expect(() => readOriginUrl(repository)).toThrow(/larger than the \d+ bytes/)
+  })
+
+  it('refuses a .git config that is not a regular file', () => {
+    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    rmSync(join(repository, '.git', 'config'))
+    mkdirSync(join(repository, '.git', 'config'))
+    expect(() => readOriginUrl(repository)).toThrow(/not a git repository this pack can read/)
   })
 })
