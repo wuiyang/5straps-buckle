@@ -81,13 +81,7 @@ export function repositoryOf(remote: ForgeRemote): ForgeRepository {
  * git, which is what settles any rewrite rule this parser cannot see.
  */
 export function readOriginUrl(repository: string): string {
-  const content = readBounded({
-    path: join(gitDirectory(repository), 'config'),
-    maxBytes: MAX_CONFIG_BYTES,
-    subject: `${repository} is not a git repository this pack can read`,
-  })
-
-  assertNoInclude({ repository, content })
+  const content = readRepositoryConfig(repository)
 
   let inOrigin = false
   for (const line of content.split('\n')) {
@@ -103,6 +97,21 @@ export function readOriginUrl(repository: string): string {
 }
 
 /**
+ * The repository config, bounded and with an `include` refused rather than followed, because it
+ * is the last config scope the forge tools cannot replace and every guard reading it needs the
+ * same guarantee that what it reads is all git will read.
+ */
+export function readRepositoryConfig(repository: string): string {
+  const content = readBounded({
+    path: join(gitDirectory(repository), 'config'),
+    maxBytes: MAX_CONFIG_BYTES,
+    subject: `${repository} is not a git repository this pack can read`,
+  })
+  assertNoInclude({ repository, content })
+  return content
+}
+
+/**
  * An included file would hand git a different origin than this parser reads, and following it
  * would read a path nothing judged. The repository is refused instead.
  */
@@ -111,7 +120,7 @@ function assertNoInclude(input: { repository: string; content: string }): void {
   throw new ToolInputError(`${input.repository} has a git config that includes another file, so its origin is not the one this config names; the forge tools refuse it rather than following the include`, { code: 'PERMISSION_DENIED' })
 }
 
-function gitDirectory(repository: string): string {
+export function gitDirectory(repository: string): string {
   const dotGit = join(repository, '.git')
   let pointsToDirectory: boolean
   try {
@@ -134,7 +143,7 @@ function commonDirectory(gitDir: string): string {
 }
 
 /** Reads at most `maxBytes` of a regular file, so a named pipe or a huge file is a refusal. */
-function readBounded(input: { path: string; maxBytes: number; subject: string }): string {
+export function readBounded(input: { path: string; maxBytes: number; subject: string }): string {
   const refusal = new ToolInputError(input.subject, { code: 'FORGE_NO_REMOTE' })
   let stats: ReturnType<typeof statSync>
   try {

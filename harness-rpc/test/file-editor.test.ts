@@ -30,14 +30,15 @@ it('supports saving an empty file using its read revision', async () => {
 
 it('omits credential and denied symlink names from directory listing and file search', async () => {
   const { root } = await fixture('visible')
-  const { mkdir, symlink } = await import('node:fs/promises')
+  const { symlink } = await import('node:fs/promises')
   const { createRuntime } = await import('../src/runtime.js')
   const { loadConfig } = await import('../src/config.js')
   const { createDeferredApprovalChannel } = await import('../src/adapters/approval/deferred-approval-channel.js')
-  await mkdir(join(root, 'state'))
+  const state = await mkdtemp(join(tmpdir(), 'buckle-editor-state-'))
+  roots.push(state)
   await writeFile(join(root, '.env'), 'PRIVATE_FIXTURE=value')
   await symlink('/etc/passwd', join(root, 'outside-link'))
-  const runtime = await createRuntime({ config: loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_WORKSPACE_MOUNT: '/workspace', BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' }), channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config: loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_WORKSPACE_MOUNT: '/workspace', BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false' }), channel: () => createDeferredApprovalChannel() })
   for (const tool of ['fs_list', 'fs_find_names']) {
     const response = await runtime.invoke({ request: { requestId: tool, tool, args: { path: '.', pattern: '*', includeIgnored: true }, approvalTokens: [] }, sessionId: 'editor' })
     expect(response.outcome).toBe('ok')

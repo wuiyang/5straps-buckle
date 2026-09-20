@@ -8,7 +8,7 @@ import { runCli } from '../src/faces/cli/main.js'
 
 it('records local policy changes without copying command arguments into the audit', async () => {
   const root = mkdtempSync(join(tmpdir(), 'buckle-cli-audit-'))
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' })
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-audit-state-')), BUCKLE_ALLOW_SHELL: 'false' })
   const output = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
   try {
     expect((await runCli({ argv: ['policy', 'deny-command', 'curl *'], config })).exitCode).toBe(0)

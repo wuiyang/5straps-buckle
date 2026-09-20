@@ -1,6 +1,7 @@
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
+import { isInside } from './domain/paths.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -74,9 +75,13 @@ export interface BuckleConfig {
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): BuckleConfig {
+  const cwd = resolve(environment.BUCKLE_WORKSPACE_ROOT ?? process.cwd())
   const stateDirectory = environment.BUCKLE_STATE_DIR
     ? resolve(environment.BUCKLE_STATE_DIR)
     : join(homedir(), '.5straps', 'buckle')
+  if (isInside(cwd, stateDirectory)) {
+    throw new Error(`BUCKLE_STATE_DIR is ${stateDirectory}, inside the BUCKLE_WORKSPACE_ROOT at ${cwd}: an agent writes anywhere in the workspace, and the state directory holds the recorded grants, the approvals and the empty hooks directory the forge tools run git with`)
+  }
 
   const sandboxMode = parseSandboxMode(environment.BUCKLE_SANDBOX)
   const authToken = environment.BUCKLE_AUTH_TOKEN ?? ''
@@ -97,7 +102,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     usage: environment.BUCKLE_USAGE ?? '',
     authToken,
     setupToken,
-    cwd: resolve(environment.BUCKLE_WORKSPACE_ROOT ?? process.cwd()),
+    cwd,
     scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => resolve(root)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
     sandboxMode,

@@ -26,6 +26,12 @@ function startForge(): Promise<Server> {
       response.end('diff --git a/x b/x\n')
       return
     }
+    if (path.endsWith('/pulls/11') && request.headers.accept === 'application/vnd.github.v3.diff') {
+      response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+      // The é is two bytes, so a cap of three lands in the middle of it.
+      response.end('ab\u00e9cd')
+      return
+    }
     if (path.endsWith('/pulls/404')) {
       response.writeHead(401, { 'content-type': 'application/json' })
       response.end(JSON.stringify({ message: `Bad credentials for ${TOKEN}` }))
@@ -70,6 +76,12 @@ describe('the forge credential in configuration', () => {
   it('refuses an identity that is not "Name <email>", so no commit carries a broken author', () => {
     expect(() => loadConfig({ BUCKLE_FORGE_GIT_AUTHOR: 'just-a-name' })).toThrow(/expected "Name <email>"/)
   })
+
+  it('refuses a state directory inside the workspace, where an agent could write the hooks git runs', () => {
+    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/work/.buckle' }))
+      .toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
+    expect(loadConfig({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/state' }).stateDirectory).toBe('/srv/state')
+  })
 })
 
 describe('the GitHub adapter', () => {
@@ -91,6 +103,11 @@ describe('the GitHub adapter', () => {
   it('truncates a diff past the cap rather than returning all of it', async () => {
     const diff = await client().readPullRequestDiff({ ...request(9), maxBytes: 4 })
     expect(diff).toEqual({ diff: 'diff', truncated: true })
+  })
+
+  it('cuts a diff at a character boundary, so one straddling the cap is dropped rather than mangled', async () => {
+    const diff = await client().readPullRequestDiff({ ...request(11), maxBytes: 3 })
+    expect(diff).toEqual({ diff: 'ab', truncated: true })
   })
 
   it('strips the credential out of an upstream refusal that echoes it back', async () => {

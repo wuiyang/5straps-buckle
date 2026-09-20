@@ -14,21 +14,13 @@ import type { UrlMatcher } from '../../domain/url-pattern.js'
 import type { ProcessResult, ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
+import { assertNoFilters, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from './isolation.js'
 import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
 const PACK_ID = 'forge'
 const MAX_DIFF_BYTES = 524_288
 /** Empty, Buckle-owned, and where `core.hooksPath` points, so no hook the workspace wrote runs. */
 const HOOKS_DIRECTORY = 'forge-hooks'
-/**
- * The system and global configs are made invisible, and the terminal prompt is closed. What is
- * left is the repository config, whose executable knobs are overridden below.
- */
-const ISOLATION_ENVIRONMENT: Record<string, string> = {
-  GIT_TERMINAL_PROMPT: '0',
-  GIT_CONFIG_NOSYSTEM: '1',
-  GIT_CONFIG_GLOBAL: '/dev/null',
-}
 /** Unit separator: safe inside a commit subject, unlike any printable delimiter. */
 const FIELD_SEPARATOR = '\x1f'
 /** No leading dash, so a branch can never be read as a flag, and no `..` or ref-name punctuation. */
@@ -181,6 +173,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
       run: async (input, context): Promise<JsonValue> => {
         const repository = paths.resolve(input.repo)
         assertRepositoryPaths({ repository, named: input.paths })
+        assertNoFilters({ repository, paths: input.paths })
         const identity = {
           GIT_AUTHOR_NAME: options.author.name,
           GIT_AUTHOR_EMAIL: options.author.email,
@@ -209,8 +202,9 @@ export function createForgePack(options: ForgePackOptions): Pack {
         const branch = assertBranchName(input.branch)
         const repository = paths.resolve(input.repo)
         const remote = await resolvePushRemote({ repository, context })
-        const args = ['push', ...(input.setUpstream ? ['--set-upstream'] : []), 'origin', branch]
-        await gitOutput({ repository, args, config: credentialConfig({ remote, forge }), context })
+        // `remote.origin.receivepack` is first-wins in git, so only the command line can reset it.
+        const args = ['push', '--receive-pack=git-receive-pack', ...(input.setUpstream ? ['--set-upstream'] : []), 'origin', branch]
+        await gitOutput({ repository, args, config: pushConfig({ remote, forge }), context })
         const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
         return { branch, remote: remote.display, headSha }
       },
@@ -291,42 +285,10 @@ function remoteEffect(repository: string): ToolEffect {
     : { kind: 'write_path', path: remote.path }
 }
 
-interface GitConfig {
-  key: string
-  value: string
-}
-
 interface PushUrl {
   /** The URL as written, so a rewrite shows up as a value git changed. */
   raw: string
   remote: ForgeRemote
-}
-
-/**
- * Git hands a hook its whole environment, credential included, and a workspace can write
- * `.git/hooks/pre-push` or a `credential.helper` with an ordinary file write. Every forge git
- * call therefore runs with hooks pointed at an empty Buckle-owned directory and with the
- * repository's executable config knobs overridden, so no workspace code runs while the credential
- * is in reach. Git reads this scope last, so a repository config cannot win it back, and an
- * `include` the config pulls in can only set what is overridden here.
- */
-function isolationConfig(hooksDirectory: string): GitConfig[] {
-  return [
-    { key: 'core.hooksPath', value: hooksDirectory },
-    // An empty value resets the helper list, so a repository's `!sh -c …` helper never runs.
-    { key: 'credential.helper', value: '' },
-    { key: 'core.fsmonitor', value: 'false' },
-  ]
-}
-
-/** Config git reads after every file, so nothing the workspace wrote can override it. */
-function gitConfigEnvironment(entries: GitConfig[]): Record<string, string> {
-  const environment: Record<string, string> = { GIT_CONFIG_COUNT: String(entries.length) }
-  entries.forEach((entry, index) => {
-    environment[`GIT_CONFIG_KEY_${index}`] = entry.key
-    environment[`GIT_CONFIG_VALUE_${index}`] = entry.value
-  })
-  return environment
 }
 
 /**
@@ -339,14 +301,18 @@ function assertNoRewrite(input: { configured: PushUrl; actual: PushUrl }): void 
 }
 
 /**
- * The credential is scoped to the one origin URL it belongs to, so a redirect to another
- * repository — even on the same host — is served no header at all.
+ * What the one git call that reaches the network is configured with. The credential is scoped to
+ * the single origin URL it belongs to, so a redirect to another repository — even on the same
+ * host — is served no header at all, and the proxy and TLS resets are repeated at that same scope
+ * because a URL-scoped key in the repository config outranks the plain one.
  */
-function credentialConfig(input: { remote: ForgeRemote; forge: ForgePackOptions['forge'] }): GitConfig[] {
-  if (input.remote.kind !== 'https' || input.remote.host !== input.forge.gitHost) return []
+function pushConfig(input: { remote: ForgeRemote; forge: ForgePackOptions['forge'] }): GitConfig[] {
+  if (input.remote.kind !== 'https') return []
   // `display` is the URL without userinfo, which is the form git matches a request against.
   const scope = input.remote.display.replace(/\/+$/, '')
-  return [{ key: `http.${scope}.extraheader`, value: `Authorization: Basic ${basicCredential(input.forge.token)}` }]
+  const transport = transportConfig(scope)
+  if (input.remote.host !== input.forge.gitHost) return transport
+  return [...transport, { key: `http.${scope}.extraheader`, value: `Authorization: Basic ${basicCredential(input.forge.token)}` }]
 }
 
 /**

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { createServer as createSocketServer, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
@@ -160,7 +160,85 @@ describe('git_commit', () => {
     await expect(call({ repository, tool: 'git_commit', args: { message: 'escape', paths: ['../outside.txt'] } }))
       .rejects.toThrow(/not inside it/)
   })
+
+  it('refuses a repository defining a clean filter, before git is spawned at all', async () => {
+    const { repository } = bareOrigin()
+    const marker = seedCleanFilter(repository)
+    writeFileSync(join(repository, '.gitattributes'), '* filter=pwn\n')
+    const calls: ProcessRequest[] = []
+
+    await expect(call({ repository, tool: 'git_commit', args: { message: 'm', paths: ['kept.txt'] }, runner: recordingGit(calls) }))
+      .rejects.toThrow(/filter driver/)
+    expect(calls).toEqual([])
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('refuses a .gitattributes that gives a committed path a filter attribute', async () => {
+    const { repository } = bareOrigin()
+    mkdirSync(join(repository, 'src'))
+    writeFileSync(join(repository, 'src', '.gitattributes'), '*.js filter=pwn\n')
+    writeFileSync(join(repository, 'src', 'kept.js'), 'kept\n')
+
+    await expect(call({ repository, tool: 'git_commit', args: { message: 'm', paths: ['src/kept.js'] } }))
+      .rejects.toThrow(/filter attribute/)
+  })
+
+  it('commits without running a gpg program the repository configured', async () => {
+    const { repository } = bareOrigin()
+    const marker = join(repository, 'gpg-ran.txt')
+    writeFileSync(join(repository, 'gpg.sh'), `#!/bin/sh\ntouch ${marker}\nexit 1\n`, { mode: 0o755 })
+    git(repository, 'config', 'commit.gpgSign', 'true')
+    git(repository, 'config', 'gpg.program', join(repository, 'gpg.sh'))
+    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+
+    const output = await call({ repository, tool: 'git_commit', args: { message: 'unsigned', paths: ['kept.txt'] } }) as JsonObject
+    expect(output.subject).toBe('unsigned')
+    expect(existsSync(marker)).toBe(false)
+  })
 })
+
+/** A repository that runs a marker-writing program while staging, if anything lets it. */
+function seedCleanFilter(repository: string): string {
+  const marker = join(repository, 'filter-ran.txt')
+  writeFileSync(join(repository, 'clean.sh'), `#!/bin/sh\ntouch ${marker}\ncat\n`, { mode: 0o755 })
+  writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+  git(repository, 'config', 'filter.pwn.clean', join(repository, 'clean.sh'))
+  return marker
+}
+
+/** Records what would have been spawned, so a guard that refuses too late shows up as a call. */
+function recordingGit(calls: ProcessRequest[]): typeof runProcess {
+  return async (request): Promise<ProcessResult> => {
+    calls.push(request)
+    return { exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }
+  }
+}
+
+/** An http origin recording the paths git asks it for: a push that took a proxy shows as silence here. */
+function recordingOrigin(): Promise<{ url: string; paths: string[]; close: () => void }> {
+  const paths: string[] = []
+  const origin = createServer((request, response) => {
+    paths.push(request.url ?? '')
+    response.writeHead(404, { 'content-type': 'text/plain' })
+    response.end('no such repository')
+  })
+  return new Promise(resolve => origin.listen(0, '127.0.0.1', () => resolve({
+    url: `http://127.0.0.1:${(origin.address() as AddressInfo).port}`,
+    paths,
+    close: () => { origin.close() },
+  })))
+}
+
+/** An attacker's proxy: anything reaching it is the scoped credential header leaving the node. */
+function recordingProxy(): Promise<{ url: string; connections: () => number; close: () => void }> {
+  let connections = 0
+  const proxy = createSocketServer(socket => { connections += 1; socket.destroy() })
+  return new Promise(resolve => proxy.listen(0, '127.0.0.1', () => resolve({
+    url: `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`,
+    connections: () => connections,
+    close: () => { proxy.close() },
+  })))
+}
 
 describe('git_push', () => {
   it('pushes to a repository on this filesystem without any credential', async () => {
@@ -191,14 +269,16 @@ describe('git_push', () => {
     }) as JsonObject
     const push = calls.find(request => request.args[0] === 'push')
     const encoded = Buffer.from(`x-access-token:${TOKEN}`).toString('base64')
-    expect(push?.args).toEqual(['push', '--set-upstream', 'origin', 'forge-live-check'])
+    expect(push?.args).toEqual(['push', '--receive-pack=git-receive-pack', '--set-upstream', 'origin', 'forge-live-check'])
     expect(gitConfigOf(push?.environment)[`http.${apiUrl}/wuiyang/demo.git.extraheader`]).toBe(`Authorization: Basic ${encoded}`)
+    expect(gitConfigOf(push?.environment)[`http.${apiUrl}/wuiyang/demo.git.proxy`]).toBe('')
+    expect(gitConfigOf(push?.environment)[`http.${apiUrl}/wuiyang/demo.git.sslVerify`]).toBe('true')
     expect(gitConfigOf(push?.environment)['http.extraheader']).toBeUndefined()
     expect(JSON.stringify(calls.map(request => request.args))).not.toContain(TOKEN)
     for (const form of [TOKEN, encoded]) expect(JSON.stringify(output)).not.toContain(form)
   })
 
-  it('runs every git call with the workspace hooks and configs out of reach', async () => {
+  it('runs every git call with the workspace hooks, proxies, configs and programs out of reach', async () => {
     const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
     const calls: ProcessRequest[] = []
     await call({ repository, tool: 'git_push', args: { branch: 'forge-live-check' }, runner: scriptedGit(calls, `${apiUrl}/wuiyang/demo.git`) })
@@ -206,11 +286,61 @@ describe('git_push', () => {
       expect(request.environment.GIT_CONFIG_NOSYSTEM).toBe('1')
       expect(request.environment.GIT_CONFIG_GLOBAL).toBe('/dev/null')
       expect(request.environment.GIT_TERMINAL_PROMPT).toBe('0')
+      for (const name of ['http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY']) {
+        expect(request.environment[name]).toBe('')
+      }
       const config = gitConfigOf(request.environment)
       expect(config['core.hooksPath']).toMatch(/forge-hooks$/)
       expect(readdirSync(String(config['core.hooksPath']))).toEqual([])
-      expect(config['credential.helper']).toBe('')
+      expect(config).toMatchObject({
+        'credential.helper': '',
+        'core.fsmonitor': 'false',
+        'http.proxy': '',
+        'https.proxy': '',
+        'remote.origin.proxy': '',
+        'http.sslVerify': 'true',
+        'core.askpass': '',
+        'commit.gpgSign': 'false',
+        'tag.gpgSign': 'false',
+        'gpg.program': '',
+        'gpg.format': '',
+        'core.editor': 'true',
+        'sequence.editor': 'true',
+        'core.pager': 'cat',
+        'diff.external': '',
+        'core.attributesFile': '/dev/null',
+      })
     }
+  })
+
+  it('pushes to the real origin when the repository configures a proxy and turns TLS checking off', async () => {
+    const origin = await recordingOrigin()
+    const proxy = await recordingProxy()
+    const repository = workRepository({ origin: `${origin.url}/wuiyang/demo.git` })
+    git(repository, 'config', 'http.proxy', proxy.url)
+    git(repository, 'config', `http.${origin.url}/wuiyang/demo.git.proxy`, proxy.url)
+    git(repository, 'config', 'http.sslVerify', 'false')
+    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+    await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
+
+    // The recording origin is not a git server, so the push fails there — at the right host.
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } })).rejects.toThrow()
+    expect(proxy.connections()).toBe(0)
+    expect(origin.paths).toContain('/wuiyang/demo.git/info/refs?service=git-receive-pack')
+    origin.close(); proxy.close()
+  })
+
+  it('never runs a receive-pack program the repository configured', async () => {
+    const { origin, repository } = bareOrigin()
+    const marker = join(repository, 'receivepack-ran.txt')
+    writeFileSync(join(repository, 'receivepack.sh'), `#!/bin/sh\ntouch ${marker}\nexec git-receive-pack "$@"\n`, { mode: 0o755 })
+    git(repository, 'config', 'remote.origin.receivepack', join(repository, 'receivepack.sh'))
+    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+    await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
+
+    const output = await call({ repository, tool: 'git_push', args: { branch: 'main', setUpstream: true } }) as JsonObject
+    expect(existsSync(marker)).toBe(false)
+    expect(execFileSync('git', ['-C', origin, 'rev-parse', 'main'], { encoding: 'utf8' }).trim()).toBe(output.headSha)
   })
 
   it('refuses force by name rather than asking about it', async () => {

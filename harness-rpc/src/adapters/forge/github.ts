@@ -91,7 +91,7 @@ export function createGitHubForgeClient(options: GitHubForgeOptions): ForgeClien
       const response = await call({ path: pullPath(input), method: 'GET', accept: DIFF_MEDIA_TYPE, signal: input.signal })
       const bytes = Buffer.from(await response.text(), 'utf8')
       if (bytes.byteLength <= input.maxBytes) return { diff: bytes.toString('utf8'), truncated: false }
-      return { diff: bytes.subarray(0, input.maxBytes).toString('utf8'), truncated: true }
+      return { diff: decodeWholeCharacters(bytes.subarray(0, input.maxBytes)), truncated: true }
     },
 
     async readPullRequestFiles(input) {
@@ -108,6 +108,15 @@ export function createGitHubForgeClient(options: GitHubForgeOptions): ForgeClien
       return comments.map(comment => ({ author: comment.user?.login ?? 'unknown', at: comment.created_at, body: comment.body }))
     },
   }
+}
+
+/**
+ * Decodes a byte-capped buffer without splitting a character: a streaming decoder holds a
+ * trailing incomplete sequence back instead of emitting a replacement character for it, and this
+ * one is discarded rather than flushed.
+ */
+function decodeWholeCharacters(bytes: Buffer): string {
+  return new TextDecoder('utf-8').decode(bytes, { stream: true })
 }
 
 function pullsPath(repository: ForgeRepository): string {
