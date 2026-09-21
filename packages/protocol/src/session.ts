@@ -2,14 +2,30 @@ import { z } from 'zod'
 import { SessionFeatureSchema } from './binding.js'
 import { JsonObjectSchema } from './json.js'
 
-export const HarnessServerInputSchema = z.object({
+/**
+ * `BUCKLE-08` renamed the setup token to the admin credential. A client still sending the old
+ * field name is read for one release, so an unupgraded caller keeps registering its node.
+ */
+function renameLegacySetupToken(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const { setupToken, ...rest } = value as Record<string, unknown>
+  if (setupToken === undefined) return value
+  return { ...rest, adminToken: rest.adminToken ?? setupToken }
+}
+
+const HarnessServerFieldsSchema = z.object({
   name: z.string().min(1),
   baseUrl: z.url(),
   authToken: z.string().min(1),
-  /** The setup credential, kept apart from the agent's token, that lets Rings read and push the workspace policy. */
-  setupToken: z.string().min(1).optional(),
+  /** The admin credential, kept apart from the agent's token, that lets Rings read and push the workspace policy, mint workspace tokens and decide approvals. */
+  adminToken: z.string().min(1).optional(),
 })
+export const HarnessServerInputSchema = z.preprocess(renameLegacySetupToken, HarnessServerFieldsSchema)
 export type HarnessServerInput = z.infer<typeof HarnessServerInputSchema>
+
+/** Editing a registered node: every field optional, guarded against a concurrent edit. */
+export const HarnessServerPatchSchema = z.preprocess(renameLegacySetupToken, HarnessServerFieldsSchema.partial().extend({ expectedUpdatedAt: z.string().optional() }))
+export type HarnessServerPatch = z.infer<typeof HarnessServerPatchSchema>
 
 export const CreateSessionInputSchema = z.object({
   clientRequestId: z.string().uuid().optional(),
