@@ -1,5 +1,12 @@
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 
+/**
+ * Whose answer a decision carries. `BUCKLE-D14` keeps a persisted approval on the admin
+ * credential alone: a face reachable with an agent's token resolves as `agent`, and the
+ * registry then admits `once` and nothing durable.
+ */
+export type ApprovalAuthority = 'admin' | 'agent'
+
 export interface ApprovalChannel {
   readonly id: string
   /**

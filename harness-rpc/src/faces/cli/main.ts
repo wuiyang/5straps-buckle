@@ -10,6 +10,7 @@ import { createRuntime, type BuckleRuntime } from '../../runtime.js'
 import { createCliApprovalChannel } from '../../adapters/approval/cli-approval-channel.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, policyMigrateCommand } from './policy.js'
+import { workspaceRegistryCommand } from './workspace.js'
 import { BUCKLE_VERSION } from '../../version.js'
 
 export interface CliResult {
@@ -26,21 +27,23 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
 
   const runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
 
-  if (['approve', 'grants', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
+  if (['approve', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
     return auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0,
-      operation: () => dispatchRuntimeCommand(runtime, command, rest),
+      operation: () => dispatchRuntimeCommand({ runtime, config: input.config, command, rest }),
     })
   }
-  return dispatchRuntimeCommand(runtime, command, rest)
+  return dispatchRuntimeCommand({ runtime, config: input.config, command, rest })
 }
 
-function dispatchRuntimeCommand(runtime: BuckleRuntime, command: string, rest: string[]): CliResult | Promise<CliResult> {
+function dispatchRuntimeCommand(input: { runtime: BuckleRuntime; config: BuckleConfig; command: string; rest: string[] }): CliResult | Promise<CliResult> {
+  const { runtime, command, rest } = input
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
   if (command === 'skills') return printSkills(runtime, rest)
   if (command === 'approve') return approve(runtime, rest)
   if (command === 'grants') return grants(runtime, rest)
-  if (command === 'workspaces') return workspaceCommand(runtime, rest)
+  if (command === 'workspace') return workspaceRegistryCommand({ config: input.config, runtime, argv: rest })
+  if (command === 'workspaces') return shellWorkspacesCommand(runtime, rest)
   if (command === 'history') return historyCommand(runtime, rest)
   if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
@@ -69,6 +72,8 @@ function printUsage(): CliResult {
 
   buckle approve <token> [--scope once|session|always]
   buckle grants list | revoke <id>
+  buckle workspace list | add <id> --root <dir>
+  buckle workspace token list | add <workspace> | revoke <workspace> <token-id>
   buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune
   buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune
   buckle log [--limit N] [--json]    Show what this node actually did
@@ -143,7 +148,7 @@ function approve(runtime: BuckleRuntime, argv: string[]): CliResult {
   const scope = GrantScopeSchema.safeParse(values.scope ?? 'once')
   if (!scope.success) return fail(`Invalid scope: ${values.scope}`)
 
-  const result = runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data })
+  const result = runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data }, 'admin')
   if (!result.ok) return fail(result.reason)
   process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token}\n`)
   return { exitCode: 0 }
@@ -268,7 +273,7 @@ async function historyCommand(runtime: BuckleRuntime, argv: string[]): Promise<C
   return fail('Usage: buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune')
 }
 
-async function workspaceCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
+async function shellWorkspacesCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
   const [command = 'list', id] = argv
   if (command === 'list') return print(runtime.shellWorkspaces.list())
   if (command === 'prune') return print(await runtime.shellWorkspaces.prune())

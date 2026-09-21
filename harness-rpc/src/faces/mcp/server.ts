@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
 import { logger } from '../../logger.js'
+import type { ApprovalAuthority } from '../../ports/approval-channel.js'
 import type { BuckleRuntime } from '../../runtime.js'
 
 interface ApprovalAnswer extends Record<string, unknown> {
@@ -43,7 +44,7 @@ function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprova
       },
       async (args, context) => {
         const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
-        const approvalTokens = resolveAnswers({ runtime, responses })
+        const approvalTokens = resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
 
         const response = await runtime.invoke({
           request: {
@@ -152,6 +153,7 @@ function askForApproval(approvals: ApprovalRequest[]) {
 function resolveAnswers(input: {
   runtime: BuckleRuntime
   responses: Record<string, unknown> | undefined
+  authority: ApprovalAuthority
 }): string[] {
   if (!input.responses) return []
 
@@ -164,7 +166,7 @@ function resolveAnswers(input: {
       token,
       approved: answer.approve === true,
       scope: answer.scope ?? 'once',
-    })
+    }, input.authority)
     if (result.ok) tokens.push(token)
     else logger.warn('Elicited approval was rejected', { reason: result.reason })
   }

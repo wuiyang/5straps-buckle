@@ -13,7 +13,7 @@ import { createSetupApp } from './setup/app.js'
 
 /**
  * The whole HTTP surface: native RPC under /v1 and MCP under /mcp, both behind the same bearer
- * gate, and the owner's /setup behind a different one when a setup token is configured. Only
+ * gate, and the owner's /setup behind a different one when an admin credential is configured. Only
  * /health is open, and it reports nothing a caller could act on.
  */
 export function createHttpApp(input: {
@@ -38,7 +38,7 @@ export function createHttpApp(input: {
   app.all('/mcp', context => mcpHandler.fetch(context.req.raw))
   runtime.onToolsChanged(() => mcpHandler.notify.toolsChanged())
 
-  if (config.setupToken) app.route('/setup', createSetupApp({ config, runtime, setupToken: config.setupToken }))
+  if (config.adminToken) app.route('/setup', createSetupApp({ config, runtime, adminToken: config.adminToken }))
 
   return app
 }

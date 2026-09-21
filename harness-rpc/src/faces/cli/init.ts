@@ -11,13 +11,13 @@ export interface CliResult {
 
 const USAGE = `Usage: buckle init [--root <dir>] [--mount <path>] [--name <name>] [--port <n>] [--out <file>] [--yes] [--force]
 
-Writes an environment file for one workspace, with a fresh agent token and a fresh setup
-token. Asks for the few decisions when run in a terminal; --yes takes the defaults.
+Writes an environment file for one workspace, with a fresh agent token and a fresh admin
+credential. Asks for the few decisions when run in a terminal; --yes takes the defaults.
 `
 
 /**
  * Onboards a workspace: one file the node starts from, two credentials that never meet. The
- * agent token is what a harness or Rings calls tools with; the setup token is what Rings
+ * agent token is what a harness or Rings calls tools with; the admin credential is what Rings
  * configures the node with, and no tool call can present it.
  */
 export async function runInit(argv: string[]): Promise<CliResult> {
@@ -65,8 +65,8 @@ export async function runInit(argv: string[]): Promise<CliResult> {
   }
 
   const authToken = token()
-  const setupToken = token()
-  writeFileSync(out, renderEnv({ root, mount, name, port, authToken, setupToken }), { mode: 0o600 })
+  const adminToken = token()
+  writeFileSync(out, renderEnv({ root, mount, name, port, authToken, adminToken }), { mode: 0o600 })
 
   process.stdout.write(`Wrote ${out}
 
@@ -76,14 +76,15 @@ export async function runInit(argv: string[]): Promise<CliResult> {
 
 Next:
   1. Start the node:            buckle serve        (reads ${basename(out)} from this directory)
-  2. Register it in Rings with both tokens, or drive it directly:
-       agent token   ${authToken}
-       setup token   ${setupToken}
+  2. Register it in Rings with both credentials, or drive it directly:
+       agent token        ${authToken}
+       admin credential   ${adminToken}
   3. Restrict it:               buckle policy allow-command 'pnpm {build,test} *'
                                 buckle policy allow-url localhost:3000
 
-The agent token runs tools. The setup token reads and pushes the policy at /setup and nothing
-else. Keep them apart; Buckle refuses to start if they are the same value.
+The agent token runs tools. The admin credential reads and pushes the policy at /setup, mints
+and revokes workspace tokens, and nothing else. Keep them apart; Buckle refuses to start if
+they are the same value.
 `)
   return { exitCode: 0 }
 }
@@ -101,7 +102,7 @@ async function askInTerminal(defaults: { root?: string; mount?: string; name?: s
   }
 }
 
-function renderEnv(input: { root: string; mount: string | null; name: string; port: string; authToken: string; setupToken: string }): string {
+function renderEnv(input: { root: string; mount: string | null; name: string; port: string; authToken: string; adminToken: string }): string {
   return `# Written by buckle init on ${new Date().toISOString()}
 # The node reads this file from its working directory. Only BUCKLE_* names are taken from it.
 
@@ -112,8 +113,12 @@ BUCKLE_PORT=${input.port}
 
 # What agents call tools with. Rings stores this one.
 BUCKLE_AUTH_TOKEN=${input.authToken}
-# What configures the node through /setup. Rings stores this one too, apart from the first.
-BUCKLE_SETUP_TOKEN=${input.setupToken}
+# What configures the node through /setup, mints workspace tokens and writes a persisted
+# approval. Rings stores this one too, apart from the first.
+BUCKLE_ADMIN_TOKEN=${input.adminToken}
+# The name the admin credential had before BUCKLE-08, written for one release so a script
+# reading the old key keeps working. Delete this line once nothing reads it.
+BUCKLE_SETUP_TOKEN=${input.adminToken}
 
 BUCKLE_WORKSPACE_ROOT=${input.root}
 ${input.mount ? `BUCKLE_WORKSPACE_MOUNT=${input.mount}` : '# BUCKLE_WORKSPACE_MOUNT=/workspace'}

@@ -12,6 +12,24 @@ function registry() {
   return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: '/workspace' }), join(root, 'approvals.json'))
 }
 
+describe('BUCKLE-D14: only the admin credential writes a persisted approval', () => {
+  const ask = (approvals: ReturnType<typeof registry>) => approvals.issue({ tool: 'fs_write', sessionId: 'writer', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session', 'always'] }] })[0]!
+
+  it.each(['session', 'always'] as const)('refuses a %s decision carried by an agent credential', scope => {
+    const approvals = registry()
+    const request = ask(approvals)
+    const result = approvals.resolve({ token: request.token, approved: true, scope }, 'agent')
+    expect(result).toMatchObject({ ok: false })
+    expect(approvals.pending().map(entry => entry.token)).toEqual([request.token])
+  })
+
+  it('lets an agent credential answer once, and the owner answer for good', () => {
+    const approvals = registry()
+    expect(approvals.resolve({ token: ask(approvals).token, approved: true, scope: 'once' }, 'agent').ok).toBe(true)
+    expect(approvals.resolve({ token: ask(approvals).token, approved: true, scope: 'always' }, 'admin').ok).toBe(true)
+  })
+})
+
 describe('once approval consumption', () => {
   it('retains partial grants and consumes them exactly when every gate allows', () => {
     const approvals = registry()
@@ -20,9 +38,9 @@ describe('once approval consumption', () => {
       { kind: 'ask', rule: 'sensitive_path', subject: '/outside/credentials.json', reason: 'sensitive', offeredScopes: ['once'] },
     ] })
     const check = (subjects: unknown[]): PermissionOutcome => subjects.length === 2 ? { kind: 'allow', allowedBy: [] } : { kind: 'ask', asks: [] }
-    approvals.resolve({ token: issued[0]!.token, approved: true, scope: 'once' })
+    approvals.resolve({ token: issued[0]!.token, approved: true, scope: 'once' }, 'admin')
     expect(approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check }).kind).toBe('ask')
-    approvals.resolve({ token: issued[1]!.token, approved: true, scope: 'once' })
+    approvals.resolve({ token: issued[1]!.token, approved: true, scope: 'once' }, 'admin')
     expect(approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check }).kind).toBe('allow')
     expect(approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check }).kind).toBe('ask')
   })
@@ -32,8 +50,8 @@ describe('once approval consumption', () => {
     const approvals = registry()
     const [request] = approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })
     const decision = { token: request!.token, approved: true, scope: 'once' as const }
-    expect(approvals.resolve(decision).ok).toBe(true)
-    expect(approvals.resolve(decision).ok).toBe(true)
+    expect(approvals.resolve(decision, 'admin').ok).toBe(true)
+    expect(approvals.resolve(decision, 'admin').ok).toBe(true)
     const check = (subjects: unknown[]): PermissionOutcome => subjects.length ? { kind: 'allow', allowedBy: [] } : { kind: 'ask', asks: [] }
     expect(approvals.evaluate({ tokens: [request!.token], sessionId: 'other-reader', tool: 'fs_read', check }).kind).toBe('ask')
     expect(approvals.evaluate({ tokens: [request!.token], sessionId: 'reader', tool: 'fs_write', check }).kind).toBe('ask')
@@ -50,8 +68,8 @@ describe('once approval consumption', () => {
   const [request] = first.issue({ tool: 'fs_read', sessionId: 'shared', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })
   const decision = { token: request!.token, approved: true, scope: 'once' as const }
   expect(second.pending()).toEqual([])
-  expect(second.resolve(decision).ok).toBe(false)
-  expect(first.resolve(decision).ok).toBe(true)
+  expect(second.resolve(decision, 'admin').ok).toBe(false)
+  expect(first.resolve(decision, 'admin').ok).toBe(true)
   second.evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toEqual([]); return { kind: 'allow', allowedBy: [] } } })
   create('/first').evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toHaveLength(1); return { kind: 'allow', allowedBy: [] } } })
 })

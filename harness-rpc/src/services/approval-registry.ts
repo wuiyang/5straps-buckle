@@ -4,6 +4,7 @@ import { ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, type
 import { createJsonFileStore } from '../adapters/json-file-store.js'
 import type { PermissionDecision } from '../domain/permission/decision.js'
 import type { PermissionOutcome } from '../domain/permission/engine.js'
+import type { ApprovalAuthority } from '../ports/approval-channel.js'
 import type { GrantStore } from '../ports/grant-store.js'
 import { logger } from '../logger.js'
 
@@ -25,7 +26,13 @@ type State = z.infer<typeof fileSchema>
 
 export interface ApprovalRegistry {
   issue(input: { tool: string; sessionId: string; asks: Ask[] }): ApprovalRequest[]
-  resolve(decision: ApprovalDecision): { ok: true } | { ok: false; reason: string }
+  /**
+   * `BUCKLE-D14`: a decision that outlives the call is written under the admin credential
+   * alone. An `agent` authority may answer `once`, which expires with the call it unblocks.
+   * The default names the owner, because every caller but the agent-facing MCP face reaches
+   * this from the owner's own process or from behind the admin credential.
+   */
+  resolve(decision: ApprovalDecision, authority?: ApprovalAuthority): { ok: true } | { ok: false; reason: string }
   evaluate(input: {
     tokens: string[]; sessionId: string; tool: string
     check: (subjects: GrantSubject[]) => PermissionOutcome
@@ -49,7 +56,11 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       })
     },
 
-    resolve(decision) {
+    resolve(decision, authority = 'admin') {
+      if (decision.approved && decision.scope !== 'once' && authority !== 'admin') {
+        logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
+        return { ok: false, reason: 'Only the admin credential writes an approval that outlives the call' }
+      }
       return store.update(state => {
         prune(state)
         const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)

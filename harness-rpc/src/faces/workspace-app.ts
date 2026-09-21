@@ -9,8 +9,8 @@ import { bodyLimit } from 'hono/body-limit'
 import { z } from 'zod'
 import type { BuckleConfig } from '../config.js'
 import type { BuckleRuntime } from '../runtime.js'
-import { createWorkspaceManager, WorkspaceError, WorkspaceRegistrationSchema, WorkspacePatchSchema } from '../services/workspace-manager.js'
-import { requireBearerToken, tokenMatches } from './rpc/auth.js'
+import { createWorkspaceManager, WorkspaceError, WorkspaceRegistrationSchema, WorkspacePatchSchema, WorkspaceTokenInputSchema } from '../services/workspace-manager.js'
+import { matchesTokenSource, requireBearerToken } from './rpc/auth.js'
 import { createRpcApp } from './rpc/app.js'
 import { createSetupApp } from './setup/app.js'
 import { logger } from '../logger.js'
@@ -25,15 +25,15 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     await next()
   })
 
-  if (input.config.setupToken) {
-    app.use('/setup/directories', requireBearerToken(input.config.setupToken))
+  if (input.config.adminToken) {
+    app.use('/setup/directories', requireBearerToken(input.config.adminToken))
     app.get('/setup/directories', async context => {
       const parsed = DirectoryQuerySchema.safeParse(context.req.query())
       if (!parsed.success) return context.json({ error: 'Invalid directory request' }, 400)
       return context.json(await browseDirectories({ ...parsed.data, eligibility: manager.eligibility }))
     })
-    app.use('/setup/workspaces', requireBearerToken(input.config.setupToken))
-    app.use('/setup/workspaces/*', requireBearerToken(input.config.setupToken))
+    app.use('/setup/workspaces', requireBearerToken(input.config.adminToken))
+    app.use('/setup/workspaces/*', requireBearerToken(input.config.adminToken))
     app.use('/setup/workspaces', bodyLimit({ maxSize: 65_536 }))
     app.get('/setup/workspaces', context => context.json({ workspaces: manager.list() }))
     app.get('/setup/workspaces/:id', context => {
@@ -63,6 +63,21 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
       const workspace = await auditAdminOperation(input.runtime, 'workspace_reactivate', id, () => manager.update(id, { retired: false }))
       return context.json({ workspace })
     })
+
+    // `BUCKLE-D12`: minting and revoking sit behind the admin credential, which no tool reads.
+    app.get('/setup/workspaces/:id/tokens', context => context.json({ tokens: manager.listTokens(context.req.param('id')) }))
+    app.post('/setup/workspaces/:id/tokens', async context => {
+      const parsed = WorkspaceTokenInputSchema.safeParse(await context.req.json().catch(() => ({})))
+      if (!parsed.success) return context.json({ error: 'Invalid workspace token request' }, 400)
+      const id = context.req.param('id')
+      const minted = await auditAdminOperation(input.runtime, 'workspace_token_add', id, () => manager.addToken(id, parsed.data))
+      return context.json({ token: minted }, 201)
+    })
+    app.delete('/setup/workspaces/:id/tokens/:tokenId', async context => {
+      const id = context.req.param('id')
+      const revoked = await auditAdminOperation(input.runtime, 'workspace_token_revoke', id, () => manager.revokeToken(id, context.req.param('tokenId')))
+      return revoked ? context.body(null, 204) : context.json({ error: 'Workspace token not found' }, 404)
+    })
   }
 
   app.all('/workspaces/:id/*', async context => {
@@ -80,12 +95,12 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
       url.pathname = path
       return app.fetch(new Request(url, context.req.raw))
     }
-    const credentials = manager.credentials(id)
-    const credential = path.startsWith('/setup/') ? credentials?.setupToken : credentials?.authToken
-    if (!credential || !tokenMatches(context.req.header('authorization'), credential)) {
+    const known = manager.known(id)
+    const credential = path.startsWith('/setup/') ? manager.adminToken(id) : () => manager.agentTokens(id)
+    if (!credential || !matchesTokenSource(context.req.header('authorization'), credential)) {
       if (path === '/v1/invoke' || path === '/mcp' || path.startsWith('/setup/')) {
         const auditId = randomUUID()
-        input.runtime.actions.record({ auditId, event: 'result', workspaceId: credentials ? id : 'unresolved',
+        input.runtime.actions.record({ auditId, event: 'result', workspaceId: known ? id : 'unresolved',
           at: new Date().toISOString(), requestId: auditId, sessionId: 'http-untrusted', tool: path === '/mcp' ? 'workspace_mcp_auth_rejected' : path.startsWith('/setup/') ? 'workspace_setup_auth_rejected' : 'workspace_invoke_rejected',
           outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: 'HTTP 401',
         })
@@ -96,14 +111,15 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     const { config, runtime } = await manager.resolve(id, { setup: path.startsWith('/setup/') })
     let face = faces.get(id)
     if (!face) {
-      face = createRpcApp({ config, runtime, authToken: config.authToken })
+      const agentTokens = () => manager.agentTokens(id)
+      face = createRpcApp({ config, runtime, authToken: agentTokens })
       const mcpHandler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, version: runtime.manifest().version }))
       face.use('/mcp', auditHttpRequest({ actions: runtime.actions, workspaceId: runtime.workspaceId, face: 'http_mcp' }))
       face.use('/mcp', bodyLimit({ maxSize: config.maxRequestBytes }))
-      face.use('/mcp', requireBearerToken(config.authToken))
+      face.use('/mcp', requireBearerToken(agentTokens))
       face.all('/mcp', context => mcpHandler.fetch(context.req.raw))
       runtime.onToolsChanged(() => mcpHandler.notify.toolsChanged())
-      if (config.setupToken) face.route('/setup', createSetupApp({ config, runtime, setupToken: config.setupToken }))
+      if (config.adminToken) face.route('/setup', createSetupApp({ config, runtime, adminToken: config.adminToken }))
       faces.set(id, face)
     }
     const url = new URL(context.req.url)

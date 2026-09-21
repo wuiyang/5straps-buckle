@@ -18,7 +18,7 @@ export interface WaitingApprovalOptions {
 /**
  * Holds a gated call open for a grace period rather than refusing it at once, so an approval
  * arriving by any route lands in time: a y/n in this terminal, `buckle approve` elsewhere, a POST
- * to /v1/approvals, or whatever a webhook put in front of the person.
+ * to /setup/approvals, or whatever a webhook put in front of the person.
  *
  * An out-of-band approval resolves the token itself, so this returns an empty decision list
  * rather than a decision to apply. The caller then re-evaluates against the grant that now exists.

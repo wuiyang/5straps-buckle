@@ -13,7 +13,7 @@ const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
 it('returns only the requested skill body through the execution credential', async () => {
   const root = mkdtempSync(join(tmpdir(), 'buckle-skills-'))
   // Buckle's state lives outside the workspace, which is the only layout loadConfig accepts.
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-skills-state-')), BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_SETUP_TOKEN: SETUP, BUCKLE_ALLOW_SHELL: 'false' })
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-skills-state-')), BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: SETUP, BUCKLE_ALLOW_SHELL: 'false' })
   const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
   const app = createHttpApp({ config, runtime, authToken: AGENT })
   const skill = runtime.skills()[0]!

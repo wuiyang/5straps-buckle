@@ -47,7 +47,7 @@ describe('an approval granted while the server keeps running', () => {
     if (!token) return
 
     // Stands in for `buckle approve` in a terminal: resolve, then call the server again.
-    expect(runtime.approvals.resolve({ token, approved: true, scope: 'session' }).ok).toBe(true)
+    expect(runtime.approvals.resolve({ token, approved: true, scope: 'session' }, 'admin').ok).toBe(true)
 
     expect((await invoke('two')).outcome).toBe('ok')
     expect((await invoke('three')).outcome).toBe('ok')
@@ -57,7 +57,7 @@ describe('an approval granted while the server keeps running', () => {
     const first = await invoke('one')
     const token = first.approvals?.[0]?.token
     if (!token) throw new Error('expected an approval token')
-    runtime.approvals.resolve({ token, approved: true, scope: 'session' })
+    runtime.approvals.resolve({ token, approved: true, scope: 'session' }, 'admin')
 
     expect((await invoke('two', 'someone-else')).outcome).toBe('approval_required')
   })

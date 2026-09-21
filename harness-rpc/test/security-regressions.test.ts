@@ -15,7 +15,7 @@ async function fixture() {
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_SETUP_TOKEN: 'owner-token' })
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_ADMIN_TOKEN: 'owner-token' })
   const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
   const app = createHttpApp({ config, runtime, authToken: config.authToken })
   return { root, workspace, config, runtime, app }

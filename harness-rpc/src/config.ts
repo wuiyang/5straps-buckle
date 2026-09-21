@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { isInside } from './domain/paths.js'
+import { logger } from './logger.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -20,10 +21,11 @@ export interface BuckleConfig {
   usage: string
   authToken: string
   /**
-   * The setup credential. It opens `/setup`, where the policy is read and pushed, and nothing
-   * else; the agent's token opens nothing there. Empty leaves the setup face unmounted.
+   * The admin credential. It opens `/setup`, where the policy is read and pushed, mints and
+   * revokes workspace tokens, and writes a persisted approval; the agent's token opens nothing
+   * there. Empty leaves the setup face unmounted.
    */
-  setupToken: string
+  adminToken: string
   cwd: string
   /** Directories writable without asking. Empty by default, so the first write anywhere asks. */
   scratchRoots: string[]
@@ -85,9 +87,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
 
   const sandboxMode = parseSandboxMode(environment.BUCKLE_SANDBOX)
   const authToken = environment.BUCKLE_AUTH_TOKEN ?? ''
-  const setupToken = environment.BUCKLE_SETUP_TOKEN ?? ''
-  if (setupToken && setupToken === authToken) {
-    throw new Error('BUCKLE_SETUP_TOKEN must differ from BUCKLE_AUTH_TOKEN: the credential that configures the node is never the one an agent holds')
+  const adminToken = parseAdminToken(environment)
+  if (adminToken && adminToken === authToken) {
+    throw new Error('BUCKLE_ADMIN_TOKEN must differ from BUCKLE_AUTH_TOKEN: the credential that configures the node is never the one an agent holds')
   }
   if (Boolean(environment.BUCKLE_REPORT_URL) !== Boolean(environment.BUCKLE_REPORT_TOKEN)) {
     throw new Error('BUCKLE_REPORT_URL and BUCKLE_REPORT_TOKEN must be configured together')
@@ -101,7 +103,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     description: environment.BUCKLE_DESCRIPTION ?? '',
     usage: environment.BUCKLE_USAGE ?? '',
     authToken,
-    setupToken,
+    adminToken,
     cwd,
     scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => resolve(root)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
@@ -161,6 +163,21 @@ export function actionsPath(config: BuckleConfig): string {
 
 export function policyPath(config: BuckleConfig): string {
   return join(config.stateDirectory, 'policy.json')
+}
+
+/**
+ * The admin credential, renamed from the setup token by `BUCKLE-08`. `BUCKLE_SETUP_TOKEN` is
+ * still read for one release so an install written by an earlier `buckle init` keeps starting;
+ * two different values are an error rather than a silent choice between two authorities.
+ */
+function parseAdminToken(environment: NodeJS.ProcessEnv): string {
+  const adminToken = environment.BUCKLE_ADMIN_TOKEN?.trim() ?? ''
+  const legacyToken = environment.BUCKLE_SETUP_TOKEN?.trim() ?? ''
+  if (adminToken && legacyToken && adminToken !== legacyToken) {
+    throw new Error('BUCKLE_ADMIN_TOKEN and BUCKLE_SETUP_TOKEN hold different values: keep BUCKLE_ADMIN_TOKEN and remove the old name')
+  }
+  if (!adminToken && legacyToken) logger.warn('BUCKLE_SETUP_TOKEN is the old name for BUCKLE_ADMIN_TOKEN and is read for one release; rename it')
+  return adminToken || legacyToken
 }
 
 /**

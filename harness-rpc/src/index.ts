@@ -81,7 +81,7 @@ async function serveHttp(config: BuckleConfig): Promise<void> {
       skills: manifest.skills.length,
       approvalGraceMs: config.approvalTimeoutMs,
       approvalWebhook: config.approvalWebhook ? 'configured' : 'none',
-      setupFace: config.setupToken ? 'configured' : 'none',
+      setupFace: config.adminToken ? 'configured' : 'none',
       deniedRunReports: runtime.reporter.configured ? 'configured' : 'none',
       mount: runtime.paths().mount ?? 'none',
     })

@@ -21,14 +21,14 @@ beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'buckle-multi-'))
   const { mkdirSync } = await import('node:fs')
   for (const folder of ['default', 'one', 'two', 'state']) mkdirSync(join(root, folder))
-  config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_SETUP_TOKEN: NODE_SETUP, BUCKLE_ALLOW_SHELL: 'false' })
+  config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_SETUP, BUCKLE_ALLOW_SHELL: 'false' })
   app = createHttpApp({ config, runtime: await createRuntime({ config, channel: () => createDeferredApprovalChannel() }), authToken: NODE_AGENT })
   writeFileSync(join(root, 'one', 'hello.txt'), 'workspace one')
   writeFileSync(join(root, 'two', 'hello.txt'), 'workspace two')
 })
 
 function register(id: string, token = NODE_SETUP, overrides: Record<string, unknown> = {}) {
-  return app.request('/setup/workspaces', { method: 'POST', headers: headers(token), body: JSON.stringify({ id, name: `Workspace ${id}`, root: join(root, id), authToken: agent(id), setupToken: setup(id), ...overrides }) })
+  return app.request('/setup/workspaces', { method: 'POST', headers: headers(token), body: JSON.stringify({ id, name: `Workspace ${id}`, root: join(root, id), authToken: agent(id), adminToken: setup(id), ...overrides }) })
 }
 
 function invoke(id: string, token: string, path = '/workspace/hello.txt') {

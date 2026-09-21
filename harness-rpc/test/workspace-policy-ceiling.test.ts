@@ -31,7 +31,7 @@ async function workspace(node: WorkspacePolicy, child: WorkspacePolicy = policy(
   config.policy = node
   const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
   const manager = createWorkspaceManager({ config, runtime })
-  manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', setupToken: 'child-setup-token-fixture-only', policy: child })
+  manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-setup-token-fixture-only', policy: child })
   return (await manager.resolve('child')).runtime
 }
 

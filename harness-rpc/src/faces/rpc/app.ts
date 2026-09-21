@@ -3,7 +3,7 @@ import { InvokeRequestSchema } from '@5straps/protocol'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import type { BuckleConfig } from '../../config.js'
-import { requireBearerToken } from './auth.js'
+import { requireBearerToken, type TokenSource } from './auth.js'
 import { toDescriptor } from '../../domain/skill.js'
 import { logger } from '../../logger.js'
 import type { BuckleRuntime } from '../../runtime.js'
@@ -11,7 +11,7 @@ import type { BuckleRuntime } from '../../runtime.js'
 export interface RpcAppDependencies {
   config: BuckleConfig
   runtime: BuckleRuntime
-  authToken: string
+  authToken: TokenSource
 }
 
 /** Mirrors the MCP face's fallback, so both name a session the same way when a caller gives none. */

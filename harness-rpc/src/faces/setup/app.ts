@@ -15,16 +15,17 @@ import type { BuckleRuntime } from '../../runtime.js'
 import { tokenMatches, requireBearerToken } from '../rpc/auth.js'
 
 /**
- * The owner's face. It reads and replaces the workspace policy and reports how the node is set
- * up, behind the setup credential alone: the agent's token opens nothing here, and nothing here
- * runs a tool. Rings drives it to push configuration; `buckle policy` does the same locally.
+ * The owner's face. It reads and replaces the workspace policy, decides approvals and reports
+ * how the node is set up, behind the admin credential alone: the agent's token opens nothing
+ * here, and nothing here runs a tool. Rings drives it to push configuration; `buckle policy`
+ * does the same locally.
  */
-export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRuntime; setupToken: string }): Hono {
-  const { config, runtime, setupToken } = input
+export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRuntime; adminToken: string }): Hono {
+  const { config, runtime, adminToken } = input
   const app = new Hono()
 
   app.use('/*', async (context, next) => {
-    if (!tokenMatches(context.req.header('authorization'), setupToken)) {
+    if (!tokenMatches(context.req.header('authorization'), adminToken)) {
       const auditId = randomUUID()
       runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
         at: new Date().toISOString(), sessionId: 'http-untrusted', tool: 'setup_auth_rejected',
@@ -33,7 +34,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     }
     await next()
   })
-  app.use('/*', requireBearerToken(setupToken))
+  app.use('/*', requireBearerToken(adminToken))
   app.use('/*', async (context, next) => {
     const auditId = randomUUID()
     const at = new Date().toISOString()
@@ -93,7 +94,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
   app.post('/approvals', async context => {
     const parsed = ApprovalDecisionSchema.safeParse(await context.req.json().catch(() => null))
     if (!parsed.success) return context.json({ error: 'Invalid approval decision' }, 400)
-    const result = runtime.approvals.resolve(parsed.data)
+    const result = runtime.approvals.resolve(parsed.data, 'admin')
     return result.ok ? context.json({ resolved: true }) : context.json({ error: result.reason }, 409)
   })
   app.get('/grants', context => context.json({ grants: runtime.grants.list() }))
