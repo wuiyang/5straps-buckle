@@ -40,6 +40,17 @@ export const HarnessPairingRedeemSchema = z.object({
 })
 export type HarnessPairingRedeem = z.infer<typeof HarnessPairingRedeemSchema>
 
+/**
+ * Minting a pairing code. A code with no `serverId` onboards a Buckle Rings has never seen; one
+ * naming a registered node is the owner's own authority to replace that node's connection, which
+ * is how a moved node re-pairs when Rings no longer holds the admin credential it can present.
+ * The body may be absent entirely, which is the plain new-node code Visual asks for.
+ */
+export const HarnessPairingIssueSchema = z.preprocess(value => value ?? {}, z.object({
+  serverId: z.string().min(1).max(200).optional(),
+}))
+export type HarnessPairingIssue = z.infer<typeof HarnessPairingIssueSchema>
+
 /** Editing a registered node: every field optional, guarded against a concurrent edit. */
 export const HarnessServerPatchSchema = z.preprocess(renameLegacySetupToken, HarnessServerFieldsSchema.partial().extend({ expectedUpdatedAt: z.string().optional() }))
 export type HarnessServerPatch = z.infer<typeof HarnessServerPatchSchema>
