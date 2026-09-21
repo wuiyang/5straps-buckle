@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../domain/environment.js'
@@ -42,10 +43,11 @@ export function createGitPack(options: GitPackOptions): Pack {
     timeoutMs: number
     signal: AbortSignal
   }): Promise<string> => {
+    const cwd = resolveRepository({ paths: options.paths, repo: input.repo })
     const result = await options.runProcess({
       command: 'git',
       args: input.args,
-      cwd: options.paths.resolve(input.repo),
+      cwd,
       timeoutMs: input.timeoutMs,
       environment: buildChildEnvironment({ parent: process.env, extra: { GIT_TERMINAL_PROMPT: '0' } }),
       signal: input.signal,
@@ -134,6 +136,18 @@ export function createGitPack(options: GitPackOptions): Pack {
     skills: [loadPackSkill(PACK_ID)],
     unavailableReason: options.hasGit ? null : 'git is not installed on this node',
   }
+}
+
+/**
+ * A missing working directory makes `spawn` report `spawn git ENOENT`, which reads as a missing
+ * git binary rather than a missing directory. Named here instead, before anything is spawned.
+ */
+function resolveRepository(input: { paths: PathView; repo: string }): string {
+  const cwd = input.paths.resolve(input.repo)
+  const stats = statSync(cwd, { throwIfNoEntry: false })
+  if (!stats) throw new ToolExecutionError(`No such directory in this workspace: ${input.paths.display(cwd)}`, { code: 'GIT_NO_REPOSITORY' })
+  if (!stats.isDirectory()) throw new ToolExecutionError(`Not a directory: ${input.paths.display(cwd)}`, { code: 'GIT_NO_REPOSITORY' })
+  return cwd
 }
 
 function parseStatus(output: string): JsonValue {
