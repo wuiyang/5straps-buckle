@@ -148,6 +148,11 @@ describe('what no pattern can change', () => {
     expect(evaluate('bash', ['-c', 'cd /x && buckle grants revoke 1']).kind).toBe('deny')
   })
 
+  it('refuses the pending queue too, which is where a tool would read the token to approve itself', () => {
+    expect(reasonOf(evaluate('buckle', ['approvals'], { allow: ['*'] }))).toContain('cannot administer')
+    expect(evaluate('bash', ['-c', 'buckle approvals --json'], { allow: ['bash -c *'] }).kind).toBe('deny')
+  })
+
   it.each(['workspaces', 'history'])('rejects %s administration directly and through a wrapper', command => {
     expect(evaluate('buckle', [command, 'list'], { allow: ['*'] }).kind).toBe('deny')
     expect(evaluate('bash', ['-c', `buckle ${command} list`], { allow: ['bash -c *'] }).kind).toBe('deny')

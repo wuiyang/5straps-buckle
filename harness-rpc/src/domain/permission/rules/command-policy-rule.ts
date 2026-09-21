@@ -8,9 +8,11 @@ const MAX_SUBJECT_LENGTH = 300
 
 /**
  * `buckle approve`, `buckle policy` and friends administer the node. A tool that could run them
- * would approve its own calls, so they are refused whatever the owner's patterns say.
+ * would approve its own calls, so they are refused whatever the owner's patterns say. `approvals`
+ * is named apart from `approve`: reading the pending queue is how a tool would learn the token
+ * it needs to approve itself.
  */
-const SELF_ADMINISTRATION = /(^|\s)buckle\s+(approve|grants|policy|init|plugin|serve|mcp|workspaces?|history)\b/
+const SELF_ADMINISTRATION = /(^|\s)buckle\s+(approvals|approve|grants|policy|init|plugin|serve|mcp|workspaces?|history)\b/
 
 /**
  * The owner's command globs, judged one shell word at a time on the parsed command line. Deny

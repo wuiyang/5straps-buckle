@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream'
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { createCliApprovalChannel } from '../src/adapters/approval/cli-approval-channel.js'
@@ -6,7 +7,7 @@ import { createSerialQueue } from '../src/domain/serial-queue.js'
 import type { ApprovalChannel } from '../src/ports/approval-channel.js'
 import type { ApprovalRegistry } from '../src/services/approval-registry.js'
 
-function request(token: string): ApprovalRequest {
+function request(token: string, expiresInMs = 60_000): ApprovalRequest {
   return {
     token,
     rule: 'read_scope',
@@ -14,8 +15,17 @@ function request(token: string): ApprovalRequest {
     reason: 'outside the sandbox',
     tool: 'fs_read',
     offeredScopes: ['once', 'session', 'always'],
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    expiresAt: new Date(Date.now() + expiresInMs).toISOString(),
   }
+}
+
+/** A terminal nobody answers: the streams are open, and no keystroke ever arrives. */
+function silentTerminal() {
+  const input = new PassThrough()
+  const output = new PassThrough()
+  let shown = ''
+  output.on('data', (chunk: Buffer) => { shown += chunk.toString('utf8') })
+  return { input, output, shown: () => shown }
 }
 
 /** Only `pending` is consulted by the waiting channel; the rest of the registry is not its concern. */
@@ -132,6 +142,52 @@ describe('the terminal prompt queue', () => {
     process.stdin.isTTY = false
     try {
       expect(await createCliApprovalChannel().request([request('t1')])).toBeNull()
+    } finally {
+      process.stdin.isTTY = wasTty
+    }
+  })
+
+  it('gives up on a question once its own request expires, rather than holding the terminal', async () => {
+    const wasTty = process.stdin.isTTY
+    process.stdin.isTTY = true
+    const terminal = silentTerminal()
+    try {
+      const channel = createCliApprovalChannel(terminal)
+
+      const asked = channel.request([request('t1', 300)])
+      expect(await asked).toBeNull()
+      expect(terminal.shown()).toContain('expires in')
+    } finally {
+      process.stdin.isTTY = wasTty
+    }
+  })
+
+  it('asks the next queued question after one expires, so a live request is still answerable', async () => {
+    const wasTty = process.stdin.isTTY
+    process.stdin.isTTY = true
+    const terminal = silentTerminal()
+    try {
+      const channel = createCliApprovalChannel(terminal)
+
+      const first = channel.request([request('expiring', 300)])
+      const second = channel.request([request('live', 600)])
+      expect(await first).toBeNull()
+      expect(await second).toBeNull()
+      // Both questions reached the terminal, which is what a held terminal would have stopped.
+      expect(terminal.shown()).toContain('outside the sandbox')
+      expect(terminal.shown().match(/needs approval/g)).toHaveLength(2)
+    } finally {
+      process.stdin.isTTY = wasTty
+    }
+  })
+
+  it('does not ask about a request whose expiry passed while it queued', async () => {
+    const wasTty = process.stdin.isTTY
+    process.stdin.isTTY = true
+    const terminal = silentTerminal()
+    try {
+      expect(await createCliApprovalChannel(terminal).request([request('stale', -1_000)])).toBeNull()
+      expect(terminal.shown()).toBe('')
     } finally {
       process.stdin.isTTY = wasTty
     }

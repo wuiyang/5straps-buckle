@@ -6,6 +6,7 @@ import { parseArgs } from 'node:util'
 import type { GrantScope, InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import type { BuckleConfig } from '../../config.js'
+import { describeExpiry } from '../../domain/approval-deadline.js'
 import { createRuntime, type BuckleRuntime } from '../../runtime.js'
 import { createCliApprovalChannel } from '../../adapters/approval/cli-approval-channel.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
@@ -27,7 +28,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
 
   const runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
 
-  if (['approve', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
+  if (['approve', 'approvals', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
     return auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0,
       operation: () => dispatchRuntimeCommand({ runtime, config: input.config, command, rest }),
     })
@@ -41,6 +42,7 @@ function dispatchRuntimeCommand(input: { runtime: BuckleRuntime; config: BuckleC
   if (command === 'manifest') return print(runtime.manifest())
   if (command === 'skills') return printSkills(runtime, rest)
   if (command === 'approve') return approve(runtime, rest)
+  if (command === 'approvals') return approvals(runtime, rest)
   if (command === 'grants') return grants(runtime, rest)
   if (command === 'workspace') return workspaceRegistryCommand({ config: input.config, runtime, argv: rest })
   if (command === 'workspaces') return shellWorkspacesCommand(runtime, rest)
@@ -71,6 +73,7 @@ function printUsage(): CliResult {
   buckle <group> <verb> [args]       Run a tool, e.g. buckle fs read src/app.ts
   buckle call <tool> --json '{...}'  Run a tool with raw JSON arguments
 
+  buckle approvals [--json]          List the requests waiting for a decision
   buckle approve <token> [--scope once|session|always]
   buckle grants list | revoke <id>
   buckle workspace list | add <id> --root <dir>
@@ -134,6 +137,31 @@ function printSkills(runtime: BuckleRuntime, argv: string[]): CliResult {
   const skill = skills.find(candidate => candidate.name === name)
   if (!skill) return fail(`Unknown skill: ${name}`)
   process.stdout.write(`${skill.content}\n`)
+  return { exitCode: 0 }
+}
+
+/**
+ * The queue a person answers from. `buckle approve` needs a token, and a request only reaches a
+ * terminal when a prompt was on screen there, so without this the tokens waiting on a node were
+ * readable through the admin API alone.
+ */
+function approvals(runtime: BuckleRuntime, argv: string[]): CliResult {
+  const { values } = parseArgs({ args: argv, options: { json: { type: 'boolean' } }, allowPositionals: false })
+  const pending = runtime.approvals.pending()
+  if (values.json) return print(pending)
+  if (pending.length === 0) {
+    process.stdout.write('Nothing is waiting for a decision.\n')
+    return { exitCode: 0 }
+  }
+
+  for (const request of pending) {
+    process.stdout.write(`${request.token}  ${request.tool}\n`)
+    process.stdout.write(`    ${request.rule}: ${request.subject}\n`)
+    process.stdout.write(`    ${request.reason}\n`)
+    process.stdout.write(`    scopes: ${request.offeredScopes.join(' | ')}\n`)
+    process.stdout.write(`    ${describeExpiry(request.expiresAt)}\n`)
+    process.stdout.write(`    buckle approve ${request.token} --scope ${defaultScope(request.offeredScopes)}\n`)
+  }
   return { exitCode: 0 }
 }
 
@@ -240,7 +268,7 @@ function reportResponse(response: InvokeResponse): CliResult {
   if (response.outcome === 'approval_required') {
     for (const approval of response.approvals) {
       process.stderr.write(
-        `Approval required: ${approval.reason}\n  subject: ${approval.subject}\n  buckle approve ${approval.token} --scope ${defaultScope(approval.offeredScopes)}\n`,
+        `Approval required: ${approval.reason}\n  subject: ${approval.subject}\n  ${describeExpiry(approval.expiresAt)}\n  buckle approve ${approval.token} --scope ${defaultScope(approval.offeredScopes)}\n`,
       )
     }
     return { exitCode: 3 }
