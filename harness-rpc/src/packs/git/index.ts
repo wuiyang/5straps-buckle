@@ -5,13 +5,20 @@ import { buildChildEnvironment } from '../../domain/environment.js'
 import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
 import { defineTool, ToolExecutionError } from '../../domain/tool.js'
-import type { ProcessRunner } from '../../ports/process-runner.js'
+import type { ProcessResult, ProcessRunner } from '../../ports/process-runner.js'
+import { ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'git'
 /** Unit separator: safe inside commit subjects and branch names, unlike any printable delimiter. */
 const FIELD_SEPARATOR = '\x1f'
+/**
+ * `diff.<driver>.command` and `diff.<driver>.textconv` name programs git runs for a path whose
+ * attributes ask for that driver, and an empty `diff.external` stops neither. Only the command
+ * line does.
+ */
+const PATCH_SAFETY_ARGS = ['--no-ext-diff', '--no-textconv']
 
 const repoInput = z.object({ repo: z.string().default('.') })
 const statusInput = repoInput.extend({ untracked: z.boolean().default(true) })
@@ -33,10 +40,41 @@ const blameInput = repoInput.extend({
 export interface GitPackOptions {
   paths: PathView
   runProcess: ProcessRunner
+  /** Buckle's own state directory, which is where the empty hooks directory git is pointed at lives. */
+  stateDirectory: string
   hasGit: boolean
 }
 
 export function createGitPack(options: GitPackOptions): Pack {
+  const spawnGit = (input: { cwd: string; args: string[]; config: GitConfig[]; timeoutMs: number; signal: AbortSignal }): Promise<ProcessResult> => {
+    return options.runProcess({
+      command: 'git',
+      args: input.args,
+      cwd: input.cwd,
+      timeoutMs: input.timeoutMs,
+      environment: buildChildEnvironment({ parent: process.env, extra: { ...ISOLATION_ENVIRONMENT, ...gitConfigEnvironment(input.config) } }),
+      signal: input.signal,
+    })
+  }
+
+  /**
+   * Which filter programs this repository defines, asked of git under the isolation scope so an
+   * `include` is resolved and neither the global nor the system config is in view. A listing
+   * that did not complete is a refusal rather than an empty answer: an unread key is a program
+   * that would run.
+   */
+  const configuredKeys = async (input: { cwd: string; config: GitConfig[]; timeoutMs: number; signal: AbortSignal }): Promise<string[]> => {
+    const result = await spawnGit({ ...input, args: ['config', '--list', '--name-only', '--null'] })
+    // Exit 1 is git saying there is nothing configured, which is an answer.
+    if (result.exitCode !== 0 && result.exitCode !== 1) {
+      throw new ToolExecutionError(describeProcessFailure('git config --list', result), { code: 'GIT_FAILED' })
+    }
+    if (result.truncated) {
+      throw new ToolExecutionError('This repository has more git config than Buckle reads in one pass, so the tools cannot prove no filter program is defined; the git pack refuses the repository rather than running one', { code: 'GIT_ISOLATION_UNAVAILABLE' })
+    }
+    return result.stdout.split('\0').filter(Boolean)
+  }
+
   const run = async (input: {
     repo: string
     args: string[]
@@ -44,14 +82,10 @@ export function createGitPack(options: GitPackOptions): Pack {
     signal: AbortSignal
   }): Promise<string> => {
     const cwd = resolveRepository({ paths: options.paths, repo: input.repo })
-    const result = await options.runProcess({
-      command: 'git',
-      args: input.args,
-      cwd,
-      timeoutMs: input.timeoutMs,
-      environment: buildChildEnvironment({ parent: process.env, extra: { GIT_TERMINAL_PROMPT: '0' } }),
-      signal: input.signal,
-    })
+    const isolation = isolationConfig(ensureHooksDirectory(options.stateDirectory))
+    const keys = await configuredKeys({ cwd, config: isolation, timeoutMs: input.timeoutMs, signal: input.signal })
+    const config = [...isolation, ...filterProgramOverrides(keys)]
+    const result = await spawnGit({ cwd, args: input.args, config, timeoutMs: input.timeoutMs, signal: input.signal })
     if (result.exitCode !== 0) {
       throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
     }
@@ -80,7 +114,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       input: diffInput,
       effects: input => [{ kind: 'read_path', path: input.repo }],
       run: async (input, context): Promise<JsonValue> => {
-        const args = ['diff', `--unified=${input.contextLines}`, '--no-color']
+        const args = ['diff', `--unified=${input.contextLines}`, '--no-color', ...PATCH_SAFETY_ARGS]
         if (input.staged) args.push('--staged')
         if (input.paths.length > 0) args.push('--', ...input.paths)
         return { diff: await run({ repo: input.repo, args, ...context }) }
@@ -108,7 +142,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       input: blameInput,
       effects: input => [{ kind: 'read_path', path: input.path }],
       run: async (input, context): Promise<JsonValue> => {
-        const args = ['blame', '--line-porcelain']
+        const args = ['blame', '--line-porcelain', '--no-textconv']
         if (input.startLine) args.push('-L', `${input.startLine},${input.endLine ?? input.startLine}`)
         args.push('--', input.path)
         return { lines: parseBlame(await run({ repo: input.repo, args, ...context })) }

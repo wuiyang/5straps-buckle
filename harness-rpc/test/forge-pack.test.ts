@@ -290,7 +290,7 @@ describe('git_push', () => {
         expect(request.environment[name]).toBe('')
       }
       const config = gitConfigOf(request.environment)
-      expect(config['core.hooksPath']).toMatch(/forge-hooks$/)
+      expect(config['core.hooksPath']).toMatch(/git-hooks$/)
       expect(readdirSync(String(config['core.hooksPath']))).toEqual([])
       expect(config).toMatchObject({
         'credential.helper': '',

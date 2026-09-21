@@ -23,3 +23,13 @@ with `hash`, `author`, `date`, `subject`.
 This pack does not commit, push, or rewrite history. Use `shell_exec` for that, which means
 `git push --force`, `git reset --hard`, and `git clean -f` hit the destructive-command gate
 and ask for approval first. That is deliberate.
+
+## The repository's own git config cannot run programs here
+
+Every call runs with the system and global configs out of view, hooks pointed at an empty
+Buckle-owned directory, and every repository key that names a program — `core.fsmonitor`, a
+pager, an editor, a credential helper, an external diff or textconv driver, a clean or smudge
+filter — emptied or refused. A read tool never runs workspace code.
+
+The one visible effect: where a repository defines a content filter, `git_diff` and `git_blame`
+show the bytes on disk rather than the converted form, so a Git LFS path reads as its pointer.

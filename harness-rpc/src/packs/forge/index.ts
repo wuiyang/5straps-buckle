@@ -1,5 +1,4 @@
-import { mkdirSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import { z } from 'zod'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../domain/environment.js'
@@ -14,13 +13,12 @@ import type { UrlMatcher } from '../../domain/url-pattern.js'
 import type { ProcessResult, ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { assertNoFilters, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from './isolation.js'
+import { ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
+import { assertNoFilters } from './isolation.js'
 import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
 const PACK_ID = 'forge'
 const MAX_DIFF_BYTES = 524_288
-/** Empty, Buckle-owned, and where `core.hooksPath` points, so no hook the workspace wrote runs. */
-const HOOKS_DIRECTORY = 'forge-hooks'
 /** Unit separator: safe inside a commit subject, unlike any printable delimiter. */
 const FIELD_SEPARATOR = '\x1f'
 /** No leading dash, so a branch can never be read as a flag, and no `..` or ref-name punctuation. */
@@ -74,20 +72,9 @@ export interface ForgePackOptions {
 
 export function createForgePack(options: ForgePackOptions): Pack {
   const { forge, paths } = options
-  const hooksDirectory = join(options.stateDirectory, HOOKS_DIRECTORY)
-
-  /** Without it there is nothing to point git's hooks at, so git is not run at all. */
-  const ensureHooksDirectory = (): string => {
-    try {
-      mkdirSync(hooksDirectory, { recursive: true, mode: 0o700 })
-    } catch {
-      throw new ToolExecutionError(`Buckle could not create its empty hooks directory at ${hooksDirectory}; git is not run with the workspace's hooks in reach`, { code: 'FORGE_ISOLATION_UNAVAILABLE' })
-    }
-    return hooksDirectory
-  }
 
   const runGit = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; context: ToolContext }): Promise<ProcessResult> => {
-    const config = [...isolationConfig(ensureHooksDirectory()), ...(input.config ?? [])]
+    const config = [...isolationConfig(ensureHooksDirectory(options.stateDirectory)), ...(input.config ?? [])]
     return await options.runProcess({
       command: 'git',
       args: input.args,

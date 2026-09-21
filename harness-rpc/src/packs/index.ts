@@ -31,8 +31,10 @@ export interface BuiltinPackOptions {
   /** The owner's approved list, or null for the default egress rules. */
   approvedUrls: UrlMatcher | null
   braveSearchApiKey?: string
-  /** The owner's forge credential, where it may be spent, and Buckle's state directory for git's isolation. */
-  forge: { token?: string; apiUrl: string; author: { name: string; email: string }; stateDirectory: string }
+  /** The owner's forge credential and where it may be spent. */
+  forge: { token?: string; apiUrl: string; author: { name: string; email: string } }
+  /** Buckle's own state directory, which holds the empty hooks directory every git call runs with. */
+  stateDirectory: string
   allowedHosts: string[]
   agentBrowserCommand: string
   /** Protected browser configuration and daemon identities for this workspace. */
@@ -52,11 +54,11 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const packs: Pack[] = [
     createFsPack({ paths: options.paths, runProcess: options.runProcess, hasRipgrep: hasExecutable('rg') }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, allowedHosts: options.allowedHosts, approved: options.approvedUrls }),
-    createGitPack({ paths: options.paths, runProcess: options.runProcess, hasGit: hasExecutable('git') }),
+    createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, hasGit: hasExecutable('git') }),
     createForgePack({
       paths: options.paths,
       runProcess: options.runProcess,
-      stateDirectory: options.forge.stateDirectory,
+      stateDirectory: options.stateDirectory,
       forge: {
         client: options.forge.token ? createGitHubForgeClient({ token: options.forge.token, apiUrl: options.forge.apiUrl }) : null,
         apiUrl: options.forge.apiUrl,

@@ -8,7 +8,8 @@ import { createGitPack } from '../src/packs/git/index.js'
 import type { ProcessRunner } from '../src/ports/process-runner.js'
 
 function gitPack(root: string, runProcess: ProcessRunner = vi.fn()) {
-  const pack = createGitPack({ paths: createPathView({ root, mount: null, scratchRoots: [] }), runProcess, hasGit: true })
+  const stateDirectory = mkdtempSync(join(tmpdir(), 'git-pack-state-'))
+  const pack = createGitPack({ paths: createPathView({ root, mount: null, scratchRoots: [] }), runProcess, stateDirectory, hasGit: true })
   const call = (name: string, args: Record<string, JsonValue>) => {
     const tool = pack.tools.find(candidate => candidate.capability.name === name)
     if (!tool) throw new Error(`No such tool: ${name}`)
