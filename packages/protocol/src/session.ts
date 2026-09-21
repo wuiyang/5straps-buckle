@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { SessionFeatureSchema } from './binding.js'
 import { JsonObjectSchema } from './json.js'
+import { HarnessManifestSchema } from './manifest.js'
 
 /**
  * `BUCKLE-08` renamed the setup token to the admin credential. A client still sending the old
@@ -22,6 +23,22 @@ const HarnessServerFieldsSchema = z.object({
 })
 export const HarnessServerInputSchema = z.preprocess(renameLegacySetupToken, HarnessServerFieldsSchema)
 export type HarnessServerInput = z.infer<typeof HarnessServerInputSchema>
+
+/**
+ * A node redeeming a pairing code, per `BUCKLE-D08: Onboarding is buckle init plus a pairing
+ * code`. The code is the whole authority here, so it is short-lived and single use; the node's
+ * URL, its credentials and the manifest it reports all travel in this one body rather than
+ * being typed from one screen into another.
+ */
+export const HarnessPairingRedeemSchema = z.object({
+  code: z.string().min(8).max(128),
+  name: z.string().min(1).max(200),
+  baseUrl: z.url(),
+  authToken: z.string().min(1),
+  adminToken: z.string().min(1).optional(),
+  manifest: HarnessManifestSchema,
+})
+export type HarnessPairingRedeem = z.infer<typeof HarnessPairingRedeemSchema>
 
 /** Editing a registered node: every field optional, guarded against a concurrent edit. */
 export const HarnessServerPatchSchema = z.preprocess(renameLegacySetupToken, HarnessServerFieldsSchema.partial().extend({ expectedUpdatedAt: z.string().optional() }))

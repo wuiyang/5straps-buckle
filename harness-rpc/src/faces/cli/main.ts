@@ -61,6 +61,7 @@ function printUsage(): CliResult {
   process.stdout.write(`buckle ${BUCKLE_VERSION}, the 5straps execution node
 
   buckle init                        Write an environment file for a workspace, with fresh tokens
+  buckle init --pair <code> --rings <url>   Redeem a Rings pairing code and register this node
   buckle serve                       Serve the native RPC and MCP HTTP faces
   buckle mcp                         Serve MCP over stdio
   buckle tools                       List available tools

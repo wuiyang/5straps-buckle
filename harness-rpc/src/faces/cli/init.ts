@@ -1,18 +1,25 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { basename, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
+import { redeemPairingCode } from './pairing.js'
 
 export interface CliResult {
   exitCode: number
 }
 
 const USAGE = `Usage: buckle init [--root <dir>] [--mount <path>] [--name <name>] [--port <n>] [--out <file>] [--yes] [--force]
+                  [--pair <code> --rings <url> [--url <public url>]]
 
 Writes an environment file for one workspace, with a fresh agent token and a fresh admin
 credential. Asks for the few decisions when run in a terminal; --yes takes the defaults.
+
+With --pair, the node registers itself with Rings by redeeming a code issued there, so no
+credential is typed from one screen into another. --url is where Rings reaches this node, and
+defaults to http://127.0.0.1:<port>, which only serves a Rings on this host. Pairing again
+beside an existing environment file keeps its credentials and updates the node's URL.
 `
 
 /**
@@ -29,6 +36,9 @@ export async function runInit(argv: string[]): Promise<CliResult> {
       name: { type: 'string' },
       port: { type: 'string' },
       out: { type: 'string' },
+      pair: { type: 'string' },
+      rings: { type: 'string' },
+      url: { type: 'string' },
       yes: { type: 'boolean' },
       force: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
@@ -40,7 +50,14 @@ export async function runInit(argv: string[]): Promise<CliResult> {
     return { exitCode: 0 }
   }
 
+  if (values.pair && !values.rings) {
+    process.stderr.write('--pair needs --rings <url>, the Rings that issued the code.\n')
+    return { exitCode: 1 }
+  }
+
   const out = resolve(values.out ?? '.env')
+  // Pairing beside a configured node re-pairs it: the credentials stay, the URL is what moved.
+  if (existsSync(out) && values.pair && !values.force) return pairExisting({ out, code: values.pair, rings: values.rings!, url: values.url })
   if (existsSync(out) && !values.force) {
     process.stderr.write(`${out} already exists. Pass --force to replace it, or --out to write elsewhere.\n`)
     return { exitCode: 1 }
@@ -66,7 +83,8 @@ export async function runInit(argv: string[]): Promise<CliResult> {
 
   const authToken = token()
   const adminToken = token()
-  writeFileSync(out, renderEnv({ root, mount, name, port, authToken, adminToken }), { mode: 0o600 })
+  const contents = renderEnv({ root, mount, name, port, authToken, adminToken })
+  writeFileSync(out, contents, { mode: 0o600 })
 
   process.stdout.write(`Wrote ${out}
 
@@ -86,7 +104,25 @@ The agent token runs tools. The admin credential reads and pushes the policy at 
 and revokes workspace tokens, and nothing else. Keep them apart; Buckle refuses to start if
 they are the same value.
 `)
-  return { exitCode: 0 }
+
+  if (!values.pair) return { exitCode: 0 }
+  return pair({ out, contents, code: values.pair, rings: values.rings!, url: values.url, port })
+}
+
+/** Re-pairs a node that already has an environment file, keeping the credentials it holds. */
+async function pairExisting(input: { out: string; code: string; rings: string; url?: string }): Promise<CliResult> {
+  const contents = readFileSync(input.out, 'utf8')
+  const port = /^BUCKLE_PORT=(\d+)$/m.exec(contents)?.[1] ?? '4320'
+  process.stdout.write(`Pairing the node configured in ${input.out}; its credentials are unchanged.\n`)
+  return pair({ ...input, contents, port })
+}
+
+async function pair(input: { out: string; contents: string; code: string; rings: string; url?: string; port: string }): Promise<CliResult> {
+  const baseUrl = input.url?.trim() || `http://127.0.0.1:${input.port}`
+  const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, environmentText: input.contents })
+  process.stdout.write(`\n${result.message}\n`)
+  if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}. Start it with: buckle serve\n`)
+  return { exitCode: result.ok ? 0 : 1 }
 }
 
 async function askInTerminal(defaults: { root?: string; mount?: string; name?: string }) {
