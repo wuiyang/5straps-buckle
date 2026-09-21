@@ -2,13 +2,14 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import type { JsonValue } from '@5straps/protocol'
 import { createPathView } from '../src/domain/path-view.js'
 import { createGitPack } from '../src/packs/git/index.js'
 import type { ProcessRunner } from '../src/ports/process-runner.js'
 
 function gitPack(root: string, runProcess: ProcessRunner = vi.fn()) {
   const pack = createGitPack({ paths: createPathView({ root, mount: null, scratchRoots: [] }), runProcess, hasGit: true })
-  const call = (name: string, args: Record<string, unknown>) => {
+  const call = (name: string, args: Record<string, JsonValue>) => {
     const tool = pack.tools.find(candidate => candidate.capability.name === name)
     if (!tool) throw new Error(`No such tool: ${name}`)
     return tool.prepare(args).execute({ requestId: 'req-1', sessionId: 'chat-1', timeoutMs: 1_000, signal: AbortSignal.timeout(1_000) })

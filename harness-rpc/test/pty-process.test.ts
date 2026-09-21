@@ -3,7 +3,10 @@ import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { spawnPtyProcess } from '../src/adapters/pty-process.js'
 
-it.runIf(process.platform === 'linux')('preserves interactive shell state, streams output and exits through the native PTY adapter', async () => {
+/** `node-pty` is an optional native dependency: an installation without it serves a 503 instead. */
+const nativeTerminal = await import('node-pty').then(() => true, () => false)
+
+it.runIf(process.platform === 'linux' && nativeTerminal)('preserves interactive shell state, streams output and exits through the native PTY adapter', async () => {
   const root = mkdtempSync('/tmp/buckle-pty-adapter-')
   mkdirSync(join(root, 'child'))
   const terminal = await spawnPtyProcess({ command: '/bin/bash', args: ['--noprofile', '--norc', '-i'], cwd: root,
