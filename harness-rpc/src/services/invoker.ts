@@ -109,6 +109,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
 
       })
       if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
+      reportEntry({ options, entry, denial: gate.denial })
       return response
     },
   }
@@ -161,6 +162,34 @@ function announceDenial(input: { options: InvokerOptions; entry: ActionLogEntry;
   }
   void input.options.reporter.report(report).catch((error: unknown) => {
     logger.warn('Could not report a denied run', { message: error instanceof Error ? error.message : 'Unknown error' })
+  })
+}
+
+/**
+ * The whole action log, not only its refusals, per `BUCKLE-D06: Buckle reports the full action
+ * log`. Queued rather than posted: the entry is already in the node's own log, so a batch that
+ * never reaches Rings loses nothing.
+ */
+function reportEntry(input: { options: InvokerOptions; entry: ActionLogEntry; denial: GateOutcome['denial'] }): void {
+  if (!input.options.reporter.configured) return
+  const { entry, denial } = input
+  input.options.reporter.record({
+    workspace: input.options.paths.root,
+    workspaceId: input.options.workspaceId ?? 'default',
+    at: entry.at,
+    requestId: entry.requestId,
+    sessionId: entry.sessionId,
+    tool: entry.tool,
+    outcome: entry.outcome,
+    durationMs: entry.durationMs,
+    effects: entry.effects,
+    args: entry.args,
+    rule: denial?.rule ?? null,
+    subject: denial?.subject ?? '',
+    reason: denial?.reason ?? '',
+    asked: entry.asked ?? [],
+    approvedBy: entry.approvedBy ?? [],
+    detail: entry.detail ?? null,
   })
 }
 

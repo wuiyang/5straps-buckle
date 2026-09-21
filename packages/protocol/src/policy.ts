@@ -76,19 +76,64 @@ export function destructivePatterns(policy: WorkspacePolicy): string[] {
   return policy.commands.destructive ?? []
 }
 
-/** One refused tool call, sent to Rings as it happens so the owner sees what an agent tried. */
-export const DeniedRunReportSchema = z.object({
-  event: z.literal('denied_run'),
+/** Fields every Buckle report carries, whether it is a lone refusal or one action-log entry. */
+const BuckleReportBaseSchema = z.object({
   serverId: z.string().min(1),
   workspace: z.string().min(1),
   at: z.iso.datetime(),
   requestId: z.string().min(1),
   sessionId: z.string().min(1),
   tool: z.string().min(1),
-  rule: PermissionRuleIdSchema,
-  subject: z.string(),
-  reason: z.string(),
   effects: z.array(z.string()),
   args: JsonValueSchema,
 })
+
+/** One refused tool call, sent to Rings as it happens so the owner sees what an agent tried. */
+export const DeniedRunReportSchema = BuckleReportBaseSchema.extend({
+  event: z.literal('denied_run'),
+  rule: PermissionRuleIdSchema,
+  subject: z.string(),
+  reason: z.string(),
+})
 export type DeniedRunReport = z.infer<typeof DeniedRunReportSchema>
+
+/** Every outcome an action-log entry can carry, as Buckle records it. */
+export const ActionOutcomeSchema = z.enum(['interrupted', 'started', 'ok', 'error', 'denied', 'approval_required'])
+export type ActionOutcome = z.infer<typeof ActionOutcomeSchema>
+
+/**
+ * One action-log entry, whatever its outcome, per `BUCKLE-D06: Buckle reports the full action
+ * log`. It widens the denial report rather than replacing it: `rule`, `subject` and `reason`
+ * are filled only when something refused the call. The node is named by the batch around it,
+ * so an entry never disagrees with the batch it arrived in.
+ */
+export const ActionReportSchema = BuckleReportBaseSchema.omit({ serverId: true }).extend({
+  workspaceId: z.string().min(1).default('default'),
+  outcome: ActionOutcomeSchema,
+  durationMs: z.number().int().min(0).default(0),
+  rule: PermissionRuleIdSchema.nullable().default(null),
+  subject: z.string().default(''),
+  reason: z.string().default(''),
+  /** Gates that stopped the call, and grants that let it through, both as `rule` names. */
+  asked: z.array(z.string()).default([]),
+  approvedBy: z.array(z.string()).default([]),
+  detail: z.string().nullable().default(null),
+})
+export type ActionReport = z.infer<typeof ActionReportSchema>
+
+/** Entries one post may carry. A busy workspace posts batches rather than one call at a time. */
+export const ACTION_REPORT_BATCH_MAX = 100
+
+export const ActionReportBatchSchema = z.object({
+  event: z.literal('action_log'),
+  serverId: z.string().min(1),
+  reports: z.array(ActionReportSchema).min(1).max(ACTION_REPORT_BATCH_MAX),
+})
+export type ActionReportBatch = z.infer<typeof ActionReportBatchSchema>
+
+/**
+ * What the report endpoint accepts. A Buckle built before the action log posted lone denials,
+ * and still may, so both shapes stay valid on the one route.
+ */
+export const BuckleReportPayloadSchema = z.discriminatedUnion('event', [DeniedRunReportSchema, ActionReportBatchSchema])
+export type BuckleReportPayload = z.infer<typeof BuckleReportPayloadSchema>
