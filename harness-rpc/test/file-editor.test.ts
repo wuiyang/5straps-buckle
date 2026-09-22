@@ -28,6 +28,8 @@ it('supports saving an empty file using its read revision', async () => {
   expect(await readFile(join(root, 'note.txt'), 'utf8')).toBe('new text')
 })
 
+// Load allowance, not a slow test: this spins up a full runtime and can miss the
+// default 5000 ms budget when the whole workspace suite runs concurrently.
 it('omits credential and denied symlink names from directory listing and file search', async () => {
   const { root } = await fixture('visible')
   const { symlink } = await import('node:fs/promises')
@@ -48,7 +50,7 @@ it('omits credential and denied symlink names from directory listing and file se
     expect(output).not.toContain('outside-link')
     expect(output).not.toContain('actions.jsonl')
   }
-})
+}, 20000)
 
 it('marks invalid UTF-8 as unsafe to edit without rejecting a valid replacement character', async () => {
   const invalid = await fixture(Buffer.from([0x61, 0xc3, 0x28]))
