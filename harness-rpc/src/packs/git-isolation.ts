@@ -26,11 +26,18 @@ export interface ConfigListing {
  * repository config is all that is left; its executable and routing knobs are overridden below.
  * `buildChildEnvironment` already drops every variable off its allowlist, and the proxy variables
  * are named again here so a later addition to that allowlist cannot re-route a push.
+ *
+ * `GIT_PAGER` is here rather than in the config scope because `pager.<cmd>` is a program named
+ * per command, which no single config key resets, and it outranks the `core.pager` below. Git
+ * reads this variable ahead of both, so one entry closes the whole section without enumerating
+ * the commands. Git pages nothing when its output is a pipe, which is every call Buckle makes
+ * today, so this is what a caller that ever hands git a terminal inherits.
  */
 export const ISOLATION_ENVIRONMENT: Record<string, string> = {
   GIT_TERMINAL_PROMPT: '0',
   GIT_CONFIG_NOSYSTEM: '1',
   GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_PAGER: 'cat',
   ...Object.fromEntries(PROXY_VARIABLES.map(name => [name, ''])),
 }
 
@@ -87,6 +94,8 @@ export function isolationConfig(hooksDirectory: string): GitConfig[] {
     { key: 'gpg.format', value: '' },
     { key: 'core.editor', value: 'true' },
     { key: 'sequence.editor', value: 'true' },
+    // `pager.<cmd>` outranks this one and is a section rather than a key; `GIT_PAGER` above is
+    // what closes that, and git reads the variable ahead of both of these.
     { key: 'core.pager', value: 'cat' },
     { key: 'diff.external', value: '' },
     { key: 'core.attributesFile', value: '/dev/null' },

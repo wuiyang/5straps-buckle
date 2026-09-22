@@ -8,7 +8,7 @@ import { buildChildEnvironment } from '../src/domain/environment.js'
 import { hasExecutable } from '../src/domain/executable.js'
 import { createPathView } from '../src/domain/path-view.js'
 import { createGitPack } from '../src/packs/git/index.js'
-import { filterProgramOverrides } from '../src/packs/git-isolation.js'
+import { filterProgramOverrides, ISOLATION_ENVIRONMENT } from '../src/packs/git-isolation.js'
 
 const READ_TOOL_CALLS: Array<[string, Record<string, JsonValue>]> = [
   ['git_status', {}],
@@ -141,4 +141,69 @@ describe('the filter drivers a repository defines', () => {
       { key: 'filter.lfs.process', value: '' },
     ])
   })
+})
+
+/**
+ * `pager.<cmd>` names a program per command, so no one config key resets it and the override
+ * scope's `core.pager` loses to it. Git reads `GIT_PAGER` ahead of both, which is what the
+ * isolation environment carries. Git pages nothing when its output is a pipe, so a terminal has
+ * to be borrowed to ask the question at all: `script` gives git the tty it wants.
+ *
+ * The repository here names one program and nothing else, so the marker can only be the pager.
+ */
+describe.runIf(hasExecutable('git') && hasExecutable('script'))('a repository that names a pager for one command', () => {
+  async function pagingRepository(): Promise<{ root: string; marker: string }> {
+    const root = mkdtempSync(join(tmpdir(), 'git-pager-workspace-'))
+    const marker = join(mkdtempSync(join(tmpdir(), 'git-pager-outside-')), 'pager-that-ran')
+    const probe = join(root, 'pager.sh')
+    writeFileSync(probe, `#!/bin/sh\necho ran >> ${marker}\ncat\n`)
+    chmodSync(probe, 0o755)
+
+    const git = async (...args: string[]): Promise<void> => {
+      const result = await runProcess({
+        command: 'git', args, cwd: root, timeoutMs: 20_000,
+        environment: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' },
+      })
+      if (result.exitCode !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`)
+    }
+    await git('init', '--initial-branch=main')
+    await git('config', 'user.email', 'probe@example.com')
+    await git('config', 'user.name', 'Probe')
+    writeFileSync(join(root, 'a.txt'), 'aaaa\n')
+    await git('add', 'a.txt')
+    await git('commit', '--message', 'first')
+    writeFileSync(join(root, 'a.txt'), 'bbbb\n')
+    await git('config', 'pager.status', probe)
+    return { root, marker }
+  }
+
+  /** Git pages only what it writes to a terminal, so `script` lends it one. */
+  async function statusOnATerminal(input: { root: string; environment: NodeJS.ProcessEnv }): Promise<void> {
+    await runProcess({
+      command: 'script',
+      args: ['-qec', 'git status --porcelain=v2', '/dev/null'],
+      cwd: input.root,
+      timeoutMs: 20_000,
+      environment: input.environment,
+    })
+  }
+
+  it('leaves the fixture proven: git on a terminal runs it, and an emptied core.pager does not stop it', async () => {
+    const { root, marker } = await pagingRepository()
+
+    await statusOnATerminal({ root, environment: {
+      PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: root, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.pager', GIT_CONFIG_VALUE_0: 'cat',
+    } })
+
+    expect(readFileSync(marker, 'utf8')).toContain('ran')
+  }, 60_000)
+
+  it('does not run it under the isolation environment every git call carries', async () => {
+    const { root, marker } = await pagingRepository()
+
+    await statusOnATerminal({ root, environment: buildChildEnvironment({ parent: process.env, extra: { ...ISOLATION_ENVIRONMENT, HOME: root } }) })
+
+    expect(existsSync(marker), existsSync(marker) ? readFileSync(marker, 'utf8') : '').toBe(false)
+  }, 60_000)
 })
