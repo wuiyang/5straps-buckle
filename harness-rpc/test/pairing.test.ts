@@ -29,6 +29,23 @@ function init(extra: string[] = []) {
   return runInit(['--root', workspace, '--out', out, '--name', 'Paired', '--port', '4399', '--yes', ...extra])
 }
 
+/** Rings mints a report credential in its redeem answer, readable that once. */
+function ringsMinting(reportToken: string) {
+  vi.stubGlobal('fetch', vi.fn(async (url: URL, init: { body: string }) => {
+    requests.push({ url: String(url), body: JSON.parse(init.body) as Record<string, unknown> })
+    return new Response(JSON.stringify({ server: { id: 'paired', name: 'Paired' }, reportToken }), { status: 201, headers: { 'content-type': 'application/json' } })
+  }))
+}
+
+async function initSilently(extra: string[]): Promise<{ exitCode: number; printed: string }> {
+  let printed = ''
+  const out = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
+  const error = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
+  try {
+    return { exitCode: (await init(extra)).exitCode, printed }
+  } finally { out.mockRestore(); error.mockRestore() }
+}
+
 describe('buckle init --pair', () => {
   it('sends the node URL, both credentials and the manifest in one body, never in argv', async () => {
     expect((await init(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001', '--url', 'http://node.test:4399'])).exitCode).toBe(0)
@@ -62,6 +79,42 @@ describe('buckle init --pair', () => {
     expect((await init(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001', '--url', 'http://moved.test:4399'])).exitCode).toBe(0)
     expect(readFileSync(out, 'utf8')).toBe(before)
     expect(requests[0]!.body).toMatchObject({ baseUrl: 'http://moved.test:4399', authToken: parseEnv(before).BUCKLE_AUTH_TOKEN })
+  })
+
+  it('writes the report credential Rings minted into the environment file, and never prints it', async () => {
+    const reportToken = 'rings-minted-report-token-fixture'
+    ringsMinting(reportToken)
+
+    const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+
+    expect(result.exitCode).toBe(0)
+    const written = parseEnv(readFileSync(out, 'utf8'))
+    expect(written.BUCKLE_REPORT_TOKEN).toBe(reportToken)
+    expect(written.BUCKLE_REPORT_URL).toBe('http://rings.test:3001/api/v1/buckle-reports')
+    expect(written.BUCKLE_APPROVAL_WEBHOOK).toBe('http://rings.test:3001/api/v1/buckle-approvals')
+    expect(result.printed).not.toContain(reportToken)
+    expect(process.argv.join(' ')).not.toContain(reportToken)
+  })
+
+  it('takes the rotated credential when a configured node pairs again, and keeps its own two', async () => {
+    ringsMinting('first-report-token-fixture-value')
+    await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+    const first = parseEnv(readFileSync(out, 'utf8'))
+
+    ringsMinting('rotated-report-token-fixture-value')
+    await initSilently(['--pair', 'PQRS-TVWX-YZ23', '--rings', 'http://rings.test:3001'])
+
+    const second = parseEnv(readFileSync(out, 'utf8'))
+    expect(second.BUCKLE_REPORT_TOKEN).toBe('rotated-report-token-fixture-value')
+    expect(second.BUCKLE_AUTH_TOKEN).toBe(first.BUCKLE_AUTH_TOKEN)
+    expect(second.BUCKLE_ADMIN_TOKEN).toBe(first.BUCKLE_ADMIN_TOKEN)
+  })
+
+  it('stays paired when Rings mints nothing, leaving the report settings to the operator', async () => {
+    const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+
+    expect(result.exitCode).toBe(0)
+    expect(parseEnv(readFileSync(out, 'utf8')).BUCKLE_REPORT_TOKEN).toBeUndefined()
   })
 
   it('reports a refusal from Rings and keeps the environment file it wrote', async () => {

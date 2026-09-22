@@ -169,9 +169,12 @@ BUCKLE_ALLOW_SHELL=true
 # BUCKLE_COMMAND_DESTRUCTIVE="terraform destroy *"
 # BUCKLE_NETWORK_ALLOW=localhost:3000,*.example.com
 
-# Where refused calls are reported as they happen (Rings: <rings>/api/v1/buckle-reports).
+# Where this node reports what it did, and where a request waiting for a decision is announced.
+# buckle init --pair fills all three in from Rings, with the report credential Rings mints for
+# this node; Rings refuses a report filed for a node that credential does not belong to.
 # BUCKLE_REPORT_URL=
 # BUCKLE_REPORT_TOKEN=
+# BUCKLE_APPROVAL_WEBHOOK=
 `
 }
 
