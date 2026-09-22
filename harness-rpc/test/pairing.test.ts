@@ -93,6 +93,7 @@ describe('buckle init --pair', () => {
     expect(written.BUCKLE_REPORT_URL).toBe('http://rings.test:3001/api/v1/buckle-reports')
     expect(written.BUCKLE_APPROVAL_WEBHOOK).toBe('http://rings.test:3001/api/v1/buckle-approvals')
     expect(result.printed).not.toContain(reportToken)
+    expect(result.printed).toContain('Restart any running Buckle service')
     expect(process.argv.join(' ')).not.toContain(reportToken)
   })
 

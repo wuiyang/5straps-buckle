@@ -84,9 +84,9 @@ function recordReportCredential(input: { environmentFile: string; environmentTex
     writeFileSync(input.environmentFile, text, { mode: 0o600 })
   } catch (error) {
     logger.error('Could not write the report credential Rings minted', { message: error instanceof Error ? error.message : 'Unknown error' })
-    return `Rings minted a report credential for this node, but ${input.environmentFile} could not be written; pair again once it is writable, or the action log is reported under the installation-wide token instead.`
+    return `Rings minted a report credential for this node, but ${input.environmentFile} could not be written; pair again once it is writable. Remote reporting is unavailable until the new credential is saved and Buckle is restarted.`
   }
-  return `Its action log and pending approvals now report to Rings under this node's own credential, written to ${input.environmentFile}.`
+  return `Its action log and pending approvals now report to Rings under this node's own credential, written to ${input.environmentFile}. Restart any running Buckle service to load the new credential.`
 }
 
 async function errorText(response: Response): Promise<string> {
