@@ -163,7 +163,7 @@ interface CommandInput {
  * so a request from a registered child workspace is reachable only through that workspace's
  * runtime; the node's own is the default.
  */
-async function approvalsOf(input: { config: BuckleConfig; runtime: BuckleRuntime; workspace?: string }): Promise<BuckleRuntime> {
+async function runtimeForWorkspace(input: { config: BuckleConfig; runtime: BuckleRuntime; workspace?: string }): Promise<BuckleRuntime> {
   if (!input.workspace || input.workspace === 'default') return input.runtime
   const manager = createWorkspaceManager({ config: input.config, runtime: input.runtime })
   return (await manager.resolve(input.workspace)).runtime
@@ -176,7 +176,7 @@ async function approvalsOf(input: { config: BuckleConfig; runtime: BuckleRuntime
  */
 async function approvals(input: CommandInput): Promise<CliResult> {
   const { values } = parseArgs({ args: input.argv, options: { json: { type: 'boolean' }, workspace: { type: 'string' } }, allowPositionals: false })
-  const runtime = await approvalsOf({ ...input, workspace: values.workspace })
+  const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
   const pending = runtime.approvals.pending()
   if (values.json) return print(pending.map(request => ({ ...request, workspaceId: runtime.workspaceId, approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }) })))
   if (pending.length === 0) {
@@ -207,7 +207,7 @@ async function approve(input: CommandInput): Promise<CliResult> {
   const scope = GrantScopeSchema.safeParse(values.scope ?? 'once')
   if (!scope.success) return fail(`Invalid scope: ${values.scope}`)
 
-  const runtime = await approvalsOf({ ...input, workspace: values.workspace })
+  const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
   const result = runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data }, 'admin')
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceId}`)
   process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceId}\n`)
