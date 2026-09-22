@@ -30,12 +30,18 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
 
   const runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
 
-  if (['approve', 'approvals', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
-    return auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0,
-      operation: () => dispatchRuntimeCommand({ runtime, config: input.config, command, rest }),
-    })
+  try {
+    if (['approve', 'approvals', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
+      return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0,
+        operation: () => dispatchRuntimeCommand({ runtime, config: input.config, command, rest }),
+      })
+    }
+    return await dispatchRuntimeCommand({ runtime, config: input.config, command, rest })
+  } finally {
+    // One command is one process, and the batch timer is unreferenced so it never holds the
+    // process open: without this the entry a CLI call recorded reached Rings for no call at all.
+    await runtime.reporter.flush()
   }
-  return dispatchRuntimeCommand({ runtime, config: input.config, command, rest })
 }
 
 function dispatchRuntimeCommand(input: { runtime: BuckleRuntime; config: BuckleConfig; command: string; rest: string[] }): CliResult | Promise<CliResult> {
