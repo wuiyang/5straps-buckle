@@ -542,7 +542,7 @@ describe('the credential', () => {
     git(workspace, 'update-ref', 'refs/remotes/origin/side', 'HEAD')
 
     const config = loadConfig({
-      BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false',
+      BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
       BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl,
       BUCKLE_NETWORK_ALLOW: new URL(apiUrl).host,
     })
@@ -585,7 +585,7 @@ describe('the credential', () => {
     git(workspace, 'remote', 'add', 'origin', 'https://github.com/wuiyang/demo.git')
 
     const config = loadConfig({
-      BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false',
+      BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
       BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl,
       BUCKLE_NETWORK_ALLOW: 'example.com',
     })
@@ -605,7 +605,7 @@ describe('the credential', () => {
     const root = temporaryRoot('nocred')
     const workspace = join(root, 'workspace')
     mkdirSync(workspace)
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AUTH_TOKEN: 'agent-token' })
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_AUTH_TOKEN: 'agent-token' })
     const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
     const descriptor = runtime.manifest().packs.find(candidate => candidate.id === 'forge')
     expect(descriptor?.unavailableReason).toContain('BUCKLE_FORGE_GITHUB_TOKEN')
