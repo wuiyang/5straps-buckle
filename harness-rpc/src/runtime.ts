@@ -282,6 +282,7 @@ async function buildPacks(input: {
     browserStateDirectory: input.browserStateDirectory,
     browserHeaded: input.config.browserHeaded,
     enableShell: input.config.enableShell,
+    allowHostGit: input.config.allowHostGit,
     allowHostLsp: input.config.allowHostLsp,
     shellNetwork: input.config.shellNetwork,
     filesystemPolicy: { policy: input.compiled.policy, ceiling: input.ceiling?.policy },

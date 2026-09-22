@@ -110,6 +110,17 @@ describe.runIf(hasExecutable('git'))('a read-risk git tool in a repository whose
     }
   }, 120_000)
 
+  it('documents why config hardening still requires an owner opt-in: tracked credential diffs are visible', async () => {
+    const repository = await hostileRepository()
+    writeFileSync(join(repository.root, 'credentials.json'), '{"synthetic":"before"}\n')
+    const added = await runProcess({ command: 'git', args: ['add', 'credentials.json'], cwd: repository.root,
+      timeoutMs: 20_000, environment: buildChildEnvironment({ parent: process.env, extra: ISOLATION_ENVIRONMENT }) })
+    expect(added.exitCode).toBe(0)
+    writeFileSync(join(repository.root, 'credentials.json'), '{"synthetic":"after-private-marker"}\n')
+    const result = await readToolCall(repository)('git_diff', {})
+    expect(JSON.stringify(result)).toContain('after-private-marker')
+  }, 60_000)
+
   it('still answers with the repository it was asked about', async () => {
     const repository = await hostileRepository()
     const call = readToolCall(repository)

@@ -5,12 +5,15 @@ import { createPathView } from '../src/domain/path-view.js'
 import { createBuiltinPacks } from '../src/packs/index.js'
 import { availableTools } from '../src/domain/pack.js'
 import { createToolRegistry } from '../src/domain/tool-registry.js'
+import { loadConfig } from '../src/config.js'
+import { hasExecutable } from '../src/domain/executable.js'
 import { createNoneSandbox } from '../src/adapters/sandbox/none-sandbox.js'
 import { defineTool } from '../src/domain/tool.js'
 import { toolNameToCommand, commandToToolName, buildToolArgs, parseArgsOptions } from '../src/faces/cli/arguments.js'
 
-function builtinRegistry() {
+function builtinRegistry(allowHostGit = false) {
   const packs = createBuiltinPacks({
+    allowHostGit,
     cwd: '/work/project',
     paths: createPathView({ root: '/work/project', mount: null }),
     hiddenPaths: [],
@@ -32,6 +35,17 @@ function builtinRegistry() {
 }
 
 describe('built-in tools', () => {
+  it('withholds host Git and forge tools by default, including an explicit false setting', () => {
+    expect(loadConfig({}).allowHostGit).toBe(false)
+    expect(loadConfig({ BUCKLE_ALLOW_HOST_GIT: 'false' }).allowHostGit).toBe(false)
+    expect(loadConfig({ BUCKLE_ALLOW_HOST_GIT: 'true' }).allowHostGit).toBe(true)
+    expect(builtinRegistry().capabilities().some(tool => /^(git|forge)_/.test(tool.name))).toBe(false)
+  })
+
+  it.runIf(hasExecutable('git'))('allows host Git only after the owner opts in', () => {
+    expect(builtinRegistry(true).capabilities().map(tool => tool.name)).toContain('git_diff')
+  })
+
   it('every name is accepted by MCP clients', () => {
     for (const capability of builtinRegistry().capabilities()) {
       expect(capability.name, capability.name).toMatch(TOOL_NAME_PATTERN)

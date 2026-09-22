@@ -40,6 +40,7 @@ export interface BuiltinPackOptions {
   /** Protected browser configuration and daemon identities for this workspace. */
   browserStateDirectory: string
   browserHeaded: boolean
+  allowHostGit?: boolean
   allowHostLsp?: boolean
   enableShell: boolean
   shellNetwork?: boolean
@@ -96,6 +97,9 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   }))
 
   if (options.environmentValidator) packs.push(createEnvironmentPack({ command: options.environmentValidator, cwd: options.cwd, runProcess: options.runProcess }))
+  if (!options.allowHostGit) for (const pack of packs) {
+    if (pack.id === 'git' || pack.id === 'forge') pack.unavailableReason = 'Host Git can read repository data outside per-file approval checks; BUCKLE_ALLOW_HOST_GIT=true explicitly trusts repository access outside the shell sandbox'
+  }
   const restricted = [options.filesystemPolicy?.policy, options.filesystemPolicy?.ceiling]
     .some(policy => policy?.filesystem?.rules.some(rule => rule.read === 'deny' || rule.read === 'ask' || rule.write === 'deny' || rule.write === 'ask'))
   if (restricted) for (const pack of packs) {
