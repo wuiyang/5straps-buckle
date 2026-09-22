@@ -1,7 +1,7 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { JsonValue } from '@5straps/protocol'
 import { runProcess } from '../src/adapters/process-runner.js'
 import { buildChildEnvironment } from '../src/domain/environment.js'
@@ -9,6 +9,14 @@ import { hasExecutable } from '../src/domain/executable.js'
 import { createPathView } from '../src/domain/path-view.js'
 import { createGitPack } from '../src/packs/git/index.js'
 import { filterProgramOverrides, ISOLATION_ENVIRONMENT } from '../src/packs/git-isolation.js'
+
+const roots: string[] = []
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+function temporaryDirectory(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix))
+  roots.push(root)
+  return root
+}
 
 const READ_TOOL_CALLS: Array<[string, Record<string, JsonValue>]> = [
   ['git_status', {}],
@@ -25,9 +33,9 @@ const READ_TOOL_CALLS: Array<[string, Record<string, JsonValue>]> = [
  * refusal has to come from what git resolves rather than from a parse of the one file.
  */
 async function hostileRepository(): Promise<{ root: string; marker: string; stateDirectory: string }> {
-  const root = mkdtempSync(join(tmpdir(), 'git-isolation-workspace-'))
-  const outside = mkdtempSync(join(tmpdir(), 'git-isolation-outside-'))
-  const stateDirectory = mkdtempSync(join(tmpdir(), 'git-isolation-state-'))
+  const root = temporaryDirectory('git-isolation-workspace-')
+  const outside = temporaryDirectory('git-isolation-outside-')
+  const stateDirectory = temporaryDirectory('git-isolation-state-')
   const marker = join(outside, 'programs-that-ran')
   const probe = join(root, 'probe.sh')
   writeFileSync(probe, `#!/bin/sh\necho "$1" >> ${marker}\ncat >/dev/null 2>&1\nexit 0\n`)
@@ -164,8 +172,8 @@ describe('the filter drivers a repository defines', () => {
  */
 describe.runIf(hasExecutable('git') && hasExecutable('script'))('a repository that names a pager for one command', () => {
   async function pagingRepository(): Promise<{ root: string; marker: string }> {
-    const root = mkdtempSync(join(tmpdir(), 'git-pager-workspace-'))
-    const marker = join(mkdtempSync(join(tmpdir(), 'git-pager-outside-')), 'pager-that-ran')
+    const root = temporaryDirectory('git-pager-workspace-')
+    const marker = join(temporaryDirectory('git-pager-outside-'), 'pager-that-ran')
     const probe = join(root, 'pager.sh')
     writeFileSync(probe, `#!/bin/sh\necho ran >> ${marker}\ncat\n`)
     chmodSync(probe, 0o755)

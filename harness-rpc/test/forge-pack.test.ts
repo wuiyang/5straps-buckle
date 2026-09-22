@@ -338,19 +338,20 @@ describe('git_push', () => {
   it('pushes to the real origin when the repository configures a proxy and turns TLS checking off', async () => {
     const origin = await recordingOrigin()
     const proxy = await recordingProxy()
-    const repository = workRepository({ origin: `${origin.url}/wuiyang/demo.git` })
-    git(repository, 'config', 'http.proxy', proxy.url)
-    git(repository, 'config', `http.${origin.url}/wuiyang/demo.git.proxy`, proxy.url)
-    git(repository, 'config', 'http.sslVerify', 'false')
-    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
-    await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
+    try {
+      const repository = workRepository({ origin: `${origin.url}/wuiyang/demo.git` })
+      git(repository, 'config', 'http.proxy', proxy.url)
+      git(repository, 'config', `http.${origin.url}/wuiyang/demo.git.proxy`, proxy.url)
+      git(repository, 'config', 'http.sslVerify', 'false')
+      writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+      await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
 
-    // The recording origin is not a git server, so the push fails there — at the right host.
-    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } })).rejects.toThrow()
-    expect(proxy.connections()).toBe(0)
-    expect(origin.paths).toContain('/wuiyang/demo.git/info/refs?service=git-receive-pack')
-    origin.close(); proxy.close()
-  })
+      // The recording origin is not a git server, so the push fails there — at the right host.
+      await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } })).rejects.toThrow()
+      expect(proxy.connections()).toBe(0)
+      expect(origin.paths).toContain('/wuiyang/demo.git/info/refs?service=git-receive-pack')
+    } finally { origin.close(); proxy.close() }
+  }, 30_000)
 
   it('never runs a receive-pack program the repository configured', async () => {
     const { origin, repository } = bareOrigin()
