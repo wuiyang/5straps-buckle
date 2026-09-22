@@ -108,6 +108,8 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     const effective = runtime.policy.effective()
     return context.json({
       serverId: config.serverId,
+      /** Which of the node's workspaces this face serves, and the identity its reports carry. */
+      workspaceId: runtime.workspaceId,
       name: config.serverName,
       version: manifest.version,
       workspace: { root: config.cwd, mount: effective.mount, displayRoot: runtime.paths().displayRoot },

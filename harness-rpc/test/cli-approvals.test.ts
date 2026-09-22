@@ -58,7 +58,7 @@ describe('buckle approvals, the queue a person answers from', () => {
     const listed = await capture({ argv: ['approvals'], config: node() })
 
     expect(listed.exitCode).toBe(0)
-    expect(listed.stdout).toContain('Nothing is waiting for a decision.')
+    expect(listed.stdout).toContain('Nothing is waiting for a decision in workspace default.')
   })
 
   it('answers --json with the requests themselves, for a relay to render', async () => {
@@ -76,6 +76,6 @@ describe('buckle approvals, the queue a person answers from', () => {
 
     expect((await capture({ argv: ['approve', token, '--scope', 'once'], config })).exitCode).toBe(0)
 
-    expect((await capture({ argv: ['approvals'], config })).stdout).toContain('Nothing is waiting for a decision.')
+    expect((await capture({ argv: ['approvals'], config })).stdout).toContain('Nothing is waiting for a decision in workspace default.')
   })
 })

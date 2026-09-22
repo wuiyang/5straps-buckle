@@ -1,4 +1,5 @@
 import type { ApprovalRequest } from '@5straps/protocol'
+import { approveCommand } from '../../domain/approval-instruction.js'
 import { logger } from '../../logger.js'
 
 const NOTIFY_TIMEOUT_MS = 5_000
@@ -7,6 +8,8 @@ export interface WebhookNotifierOptions {
   url: string
   /** Named in the payload so a relay serving several nodes can answer the right one. */
   serverId: string
+  /** Which of the node's workspaces is waiting: a token resolves in its own workspace alone. */
+  workspaceId: string
   /** The node's outbound credential, sent as a bearer when set. Rings requires it. */
   token?: string
 }
@@ -28,14 +31,14 @@ export function createWebhookNotifier(options: WebhookNotifierOptions) {
         'content-type': 'application/json',
         ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
       },
-      body: JSON.stringify({ serverId: options.serverId, approvals: requests.map(describe) }),
+      body: JSON.stringify({ serverId: options.serverId, workspaceId: options.workspaceId, approvals: requests.map(request => describe(request, options.workspaceId)) }),
       signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
     })
     if (!response.ok) logger.warn('Approval webhook refused the notification', { status: response.status })
   }
 }
 
-function describe(request: ApprovalRequest) {
+function describe(request: ApprovalRequest, workspaceId: string) {
   return {
     token: request.token,
     tool: request.tool,
@@ -44,10 +47,7 @@ function describe(request: ApprovalRequest) {
     reason: request.reason,
     expiresAt: request.expiresAt,
     offeredScopes: request.offeredScopes,
-    approveCommand: `buckle approve ${request.token} --scope ${preferredScope(request)}`,
+    workspaceId,
+    approveCommand: approveCommand({ request, workspaceId }),
   }
-}
-
-function preferredScope(request: ApprovalRequest): string {
-  return request.offeredScopes.includes('session') ? 'session' : request.offeredScopes[0] ?? 'once'
 }

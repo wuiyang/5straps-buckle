@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { z } from 'zod'
 import { WorkspacePolicySchema, emptyWorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore } from '../adapters/json-file-store.js'
-import { createDeferredApprovalChannel } from '../adapters/approval/deferred-approval-channel.js'
+import { createChildApprovalDelivery } from './approval-delivery.js'
 import type { BuckleConfig } from '../config.js'
 import { compilePolicy } from '../domain/policy.js'
 import { createRuntime, type BuckleRuntime } from '../runtime.js'
@@ -192,6 +192,11 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       let pending = runtimes.get(id)
       if (!pending) {
         const config: BuckleConfig = {
+          // `reportUrl`, `reportToken` and `approvalWebhook` come through this spread on purpose.
+          // Every action a child reports carries its own workspaceId, and a notification from one
+          // names the workspace whose `buckle approve --workspace` answers it. Clearing them, as
+          // this did before, left a registered workspace out of the owner's audit trail and its
+          // approvals announced to nobody.
           ...input.config,
           cwd: workspace.root,
           serverName: workspace.name,
@@ -201,16 +206,12 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           nodeStateDirectory: stateRoot,
           scratchRoots: [],
           skillDirectories: [],
-          // Legacy callbacks lack workspace identity; Rings routes scoped invocation approvals.
-          reportUrl: undefined,
-          reportToken: undefined,
-          approvalWebhook: undefined,
           strictWrites: true,
           // Every registered workspace has a hard path boundary, independent of grants.
           policy: { ...workspace.policy, mount: '/workspace' },
           nodePolicy: structuredClone(input.config.policy),
         }
-        pending = createRuntime({ config, workspaceId: id, channel: () => createDeferredApprovalChannel() }).then(runtime => ({ config, runtime }))
+        pending = createRuntime({ config, workspaceId: id, channel: approvals => createChildApprovalDelivery({ config, approvals, workspaceId: id }) }).then(runtime => ({ config, runtime }))
         runtimes.set(id, pending)
         void pending.catch(() => { runtimes.delete(id) })
       }

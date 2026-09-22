@@ -109,14 +109,15 @@ it('rejects workspaces exposed by inherited host read-only mounts', async () => 
   expect(await response.text()).toContain('read-only mount')
 })
 
-it('does not inherit node callbacks without a workspace identity', async () => {
+it('inherits the node callbacks, so a registered workspace is not absent from the audit trail', async () => {
   config.reportUrl = 'https://reports.example.test/events'
   config.reportToken = 'node-report-fixture'
   config.approvalWebhook = 'https://reports.example.test/approvals'
   await register('one')
   const response = await app.request('/workspaces/one/setup/status', { headers: headers(setup('one')) })
   expect(response.status).toBe(200)
-  expect(await response.json()).toMatchObject({ reporting: false })
+  // Every entry it posts carries workspaceId: 'one', which is the identity that was missing.
+  expect(await response.json()).toMatchObject({ reporting: true, workspaceId: 'one' })
 })
 
 it('retains setup history and audit after workspace retirement and requires explicit reactivation', async () => {

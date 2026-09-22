@@ -37,7 +37,7 @@ const request: ApprovalRequest = {
 
 describe('what the approval webhook carries', () => {
   it('names the node and presents its credential, so Rings can answer the right Buckle', async () => {
-    await createWebhookNotifier({ url, serverId: 'linux-dev', token: 'report-secret' })([request])
+    await createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'default', token: 'report-secret' })([request])
     const last = received.at(-1)
     expect(last?.authorization).toBe('Bearer report-secret')
     expect(last?.body.serverId).toBe('linux-dev')
@@ -46,8 +46,16 @@ describe('what the approval webhook carries', () => {
     expect(approvals[0]?.approveCommand).toBe('buckle approve tok-1 --scope session')
   })
 
+  it('names the workspace a child runtime is waiting in, and the command that answers it there', async () => {
+    await createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'photos', token: 'report-secret' })([request])
+    const last = received.at(-1)
+    expect(last?.body.workspaceId).toBe('photos')
+    const approvals = last?.body.approvals as Array<Record<string, unknown>>
+    expect(approvals[0]).toMatchObject({ workspaceId: 'photos', approveCommand: 'buckle approve tok-1 --scope session --workspace photos' })
+  })
+
   it('sends no credential when the node has none configured', async () => {
-    await createWebhookNotifier({ url, serverId: 'laptop' })([request])
+    await createWebhookNotifier({ url, serverId: 'laptop', workspaceId: 'default' })([request])
     expect(received.at(-1)?.authorization).toBeUndefined()
   })
 })

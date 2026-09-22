@@ -3,10 +3,12 @@ import { createFileActionLog } from '../../adapters/action-log/file-action-log.j
 import { actionsPath } from '../../config.js'
 import { randomUUID } from 'node:crypto'
 import { parseArgs } from 'node:util'
-import type { GrantScope, InvokeResponse } from '@5straps/protocol'
+import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import type { BuckleConfig } from '../../config.js'
 import { describeExpiry } from '../../domain/approval-deadline.js'
+import { approveCommand } from '../../domain/approval-instruction.js'
+import { WorkspaceError, createWorkspaceManager } from '../../services/workspace-manager.js'
 import { createRuntime, type BuckleRuntime } from '../../runtime.js'
 import { createCliApprovalChannel } from '../../adapters/approval/cli-approval-channel.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
@@ -41,8 +43,8 @@ function dispatchRuntimeCommand(input: { runtime: BuckleRuntime; config: BuckleC
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
   if (command === 'skills') return printSkills(runtime, rest)
-  if (command === 'approve') return approve(runtime, rest)
-  if (command === 'approvals') return approvals(runtime, rest)
+  if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, argv: rest }))
+  if (command === 'approvals') return reportWorkspaceErrors(() => approvals({ config: input.config, runtime, argv: rest }))
   if (command === 'grants') return grants(runtime, rest)
   if (command === 'workspace') return workspaceRegistryCommand({ config: input.config, runtime, argv: rest })
   if (command === 'workspaces') return shellWorkspacesCommand(runtime, rest)
@@ -73,8 +75,8 @@ function printUsage(): CliResult {
   buckle <group> <verb> [args]       Run a tool, e.g. buckle fs read src/app.ts
   buckle call <tool> --json '{...}'  Run a tool with raw JSON arguments
 
-  buckle approvals [--json]          List the requests waiting for a decision
-  buckle approve <token> [--scope once|session|always]
+  buckle approvals [--json] [--workspace <id>]   Requests waiting for a decision
+  buckle approve <token> [--scope once|session|always] [--workspace <id>]
   buckle grants list | revoke <id>
   buckle workspace list | add <id> --root <dir>
   buckle workspace token list | add <workspace> | revoke <workspace> <token-id>
@@ -140,17 +142,45 @@ function printSkills(runtime: BuckleRuntime, argv: string[]): CliResult {
   return { exitCode: 0 }
 }
 
+/** A named workspace that is unknown, disabled or retired is a typo to report, not a crash. */
+async function reportWorkspaceErrors(operation: () => Promise<CliResult>): Promise<CliResult> {
+  try {
+    return await operation()
+  } catch (error) {
+    if (error instanceof WorkspaceError) return fail(error.message)
+    throw error
+  }
+}
+
+interface CommandInput {
+  config: BuckleConfig
+  runtime: BuckleRuntime
+  argv: string[]
+}
+
+/**
+ * Whose queue is being answered. A token is issued and resolved inside one workspace's own state,
+ * so a request from a registered child workspace is reachable only through that workspace's
+ * runtime; the node's own is the default.
+ */
+async function approvalsOf(input: { config: BuckleConfig; runtime: BuckleRuntime; workspace?: string }): Promise<BuckleRuntime> {
+  if (!input.workspace || input.workspace === 'default') return input.runtime
+  const manager = createWorkspaceManager({ config: input.config, runtime: input.runtime })
+  return (await manager.resolve(input.workspace)).runtime
+}
+
 /**
  * The queue a person answers from. `buckle approve` needs a token, and a request only reaches a
  * terminal when a prompt was on screen there, so without this the tokens waiting on a node were
  * readable through the admin API alone.
  */
-function approvals(runtime: BuckleRuntime, argv: string[]): CliResult {
-  const { values } = parseArgs({ args: argv, options: { json: { type: 'boolean' } }, allowPositionals: false })
+async function approvals(input: CommandInput): Promise<CliResult> {
+  const { values } = parseArgs({ args: input.argv, options: { json: { type: 'boolean' }, workspace: { type: 'string' } }, allowPositionals: false })
+  const runtime = await approvalsOf({ ...input, workspace: values.workspace })
   const pending = runtime.approvals.pending()
-  if (values.json) return print(pending)
+  if (values.json) return print(pending.map(request => ({ ...request, workspaceId: runtime.workspaceId, approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }) })))
   if (pending.length === 0) {
-    process.stdout.write('Nothing is waiting for a decision.\n')
+    process.stdout.write(`Nothing is waiting for a decision in workspace ${runtime.workspaceId}.\n`)
     return { exitCode: 0 }
   }
 
@@ -160,26 +190,27 @@ function approvals(runtime: BuckleRuntime, argv: string[]): CliResult {
     process.stdout.write(`    ${request.reason}\n`)
     process.stdout.write(`    scopes: ${request.offeredScopes.join(' | ')}\n`)
     process.stdout.write(`    ${describeExpiry(request.expiresAt)}\n`)
-    process.stdout.write(`    buckle approve ${request.token} --scope ${defaultScope(request.offeredScopes)}\n`)
+    process.stdout.write(`    ${approveCommand({ request, workspaceId: runtime.workspaceId })}\n`)
   }
   return { exitCode: 0 }
 }
 
-function approve(runtime: BuckleRuntime, argv: string[]): CliResult {
+async function approve(input: CommandInput): Promise<CliResult> {
   const { positionals, values } = parseArgs({
-    args: argv,
-    options: { scope: { type: 'string' }, deny: { type: 'boolean' } },
+    args: input.argv,
+    options: { scope: { type: 'string' }, deny: { type: 'boolean' }, workspace: { type: 'string' } },
     allowPositionals: true,
   })
   const token = positionals[0]
-  if (!token) return fail('Usage: buckle approve <token> [--scope once|session|always] [--deny]')
+  if (!token) return fail('Usage: buckle approve <token> [--scope once|session|always] [--deny] [--workspace <id>]')
 
   const scope = GrantScopeSchema.safeParse(values.scope ?? 'once')
   if (!scope.success) return fail(`Invalid scope: ${values.scope}`)
 
+  const runtime = await approvalsOf({ ...input, workspace: values.workspace })
   const result = runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data }, 'admin')
-  if (!result.ok) return fail(result.reason)
-  process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token}\n`)
+  if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceId}`)
+  process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceId}\n`)
   return { exitCode: 0 }
 }
 
@@ -259,16 +290,17 @@ async function invoke(runtime: BuckleRuntime, tool: string, args: unknown): Prom
     request: { requestId: randomUUID(), tool, args: args as Record<string, never>, approvalTokens: [], context: { stageId: process.env.BUCKLE_STAGE_ID } },
     sessionId: CLI_SESSION_ID,
   })
-  return reportResponse(response)
+  return reportResponse({ response, workspaceId: runtime.workspaceId })
 }
 
-function reportResponse(response: InvokeResponse): CliResult {
+function reportResponse(input: { response: InvokeResponse; workspaceId: string }): CliResult {
+  const { response } = input
   if (response.outcome === 'ok') return print(response.output)
 
   if (response.outcome === 'approval_required') {
     for (const approval of response.approvals) {
       process.stderr.write(
-        `Approval required: ${approval.reason}\n  subject: ${approval.subject}\n  ${describeExpiry(approval.expiresAt)}\n  buckle approve ${approval.token} --scope ${defaultScope(approval.offeredScopes)}\n`,
+        `Approval required: ${approval.reason}\n  subject: ${approval.subject}\n  ${describeExpiry(approval.expiresAt)}\n  ${approveCommand({ request: approval, workspaceId: input.workspaceId })}\n`,
       )
     }
     return { exitCode: 3 }
@@ -276,10 +308,6 @@ function reportResponse(response: InvokeResponse): CliResult {
 
   process.stderr.write(`${response.error.code}: ${response.error.message}\n`)
   return { exitCode: 1 }
-}
-
-function defaultScope(offered: GrantScope[]): GrantScope {
-  return offered.includes('session') ? 'session' : (offered[0] ?? 'once')
 }
 
 function print(value: unknown): CliResult {

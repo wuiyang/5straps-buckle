@@ -7,9 +7,7 @@ import { serve } from '@hono/node-server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { createStdioWire } from './faces/mcp/stdio-wire.js'
 import { createAuditedStdioTransport } from './faces/mcp/audited-stdio-transport.js'
-import { createCliApprovalChannel } from './adapters/approval/cli-approval-channel.js'
-import { createWaitingApprovalChannel } from './adapters/approval/waiting-approval-channel.js'
-import { createWebhookNotifier } from './adapters/approval/webhook-notifier.js'
+import { createApprovalDelivery } from './services/approval-delivery.js'
 import { actionsPath, loadConfig, requireAuthToken, type BuckleConfig } from './config.js'
 import { createHttpApp } from './faces/http-app.js'
 import { createMcpServer } from './faces/mcp/server.js'
@@ -65,7 +63,7 @@ async function serveHttp(config: BuckleConfig): Promise<void> {
   // A terminal running `buckle serve` can answer directly; stdin here is not the protocol.
   const runtime = await createRuntime({
     config,
-    channel: approvals => buildServerChannel({ config, approvals, prompt: process.stdin.isTTY }),
+    channel: approvals => createApprovalDelivery({ config, approvals, workspaceId: 'default', prompt: Boolean(process.stdin.isTTY) }),
   })
   const manifest = runtime.manifest()
 
@@ -88,31 +86,12 @@ async function serveHttp(config: BuckleConfig): Promise<void> {
   })
 }
 
-/**
- * Holds a gated call open for the grace period, so an approval can arrive from a prompt here, a
- * `buckle approve` elsewhere, a POST to /setup/approvals, or whatever a webhook reached.
- */
-function buildServerChannel(input: {
-  config: BuckleConfig
-  approvals: Parameters<Parameters<typeof createRuntime>[0]['channel']>[0]
-  prompt: boolean
-}) {
-  return createWaitingApprovalChannel({
-    approvals: input.approvals,
-    timeoutMs: input.config.approvalTimeoutMs,
-    notify: input.config.approvalWebhook
-      ? createWebhookNotifier({ url: input.config.approvalWebhook, serverId: input.config.serverId, token: input.config.reportToken })
-      : undefined,
-    prompt: input.prompt ? createCliApprovalChannel() : undefined,
-  })
-}
-
 /** stdout carries the MCP protocol here, so every log line must go to stderr. */
 async function serveMcpStdio(config: BuckleConfig): Promise<void> {
   // stdin carries the MCP protocol, so there is no terminal here to ask a person in.
   const runtime = await createRuntime({
     config,
-    channel: approvals => buildServerChannel({ config, approvals, prompt: false }),
+    channel: approvals => createApprovalDelivery({ config, approvals, workspaceId: 'default', prompt: false }),
   })
   const version = runtime.manifest().version
   const transport = createAuditedStdioTransport({

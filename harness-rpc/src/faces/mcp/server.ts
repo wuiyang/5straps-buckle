@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
+import { describeApprovalRequest } from '../../domain/approval-instruction.js'
 import { logger } from '../../logger.js'
 import type { ApprovalAuthority } from '../../ports/approval-channel.js'
 import type { BuckleRuntime } from '../../runtime.js'
@@ -16,19 +17,19 @@ interface ApprovalAnswer extends Record<string, unknown> {
  */
 export function createMcpServer(input: { runtime: BuckleRuntime; serverName: string; version: string; trustedApprovalResponses?: boolean }): McpServer {
   const server = new McpServer({ name: input.serverName, version: input.version })
-  let registrations = registerTools(server, input.runtime, input.trustedApprovalResponses === true)
+  let registrations = registerTools(server, input.runtime, input.trustedApprovalResponses === true, input.serverName)
   registerSkills(server, input.runtime)
 
   input.runtime.onToolsChanged(() => {
     for (const registration of registrations) registration.remove()
-    registrations = registerTools(server, input.runtime, input.trustedApprovalResponses === true)
+    registrations = registerTools(server, input.runtime, input.trustedApprovalResponses === true, input.serverName)
     logger.info('MCP tool list refreshed')
   })
 
   return server
 }
 
-function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprovalResponses: boolean): Array<ReturnType<McpServer['registerTool']>> {
+function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprovalResponses: boolean, serverName: string): Array<ReturnType<McpServer['registerTool']>> {
   const readers = capabilityReaders(server)
   const registrations: Array<ReturnType<McpServer['registerTool']>> = []
 
@@ -60,7 +61,7 @@ function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprova
         if (response.outcome === 'approval_required') {
           return trustedApprovalResponses && supportsElicitation(readers, context)
             ? askForApproval(response.approvals)
-            : relayApproval(response.approvals)
+            : relayApproval({ approvals: response.approvals, workspaceId: runtime.workspaceId, nodeName: serverName })
         }
         return toCallToolResult(response)
       },
@@ -71,12 +72,15 @@ function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprova
 
 /**
  * Hosts that never declared elicitation cannot be prompted, so the approval is handed back as
- * text the agent can relay to its user. This is the fallback that makes Buckle work anywhere.
+ * text the agent can relay to its user. This is the fallback that makes Buckle work anywhere,
+ * which is why it names the node and the workspace: the person may hold several, and the command
+ * only answers the workspace it names.
  */
-function relayApproval(approvals: ApprovalRequest[]) {
-  const lines = approvals.map(approval =>
-    `- ${approval.reason}\n  subject: ${approval.subject}\n  approve with: buckle approve ${approval.token} --scope ${approval.offeredScopes.includes('session') ? 'session' : approval.offeredScopes[0] ?? 'once'}`,
-  )
+function relayApproval(input: { approvals: ApprovalRequest[]; workspaceId: string; nodeName: string }) {
+  const lines = input.approvals.map(request => {
+    const [first, ...rest] = describeApprovalRequest({ request, workspaceId: input.workspaceId, nodeName: input.nodeName })
+    return [`- ${first}`, ...rest.map(line => `  ${line}`)].join('\n')
+  })
   return {
     isError: true,
     content: [{
