@@ -14,6 +14,13 @@ export interface GitConfig {
   value: string
 }
 
+/** As much of a `git config --list` answer as the caller of `configuredFilterPrograms` needs. */
+export interface ConfigListing {
+  exitCode: number | null
+  stdout: string
+  truncated: boolean
+}
+
 /**
  * The system and global configs are made invisible and the terminal prompt is closed, so the
  * repository config is all that is left; its executable and routing knobs are overridden below.
@@ -107,6 +114,31 @@ export function transportConfig(originUrl: string): GitConfig[] {
  */
 export function filterProgramOverrides(configuredKeys: string[]): GitConfig[] {
   return configuredKeys.filter(key => FILTER_PROGRAM_KEY.test(key)).map(key => ({ key, value: '' }))
+}
+
+/**
+ * Which filter programs this repository defines, asked of git under the isolation scope rather
+ * than parsed out of `.git/config`: git resolves an `include` and the `.git/config.worktree` that
+ * `extensions.worktreeConfig` turns on, and neither is named in the text of the file a parser
+ * reads. The system and global scopes are hidden by `ISOLATION_ENVIRONMENT`, so an operator's own
+ * git-lfs configuration is not one of these keys.
+ *
+ * `spawn` runs git with that scope in force and no repository program in reach. Exit 1 is git
+ * saying nothing is configured, which is an answer; a listing that did not complete is a refusal,
+ * because an unread key is a program that would run.
+ */
+export async function configuredFilterPrograms<Listing extends ConfigListing>(input: {
+  spawn: (args: string[]) => Promise<Listing>
+  describeFailure: (result: Listing) => string
+}): Promise<string[]> {
+  const result = await input.spawn(['config', '--list', '--name-only', '--null'])
+  if (result.exitCode !== 0 && result.exitCode !== 1) {
+    throw new ToolExecutionError(input.describeFailure(result), { code: 'GIT_FAILED' })
+  }
+  if (result.truncated) {
+    throw new ToolExecutionError('This repository has more git config than Buckle reads in one pass, so the tools cannot prove no filter program is defined; the repository is refused rather than one being run', { code: 'GIT_ISOLATION_UNAVAILABLE' })
+  }
+  return result.stdout.split('\0').filter(key => FILTER_PROGRAM_KEY.test(key))
 }
 
 /** Config git reads after every file, so nothing the workspace wrote can override it. */

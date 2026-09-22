@@ -6,7 +6,7 @@ import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
 import { defineTool, ToolExecutionError } from '../../domain/tool.js'
 import type { ProcessResult, ProcessRunner } from '../../ports/process-runner.js'
-import { ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
+import { configuredFilterPrograms, ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
 
@@ -57,24 +57,6 @@ export function createGitPack(options: GitPackOptions): Pack {
     })
   }
 
-  /**
-   * Which filter programs this repository defines, asked of git under the isolation scope so an
-   * `include` is resolved and neither the global nor the system config is in view. A listing
-   * that did not complete is a refusal rather than an empty answer: an unread key is a program
-   * that would run.
-   */
-  const configuredKeys = async (input: { cwd: string; config: GitConfig[]; timeoutMs: number; signal: AbortSignal }): Promise<string[]> => {
-    const result = await spawnGit({ ...input, args: ['config', '--list', '--name-only', '--null'] })
-    // Exit 1 is git saying there is nothing configured, which is an answer.
-    if (result.exitCode !== 0 && result.exitCode !== 1) {
-      throw new ToolExecutionError(describeProcessFailure('git config --list', result), { code: 'GIT_FAILED' })
-    }
-    if (result.truncated) {
-      throw new ToolExecutionError('This repository has more git config than Buckle reads in one pass, so the tools cannot prove no filter program is defined; the git pack refuses the repository rather than running one', { code: 'GIT_ISOLATION_UNAVAILABLE' })
-    }
-    return result.stdout.split('\0').filter(Boolean)
-  }
-
   const run = async (input: {
     repo: string
     args: string[]
@@ -83,7 +65,10 @@ export function createGitPack(options: GitPackOptions): Pack {
   }): Promise<string> => {
     const cwd = resolveRepository({ paths: options.paths, repo: input.repo })
     const isolation = isolationConfig(ensureHooksDirectory(options.stateDirectory))
-    const keys = await configuredKeys({ cwd, config: isolation, timeoutMs: input.timeoutMs, signal: input.signal })
+    const keys = await configuredFilterPrograms({
+      spawn: args => spawnGit({ cwd, args, config: isolation, timeoutMs: input.timeoutMs, signal: input.signal }),
+      describeFailure: result => describeProcessFailure('git config --list', result),
+    })
     const config = [...isolation, ...filterProgramOverrides(keys)]
     const result = await spawnGit({ cwd, args: input.args, config, timeoutMs: input.timeoutMs, signal: input.signal })
     if (result.exitCode !== 0) {

@@ -13,8 +13,8 @@ import type { UrlMatcher } from '../../domain/url-pattern.js'
 import type { ProcessResult, ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
-import { assertNoFilters } from './isolation.js'
+import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
+import { assertNoFilters, assertNoFilterPrograms } from './isolation.js'
 import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
 const PACK_ID = 'forge'
@@ -93,6 +93,14 @@ export function createForgePack(options: ForgePackOptions): Pack {
     return scrub(result.stdout)
   }
 
+  /** Which filter programs git resolves here, asked of git so no config scope is missed. */
+  const filterPrograms = (input: { repository: string; context: ToolContext }): Promise<string[]> => {
+    return configuredFilterPrograms({
+      spawn: args => runGit({ repository: input.repository, args, context: input.context }),
+      describeFailure: result => scrub(describeProcessFailure('git config --list', result)),
+    })
+  }
+
   /** Absent config is exit 1, which is an answer rather than a failure. */
   const configValues = async (input: { repository: string; key: string; context: ToolContext }): Promise<string[]> => {
     const result = await runGit({ repository: input.repository, args: ['config', '--get-all', input.key], context: input.context })
@@ -161,6 +169,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
         const repository = paths.resolve(input.repo)
         assertRepositoryPaths({ repository, named: input.paths })
         assertNoFilters({ repository, paths: input.paths })
+        assertNoFilterPrograms({ repository, keys: await filterPrograms({ repository, context }) })
         const identity = {
           GIT_AUTHOR_NAME: options.author.name,
           GIT_AUTHOR_EMAIL: options.author.email,

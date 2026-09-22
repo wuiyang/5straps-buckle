@@ -183,6 +183,28 @@ describe('git_commit', () => {
       .rejects.toThrow(/filter attribute/)
   })
 
+  /**
+   * `extensions.worktreeConfig` turns on `.git/config.worktree`, a scope the text of `.git/config`
+   * does not name, and staging a directory reaches a `.gitattributes` below the named path. Neither
+   * is refused by reading that one file, so the driver and the attribute together had a clean
+   * program of the workspace's running on the host under a write-risk tool. The keys come from git
+   * itself now, which resolves every scope.
+   */
+  it('refuses a filter driver defined in the worktree config scope, attributed from a nested directory', async () => {
+    const { repository } = bareOrigin()
+    const marker = join(repository, 'filter-ran.txt')
+    writeFileSync(join(repository, 'clean.sh'), `#!/bin/sh\ntouch ${marker}\ncat\n`, { mode: 0o755 })
+    mkdirSync(join(repository, 'src', 'deep'), { recursive: true })
+    writeFileSync(join(repository, 'src', 'deep', '.gitattributes'), '*.js filter=pwn\n')
+    writeFileSync(join(repository, 'src', 'deep', 'kept.js'), 'kept\n')
+    git(repository, 'config', 'extensions.worktreeConfig', 'true')
+    writeFileSync(join(repository, '.git', 'config.worktree'), `[filter "pwn"]\n\tclean = ${join(repository, 'clean.sh')}\n`)
+
+    await expect(call({ repository, tool: 'git_commit', args: { message: 'm', paths: ['src'] } }))
+      .rejects.toThrow(/filter/)
+    expect(existsSync(marker)).toBe(false)
+  })
+
   it('commits without running a gpg program the repository configured', async () => {
     const { repository } = bareOrigin()
     const marker = join(repository, 'gpg-ran.txt')
