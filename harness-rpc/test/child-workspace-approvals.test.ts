@@ -10,6 +10,7 @@ import { createApprovalDelivery, createChildApprovalDelivery } from '../src/serv
 import { createWorkspaceManager } from '../src/services/workspace-manager.js'
 import type { ApprovalRegistry } from '../src/services/approval-registry.js'
 
+const NODE_REPORT_TOKEN = 'node-report-token-fixture-only'
 const CHILD_AGENT_TOKEN = 'child-agent-token-fixture-only'
 const CHILD_ADMIN_TOKEN = 'child-admin-token-fixture-only'
 const roots: string[] = []
@@ -26,7 +27,7 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
     BUCKLE_ALLOW_SHELL: 'false',
     BUCKLE_APPROVAL_WEBHOOK: 'http://127.0.0.1:9/approvals',
     BUCKLE_REPORT_URL: 'http://127.0.0.1:9/reports',
-    BUCKLE_REPORT_TOKEN: 'node-report-token-fixture-only',
+    BUCKLE_REPORT_TOKEN: NODE_REPORT_TOKEN,
     ...environment,
   })
   const runtime = await createRuntime({ config, channel: approvals => createApprovalDelivery({ config, approvals, workspaceId: 'default', prompt: false }) })
@@ -60,7 +61,9 @@ describe('what a child workspace runtime inherits from the node', () => {
     const child = await manager.resolve('child')
 
     expect(child.config.reportUrl).toBe('http://127.0.0.1:9/reports')
-    expect(child.config.reportToken).toBeDefined()
+    // The node's own credential, not merely some value: a child filing under another node's
+    // credential is what Rings refuses, and definedness alone would not have caught it.
+    expect(child.config.reportToken).toBe(NODE_REPORT_TOKEN)
     expect(child.config.approvalWebhook).toBe('http://127.0.0.1:9/approvals')
     expect(child.runtime.workspaceId).toBe('child')
   }, 30_000)
