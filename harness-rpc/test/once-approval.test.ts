@@ -65,6 +65,31 @@ describe('once approval consumption', () => {
   })
 })
 
+describe('which late onces a call spends', () => {
+  it('leaves a once whose subject a session grant already covers', () => {
+    const approvals = registry()
+    const issued = approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [
+      { kind: 'ask', rule: 'read_scope', subject: '/granted', reason: 'outside', offeredScopes: ['once'] },
+      { kind: 'ask', rule: 'read_scope', subject: '/needed', reason: 'outside', offeredScopes: ['once'] },
+    ] })
+    for (const item of issued) approvals.resolve({ token: item.token, approved: true, scope: 'once' }, 'admin')
+    // A session grant covers /granted, so the rule reports both subjects but needs only /needed.
+    const coveredByGrant = (subjects: { subject: string }[]): PermissionOutcome => subjects.some(item => item.subject === '/needed')
+      ? { kind: 'allow', allowedBy: subjects.map(item => `read_scope:${item.subject}`) }
+      : { kind: 'ask', asks: [] }
+    const spent: string[][] = []
+    const recording = (subjects: { subject: string }[]) => { spent.push(subjects.map(item => item.subject)); return coveredByGrant(subjects) }
+    expect(approvals.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: recording }).kind).toBe('allow')
+    expect(spent.at(-1)).toEqual(['/needed'])
+    // The once for /granted was not spent: a call that needs it still finds it.
+    const needsGranted = (subjects: { subject: string }[]): PermissionOutcome => subjects.some(item => item.subject === '/granted')
+      ? { kind: 'allow', allowedBy: ['read_scope:/granted'] }
+      : { kind: 'ask', asks: [] }
+    expect(approvals.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: needsGranted }).kind).toBe('allow')
+    expect(approvals.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: needsGranted }).kind).toBe('ask')
+  })
+})
+
  it('isolates approvals between workspaces sharing the same state directory', () => {
   const root = mkdtempSync('/tmp/buckle-workspace-'); roots.push(root)
   const create = (workspace: string) => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), join(root, 'approvals.json'), workspace)
@@ -117,6 +142,18 @@ describe('a once approval answered after the grace period', () => {
     await answerOnceLate(context)
     expect((await context.read(context.otherFile)).outcome).toBe('approval_required')
     expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
+  })
+
+  it('spends one of two onces answered for the same subject, leaving the other for the next call', async () => {
+    const context = await setup()
+    const asked = [await context.read(context.file), await context.read(context.file)]
+    for (const result of asked) {
+      if (result.outcome !== 'approval_required') throw new Error(`expected an approval, got ${result.outcome}`)
+      expect(context.runtime.approvals.resolve({ token: result.approvals[0]!.token, approved: true, scope: 'once' }, 'agent').ok).toBe(true)
+    }
+    expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
+    expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
+    expect((await context.read(context.file)).outcome).toBe('approval_required')
   })
 
   it('does not cover another session or another tool', async () => {

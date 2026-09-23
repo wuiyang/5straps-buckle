@@ -113,6 +113,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
  * retry arrives without one. When the call would otherwise ask, an unconsumed `once` for this
  * session and tool counts, but only the ones a rule actually relied on for this call's effects,
  * so a `once` still covers one call with that subject and nothing wider.
+ *
+ * Only the smallest set the call needs is spent: one `once` per subject, the one expiring first,
+ * and none whose subject is already covered without it, by a session grant for instance. The
+ * others stay for the next call rather than wasting an owner's answer.
  */
 function unclaimedReliedOn(input: {
   usable: OnceEntry[]
@@ -124,7 +128,17 @@ function unclaimedReliedOn(input: {
   const wider = input.check([...input.usable, ...input.unclaimed].map(entry => entry.subject))
   if (wider.kind !== 'allow') return []
   const relied = new Set(wider.allowedBy)
-  return input.unclaimed.filter(entry => relied.has(`${entry.subject.rule}:${entry.subject.subject}`))
+  const firstPerSubject = new Map<string, OnceEntry>()
+  for (const entry of [...input.unclaimed].sort((a, b) => Date.parse(a.expiresAt!) - Date.parse(b.expiresAt!))) {
+    const key = `${entry.subject.rule}:${entry.subject.subject}`
+    if (relied.has(key) && !firstPerSubject.has(key)) firstPerSubject.set(key, entry)
+  }
+  let needed = [...firstPerSubject.values()]
+  for (const entry of [...needed]) {
+    const without = needed.filter(other => other !== entry)
+    if (input.check([...input.usable, ...without].map(other => other.subject)).kind === 'allow') needed = without
+  }
+  return needed
 }
 
 function prune(state: State): void {
