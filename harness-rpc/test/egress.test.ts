@@ -100,4 +100,42 @@ describe('guardedFetch', () => {
       allowedHosts: allowLocal(), approved: null,
     })).resolves.toBeDefined()
   })
+
+  it('reaches a private host the permission rules say an approval covers', async () => {
+    const response = await guardedFetch({
+      url: new URL(`http://127.0.0.1:${port}/`),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      allowedHosts: [], approved: null,
+      judge: () => ({ kind: 'granted' }),
+    })
+    expect(await response.text()).toBe('arrived')
+  })
+
+  it('refuses with the rules\' reason when they would deny or ask', async () => {
+    await expect(guardedFetch({
+      url: new URL(`http://127.0.0.1:${port}/`),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      allowedHosts: [], approved: null,
+      judge: () => ({ kind: 'refused', reason: '127.0.0.1 is in the loopback range' }),
+    })).rejects.toThrow(/loopback/)
+  })
+
+  it('still checks where a name resolves when no approval is involved', async () => {
+    await expect(guardedFetch({
+      url: new URL(`http://127.0.0.1:${port}/`),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      allowedHosts: [], approved: null,
+      judge: () => ({ kind: 'allowed' }),
+    })).rejects.toThrow(/loopback/)
+  })
+
+  it('lets BUCKLE_ALLOWED_HOSTS reach its host before the rules are consulted', async () => {
+    const response = await guardedFetch({
+      url: new URL(`http://127.0.0.1:${port}/`),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      allowedHosts: allowLocal(), approved: null,
+      judge: () => ({ kind: 'refused', reason: 'not consulted' }),
+    })
+    expect(await response.text()).toBe('arrived')
+  })
 })

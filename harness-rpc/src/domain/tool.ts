@@ -10,7 +10,20 @@ export interface ToolContext {
   timeoutMs: number
   signal: AbortSignal
   authorizeRead?: (path: string) => Promise<boolean>
+  /**
+   * The permission rules' verdict on reaching a URL mid-call, with this session's grants and the
+   * approvals this call consumed, so a fetch honours what the owner approved without a copy of
+   * the allow logic.
+   */
+  judgeNetwork?: (url: URL) => NetworkVerdict
 }
+
+/**
+ * `granted`: allowed by an owner's approval for that host. `allowed`: allowed with no approval
+ * involved, so the caller still checks where the name resolves. `refused`: the rules deny or
+ * would ask, with their reason.
+ */
+export type NetworkVerdict = { kind: 'granted' } | { kind: 'allowed' } | { kind: 'refused'; reason: string }
 
 export interface ToolDefinition<TInput> {
   managesHistory?: boolean

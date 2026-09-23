@@ -9,7 +9,7 @@ import type { PermissionEngine } from '../domain/permission/engine.js'
 import type { GrantLookup } from '../domain/permission/decision.js'
 import { redactAuditArguments } from '../domain/redact.js'
 import type { ToolRegistry } from '../domain/tool-registry.js'
-import { ToolExecutionError, ToolInputError, type ToolContext } from '../domain/tool.js'
+import { ToolExecutionError, ToolInputError, type NetworkVerdict, type ToolContext } from '../domain/tool.js'
 import type { ActionLog, ActionLogEntry } from '../ports/action-log.js'
 import type { ApprovalChannel } from '../ports/approval-channel.js'
 import type { GrantStore } from '../ports/grant-store.js'
@@ -47,6 +47,8 @@ interface GateOutcome {
   approvedBy: string[]
   /** Set when the call was refused rather than run, whoever refused it. */
   denial?: { rule: PermissionRuleId; subject: string; reason: string }
+  /** The once approvals this call was cleared with, which also cover what it reaches mid-call. */
+  consumed?: GrantSubject[]
 }
 
 export function createInvoker(options: InvokerOptions): Invoker {
@@ -78,7 +80,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           gate = await clearPermissions({ options, request, sessionId, effects })
           if (gate.response) return gate.response
 
-          const execute = () => executeWithTimeout({ options, request, sessionId, execute: prepared.execute })
+          const execute = () => executeWithTimeout({ options, request, sessionId, consumed: gate.consumed ?? [], execute: prepared.execute })
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
@@ -212,15 +214,17 @@ async function clearPermissions(input: {
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects } = input
   const approvedBy: string[] = []
+  let consumed: GrantSubject[] = []
   const evaluate = (tokens: string[]) => options.approvals.evaluate({
     tokens, sessionId, tool: request.tool,
     check: subjects => {
+      consumed = subjects
       approvedBy.push(...subjects.map(subject => `${subject.rule}:${subject.subject}`))
       return options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: subjects }) })
     },
   })
   const outcome = evaluate(request.approvalTokens)
-  if (outcome.kind === 'allow') return { response: null, asked: [], approvedBy: [...approvedBy, ...outcome.allowedBy] }
+  if (outcome.kind === 'allow') return { response: null, asked: [], approvedBy: [...approvedBy, ...outcome.allowedBy], consumed }
   if (outcome.kind === 'deny') {
     return {
       response: denied(request, outcome.denial.reason),
@@ -245,7 +249,7 @@ async function clearPermissions(input: {
   const rechecked = evaluate([...request.approvalTokens, ...approvals.map(approval => approval.token)])
   const resolvedBy = [...new Set(approvedBy)]
   if (rechecked.kind === 'allow') {
-    return { response: null, asked, approvedBy: [...new Set([...resolvedBy, ...rechecked.allowedBy])] }
+    return { response: null, asked, approvedBy: [...new Set([...resolvedBy, ...rechecked.allowedBy])], consumed }
   }
 
   const first = approvals[0]
@@ -286,6 +290,7 @@ async function executeWithTimeout(input: {
   options: InvokerOptions
   request: InvokeRequest
   sessionId: string
+  consumed: GrantSubject[]
   execute: (context: ToolContext) => Promise<JsonValue>
 }): Promise<JsonValue> {
   const timeoutMs = Math.min(input.request.timeoutMs ?? input.options.defaultTimeoutMs, input.options.maxTimeoutMs)
@@ -305,10 +310,23 @@ async function executeWithTimeout(input: {
           grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: [] }),
         }).kind === 'allow'
       },
+      judgeNetwork: url => judgeNetwork({ ...input, url }),
     })
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** One network effect through the same rules the call cleared, with the grants it cleared with. */
+function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; consumed: GrantSubject[]; url: URL }): NetworkVerdict {
+  const outcome = input.options.permissions.evaluate({
+    tool: input.request.tool,
+    effects: [{ kind: 'network', url: input.url }],
+    grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
+  })
+  if (outcome.kind === 'deny') return { kind: 'refused', reason: outcome.denial.reason }
+  if (outcome.kind === 'ask') return { kind: 'refused', reason: outcome.asks.map(item => item.reason).join('; ') }
+  return outcome.allowedBy.some(key => key.startsWith('network_egress:')) ? { kind: 'granted' } : { kind: 'allowed' }
 }
 
 function shapeError(error: unknown, tool: string): { code: string; message: string; retryable: boolean } {

@@ -53,6 +53,7 @@ export function createWebPack(options: WebPackOptions): Pack {
           signal: context.signal,
           allowedHosts: options.allowedHosts,
           approved: options.approved,
+          judge: context.judgeNetwork,
         })
         const { body, truncated } = await readBounded(response)
         return {
