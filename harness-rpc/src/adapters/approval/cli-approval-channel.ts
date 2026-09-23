@@ -9,6 +9,11 @@ export interface CliApprovalOptions {
   /** Where the question is asked. This process's terminal unless a caller names another. */
   input?: Readable
   output?: Writable
+  /**
+   * What Ctrl-C does once every question is dropped. By default SIGINT is raised again, so the
+   * process stops exactly as it would have with no question open.
+   */
+  onInterrupt?: () => void
 }
 
 /**
@@ -23,34 +28,54 @@ export interface CliApprovalOptions {
  * a terminal someone is sitting at — the grace period is the server's, and is far shorter. Both
  * `buckle serve` and a direct `buckle fs write` therefore have a question that ends: the queue
  * moves on to one that is still answerable instead of holding the terminal for a dead token.
+ *
+ * Ctrl-C at a question stops the process, not just that question. A question lives until its
+ * request expires, and every gated call queues its own, so dropping one at a time would take a
+ * key press per question to stop `buckle serve`. The first Ctrl-C drops the whole queue, closes
+ * the terminal, and raises SIGINT again for the process to shut down as usual.
  */
 export function createCliApprovalChannel(options: CliApprovalOptions = {}): ApprovalChannel {
   const queue = createSerialQueue()
   const input = options.input ?? process.stdin
   const output = options.output ?? process.stderr
+  const interrupted = new AbortController()
+  const onInterrupt = options.onInterrupt ?? (() => process.kill(process.pid, 'SIGINT'))
+  const interrupt = () => {
+    if (interrupted.signal.aborted) return
+    interrupted.abort()
+    onInterrupt()
+  }
 
   return {
     id: 'cli',
     request(requests, signal) {
-      if (!process.stdin.isTTY) return Promise.resolve(null)
-      return queue(() => ask({ requests, signal, input, output }))
+      if (!process.stdin.isTTY || interrupted.signal.aborted) return Promise.resolve(null)
+      const cancelled = signal ? AbortSignal.any([signal, interrupted.signal]) : interrupted.signal
+      return queue(() => ask({ requests, signal: cancelled, input, output, interrupt }))
     },
   }
 }
 
-async function ask(context: { requests: ApprovalRequest[]; signal?: AbortSignal; input: Readable; output: Writable }): Promise<ApprovalDecision[] | null> {
-  // The wait for our turn may have outlasted the grace period, or another route may have answered.
-  if (context.signal?.aborted) return null
+async function ask(context: { requests: ApprovalRequest[]; signal: AbortSignal; input: Readable; output: Writable; interrupt: () => void }): Promise<ApprovalDecision[] | null> {
+  // The wait for our turn may have outlasted the grace period, another route may have answered,
+  // or Ctrl-C dropped the queue.
+  if (context.signal.aborted) return null
   // A request whose expiry passed while it queued resolves no longer, so it is not worth asking.
   if (context.requests.some(request => remainingMs(request.expiresAt) === 0)) return null
 
   const readline = createInterface({ input: context.input, output: context.output })
+  // With a listener here readline no longer closes on Ctrl-C by itself, so close it first: the
+  // terminal is restored before the process is told to stop.
+  readline.on('SIGINT', () => {
+    readline.close()
+    context.interrupt()
+  })
   try {
     const decisions: ApprovalDecision[] = []
     for (const request of context.requests) decisions.push(await promptOne({ readline, request, signal: context.signal, output: context.output }))
     return decisions
   } catch {
-    // Aborted mid-question: the request expired, or the decision came from somewhere else.
+    // Aborted mid-question: the request expired, the decision came from somewhere else, or Ctrl-C.
     return null
   } finally {
     readline.close()
@@ -60,7 +85,7 @@ async function ask(context: { requests: ApprovalRequest[]; signal?: AbortSignal;
 async function promptOne(context: {
   readline: ReturnType<typeof createInterface>
   request: ApprovalRequest
-  signal?: AbortSignal
+  signal: AbortSignal
   output: Writable
 }): Promise<ApprovalDecision> {
   const { request } = context
@@ -75,9 +100,8 @@ async function promptOne(context: {
 }
 
 /** The request's own expiry, plus whatever the caller is already watching for. */
-function questionDeadline(request: ApprovalRequest, signal?: AbortSignal): AbortSignal {
-  const expiry = AbortSignal.timeout(remainingMs(request.expiresAt))
-  return signal ? AbortSignal.any([signal, expiry]) : expiry
+function questionDeadline(request: ApprovalRequest, signal: AbortSignal): AbortSignal {
+  return AbortSignal.any([signal, AbortSignal.timeout(remainingMs(request.expiresAt))])
 }
 
 function scopeLabel(scope: GrantScope): string {

@@ -1,3 +1,4 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -7,6 +8,7 @@ import { createCliApprovalChannel } from '../src/adapters/approval/cli-approval-
 import { createWaitingApprovalChannel } from '../src/adapters/approval/waiting-approval-channel.js'
 import { createSerialQueue } from '../src/domain/serial-queue.js'
 import type { ApprovalChannel } from '../src/ports/approval-channel.js'
+import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../src/services/approval-registry.js'
 
@@ -275,6 +277,75 @@ describe('the terminal prompt queue', () => {
       process.stdin.isTTY = wasTty
     }
   })
+})
+
+/** `node-pty` is an optional native dependency, so the real-terminal check runs only where it loads. */
+const nativeTerminal = await import('node-pty').then(() => true, () => false)
+
+describe('Ctrl-C at a terminal question', () => {
+  /** A terminal readline treats as a keyboard, so Ctrl-C arrives as a key press, not a signal. */
+  function keyboardTerminal() {
+    const terminal = silentTerminal()
+    Object.assign(terminal.output, { isTTY: true, columns: 80, rows: 24 })
+    return terminal
+  }
+
+  it('drops the open question and every queued one, and stops the process once', async () => {
+    const wasTty = process.stdin.isTTY
+    process.stdin.isTTY = true
+    const terminal = keyboardTerminal()
+    const onInterrupt = vi.fn()
+    try {
+      const channel = createCliApprovalChannel({ ...terminal, onInterrupt })
+      const open = channel.request([request('open', 600_000)])
+      const queued = [channel.request([request('queued-1', 600_000)]), channel.request([request('queued-2', 600_000)])]
+      await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+
+      terminal.input.write('\x03')
+
+      expect(await open).toBeNull()
+      expect(await Promise.all(queued)).toEqual([null, null])
+      expect(onInterrupt).toHaveBeenCalledTimes(1)
+      // Only the first question was ever shown; the queued ones were dropped, not asked in turn.
+      expect(terminal.shown().match(/needs approval/g)).toHaveLength(1)
+      // The readline is closed: it no longer listens for key presses on the terminal.
+      expect(terminal.input.listenerCount('keypress')).toBe(0)
+      // A request arriving after Ctrl-C is not asked while the process stops.
+      expect(await channel.request([request('late', 600_000)])).toBeNull()
+      expect(onInterrupt).toHaveBeenCalledTimes(1)
+    } finally {
+      process.stdin.isTTY = wasTty
+    }
+  })
+
+  it.runIf(process.platform === 'linux' && nativeTerminal)('stops the process on the first Ctrl-C in a real terminal, with questions open and queued', async () => {
+    const pty = await import('node-pty')
+    const script = join(mkdtempSync(join(tmpdir(), 'buckle-ctrl-c-')), 'serve-like.mts')
+    writeFileSync(script, `
+      import { createCliApprovalChannel } from ${JSON.stringify(new URL('../src/adapters/approval/cli-approval-channel.ts', import.meta.url).href)};
+      const channel = createCliApprovalChannel();
+      const request = (token) => ({ token, rule: 'read_scope', subject: '/outside', reason: 'outside the sandbox', tool: 'fs_read', offeredScopes: ['once'], expiresAt: new Date(Date.now() + 600_000).toISOString() });
+      // Like buckle serve, something else keeps the process alive while the questions are open.
+      setInterval(() => {}, 1_000);
+      for (const token of ['a', 'b', 'c']) channel.request([request(token)]);
+    `)
+    const child = pty.spawn(process.execPath, ['--import', import.meta.resolve('tsx'), script], {
+      name: 'xterm-256color', cwd: tmpdir(), env: { PATH: process.env.PATH ?? '/usr/bin:/bin', TERM: 'xterm-256color' }, cols: 80, rows: 24,
+    })
+    let shown = ''
+    child.onData(data => { shown += data })
+    const exited = new Promise<{ exitCode: number; signal?: number }>(resolve => child.onExit(resolve))
+    try {
+      await expect.poll(() => shown, { timeout: SPAWN_TEST_TIMEOUT_MS / 2 }).toContain('needs approval')
+      child.write('\x03')
+      const stopped = await Promise.race([exited, new Promise<null>(resolve => setTimeout(() => resolve(null), 5_000))])
+      expect(stopped).not.toBeNull()
+      expect(stopped!.signal).toBe(2)
+      expect(shown.match(/needs approval/g)).toHaveLength(1)
+    } finally {
+      child.kill('SIGKILL')
+    }
+  }, SPAWN_TEST_TIMEOUT_MS)
 })
 
 describe('the queue that keeps one question on screen at a time', () => {
