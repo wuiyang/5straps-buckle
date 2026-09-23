@@ -2,9 +2,6 @@ import type { ToolEffect } from '../../domain/effect.js'
 import { normaliseUrl, UrlNormaliseError } from '../../domain/url-normalise.js'
 import { ToolInputError } from '../../domain/tool.js'
 
-/** Two or more characters before the colon, so a Windows drive letter like `C:` is not a scheme. */
-const SCHEME_PATTERN = /^[a-z][a-z0-9+.-]+:/i
-
 /** agent-browser's names for loading a page. */
 const NAVIGATION_COMMANDS = new Set(['open', 'goto', 'navigate'])
 
@@ -69,16 +66,11 @@ function flagName(argument: string): string | null {
 
 /**
  * The page a command loads, normalised so `open example.com` is judged exactly like
- * `open https://example.com`. Any other argument written with a scheme is declared too, so a URL
- * handed to the browser some other way is still judged rather than invisible.
+ * `open https://example.com`. Only that page is a URL: the text given to `fill` or `type`, and
+ * every flag value, are passed as written and never read as an address.
  */
 function navigationEffects(command: string, args: string[]): ToolEffect[] {
-  const targets = navigationTargets(command, args)
-  return args.flatMap((argument, index) => {
-    const target = targets.get(index)
-    if (target) return [{ kind: 'network', url: target }] as const
-    return SCHEME_PATTERN.test(argument) ? [{ kind: 'network', url: normalised(argument) }] as const : []
-  })
+  return [...navigationTargets(command, args).values()].map(url => ({ kind: 'network', url }) as const)
 }
 
 /**

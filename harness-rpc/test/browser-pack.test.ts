@@ -307,6 +307,19 @@ describe('a page named without a scheme', () => {
     expect(() => browserEffects('open', ['not a url'])).toThrow(/Not an http or https URL or a host/)
   })
 
+  it('passes fill and type text containing a colon through unchanged, since text is not a page', async () => {
+    expect(browserEffects('fill', ['@e1', 'Note: hello world'])).toEqual([])
+    expect(browserEffects('type', ['@e1', 'Note: hi'])).toEqual([])
+    expect(browserEffects('type', ['@e1', 'https://10.0.0.1/'])).toEqual([])
+    const { args } = await run({ command: 'fill', args: ['@e1', 'Note: hello world'] })
+    expect(args.slice(0, 3)).toEqual(['fill', '@e1', 'Note: hello world'])
+  })
+
+  it('still judges the page open names', () => {
+    expect(judge(['https://example.com/'])).toMatchObject({ kind: 'deny', denial: { rule: 'network_egress', subject: 'example.com' } })
+    expect(browserEffects('open', ['https://example.com/a:b'])).toEqual([{ kind: 'network', url: 'https://example.com/a:b' }])
+  })
+
   it('hands agent-browser the URL that was judged', async () => {
     const { args } = await run({ command: 'open', args: ['localhost:3000'] })
     expect(args.slice(0, 2)).toEqual(['open', 'https://localhost:3000/'])
