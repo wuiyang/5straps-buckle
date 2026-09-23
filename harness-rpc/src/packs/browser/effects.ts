@@ -114,10 +114,27 @@ function navigationEffects(command: string, args: string[]): ToolEffect[] {
  */
 export function navigationTargets(command: string, args: string[]): Map<number, string> {
   const positionals = positionalIndexes(args)
+  if (NAVIGATION_COMMANDS.has(command) && positionals.length !== 1) {
+    throw new ToolInputError(`${command} takes exactly one page to load, got ${positionals.length}`)
+  }
   const pages = NAVIGATION_COMMANDS.has(command) ? positionals
     : command === 'tab' && positionals[0] !== undefined && args[positionals[0]] === 'new' ? positionals.slice(1)
       : []
+  if (pages.length > 1) throw new ToolInputError(`tab new takes at most one page to load, got ${pages.length}`)
   return new Map(pages.map(index => [index, normalised(args[index]!)]))
+}
+
+/**
+ * The order the arguments are handed to agent-browser in: for a navigation command the
+ * positionals first, so the page that was judged is the first one agent-browser reads. A `true`
+ * or `false` Buckle took as a boolean flag's value then cannot become the page instead, even if
+ * agent-browser read that flag as bare.
+ */
+export function argumentOrder(command: string, args: string[]): number[] {
+  const all = args.map((_, index) => index)
+  if (navigationTargets(command, args).size === 0) return all
+  const positionals = new Set(positionalIndexes(args))
+  return [...all.filter(index => positionals.has(index)), ...all.filter(index => !positionals.has(index))]
 }
 
 /** Arguments that are not a flag and not the separate value of the flag before them. */
@@ -131,10 +148,14 @@ function positionalIndexes(args: string[]): number[] {
   return indexes
 }
 
-/** `--timeout 5000` and `--headed false` own the next argument; `--timeout=5000` does not. */
+/**
+ * `--timeout 5000` and `--headed false` own the next argument; `--timeout=5000` does not. The
+ * flag is recognised by its name: `true` or `false` after anything but a boolean flag is a
+ * positional, and a positional of a navigation command is judged as a page.
+ */
 function takesNextArgument(name: string, argument: string, next: string | undefined): boolean {
   if (argument.includes('=') || next === undefined) return false
-  return VALUE_FLAGS.has(name) || next === 'true' || next === 'false'
+  return VALUE_FLAGS.has(name) || (BOOLEAN_FLAGS.has(name) && (next === 'true' || next === 'false'))
 }
 
 function normalised(argument: string): string {

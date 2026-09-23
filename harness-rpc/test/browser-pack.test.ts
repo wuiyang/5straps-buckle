@@ -349,6 +349,26 @@ describe('a page named without a scheme', () => {
     expect(args.slice(0, 6)).toEqual(['open', 'https://example.com/', '--engine', 'chrome', '--allowed-domains', 'example.com'])
   })
 
+  it('judges a host named true or false whenever it is the page, since boolean flags are known by name', () => {
+    expect(browserEffects('open', ['true'])).toEqual([{ kind: 'network', url: 'https://true/' }])
+    expect(browserEffects('open', ['--timeout', '5000', 'false'])).toEqual([{ kind: 'network', url: 'https://false/' }])
+    expect(browserEffects('open', ['--engine', 'true', 'example.com'])).toEqual([{ kind: 'network', url: 'https://example.com/' }])
+  })
+
+  it('refuses open unless exactly one page is judged, so a word taken as a flag value cannot be the page', () => {
+    expect(() => browserEffects('open', ['--headed', 'false'])).toThrow('open takes exactly one page to load, got 0')
+    expect(() => browserEffects('open', ['example.com', 'true'])).toThrow('open takes exactly one page to load, got 2')
+    expect(() => browserEffects('tab', ['new', 'a.example', 'b.example'])).toThrow('tab new takes at most one page to load, got 2')
+    expect(browserEffects('tab', ['new'])).toEqual([])
+  })
+
+  it('hands agent-browser the judged page first, ahead of a boolean flag and its value', async () => {
+    const { args } = await run({ command: 'open', args: ['--headed', 'false', 'example.com'] })
+    expect(args.slice(0, 5)).toEqual(['open', 'https://example.com/', '--headed', 'false', '--json'])
+    const tab = await run({ command: 'tab', args: ['--new-tab', 'true', 'new', 'example.com'] })
+    expect(tab.args.slice(0, 5)).toEqual(['tab', 'new', 'https://example.com/', '--new-tab', 'true'])
+  })
+
   it('refuses a target that is not a URL or a host, with the reason', () => {
     expect(() => browserEffects('open', ['/etc/passwd'])).toThrow(ToolInputError)
     expect(() => browserEffects('open', ['not a url'])).toThrow(/Not an http or https URL or a host/)
