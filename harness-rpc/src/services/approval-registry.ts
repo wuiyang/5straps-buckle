@@ -23,6 +23,7 @@ const fileSchema = z.object({
   resolved: z.array(z.object({ workspace: z.string().optional(), decision: ApprovalDecisionSchema, expiresAt: z.string() })).default([]),
 })
 type State = z.infer<typeof fileSchema>
+type OnceEntry = z.infer<typeof onceSchema>
 
 export interface ApprovalRegistry {
   issue(input: { tool: string; sessionId: string; asks: Ask[] }): ApprovalRequest[]
@@ -89,12 +90,15 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     evaluate({ tokens, sessionId, tool, check }) {
       return store.update(state => {
         prune(state)
-        const usable = state.once.filter(entry => entry.workspace === workspace && tokens.includes(entry.token) && entry.sessionId === sessionId && entry.tool === tool)
-        const outcome = check(usable.map(entry => entry.subject))
+        const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool)
+        const usable = bound.filter(entry => tokens.includes(entry.token))
+        const used = [...usable, ...unclaimedReliedOn({ usable, unclaimed: bound.filter(entry => !tokens.includes(entry.token)), check })]
+        // The last check is the one the caller acts on, so it sees only the approvals this call uses.
+        const outcome = check(used.map(entry => entry.subject))
         // Keep partial approvals until every gate clears; consume under the same process lock.
         if (outcome.kind === 'allow') {
-          const used = new Set(usable.map(entry => entry.token))
-          state.once = state.once.filter(entry => !used.has(entry.token))
+          const consumed = new Set(used.map(entry => entry.token))
+          state.once = state.once.filter(entry => !consumed.has(entry.token))
         }
         return outcome
       })
@@ -102,6 +106,25 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 
     pending: () => store.read().pending.filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now()).map(entry => entry.request),
   }
+}
+
+/**
+ * A `once` answered after the grace period has no call left to carry its token: over MCP the
+ * retry arrives without one. When the call would otherwise ask, an unconsumed `once` for this
+ * session and tool counts, but only the ones a rule actually relied on for this call's effects,
+ * so a `once` still covers one call with that subject and nothing wider.
+ */
+function unclaimedReliedOn(input: {
+  usable: OnceEntry[]
+  unclaimed: OnceEntry[]
+  check: (subjects: GrantSubject[]) => PermissionOutcome
+}): OnceEntry[] {
+  if (input.unclaimed.length === 0) return []
+  if (input.check(input.usable.map(entry => entry.subject)).kind !== 'ask') return []
+  const wider = input.check([...input.usable, ...input.unclaimed].map(entry => entry.subject))
+  if (wider.kind !== 'allow') return []
+  const relied = new Set(wider.allowedBy)
+  return input.unclaimed.filter(entry => relied.has(`${entry.subject.rule}:${entry.subject.subject}`))
 }
 
 function prune(state: State): void {

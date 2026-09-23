@@ -1,9 +1,13 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry } from '../src/services/approval-registry.js'
 import type { PermissionOutcome } from '../src/domain/permission/engine.js'
+import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../src/config.js'
+import { createRuntime } from '../src/runtime.js'
 
 const roots: string[] = []
 afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -72,4 +76,54 @@ describe('once approval consumption', () => {
   expect(first.resolve(decision, 'admin').ok).toBe(true)
   second.evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toEqual([]); return { kind: 'allow', allowedBy: [] } } })
   create('/first').evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toHaveLength(1); return { kind: 'allow', allowedBy: [] } } })
+})
+
+describe('a once approval answered after the grace period', () => {
+  async function setup() {
+    const outside = mkdtempSync(join(tmpdir(), 'buckle-once-outside-'))
+    const other = mkdtempSync(join(tmpdir(), 'buckle-once-other-'))
+    writeFileSync(join(outside, 'notes.txt'), 'late')
+    writeFileSync(join(other, 'notes.txt'), 'other')
+    const runtime = await createRuntime({
+      config: loadConfig({
+        BUCKLE_AUTH_TOKEN: 'agent',
+        BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-once-state-')),
+        BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-once-ws-')),
+        BUCKLE_ALLOW_SHELL: 'false',
+      }),
+      channel: () => createDeferredApprovalChannel(),
+    })
+    const read = (path: string, sessionId = 'mcp', tool = 'fs_read') => runtime.invoke({
+      request: { requestId: 'late', tool, args: { path }, approvalTokens: [] }, sessionId,
+    })
+    return { runtime, read, file: join(outside, 'notes.txt'), otherFile: join(other, 'notes.txt') }
+  }
+
+  async function answerOnceLate(context: Awaited<ReturnType<typeof setup>>) {
+    const first = await context.read(context.file)
+    if (first.outcome !== 'approval_required') throw new Error(`expected an approval, got ${first.outcome}`)
+    expect(context.runtime.approvals.resolve({ token: first.approvals[0]!.token, approved: true, scope: 'once' }, 'agent').ok).toBe(true)
+  }
+
+  it('runs the retried call that carries no token, and is consumed by it', async () => {
+    const context = await setup()
+    await answerOnceLate(context)
+    expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
+    expect((await context.read(context.file)).outcome).toBe('approval_required')
+  })
+
+  it('does not cover a call with a different effect, and survives it', async () => {
+    const context = await setup()
+    await answerOnceLate(context)
+    expect((await context.read(context.otherFile)).outcome).toBe('approval_required')
+    expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
+  })
+
+  it('does not cover another session or another tool', async () => {
+    const context = await setup()
+    await answerOnceLate(context)
+    expect((await context.read(context.file, 'someone-else')).outcome).toBe('approval_required')
+    expect((await context.read(dirname(context.file), 'mcp', 'fs_list')).outcome).toBe('approval_required')
+    expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
+  })
 })

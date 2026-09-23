@@ -218,8 +218,9 @@ async function clearPermissions(input: {
   const evaluate = (tokens: string[]) => options.approvals.evaluate({
     tokens, sessionId, tool: request.tool,
     check: subjects => {
+      // The registry's last check carries the approvals the call uses, a superset of earlier ones.
       consumed = subjects
-      approvedBy.push(...subjects.map(subject => `${subject.rule}:${subject.subject}`))
+      approvedBy.splice(0, approvedBy.length, ...subjects.map(subject => `${subject.rule}:${subject.subject}`))
       return options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: subjects }) })
     },
   })
