@@ -197,6 +197,30 @@ describe('flags the browser pack refuses outright', () => {
   })
 })
 
+describe('a proxy chosen by the agent', () => {
+  it.each([
+    ['the equals form', ['example.com', '--proxy=http://10.0.0.5:3128']],
+    ['the separate-argument form', ['example.com', '--proxy', '10.0.0.5:3128']],
+    ['the flag written before the page', ['--proxy', '10.0.0.5:3128', 'example.com']],
+    ['the flag after other arguments', ['example.com', '--headed', '--proxy', 'http://10.0.0.5:3128']],
+    ['the bypass list in the equals form', ['example.com', '--proxy-bypass=*.internal']],
+    ['the bypass list after other arguments', ['example.com', '--timeout', '5000', '--proxy-bypass', 'localhost']],
+  ])('is refused before anything is judged, in %s', (_, args) => {
+    expect(() => browserEffects('open', args)).toThrow(ToolInputError)
+    expect(() => browserEffects('open', args)).toThrow(/Buckle owns the network policy/)
+  })
+
+  it('is refused on any command, not only open', () => {
+    expect(() => browserEffects('snapshot', ['--proxy', '10.0.0.5:3128'])).toThrow(/--proxy is not allowed/)
+    expect(() => browserEffects('tab', ['new', 'example.com', '--PROXY=http://10.0.0.5:3128'])).toThrow(/--proxy is not allowed/)
+  })
+
+  it('never reaches agent-browser', async () => {
+    await expect(run({ command: 'open', args: ['example.com', '--proxy', '10.0.0.5:3128'] }))
+      .rejects.toThrow('--proxy is not allowed: Buckle owns the network policy')
+  })
+})
+
 describe('workspace browser isolation', () => {
   it('uses explicit configuration without a persistent profile', async () => {
     const { args } = await run({ command: 'open', args: ['https://example.com'] })

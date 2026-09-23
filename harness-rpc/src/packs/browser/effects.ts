@@ -6,7 +6,7 @@ import { ToolInputError } from '../../domain/tool.js'
 const NAVIGATION_COMMANDS = new Set(['open', 'goto', 'navigate'])
 
 /** Flags whose value is a separate argument, so it is not mistaken for the page to open. */
-const VALUE_FLAGS = new Set(['--headers', '--user-agent', '--proxy', '--proxy-bypass', '--device', '--color-scheme', '--timeout'])
+const VALUE_FLAGS = new Set(['--headers', '--user-agent', '--device', '--color-scheme', '--timeout'])
 
 /** Commands whose first positional names a file the browser writes. */
 const WRITES_FIRST_POSITIONAL = new Set(['screenshot', 'pdf'])
@@ -23,7 +23,8 @@ const FLAG_PATTERN = /^-{1,2}[a-z]/i
  * outside Buckle's view; `--allow-file-access` reads local files around the path rules;
  * `--provider` moves the browser off this node; `--ca-cert` trusts a certificate; and
  * `--screenshot-dir`, `--download-path`, `--params` and `--payload` read or write a path the
- * rules never judge. Name an output path as a positional instead, where they do.
+ * rules never judge. Name an output path as a positional instead, where they do. `--proxy` and
+ * `--proxy-bypass` are in `REFUSAL_REASONS`.
  */
 const KNOWN_FLAGS = new Set([
   '--action-policy', '--all', '--allowed-domains', '--allowed-origins', '--annotate', '--abort',
@@ -34,13 +35,25 @@ const KNOWN_FLAGS = new Set([
   '--item', '--json', '--label', '--llms', '--load', '--max-output', '--method', '--model',
   '--name', '--namespace', '--new-tab', '--no-auto-dialog', '--no-ca-cert', '--no-webmcp',
   '--offline', '--older-than', '--only-dynamic', '--outline', '--password', '--password-selector',
-  '--password-stdin', '--port', '--proxy', '--proxy-bypass', '--quick', '--quiet', '--raw',
+  '--password-stdin', '--port', '--quick', '--quiet', '--raw',
   '--require-md', '--resource-type', '--restore', '--restore-save', '--screenshot-format',
   '--screenshot-quality', '--selector', '--session', '--state', '--status', '--submit-selector',
   '--tags', '--text', '--timeout', '--tools', '--type', '--url', '--user-agent', '--username',
   '--username-selector', '--verbose', '--webgpu',
   '-i', '-q', '-v',
 ])
+
+/**
+ * Flags refused with a reason of their own. Buckle owns the network policy: a proxy the agent
+ * chose would carry every request to a host the rules never judge, while the page it names is
+ * judged and approved.
+ */
+const REFUSAL_REASONS = new Map([
+  ['--proxy', 'Buckle owns the network policy, so the agent cannot route the browser through a proxy the rules never judge'],
+  ['--proxy-bypass', 'Buckle owns the network policy, so the agent cannot choose which hosts skip a proxy'],
+])
+
+const GENERIC_REFUSAL = 'Buckle passes only the agent-browser flags it can judge, and never one that changes the profile, the binary, or where output lands'
 
 /**
  * What a browser command touches beyond running the binary.
@@ -50,12 +63,24 @@ const KNOWN_FLAGS = new Set([
  * by the path rules instead of being invisible because the call happened to go through a browser.
  */
 export function browserEffects(command: string, args: string[]): ToolEffect[] {
+  assertFlagsKnown(args)
   return [...navigationEffects(command, args), ...fileEffects(command, args)]
 }
 
 /** The first flag Buckle does not know, or null when every flag is one it does. */
 export function refusedFlag(args: string[]): string | null {
   return args.map(flagName).find(flag => flag !== null && !KNOWN_FLAGS.has(flag)) ?? null
+}
+
+/** The refusal for a flag `refusedFlag` named, with its own reason when it has one. */
+export function flagRefusal(flag: string): string {
+  return `${flag} is not allowed: ${REFUSAL_REASONS.get(flag) ?? GENERIC_REFUSAL}`
+}
+
+/** Refused before anything is judged, so the owner is never asked about a call that cannot run. */
+function assertFlagsKnown(args: string[]): void {
+  const refused = refusedFlag(args)
+  if (refused) throw new ToolInputError(flagRefusal(refused))
 }
 
 function flagName(argument: string): string | null {

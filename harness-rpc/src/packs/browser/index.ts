@@ -10,7 +10,7 @@ import type { PathView } from '../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
-import { browserEffects, navigationTargets, refusedFlag } from './effects.js'
+import { browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
@@ -58,9 +58,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           const forbidden = ['--session', '--namespace', '--restore', '--restore-save', '--state', '--load', '--credential-provider', '--action-policy']
           if ((!FRESH_COMMANDS.has(input.command) || input.args.some(arg => forbidden.includes(arg.split('=')[0]!)))) throw new ToolInputError('Fresh browsers cannot attach, restore, or override session identity')
           const refused = refusedFlag(input.args)
-          if (refused) {
-            throw new ToolInputError(`${refused} is not allowed: Buckle passes only the agent-browser flags it can judge, and never one that changes the profile, the binary, or where output lands`)
-          }
+          if (refused) throw new ToolInputError(flagRefusal(refused))
 
           // Resolve file arguments against the authorized workspace, not the daemon state directory.
           const filePaths = new Set(browserEffects(input.command, input.args).flatMap(effect => effect.kind === 'read_path' || effect.kind === 'write_path' ? [effect.path] : []))
