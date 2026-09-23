@@ -5,7 +5,7 @@ import { createGitHubForgeClient } from '../src/adapters/forge/github.js'
 import { loadConfig } from '../src/config.js'
 
 const TOKEN = 'ghp-credential-test-value'
-const REPOSITORY = { owner: 'wuiyang', name: 'demo' }
+const REPOSITORY = { owner: '5straps', name: 'demo' }
 
 let server: Server
 let apiUrl: string
@@ -39,7 +39,7 @@ function startForge(): Promise<Server> {
     }
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify({
-      number: 9, html_url: 'https://github.com/wuiyang/demo/pull/9', state: 'open', title: 'a change',
+      number: 9, html_url: 'https://github.com/5straps/demo/pull/9', state: 'open', title: 'a change',
       head: { ref: 'work', sha: 'a'.repeat(40) }, base: { ref: 'main', sha: 'b'.repeat(40) },
     }))
   })

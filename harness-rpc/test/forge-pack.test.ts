@@ -34,7 +34,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 function startForgeServer(): Promise<Server> {
   const pull = (number: number, state = 'open') => ({
-    number, html_url: `https://github.com/wuiyang/demo/pull/${number}`, state, title: 'collapse separators',
+    number, html_url: `https://github.com/5straps/demo/pull/${number}`, state, title: 'collapse separators',
     head: { ref: 'forge-live-check', sha: 'a'.repeat(40) },
     base: { ref: 'main', sha: 'b'.repeat(40) },
   })
@@ -48,18 +48,18 @@ function startForgeServer(): Promise<Server> {
     }
     // A forge that echoes the credential back is exactly what the stripping has to survive.
     if (path.startsWith('/repos/leaky/')) return send(403, JSON.stringify({ message: `bad credentials: ${TOKEN}` }))
-    if (path === '/repos/wuiyang/demo/pulls' && request.method === 'POST') {
+    if (path === '/repos/5straps/demo/pulls' && request.method === 'POST') {
       let body = ''
       request.on('data', chunk => { body += String(chunk) })
       request.on('end', () => send(201, JSON.stringify({ ...pull(7), title: (JSON.parse(body) as { title: string }).title })))
       return undefined
     }
-    if (path === '/repos/wuiyang/demo/pulls/7') {
+    if (path === '/repos/5straps/demo/pulls/7') {
       if (request.headers.accept === 'application/vnd.github.v3.diff') return send(200, `${'d'.repeat(600_000)}\n`, 'text/plain')
       return send(200, JSON.stringify(pull(7)))
     }
-    if (path === '/repos/wuiyang/demo/pulls/7/files') return send(200, JSON.stringify([{ filename: 'src/slugify.js', status: 'modified', additions: 3, deletions: 1 }]))
-    if (path === '/repos/wuiyang/demo/issues/7/comments') return send(200, JSON.stringify([{ user: { login: 'wuiyang' }, created_at: '2026-09-20T00:00:00Z', body: 'looks right' }]))
+    if (path === '/repos/5straps/demo/pulls/7/files') return send(200, JSON.stringify([{ filename: 'src/slugify.js', status: 'modified', additions: 3, deletions: 1 }]))
+    if (path === '/repos/5straps/demo/issues/7/comments') return send(200, JSON.stringify([{ user: { login: '5straps' }, created_at: '2026-09-20T00:00:00Z', body: 'looks right' }]))
     return send(404, JSON.stringify({ message: 'no such route' }))
   })
   return new Promise(resolve => scripted.listen(0, '127.0.0.1', () => resolve(scripted)))
@@ -277,33 +277,33 @@ describe('git_push', () => {
     const { origin, repository } = bareOrigin()
     expect(effectsOf({ repository, tool: 'git_push', args: { branch: 'main' } }))
       .toEqual([{ kind: 'read_path', path: '.' }, { kind: 'write_path', path: origin }])
-    const remote = workRepository({ origin: 'https://github.com/wuiyang/demo.git' })
+    const remote = workRepository({ origin: 'https://github.com/5straps/demo.git' })
     expect(effectsOf({ repository: remote, tool: 'git_push', args: { branch: 'main' } }))
       .toEqual([{ kind: 'read_path', path: '.' }, { kind: 'network', url: 'https://github.com' }])
   })
 
   it('injects the credential through git\'s environment, scoped to the origin, and never as an argument', async () => {
-    const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     const calls: ProcessRequest[] = []
     const output = await call({
       repository, tool: 'git_push', args: { branch: 'forge-live-check', setUpstream: true },
-      runner: scriptedGit(calls, `${apiUrl}/wuiyang/demo.git`),
+      runner: scriptedGit(calls, `${apiUrl}/5straps/demo.git`),
     }) as JsonObject
     const push = calls.find(request => request.args[0] === 'push')
     const encoded = Buffer.from(`x-access-token:${TOKEN}`).toString('base64')
     expect(push?.args).toEqual(['push', '--receive-pack=git-receive-pack', '--set-upstream', 'origin', 'forge-live-check'])
-    expect(gitConfigOf(push?.environment)[`http.${apiUrl}/wuiyang/demo.git.extraheader`]).toBe(`Authorization: Basic ${encoded}`)
-    expect(gitConfigOf(push?.environment)[`http.${apiUrl}/wuiyang/demo.git.proxy`]).toBe('')
-    expect(gitConfigOf(push?.environment)[`http.${apiUrl}/wuiyang/demo.git.sslVerify`]).toBe('true')
+    expect(gitConfigOf(push?.environment)[`http.${apiUrl}/5straps/demo.git.extraheader`]).toBe(`Authorization: Basic ${encoded}`)
+    expect(gitConfigOf(push?.environment)[`http.${apiUrl}/5straps/demo.git.proxy`]).toBe('')
+    expect(gitConfigOf(push?.environment)[`http.${apiUrl}/5straps/demo.git.sslVerify`]).toBe('true')
     expect(gitConfigOf(push?.environment)['http.extraheader']).toBeUndefined()
     expect(JSON.stringify(calls.map(request => request.args))).not.toContain(TOKEN)
     for (const form of [TOKEN, encoded]) expect(JSON.stringify(output)).not.toContain(form)
   })
 
   it('runs every git call with the workspace hooks, proxies, configs and programs out of reach', async () => {
-    const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     const calls: ProcessRequest[] = []
-    await call({ repository, tool: 'git_push', args: { branch: 'forge-live-check' }, runner: scriptedGit(calls, `${apiUrl}/wuiyang/demo.git`) })
+    await call({ repository, tool: 'git_push', args: { branch: 'forge-live-check' }, runner: scriptedGit(calls, `${apiUrl}/5straps/demo.git`) })
     for (const request of calls) {
       expect(request.environment.GIT_CONFIG_NOSYSTEM).toBe('1')
       expect(request.environment.GIT_CONFIG_GLOBAL).toBe('/dev/null')
@@ -339,9 +339,9 @@ describe('git_push', () => {
     const origin = await recordingOrigin()
     const proxy = await recordingProxy()
     try {
-      const repository = workRepository({ origin: `${origin.url}/wuiyang/demo.git` })
+      const repository = workRepository({ origin: `${origin.url}/5straps/demo.git` })
       git(repository, 'config', 'http.proxy', proxy.url)
-      git(repository, 'config', `http.${origin.url}/wuiyang/demo.git.proxy`, proxy.url)
+      git(repository, 'config', `http.${origin.url}/5straps/demo.git.proxy`, proxy.url)
       git(repository, 'config', 'http.sslVerify', 'false')
       writeFileSync(join(repository, 'kept.txt'), 'kept\n')
       await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
@@ -349,7 +349,7 @@ describe('git_push', () => {
       // The recording origin is not a git server, so the push fails there — at the right host.
       await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } })).rejects.toThrow()
       expect(proxy.connections()).toBe(0)
-      expect(origin.paths).toContain('/wuiyang/demo.git/info/refs?service=git-receive-pack')
+      expect(origin.paths).toContain('/5straps/demo.git/info/refs?service=git-receive-pack')
     } finally { origin.close(); proxy.close() }
   }, 30_000)
 
@@ -373,17 +373,17 @@ describe('git_push', () => {
   })
 
   it('refuses a remote that is not the forge host and that the owner never approved', async () => {
-    const repository = workRepository({ origin: 'https://gitlab.example.com/wuiyang/demo.git' })
-    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: scriptedGit([], 'https://gitlab.example.com/wuiyang/demo.git') }))
+    const repository = workRepository({ origin: 'https://gitlab.example.com/5straps/demo.git' })
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: scriptedGit([], 'https://gitlab.example.com/5straps/demo.git') }))
       .rejects.toThrow(/the configured forge host is/)
   })
 
   it('allows an approved host, and still withholds the credential from it', async () => {
-    const repository = workRepository({ origin: 'https://gitlab.example.com/wuiyang/demo.git' })
+    const repository = workRepository({ origin: 'https://gitlab.example.com/5straps/demo.git' })
     const calls: ProcessRequest[] = []
     await call({
       repository, tool: 'git_push', args: { branch: 'main' }, approved: ['gitlab.example.com'],
-      runner: scriptedGit(calls, 'https://gitlab.example.com/wuiyang/demo.git'),
+      runner: scriptedGit(calls, 'https://gitlab.example.com/5straps/demo.git'),
     })
     const push = calls.find(request => request.args[0] === 'push')
     expect(Object.keys(gitConfigOf(push?.environment)).filter(key => key.endsWith('.extraheader'))).toEqual([])
@@ -391,8 +391,8 @@ describe('git_push', () => {
   })
 
   it('refuses a push whose real remote is not the one the rules judged', async () => {
-    const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
-    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: scriptedGit([], 'https://elsewhere.example.com/wuiyang/demo.git') }))
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: scriptedGit([], 'https://elsewhere.example.com/5straps/demo.git') }))
       .rejects.toThrow(/not the .* the permission rules judged/)
   })
 
@@ -430,14 +430,14 @@ describe('git_push', () => {
   })
 
   it('refuses a push an insteadOf rule rewrote to another repository on the same host', async () => {
-    const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
-    git(repository, 'config', `url.${apiUrl}/attacker/demo.git.pushInsteadOf`, `${apiUrl}/wuiyang/demo.git`)
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
+    git(repository, 'config', `url.${apiUrl}/attacker/demo.git.pushInsteadOf`, `${apiUrl}/5straps/demo.git`)
     await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } }))
       .rejects.toThrow(/insteadOf or pushInsteadOf rule rewrites origin/)
   })
 
   it('refuses a push URL naming another repository on the forge host', async () => {
-    const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     git(repository, 'config', 'remote.origin.pushurl', `${apiUrl}/attacker/demo.git`)
     await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } }))
       .rejects.toThrow(/not the .* the permission rules judged/)
@@ -477,18 +477,18 @@ function gitConfigOf(environment: NodeJS.ProcessEnv | undefined): Record<string,
 
 describe('pr_open', () => {
   it('opens a pull request under a bearer token, deriving the repository from origin', async () => {
-    const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     writeFileSync(join(repository, 'kept.txt'), 'kept\n')
     await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
     git(repository, 'update-ref', 'refs/remotes/origin/forge-live-check', 'HEAD')
     seenAuthorization.length = 0
     const output = await call({ repository, tool: 'pr_open', args: { head: 'forge-live-check', base: 'main', title: 'collapse separators', body: 'see the ticket' } }) as JsonObject
-    expect(output).toMatchObject({ number: 7, state: 'open', url: 'https://github.com/wuiyang/demo/pull/7' })
+    expect(output).toMatchObject({ number: 7, state: 'open', url: 'https://github.com/5straps/demo/pull/7' })
     expect(seenAuthorization).toEqual([`Bearer ${TOKEN}`])
   })
 
   it('refuses a head branch that was never pushed', async () => {
-    const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     writeFileSync(join(repository, 'kept.txt'), 'kept\n')
     await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
     await expect(call({ repository, tool: 'pr_open', args: { head: 'forge-live-check', base: 'main', title: 't', body: '' } }))
@@ -496,7 +496,7 @@ describe('pr_open', () => {
   })
 
   it('declares the forge API as its network effect, so the egress rule judges it', () => {
-    const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     expect(effectsOf({ repository, tool: 'pr_open', args: { head: 'a', base: 'main', title: 't', body: '' } }))
       .toEqual([{ kind: 'read_path', path: '.' }, { kind: 'network', url: apiUrl }])
   })
@@ -510,7 +510,7 @@ describe('pr_open', () => {
 
 describe('pr_read', () => {
   it('returns the pull request, and only the extras that were asked for', async () => {
-    const repository = workRepository({ origin: `${apiUrl}/wuiyang/demo.git` })
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     const plain = await call({ repository, tool: 'pr_read', args: { number: 7 } }) as JsonObject
     expect(plain).toMatchObject({ number: 7, state: 'open', head: { ref: 'forge-live-check' }, base: { ref: 'main' } })
     expect(plain.diff).toBeUndefined()
@@ -518,7 +518,7 @@ describe('pr_read', () => {
 
     const full = await call({ repository, tool: 'pr_read', args: { number: 7, include: ['diff', 'files', 'comments'] } }) as JsonObject
     expect(full.files).toEqual([{ path: 'src/slugify.js', status: 'modified', additions: 3, deletions: 1 }])
-    expect(full.comments).toEqual([{ author: 'wuiyang', at: '2026-09-20T00:00:00Z', body: 'looks right' }])
+    expect(full.comments).toEqual([{ author: '5straps', at: '2026-09-20T00:00:00Z', body: 'looks right' }])
     expect(full.diffTruncated).toBe(true)
     expect(String(full.diff)).toHaveLength(524_288)
   })
@@ -563,10 +563,10 @@ describe('the credential', () => {
 
   it('stays out of the refusals the push checks write, even when the remote itself carries it', async () => {
     const credentialled = apiUrl.replace('http://', `http://x-access-token:${TOKEN}@`)
-    const mismatched = workRepository({ origin: `${credentialled}/wuiyang/demo.git` })
+    const mismatched = workRepository({ origin: `${credentialled}/5straps/demo.git` })
     git(mismatched, 'config', 'remote.origin.pushurl', `${apiUrl}/attacker/demo.git`)
-    const rewritten = workRepository({ origin: `${credentialled}/wuiyang/demo.git` })
-    git(rewritten, 'config', `url.${apiUrl}/attacker/demo.git.pushInsteadOf`, `${credentialled}/wuiyang/demo.git`)
+    const rewritten = workRepository({ origin: `${credentialled}/5straps/demo.git` })
+    git(rewritten, 'config', `url.${apiUrl}/attacker/demo.git.pushInsteadOf`, `${credentialled}/5straps/demo.git`)
 
     for (const repository of [mismatched, rewritten]) {
       const thrown = await call({ repository, tool: 'git_push', args: { branch: 'main' } }).catch((error: Error) => error)
@@ -583,7 +583,7 @@ describe('the credential', () => {
     const workspace = join(root, 'workspace')
     mkdirSync(workspace)
     execFileSync('git', ['init', '-b', 'main', workspace])
-    git(workspace, 'remote', 'add', 'origin', 'https://github.com/wuiyang/demo.git')
+    git(workspace, 'remote', 'add', 'origin', 'https://github.com/5straps/demo.git')
 
     const config = loadConfig({
       BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',

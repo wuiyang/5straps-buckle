@@ -29,24 +29,24 @@ describe('the host a forge API belongs to', () => {
 
 describe('classifying an origin remote', () => {
   it('reads an https remote as a network reach, carrying the host the rules judge', () => {
-    const remote = classifyRemote('https://github.com/wuiyang/demo.git')
+    const remote = classifyRemote('https://github.com/5straps/demo.git')
     expect(remote.kind).toBe('https')
     if (remote.kind !== 'https') return
     expect(remote.host).toBe('github.com')
   })
 
   it('drops userinfo from the display, so a credential in the config never reaches a result', () => {
-    const remote = classifyRemote('https://someone:secret-token@github.com/wuiyang/demo.git')
-    expect(remote.display).toBe('https://github.com/wuiyang/demo.git')
+    const remote = classifyRemote('https://someone:secret-token@github.com/5straps/demo.git')
+    expect(remote.display).toBe('https://github.com/5straps/demo.git')
     expect(remote.display).not.toContain('secret-token')
   })
 
   it('refuses an scp-style remote, because ssh would push under a key Buckle never judged', () => {
-    expect(() => classifyRemote('git@github.com:wuiyang/demo.git')).toThrow(/ssh/)
+    expect(() => classifyRemote('git@github.com:5straps/demo.git')).toThrow(/ssh/)
   })
 
   it('refuses an ssh scheme for the same reason', () => {
-    expect(() => classifyRemote('ssh://git@github.com/wuiyang/demo.git')).toThrow(/ssh/)
+    expect(() => classifyRemote('ssh://git@github.com/5straps/demo.git')).toThrow(/ssh/)
   })
 
   it('reads an absolute path as a repository on this filesystem', () => {
@@ -64,27 +64,27 @@ describe('classifying an origin remote', () => {
 
 describe('the subject two remotes are compared on', () => {
   it('reads the same repository through the default port and the .git suffix', () => {
-    expect(remoteSubject(classifyRemote('https://github.com/wuiyang/demo.git')))
-      .toBe(remoteSubject(classifyRemote('https://github.com:443/wuiyang/demo/')))
+    expect(remoteSubject(classifyRemote('https://github.com/5straps/demo.git')))
+      .toBe(remoteSubject(classifyRemote('https://github.com:443/5straps/demo/')))
   })
 
   it('separates another repository on the same host, which host and port alone would miss', () => {
-    expect(remoteSubject(classifyRemote('https://github.com/wuiyang/demo.git')))
+    expect(remoteSubject(classifyRemote('https://github.com/5straps/demo.git')))
       .not.toBe(remoteSubject(classifyRemote('https://github.com/attacker/demo.git')))
   })
 
   it('separates another scheme and another port on the same host', () => {
-    expect(remoteSubject(classifyRemote('https://github.com/wuiyang/demo')))
-      .not.toBe(remoteSubject(classifyRemote('http://github.com/wuiyang/demo')))
-    expect(remoteSubject(classifyRemote('https://github.com/wuiyang/demo')))
-      .not.toBe(remoteSubject(classifyRemote('https://github.com:8443/wuiyang/demo')))
+    expect(remoteSubject(classifyRemote('https://github.com/5straps/demo')))
+      .not.toBe(remoteSubject(classifyRemote('http://github.com/5straps/demo')))
+    expect(remoteSubject(classifyRemote('https://github.com/5straps/demo')))
+      .not.toBe(remoteSubject(classifyRemote('https://github.com:8443/5straps/demo')))
   })
 })
 
 describe('the repository an https remote names', () => {
   it('reads owner and name, with or without the .git suffix', () => {
-    expect(repositoryOf(classifyRemote('https://github.com/wuiyang/demo.git'))).toEqual({ owner: 'wuiyang', name: 'demo' })
-    expect(repositoryOf(classifyRemote('https://github.com/wuiyang/demo'))).toEqual({ owner: 'wuiyang', name: 'demo' })
+    expect(repositoryOf(classifyRemote('https://github.com/5straps/demo.git'))).toEqual({ owner: '5straps', name: 'demo' })
+    expect(repositoryOf(classifyRemote('https://github.com/5straps/demo'))).toEqual({ owner: '5straps', name: 'demo' })
   })
 
   it('refuses a local remote, which names no forge', () => {
@@ -94,18 +94,18 @@ describe('the repository an https remote names', () => {
 
 describe('reading the origin URL without running git', () => {
   it('finds it in the repository config', () => {
-    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
-    expect(readOriginUrl(repository)).toBe('https://github.com/wuiyang/demo.git')
+    const repository = repositoryWithOrigin('https://github.com/5straps/demo.git')
+    expect(readOriginUrl(repository)).toBe('https://github.com/5straps/demo.git')
   })
 
   it('follows a linked worktree back to the repository holding the remotes', () => {
-    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    const repository = repositoryWithOrigin('https://github.com/5straps/demo.git')
     writeFileSync(join(repository, 'README.md'), '# demo\n')
     execFileSync('git', ['-C', repository, 'add', 'README.md'])
     execFileSync('git', ['-C', repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-m', 'first'])
     const worktree = join(repository, '..', 'linked')
     execFileSync('git', ['-C', repository, 'worktree', 'add', worktree, '-b', 'side'])
-    expect(readOriginUrl(worktree)).toBe('https://github.com/wuiyang/demo.git')
+    expect(readOriginUrl(worktree)).toBe('https://github.com/5straps/demo.git')
   })
 
   it('refuses a directory that is not a repository', () => {
@@ -123,7 +123,7 @@ describe('reading the origin URL without running git', () => {
   })
 
   it('refuses a config that includes another file rather than following it', () => {
-    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    const repository = repositoryWithOrigin('https://github.com/5straps/demo.git')
     const included = join(repository, '..', 'included-config')
     writeFileSync(included, '[remote "origin"]\n\turl = https://github.com/attacker/demo.git\n')
     appendFileSync(join(repository, '.git', 'config'), `[include]\n\tpath = ${included}\n`)
@@ -131,19 +131,19 @@ describe('reading the origin URL without running git', () => {
   })
 
   it('refuses a conditional include the same way', () => {
-    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    const repository = repositoryWithOrigin('https://github.com/5straps/demo.git')
     appendFileSync(join(repository, '.git', 'config'), '[includeIf "gitdir:/"]\n\tpath = /tmp/anything\n')
     expect(() => readOriginUrl(repository)).toThrow(/includes another file/)
   })
 
   it('refuses a config larger than it will read, rather than pulling all of it into memory', () => {
-    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    const repository = repositoryWithOrigin('https://github.com/5straps/demo.git')
     appendFileSync(join(repository, '.git', 'config'), `# ${'padding '.repeat(40_000)}\n`)
     expect(() => readOriginUrl(repository)).toThrow(/larger than the \d+ bytes/)
   })
 
   it('refuses a .git config that is not a regular file', () => {
-    const repository = repositoryWithOrigin('https://github.com/wuiyang/demo.git')
+    const repository = repositoryWithOrigin('https://github.com/5straps/demo.git')
     rmSync(join(repository, '.git', 'config'))
     mkdirSync(join(repository, '.git', 'config'))
     expect(() => readOriginUrl(repository)).toThrow(/not a git repository this pack can read/)
