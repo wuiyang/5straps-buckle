@@ -1,7 +1,15 @@
 import type { ToolEffect } from '../../domain/effect.js'
+import { normaliseUrl, UrlNormaliseError } from '../../domain/url-normalise.js'
+import { ToolInputError } from '../../domain/tool.js'
 
 /** Two or more characters before the colon, so a Windows drive letter like `C:` is not a scheme. */
 const SCHEME_PATTERN = /^[a-z][a-z0-9+.-]+:/i
+
+/** agent-browser's names for loading a page. */
+const NAVIGATION_COMMANDS = new Set(['open', 'goto', 'navigate'])
+
+/** Flags whose value is a separate argument, so it is not mistaken for the page to open. */
+const VALUE_FLAGS = new Set(['--headers', '--user-agent', '--proxy', '--proxy-bypass', '--device', '--color-scheme', '--timeout'])
 
 /** Commands whose first positional names a file the browser writes. */
 const WRITES_FIRST_POSITIONAL = new Set(['screenshot', 'pdf'])
@@ -45,7 +53,7 @@ const KNOWN_FLAGS = new Set([
  * by the path rules instead of being invisible because the call happened to go through a browser.
  */
 export function browserEffects(command: string, args: string[]): ToolEffect[] {
-  return [...navigationEffects(args), ...fileEffects(command, args)]
+  return [...navigationEffects(command, args), ...fileEffects(command, args)]
 }
 
 /** The first flag Buckle does not know, or null when every flag is one it does. */
@@ -59,10 +67,50 @@ function flagName(argument: string): string | null {
   return name
 }
 
-function navigationEffects(args: string[]): ToolEffect[] {
-  return args
-    .filter(argument => SCHEME_PATTERN.test(argument))
-    .map(url => ({ kind: 'network', url }) as const)
+/**
+ * The page a command loads, normalised so `open example.com` is judged exactly like
+ * `open https://example.com`. Any other argument written with a scheme is declared too, so a URL
+ * handed to the browser some other way is still judged rather than invisible.
+ */
+function navigationEffects(command: string, args: string[]): ToolEffect[] {
+  const targets = navigationTargets(command, args)
+  return args.flatMap((argument, index) => {
+    const target = targets.get(index)
+    if (target) return [{ kind: 'network', url: target }] as const
+    return SCHEME_PATTERN.test(argument) ? [{ kind: 'network', url: normalised(argument) }] as const : []
+  })
+}
+
+/**
+ * Argument index to the normalised URL the browser will load. Every positional of a navigation
+ * command is taken as a page, so a flag value misread as the URL cannot leave the real one
+ * unjudged. The pack passes these on in place of what was written, so what the rules judged is
+ * what agent-browser opens.
+ */
+export function navigationTargets(command: string, args: string[]): Map<number, string> {
+  const positionals = args.flatMap((argument, index) => isPositional(args, index) ? [index] : [])
+  const pages = NAVIGATION_COMMANDS.has(command) ? positionals
+    : command === 'tab' && positionals[0] !== undefined && args[positionals[0]] === 'new' ? positionals.slice(1)
+      : []
+  return new Map(pages.map(index => [index, normalised(args[index]!)]))
+}
+
+/** Not a flag, and not the value of the flag before it (`--headers {...}`, `--headed false`). */
+function isPositional(args: string[], index: number): boolean {
+  const argument = args[index]!
+  if (FLAG_PATTERN.test(argument)) return false
+  const previous = args[index - 1]?.toLowerCase()
+  if (!previous || !FLAG_PATTERN.test(previous) || previous.includes('=')) return true
+  return !VALUE_FLAGS.has(previous) && argument !== 'true' && argument !== 'false'
+}
+
+function normalised(argument: string): string {
+  try {
+    return normaliseUrl(argument).href
+  } catch (error) {
+    if (error instanceof UrlNormaliseError) throw new ToolInputError(error.message)
+    throw error
+  }
 }
 
 /**

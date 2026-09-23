@@ -10,7 +10,7 @@ import type { PathView } from '../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
-import { browserEffects, refusedFlag } from './effects.js'
+import { browserEffects, navigationTargets, refusedFlag } from './effects.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
@@ -65,7 +65,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           // Resolve file arguments against the authorized workspace, not the daemon state directory.
           const filePaths = new Set(browserEffects(input.command, input.args).flatMap(effect => effect.kind === 'read_path' || effect.kind === 'write_path' ? [effect.path] : []))
           if (['screenshot', 'pdf', 'download', 'upload'].includes(input.command) && !filePaths.size) throw new ToolInputError('Browser file operations require an explicit path')
-          const args = [input.command, ...input.args.map(argument => filePaths.has(argument) ? options.paths.resolve(argument) : realPath(argument, options.paths)), '--json']
+          const targets = navigationTargets(input.command, input.args)
+          const args = [input.command, ...input.args.map((argument, index) => targets.get(index) ?? (filePaths.has(argument) ? options.paths.resolve(argument) : realPath(argument, options.paths))), '--json']
           const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
           const session = sessions.update(state => state.sessions[key] ??= `buckle-${randomUUID()}`)
           args.push('--config', configFile, '--session', session, '--idle-timeout', '300000')

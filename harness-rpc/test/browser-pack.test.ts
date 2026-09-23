@@ -7,6 +7,11 @@ import { createPathView } from '../src/domain/path-view.js'
 import { createBrowserPack, type BrowserPackOptions } from '../src/packs/browser/index.js'
 import { workspaceStateKey } from '../src/domain/workspace-key.js'
 import type { ProcessRequest, ProcessResult } from '../src/ports/process-runner.js'
+import type { ResolvedEffect } from '../src/domain/effect.js'
+import { createPermissionEngine } from '../src/domain/permission/engine.js'
+import { createNetworkEgressRule } from '../src/domain/permission/rules/network-egress-rule.js'
+import { ToolInputError } from '../src/domain/tool.js'
+import { compileUrlPatterns } from '../src/domain/url-pattern.js'
 
 const PROFILE = mkdtempSync('/tmp/buckle-browser-pack-')
 afterAll(() => rmSync(PROFILE, { recursive: true, force: true }))
@@ -45,7 +50,7 @@ async function run(input: JsonObject, options: Partial<BrowserPackOptions> = {},
 describe('the arguments the browser pack builds', () => {
   it('puts the subcommand first and its positionals next, which is the order agent-browser wants', async () => {
     const { args } = await run({ command: 'open', args: ['https://example.com'] })
-    expect(args.slice(0, 2)).toEqual(['open', 'https://example.com'])
+    expect(args.slice(0, 2)).toEqual(['open', 'https://example.com/'])
   })
 
   it('always asks for JSON, so output can be parsed rather than scraped', async () => {
@@ -66,7 +71,7 @@ describe('the arguments the browser pack builds', () => {
   it('lets a per-call flag override the configured default, rather than passing it twice', async () => {
     const { args } = await run({ command: 'open', args: ['https://example.com', '--headed', 'false'] }, { headed: true })
     expect(args.filter(argument => argument === '--headed')).toHaveLength(1)
-    expect(args.slice(0, 5)).toEqual(['open', 'https://example.com', '--headed', 'false', '--json'])
+    expect(args.slice(0, 5)).toEqual(['open', 'https://example.com/', '--headed', 'false', '--json'])
   })
 
   it('passes a session through as a flag, keeping browser state isolated per caller', async () => {
@@ -108,7 +113,7 @@ describe('what the browser pack declares it will touch', () => {
 
   it('declares navigation as a network effect, so the egress rule judges the URL', () => {
     expect(effectsFor('open', ['https://example.com']))
-      .toEqual([{ kind: 'network', url: 'https://example.com' }])
+      .toEqual([{ kind: 'network', url: 'https://example.com/' }])
   })
 
   it('declares a file URL too, which is what puts it in front of the rule that refuses it', () => {
@@ -116,8 +121,13 @@ describe('what the browser pack declares it will touch', () => {
       .toEqual([{ kind: 'network', url: 'file:///etc/shadow' }])
   })
 
-  it('does not mistake a Windows drive letter for a URL scheme', () => {
-    expect(effectsFor('open', ['C:/Users/someone/page.html'])).toEqual([])
+  it('judges a Windows drive letter as the scheme the egress rule refuses, rather than opening a local file unjudged', () => {
+    expect(effectsFor('open', ['C:/Users/someone/page.html']))
+      .toEqual([{ kind: 'network', url: 'c:/Users/someone/page.html' }])
+  })
+
+  it('does not mistake a Windows drive letter in a non-navigation argument for a URL', () => {
+    expect(effectsFor('fill', ['@e1', 'C:/Users/someone/page.html'])).toEqual([])
   })
 
   it('declares a screenshot destination as a write, so it cannot land outside the sandbox', () => {
@@ -258,5 +268,47 @@ describe('the environment the browser is spawned with', () => {
   it('keeps passing the variables a child genuinely needs', async () => {
     const environment = await environmentFor({})
     expect(environment.PATH).toBeDefined()
+  })
+})
+
+describe('a page named without a scheme', () => {
+  const judge = (args: string[], approved: string[] | null = ['allowed.test']) => {
+    const engine = createPermissionEngine([createNetworkEgressRule({ approved: approved ? compileUrlPatterns(approved) : null })])
+    const effects = browserEffects('open', args).map(effect => effect.kind === 'network' ? { kind: 'network' as const, url: new URL(effect.url) } : effect) as ResolvedEffect[]
+    return engine.evaluate({ tool: 'browser_command', effects, grants: { subjectsFor: () => [] } })
+  }
+
+  it('is judged, and denied when the host is not on the approved list', () => {
+    expect(judge(['example.com'])).toMatchObject({ kind: 'deny', denial: { rule: 'network_egress', subject: 'example.com' } })
+    expect(judge(['allowed.test'])).toMatchObject({ kind: 'allow' })
+  })
+
+  it('is declared exactly like the same host written with https', () => {
+    expect(browserEffects('open', ['example.com'])).toEqual(browserEffects('open', ['https://example.com']))
+    expect(browserEffects('open', ['example.com/path?q=1'])).toEqual(browserEffects('open', ['https://example.com/path?q=1']))
+  })
+
+  it('reads localhost:3000 as host localhost on port 3000, not as a scheme', () => {
+    const [effect] = browserEffects('open', ['localhost:3000'])
+    expect(effect).toEqual({ kind: 'network', url: 'https://localhost:3000/' })
+    expect(judge(['localhost:3000'], null)).toMatchObject({ kind: 'ask', asks: [{ rule: 'network_egress', subject: 'localhost:3000' }] })
+  })
+
+  it('judges the page of every command that loads one, skipping flag values', () => {
+    expect(browserEffects('tab', ['new', 'example.com'])).toEqual([{ kind: 'network', url: 'https://example.com/' }])
+    expect(browserEffects('goto', ['example.com'])).toEqual([{ kind: 'network', url: 'https://example.com/' }])
+    expect(browserEffects('open', ['--headers', '{"x":"1"}', 'example.com'])).toEqual([{ kind: 'network', url: 'https://example.com/' }])
+    expect(browserEffects('open', ['--headed', 'false', 'example.com'])).toEqual([{ kind: 'network', url: 'https://example.com/' }])
+    expect(browserEffects('tab', ['2'])).toEqual([])
+  })
+
+  it('refuses a target that is not a URL or a host, with the reason', () => {
+    expect(() => browserEffects('open', ['/etc/passwd'])).toThrow(ToolInputError)
+    expect(() => browserEffects('open', ['not a url'])).toThrow(/Not an http or https URL or a host/)
+  })
+
+  it('hands agent-browser the URL that was judged', async () => {
+    const { args } = await run({ command: 'open', args: ['localhost:3000'] })
+    expect(args.slice(0, 2)).toEqual(['open', 'https://localhost:3000/'])
   })
 })
