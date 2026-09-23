@@ -29,15 +29,17 @@ Close the session to force a fresh launch after changing that setting.
 Navigation is judged like any other network access. `file://` and other non-HTTP schemes are
 refused, so the browser cannot be used to read local files around the path rules. A private or
 loopback address asks first. A page named without a scheme is opened and judged as
-`https://<page>`, and `localhost:3000` is host `localhost` on port 3000. Only the page a command
-names is judged: links clicked and redirects inside the browser are not.
+`https://<page>`, and `localhost:3000` is host `localhost` on port 3000. Most dev servers speak
+plain HTTP, so write `http://localhost:3000` for one. `open` takes exactly one page. Only the page
+a command names is judged: links clicked and redirects inside the browser are not.
 
 Paths given to `screenshot`, `pdf`, `upload` and `download` are judged by the same path rules as
 `fs` tools, so writing outside the workspace asks. Name such a path as a positional argument,
 which is where the rules look.
 
 Flags are an allowlist: anything Buckle does not know is refused by name, so read the refusal
-rather than guessing a second spelling. Refused on purpose are `--profile`, `--executable-path`,
+rather than guessing a second spelling. `--proxy` and `--proxy-bypass` are refused because Buckle
+owns the network policy. Also refused on purpose are `--profile`, `--executable-path`,
 `--args`, `--extension`, `--init-script`, `--config`, `--cdp`, `--auto-connect`, `--provider`,
 `--ca-cert`, `--allow-file-access`, and the flags that read or write an unjudged path,
 `--screenshot-dir`, `--download-path`, `--params` and `--payload`.
