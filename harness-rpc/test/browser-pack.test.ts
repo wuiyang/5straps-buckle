@@ -135,6 +135,13 @@ describe('what the browser pack declares it will touch', () => {
       .toEqual([{ kind: 'write_path', path: 'out/page.png' }])
   })
 
+  it('declares the screenshot path, not the value of a flag written before it', () => {
+    expect(effectsFor('screenshot', ['--screenshot-quality', '80', '/elsewhere/page.png']))
+      .toEqual([{ kind: 'write_path', path: '/elsewhere/page.png' }])
+    expect(effectsFor('screenshot', ['--full', 'out/page.png']))
+      .toEqual([{ kind: 'write_path', path: 'out/page.png' }])
+  })
+
   it('declares nothing for a screenshot that only carries flags', () => {
     expect(effectsFor('screenshot', ['--full'])).toEqual([])
   })
@@ -324,6 +331,22 @@ describe('a page named without a scheme', () => {
     expect(browserEffects('open', ['--headers', '{"x":"1"}', 'example.com'])).toEqual([{ kind: 'network', url: 'https://example.com/' }])
     expect(browserEffects('open', ['--headed', 'false', 'example.com'])).toEqual([{ kind: 'network', url: 'https://example.com/' }])
     expect(browserEffects('tab', ['2'])).toEqual([])
+  })
+
+  it.each([
+    [['example.com', '--engine', 'chrome']],
+    [['--allowed-domains', 'example.com,cdn.example.com', 'example.com']],
+    [['--port', '9222', 'example.com']],
+    [['--port=9222', 'example.com']],
+    [['example.com', '--label=checkout', '--timeout', '5000']],
+    [['--user-agent', 'Mozilla/5.0 (X11; Linux)', 'example.com']],
+  ])('judges only the page, never a flag value: %j', args => {
+    expect(browserEffects('open', args)).toEqual([{ kind: 'network', url: 'https://example.com/' }])
+  })
+
+  it('passes a flag value on as written rather than as a page', async () => {
+    const { args } = await run({ command: 'open', args: ['example.com', '--engine', 'chrome', '--allowed-domains', 'example.com'] })
+    expect(args.slice(0, 6)).toEqual(['open', 'https://example.com/', '--engine', 'chrome', '--allowed-domains', 'example.com'])
   })
 
   it('refuses a target that is not a URL or a host, with the reason', () => {
