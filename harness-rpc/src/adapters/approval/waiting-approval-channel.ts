@@ -22,6 +22,10 @@ export interface WaitingApprovalOptions {
  *
  * An out-of-band approval resolves the token itself, so this returns an empty decision list
  * rather than a decision to apply. The caller then re-evaluates against the grant that now exists.
+ *
+ * The grace period bounds the call, not the question. When it ends the call reports back, and the
+ * terminal keeps asking until the request expires or another route answers it; an answer given
+ * there afterwards is recorded like any other, so the retried call finds it.
  */
 export function createWaitingApprovalChannel(options: WaitingApprovalOptions): ApprovalChannel {
   return {
@@ -32,16 +36,36 @@ export function createWaitingApprovalChannel(options: WaitingApprovalOptions): A
 
       // Whichever route answers first wins, and the loser is told to let go of the terminal.
       const controller = new AbortController()
-      try {
-        return await Promise.race([
-          promptOrWait(options.prompt, requests, controller.signal),
-          waitForResolution(options.approvals, requests, options.timeoutMs),
-        ])
-      } finally {
+      const prompted = promptOrWait(options.prompt, requests, controller.signal)
+      const decided = await Promise.race([prompted, waitForResolution(options.approvals, requests, options.timeoutMs)])
+      if (decided !== null || !options.prompt) {
         controller.abort()
+        return decided
       }
+      keepAsking({ approvals: options.approvals, requests, prompted, controller })
+      return null
     },
   }
+}
+
+/**
+ * After the grace period: records what the terminal answers, and lets go of the terminal once
+ * every token leaves the pending set, which is how an answer elsewhere or an expiry shows.
+ */
+function keepAsking(input: {
+  approvals: ApprovalRegistry
+  requests: ApprovalRequest[]
+  prompted: Promise<ApprovalDecision[] | null>
+  controller: AbortController
+}): void {
+  void input.prompted.then(decisions => {
+    for (const decision of decisions ?? []) {
+      const result = input.approvals.resolve(decision)
+      if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
+    }
+  })
+  const untilExpiry = Math.max(...input.requests.map(request => Date.parse(request.expiresAt) - Date.now()), 0)
+  void waitForResolution(input.approvals, input.requests, untilExpiry).then(() => input.controller.abort())
 }
 
 async function announce(

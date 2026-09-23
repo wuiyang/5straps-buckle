@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
@@ -5,7 +7,8 @@ import { createCliApprovalChannel } from '../src/adapters/approval/cli-approval-
 import { createWaitingApprovalChannel } from '../src/adapters/approval/waiting-approval-channel.js'
 import { createSerialQueue } from '../src/domain/serial-queue.js'
 import type { ApprovalChannel } from '../src/ports/approval-channel.js'
-import type { ApprovalRegistry } from '../src/services/approval-registry.js'
+import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
+import { createApprovalRegistry, type ApprovalRegistry } from '../src/services/approval-registry.js'
 
 function request(token: string, expiresInMs = 60_000): ApprovalRequest {
   return {
@@ -133,6 +136,71 @@ describe('the grace period before a gated call gives up', () => {
 
     await channel.request([request('t1')])
     expect(aborted).toBe(true)
+  })
+})
+
+/** A prompt that answers when told to, and records whether it was told to let go. */
+function heldPrompt() {
+  let answer: (decisions: ApprovalDecision[]) => void = () => undefined
+  let aborted = false
+  const prompt: ApprovalChannel = {
+    id: 'held',
+    request: (_requests, signal) => new Promise(resolve => {
+      answer = resolve
+      signal?.addEventListener('abort', () => { aborted = true; resolve(null) })
+    }),
+  }
+  return { prompt, answer: (decisions: ApprovalDecision[]) => answer(decisions), aborted: () => aborted }
+}
+
+describe('the terminal question after the grace period', () => {
+  it('stays open past the grace deadline while the call reports back', async () => {
+    const held = heldPrompt()
+    const channel = createWaitingApprovalChannel({ approvals: registry(() => [request('t1')]), timeoutMs: 200, prompt: held.prompt })
+
+    expect(await channel.request([request('t1')])).toBeNull()
+    await new Promise(resolve => setTimeout(resolve, 600))
+    expect(held.aborted()).toBe(false)
+  })
+
+  it('records an answer given after the grace period, resolving the pending approval', async () => {
+    const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(tmpdir(), 'grace-grants.json'), workspace: '/workspace' }), join(tmpdir(), 'grace-approvals.json'))
+    const [issued] = approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session', 'always'] }] })
+    const held = heldPrompt()
+    const channel = createWaitingApprovalChannel({ approvals, timeoutMs: 200, prompt: held.prompt })
+
+    expect(await channel.request([issued!])).toBeNull()
+    expect(approvals.pending().map(entry => entry.token)).toEqual([issued!.token])
+    held.answer([{ token: issued!.token, approved: true, scope: 'session' }])
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(approvals.pending()).toEqual([])
+    expect(approvals.resolve({ token: issued!.token, approved: true, scope: 'session' })).toEqual({ ok: true })
+  })
+
+  it('closes once the request expires', async () => {
+    const expiring = request('t1', 700)
+    const held = heldPrompt()
+    const channel = createWaitingApprovalChannel({
+      approvals: registry(() => [expiring].filter(entry => Date.parse(entry.expiresAt) > Date.now())),
+      timeoutMs: 200,
+      prompt: held.prompt,
+    })
+
+    expect(await channel.request([expiring])).toBeNull()
+    expect(held.aborted()).toBe(false)
+    await new Promise(resolve => setTimeout(resolve, 1_000))
+    expect(held.aborted()).toBe(true)
+  })
+
+  it('closes once another route answers after the grace period', async () => {
+    let answered = false
+    const held = heldPrompt()
+    const channel = createWaitingApprovalChannel({ approvals: registry(() => answered ? [] : [request('t1')]), timeoutMs: 200, prompt: held.prompt })
+
+    expect(await channel.request([request('t1')])).toBeNull()
+    answered = true
+    await new Promise(resolve => setTimeout(resolve, 600))
+    expect(held.aborted()).toBe(true)
   })
 })
 
