@@ -1,6 +1,6 @@
 import type { GrantScope } from '@5straps/protocol'
-import { createNetworkEgressRule } from './permission/rules/network-egress-rule.js'
-import { compileUrlPatterns, intersectUrlMatchers } from './url-pattern.js'
+import type { PermissionRule } from './permission/decision.js'
+import { compileUrlPatterns, type UrlMatcher } from './url-pattern.js'
 
 export type UrlVerdictKind = 'approved' | 'denied' | 'asks' | 'not listed'
 
@@ -22,9 +22,9 @@ export function describeGrantScope(scope: GrantScope): string {
 
 /**
  * What the network rules would answer for one URL, for `buckle check-url`. The verdict is the
- * egress rule's own, built from the same lists the packs are given, so it cannot drift from what
- * a call meets: the workspace's approved list, intersected with the node's where a registered
- * workspace has one, then the private-address question and the approvals that answer it.
+ * egress rule's own, taken with its approved list from the runtime that builds them for the
+ * engine and the packs, so it cannot drift from what a call meets. The two lists are read only
+ * to name the entries that matched.
  *
  * `BUCKLE_ALLOWED_HOSTS` is not read by the rule. `web_fetch` consults it after the rule, to reach
  * a listed host even where its name resolves to a private address, so it decides only what the
@@ -32,15 +32,14 @@ export function describeGrantScope(scope: GrantScope): string {
  */
 export function judgeUrl(input: {
   url: URL
+  rule: PermissionRule
+  approved: UrlMatcher | null
   workspaceList: string[]
   nodeList: string[] | null
   allowedHosts: string[]
   approvals: NetworkApproval[]
 }): UrlVerdict {
-  const workspace = input.workspaceList.length ? compileUrlPatterns(input.workspaceList) : null
-  const node = input.nodeList?.length ? compileUrlPatterns(input.nodeList) : null
-  const approved = intersectUrlMatchers(node, workspace)
-  const decision = createNetworkEgressRule({ approved }).evaluate({
+  const decision = input.rule.evaluate({
     tool: 'check-url',
     effect: { kind: 'network', url: input.url },
     grants: { subjectsFor: rule => rule === 'network_egress' ? input.approvals.map(approval => approval.subject) : [] },
@@ -57,7 +56,7 @@ export function judgeUrl(input: {
     const approval = input.approvals.find(entry => entry.subject === decision.via!.subject)
     return { verdict: 'approved', because: `${approval?.label ?? 'approval'} for ${decision.via.subject}` }
   }
-  if (approved) return { verdict: 'approved', because: matchingEntries({ url: input.url, workspaceList: input.workspaceList, nodeList: input.nodeList }) }
+  if (input.approved) return { verdict: 'approved', because: matchingEntries({ url: input.url, workspaceList: input.workspaceList, nodeList: input.nodeList }) }
   if (listedHost) return { verdict: 'approved', because: `BUCKLE_ALLOWED_HOSTS entry ${listedHost}` }
   return { verdict: 'not listed', because: 'no approved list is set, so a public host is reached without asking; web_fetch still refuses one that resolves to a private address' }
 }

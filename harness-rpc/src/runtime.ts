@@ -35,7 +35,8 @@ import { compilePolicy, mergePolicies, policyRevision, PolicyConflictError, type
 import { loadSkills } from './domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from './domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from './domain/tool-registry.js'
-import { intersectUrlMatchers } from './domain/url-pattern.js'
+import { intersectUrlMatchers, type UrlMatcher } from './domain/url-pattern.js'
+import type { PermissionRule } from './domain/permission/decision.js'
 import { workspaceStateKey } from './domain/workspace-key.js'
 import { createBuiltinPacks } from './packs/index.js'
 import { loadRootSkill } from './packs/pack-skill.js'
@@ -59,6 +60,8 @@ export interface PolicyHandle {
   effective(): WorkspacePolicy
   /** The node's own policy over a registered workspace, which every call also meets. Null on the node's workspace. */
   ceiling(): WorkspacePolicy | null
+  /** The egress rule and approved list a call meets, built as the engine and packs build them, for `buckle check-url`. */
+  network(): { rule: PermissionRule; approved: UrlMatcher | null }
   /** Validates against the base, stores, and rebuilds the rules and packs. Throws PolicyError. */
   revision(): string
   apply(policy: WorkspacePolicy, expectedRevision?: string): Promise<WorkspacePolicy>
@@ -187,6 +190,7 @@ export async function createRuntime(input: {
       stored: () => policyStore.read(),
       effective: () => compiled.policy,
       ceiling: () => ceiling?.policy ?? null,
+      network: () => ({ rule: networkEgressRule(compiled, ceiling), approved: approvedUrls(compiled, ceiling) }),
       revision: () => policyRevision(policyStore.read()),
       async apply(policy, expectedRevision) {
         if (runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
@@ -276,7 +280,7 @@ async function buildPacks(input: {
     writableRoots: [input.config.cwd, ...input.config.scratchRoots],
     hiddenPaths: [input.config.nodeStateDirectory ?? input.config.stateDirectory],
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
-    approvedUrls: intersectUrlMatchers(input.ceiling?.network, input.compiled.network),
+    approvedUrls: approvedUrls(input.compiled, input.ceiling),
     braveSearchApiKey: input.config.braveSearchApiKey,
     forge: { token: input.config.forgeGithubToken, apiUrl: input.config.forgeApiUrl, author: input.config.forgeGitAuthor },
     stateDirectory: input.config.stateDirectory,
@@ -302,6 +306,16 @@ async function buildPacks(input: {
   return [...builtin, ...(filesystemRestricted ? [] : await input.plugins.load())]
 }
 
+/** The approved list every call meets: the node's over a registered workspace, then the workspace's own. */
+function approvedUrls(compiled: CompiledPolicy, ceiling: CompiledPolicy | null): UrlMatcher | null {
+  return intersectUrlMatchers(ceiling?.network, compiled.network)
+}
+
+/** One construction for the engine and `buckle check-url`, so the check cannot drift from the rule. */
+function networkEgressRule(compiled: CompiledPolicy, ceiling: CompiledPolicy | null): PermissionRule {
+  return createNetworkEgressRule({ approved: approvedUrls(compiled, ceiling) })
+}
+
 /**
  * Order is the security model: floor rules run before scope rules, so a granted directory
  * can never unlock a credential file or a destructive command inside it. The owner's command
@@ -314,7 +328,7 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
     ...(ceiling ? [createCommandPolicyRule(ceiling, { enforceWrapperAllow: false })] : []),
     createCommandPolicyRule(compiled, { enforceWrapperAllow: !ceiling?.commands.allow.length }),
     createDestructiveCommandRule({ added: [...(ceiling?.commands.destructive ?? []), ...compiled.commands.destructive] }),
-    createNetworkEgressRule({ approved: intersectUrlMatchers(ceiling?.network, compiled.network) }),
+    networkEgressRule(compiled, ceiling),
     createProcessProbeRule(),
     createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy, ceiling: ceiling?.policy }),
     createReadScopeRule({ paths }),

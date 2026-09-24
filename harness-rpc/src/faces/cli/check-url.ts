@@ -58,6 +58,7 @@ export async function checkUrlCommand(input: {
   }
   const result = judgeUrl({
     url,
+    ...runtime.policy.network(),
     workspaceList: runtime.policy.effective().network.allow,
     nodeList: runtime.policy.ceiling()?.network.allow ?? null,
     allowedHosts: input.allowedHosts,
