@@ -133,6 +133,9 @@ describe('host patterns, one grammar for lists, BUCKLE_ALLOWED_HOSTS and grants 
     ['*.254.169.254', /covers a domain, not an address/],
     ['*.internal.0x7f', /covers a domain, not an address/],
     ['example.com:70000', /Not a port/],
+    ['example.com:0', /Not a port/],
+    ['example.com:0443', /without leading zeros/],
+    ['*.example.com:08080', /Not a port/],
   ])('refuse %s with a reason that says what is wrong', (pattern, reason) => {
     expect(() => compileHostPattern(pattern)).toThrow(UrlPatternError)
     expect(() => compileHostPattern(pattern)).toThrow(reason)
@@ -141,6 +144,7 @@ describe('host patterns, one grammar for lists, BUCKLE_ALLOWED_HOSTS and grants 
   it('refuse the same malformed forms in an approved list', () => {
     expect(() => compileUrlPatterns(['*.*.com'])).toThrow(/whole leftmost label/)
     expect(() => compileUrlPatterns(['example.com', '*.0.0.1'])).toThrow(/covers a domain, not an address/)
+    expect(() => compileUrlPatterns(['localhost:0'])).toThrow(/Not a port/)
   })
 
   it('name the first entry of a list that covers a URL', () => {

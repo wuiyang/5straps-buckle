@@ -61,7 +61,8 @@ export function compileHostPattern(pattern: string): HostPattern {
   if (!match) throw new UrlPatternError(describeMalformed(trimmed))
   const [, wildcard, host, port] = match
   if (wildcard && coversAnAddress(host ?? '')) throw new UrlPatternError(`A wildcard covers a domain, not an address: ${pattern}`)
-  if (port !== undefined && Number(port) > 65_535) throw new UrlPatternError(`Not a port: ${port} in ${pattern}`)
+  // A port is compared as the URL parser writes it, so `0443` would silently match nothing.
+  if (port !== undefined && (!/^[1-9]\d*$/.test(port) || Number(port) > 65_535)) throw new UrlPatternError(`Not a port: ${port} in ${pattern}. Write 1 to 65535 without leading zeros`)
   const bare = (host ?? '').toLowerCase().replace(/^\[|\]$/g, '')
   return {
     pattern: trimmed,

@@ -185,6 +185,7 @@ describe('BUCKLE_ALLOWED_HOSTS at load', () => {
     expect(() => loadConfig(environment('https://db.internal'))).toThrow(/names no scheme/)
     expect(loadConfig(environment('my_db, my_db:5432, *.compose_net')).allowedHosts).toEqual(['my_db', 'my_db:5432', '*.compose_net'])
     expect(() => loadConfig(environment('db.internal.'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry/)
+    expect(() => loadConfig(environment('my_db:05432'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: Not a port/)
     expect(() => loadConfig(environment('*.0.0.1'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: A wildcard covers a domain, not an address/)
   })
 })
