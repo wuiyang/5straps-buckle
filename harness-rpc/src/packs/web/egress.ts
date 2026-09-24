@@ -1,7 +1,7 @@
 import { lookup } from 'node:dns/promises'
 import { reservedRangeOf } from '../../domain/ip.js'
 import { ToolExecutionError, type NetworkVerdict } from '../../domain/tool.js'
-import { matchingHostEntry, type UrlMatcher } from '../../domain/url-pattern.js'
+import { matchingHostEntry, starredHostRefusal, type UrlMatcher } from '../../domain/url-pattern.js'
 
 const MAX_REDIRECTS = 5
 
@@ -47,6 +47,8 @@ export async function guardedFetch(input: {
 }
 
 async function assertReachable(url: URL, allowedHosts: string[], approved: UrlMatcher | null, judge?: (url: URL) => NetworkVerdict): Promise<void> {
+  const starred = starredHostRefusal(url)
+  if (starred) throw new ToolExecutionError(starred, { code: 'EGRESS_BLOCKED' })
   if (approved) {
     if (approved.matches(url)) return
     throw new ToolExecutionError(`${url.origin} is not on the workspace's approved list`, { code: 'EGRESS_BLOCKED' })

@@ -139,18 +139,35 @@ describe('host patterns, one grammar for lists, BUCKLE_ALLOWED_HOSTS and grants 
 })
 
 describe('network grants read with the pattern grammar', () => {
+  const exact = (subjects: string[]) => ({ exact: subjects, patterns: [] })
+
   it('prefer an exact grant, then a pattern, and never read an exact grant as a pattern', () => {
-    expect(coveringGrant(['app.localhost:3000', '*.localhost'], new URL('http://app.localhost:3000/'))).toBe('app.localhost:3000')
-    expect(coveringGrant(['*.localhost'], new URL('http://deep.app.localhost:3000/'))).toBe('*.localhost')
-    expect(coveringGrant(['localhost'], new URL('http://localhost:5432/'))).toBeNull()
-    expect(coveringGrant(['localhost:3000'], new URL('http://localhost:3000/'))).toBe('localhost:3000')
-    expect(coveringGrant(['*.localhost:3000'], new URL('http://app.localhost:3001/'))).toBeNull()
+    expect(coveringGrant({ exact: ['app.localhost:3000'], patterns: ['*.localhost'] }, new URL('http://app.localhost:3000/'))).toBe('app.localhost:3000')
+    expect(coveringGrant({ exact: [], patterns: ['*.localhost'] }, new URL('http://deep.app.localhost:3000/'))).toBe('*.localhost')
+    expect(coveringGrant(exact(['localhost']), new URL('http://localhost:5432/'))).toBeNull()
+    expect(coveringGrant(exact(['localhost:3000']), new URL('http://localhost:3000/'))).toBe('localhost:3000')
+    expect(coveringGrant({ exact: [], patterns: ['*.localhost:3000'] }, new URL('http://app.localhost:3001/'))).toBeNull()
   })
 
-  const judge = (approved: ReturnType<typeof compileUrlPatterns> | null, subjects: string[], url: string) => {
+  it('read a grant spelled like a pattern but not recorded as one as its literal string alone', () => {
+    for (const url of ['http://app.localhost:3000/', 'http://localhost:3000/', 'http://x.y.localhost:3000/']) {
+      expect(coveringGrant(exact(['*.localhost:3000']), new URL(url))).toBeNull()
+    }
+  })
+
+  const judge = (approved: ReturnType<typeof compileUrlPatterns> | null, patterns: string[], url: string) => {
     const engine = createPermissionEngine([createNetworkEgressRule({ approved })])
-    return engine.evaluate({ tool: 'web_fetch', effects: [{ kind: 'network', url: new URL(url) }], grants: { subjectsFor: () => subjects } })
+    return engine.evaluate({ tool: 'web_fetch', effects: [{ kind: 'network', url: new URL(url) }], grants: { subjectsFor: () => [], patternsFor: () => patterns } })
   }
+
+  it('refuse a URL whose host holds a *, before any question is asked or grant read', () => {
+    for (const url of ['http://*.localhost:3000/', 'http://%2a.localhost:3000/', 'https://*.example.com/']) {
+      const outcome = judge(null, ['*.localhost'], url)
+      expect(outcome).toMatchObject({ kind: 'deny', denial: { rule: 'network_egress', reason: expect.stringContaining('A host cannot contain *') } })
+    }
+    expect(judge(compileUrlPatterns(['*.localhost']), [], 'http://*.localhost/').kind).toBe('deny')
+    expect(compileHostPattern('*.localhost').matches(new URL('http://*.localhost/'))).toBe(false)
+  })
 
   it('let a pattern grant answer the question a private host asks, naming the pattern', () => {
     expect(judge(null, ['*.localhost'], 'http://app.localhost:3000/')).toEqual({ kind: 'allow', allowedBy: ['network_egress:*.localhost'] })

@@ -184,7 +184,7 @@ describe('buckle check-url', () => {
 
   it('names the pattern that decided when an approval was widened to one', async () => {
     const config = node()
-    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always' })
+    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
 
     expect(await check(config, 'http://api.app.localhost:5173')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(persisted approval for pattern *.localhost, which covers api.app.localhost:5173)') })
     expect(await check(config, 'http://localhost:3000')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('pattern *.localhost') })
@@ -193,7 +193,7 @@ describe('buckle check-url', () => {
 
   it('denies what the approved list leaves off, whatever pattern grant is recorded', async () => {
     const config = node({ BUCKLE_NETWORK_ALLOW: 'example.com' })
-    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always' })
+    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
 
     expect(await check(config, 'http://app.localhost:3000')).toMatchObject({ exitCode: 1, stdout: expect.stringContaining('not on the workspace\'s approved list') })
   })
@@ -207,7 +207,7 @@ describe('buckle check-url', () => {
       createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy: emptyWorkspacePolicy() })
       const childState = join(realpathSync(join(root, 'state')), 'workspaces', 'child')
       mkdirSync(childState, { recursive: true })
-      createFileGrantStore({ filePath: join(childState, 'grants.json'), workspace: join(root, 'child') }).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always' })
+      createFileGrantStore({ filePath: join(childState, 'grants.json'), workspace: join(root, 'child') }).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
       return config
     }
 

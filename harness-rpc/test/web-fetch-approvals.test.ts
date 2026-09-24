@@ -101,7 +101,7 @@ describe('web_fetch and an approval widened to a host pattern (BUCKLE-D18)', () 
 
   it('never gets a pattern grant past the approved list', async () => {
     const runtime = await runtimeWith({ BUCKLE_NETWORK_ALLOW: 'example.com' })
-    runtime.grants.grant({ sessionId: 'fetcher', rule: 'network_egress', subject: '*.localhost', scope: 'always' })
+    runtime.grants.grant({ sessionId: 'fetcher', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
 
     const response = await fetchUrl(runtime, `http://localhost:${port}/`)
     expect(response).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })

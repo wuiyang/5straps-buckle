@@ -284,6 +284,8 @@ function buildLookup(input: {
       ...input.grants.activeSubjects({ sessionId: input.sessionId, rule }),
       ...subjectsByRule(input.consumed, rule),
     ],
+    // A `once` stays exact, so only standing grants can hold a pattern.
+    patternsFor: rule => input.grants.activePatterns({ sessionId: input.sessionId, rule }),
   }
 }
 

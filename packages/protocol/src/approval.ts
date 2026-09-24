@@ -45,6 +45,11 @@ export const GrantRecordSchema = z.object({
   rule: PermissionRuleIdSchema,
   subject: z.string().min(1),
   scope: GrantScopeSchema,
+  /**
+   * The subject is a host pattern the owner widened a network approval to with `buckle approve
+   * --host`, per `BUCKLE-D18`. Only this flag makes a subject a pattern, never its spelling.
+   */
+  pattern: z.literal(true).optional(),
   sessionId: z.string().nullable(),
   createdAt: z.iso.datetime(),
   expiresAt: z.iso.datetime().nullable(),

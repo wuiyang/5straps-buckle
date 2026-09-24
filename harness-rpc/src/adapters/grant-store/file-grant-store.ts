@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { GrantRecordSchema, type GrantRecord, type PermissionRuleId } from '@5straps/protocol'
+import type { GrantLookup } from '../../domain/permission/decision.js'
 import type { GrantStore } from '../../ports/grant-store.js'
+import { logger } from '../../logger.js'
 import { createJsonFileStore } from '../json-file-store.js'
 
 const fileSchema = z.object({ version: z.literal(1), grants: z.array(GrantRecordSchema) })
@@ -20,23 +22,31 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
 
   const load = (): GrantRecord[] => store.read().grants
 
+  const active = (sessionId: string, rule: PermissionRuleId): GrantRecord[] => {
+    const now = Date.now()
+    return load()
+      .filter(grant => grant.workspace === input.workspace && grant.rule === rule)
+      .filter(grant => grant.sessionId === null || grant.sessionId === sessionId)
+      .filter(grant => !grant.expiresAt || Date.parse(grant.expiresAt) > now)
+  }
+
   return {
     activeSubjects({ sessionId, rule }) {
-      const now = Date.now()
-      return load()
-        .filter(grant => grant.workspace === input.workspace && grant.rule === rule)
-        .filter(grant => grant.sessionId === null || grant.sessionId === sessionId)
-        .filter(grant => !grant.expiresAt || Date.parse(grant.expiresAt) > now)
-        .map(grant => grant.subject)
+      const exact = active(sessionId, rule).filter(grant => !grant.pattern)
+      for (const grant of exact) warnIfStarred(grant)
+      return exact.map(grant => grant.subject)
     },
 
-    grant({ sessionId, rule, subject, scope }) {
+    activePatterns: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => grant.pattern).map(grant => grant.subject),
+
+    grant({ sessionId, rule, subject, scope, pattern }) {
       const record: GrantRecord = {
         id: randomUUID(),
         workspace: input.workspace,
         rule,
         subject,
         scope,
+        ...(pattern ? { pattern: true as const } : {}),
         sessionId: scope === 'always' ? null : sessionId,
         createdAt: new Date().toISOString(),
         expiresAt: null,
@@ -64,9 +74,26 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
 }
 
 function isSameSubject(left: GrantRecord, right: GrantRecord): boolean {
-  return left.workspace === right.workspace && left.rule === right.rule && left.subject === right.subject && left.scope === right.scope && left.sessionId === right.sessionId
+  return left.workspace === right.workspace && left.rule === right.rule && left.subject === right.subject && left.scope === right.scope
+    && left.sessionId === right.sessionId && Boolean(left.pattern) === Boolean(right.pattern)
 }
 
-export function createGrantLookup(store: GrantStore, sessionId: string): { subjectsFor(rule: PermissionRuleId): string[] } {
-  return { subjectsFor: rule => store.activeSubjects({ sessionId, rule }) }
+const warnedStarred = new Set<string>()
+
+/**
+ * A network grant named with a `*` but not recorded through `buckle approve --host` came from an
+ * agent asking for a URL whose host held a `*`, before such a URL was refused. It stays exact, so
+ * it covers only its own string, which no URL can now reach; the owner is told once to revoke it.
+ */
+function warnIfStarred(grant: GrantRecord): void {
+  if (grant.rule !== 'network_egress' || !grant.subject.includes('*') || warnedStarred.has(grant.id)) return
+  warnedStarred.add(grant.id)
+  logger.warn('Network grant names a * but is not a host pattern; it covers only its own string. Revoke it with buckle grants revoke', { id: grant.id, subject: grant.subject })
+}
+
+export function createGrantLookup(store: GrantStore, sessionId: string): GrantLookup {
+  return {
+    subjectsFor: rule => store.activeSubjects({ sessionId, rule }),
+    patternsFor: rule => store.activePatterns({ sessionId, rule }),
+  }
 }

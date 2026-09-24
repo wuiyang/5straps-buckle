@@ -1,7 +1,7 @@
 import type { GrantScope } from '@5straps/protocol'
 import type { PermissionRule } from './permission/decision.js'
 import { hostSubject } from './permission/rules/network-egress-rule.js'
-import { compileUrlPatterns, isHostWildcard, matchingHostEntry, type UrlMatcher } from './url-pattern.js'
+import { compileUrlPatterns, matchingHostEntry, type UrlMatcher } from './url-pattern.js'
 
 export type UrlVerdictKind = 'approved' | 'denied' | 'asks' | 'not listed'
 
@@ -15,6 +15,8 @@ export interface UrlVerdict {
 export interface NetworkApproval {
   subject: string
   label: string
+  /** Recorded through `buckle approve --host`; only then is the subject read as a pattern. */
+  pattern?: boolean
 }
 
 export function describeGrantScope(scope: GrantScope): string {
@@ -43,7 +45,10 @@ export function judgeUrl(input: {
   const decision = input.rule.evaluate({
     tool: 'check-url',
     effect: { kind: 'network', url: input.url },
-    grants: { subjectsFor: rule => rule === 'network_egress' ? input.approvals.map(approval => approval.subject) : [] },
+    grants: {
+      subjectsFor: rule => rule === 'network_egress' ? input.approvals.filter(approval => !approval.pattern).map(approval => approval.subject) : [],
+      patternsFor: rule => rule === 'network_egress' ? input.approvals.filter(approval => approval.pattern).map(approval => approval.subject) : [],
+    },
   })
   const listedHost = matchingHostEntry(input.allowedHosts, input.url)
 
@@ -53,8 +58,9 @@ export function judgeUrl(input: {
     return { verdict: 'asks', because: `network_egress: ${decision.reason}${note}` }
   }
   if (decision.via) {
-    const approval = input.approvals.find(entry => entry.subject === decision.via!.subject)
-    const covered = isHostWildcard(decision.via.subject) ? `pattern ${decision.via.subject}, which covers ${hostSubject(input.url)}` : decision.via.subject
+    const exact = decision.via.subject === hostSubject(input.url)
+    const approval = input.approvals.find(entry => entry.subject === decision.via!.subject && Boolean(entry.pattern) === !exact)
+    const covered = exact ? decision.via.subject : `pattern ${decision.via.subject}, which covers ${hostSubject(input.url)}`
     return { verdict: 'approved', because: `${approval?.label ?? 'approval'} for ${covered}` }
   }
   if (input.approved) return { verdict: 'approved', because: matchingEntries({ url: input.url, workspaceList: input.workspaceList, nodeList: input.nodeList }) }

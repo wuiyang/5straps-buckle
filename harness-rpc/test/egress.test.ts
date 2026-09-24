@@ -167,6 +167,16 @@ describe('guardedFetch', () => {
   })
 })
 
+describe('a * in a host', () => {
+  it('is refused on every hop, whatever list or pattern would otherwise reach it', async () => {
+    await expect(guardedFetch({
+      url: new URL('http://*.localhost/'),
+      method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
+      allowedHosts: ['*.localhost'], approved: null, judge: () => ({ kind: 'granted' }),
+    })).rejects.toThrow(/A host cannot contain \*/)
+  })
+})
+
 describe('BUCKLE_ALLOWED_HOSTS at load', () => {
   it('accepts a pattern and refuses a malformed one, naming the variable', () => {
     const environment = (hosts: string) => ({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-egress-')), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-egress-state-')), BUCKLE_ALLOWED_HOSTS: hosts })

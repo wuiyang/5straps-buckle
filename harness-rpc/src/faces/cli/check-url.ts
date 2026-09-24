@@ -84,7 +84,11 @@ function approvalsInEffect(runtime: BuckleRuntime, session?: string): NetworkApp
   const standing = runtime.grants.list()
     .filter(grant => grant.rule === 'network_egress' && (grant.sessionId === null || grant.sessionId === session))
     .filter(grant => !grant.expiresAt || Date.parse(grant.expiresAt) > now)
-    .map(grant => ({ subject: grant.subject, label: grant.sessionId === null ? describeGrantScope(grant.scope) : `${describeGrantScope(grant.scope)} in session ${session}` }))
+    .map(grant => ({
+      subject: grant.subject,
+      label: grant.sessionId === null ? describeGrantScope(grant.scope) : `${describeGrantScope(grant.scope)} in session ${session}`,
+      ...(grant.pattern ? { pattern: true } : {}),
+    }))
   const unspent = session
     ? runtime.approvals.unspent(session)
       .filter(entry => entry.subject.rule === 'network_egress')

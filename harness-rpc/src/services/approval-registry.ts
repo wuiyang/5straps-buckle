@@ -6,7 +6,7 @@ import type { PermissionDecision } from '../domain/permission/decision.js'
 import type { PermissionOutcome } from '../domain/permission/engine.js'
 import type { ApprovalAuthority } from '../ports/approval-channel.js'
 import type { GrantStore } from '../ports/grant-store.js'
-import { compileHostPattern, isHostWildcard, UrlPatternError } from '../domain/url-pattern.js'
+import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 import { logger } from '../logger.js'
 
 const PENDING_TTL_MS = 10 * 60_000
@@ -101,7 +101,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         }
         if (decision.approved) {
           if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt })
-          else grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope })
+          else grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}) })
           logger.info('Approval granted', { rule, subject: widenedTo ?? subject, ...(widenedTo ? { askedBy: subject } : {}), scope: decision.scope, tool })
         }
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
@@ -177,13 +177,14 @@ function checkWidening(input: { pattern: string; decision: ApprovalDecision; aut
   if (!input.decision.approved) return { ok: false, reason: 'A denial names no host pattern; deny without --host' }
   if (input.decision.scope === 'once') return { ok: false, reason: 'A once approval covers one call to the host that asked; widen a session or always approval instead' }
   const pattern = input.pattern.trim()
+  let wildcard: boolean
   try {
-    compileHostPattern(pattern)
+    wildcard = compileHostPattern(pattern).wildcard
   } catch (error) {
     if (error instanceof UrlPatternError) return { ok: false, reason: error.message }
     throw error
   }
-  if (!isHostWildcard(pattern)) return { ok: false, reason: `--host takes a wildcard pattern such as *.example.com, got ${pattern}; without --host the approval is for the host that asked` }
+  if (!wildcard) return { ok: false, reason: `--host takes a wildcard pattern such as *.example.com, got ${pattern}; without --host the approval is for the host that asked` }
   return { ok: true, pattern }
 }
 

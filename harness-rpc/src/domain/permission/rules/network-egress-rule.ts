@@ -1,5 +1,5 @@
 import { reservedRangeOf } from '../../ip.js'
-import { isHostWildcard, matchingHostEntry, type UrlMatcher } from '../../url-pattern.js'
+import { matchingHostEntry, starredHostRefusal, type UrlMatcher } from '../../url-pattern.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, deny } from '../decision.js'
 
@@ -28,6 +28,10 @@ export function createNetworkEgressRule(options: NetworkEgressOptions = { approv
         return deny('network_egress', url.protocol, `Only http and https are allowed, got ${url.protocol}`)
       }
 
+      // Before any list or question: a `*` in a host would otherwise be asked about, and granted, as a name.
+      const starred = starredHostRefusal(url)
+      if (starred) return deny('network_egress', url.hostname, starred)
+
       const subject = hostSubject(url)
       if (options.approved) {
         if (options.approved.matches(url)) return { kind: 'allow' }
@@ -36,7 +40,7 @@ export function createNetworkEgressRule(options: NetworkEgressOptions = { approv
 
       const reason = localReason(url.hostname)
       if (!reason) return { kind: 'allow' }
-      const covering = coveringGrant(grants.subjectsFor('network_egress'), url)
+      const covering = coveringGrant({ exact: grants.subjectsFor('network_egress'), patterns: grants.patternsFor?.('network_egress') ?? [] }, url)
       if (covering) return allowedVia('network_egress', covering)
       return ask('network_egress', subject, reason)
     },
@@ -52,12 +56,13 @@ export function hostSubject(url: URL): string {
  * The grant that covers a URL: one for its exact host first, then a pattern the owner widened an
  * approval to, per `BUCKLE-D18: A host wildcard covers the apex and every subdomain, in lists and
  * grants alike`. An exact subject is compared as it was recorded and never read as a pattern, so
- * `localhost`, granted for a URL with no port, still does not cover `localhost:5432`.
+ * `localhost`, granted for a URL with no port, still does not cover `localhost:5432`, and a
+ * subject spelled `*.localhost` covers nothing unless it was recorded as a pattern.
  */
-export function coveringGrant(subjects: string[], url: URL): string | null {
+export function coveringGrant(grants: { exact: string[]; patterns: string[] }, url: URL): string | null {
   const subject = hostSubject(url)
-  if (subjects.includes(subject)) return subject
-  return matchingHostEntry(subjects.filter(isHostWildcard), url)
+  if (grants.exact.includes(subject)) return subject
+  return matchingHostEntry(grants.patterns, url)
 }
 
 function localReason(hostname: string): string | null {

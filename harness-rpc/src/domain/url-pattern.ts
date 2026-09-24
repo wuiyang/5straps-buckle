@@ -67,6 +67,7 @@ export function compileHostPattern(pattern: string): HostPattern {
     wildcard: Boolean(wildcard),
     matches: url => {
       if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+      if (starredHostRefusal(url)) return false
       const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
       const hostMatches = wildcard ? hostname === bare || hostname.endsWith(`.${bare}`) : hostname === bare
       if (!hostMatches) return false
@@ -75,9 +76,13 @@ export function compileHostPattern(pattern: string): HostPattern {
   }
 }
 
-/** A pattern that widens past one host. Only these are compiled when read back from a grant. */
-export function isHostWildcard(pattern: string): boolean {
-  return pattern.trim().startsWith('*.')
+/**
+ * The URL parser keeps a `*` in a host (`http://*.localhost/`), so an agent could ask for one by
+ * name and have it recorded, spelled like a pattern. No real host has one, so it is refused
+ * wherever a URL becomes a network subject, before any list is read or question asked.
+ */
+export function starredHostRefusal(url: URL): string | null {
+  return url.hostname.includes('*') ? `A host cannot contain *: ${url.hostname}. A host pattern is the owner's to grant, with buckle approve --host` : null
 }
 
 /**

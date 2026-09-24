@@ -4,8 +4,9 @@ import { join } from 'node:path'
 import { ApprovalDecisionSchema } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../src/adapters/action-log/file-action-log.js'
-import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
+import { createFileGrantStore, createGrantLookup } from '../src/adapters/grant-store/file-grant-store.js'
 import { actionsPath, approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../src/config.js'
+import { createNetworkEgressRule } from '../src/domain/permission/rules/network-egress-rule.js'
 import { runCli } from '../src/faces/cli/main.js'
 import { createApprovalRegistry } from '../src/services/approval-registry.js'
 
@@ -103,8 +104,12 @@ async function captureAll(input: { argv: string[]; config: BuckleConfig }): Prom
   } finally { write.mockRestore() }
 }
 
+function grantStore(config: BuckleConfig) {
+  return createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
+}
+
 function networkSubjects(config: BuckleConfig): string[] {
-  return createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }).list().filter(grant => grant.rule === 'network_egress').map(grant => grant.subject)
+  return grantStore(config).list().filter(grant => grant.rule === 'network_egress').map(grant => grant.subject)
 }
 
 describe('buckle approve --host, widening a network approval to a pattern (BUCKLE-D18)', () => {
@@ -117,7 +122,8 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     expect(approved.exitCode).toBe(0)
     expect(approved.stdout).toContain(`Approved ${token} (always) for *.localhost, asked by app.localhost:3000, in workspace default`)
     expect(networkSubjects(config)).toEqual(['*.localhost'])
-    expect((await capture({ argv: ['grants', 'list'], config })).stdout).toMatch(/always\s+network_egress\s+\*\.localhost/)
+    expect(grantStore(config).list()[0]).toMatchObject({ subject: '*.localhost', pattern: true })
+    expect((await capture({ argv: ['grants', 'list'], config })).stdout).toMatch(/always\s+network_egress\s+\*\.localhost {2}\(host pattern\)/)
   })
 
   it('refuses a pattern that does not cover the host that asked, naming both, and leaves the request waiting', async () => {
@@ -221,5 +227,33 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
     expect(networkSubjects(config)).toEqual(['localhost:3000'])
     expect(registry(config).resolve({ token: 'old-token', approved: true, scope: 'always' })).toEqual({ ok: true })
+  })
+})
+
+describe('a * in a URL host never becomes a pattern grant (BUCKLE-D18)', () => {
+  const rule = createNetworkEgressRule({ approved: null })
+  const evaluate = (config: BuckleConfig, url: string) => rule.evaluate({ tool: 'web_fetch', effect: { kind: 'network', url: new URL(url) }, grants: createGrantLookup(grantStore(config), 'chat-1') })
+
+  it('refuses the request for http://*.localhost:3000/ before any approval is asked', () => {
+    const config = node()
+
+    expect(evaluate(config, 'http://*.localhost:3000/')).toMatchObject({ kind: 'deny', reason: expect.stringContaining('A host cannot contain *') })
+    expect(registry(config).pending()).toEqual([])
+  })
+
+  it('keeps a stored grant spelled *.localhost:3000 without the pattern flag to its literal string, whatever approved it', () => {
+    const config = node()
+    const token = networkRequest(config, '*.localhost:3000')
+    expect(registry(config).resolve({ token, approved: true, scope: 'session' }, 'admin')).toEqual({ ok: true })
+    const now = new Date().toISOString()
+    writeFileSync(grantsPath(config), JSON.stringify({ version: 1, grants: [
+      ...grantStore(config).list(),
+      { id: 'legacy-star', workspace: config.cwd, rule: 'network_egress', subject: '*.localhost', scope: 'always', sessionId: null, createdAt: now, expiresAt: null },
+    ] }))
+
+    expect(grantStore(config).list().every(grant => grant.pattern === undefined)).toBe(true)
+    for (const url of ['http://app.localhost:3000/', 'http://localhost:3000/', 'http://x.y.localhost:3000/', 'http://localhost/']) {
+      expect(evaluate(config, url)).toMatchObject({ kind: 'ask' })
+    }
   })
 })
