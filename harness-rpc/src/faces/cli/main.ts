@@ -14,7 +14,7 @@ import { createCliApprovalChannel } from '../../adapters/approval/cli-approval-c
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, policyMigrateCommand } from './policy.js'
 import { watchApprovals } from './approvals-watch.js'
-import { CHECK_URL_BAD_INPUT, checkUrlCommand } from './check-url.js'
+import { CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
 import { workspaceRegistryCommand } from './workspace.js'
 import { BUCKLE_VERSION } from '../../version.js'
 
@@ -30,7 +30,14 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   // the owner here in the first place.
   if (command === 'policy' && rest[0] === 'migrate') return auditOperation({ actions: createFileActionLog(actionsPath(input.config)), workspaceId: 'default', tool: 'cli_policy_migrate', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => policyMigrateCommand({ config: input.config, argv: rest.slice(1) }) })
 
-  const runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
+  let runtime: BuckleRuntime
+  try {
+    runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
+  } catch (error) {
+    // check-url's exit 1 means denied, so a node it cannot read must not look like one.
+    if (command === 'check-url') return checkUrlUnreadable(error)
+    throw error
+  }
 
   try {
     if (['approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
@@ -89,7 +96,7 @@ function printUsage(): CliResult {
   buckle approvals [--json] [--workspace <id>]   Requests waiting for a decision
   buckle approvals --watch [--workspace <id>]    Ask about each request as it arrives
   buckle approve <token> [--scope once|session|always] [--workspace <id>]
-  buckle check-url <url|host> [--session <id>] [--workspace <id>]   approved, denied, asks or not listed
+  buckle check-url <url|host> [--session <id>] [--workspace <id>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
   buckle grants list | revoke <id>
   buckle workspace list | add <id> --root <dir>
   buckle workspace token list | add <workspace> | revoke <workspace> <token-id>

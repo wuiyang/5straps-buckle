@@ -5,7 +5,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
 import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
-import { approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../src/config.js'
+import { approvalsPath, grantsPath, loadConfig, policyPath, type BuckleConfig } from '../src/config.js'
+import { checkUrlCommand } from '../src/faces/cli/check-url.js'
 import { runCli } from '../src/faces/cli/main.js'
 import { createRuntime } from '../src/runtime.js'
 import { createWorkspaceManager } from '../src/services/workspace-manager.js'
@@ -87,11 +88,11 @@ describe('buckle check-url', () => {
     expect(result.stdout).toContain('Approved: example.com')
   })
 
-  it('reports an unlisted public host as not listed, and a private one as asking, with no list set', async () => {
+  it('reports an unlisted public host as not listed with exit 4, and a private one as asking with exit 3, with no list set', async () => {
     const config = node()
 
     const publicHost = await check(config, 'example.org')
-    expect(publicHost.exitCode).toBe(3)
+    expect(publicHost.exitCode).toBe(4)
     expect(publicHost.stdout).toMatch(/^not listed: https:\/\/example\.org\/ \(no approved list is set/)
     const privateHost = await check(config, '192.168.1.10')
     expect(privateHost.exitCode).toBe(3)
@@ -161,5 +162,23 @@ describe('buckle check-url', () => {
 
   it('exits 2 for a workspace this node does not know', async () => {
     expect(await check(node(), 'example.com', '--workspace', 'nope')).toMatchObject({ exitCode: 2 })
+  })
+
+  it('exits 2 when the stored policy cannot be read, rather than reading as a denial', async () => {
+    const config = node()
+    writeFileSync(policyPath(config), '{ not json')
+
+    expect(await check(config, 'example.com')).toMatchObject({ exitCode: 2, stdout: '', stderr: expect.stringContaining('Cannot read this node\'s policy or state, so there is no verdict') })
+  })
+
+  it('exits 2 when a registered workspace fails to open for any reason', async () => {
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const result = await checkUrlCommand({ argv: ['example.com', '--workspace', 'child'], allowedHosts: [], runtimeFor: () => Promise.reject(new Error('disk unreadable')) })
+      expect(result.exitCode).toBe(2)
+      expect(err).toHaveBeenCalledWith('Cannot open workspace child: disk unreadable\n')
+    } finally {
+      err.mockRestore()
+    }
   })
 })

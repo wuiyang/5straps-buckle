@@ -8,11 +8,16 @@ export interface CliResult {
   exitCode: number
 }
 
-/** 0 approved and 1 denied, like a test; 3 is the code a gated CLI call already exits with. */
-const EXIT_CODES: Record<UrlVerdictKind, number> = { approved: 0, denied: 1, asks: 3, 'not listed': 3 }
+/**
+ * 0 approved and 1 denied, like a test; 3 is the code a gated CLI call already exits with, and
+ * `not listed` has its own because it is reached without asking, which a script must tell apart.
+ */
+const EXIT_CODES: Record<UrlVerdictKind, number> = { approved: 0, denied: 1, asks: 3, 'not listed': 4 }
+/** Anything that stops a verdict being reached. Never 1, which would read as a denial. */
 export const CHECK_URL_BAD_INPUT = 2
 
-const USAGE = 'Usage: buckle check-url <url|host> [--session <id>] [--workspace <id>]'
+const USAGE = `Usage: buckle check-url <url|host> [--session <id>] [--workspace <id>]
+Exits 0 approved, 1 denied, 3 asks, 4 not listed, 2 when no verdict could be reached.`
 
 /**
  * `buckle check-url`: what the network rules would answer for one URL or host, in one line. It is
@@ -41,7 +46,7 @@ export async function checkUrlCommand(input: {
     runtime = await input.runtimeFor(parsed.workspace)
   } catch (error) {
     if (error instanceof WorkspaceError) return badInput(error.message)
-    throw error
+    return badInput(`Cannot open workspace ${parsed.workspace}: ${messageOf(error)}`)
   }
 
   let approvals: NetworkApproval[]
@@ -49,7 +54,7 @@ export async function checkUrlCommand(input: {
     approvals = approvalsInEffect(runtime, parsed.session)
   } catch (error) {
     // Exit 1 would read as a denial, so state that cannot be read takes the bad-input code.
-    return badInput(`Cannot read the approvals in workspace ${runtime.workspaceId}: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    return badInput(`Cannot read the approvals in workspace ${runtime.workspaceId}: ${messageOf(error)}`)
   }
   const result = judgeUrl({
     url,
@@ -85,6 +90,18 @@ function approvalsInEffect(runtime: BuckleRuntime, session?: string): NetworkApp
       .map(entry => ({ subject: entry.subject.subject, label: `unspent once approval for ${entry.tool} in session ${session}` }))
     : []
   return [...standing, ...unspent]
+}
+
+/**
+ * The node's configuration or state could not be read, so the runtime was never built: a corrupt
+ * `policy.json`, say. Reported here rather than as the CLI's usual exit 1.
+ */
+export function checkUrlUnreadable(error: unknown): CliResult {
+  return badInput(`Cannot read this node's policy or state, so there is no verdict: ${messageOf(error)}`)
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown error'
 }
 
 function badInput(message: string): CliResult {
