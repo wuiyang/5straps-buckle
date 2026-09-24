@@ -13,6 +13,7 @@ import { createHttpApp } from './faces/http-app.js'
 import { createMcpServer } from './faces/mcp/server.js'
 import { runInit } from './faces/cli/init.js'
 import { runCli } from './faces/cli/main.js'
+import { settingsCommand } from './faces/cli/settings.js'
 import { logger } from './logger.js'
 import { createRuntime } from './runtime.js'
 
@@ -35,6 +36,12 @@ async function main(): Promise<void> {
     return
   }
 
+  // Before the file is loaded, so `settings show` can tell the file's values from the shell's.
+  if (command === 'settings') {
+    process.exitCode = (await settingsCommand({ argv: rest, environment: process.env, environmentFile: environmentFilePath(), cwd: process.cwd() })).exitCode
+    return
+  }
+
   loadEnvironmentFile()
   const config = loadConfig()
 
@@ -51,11 +58,15 @@ async function main(): Promise<void> {
  * a project's own `.env` never leaks into the node and an operator override still applies.
  */
 function loadEnvironmentFile(): void {
-  const path = process.env.BUCKLE_ENV_FILE ?? '.env'
+  const path = environmentFilePath()
   if (!existsSync(path)) return
   for (const [name, value] of Object.entries(parseEnv(readFileSync(path, 'utf8')))) {
     if (name.startsWith('BUCKLE_') && process.env[name] === undefined) process.env[name] = value
   }
+}
+
+function environmentFilePath(): string {
+  return process.env.BUCKLE_ENV_FILE ?? '.env'
 }
 
 async function serveHttp(config: BuckleConfig): Promise<void> {

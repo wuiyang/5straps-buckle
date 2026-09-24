@@ -81,9 +81,7 @@ export interface BuckleConfig {
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): BuckleConfig {
   const cwd = resolve(environment.BUCKLE_WORKSPACE_ROOT ?? process.cwd())
-  const stateDirectory = environment.BUCKLE_STATE_DIR
-    ? resolve(environment.BUCKLE_STATE_DIR)
-    : join(homedir(), '.5straps', 'buckle')
+  const stateDirectory = stateDirectoryOf(environment)
   if (isInside(cwd, stateDirectory)) {
     throw new Error(`BUCKLE_STATE_DIR is ${stateDirectory}, inside the BUCKLE_WORKSPACE_ROOT at ${cwd}: an agent writes anywhere in the workspace, and the state directory holds the recorded grants, the approvals and the empty hooks directory the forge tools run git with`)
   }
@@ -143,6 +141,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
   }
 }
 
+/** Where grants, approvals and the action log live, read without loading the rest of the config. */
+export function stateDirectoryOf(environment: NodeJS.ProcessEnv): string {
+  return environment.BUCKLE_STATE_DIR ? resolve(environment.BUCKLE_STATE_DIR) : join(homedir(), '.5straps', 'buckle')
+}
+
 /** The HTTP face exposes tools over the network, so it refuses to start without a token. */
 export function requireAuthToken(config: BuckleConfig): string {
   if (!config.authToken) throw new Error('BUCKLE_AUTH_TOKEN is required to serve over HTTP')
@@ -161,7 +164,7 @@ export function approvalsPath(config: BuckleConfig): string {
   return join(config.stateDirectory, 'approvals.json')
 }
 
-export function actionsPath(config: BuckleConfig): string {
+export function actionsPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
   return join(config.stateDirectory, 'actions.jsonl')
 }
 

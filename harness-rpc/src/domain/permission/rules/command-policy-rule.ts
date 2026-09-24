@@ -18,7 +18,7 @@ const MAX_SUBJECT_LENGTH = 300
  * directory named `buckle` is not taken for one. This is a speed bump: the real guard is the hidden
  * state directory and the sandbox.
  */
-const SELF_ADMINISTRATION = /(^|[\s/\\'"])buckle['"]?\s+(approvals|approve|check-url|grants|policy|init|plugin|serve|mcp|workspaces?|history)(?=$|[\s'"])/
+const SELF_ADMINISTRATION = /(^|[\s/\\'"])buckle['"]?\s+(approvals|approve|check-url|grants|policy|init|settings|plugin|serve|mcp|workspaces?|history)(?=$|[\s'"])/
 
 /**
  * The owner's command globs, judged one shell word at a time on the parsed command line. Deny

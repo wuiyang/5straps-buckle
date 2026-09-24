@@ -107,6 +107,7 @@ function printUsage(): CliResult {
   buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
   buckle policy show | allow-command | deny-command | allow-url | mount | migrate | ...
+  buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
 
   buckle --version                   Print the version
 `)

@@ -158,9 +158,15 @@ describe('what no pattern can change', () => {
     expect(evaluate('bash', ['-c', 'buckle check-url 10.0.0.1'], { allow: ['bash -c *'] }).kind).toBe('deny')
   })
 
-  it.each(['workspaces', 'history'])('rejects %s administration directly and through a wrapper', command => {
+  it.each(['workspaces', 'history', 'settings', 'init'])('rejects %s administration directly and through a wrapper', command => {
     expect(evaluate('buckle', [command, 'list'], { allow: ['*'] }).kind).toBe('deny')
     expect(evaluate('bash', ['-c', `buckle ${command} list`], { allow: ['bash -c *'] }).kind).toBe('deny')
+  })
+
+  it('refuses a settings write, which would turn a pack or the shell on for the next start', () => {
+    expect(reasonOf(evaluate('buckle', ['settings', 'set', 'host-git', 'on'], { allow: ['*'] }))).toContain('cannot administer')
+    expect(evaluate('bash', ['-c', 'buckle settings set shell on'], { allow: ['bash -c *'] }).kind).toBe('deny')
+    expect(evaluate('node', ['./node_modules/.bin/buckle', 'settings', 'show'], { allow: ['*'] }).kind).toBe('deny')
   })
 
   it.each([
