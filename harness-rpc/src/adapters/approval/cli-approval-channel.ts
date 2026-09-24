@@ -4,6 +4,7 @@ import type { ApprovalDecision, ApprovalRequest, GrantScope } from '@5straps/pro
 import { describeExpiry, remainingMs } from '../../domain/approval-deadline.js'
 import { createSerialQueue } from '../../domain/serial-queue.js'
 import type { ApprovalChannel } from '../../ports/approval-channel.js'
+import { QUIET_MS, discardTypedLine, watchKeys, type KeyWatch } from './terminal-keys.js'
 
 export interface CliApprovalOptions {
   /** Where the question is asked. This process's terminal unless a caller names another. */
@@ -23,6 +24,11 @@ export interface CliApprovalOptions {
  * prompts sharing stdin would interleave their text and race for the same keystroke: a request
  * arriving while someone is reading could take the answer meant for the one they were shown.
  * Serialising it means the answer always belongs to the question on screen.
+ *
+ * Serialising is not enough on its own: the next question opens the moment the last one ends,
+ * sooner than anyone reads it. So a question takes keys only after `QUIET_MS` with no typing,
+ * and whatever was typed before that, including keys held while no question was open, is thrown
+ * away. Enter still denies once the prompt is showing.
  *
  * Each question is abandoned when its own request expires, which is the deadline that belongs to
  * a terminal someone is sitting at — the grace period is the server's, and is far shorter. Both
@@ -63,7 +69,8 @@ async function ask(context: { requests: ApprovalRequest[]; signal: AbortSignal; 
   // A request whose expiry passed while it queued resolves no longer, so it is not worth asking.
   if (context.requests.some(request => remainingMs(request.expiresAt) === 0)) return null
 
-  const readline = createInterface({ input: context.input, output: context.output })
+  const readline = createInterface({ input: context.input, output: context.output, historySize: 0 })
+  const keys = watchKeys(context.input)
   // With a listener here readline no longer closes on Ctrl-C by itself, so close it first: the
   // terminal is restored before the process is told to stop.
   readline.on('SIGINT', () => {
@@ -72,18 +79,20 @@ async function ask(context: { requests: ApprovalRequest[]; signal: AbortSignal; 
   })
   try {
     const decisions: ApprovalDecision[] = []
-    for (const request of context.requests) decisions.push(await promptOne({ readline, request, signal: context.signal, output: context.output }))
+    for (const request of context.requests) decisions.push(await promptOne({ readline, keys, request, signal: context.signal, output: context.output }))
     return decisions
   } catch {
     // Aborted mid-question: the request expired, the decision came from somewhere else, or Ctrl-C.
     return null
   } finally {
+    keys.stop()
     readline.close()
   }
 }
 
 async function promptOne(context: {
   readline: ReturnType<typeof createInterface>
+  keys: KeyWatch
   request: ApprovalRequest
   signal: AbortSignal
   output: Writable
@@ -91,7 +100,11 @@ async function promptOne(context: {
   const { request } = context
   const choices = request.offeredScopes.map((scope, index) => `${index + 1}) ${scopeLabel(scope)}`).join('  ')
   context.output.write(describeQuestion(request))
-  const answer = (await context.readline.question(`  ${choices}  n) deny > `, { signal: questionDeadline(request, context.signal) })).trim().toLowerCase()
+  const deadline = questionDeadline(request, context.signal)
+  await context.keys.quiet(QUIET_MS, deadline)
+  deadline.throwIfAborted()
+  discardTypedLine(context.readline)
+  const answer = (await context.readline.question(`  ${choices}  n) deny > `, { signal: deadline })).trim().toLowerCase()
 
   const chosenIndex = Number.parseInt(answer, 10) - 1
   const scope = request.offeredScopes[chosenIndex]

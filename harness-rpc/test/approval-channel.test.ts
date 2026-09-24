@@ -33,6 +33,13 @@ function silentTerminal() {
   return { input, output, shown: () => shown }
 }
 
+/** A terminal readline treats as a keyboard, so Ctrl-C arrives as a key press, not a signal. */
+function keyboardTerminal() {
+  const terminal = silentTerminal()
+  Object.assign(terminal.output, { isTTY: true, columns: 80, rows: 24 })
+  return terminal
+}
+
 /** Only `pending` is consulted by the waiting channel; the rest of the registry is not its concern. */
 function registry(pending: () => ApprovalRequest[]): ApprovalRegistry {
   return { pending } as unknown as ApprovalRegistry
@@ -279,17 +286,80 @@ describe('the terminal prompt queue', () => {
   })
 })
 
+describe('keys meant for another terminal question', () => {
+  const prompts = (terminal: ReturnType<typeof keyboardTerminal>) => terminal.shown().match(/n\) deny > /g)?.length ?? 0
+  const prompted = (terminal: ReturnType<typeof keyboardTerminal>, times: number) => vi.waitFor(() => expect(prompts(terminal)).toBe(times), { timeout: 3_000 })
+
+  it('does not let a double press answer the next queued question', async () => {
+    const wasTty = process.stdin.isTTY
+    process.stdin.isTTY = true
+    const terminal = keyboardTerminal()
+    try {
+      const channel = createCliApprovalChannel(terminal)
+      const first = channel.request([request('first', 600_000)])
+      const second = channel.request([request('second', 600_000)])
+      await prompted(terminal, 1)
+
+      terminal.input.write('1\r')
+      await new Promise(resolve => setImmediate(resolve))
+      terminal.input.write('1\r')
+
+      expect(await first).toEqual([{ token: 'first', approved: true, scope: 'once' }])
+      await prompted(terminal, 2)
+      terminal.input.write('2\r')
+      expect(await second).toEqual([{ token: 'second', approved: true, scope: 'session' }])
+    } finally {
+      process.stdin.isTTY = wasTty
+    }
+  })
+
+  it('lets no key typed just after a drop answer the next question, which still denies on Enter', async () => {
+    const wasTty = process.stdin.isTTY
+    process.stdin.isTTY = true
+    const terminal = keyboardTerminal()
+    try {
+      const channel = createCliApprovalChannel(terminal)
+      const expiring = channel.request([request('expiring', 1_000)])
+      const next = channel.request([request('next', 600_000)])
+      await prompted(terminal, 1)
+
+      expect(await expiring).toBeNull()
+      // Reaction time: the owner was answering the question that just went.
+      await new Promise(resolve => setTimeout(resolve, 250))
+      terminal.input.write('3\r')
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(prompts(terminal)).toBe(1)
+
+      await prompted(terminal, 2)
+      terminal.input.write('\r')
+      expect(await next).toEqual([{ token: 'next', approved: false, scope: 'once' }])
+    } finally {
+      process.stdin.isTTY = wasTty
+    }
+  })
+
+  it('throws away keys typed while no question was open', async () => {
+    const wasTty = process.stdin.isTTY
+    process.stdin.isTTY = true
+    const terminal = keyboardTerminal()
+    try {
+      const channel = createCliApprovalChannel(terminal)
+      terminal.input.write('3\r1')
+      const asked = channel.request([request('late', 600_000)])
+      await prompted(terminal, 1)
+
+      terminal.input.write('\r')
+      expect(await asked).toEqual([{ token: 'late', approved: false, scope: 'once' }])
+    } finally {
+      process.stdin.isTTY = wasTty
+    }
+  })
+})
+
 /** `node-pty` is an optional native dependency, so the real-terminal check runs only where it loads. */
 const nativeTerminal = await import('node-pty').then(() => true, () => false)
 
 describe('Ctrl-C at a terminal question', () => {
-  /** A terminal readline treats as a keyboard, so Ctrl-C arrives as a key press, not a signal. */
-  function keyboardTerminal() {
-    const terminal = silentTerminal()
-    Object.assign(terminal.output, { isTTY: true, columns: 80, rows: 24 })
-    return terminal
-  }
-
   it('drops the open question and every queued one, and stops the process once', async () => {
     const wasTty = process.stdin.isTTY
     process.stdin.isTTY = true
