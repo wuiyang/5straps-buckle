@@ -191,7 +191,7 @@ async function approvals(input: CommandInput): Promise<CliResult> {
   const { values } = parseArgs({ args: input.argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, workspace: { type: 'string' } }, allowPositionals: false })
   if (values.watch && values.json) return fail('--watch asks in the terminal, so it takes no --json')
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
-  if (values.watch) return watch(runtime)
+  if (values.watch) return watch(runtime, input.runtime)
   const pending = runtime.approvals.pending()
   if (values.json) return print(pending.map(request => ({ ...request, workspaceId: runtime.workspaceId, approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }) })))
   if (pending.length === 0) {
@@ -213,14 +213,15 @@ async function approvals(input: CommandInput): Promise<CliResult> {
 /**
  * Asks about each request as it arrives, in a terminal of its own beside `buckle serve`. A Ctrl-C
  * that reaches the process as a signal, where readline is not reading keys, stops it the same way.
+ * Each answer is audited in the node's log, where `buckle approve` records its own.
  */
-async function watch(runtime: BuckleRuntime): Promise<CliResult> {
+async function watch(runtime: BuckleRuntime, node: BuckleRuntime): Promise<CliResult> {
   if (!process.stdin.isTTY) return fail('buckle approvals --watch needs a terminal to ask in; use buckle approvals and buckle approve instead')
   const interrupted = new AbortController()
   const interrupt = () => interrupted.abort()
   process.once('SIGINT', interrupt)
   try {
-    return await watchApprovals({ approvals: runtime.approvals, workspaceId: runtime.workspaceId, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
+    return await watchApprovals({ approvals: runtime.approvals, actions: node.actions, workspaceId: runtime.workspaceId, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
   } finally {
     process.off('SIGINT', interrupt)
   }

@@ -4,12 +4,14 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import type { ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
+import { createFileActionLog } from '../src/adapters/action-log/file-action-log.js'
 import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
 import { createWaitingApprovalChannel } from '../src/adapters/approval/waiting-approval-channel.js'
-import { approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../src/config.js'
+import { actionsPath, approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../src/config.js'
 import { watchApprovals } from '../src/faces/cli/approvals-watch.js'
 import { createRuntime } from '../src/runtime.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../src/services/approval-registry.js'
+import type { ActionLog } from '../src/ports/action-log.js'
 
 const POLL = { first: 20, idle: 50 }
 
@@ -47,8 +49,11 @@ function keyboardTerminal() {
   return { input, output, errors, shown: () => shown, refused: () => refused, type: (keys: string) => input.write(keys) }
 }
 
-function watch(approvals: Pick<ApprovalRegistry, 'pending' | 'resolve'>, terminal = keyboardTerminal()) {
-  const done = watchApprovals({ approvals, workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
+/** An action log of its own, for a watch whose audit the test does not read. */
+const scratchLog = () => createFileActionLog(join(mkdtempSync(join(tmpdir(), 'buckle-watch-log-')), 'actions.jsonl'))
+
+function watch(approvals: Pick<ApprovalRegistry, 'pending' | 'resolve'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
+  const done = watchApprovals({ approvals, actions, workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
   return { terminal, done }
 }
 
@@ -189,7 +194,7 @@ describe('buckle approvals --watch', () => {
   it('stops on an interrupt signal while nothing is waiting', async () => {
     const terminal = keyboardTerminal()
     const interrupted = new AbortController()
-    const done = watchApprovals({ approvals: registryOf(node()), workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL, signal: interrupted.signal })
+    const done = watchApprovals({ approvals: registryOf(node()), actions: scratchLog(), workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL, signal: interrupted.signal })
 
     interrupted.abort()
 
@@ -206,6 +211,32 @@ describe('buckle approvals --watch', () => {
     expect(terminal.refused()).toContain('Cannot read the approvals waiting in workspace default')
     expect(terminal.refused()).toContain('BUCKLE_STATE_DIR')
     expect(existsSync(approvalsPath(config))).toBe(true)
+  })
+})
+
+describe('buckle approvals --watch, audit', () => {
+  it('audits each answer on its own, as buckle approve does', async () => {
+    const config = node()
+    const registry = registryOf(config)
+    issuePrivate(registry, '10.0.0.1')
+    await sleep(5)
+    const second = issuePrivate(registry, '10.0.0.2')
+    const actions = createFileActionLog(actionsPath(config))
+    const { terminal, done } = watch(registryOf(config), keyboardTerminal(), actions)
+
+    await prompted(terminal)
+    terminal.type('always\r')
+    await prompted(terminal, 2)
+    terminal.type('d\r')
+    await vi.waitFor(() => expect(terminal.shown()).toContain(`Denied ${second}`))
+    terminal.type('\x03')
+    await done
+
+    const results = actions.read(50).filter(entry => entry.tool === 'cli_approve' && entry.event === 'result')
+    expect(results).toHaveLength(2)
+    expect(results.map(entry => [entry.workspaceId, entry.sessionId, entry.outcome])).toEqual([['default', 'local-owner', 'ok'], ['default', 'local-owner', 'ok']])
+    expect(actions.read(50).filter(entry => entry.tool === 'cli_approve' && entry.event === 'attempt')).toHaveLength(2)
+    expect(grantsOf(config).map(grant => [grant.subject, grant.scope])).toEqual([['10.0.0.1', 'always']])
   })
 })
 
