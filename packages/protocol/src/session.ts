@@ -37,6 +37,8 @@ export const HarnessPairingRedeemSchema = z.object({
   authToken: z.string().min(1),
   adminToken: z.string().min(1).optional(),
   manifest: HarnessManifestSchema,
+  /** `RINGS-D20`: the node opens sealed approval traffic, so Rings mints it a key. Absent on an older node. */
+  approvalEnvelope: z.literal(1).optional(),
 })
 export type HarnessPairingRedeem = z.infer<typeof HarnessPairingRedeemSchema>
 
