@@ -163,6 +163,19 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     expect(refused.exitCode).toBe(1)
     expect(refused.stderr).toContain(reason)
     expect(networkSubjects(config)).toEqual([])
+    expect(registry(config).pending().map(request => request.token)).toEqual([token])
+  })
+
+  it('refuses --host on a denial, which names no pattern, and leaves the request waiting', async () => {
+    const config = node()
+    const token = networkRequest(config)
+
+    const refused = await captureAll({ argv: ['approve', token, '--deny', '--host', '*.localhost'], config })
+
+    expect(refused.exitCode).toBe(1)
+    expect(refused.stderr).toContain('A denial names no host pattern; deny without --host')
+    expect(networkSubjects(config)).toEqual([])
+    expect(registry(config).pending().map(request => request.token)).toEqual([token])
   })
 
   it('refuses a wildcard over an address suffix for a request from an address, and leaves it waiting', async () => {
@@ -185,6 +198,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
     expect(refused.exitCode).toBe(1)
     expect(refused.stderr).toContain('--host widens a network approval only; this one is write_scope')
+    expect(registry(config).pending().map(request => request.token)).toEqual([token])
   })
 
   it('refuses the widening from any authority but the admin credential, whatever the scope', () => {
