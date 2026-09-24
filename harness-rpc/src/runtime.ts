@@ -60,7 +60,7 @@ export interface PolicyHandle {
   effective(): WorkspacePolicy
   /** The node's own policy over a registered workspace, which every call also meets. Null on the node's workspace. */
   ceiling(): WorkspacePolicy | null
-  /** The egress rule and approved list a call meets, built as the engine and packs build them, for `buckle check-url`. */
+  /** A fresh egress rule and approved list, built by the same construction the engine and packs use, for `buckle check-url`. */
   network(): { rule: PermissionRule; approved: UrlMatcher | null }
   /** Validates against the base, stores, and rebuilds the rules and packs. Throws PolicyError. */
   revision(): string
