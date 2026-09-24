@@ -90,13 +90,18 @@ async function promptOne(context: {
 }): Promise<ApprovalDecision> {
   const { request } = context
   const choices = request.offeredScopes.map((scope, index) => `${index + 1}) ${scopeLabel(scope)}`).join('  ')
-  context.output.write(`\n${request.tool} needs approval\n  ${request.reason}\n  subject: ${request.subject}\n  ${describeExpiry(request.expiresAt)}\n`)
+  context.output.write(describeQuestion(request))
   const answer = (await context.readline.question(`  ${choices}  n) deny > `, { signal: questionDeadline(request, context.signal) })).trim().toLowerCase()
 
   const chosenIndex = Number.parseInt(answer, 10) - 1
   const scope = request.offeredScopes[chosenIndex]
   if (!scope) return { token: request.token, approved: false, scope: 'once' }
   return { token: request.token, approved: true, scope }
+}
+
+/** What a terminal question shows, shared with `buckle approvals --watch` so both read alike. */
+export function describeQuestion(request: ApprovalRequest): string {
+  return `\n${request.tool} needs approval\n  ${request.reason}\n  subject: ${request.subject}\n  ${describeExpiry(request.expiresAt)}\n`
 }
 
 /** The request's own expiry, plus whatever the caller is already watching for. */

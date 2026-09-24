@@ -1,0 +1,192 @@
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
+import type { ApprovalRequest } from '@5straps/protocol'
+import { describe, expect, it, vi } from 'vitest'
+import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
+import { createWaitingApprovalChannel } from '../src/adapters/approval/waiting-approval-channel.js'
+import { approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../src/config.js'
+import { watchApprovals } from '../src/faces/cli/approvals-watch.js'
+import { createRuntime } from '../src/runtime.js'
+import { createApprovalRegistry, type ApprovalRegistry } from '../src/services/approval-registry.js'
+
+const POLL = { first: 20, idle: 50 }
+
+function node(): BuckleConfig {
+  return loadConfig({
+    BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-watch-')),
+    BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-watch-state-')),
+    BUCKLE_ALLOW_SHELL: 'false',
+  })
+}
+
+/** A second registry over the node's state files, which is what a second terminal holds. */
+function registryOf(config: BuckleConfig): ApprovalRegistry {
+  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }), approvalsPath(config), config.cwd)
+}
+
+function issue(registry: ApprovalRegistry): string {
+  const [request] = registry.issue({
+    tool: 'fs_write', sessionId: 'chat-1',
+    asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
+  })
+  return request!.token
+}
+
+/** A terminal readline treats as a keyboard, so Ctrl-C arrives as a key press, not a signal. */
+function keyboardTerminal() {
+  const input = new PassThrough()
+  const output = new PassThrough()
+  const errors = new PassThrough()
+  Object.assign(output, { isTTY: true, columns: 200, rows: 24 })
+  let shown = ''
+  let refused = ''
+  output.on('data', (chunk: Buffer) => { shown += chunk.toString('utf8') })
+  errors.on('data', (chunk: Buffer) => { refused += chunk.toString('utf8') })
+  return { input, output, errors, shown: () => shown, refused: () => refused, type: (keys: string) => input.write(keys) }
+}
+
+function watch(approvals: Pick<ApprovalRegistry, 'pending' | 'resolve'>, terminal = keyboardTerminal()) {
+  const done = watchApprovals({ approvals, workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
+  return { terminal, done }
+}
+
+const count = (text: string, pattern: RegExp) => text.match(pattern)?.length ?? 0
+
+describe('buckle approvals --watch', () => {
+  it('answers a waiting approval, and the gated tool call proceeds', async () => {
+    const config = node()
+    const outside = mkdtempSync(join(tmpdir(), 'buckle-watch-outside-'))
+    const runtime = await createRuntime({ config, channel: approvals => createWaitingApprovalChannel({ approvals, timeoutMs: 10_000 }) })
+    const call = runtime.invoke({ request: { requestId: 'write', tool: 'fs_write', args: { path: join(outside, 'note.md'), content: 'hello' }, approvalTokens: [] }, sessionId: 'chat-1' })
+
+    const { terminal, done } = watch(registryOf(config))
+    await vi.waitFor(() => expect(terminal.shown()).toContain('fs_write needs approval'))
+    expect(terminal.shown()).toContain('o) once  s) session  a) always  d) deny  n) skip')
+    terminal.type('s\r')
+
+    expect(await call).toMatchObject({ outcome: 'ok' })
+    expect(readFileSync(join(outside, 'note.md'), 'utf8')).toBe('hello')
+    expect(terminal.shown()).toContain('Approved (session)')
+    terminal.type('\x03')
+    expect(await done).toEqual({ exitCode: 0 })
+  })
+
+  it('leaves a skipped request waiting, and does not ask about it again', async () => {
+    const config = node()
+    const token = issue(registryOf(config))
+    const { terminal, done } = watch(registryOf(config))
+    await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+
+    terminal.type('n\r')
+    await vi.waitFor(() => expect(terminal.shown()).toContain(`Skipped; still waiting. Answer later with: buckle approve ${token}`))
+    await new Promise(resolve => setTimeout(resolve, 200))
+
+    expect(registryOf(config).pending().map(request => request.token)).toEqual([token])
+    expect(count(terminal.shown(), /needs approval/g)).toBe(1)
+    terminal.type('\x03')
+    expect(await done).toEqual({ exitCode: 0 })
+  })
+
+  it('grants nothing on Enter or an unrecognised key, and keeps asking', async () => {
+    const config = node()
+    const token = issue(registryOf(config))
+    const { terminal, done } = watch(registryOf(config))
+    await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+
+    // `a` is not a key for this request, which offers once and session alone.
+    for (const [index, keys] of ['\r', 'y\r', 'a\r'].entries()) {
+      terminal.type(keys)
+      await vi.waitFor(() => expect(count(terminal.shown(), /Nothing granted/g)).toBe(index + 1))
+    }
+
+    expect(registryOf(config).pending().map(request => request.token)).toEqual([token])
+    expect(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }).list()).toEqual([])
+    terminal.type('\x03')
+    expect(await done).toEqual({ exitCode: 0 })
+    expect(registryOf(config).pending().map(request => request.token)).toEqual([token])
+  })
+
+  it('denies with d, through the same resolution as buckle approve --deny', async () => {
+    const config = node()
+    const token = issue(registryOf(config))
+    const { terminal, done } = watch(registryOf(config))
+    await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+
+    terminal.type('d\r')
+    await vi.waitFor(() => expect(terminal.shown()).toContain(`Denied ${token}`))
+
+    expect(registryOf(config).pending()).toEqual([])
+    expect(registryOf(config).resolve({ token, approved: true, scope: 'session' })).toMatchObject({ ok: false })
+    terminal.type('\x03')
+    await done
+  })
+
+  it('drops a question whose request expires while it is on screen', async () => {
+    const expiring: ApprovalRequest = {
+      token: 'expiring', rule: 'read_scope', subject: '/shots', reason: 'outside the sandbox', tool: 'fs_read',
+      offeredScopes: ['once'], expiresAt: new Date(Date.now() + 300).toISOString(),
+    }
+    const resolve = vi.fn()
+    const { terminal, done } = watch({ pending: () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now()), resolve })
+
+    await vi.waitFor(() => expect(terminal.shown()).toContain('expiring expired; dropped.'))
+    terminal.type('o\r')
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(resolve).not.toHaveBeenCalled()
+    terminal.type('\x03')
+    expect(await done).toEqual({ exitCode: 0 })
+  })
+
+  it('drops a question another route answered', async () => {
+    const config = node()
+    const token = issue(registryOf(config))
+    const { terminal, done } = watch(registryOf(config))
+    await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+
+    registryOf(config).resolve({ token, approved: true, scope: 'once' })
+
+    await vi.waitFor(() => expect(terminal.shown()).toContain(`${token} was answered elsewhere; dropped.`))
+    terminal.type('\x03')
+    await done
+  })
+
+  it('stops on the first Ctrl-C with a question open, answering nothing', async () => {
+    const config = node()
+    const token = issue(registryOf(config))
+    const { terminal, done } = watch(registryOf(config))
+    await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+
+    terminal.type('\x03')
+
+    expect(await done).toEqual({ exitCode: 0 })
+    terminal.type('\x03')
+    expect(count(terminal.shown(), /Stopped watching/g)).toBe(1)
+    expect(terminal.input.listenerCount('keypress')).toBe(0)
+    expect(registryOf(config).pending().map(request => request.token)).toEqual([token])
+  })
+
+  it('stops on an interrupt signal while nothing is waiting', async () => {
+    const terminal = keyboardTerminal()
+    const interrupted = new AbortController()
+    const done = watchApprovals({ approvals: registryOf(node()), workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL, signal: interrupted.signal })
+
+    interrupted.abort()
+
+    expect(await done).toEqual({ exitCode: 0 })
+    expect(count(terminal.shown(), /Stopped watching/g)).toBe(1)
+  })
+
+  it('exits non-zero with a clear error when the node\'s approvals cannot be read', async () => {
+    const config = node()
+    writeFileSync(approvalsPath(config), '{ not json')
+    const { terminal, done } = watch(registryOf(config))
+
+    expect(await done).toEqual({ exitCode: 1 })
+    expect(terminal.refused()).toContain('Cannot read the approvals waiting in workspace default')
+    expect(terminal.refused()).toContain('BUCKLE_STATE_DIR')
+    expect(existsSync(approvalsPath(config))).toBe(true)
+  })
+})

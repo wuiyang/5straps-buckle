@@ -32,7 +32,8 @@ Approval required: /etc/hostname is outside the sandbox
 ```
 
 When you see this, relay it to the person you are working with. Tell them what you were trying
-to do and why, then give them the command. Reaching for a different tool, a shell one-liner, or
+to do and why, then give them the command, or tell them they can answer it in
+`buckle approvals --watch` on the Buckle machine. Reaching for a different tool, a shell one-liner, or
 a rephrased path hits the same gate, because the gate is on the effect rather than the wording.
 
 Scopes are `once`, `session`, and `always`. Some gates deliberately do not offer `always`.

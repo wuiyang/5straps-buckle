@@ -28,7 +28,8 @@ Close the session to force a fresh launch after changing that setting.
 
 Navigation is judged like any other network access. `file://` and other non-HTTP schemes are
 refused, so the browser cannot be used to read local files around the path rules. A private or
-loopback address asks first. A page named without a scheme is opened and judged as
+loopback address asks first: relay the `buckle approve <token>` line to the person, who can also
+answer in `buckle approvals --watch` on the Buckle machine, then retry. A page named without a scheme is opened and judged as
 `https://<page>`, and `localhost:3000` is host `localhost` on port 3000. Most dev servers speak
 plain HTTP, so write `http://localhost:3000` for one. `open` takes exactly one page. Only the page
 a command names is judged: links clicked and redirects inside the browser are not.

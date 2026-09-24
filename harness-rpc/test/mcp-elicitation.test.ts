@@ -81,6 +81,7 @@ describe('MCP elicitation detection', () => {
     }))
     expect(result).toMatchObject({ isError: true })
     expect(JSON.stringify(result)).toContain('buckle approve token-1 --scope session')
+    expect(JSON.stringify(result)).toContain('buckle approvals --watch')
   })
 
   it('relays the approval as text when the client declares URL elicitation alone', async () => {

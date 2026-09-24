@@ -81,13 +81,14 @@ function relayApproval(input: { approvals: ApprovalRequest[]; workspaceId: strin
     const [first, ...rest] = describeApprovalRequest({ request, workspaceId: input.workspaceId, nodeName: input.nodeName })
     return [`- ${first}`, ...rest.map(line => `  ${line}`)].join('\n')
   })
+  const workspace = input.workspaceId === 'default' ? '' : ` --workspace ${input.workspaceId}`
   return {
     isError: true,
     content: [{
       type: 'text' as const,
       text: [
-        'This call needs approval from the person you are working with. Ask them, then run the',
-        'listed command (or have them run it) and retry.',
+        'This call needs approval from the person you are working with. Ask them to run the listed',
+        `command, or to answer it in \`buckle approvals --watch${workspace}\`, then retry.`,
         '',
         ...lines,
       ].join('\n'),
