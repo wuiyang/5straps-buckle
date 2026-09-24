@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -65,6 +65,33 @@ describe('no face exposes node settings', () => {
 
     expect(sources.length).toBeGreaterThan(5)
     for (const path of sources) expect(readFileSync(path, 'utf8'), path).not.toMatch(/cli\/(settings|node-settings|environment-file)\.js/)
+  })
+})
+
+describe('the manifest an agent token reads', () => {
+  it('reports withheld packs in fixed text, naming the setting behind a built-in one and never a configured path or a plugin error', async () => {
+    const state = mkdtempSync(join(tmpdir(), 'buckle-manifest-state-'))
+    writeFileSync(join(state, 'plugins.json'), JSON.stringify({ version: 1, plugins: [{ id: 'broken', specifier: '/opt/private-fixture/plugins/broken.mjs', enabled: true }] }))
+    const config = loadConfig({
+      BUCKLE_AUTH_TOKEN: 'agent-token-fixture',
+      BUCKLE_ADMIN_TOKEN: 'admin-token-fixture',
+      BUCKLE_STATE_DIR: state,
+      BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-manifest-ws-')),
+      BUCKLE_ALLOW_SHELL: 'false',
+      BUCKLE_AGENT_BROWSER_COMMAND: '/opt/private-fixture/bin/agent-browser',
+    })
+    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    const app = createHttpApp({ config, runtime, authToken: config.authToken })
+
+    const response = await app.request('/v1/manifest', { headers: { authorization: 'Bearer agent-token-fixture' } })
+    const body = await response.text()
+    const reasons = Object.fromEntries((JSON.parse(body) as { packs: Array<{ id: string; unavailableReason: string | null }> }).packs.map(pack => [pack.id, pack.unavailableReason]))
+
+    expect(response.status).toBe(200)
+    expect(body).not.toContain('/opt/private-fixture')
+    expect(reasons.broken).toBe('The plugin failed to load; the node\'s log has the error')
+    expect(reasons.browser).toBe('agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it')
+    expect(reasons.shell).toContain('BUCKLE_ALLOW_SHELL=false')
   })
 })
 

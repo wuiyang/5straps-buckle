@@ -54,6 +54,8 @@ export function createPluginRegistry(input: { filePath: string; packOptions: Rec
   }
 }
 
+export const PLUGIN_UNAVAILABLE = 'The plugin failed to load; the node\'s log has the error'
+
 /** A plugin that fails to load becomes a visibly unavailable pack rather than killing startup. */
 async function loadOne(plugin: PluginEntry, packOptions: Record<string, unknown>): Promise<Pack> {
   try {
@@ -63,7 +65,9 @@ async function loadOne(plugin: PluginEntry, packOptions: Record<string, unknown>
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     logger.error('Plugin failed to load', { id: plugin.id, specifier: plugin.specifier, message })
-    return { id: plugin.id, version: '0.0.0', tools: [], skills: [], unavailableReason: message }
+    // The message can hold the specifier's absolute path, and agents read this reason in the
+    // manifest; the owner reads the error in the node's log.
+    return { id: plugin.id, version: '0.0.0', tools: [], skills: [], unavailableReason: PLUGIN_UNAVAILABLE }
   }
 }
 

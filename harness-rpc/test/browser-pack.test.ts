@@ -96,13 +96,14 @@ describe('how the browser pack reports trouble', () => {
     const pack = createBrowserPack({
       cwd: '/work',
       paths: createPathView({ root: '/work', mount: null }),
-      agentBrowserCommand: 'agent-browser',
+      agentBrowserCommand: '/opt/private/tools/agent-browser',
       sessionDirectory: PROFILE,
       headed: false,
       available: false,
       runProcess: async () => stubResult(),
     })
-    expect(pack.unavailableReason).toBe('agent-browser is not installed on this node')
+    expect(pack.unavailableReason).toBe('agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it')
+    expect(pack.unavailableReason).not.toContain('/opt/private')
   })
 })
 

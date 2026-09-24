@@ -35,6 +35,9 @@ export interface BrowserPackOptions {
   available: boolean
 }
 
+/** Names the setting, never its value, which can be a path outside the workspace. */
+export const BROWSER_UNAVAILABLE = 'agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it'
+
 export function createBrowserPack(options: BrowserPackOptions): Pack {
   const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: z.object({ sessions: z.record(z.string(), z.string()) }), fallback: { sessions: {} } })
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
@@ -42,7 +45,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     id: PACK_ID,
     version: '1.0.0',
     skills: [loadPackSkill(PACK_ID)],
-    unavailableReason: options.available ? null : `${options.agentBrowserCommand} is not installed on this node`,
+    // Fixed text: the manifest carrying it is read with the agent token, and the configured path is the owner's.
+    unavailableReason: options.available ? null : BROWSER_UNAVAILABLE,
     tools: [
       defineTool(PACK_ID, {
         name: 'browser_command',
