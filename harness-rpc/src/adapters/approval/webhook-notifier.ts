@@ -1,4 +1,6 @@
 import type { ApprovalRequest } from '@5straps/protocol'
+import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
+import { sealForRings } from '../../services/approval-envelope.js'
 import { approveCommand } from '../../domain/approval-instruction.js'
 import { logger } from '../../logger.js'
 
@@ -12,6 +14,8 @@ export interface WebhookNotifierOptions {
   workspaceId: string
   /** The node's outbound credential, sent as a bearer when set. Rings requires it. */
   token?: string
+  /** `RINGS-D20`: with the key minted at pairing, the notification goes sealed for Rings. */
+  approvalKey?: ApprovalKey
 }
 
 /**
@@ -31,7 +35,7 @@ export function createWebhookNotifier(options: WebhookNotifierOptions) {
         'content-type': 'application/json',
         ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
       },
-      body: JSON.stringify({ serverId: options.serverId, workspaceId: options.workspaceId, approvals: requests.map(request => describe(request, options.workspaceId)) }),
+      body: JSON.stringify(sealForRings(options.approvalKey, SEALED_REPORT_PATHS.approvals, { serverId: options.serverId, workspaceId: options.workspaceId, approvals: requests.map(request => describe(request, options.workspaceId)) })),
       signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
     })
     if (!response.ok) logger.warn('Approval webhook refused the notification', { status: response.status })

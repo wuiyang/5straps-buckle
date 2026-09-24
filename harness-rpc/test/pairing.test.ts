@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mintApprovalKey } from '@5straps/protocol/envelope'
 import { runInit } from '../src/faces/cli/init.js'
 
 let root: string
@@ -29,11 +30,11 @@ function init(extra: string[] = []) {
   return runInit(['--root', workspace, '--out', out, '--name', 'Paired', '--port', '4399', '--yes', ...extra])
 }
 
-/** Rings mints a report credential in its redeem answer, readable that once. */
-function ringsMinting(reportToken: string) {
+/** Rings mints a report credential, and since RINGS-D20 an approval key, in its redeem answer, readable that once. */
+function ringsMinting(reportToken: string, approvalKey?: string) {
   vi.stubGlobal('fetch', vi.fn(async (url: URL, init: { body: string }) => {
     requests.push({ url: String(url), body: JSON.parse(init.body) as Record<string, unknown> })
-    return new Response(JSON.stringify({ server: { id: 'paired', name: 'Paired' }, reportToken }), { status: 201, headers: { 'content-type': 'application/json' } })
+    return new Response(JSON.stringify({ server: { id: 'paired', name: 'Paired' }, reportToken, ...(approvalKey === undefined ? {} : { approvalKey }) }), { status: 201, headers: { 'content-type': 'application/json' } })
   }))
 }
 
@@ -131,6 +132,47 @@ describe('buckle init --pair', () => {
     const written = parseEnv(before)
     expect(written.BUCKLE_ALLOW_HOST_GIT).not.toBe('true')
     expect(written.BUCKLE_REPORT_TOKEN).toBeUndefined()
+  })
+
+  it('asks for an approval key and writes the one Rings minted to the environment file, never printing it', async () => {
+    const approvalKey = mintApprovalKey()
+    ringsMinting('rings-minted-report-token-fixture', approvalKey)
+
+    const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+
+    expect(result.exitCode).toBe(0)
+    expect(requests[0]!.body.approvalEnvelope).toBe(1)
+    expect(parseEnv(readFileSync(out, 'utf8')).BUCKLE_RINGS_APPROVAL_KEY).toBe(approvalKey)
+    expect(result.printed).not.toContain(approvalKey)
+  })
+
+  it('rotates the key on a re-pair, and drops it when Rings mints none', async () => {
+    ringsMinting('first-report-token-fixture-value', mintApprovalKey())
+    await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+    const rotated = mintApprovalKey()
+    ringsMinting('second-report-token-fixture-value', rotated)
+    await initSilently(['--pair', 'PQRS-TVWX-YZ23', '--rings', 'http://rings.test:3001'])
+    expect(parseEnv(readFileSync(out, 'utf8')).BUCKLE_RINGS_APPROVAL_KEY).toBe(rotated)
+
+    ringsMinting('third-report-token-fixture-value')
+    await initSilently(['--pair', 'ABCD-EFGH-JKM2', '--rings', 'http://rings.test:3001'])
+    expect(parseEnv(readFileSync(out, 'utf8')).BUCKLE_RINGS_APPROVAL_KEY).toBeUndefined()
+  })
+
+  it.each([
+    ['a line break that would set node settings', `${'a'.repeat(43)}\nBUCKLE_ALLOW_HOST_GIT=true`],
+    ['the wrong length', 'a'.repeat(42)],
+    ['a character outside base64url', `${'a'.repeat(42)}+`],
+  ])('refuses an approval key holding %s, and writes nothing', async (_, approvalKey) => {
+    await init()
+    const before = readFileSync(out, 'utf8')
+    ringsMinting('rings-minted-report-token-fixture', approvalKey)
+
+    const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.printed).toContain('approval key Buckle does not accept')
+    expect(readFileSync(out, 'utf8')).toBe(before)
   })
 
   it('keeps the environment file\'s mode and every other line when it writes the credential', async () => {

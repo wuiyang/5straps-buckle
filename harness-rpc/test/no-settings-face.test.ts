@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { mintApprovalKey } from '@5straps/protocol/envelope'
 import { describe, expect, it } from 'vitest'
 import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../src/config.js'
@@ -78,6 +79,8 @@ describe('no face exposes node settings', () => {
       BUCKLE_SERVER_NAME: 'zq81-name', BUCKLE_WORKSPACE_ROOT: root, BUCKLE_WORKSPACE_MOUNT: '/zq81-mount',
       BUCKLE_SCRATCH_ROOTS: scratch, BUCKLE_MOUNT_READ_ONLY: readOnly, BUCKLE_PACKS: 'fs,web,shell',
       BUCKLE_NETWORK_ALLOW: 'zq81-net.test', BUCKLE_ALLOWED_HOSTS: 'zq81-host.internal',
+      // RINGS-D20: the approval key is never an effect any route reports.
+      BUCKLE_RINGS_APPROVAL_KEY: mintApprovalKey(),
     }
     // BUCKLE_ALLOW_SHELL and BUCKLE_ALLOW_HOST_GIT are booleans, so no value of theirs is distinctive;
     // their effect is the withheld pack's reason, which names the variable.

@@ -1,4 +1,6 @@
 import { ACTION_REPORT_BATCH_MAX, type ActionReport, type DeniedRunReport } from '@5straps/protocol'
+import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
+import { sealForRings } from '../../services/approval-envelope.js'
 import type { Reporter } from '../../ports/reporter.js'
 import { logger } from '../../logger.js'
 
@@ -14,6 +16,8 @@ export interface WebhookReporterOptions {
   url: string
   token: string
   serverId: string
+  /** `RINGS-D20`: with the key minted at pairing, every report goes sealed. */
+  approvalKey?: ApprovalKey
   flushIntervalMs?: number
   retryDelayMs?: number
 }
@@ -39,7 +43,8 @@ export function createWebhookReporter(options: WebhookReporterOptions): Reporter
       const response = await fetch(options.url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${options.token}` },
-        body: JSON.stringify(body),
+        // Sealed per attempt, so a retry carries a fresh nonce rather than looking like a replay.
+        body: JSON.stringify(sealForRings(options.approvalKey, SEALED_REPORT_PATHS.reports, body)),
         signal: AbortSignal.timeout(REPORT_TIMEOUT_MS),
       })
       if (response.ok) return 'sent'

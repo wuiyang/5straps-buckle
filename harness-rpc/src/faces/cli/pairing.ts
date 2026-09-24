@@ -1,4 +1,5 @@
 import { parseEnv } from 'node:util'
+import { APPROVAL_KEY_PATTERN } from '@5straps/protocol/envelope'
 import { createDeferredApprovalChannel } from '../../adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../../config.js'
 import { logger } from '../../logger.js'
@@ -52,6 +53,7 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
       authToken: config.authToken,
       adminToken: config.adminToken || undefined,
       manifest: runtime.manifest(),
+      approvalEnvelope: 1,
     }),
   }).catch((error: unknown) => {
     logger.error('Pairing request failed', { message: error instanceof Error ? error.message : 'Unknown error' })
@@ -61,7 +63,7 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
   if (!response) return { ok: false, message: `Could not reach Rings at ${input.ringsUrl}. The node is configured in ${input.environmentFile}; pair it again once Rings is reachable.` }
   if (!response.ok) return { ok: false, message: `Rings refused the pairing code (HTTP ${response.status}): ${await errorText(response)}` }
 
-  const body = await response.json().catch(() => null) as { server?: { id?: string; name?: string }; reportToken?: unknown } | null
+  const body = await response.json().catch(() => null) as { server?: { id?: string; name?: string }; reportToken?: unknown; approvalKey?: unknown } | null
   const paired = `Paired with Rings as ${body?.server?.name ?? config.serverName} (${body?.server?.id ?? config.serverId}).`
   if (!body?.reportToken) {
     // A Rings built before per-node report credentials answers without one; its installation-wide
@@ -73,20 +75,28 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
     logger.error('Rings answered with a report credential Buckle does not accept')
     return { ok: false, message: `${paired}\nRings answered with a report credential Buckle does not accept (it must be 16 to 512 letters, digits or ._~+/=-), so nothing was written to ${input.environmentFile}. Check that the Rings URL is the one you meant, then pair again.` }
   }
-  return { ok: true, message: `${paired}\n${recordReportCredential({ ...input, reportToken: body.reportToken })}` }
+  // A Rings built before RINGS-D20 mints no key; the node then holds none, so the pair stays plain on both sides.
+  if (body.approvalKey !== undefined && (typeof body.approvalKey !== 'string' || !APPROVAL_KEY_PATTERN.test(body.approvalKey))) {
+    logger.error('Rings answered with an approval key Buckle does not accept')
+    return { ok: false, message: `${paired}\nRings answered with an approval key Buckle does not accept (it must be 32 bytes in base64url), so nothing was written to ${input.environmentFile}. Check that the Rings URL is the one you meant, then pair again.` }
+  }
+  const approvalKey = typeof body.approvalKey === 'string' ? body.approvalKey : null
+  return { ok: true, message: `${paired}\n${recordReportCredential({ ...input, reportToken: body.reportToken, approvalKey })}` }
 }
 
 /**
  * Rings mints this node a report credential during pairing, readable in that answer alone, and
  * refuses a report filed for a node the credential does not belong to. It is written straight into
  * the environment file, never printed and never passed in argv, along with the two Rings routes it
- * authenticates: the action log, and the approvals a person has to be reached about.
+ * authenticates: the action log, and the approvals a person has to be reached about. The approval
+ * key of `RINGS-D20` travels the same way and is removed when Rings sent none.
  */
-function recordReportCredential(input: { environmentFile: string; ringsUrl: string; reportToken: string }): string {
+function recordReportCredential(input: { environmentFile: string; ringsUrl: string; reportToken: string; approvalKey: string | null }): string {
   const settings = [
     { name: 'BUCKLE_REPORT_URL', value: new URL(REPORT_PATH, input.ringsUrl).toString() },
     { name: 'BUCKLE_REPORT_TOKEN', value: input.reportToken },
     { name: 'BUCKLE_APPROVAL_WEBHOOK', value: new URL(APPROVALS_PATH, input.ringsUrl).toString() },
+    { name: 'BUCKLE_RINGS_APPROVAL_KEY', value: input.approvalKey },
   ]
   const edit = (text: string): EnvironmentEdit => settings.reduce<EnvironmentEdit>(
     (carried, setting) => (carried.ok ? editEnvironmentVariable({ text: carried.text, ...setting }) : carried),
@@ -94,7 +104,7 @@ function recordReportCredential(input: { environmentFile: string; ringsUrl: stri
   )
   try {
     if (!updateEnvironmentFile(input.environmentFile, edit).ok) {
-      return `Rings minted a report credential for this node, but ${input.environmentFile} sets one of BUCKLE_REPORT_URL, BUCKLE_REPORT_TOKEN or BUCKLE_APPROVAL_WEBHOOK in a form Buckle does not edit, so nothing was written. Fix those lines by hand and pair again.`
+      return `Rings minted a report credential for this node, but ${input.environmentFile} sets one of BUCKLE_REPORT_URL, BUCKLE_REPORT_TOKEN, BUCKLE_APPROVAL_WEBHOOK or BUCKLE_RINGS_APPROVAL_KEY in a form Buckle does not edit, so nothing was written. Fix those lines by hand and pair again.`
     }
   } catch (error) {
     logger.error('Could not write the report credential Rings minted', { message: error instanceof Error ? error.message : 'Unknown error' })

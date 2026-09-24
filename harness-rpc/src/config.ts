@@ -2,6 +2,7 @@ import { isIPv6 } from 'node:net'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
+import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
 import { isInside } from './domain/paths.js'
 import { compileHostPattern, UrlPatternError } from './domain/url-pattern.js'
 import { logger } from './logger.js'
@@ -71,6 +72,11 @@ export interface BuckleConfig {
   /** Where every refused call is posted as it happens. Rings, usually. */
   reportUrl?: string
   reportToken?: string
+  /**
+   * `RINGS-D20`: the key Rings minted at pairing. With it, approval decisions from Rings must
+   * arrive sealed and reports to Rings go sealed; without it, both stay plain until a re-pair.
+   */
+  ringsApprovalKey?: ApprovalKey
   skillDirectories: string[]
   stateDirectory: string
   nodeStateDirectory?: string
@@ -133,6 +139,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => resolve(path)),
     reportUrl: environment.BUCKLE_REPORT_URL || undefined,
     reportToken: environment.BUCKLE_REPORT_TOKEN || undefined,
+    ringsApprovalKey: parseRingsApprovalKey(environment.BUCKLE_RINGS_APPROVAL_KEY),
     skillDirectories: parseList(environment.BUCKLE_SKILLS_DIRS),
     stateDirectory,
     maxRequestBytes: parsePositiveInteger(environment.BUCKLE_MAX_REQUEST_BYTES, DEFAULT_MAX_REQUEST_BYTES),
@@ -164,6 +171,10 @@ export function approvalsPath(config: BuckleConfig): string {
   return join(config.stateDirectory, 'approvals.json')
 }
 
+export function approvalNoncesPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
+  return join(config.stateDirectory, 'approval-nonces.json')
+}
+
 export function actionsPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
   return join(config.stateDirectory, 'actions.jsonl')
 }
@@ -185,6 +196,16 @@ function parseAdminToken(environment: NodeJS.ProcessEnv): string {
   }
   if (!adminToken && legacyToken) logger.warn('BUCKLE_SETUP_TOKEN is the old name for BUCKLE_ADMIN_TOKEN and is read for one release; rename it')
   return adminToken || legacyToken
+}
+
+/** The value is never echoed: a malformed key names the variable and the fix alone. */
+function parseRingsApprovalKey(value: string | undefined): ApprovalKey | undefined {
+  if (!value?.trim()) return undefined
+  try {
+    return approvalKey(value.trim())
+  } catch {
+    throw new Error('BUCKLE_RINGS_APPROVAL_KEY is not a key Rings minted; remove it and pair the node with Rings again')
+  }
 }
 
 /**

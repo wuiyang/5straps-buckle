@@ -7,7 +7,10 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { ApprovalDecisionSchema, WorkspacePolicyUpdateSchema } from '@5straps/protocol'
 import { Hono, type Context } from 'hono'
-import type { BuckleConfig } from '../../config.js'
+import { createMemoryNonceStore } from '@5straps/protocol/envelope'
+import { createFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
+import { approvalNoncesPath, type BuckleConfig } from '../../config.js'
+import { openApprovalDecision } from '../../services/approval-envelope.js'
 import { isRestrictive, PolicyError } from '../../domain/policy.js'
 import { redactAuditArguments } from '../../domain/redact.js'
 import { logger } from '../../logger.js'
@@ -23,6 +26,7 @@ import { tokenMatches, requireBearerToken } from '../rpc/auth.js'
 export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRuntime; adminToken: string }): Hono {
   const { config, runtime, adminToken } = input
   const app = new Hono()
+  const seenDecisions = config.ringsApprovalKey ? createFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceStore()
 
   app.use('/*', async (context, next) => {
     if (!tokenMatches(context.req.header('authorization'), adminToken)) {
@@ -92,7 +96,17 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
 
   app.get('/approvals', context => context.json({ approvals: runtime.approvals.pending() }))
   app.post('/approvals', async context => {
-    const parsed = ApprovalDecisionSchema.safeParse(await context.req.json().catch(() => null))
+    const opened = openApprovalDecision({ key: config.ringsApprovalKey, body: await context.req.json().catch(() => null), workspaceId: runtime.workspaceId, seen: seenDecisions })
+    if (!opened.ok) {
+      const auditId = randomUUID()
+      runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
+        at: new Date().toISOString(), sessionId: 'workspace-admin', tool: 'setup_approval_envelope_refused',
+        outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: opened.reason,
+      })
+      logger.warn('Refused an approval decision envelope', { reason: opened.reason, workspaceId: runtime.workspaceId })
+      return context.json({ error: `Approval decision refused: ${opened.reason}` }, 401)
+    }
+    const parsed = ApprovalDecisionSchema.safeParse(opened.body)
     if (!parsed.success) return context.json({ error: 'Invalid approval decision' }, 400)
     const result = runtime.approvals.resolve(parsed.data, 'admin')
     return result.ok ? context.json({ resolved: true }) : context.json({ error: result.reason }, 409)
@@ -117,6 +131,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
       packs: manifest.packs,
       policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },
       reporting: runtime.reporter.configured,
+      approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',
       activeWork: runtime.hasActiveWork(),
     })
   })

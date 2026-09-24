@@ -24,7 +24,7 @@ export function createApprovalDelivery(options: ApprovalDeliveryOptions & { prom
     approvals: options.approvals,
     timeoutMs: options.config.approvalTimeoutMs,
     notify: options.config.approvalWebhook
-      ? createWebhookNotifier({ url: options.config.approvalWebhook, serverId: options.config.serverId, workspaceId: options.workspaceId, token: options.config.reportToken })
+      ? createWebhookNotifier({ url: options.config.approvalWebhook, serverId: options.config.serverId, workspaceId: options.workspaceId, token: options.config.reportToken, approvalKey: options.config.ringsApprovalKey })
       : undefined,
     prompt: options.prompt ? createCliApprovalChannel() : undefined,
   })
