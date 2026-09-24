@@ -1,4 +1,4 @@
-import { isIPv4, isIPv6 } from 'node:net'
+import { isIP, isIPv6 } from 'node:net'
 
 /**
  * The owner's approved list, compiled once. Two forms are accepted:
@@ -59,7 +59,7 @@ export function compileHostPattern(pattern: string): HostPattern {
   const match = HOST_PATTERN.exec(entry)
   if (!match) throw new UrlPatternError(describeMalformed(trimmed))
   const [, wildcard, host, port] = match
-  if (wildcard && ((host ?? '').startsWith('[') || isIPv4(host ?? ''))) throw new UrlPatternError(`A wildcard covers a domain, not an address: ${pattern}`)
+  if (wildcard && coversAnAddress(host ?? '')) throw new UrlPatternError(`A wildcard covers a domain, not an address: ${pattern}`)
   if (port !== undefined && Number(port) > 65_535) throw new UrlPatternError(`Not a port: ${port} in ${pattern}`)
   const bare = (host ?? '').toLowerCase().replace(/^\[|\]$/g, '')
   return {
@@ -69,6 +69,8 @@ export function compileHostPattern(pattern: string): HostPattern {
       if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
       if (starredHostRefusal(url)) return false
       const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+      // A wildcard names domains; an address never falls under one, whatever its digits end in.
+      if (wildcard && isIP(hostname)) return false
       const hostMatches = wildcard ? hostname === bare || hostname.endsWith(`.${bare}`) : hostname === bare
       if (!hostMatches) return false
       return port === undefined || effectivePort(url) === port
@@ -98,6 +100,16 @@ export function matchingHostEntry(entries: string[], url: URL): string | null {
       return false
     }
   }) ?? null
+}
+
+/**
+ * A wildcard suffix that could only ever end an address: a bracketed IPv6 literal, or one whose
+ * last label is a number, which the URL parser reads as IPv4 (`*.0.0.1`, `*.1`, `*.254.169.254`).
+ */
+function coversAnAddress(suffix: string): boolean {
+  if (suffix.startsWith('[')) return true
+  const last = suffix.split('.').at(-1) ?? ''
+  return /^(\d+|0x[0-9a-f]*)$/i.test(last)
 }
 
 /** Says what is wrong with a host entry, so the owner can fix it where it was typed. */

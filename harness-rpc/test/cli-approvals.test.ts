@@ -165,6 +165,18 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     expect(networkSubjects(config)).toEqual([])
   })
 
+  it('refuses a wildcard over an address suffix for a request from an address, and leaves it waiting', async () => {
+    const config = node()
+    const token = networkRequest(config, '127.0.0.1:3000')
+
+    const refused = await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', '*.0.0.1'], config })
+
+    expect(refused.exitCode).toBe(1)
+    expect(refused.stderr).toContain('A wildcard covers a domain, not an address: *.0.0.1')
+    expect(networkSubjects(config)).toEqual([])
+    expect(registry(config).pending().map(request => request.token)).toEqual([token])
+  })
+
   it('widens only a network approval', async () => {
     const config = node()
     const token = pendingRequest(config)

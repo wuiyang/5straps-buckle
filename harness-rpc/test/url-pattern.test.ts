@@ -122,6 +122,10 @@ describe('host patterns, one grammar for lists, BUCKLE_ALLOWED_HOSTS and grants 
     ['*.example.com/admin', /names no path/],
     ['*.127.0.0.1', /covers a domain, not an address/],
     ['*.[::1]', /covers a domain, not an address/],
+    ['*.0.0.1', /covers a domain, not an address/],
+    ['*.1', /covers a domain, not an address/],
+    ['*.254.169.254', /covers a domain, not an address/],
+    ['*.internal.0x7f', /covers a domain, not an address/],
     ['example.com:70000', /Not a port/],
   ])('refuse %s with a reason that says what is wrong', (pattern, reason) => {
     expect(() => compileHostPattern(pattern)).toThrow(UrlPatternError)
@@ -130,6 +134,7 @@ describe('host patterns, one grammar for lists, BUCKLE_ALLOWED_HOSTS and grants 
 
   it('refuse the same malformed forms in an approved list', () => {
     expect(() => compileUrlPatterns(['*.*.com'])).toThrow(/whole leftmost label/)
+    expect(() => compileUrlPatterns(['example.com', '*.0.0.1'])).toThrow(/covers a domain, not an address/)
   })
 
   it('name the first entry of a list that covers a URL', () => {
@@ -147,6 +152,12 @@ describe('network grants read with the pattern grammar', () => {
     expect(coveringGrant(exact(['localhost']), new URL('http://localhost:5432/'))).toBeNull()
     expect(coveringGrant(exact(['localhost:3000']), new URL('http://localhost:3000/'))).toBe('localhost:3000')
     expect(coveringGrant({ exact: [], patterns: ['*.localhost:3000'] }, new URL('http://app.localhost:3001/'))).toBeNull()
+  })
+
+  it('let no pattern grant over an address suffix cover an address', () => {
+    for (const url of ['http://127.0.0.1/', 'http://10.0.0.1/', 'http://169.254.169.254/']) {
+      expect(coveringGrant({ exact: [], patterns: ['*.0.0.1', '*.1', '*.254.169.254'] }, new URL(url))).toBeNull()
+    }
   })
 
   it('read a grant spelled like a pattern but not recorded as one as its literal string alone', () => {
