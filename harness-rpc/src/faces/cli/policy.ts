@@ -61,8 +61,15 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
         return await saveTool(runtime, toolName(rest[0], action), edit(current(), policy => denyTool(policy, toolName(rest[0], action))))
       case 'allow-tool':
         return await saveTool(runtime, toolName(rest[0], action), edit(current(), policy => allowTool(policy, toolName(rest[0], action))))
-      case 'remove':
-        return await save(runtime, remove(current(), required(rest[0], action)))
+      case 'remove': {
+        const before = current()
+        const next = remove(before, required(rest[0], action))
+        const result = await save(runtime, next)
+        if (result.exitCode === 0 && opensNetwork(before, next, runtime.policy.base())) {
+          process.stdout.write('The approved list is now empty, which is no list: the default network rules reach public hosts. Add an entry with `buckle policy allow-url <host>` to restrict it again.\n')
+        }
+        return result
+      }
       case 'import':
         return await save(runtime, WorkspacePolicySchema.parse(JSON.parse(readFileSync(required(rest[0], action), 'utf8'))))
       case 'export':
@@ -130,18 +137,36 @@ export function policyMigrateCommand(input: { config: BuckleConfig; argv: string
   if (environmentRefused.length > 0) {
     process.stdout.write('\nRemove the refused BUCKLE_NETWORK_ALLOW entries from the environment file.\n')
   }
+  const migrated = stored ? applyMigrations(stored, storedMigrations, storedRefused) : null
+  const emptied = stored !== null && migrated !== null && opensNetwork(stored, migrated, input.config.policy)
   if (!values.write) {
+    if (emptied) process.stdout.write(`\n${EMPTIED_LIST} --write will refuse until the list keeps an entry.\n`)
     process.stdout.write('\nNothing written. Run `buckle policy migrate --write` to store the conversions and removals above.\n')
     return { exitCode: 0 }
   }
-  if (!stored || storedMigrations.length + storedRefused.length === 0) {
+  if (!stored || !migrated || storedMigrations.length + storedRefused.length === 0) {
     process.stdout.write('\nNo stored policy to write.\n')
     return { exitCode: 0 }
   }
 
-  store.write(applyMigrations(stored, storedMigrations, storedRefused))
+  if (emptied) {
+    process.stderr.write(`\n${EMPTIED_LIST} Nothing written: add an entry with \`buckle policy allow-url <host>\` and run this again, or run \`buckle policy clear\` if you mean to lift the list.\n`)
+    return { exitCode: 1 }
+  }
+  store.write(migrated)
   process.stdout.write('\nStored policy rewritten: command patterns as globs, refused approved-list entries dropped.\n')
   return { exitCode: 0 }
+}
+
+const EMPTIED_LIST = 'Dropping these leaves the approved list empty, and an empty list is no list: the default network rules would then reach every public host, where the list reached none.'
+
+/**
+ * A stored approved list and an absent one read the same when empty: no list, so the network rule
+ * falls back to its defaults. Emptying a list that reached nothing would therefore open the node,
+ * unless the environment still names entries of its own.
+ */
+function opensNetwork(before: WorkspacePolicy, after: WorkspacePolicy, environment: WorkspacePolicy): boolean {
+  return before.network.allow.length > 0 && after.network.allow.length === 0 && environment.network.allow.length === 0
 }
 
 function migrationsOf(policy: WorkspacePolicy | null): ListedMigration[] {

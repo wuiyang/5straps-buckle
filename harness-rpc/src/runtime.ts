@@ -276,7 +276,7 @@ function warnSkipped(skipped: SkippedEntry[]): void {
   for (const { entry, reason } of skipped) {
     if (warnedSkipped.has(entry)) continue
     warnedSkipped.add(entry)
-    logger.warn('Approved list entry skipped: it covers nothing. Remove it with buckle policy migrate --write or buckle policy remove', { entry, reason })
+    logger.warn('Approved list entry skipped: it covers nothing. Remove it with buckle policy migrate --write or buckle policy remove; if it is the only entry, add a valid one first with buckle policy allow-url, because an empty list is no list and lets the default rules reach public hosts', { entry, reason })
   }
 }
 

@@ -84,4 +84,33 @@ describe('a stored approved-list entry the host grammar now refuses (BUCKLE-D18 
     expect(store(config).read()?.network.allow).toEqual(['example.com'])
     expect((await run(config, 'policy', 'migrate')).stdout).toContain('there is nothing to migrate')
   })
+
+  it('refuses a migrate --write that would empty the list, so a list that reached nothing never opens every public host', async () => {
+    const config = upgraded(['*.127.0.0.1', '*.1'])
+
+    const dry = await run(config, 'policy', 'migrate')
+    expect(dry.stdout).toContain('an empty list is no list')
+
+    const written = await run(config, 'policy', 'migrate', '--write')
+    expect(written.exitCode).toBe(1)
+    expect(written.stderr).toContain('Nothing written')
+    expect(written.stderr).toContain('buckle policy clear')
+    expect(store(config).read()?.network.allow).toEqual(['*.127.0.0.1', '*.1'])
+    for (const url of ['https://example.com/', 'https://evil.test/']) expect((await run(config, 'check-url', url)).exitCode).toBe(1)
+
+    expect((await run(config, 'policy', 'allow-url', 'docs.test')).exitCode).toBe(0)
+    expect((await run(config, 'policy', 'migrate', '--write')).exitCode).toBe(0)
+    expect(store(config).read()?.network.allow).toEqual(['docs.test'])
+    expect((await run(config, 'check-url', 'https://example.com/')).exitCode).toBe(1)
+  })
+
+  it('says so when policy remove takes out the last entry, because an empty list is no list', async () => {
+    const config = upgraded(['*.127.0.0.1'])
+
+    const removed = await run(config, 'policy', 'remove', '*.127.0.0.1')
+
+    expect(removed.exitCode).toBe(0)
+    expect(removed.stdout).toContain('The approved list is now empty, which is no list')
+    expect(store(config).read()?.network.allow).toEqual([])
+  })
 })
