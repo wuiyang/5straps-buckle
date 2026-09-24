@@ -1,3 +1,4 @@
+import { isIPv6 } from 'node:net'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
@@ -240,7 +241,7 @@ function parseGitAuthor(value: string | undefined): { name: string; email: strin
 
 /** Each entry is checked at load, so a malformed pattern stops the node rather than covering nothing. */
 function parseAllowedHosts(value: string | undefined): string[] {
-  const entries = parseList(value)
+  const entries = parseList(value).flatMap(entry => [entry, ...legacyIpv6Port(entry)])
   for (const entry of entries) {
     try {
       compileHostPattern(entry)
@@ -250,6 +251,19 @@ function parseAllowedHosts(value: string | undefined): string[] {
     }
   }
   return entries
+}
+
+/**
+ * Before `BUCKLE-D18` an entry was compared with `host:port` as written, so `::1:3000` covered
+ * `http://[::1]:3000` as well as the address `::1:3000`. The grammar reads it as that address
+ * alone, so the old second reading is kept, bracketed, and the owner is told to write it that way.
+ */
+function legacyIpv6Port(entry: string): string[] {
+  const match = /^(.+):([1-9]\d{0,4})$/.exec(entry)
+  if (!match || !isIPv6(entry) || !isIPv6(match[1]!) || Number(match[2]) > 65_535) return []
+  const bracketed = `[${match[1]}]:${match[2]}`
+  logger.warn('BUCKLE_ALLOWED_HOSTS entry reads two ways; both are kept. Write the one you mean', { entry, address: `[${entry}]`, addressWithPort: bracketed })
+  return [bracketed]
 }
 
 function parseList(value: string | undefined): string[] {
