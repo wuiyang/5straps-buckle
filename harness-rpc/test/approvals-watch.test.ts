@@ -272,6 +272,51 @@ describe('buckle approvals --watch, keys meant for another question', () => {
     expect(await done).toEqual({ exitCode: 0 })
   })
 
+  it('grants nothing from a bare Enter and the rest of the answer typed in the same keystrokes after a drop', async () => {
+    const config = node()
+    const registry = registryOf(config)
+    const first = issuePrivate(registry, '10.0.0.1')
+    await sleep(5)
+    const second = issuePrivate(registry, '10.0.0.2')
+    const { terminal, done } = watch(registryOf(config))
+    await prompted(terminal)
+
+    registry.resolve({ token: first, approved: false, scope: 'once' })
+    await vi.waitFor(() => expect(terminal.shown()).toContain(`${first} was answered elsewhere; dropped.`))
+    // The Enter passes the gate, but `always` lands before the next question takes keys.
+    terminal.type('\ralways\r')
+    await prompted(terminal, 2)
+    await sleep(100)
+
+    expect(terminal.shown()).toContain('subject: 10.0.0.2')
+    expect(grantsOf(config)).toEqual([])
+    expect(registryOf(config).pending().map(request => request.token)).toEqual([second])
+    terminal.type('\x03')
+    expect(await done).toEqual({ exitCode: 0 })
+  })
+
+  it('keeps no answer history, so Up then Enter on the next question grants nothing', async () => {
+    const config = node()
+    const registry = registryOf(config)
+    issuePrivate(registry, '10.0.0.1')
+    await sleep(5)
+    const second = issuePrivate(registry, '10.0.0.2')
+    const { terminal, done } = watch(registryOf(config))
+    await prompted(terminal)
+
+    terminal.type('always\r')
+    await prompted(terminal, 2)
+    expect(terminal.shown()).toContain('subject: 10.0.0.2')
+    terminal.type('\x1b[A')
+    terminal.type('\r')
+
+    await vi.waitFor(() => expect(count(terminal.shown(), /Nothing granted/g)).toBe(1))
+    expect(grantsOf(config).map(grant => [grant.subject, grant.scope])).toEqual([['10.0.0.1', 'always']])
+    expect(registryOf(config).pending().map(request => request.token)).toEqual([second])
+    terminal.type('\x03')
+    expect(await done).toEqual({ exitCode: 0 })
+  })
+
   it('does not let a double press answer two requests', async () => {
     const config = node()
     const registry = registryOf(config)
