@@ -197,7 +197,11 @@ describe('network grants read with the pattern grammar', () => {
 
   it('never get a pattern grant past an approved list, the workspace\'s own or the node\'s limit over it', () => {
     expect(judge(compileUrlPatterns(['example.com']), ['*.localhost'], 'http://app.localhost:3000/').kind).toBe('deny')
-    const nodeLimit = intersectUrlMatchers(compileUrlPatterns(['example.com']), null)
-    expect(judge(nodeLimit, ['*.localhost'], 'http://app.localhost:3000/').kind).toBe('deny')
+    // The workspace's own list reaches the host; the node's limit over it does not, so the limit decides.
+    const workspaceList = compileUrlPatterns(['*.localhost:3000', 'example.com'])
+    expect(judge(workspaceList, ['*.localhost'], 'http://app.localhost:3000/').kind).toBe('allow')
+    const underNodeLimit = intersectUrlMatchers(compileUrlPatterns(['example.com']), workspaceList)
+    expect(judge(underNodeLimit, ['*.localhost'], 'http://app.localhost:3000/').kind).toBe('deny')
+    expect(judge(underNodeLimit, ['*.localhost'], 'https://example.com/').kind).toBe('allow')
   })
 })
