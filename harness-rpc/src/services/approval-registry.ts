@@ -39,6 +39,8 @@ export interface ApprovalRegistry {
     check: (subjects: GrantSubject[]) => PermissionOutcome
   }): PermissionOutcome
   pending(): ApprovalRequest[]
+  /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
+  unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
 }
 
 export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath): ApprovalRegistry {
@@ -103,6 +105,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         return outcome
       })
     },
+
+    unspent: sessionId => store.read().once
+      .filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool && entry.expiresAt && Date.parse(entry.expiresAt) > Date.now())
+      .map(entry => ({ subject: entry.subject, tool: entry.tool! })),
 
     pending: () => store.read().pending.filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now()).map(entry => entry.request),
   }

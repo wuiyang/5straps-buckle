@@ -153,6 +153,11 @@ describe('what no pattern can change', () => {
     expect(evaluate('bash', ['-c', 'buckle approvals --json'], { allow: ['bash -c *'] }).kind).toBe('deny')
   })
 
+  it('refuses check-url, which would hand a tool a probe of the network policy', () => {
+    expect(reasonOf(evaluate('buckle', ['check-url', 'example.com'], { allow: ['*'] }))).toContain('cannot administer')
+    expect(evaluate('bash', ['-c', 'buckle check-url 10.0.0.1'], { allow: ['bash -c *'] }).kind).toBe('deny')
+  })
+
   it.each(['workspaces', 'history'])('rejects %s administration directly and through a wrapper', command => {
     expect(evaluate('buckle', [command, 'list'], { allow: ['*'] }).kind).toBe('deny')
     expect(evaluate('bash', ['-c', `buckle ${command} list`], { allow: ['bash -c *'] }).kind).toBe('deny')

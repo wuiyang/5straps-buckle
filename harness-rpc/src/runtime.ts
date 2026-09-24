@@ -57,6 +57,8 @@ export interface PolicyHandle {
   base(): WorkspacePolicy
   stored(): WorkspacePolicy | null
   effective(): WorkspacePolicy
+  /** The node's own policy over a registered workspace, which every call also meets. Null on the node's workspace. */
+  ceiling(): WorkspacePolicy | null
   /** Validates against the base, stores, and rebuilds the rules and packs. Throws PolicyError. */
   revision(): string
   apply(policy: WorkspacePolicy, expectedRevision?: string): Promise<WorkspacePolicy>
@@ -184,6 +186,7 @@ export async function createRuntime(input: {
       base: () => config.policy,
       stored: () => policyStore.read(),
       effective: () => compiled.policy,
+      ceiling: () => ceiling?.policy ?? null,
       revision: () => policyRevision(policyStore.read()),
       async apply(policy, expectedRevision) {
         if (runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')

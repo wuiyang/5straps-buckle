@@ -14,6 +14,7 @@ import { createCliApprovalChannel } from '../../adapters/approval/cli-approval-c
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, policyMigrateCommand } from './policy.js'
 import { watchApprovals } from './approvals-watch.js'
+import { CHECK_URL_BAD_INPUT, checkUrlCommand } from './check-url.js'
 import { workspaceRegistryCommand } from './workspace.js'
 import { BUCKLE_VERSION } from '../../version.js'
 
@@ -32,8 +33,10 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   const runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
 
   try {
-    if (['approve', 'approvals', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
-      return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0,
+    if (['approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
+      // A check that answers denied or asks has still succeeded; only bad input failed.
+      const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0
+      return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful,
         operation: () => dispatchRuntimeCommand({ runtime, config: input.config, command, rest }),
       })
     }
@@ -52,6 +55,7 @@ function dispatchRuntimeCommand(input: { runtime: BuckleRuntime; config: BuckleC
   if (command === 'skills') return printSkills(runtime, rest)
   if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, argv: rest }))
   if (command === 'approvals') return reportWorkspaceErrors(() => approvals({ config: input.config, runtime, argv: rest }))
+  if (command === 'check-url') return checkUrlCommand({ argv: rest, allowedHosts: input.config.allowedHosts, runtimeFor: workspace => runtimeForWorkspace({ config: input.config, runtime, workspace }) })
   if (command === 'grants') return grants(runtime, rest)
   if (command === 'workspace') return workspaceRegistryCommand({ config: input.config, runtime, argv: rest })
   if (command === 'workspaces') return shellWorkspacesCommand(runtime, rest)
@@ -85,6 +89,7 @@ function printUsage(): CliResult {
   buckle approvals [--json] [--workspace <id>]   Requests waiting for a decision
   buckle approvals --watch [--workspace <id>]    Ask about each request as it arrives
   buckle approve <token> [--scope once|session|always] [--workspace <id>]
+  buckle check-url <url|host> [--session <id>] [--workspace <id>]   approved, denied, asks or not listed
   buckle grants list | revoke <id>
   buckle workspace list | add <id> --root <dir>
   buckle workspace token list | add <workspace> | revoke <workspace> <token-id>

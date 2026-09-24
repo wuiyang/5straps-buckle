@@ -12,7 +12,7 @@ const MAX_SUBJECT_LENGTH = 300
  * is named apart from `approve`: reading the pending queue is how a tool would learn the token
  * it needs to approve itself.
  */
-const SELF_ADMINISTRATION = /(^|\s)buckle\s+(approvals|approve|grants|policy|init|plugin|serve|mcp|workspaces?|history)\b/
+const SELF_ADMINISTRATION = /(^|\s)buckle\s+(approvals|approve|check-url|grants|policy|init|plugin|serve|mcp|workspaces?|history)\b/
 
 /**
  * The owner's command globs, judged one shell word at a time on the parsed command line. Deny
