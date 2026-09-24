@@ -17,6 +17,7 @@ import type { ProcessRequest, ProcessResult } from '../src/ports/process-runner.
 import { createRuntime } from '../src/runtime.js'
 
 const TOKEN = 'ghp-forge-pack-secret-value'
+const BASIC = Buffer.from(`x-access-token:${TOKEN}`).toString('base64')
 const roots: string[] = []
 
 let server: Server
@@ -58,6 +59,13 @@ function startForgeServer(): Promise<Server> {
       if (request.headers.accept === 'application/vnd.github.v3.diff') return send(200, `${'d'.repeat(600_000)}\n`, 'text/plain')
       return send(200, JSON.stringify(pull(7)))
     }
+    // A pull request whose every field carries the credential, in both forms git and REST see.
+    if (path === '/repos/5straps/demo/pulls/8') {
+      if (request.headers.accept === 'application/vnd.github.v3.diff') return send(200, `+token=${TOKEN}\n+basic=${BASIC}\n`, 'text/plain')
+      return send(200, JSON.stringify({ ...pull(8), title: `leak ${TOKEN}`, head: { ref: 'forge-live-check', sha: 'a'.repeat(40) } }))
+    }
+    if (path === '/repos/5straps/demo/pulls/8/files') return send(200, JSON.stringify([{ filename: `src/${TOKEN}.js`, status: 'modified', additions: 1, deletions: 0 }]))
+    if (path === '/repos/5straps/demo/issues/8/comments') return send(200, JSON.stringify([{ user: { login: `bot-${BASIC}` }, created_at: '2026-09-24T00:00:00Z', body: `here is ${TOKEN}` }]))
     if (path === '/repos/5straps/demo/pulls/7/files') return send(200, JSON.stringify([{ filename: 'src/slugify.js', status: 'modified', additions: 3, deletions: 1 }]))
     if (path === '/repos/5straps/demo/issues/7/comments') return send(200, JSON.stringify([{ user: { login: '5straps' }, created_at: '2026-09-20T00:00:00Z', body: 'looks right' }]))
     return send(404, JSON.stringify({ message: 'no such route' }))
@@ -521,6 +529,18 @@ describe('pr_read', () => {
     expect(full.comments).toEqual([{ author: '5straps', at: '2026-09-20T00:00:00Z', body: 'looks right' }])
     expect(full.diffTruncated).toBe(true)
     expect(String(full.diff)).toHaveLength(524_288)
+  })
+
+  it('strips the credential from every field it returns: title, diff, files and comments', async () => {
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
+    const full = await call({ repository, tool: 'pr_read', args: { number: 8, include: ['diff', 'files', 'comments'] } }) as JsonObject
+    const text = JSON.stringify(full)
+    expect(text).not.toContain(TOKEN)
+    expect(text).not.toContain(BASIC)
+    expect(String(full.title)).toMatch(/^leak /)
+    expect(String(full.diff)).toContain('+token=')
+    expect((full.files as JsonObject[])[0]?.path).toMatch(/^src\/.+\.js$/)
+    expect((full.comments as JsonObject[])[0]?.body).toMatch(/^here is /)
   })
 
   it('refuses an origin that is not the configured forge', async () => {

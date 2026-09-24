@@ -87,6 +87,14 @@ export function createForgePack(options: ForgePackOptions): Pack {
 
   const scrub = (text: string): string => credentialForms(forge.token).reduce(stripSecret, text)
 
+  /** A forge answer is text someone else wrote, so every string in it is scrubbed, not only git's. */
+  const scrubJson = (value: JsonValue): JsonValue => {
+    if (typeof value === 'string') return scrub(value)
+    if (Array.isArray(value)) return value.map(scrubJson)
+    if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, scrubJson(entry)]))
+    return value
+  }
+
   const gitOutput = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; context: ToolContext }): Promise<string> => {
     const result = await runGit(input)
     if (result.exitCode !== 0) throw new ToolExecutionError(scrub(describeProcessFailure('git', result)), { code: 'GIT_FAILED' })
@@ -256,7 +264,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
         if (input.include.includes('comments')) {
           result.comments = (await client.readPullRequestComments(request)).map(comment => ({ ...comment }))
         }
-        return result
+        return scrubJson(result)
       },
     }),
   ]
