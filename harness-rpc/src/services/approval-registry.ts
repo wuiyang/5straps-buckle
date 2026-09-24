@@ -6,6 +6,7 @@ import type { PermissionDecision } from '../domain/permission/decision.js'
 import type { PermissionOutcome } from '../domain/permission/engine.js'
 import type { ApprovalAuthority } from '../ports/approval-channel.js'
 import type { GrantStore } from '../ports/grant-store.js'
+import { compileHostPattern, isHostWildcard, UrlPatternError } from '../domain/url-pattern.js'
 import { logger } from '../logger.js'
 
 const PENDING_TTL_MS = 10 * 60_000
@@ -20,10 +21,23 @@ const fileSchema = z.object({
   version: z.literal(1),
   pending: z.array(pendingSchema),
   once: z.array(onceSchema),
-  resolved: z.array(z.object({ workspace: z.string().optional(), decision: ApprovalDecisionSchema, expiresAt: z.string() })).default([]),
+  resolved: z.array(z.object({ workspace: z.string().optional(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string() })).default([]),
 })
 type State = z.infer<typeof fileSchema>
 type OnceEntry = z.infer<typeof onceSchema>
+
+/**
+ * `widenTo` records a network approval for a host pattern instead of the host that asked, per
+ * `BUCKLE-D18: A host wildcard covers the apex and every subdomain, in lists and grants alike`.
+ * It is a separate argument rather than a field of the decision, so no decision an agent or a
+ * relay sends can carry one: `buckle approve --host` is the only caller that passes it.
+ */
+export interface ResolveOptions {
+  widenTo?: string
+}
+
+/** On a widened grant, the pattern recorded and the host it was asked for, for the audit entry. */
+export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string } } | { ok: false; reason: string }
 
 export interface ApprovalRegistry {
   issue(input: { tool: string; sessionId: string; asks: Ask[] }): ApprovalRequest[]
@@ -33,7 +47,7 @@ export interface ApprovalRegistry {
    * The default names the owner, because every caller but the agent-facing MCP face reaches
    * this from the owner's own process or from behind the admin credential.
    */
-  resolve(decision: ApprovalDecision, authority?: ApprovalAuthority): { ok: true } | { ok: false; reason: string }
+  resolve(decision: ApprovalDecision, authority?: ApprovalAuthority, options?: ResolveOptions): Resolution
   evaluate(input: {
     tokens: string[]; sessionId: string; tool: string
     check: (subjects: GrantSubject[]) => PermissionOutcome
@@ -59,33 +73,40 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       })
     },
 
-    resolve(decision, authority = 'admin') {
+    resolve(decision, authority = 'admin', options = {}) {
       if (decision.approved && decision.scope !== 'once' && authority !== 'admin') {
         logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
         return { ok: false, reason: 'Only the admin credential writes an approval that outlives the call' }
       }
-      return store.update(state => {
+      const widening = options.widenTo === undefined ? null : checkWidening({ pattern: options.widenTo, decision, authority })
+      if (widening && !widening.ok) return widening
+      return store.update((state): Resolution => {
         prune(state)
+        const widenedTo = widening?.pattern
         const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
         if (previous) {
-          return previous.decision.approved === decision.approved && previous.decision.scope === decision.scope
-            ? { ok: true as const }
-            : { ok: false as const, reason: 'Approval already has a different decision' }
+          return previous.decision.approved === decision.approved && previous.decision.scope === decision.scope && previous.widenedTo === widenedTo
+            ? { ok: true }
+            : { ok: false, reason: 'Approval already has a different decision' }
         }
         const approval = state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token)
-        if (!approval) return { ok: false as const, reason: 'Approval token is unknown or expired' }
+        if (!approval) return { ok: false, reason: 'Approval token is unknown or expired' }
         if (decision.approved && !approval.request.offeredScopes.includes(decision.scope)) {
-          return { ok: false as const, reason: `Scope ${decision.scope} is not offered for this approval` }
+          return { ok: false, reason: `Scope ${decision.scope} is not offered for this approval` }
+        }
+        const { rule, subject, tool, expiresAt } = approval.request
+        if (widenedTo) {
+          const refusal = patternRefusal({ rule, subject, pattern: widenedTo })
+          if (refusal) return { ok: false, reason: refusal }
         }
         if (decision.approved) {
-          const { rule, subject, tool, expiresAt } = approval.request
           if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt })
-          else grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope })
-          logger.info('Approval granted', { rule, subject, scope: decision.scope, tool })
+          else grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope })
+          logger.info('Approval granted', { rule, subject: widenedTo ?? subject, ...(widenedTo ? { askedBy: subject } : {}), scope: decision.scope, tool })
         }
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
-        state.resolved.push({ workspace, decision, expiresAt: approval.request.expiresAt })
-        return { ok: true as const }
+        state.resolved.push({ workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt: approval.request.expiresAt })
+        return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject } } : { ok: true }
       })
     },
 
@@ -145,6 +166,43 @@ function unclaimedReliedOn(input: {
     if (input.check([...input.usable, ...without].map(other => other.subject)).kind === 'allow') needed = without
   }
   return needed
+}
+
+/**
+ * What a widening needs before the request is looked at: the owner's authority, an approval that
+ * outlives the call (`once` stays exact, since it covers one call), and a well-formed wildcard.
+ */
+function checkWidening(input: { pattern: string; decision: ApprovalDecision; authority: ApprovalAuthority }): { ok: true; pattern: string } | { ok: false; reason: string } {
+  if (input.authority !== 'admin') return { ok: false, reason: 'Only the admin credential widens an approval to a host pattern' }
+  if (!input.decision.approved) return { ok: false, reason: 'A denial names no host pattern; deny without --host' }
+  if (input.decision.scope === 'once') return { ok: false, reason: 'A once approval covers one call to the host that asked; widen a session or always approval instead' }
+  const pattern = input.pattern.trim()
+  try {
+    compileHostPattern(pattern)
+  } catch (error) {
+    if (error instanceof UrlPatternError) return { ok: false, reason: error.message }
+    throw error
+  }
+  if (!isHostWildcard(pattern)) return { ok: false, reason: `--host takes a wildcard pattern such as *.example.com, got ${pattern}; without --host the approval is for the host that asked` }
+  return { ok: true, pattern }
+}
+
+/**
+ * A pattern widens only a network approval, and only one it covers. The subject carries no scheme,
+ * so it is tried as http and as https: a pattern naming port 443 covers `api.example.com` asked
+ * over https.
+ */
+function patternRefusal(input: { rule: PermissionRuleId; subject: string; pattern: string }): string | null {
+  if (input.rule !== 'network_egress') return `--host widens a network approval only; this one is ${input.rule} for ${input.subject}`
+  const matcher = compileHostPattern(input.pattern)
+  const covers = ['http', 'https'].some(scheme => {
+    try {
+      return matcher.matches(new URL(`${scheme}://${input.subject}/`))
+    } catch {
+      return false
+    }
+  })
+  return covers ? null : `The pattern ${input.pattern} does not cover ${input.subject}, the host that asked`
 }
 
 function prune(state: State): void {

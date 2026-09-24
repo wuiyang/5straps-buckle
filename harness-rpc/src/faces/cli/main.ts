@@ -20,6 +20,8 @@ import { BUCKLE_VERSION } from '../../version.js'
 
 export interface CliResult {
   exitCode: number
+  /** For the command's audit entry: what a widened approval covers. */
+  detail?: string
 }
 
 export async function runCli(input: { argv: string[]; config: BuckleConfig }): Promise<CliResult> {
@@ -43,7 +45,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
     if (['approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
       // A check that answers denied or asks has still succeeded; only bad input failed.
       const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0
-      return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful,
+      return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail,
         operation: () => dispatchRuntimeCommand({ runtime, config: input.config, command, rest }),
       })
     }
@@ -95,7 +97,7 @@ function printUsage(): CliResult {
 
   buckle approvals [--json] [--workspace <id>]   Requests waiting for a decision
   buckle approvals --watch [--workspace <id>]    Ask about each request as it arrives
-  buckle approve <token> [--scope once|session|always] [--workspace <id>]
+  buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <id>]
   buckle check-url <url|host> [--session <id>] [--workspace <id>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
   buckle grants list | revoke <id>
   buckle workspace list | add <id> --root <dir>
@@ -237,18 +239,24 @@ async function watch(runtime: BuckleRuntime, node: BuckleRuntime): Promise<CliRe
 async function approve(input: CommandInput): Promise<CliResult> {
   const { positionals, values } = parseArgs({
     args: input.argv,
-    options: { scope: { type: 'string' }, deny: { type: 'boolean' }, workspace: { type: 'string' } },
+    options: { scope: { type: 'string' }, deny: { type: 'boolean' }, workspace: { type: 'string' }, host: { type: 'string' } },
     allowPositionals: true,
   })
   const token = positionals[0]
-  if (!token) return fail('Usage: buckle approve <token> [--scope once|session|always] [--deny] [--workspace <id>]')
+  if (!token) return fail("Usage: buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <id>]")
 
   const scope = GrantScopeSchema.safeParse(values.scope ?? 'once')
   if (!scope.success) return fail(`Invalid scope: ${values.scope}`)
 
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
-  const result = runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data }, 'admin')
+  // `BUCKLE-D18`: `--host` widens a network approval to a pattern, under the owner's authority alone.
+  const result = runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data }, 'admin', values.host === undefined ? {} : { widenTo: values.host })
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceId}`)
+  if (result.widened) {
+    const { pattern, askedBy } = result.widened
+    process.stdout.write(`Approved ${token} (${scope.data}) for ${pattern}, asked by ${askedBy}, in workspace ${runtime.workspaceId}\n`)
+    return { exitCode: 0, detail: `network_egress ${scope.data} approval widened to ${pattern}, asked by ${askedBy}` }
+  }
   process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceId}\n`)
   return { exitCode: 0 }
 }

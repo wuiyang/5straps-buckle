@@ -9,6 +9,8 @@ export async function auditOperation<T>(input: {
   sessionId: string
   operation: () => T | Promise<T>
   isSuccessful?: (result: T) => boolean
+  /** A line for the result entry, from what the operation returned: what a widened approval covers. */
+  describe?: (result: T) => string | undefined
 }): Promise<T> {
   const auditId = randomUUID()
   const start = performance.now()
@@ -22,7 +24,8 @@ export async function auditOperation<T>(input: {
     input.actions.record({ ...entry, event: 'result', outcome: 'error', durationMs: Math.round(performance.now() - start) })
     throw error
   }
-  input.actions.record({ ...entry, event: 'result', outcome: input.isSuccessful && !input.isSuccessful(value) ? 'error' : 'ok', durationMs: Math.round(performance.now() - start) })
+  const detail = input.describe?.(value)
+  input.actions.record({ ...entry, event: 'result', outcome: input.isSuccessful && !input.isSuccessful(value) ? 'error' : 'ok', durationMs: Math.round(performance.now() - start), ...(detail ? { detail } : {}) })
   return value
 }
 

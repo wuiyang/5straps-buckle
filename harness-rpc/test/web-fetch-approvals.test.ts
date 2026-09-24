@@ -81,3 +81,29 @@ describe('web_fetch and the approvals the owner gave', () => {
     if (response.outcome === 'error') expect(response.error.message).toMatch(/loopback/)
   })
 })
+
+describe('web_fetch and an approval widened to a host pattern (BUCKLE-D18)', () => {
+  function fetchUrl(runtime: BuckleRuntime, url: string): Promise<InvokeResponse> {
+    return runtime.invoke({ request: { requestId: 'fetch', tool: 'web_fetch', args: { url }, approvalTokens: [] }, sessionId: 'fetcher' })
+  }
+
+  it('reaches the host that asked under the pattern, and checks every redirect hop against it', async () => {
+    const runtime = await runtimeWith()
+    const asked = `http://localhost:${port}/`
+    const token = tokenOf(await fetchUrl(runtime, asked))
+    expect(runtime.approvals.resolve({ token, approved: true, scope: 'session' }, 'admin', { widenTo: '*.localhost' })).toMatchObject({ ok: true, widened: { pattern: '*.localhost', askedBy: `localhost:${port}` } })
+
+    expect(await fetchUrl(runtime, asked)).toMatchObject({ outcome: 'ok', output: { body: 'arrived' } })
+    const hop = await fetchUrl(runtime, `${asked}?to=http://127.0.0.1:${port}/`)
+    expect(hop).toMatchObject({ outcome: 'error', error: { code: 'EGRESS_BLOCKED' } })
+    if (hop.outcome === 'error') expect(hop.error.message).toMatch(/loopback/)
+  })
+
+  it('never gets a pattern grant past the approved list', async () => {
+    const runtime = await runtimeWith({ BUCKLE_NETWORK_ALLOW: 'example.com' })
+    runtime.grants.grant({ sessionId: 'fetcher', rule: 'network_egress', subject: '*.localhost', scope: 'always' })
+
+    const response = await fetchUrl(runtime, `http://localhost:${port}/`)
+    expect(response).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
+  })
+})

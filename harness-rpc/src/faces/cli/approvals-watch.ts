@@ -53,6 +53,9 @@ type Outcome = { exitCode: number }
  * No key answers a question the owner has not seen. A question takes keys only once the keyboard
  * has been still for `QUIET_MS` with it on screen, and a line typed before that is thrown away.
  * After a drop the next question also waits for a bare Enter, because the owner was mid-answer.
+ *
+ * It grants the host that asked and never a pattern. Widening per `BUCKLE-D18` means typing one,
+ * which no single key or fixed word can stand for, so it stays with `buckle approve --host`.
  */
 export async function watchApprovals(options: ApprovalWatchOptions): Promise<Outcome> {
   const poll = options.pollMs ?? WATCH_POLL_MS
