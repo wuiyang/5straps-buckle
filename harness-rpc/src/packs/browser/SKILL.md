@@ -32,15 +32,19 @@ loopback address asks first: relay the `buckle approve <token>` line to the pers
 answer in `buckle approvals --watch` on the Buckle machine, then retry. A page named without a scheme is opened and judged as
 `https://<page>`, and `localhost:3000` is host `localhost` on port 3000. Most dev servers speak
 plain HTTP, so write `http://localhost:3000` for one. `open` takes exactly one page. Only the page
-a command names is judged: links clicked and redirects inside the browser are not.
+a command names is judged by Buckle's rules. When the workspace has an approved list, Buckle also
+starts the browser with that list as agent-browser's `--allowed-domains`, so clicks, redirects and
+page requests to other hosts are blocked inside the browser. A list entry agent-browser cannot
+express (a port, an address, a URL prefix) stops the browser from starting, and the refusal names
+it. Without an approved list, clicks and redirects are not judged.
 
 Paths given to `screenshot`, `pdf`, `upload` and `download` are judged by the same path rules as
 `fs` tools, so writing outside the workspace asks. Name such a path as a positional argument,
 which is where the rules look.
 
 Flags are an allowlist: anything Buckle does not know is refused by name, so read the refusal
-rather than guessing a second spelling. `--proxy` and `--proxy-bypass` are refused because Buckle
-owns the network policy. Also refused on purpose are `--profile`, `--executable-path`,
+rather than guessing a second spelling. `--proxy`, `--proxy-bypass` and `--allowed-domains` are refused
+because Buckle owns the network policy. Also refused on purpose are `--profile`, `--executable-path`,
 `--args`, `--extension`, `--init-script`, `--config`, `--cdp`, `--auto-connect`, `--provider`,
 `--ca-cert`, `--allow-file-access`, and the flags that read or write an unjudged path,
 `--screenshot-dir`, `--download-path`, `--params` and `--payload`.

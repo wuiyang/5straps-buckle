@@ -87,6 +87,7 @@ describe('the other sandboxes', () => {
       hiddenPaths: [],
       mountReadOnlyPaths: [],
       approvedUrls: null,
+      approvedLists: [],
       allowedHosts: [],
     forge: { apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } },
     stateDirectory: '/state',

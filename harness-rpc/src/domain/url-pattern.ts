@@ -46,6 +46,10 @@ export interface HostPattern {
   /** As entered, trimmed. */
   readonly pattern: string
   readonly wildcard: boolean
+  /** Lowercased, an IPv6 literal without its brackets. */
+  readonly host: string
+  /** Null when the pattern names no port, which then matches any. */
+  readonly port: string | null
   matches(url: URL): boolean
 }
 
@@ -67,6 +71,8 @@ export function compileHostPattern(pattern: string): HostPattern {
   return {
     pattern: trimmed,
     wildcard: Boolean(wildcard),
+    host: bare,
+    port: port ?? null,
     matches: url => {
       if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
       if (starredHostRefusal(url)) return false

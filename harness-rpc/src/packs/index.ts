@@ -30,6 +30,8 @@ export interface BuiltinPackOptions {
   mountReadOnlyPaths: string[]
   /** The owner's approved list, or null for the default egress rules. */
   approvedUrls: UrlMatcher | null
+  /** The entries of each approved list `approvedUrls` intersects, which the browser pack passes on. */
+  approvedLists: string[][]
   braveSearchApiKey?: string
   /** The owner's forge credential and where it may be spent. */
   forge: { token?: string; apiUrl: string; author: { name: string; email: string } }
@@ -104,6 +106,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       sessionDirectory: options.browserStateDirectory,
       headed: options.browserHeaded,
       available: hasExecutable(options.agentBrowserCommand),
+      approvedLists: options.approvedLists,
     }),
   ]
 

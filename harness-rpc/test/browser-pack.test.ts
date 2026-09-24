@@ -29,6 +29,7 @@ async function run(input: JsonObject, options: Partial<BrowserPackOptions> = {},
     sessionDirectory: PROFILE,
     headed: false,
     available: true,
+    approvedLists: [],
     runProcess: async request => {
       calls.push(request)
       return result
@@ -100,6 +101,7 @@ describe('how the browser pack reports trouble', () => {
       sessionDirectory: PROFILE,
       headed: false,
       available: false,
+      approvedLists: [],
       runProcess: async () => stubResult(),
     })
     expect(pack.unavailableReason).toBe('agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it')
@@ -256,6 +258,7 @@ describe('the environment the browser is spawned with', () => {
         sessionDirectory: PROFILE,
         headed: false,
         available: true,
+        approvedLists: [],
         runProcess: async request => {
           calls.push(request)
           return stubResult()
@@ -336,7 +339,7 @@ describe('a page named without a scheme', () => {
 
   it.each([
     [['example.com', '--engine', 'chrome']],
-    [['--allowed-domains', 'example.com,cdn.example.com', 'example.com']],
+    [['--headers', '{"x":"1"}', 'example.com']],
     [['--port', '9222', 'example.com']],
     [['--port=9222', 'example.com']],
     [['example.com', '--label=checkout', '--timeout', '5000']],
@@ -346,8 +349,8 @@ describe('a page named without a scheme', () => {
   })
 
   it('passes a flag value on as written rather than as a page', async () => {
-    const { args } = await run({ command: 'open', args: ['example.com', '--engine', 'chrome', '--allowed-domains', 'example.com'] })
-    expect(args.slice(0, 6)).toEqual(['open', 'https://example.com/', '--engine', 'chrome', '--allowed-domains', 'example.com'])
+    const { args } = await run({ command: 'open', args: ['example.com', '--engine', 'chrome', '--label', 'example.com'] })
+    expect(args.slice(0, 6)).toEqual(['open', 'https://example.com/', '--engine', 'chrome', '--label', 'example.com'])
   })
 
   it('judges a host named true or false whenever it is the page, since boolean flags are known by name', () => {

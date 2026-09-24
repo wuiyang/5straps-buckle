@@ -18,7 +18,7 @@ const FLAG_PATTERN = /^-{1,2}[a-z]/i
  * as a value would not be judged at all.
  */
 const VALUE_FLAGS = new Set([
-  '--action-policy', '--allowed-domains', '--allowed-origins', '--body', '--color-scheme',
+  '--action-policy', '--allowed-origins', '--body', '--color-scheme',
   '--confirm-actions', '--credential-provider', '--device', '--engine', '--filter', '--fn', '--fps',
   '--headers', '--idle-timeout', '--label', '--load', '--max-output', '--method', '--model',
   '--name', '--namespace', '--older-than', '--password', '--password-selector', '--port',
@@ -47,8 +47,8 @@ const BOOLEAN_FLAGS = new Set([
  * outside Buckle's view; `--allow-file-access` reads local files around the path rules;
  * `--provider` moves the browser off this node; `--ca-cert` trusts a certificate; and
  * `--screenshot-dir`, `--download-path`, `--params` and `--payload` read or write a path the
- * rules never judge. Name an output path as a positional instead, where they do. `--proxy` and
- * `--proxy-bypass` are in `REFUSAL_REASONS`.
+ * rules never judge. Name an output path as a positional instead, where they do. `--proxy`,
+ * `--proxy-bypass` and `--allowed-domains` are in `REFUSAL_REASONS`.
  */
 const KNOWN_FLAGS = new Set([...VALUE_FLAGS, ...BOOLEAN_FLAGS])
 
@@ -60,6 +60,7 @@ const KNOWN_FLAGS = new Set([...VALUE_FLAGS, ...BOOLEAN_FLAGS])
 const REFUSAL_REASONS = new Map([
   ['--proxy', 'Buckle owns the network policy, so the agent cannot route the browser through a proxy the rules never judge'],
   ['--proxy-bypass', 'Buckle owns the network policy, so the agent cannot choose which hosts skip a proxy'],
+  ['--allowed-domains', 'Buckle owns the network policy and sets the browser\'s allowed domains from the approved list'],
 ])
 
 const GENERIC_REFUSAL = 'Buckle passes only the agent-browser flags it can judge, and never one that changes the profile, the binary, or where output lands'

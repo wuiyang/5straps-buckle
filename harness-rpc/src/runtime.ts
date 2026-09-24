@@ -300,6 +300,7 @@ async function buildPacks(input: {
     hiddenPaths: [input.config.nodeStateDirectory ?? input.config.stateDirectory],
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
     approvedUrls: approvedUrls(input.compiled, input.ceiling),
+    approvedLists: [input.ceiling?.network, input.compiled.network].flatMap(list => list ? [list.patterns] : []),
     braveSearchApiKey: input.config.braveSearchApiKey,
     forge: { token: input.config.forgeGithubToken, apiUrl: input.config.forgeApiUrl, author: input.config.forgeGitAuthor },
     stateDirectory: input.config.stateDirectory,

@@ -13,7 +13,7 @@ afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync
 function fixture() {
   const root = mkdtempSync('/tmp/buckle-fresh-browser-'); roots.push(root)
   const calls: ProcessRequest[] = []
-  const pack = createBrowserPack({ cwd: root, paths: createPathView({ root, mount: null }), sessionDirectory: join(root, 'state'), agentBrowserCommand: 'agent-browser', available: true, headed: false, runProcess: async request => { calls.push(request); return { exitCode: 0, signal: null, stdout: '{}', stderr: '', truncated: false, timedOut: false } } })
+  const pack = createBrowserPack({ cwd: root, paths: createPathView({ root, mount: null }), sessionDirectory: join(root, 'state'), agentBrowserCommand: 'agent-browser', available: true, headed: false, approvedLists: [], runProcess: async request => { calls.push(request); return { exitCode: 0, signal: null, stdout: '{}', stderr: '', truncated: false, timedOut: false } } })
   const context = { requestId: 'request', sessionId: 'owner-agent', timeoutMs: 1000, signal: new AbortController().signal }
   return { root, calls, tool: pack.tools[0]!, context }
 }

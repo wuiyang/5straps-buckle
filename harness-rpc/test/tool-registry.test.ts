@@ -19,6 +19,7 @@ function builtinRegistry(allowHostGit = false) {
     hiddenPaths: [],
     mountReadOnlyPaths: [],
     approvedUrls: null,
+    approvedLists: [],
     runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
     sandbox: createNoneSandbox(),
     writableRoots: ['/work/project'],

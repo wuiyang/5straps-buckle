@@ -10,6 +10,7 @@ import type { PathView } from '../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
+import { browserAllowedDomains } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { describeProcessFailure } from '../process-failure.js'
 
@@ -33,6 +34,13 @@ export interface BrowserPackOptions {
   /** Launch a visible window instead of headless. A per-call --headed flag still wins. */
   headed: boolean
   available: boolean
+  /**
+   * The entries of each configured approved list, node ceiling and workspace, empty when none is
+   * set. Passed on every call as --allowed-domains, so clicks, redirects and page requests stay on
+   * them too; the pack is rebuilt when the policy changes, and agent-browser relaunches the
+   * browser when a call brings a different list.
+   */
+  approvedLists: string[][]
 }
 
 /** Names the setting, never its value, which can be a path outside the workspace. */
@@ -41,6 +49,7 @@ export const BROWSER_UNAVAILABLE = 'agent-browser is not installed on this node,
 export function createBrowserPack(options: BrowserPackOptions): Pack {
   const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: z.object({ sessions: z.record(z.string(), z.string()) }), fallback: { sessions: {} } })
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
+  const allowedDomains = browserAllowedDomains(options.approvedLists)
   return {
     id: PACK_ID,
     version: '1.0.0',
@@ -54,10 +63,14 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
         risk: 'execute',
         tags: ['browser', 'agent-browser', 'network'],
         input: commandInput,
-        effects: input => [
-          { kind: 'exec', command: options.agentBrowserCommand, args: [input.command, ...input.args] },
-          ...browserEffects(input.command, input.args),
-        ],
+        effects: input => {
+          // Before anything is judged, so the owner is never asked about a browser that cannot start.
+          if ('refusal' in allowedDomains) throw new ToolInputError(allowedDomains.refusal, { code: 'PERMISSION_DENIED' })
+          return [
+            { kind: 'exec', command: options.agentBrowserCommand, args: [input.command, ...input.args] },
+            ...browserEffects(input.command, input.args),
+          ]
+        },
         run: async (input, context): Promise<JsonValue> => {
           const forbidden = ['--session', '--namespace', '--restore', '--restore-save', '--state', '--load', '--credential-provider', '--action-policy']
           if ((!FRESH_COMMANDS.has(input.command) || input.args.some(arg => forbidden.includes(arg.split('=')[0]!)))) throw new ToolInputError('Fresh browsers cannot attach, restore, or override session identity')
@@ -73,6 +86,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
           const session = sessions.update(state => state.sessions[key] ??= `buckle-${randomUUID()}`)
           args.push('--config', configFile, '--session', session, '--idle-timeout', '300000')
+          if ('value' in allowedDomains && allowedDomains.value !== null) args.push('--allowed-domains', allowedDomains.value)
           if (options.headed && !input.args.includes('--headed')) args.push('--headed')
 
           mkdirSync(options.sessionDirectory, { recursive: true, mode: 0o700 })
