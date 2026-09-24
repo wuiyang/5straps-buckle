@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { ResolvedEffect } from '../src/domain/effect.js'
 import { createPermissionEngine } from '../src/domain/permission/engine.js'
 import { createNetworkEgressRule } from '../src/domain/permission/rules/network-egress-rule.js'
-import { compileUrlPatterns, UrlPatternError } from '../src/domain/url-pattern.js'
+import { coveringGrant } from '../src/domain/permission/rules/network-egress-rule.js'
+import { compileHostPattern, compileUrlPatterns, intersectUrlMatchers, matchingHostEntry, UrlPatternError } from '../src/domain/url-pattern.js'
 
 function matches(patterns: string[], url: string): boolean {
   return compileUrlPatterns(patterns).matches(new URL(url))
@@ -74,5 +75,91 @@ describe('the egress rule under an approved list', () => {
 
   it('still refuses a non-HTTP scheme whatever the list says', () => {
     expect(evaluate(['*'].filter(() => false).concat(['example.com']), 'file:///etc/passwd').kind).toBe('deny')
+  })
+})
+
+describe('host patterns, one grammar for lists, BUCKLE_ALLOWED_HOSTS and grants (BUCKLE-D18)', () => {
+  const covers = (pattern: string, url: string) => compileHostPattern(pattern).matches(new URL(url))
+
+  it('cover the apex, one level and many levels below it, and nothing beside it', () => {
+    expect(covers('*.example.com', 'https://example.com/')).toBe(true)
+    expect(covers('*.example.com', 'https://api.example.com/')).toBe(true)
+    expect(covers('*.example.com', 'https://a.b.c.example.com/')).toBe(true)
+    expect(covers('*.example.com', 'https://notexample.com/')).toBe(false)
+    expect(covers('*.example.com', 'https://example.com.evil.test/')).toBe(false)
+  })
+
+  it('match any port unless the pattern names one, and a named one against the scheme default too', () => {
+    expect(covers('*.localhost', 'http://app.localhost:5173/')).toBe(true)
+    expect(covers('*.localhost', 'http://app.localhost/')).toBe(true)
+    expect(covers('*.localhost:3000', 'http://app.localhost:3000/')).toBe(true)
+    expect(covers('*.localhost:3000', 'http://app.localhost:3001/')).toBe(false)
+    expect(covers('*.example.com:443', 'https://api.example.com/')).toBe(true)
+    expect(covers('*.example.com:443', 'http://api.example.com/')).toBe(false)
+  })
+
+  it('match http and https alike, and never another scheme', () => {
+    expect(covers('*.example.com', 'http://api.example.com/')).toBe(true)
+    expect(covers('*.example.com', 'https://api.example.com/')).toBe(true)
+    expect(covers('*.example.com', 'ws://api.example.com/')).toBe(false)
+    expect(covers('*.example.com', 'ftp://api.example.com/')).toBe(false)
+  })
+
+  it('keep an exact host exact, and read a bare IPv6 literal as its bracketed form', () => {
+    expect(covers('example.com', 'https://api.example.com/')).toBe(false)
+    expect(covers('::1', 'http://[::1]:8080/')).toBe(true)
+    expect(compileHostPattern(' *.Example.com ').pattern).toBe('*.Example.com')
+    expect(compileHostPattern('*.example.com').wildcard).toBe(true)
+  })
+
+  it.each([
+    ['*', /lone \* would match every host/],
+    ['*.', /needs a domain after it/],
+    ['*.*.com', /whole leftmost label/],
+    ['api.*.example.com', /whole leftmost label/],
+    ['foo*.example.com', /whole leftmost label/],
+    ['https://example.com', /names no scheme/],
+    ['*.example.com/admin', /names no path/],
+    ['*.127.0.0.1', /covers a domain, not an address/],
+    ['*.[::1]', /covers a domain, not an address/],
+    ['example.com:70000', /Not a port/],
+  ])('refuse %s with a reason that says what is wrong', (pattern, reason) => {
+    expect(() => compileHostPattern(pattern)).toThrow(UrlPatternError)
+    expect(() => compileHostPattern(pattern)).toThrow(reason)
+  })
+
+  it('refuse the same malformed forms in an approved list', () => {
+    expect(() => compileUrlPatterns(['*.*.com'])).toThrow(/whole leftmost label/)
+  })
+
+  it('name the first entry of a list that covers a URL', () => {
+    expect(matchingHostEntry(['other.test', '*.internal.test'], new URL('http://db.internal.test/'))).toBe('*.internal.test')
+    expect(matchingHostEntry(['other.test'], new URL('http://db.internal.test/'))).toBeNull()
+  })
+})
+
+describe('network grants read with the pattern grammar', () => {
+  it('prefer an exact grant, then a pattern, and never read an exact grant as a pattern', () => {
+    expect(coveringGrant(['app.localhost:3000', '*.localhost'], new URL('http://app.localhost:3000/'))).toBe('app.localhost:3000')
+    expect(coveringGrant(['*.localhost'], new URL('http://deep.app.localhost:3000/'))).toBe('*.localhost')
+    expect(coveringGrant(['localhost'], new URL('http://localhost:5432/'))).toBeNull()
+    expect(coveringGrant(['localhost:3000'], new URL('http://localhost:3000/'))).toBe('localhost:3000')
+    expect(coveringGrant(['*.localhost:3000'], new URL('http://app.localhost:3001/'))).toBeNull()
+  })
+
+  const judge = (approved: ReturnType<typeof compileUrlPatterns> | null, subjects: string[], url: string) => {
+    const engine = createPermissionEngine([createNetworkEgressRule({ approved })])
+    return engine.evaluate({ tool: 'web_fetch', effects: [{ kind: 'network', url: new URL(url) }], grants: { subjectsFor: () => subjects } })
+  }
+
+  it('let a pattern grant answer the question a private host asks, naming the pattern', () => {
+    expect(judge(null, ['*.localhost'], 'http://app.localhost:3000/')).toEqual({ kind: 'allow', allowedBy: ['network_egress:*.localhost'] })
+    expect(judge(null, ['*.localhost'], 'http://127.0.0.1:3000/').kind).toBe('ask')
+  })
+
+  it('never get a pattern grant past an approved list, the workspace\'s own or the node\'s limit over it', () => {
+    expect(judge(compileUrlPatterns(['example.com']), ['*.localhost'], 'http://app.localhost:3000/').kind).toBe('deny')
+    const nodeLimit = intersectUrlMatchers(compileUrlPatterns(['example.com']), null)
+    expect(judge(nodeLimit, ['*.localhost'], 'http://app.localhost:3000/').kind).toBe('deny')
   })
 })

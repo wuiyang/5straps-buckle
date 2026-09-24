@@ -1,6 +1,7 @@
 import type { GrantScope } from '@5straps/protocol'
 import type { PermissionRule } from './permission/decision.js'
-import { compileUrlPatterns, type UrlMatcher } from './url-pattern.js'
+import { hostSubject } from './permission/rules/network-egress-rule.js'
+import { compileUrlPatterns, isHostWildcard, matchingHostEntry, type UrlMatcher } from './url-pattern.js'
 
 export type UrlVerdictKind = 'approved' | 'denied' | 'asks' | 'not listed'
 
@@ -44,8 +45,7 @@ export function judgeUrl(input: {
     effect: { kind: 'network', url: input.url },
     grants: { subjectsFor: rule => rule === 'network_egress' ? input.approvals.map(approval => approval.subject) : [] },
   })
-  const subject = hostSubject(input.url)
-  const listedHost = input.allowedHosts.find(entry => entry === subject || entry === bareHost(input.url))
+  const listedHost = matchingHostEntry(input.allowedHosts, input.url)
 
   if (!decision || decision.kind === 'deny') return { verdict: 'denied', because: `network_egress: ${decision?.reason ?? 'refused'}` }
   if (decision.kind === 'ask') {
@@ -54,7 +54,8 @@ export function judgeUrl(input: {
   }
   if (decision.via) {
     const approval = input.approvals.find(entry => entry.subject === decision.via!.subject)
-    return { verdict: 'approved', because: `${approval?.label ?? 'approval'} for ${decision.via.subject}` }
+    const covered = isHostWildcard(decision.via.subject) ? `pattern ${decision.via.subject}, which covers ${hostSubject(input.url)}` : decision.via.subject
+    return { verdict: 'approved', because: `${approval?.label ?? 'approval'} for ${covered}` }
   }
   if (input.approved) return { verdict: 'approved', because: matchingEntries({ url: input.url, workspaceList: input.workspaceList, nodeList: input.nodeList }) }
   if (listedHost) return { verdict: 'approved', because: `BUCKLE_ALLOWED_HOSTS entry ${listedHost}` }
@@ -70,11 +71,3 @@ function matchingEntries(input: { url: URL; workspaceList: string[]; nodeList: s
   return parts.join(' and ')
 }
 
-/** The subject the egress rule asks about and a grant names: the host, with a port when written. */
-function hostSubject(url: URL): string {
-  return url.port ? `${url.hostname}:${url.port}` : url.hostname
-}
-
-function bareHost(url: URL): string {
-  return url.hostname.replace(/^\[|\]$/g, '')
-}

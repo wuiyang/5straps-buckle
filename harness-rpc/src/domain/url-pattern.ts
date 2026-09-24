@@ -1,3 +1,5 @@
+import { isIPv4, isIPv6 } from 'node:net'
+
 /**
  * The owner's approved list, compiled once. Two forms are accepted:
  *
@@ -7,6 +9,11 @@
  *   `https://app.example.com/admin` (that origin, that path and what is under it)
  *
  * Anything else is rejected at compile time, so a typo cannot silently approve nothing.
+ *
+ * The host form is the one grammar for every host Buckle is told about, per `BUCKLE-D18: A host
+ * wildcard covers the apex and every subdomain, in lists and grants alike`: an approved list's
+ * host entries, `BUCKLE_ALLOWED_HOSTS`, and an approval widened to a pattern all compile through
+ * `compileHostPattern`. There is no public-suffix list: `*.com` is a pattern like any other.
  */
 export interface UrlMatcher {
   readonly patterns: string[]
@@ -30,17 +37,72 @@ export function compileUrlPatterns(patterns: string[]): UrlMatcher {
 function compileOne(pattern: string): Compiled {
   const trimmed = pattern.trim()
   if (/^https?:\/\//i.test(trimmed)) return compilePrefix(trimmed)
+  return compileHostPattern(trimmed).matches
+}
 
-  const match = HOST_PATTERN.exec(trimmed)
-  if (!match) throw new UrlPatternError(`Not a host or an http(s) URL prefix: ${pattern}`)
+/** One host entry, compiled: `example.com`, `example.com:8443`, `*.example.com`, `[::1]:3000`. */
+export interface HostPattern {
+  /** As entered, trimmed. */
+  readonly pattern: string
+  readonly wildcard: boolean
+  matches(url: URL): boolean
+}
+
+/**
+ * A host with an optional port, or `*.` and a domain for the apex and every subdomain at any
+ * depth. A port is matched only when written, against the scheme default when the URL has none,
+ * and only an http or https URL ever matches. A bare IPv6 literal is read as its bracketed form.
+ */
+export function compileHostPattern(pattern: string): HostPattern {
+  const trimmed = pattern.trim()
+  const entry = isIPv6(trimmed) ? `[${trimmed}]` : trimmed
+  const match = HOST_PATTERN.exec(entry)
+  if (!match) throw new UrlPatternError(describeMalformed(trimmed))
   const [, wildcard, host, port] = match
+  if (wildcard && ((host ?? '').startsWith('[') || isIPv4(host ?? ''))) throw new UrlPatternError(`A wildcard covers a domain, not an address: ${pattern}`)
+  if (port !== undefined && Number(port) > 65_535) throw new UrlPatternError(`Not a port: ${port} in ${pattern}`)
   const bare = (host ?? '').toLowerCase().replace(/^\[|\]$/g, '')
-  return url => {
-    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
-    const hostMatches = wildcard ? hostname === bare || hostname.endsWith(`.${bare}`) : hostname === bare
-    if (!hostMatches) return false
-    return port === undefined || effectivePort(url) === port
+  return {
+    pattern: trimmed,
+    wildcard: Boolean(wildcard),
+    matches: url => {
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+      const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+      const hostMatches = wildcard ? hostname === bare || hostname.endsWith(`.${bare}`) : hostname === bare
+      if (!hostMatches) return false
+      return port === undefined || effectivePort(url) === port
+    },
   }
+}
+
+/** A pattern that widens past one host. Only these are compiled when read back from a grant. */
+export function isHostWildcard(pattern: string): boolean {
+  return pattern.trim().startsWith('*.')
+}
+
+/**
+ * The first entry of a host list, `BUCKLE_ALLOWED_HOSTS` or a set of grant subjects, that covers
+ * the URL. An entry that does not compile covers nothing here; each is checked where it is
+ * entered or loaded, so one that reaches this far was written around that check.
+ */
+export function matchingHostEntry(entries: string[], url: URL): string | null {
+  return entries.find(entry => {
+    try {
+      return compileHostPattern(entry).matches(url)
+    } catch {
+      return false
+    }
+  }) ?? null
+}
+
+/** Says what is wrong with a host entry, so the owner can fix it where it was typed. */
+function describeMalformed(pattern: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(pattern)) return `A host pattern names no scheme: ${pattern}. Write the host alone, as in *.example.com`
+  if (pattern.includes('/')) return `A host pattern names no path: ${pattern}. Write the host alone, as in *.example.com`
+  if (pattern === '*') return 'A lone * would match every host. Name a domain, as in *.example.com'
+  if (pattern === '*.') return 'A wildcard needs a domain after it, as in *.example.com'
+  if (pattern.includes('*')) return `A wildcard stands only as the whole leftmost label, as in *.example.com: ${pattern}`
+  return `Not a host or an http(s) URL prefix: ${pattern}`
 }
 
 function compilePrefix(prefix: string): Compiled {

@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { isInside } from './domain/paths.js'
+import { compileHostPattern, UrlPatternError } from './domain/url-pattern.js'
 import { logger } from './logger.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
@@ -120,7 +121,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     isolateShell: environment.BUCKLE_SHELL_ISOLATION !== 'false',
     isolationMaxBytes: parsePositiveInteger(environment.BUCKLE_ISOLATION_MAX_BYTES, 268_435_456),
     environmentValidator: environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined,
-    allowedHosts: parseList(environment.BUCKLE_ALLOWED_HOSTS),
+    allowedHosts: parseAllowedHosts(environment.BUCKLE_ALLOWED_HOSTS),
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,
     forgeGithubToken: environment.BUCKLE_FORGE_GITHUB_TOKEN || undefined,
     forgeApiUrl: parseForgeApiUrl(environment.BUCKLE_FORGE_GITHUB_API_URL),
@@ -235,6 +236,20 @@ function parseGitAuthor(value: string | undefined): { name: string; email: strin
   const match = GIT_AUTHOR_PATTERN.exec(raw)
   if (!match) throw new Error(`Invalid BUCKLE_FORGE_GIT_AUTHOR: ${raw}; expected "Name <email>"`)
   return { name: match[1]!.trim(), email: match[2]! }
+}
+
+/** Each entry is checked at load, so a malformed pattern stops the node rather than covering nothing. */
+function parseAllowedHosts(value: string | undefined): string[] {
+  const entries = parseList(value)
+  for (const entry of entries) {
+    try {
+      compileHostPattern(entry)
+    } catch (error) {
+      if (error instanceof UrlPatternError) throw new Error(`Invalid BUCKLE_ALLOWED_HOSTS entry: ${error.message}`)
+      throw error
+    }
+  }
+  return entries
 }
 
 function parseList(value: string | undefined): string[] {

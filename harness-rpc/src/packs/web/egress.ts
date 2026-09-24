@@ -1,7 +1,7 @@
 import { lookup } from 'node:dns/promises'
 import { reservedRangeOf } from '../../domain/ip.js'
 import { ToolExecutionError, type NetworkVerdict } from '../../domain/tool.js'
-import type { UrlMatcher } from '../../domain/url-pattern.js'
+import { matchingHostEntry, type UrlMatcher } from '../../domain/url-pattern.js'
 
 const MAX_REDIRECTS = 5
 
@@ -51,14 +51,14 @@ async function assertReachable(url: URL, allowedHosts: string[], approved: UrlMa
     if (approved.matches(url)) return
     throw new ToolExecutionError(`${url.origin} is not on the workspace's approved list`, { code: 'EGRESS_BLOCKED' })
   }
-  const host = url.hostname.replace(/^\[|\]$/g, '')
-  const subject = url.port ? `${host}:${url.port}` : host
-  if (allowedHosts.includes(subject) || allowedHosts.includes(host)) return
+  // The approved list's host grammar, per `BUCKLE-D18`: `*.internal.test` covers the apex and every subdomain.
+  if (matchingHostEntry(allowedHosts, url)) return
 
   const verdict = judge?.(url)
   if (verdict?.kind === 'granted') return
   if (verdict?.kind === 'refused') throw new ToolExecutionError(verdict.reason, { code: 'EGRESS_BLOCKED' })
 
+  const host = url.hostname.replace(/^\[|\]$/g, '')
   const literal = reservedRangeOf(host)
   if (literal) throw blocked(host, literal)
 

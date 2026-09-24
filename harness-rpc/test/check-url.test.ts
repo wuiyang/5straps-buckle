@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -180,5 +180,47 @@ describe('buckle check-url', () => {
     } finally {
       err.mockRestore()
     }
+  })
+
+  it('names the pattern that decided when an approval was widened to one', async () => {
+    const config = node()
+    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always' })
+
+    expect(await check(config, 'http://api.app.localhost:5173')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(persisted approval for pattern *.localhost, which covers api.app.localhost:5173)') })
+    expect(await check(config, 'http://localhost:3000')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('pattern *.localhost') })
+    expect((await check(config, 'http://127.0.0.1:3000')).exitCode).toBe(3)
+  })
+
+  it('denies what the approved list leaves off, whatever pattern grant is recorded', async () => {
+    const config = node({ BUCKLE_NETWORK_ALLOW: 'example.com' })
+    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always' })
+
+    expect(await check(config, 'http://app.localhost:3000')).toMatchObject({ exitCode: 1, stdout: expect.stringContaining('not on the workspace\'s approved list') })
+  })
+
+  it('denies what the node\'s limit over a registered workspace leaves off, whatever pattern grant it holds', async () => {
+    const withGrant = async (environment: Record<string, string>) => {
+      const root = mkdtempSync(join(tmpdir(), 'buckle-check-url-limit-'))
+      for (const directory of ['default', 'child', 'state']) mkdirSync(join(root, directory))
+      const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', ...environment })
+      const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+      createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy: emptyWorkspacePolicy() })
+      const childState = join(realpathSync(join(root, 'state')), 'workspaces', 'child')
+      mkdirSync(childState, { recursive: true })
+      createFileGrantStore({ filePath: join(childState, 'grants.json'), workspace: join(root, 'child') }).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always' })
+      return config
+    }
+
+    // Without a limit the child's own pattern grant decides, so the refusal below is the limit's.
+    expect((await check(await withGrant({}), 'http://app.localhost:3000', '--workspace', 'child')).exitCode).toBe(0)
+    expect(await check(await withGrant({ BUCKLE_NETWORK_ALLOW: 'example.com' }), 'http://app.localhost:3000', '--workspace', 'child')).toMatchObject({ exitCode: 1, stdout: expect.stringContaining('approved list') })
+  }, 30_000)
+
+  it('approves a host a BUCKLE_ALLOWED_HOSTS pattern covers, naming the entry', async () => {
+    const config = node({ BUCKLE_ALLOWED_HOSTS: '*.internal.test' })
+
+    expect(await check(config, 'http://nas.lab.internal.test/status')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(BUCKLE_ALLOWED_HOSTS entry *.internal.test)') })
+    expect(await check(config, 'http://internal.test/')).toMatchObject({ exitCode: 0 })
+    expect((await check(config, 'http://other.test/')).exitCode).toBe(4)
   })
 })
