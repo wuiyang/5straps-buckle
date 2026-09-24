@@ -9,6 +9,8 @@ import type { BuckleRuntime } from '../../runtime.js'
 
 export interface CliResult {
   exitCode: number
+  /** For the audit entry: the tool a switch names. Other policy arguments stay out of the log. */
+  detail?: string
 }
 
 const USAGE = `Usage:
@@ -58,9 +60,9 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
       case 'unmount':
         return await save(runtime, edit(current(), policy => { policy.mount = null }))
       case 'deny-tool':
-        return await saveTool(runtime, toolName(rest[0], action), edit(current(), policy => denyTool(policy, toolName(rest[0], action))))
+        return await saveTool(runtime, action, toolName(rest[0], action), edit(current(), policy => denyTool(policy, toolName(rest[0], action))))
       case 'allow-tool':
-        return await saveTool(runtime, toolName(rest[0], action), edit(current(), policy => allowTool(policy, toolName(rest[0], action))))
+        return await saveTool(runtime, action, toolName(rest[0], action), edit(current(), policy => allowTool(policy, toolName(rest[0], action))))
       case 'remove': {
         const before = current()
         const next = remove(before, required(rest[0], action))
@@ -249,14 +251,14 @@ function allowTool(policy: WorkspacePolicy, tool: string): void {
  * `allow-tool` never brings back a tool its pack withholds, and the node's own policy over a
  * registered workspace can still refuse it.
  */
-async function saveTool(runtime: BuckleRuntime, tool: string, policy: WorkspacePolicy): Promise<CliResult> {
+async function saveTool(runtime: BuckleRuntime, action: string, tool: string, policy: WorkspacePolicy): Promise<CliResult> {
   const result = await save(runtime, policy)
   const pack = runtime.manifest().packs.find(candidate => candidate.toolNames.includes(tool))
   if (!pack) process.stdout.write(`\n${tool} is not a tool on this node now; the switch is stored and applies if a pack brings it.\n`)
   else if (pack.unavailableReason) process.stdout.write(`\n${tool} stays unavailable: its pack ${pack.id} is withheld. ${pack.unavailableReason}\n`)
   const ceiling = runtime.policy.ceiling()
   if (ceiling && !isWorkspaceToolAllowed(ceiling, tool)) process.stdout.write(`\n${tool} stays refused by the node's own tool policy over this workspace.\n`)
-  return result
+  return { ...result, detail: `${action} ${tool}` }
 }
 
 async function save(runtime: BuckleRuntime, policy: WorkspacePolicy): Promise<CliResult> {

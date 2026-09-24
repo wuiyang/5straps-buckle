@@ -18,3 +18,15 @@ it('records local policy changes without copying command arguments into the audi
     expect(JSON.stringify(entries)).not.toContain('curl *')
   } finally { output.mockRestore() }
 })
+
+it('records which tool a deny-tool or allow-tool switch named', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-cli-audit-'))
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-audit-state-')), BUCKLE_ALLOW_SHELL: 'false' })
+  const output = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+  try {
+    expect((await runCli({ argv: ['policy', 'deny-tool', 'fs_write'], config })).exitCode).toBe(0)
+    expect((await runCli({ argv: ['policy', 'allow-tool', 'fs_write'], config })).exitCode).toBe(0)
+    const results = createFileActionLog(actionsPath(config)).read(10).filter(entry => entry.event === 'result')
+    expect(results.map(entry => [entry.tool, entry.detail])).toEqual([['cli_policy', 'deny-tool fs_write'], ['cli_policy', 'allow-tool fs_write']])
+  } finally { output.mockRestore() }
+})
