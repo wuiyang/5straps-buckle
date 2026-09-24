@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -59,12 +59,56 @@ describe('no face exposes node settings', () => {
     await server.close()
   })
 
-  it('keeps the settings writer out of every face but the CLI', () => {
-    const faces = join(import.meta.dirname, '../src/faces')
-    const sources = walk(faces).filter(path => !path.startsWith(join(faces, 'cli')))
+  it('keeps the settings writer out of everything but the CLI and its entry point', () => {
+    const source = join(import.meta.dirname, '../src')
+    const cli = join(source, 'faces/cli')
+    const sources = walk(source).filter(path => !path.startsWith(cli) && path !== join(source, 'index.ts'))
 
-    expect(sources.length).toBeGreaterThan(5)
+    expect(sources.length).toBeGreaterThan(20)
     for (const path of sources) expect(readFileSync(path, 'utf8'), path).not.toMatch(/cli\/(settings|node-settings|environment-file)\.js/)
+  })
+
+  it('echoes a setting\'s value only where a route reports its effect, on every GET route and with either credential', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'buckle-no-settings-values-'))
+    const root = join(base, 'zq81-root')
+    const scratch = join(base, 'zq81-scratch')
+    const readOnly = join(root, 'zq81-read-only')
+    for (const directory of [root, scratch, readOnly]) mkdirSync(directory, { recursive: true })
+    const values: Record<string, string> = {
+      BUCKLE_SERVER_NAME: 'zq81-name', BUCKLE_WORKSPACE_ROOT: root, BUCKLE_WORKSPACE_MOUNT: '/zq81-mount',
+      BUCKLE_SCRATCH_ROOTS: scratch, BUCKLE_MOUNT_READ_ONLY: readOnly, BUCKLE_PACKS: 'fs,web,shell',
+      BUCKLE_NETWORK_ALLOW: 'zq81-net.test', BUCKLE_ALLOWED_HOSTS: 'zq81-host.internal',
+    }
+    // BUCKLE_ALLOW_SHELL and BUCKLE_ALLOW_HOST_GIT are booleans, so no value of theirs is distinctive;
+    // their effect is the withheld pack's reason, which names the variable.
+    const config = loadConfig({
+      ...values, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'false',
+      BUCKLE_AUTH_TOKEN: 'agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'admin-token-fixture', BUCKLE_STATE_DIR: join(base, 'state'),
+    })
+    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    const app = createHttpApp({ config, runtime, authToken: config.authToken })
+    // Effects a route reports: what the node is called, the root and paths the agent addresses, and
+    // the policy base. `/setup/policy` returning BUCKLE_NETWORK_ALLOW entries awaits the maintainer's
+    // ruling under BUCKLE-D19; any other value reaching a body fails here.
+    const reported: Record<string, string[]> = {
+      '/v1/manifest': ['BUCKLE_SERVER_NAME', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_SCRATCH_ROOTS'],
+      '/setup/status': ['BUCKLE_SERVER_NAME', 'BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT'],
+      '/setup/workspaces': ['BUCKLE_SERVER_NAME', 'BUCKLE_WORKSPACE_ROOT'],
+      '/setup/policy': ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_NETWORK_ALLOW'],
+    }
+    const paths = [...new Set(app.routes.filter(route => route.method === 'GET' && !/[:*]/.test(route.path)).map(route => route.path))]
+
+    const answered: string[] = []
+    for (const path of paths) {
+      for (const token of ['agent-token-fixture', 'admin-token-fixture']) {
+        const response = await app.request(path, { headers: { authorization: `Bearer ${token}` } })
+        if (response.status !== 200) continue
+        const body = await response.text()
+        answered.push(path)
+        expect(Object.keys(values).filter(key => body.includes(values[key]!)), `${path} with ${token}`).toEqual(reported[path] ?? [])
+      }
+    }
+    expect(answered).toEqual(expect.arrayContaining(['/v1/manifest', '/setup/status', '/setup/policy', '/setup/tools', '/setup/audit']))
   })
 })
 
