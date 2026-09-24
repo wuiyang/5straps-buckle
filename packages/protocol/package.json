@@ -2,7 +2,7 @@
   "name": "@5straps/protocol",
   "version": "0.1.0",
   "description": "Wire schemas shared by the 5straps chat server and its Buckle execution nodes.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": [
     "5straps",
     "protocol",
