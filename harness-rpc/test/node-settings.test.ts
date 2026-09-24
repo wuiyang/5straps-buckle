@@ -1,6 +1,9 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parseEnv, promisify } from 'node:util'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../src/adapters/action-log/file-action-log.js'
 import { runProcess } from '../src/adapters/process-runner.js'
@@ -220,6 +223,72 @@ describe('an environment file this command will not edit line by line', () => {
 
     expect(editEnvironmentVariable({ text, name: 'BUCKLE_NETWORK_ALLOW', value: 'c.test' }).ok).toBe(false)
     expect(editEnvironmentVariable({ text, name: 'BUCKLE_NETWORK_ALLOW', value: null }).ok).toBe(false)
+  })
+})
+
+describe('buckle settings against other writers and links', () => {
+  const entry = fileURLToPath(new URL('../src/index.ts', import.meta.url))
+
+  function settingsProcess(...argv: string[]) {
+    return promisify(execFile)(process.execPath, ['--import', import.meta.resolve('tsx'), entry, 'settings', ...argv], {
+      cwd: root, env: { PATH: process.env.PATH, HOME: root, BUCKLE_ENV_FILE: file },
+    })
+  }
+
+  it('keeps every change when three set commands run at once', async () => {
+    for (let round = 0; round < 2; round += 1) {
+      writeFileSync(file, original)
+      await Promise.all([
+        settingsProcess('set', 'shell', 'off'),
+        settingsProcess('set', 'host-git', 'on'),
+        settingsProcess('set', 'packs', 'fs,web'),
+      ])
+
+      expect(parseEnv(readFileSync(file, 'utf8'))).toMatchObject({ BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_PACKS: 'fs,web', BUCKLE_AUTH_TOKEN: SECRET })
+      expect(readdirSync(root).sort()).toEqual(['node.env', 'state', 'workspace'])
+    }
+  }, 30_000)
+
+  it('waits for a writer holding the lock, then edits the text that writer left', async () => {
+    const lock = join(root, '.node.env.lock')
+    writeFileSync(lock, '')
+    const waiting = settingsProcess('set', 'shell', 'off')
+    await new Promise(resolve => setTimeout(resolve, 1_500))
+    expect(readFileSync(file, 'utf8')).toBe(original)
+
+    const other = withLine('BUCKLE_SERVER_NAME=Fixture node', 'BUCKLE_SERVER_NAME=Written meanwhile')
+    writeFileSync(file, other)
+    rmSync(lock)
+    await waiting
+
+    expect(parseEnv(readFileSync(file, 'utf8'))).toMatchObject({ BUCKLE_SERVER_NAME: 'Written meanwhile', BUCKLE_ALLOW_SHELL: 'false' })
+  }, 30_000)
+
+  it('edits the target of a symlinked environment file and keeps the link', async () => {
+    mkdirSync(join(root, 'real'))
+    const target = join(root, 'real', 'target.env')
+    writeFileSync(target, original, { mode: 0o640 })
+    const link = join(root, 'linked.env')
+    symlinkSync(target, link)
+    file = link
+
+    expect((await settings(['set', 'shell', 'off'])).exitCode).toBe(0)
+
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readFileSync(target, 'utf8')).toBe(withLine('BUCKLE_ALLOW_SHELL=true', 'BUCKLE_ALLOW_SHELL=false'))
+    expect(statSync(target).mode & 0o777).toBe(0o640)
+    expect(readdirSync(join(root, 'real'))).toEqual(['target.env'])
+  })
+
+  it('takes over a lock left by a writer that died', async () => {
+    const lock = join(root, '.node.env.lock')
+    writeFileSync(lock, '')
+    const old = new Date(Date.now() - 60_000)
+    utimesSync(lock, old, old)
+
+    expect((await settings(['set', 'shell', 'off'])).exitCode).toBe(0)
+    expect(parseEnv(readFileSync(file, 'utf8')).BUCKLE_ALLOW_SHELL).toBe('false')
+    expect(readdirSync(root)).not.toContain('.node.env.lock')
   })
 })
 

@@ -5,7 +5,7 @@ import { createFileActionLog } from '../../adapters/action-log/file-action-log.j
 import { actionsPath, stateDirectoryOf } from '../../config.js'
 import { isInside } from '../../domain/paths.js'
 import { auditOperation } from '../../services/audit-operation.js'
-import { editEnvironmentVariable, writeFileAtomically } from './environment-file.js'
+import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from './environment-file.js'
 import { findNodeSetting, NODE_SETTINGS, normaliseSetting, type NodeSetting } from './node-settings.js'
 
 export interface CliResult {
@@ -89,10 +89,14 @@ function write(context: SettingsContext, name: string, raw: string | null): CliR
     process.stdout.write(`${setting.key} is not set in ${context.file}; nothing to remove.\n`)
     return { exitCode: 0 }
   }
-  const edit = editEnvironmentVariable({ text: context.fileText, name: setting.key, value: next })
+  let edit: EnvironmentEdit
+  try {
+    edit = updateEnvironmentFile(context.file, text => editEnvironmentVariable({ text, name: setting.key, value: next }))
+  } catch (error) {
+    return fail(`Could not write ${context.file}: ${error instanceof Error ? error.message : 'unknown error'}. Nothing was changed.`)
+  }
   if (!edit.ok) return fail(`${edit.reason} in ${context.file}`)
 
-  if (edit.text !== context.fileText) writeFileAtomically(context.file, edit.text)
   process.stdout.write(next === null
     ? `Removed ${setting.key} from ${context.file}; the default applies: ${setting.fallback}\n`
     : `Set ${setting.key}=${next} in ${context.file}\n`)

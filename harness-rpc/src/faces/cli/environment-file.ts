@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { chmodSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, fchmodSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { parseEnv } from 'node:util'
 
@@ -55,21 +55,99 @@ export function editEnvironmentVariable(input: { text: string; name: string; val
   return text === undefined ? { ok: false, reason: handEdit } : { ok: true, text }
 }
 
+/** A lock older than this was left by a writer that died; a real edit takes milliseconds. */
+const STALE_LOCK_MS = 30_000
+const LOCK_WAIT_MS = 10_000
+
+/**
+ * Reads, edits and replaces an environment file as one step against other writers: the edit runs
+ * on the text read under an exclusive lock beside the file, so two `buckle settings set` runs at
+ * once both land. A symlinked file is followed and its target edited, the link kept. Nothing is
+ * written when the edit refuses.
+ */
+export function updateEnvironmentFile(path: string, edit: (text: string) => EnvironmentEdit): EnvironmentEdit {
+  const target = realpathSync(path)
+  return withFileLock(target, () => {
+    const text = readFileSync(target, 'utf8')
+    const result = edit(text)
+    if (result.ok && result.text !== text) writeFileAtomically(target, result.text)
+    return result
+  })
+}
+
 /**
  * Replaces the file in one step: a temporary file beside it takes the new text and the old file's
- * mode bits, then is renamed over it, so a reader never sees half a file and a crash leaves the old one.
+ * mode bits and is flushed to disk, then is renamed over it and the directory flushed, so a reader
+ * never sees half a file and a crash or power loss leaves the old one or the new. A symlink is
+ * followed, so the link stays and its target changes.
  */
 export function writeFileAtomically(path: string, text: string): void {
-  const mode = statSync(path).mode & 0o7777
-  const temporary = join(dirname(path), `.${basename(path)}.${randomBytes(6).toString('hex')}.tmp`)
+  const target = realpathSync(path)
+  const mode = statSync(target).mode & 0o7777
+  const directory = dirname(target)
+  const temporary = join(directory, `.${basename(target)}.${randomBytes(6).toString('hex')}.tmp`)
   try {
-    writeFileSync(temporary, text, { mode, flag: 'wx' })
-    chmodSync(temporary, mode)
-    renameSync(temporary, path)
+    const descriptor = openSync(temporary, 'wx', mode)
+    try {
+      writeFileSync(descriptor, text)
+      fchmodSync(descriptor, mode)
+      fsyncSync(descriptor)
+    } finally {
+      closeSync(descriptor)
+    }
+    renameSync(temporary, target)
   } catch (error) {
     rmSync(temporary, { force: true })
     throw error
   }
+  syncDirectory(directory)
+}
+
+function withFileLock<T>(target: string, operation: () => T): T {
+  const lock = join(dirname(target), `.${basename(target)}.lock`)
+  const deadline = Date.now() + LOCK_WAIT_MS
+  for (;;) {
+    try {
+      closeSync(openSync(lock, 'wx', 0o600))
+      break
+    } catch (error) {
+      if (!isCode(error, 'EEXIST')) throw error
+      if (lockAge(lock) > STALE_LOCK_MS) { rmSync(lock, { force: true }); continue }
+      if (Date.now() > deadline) throw new Error(`Another writer holds ${lock}; if no buckle command is running, remove that file and try again`)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+    }
+  }
+  try {
+    return operation()
+  } finally {
+    rmSync(lock, { force: true })
+  }
+}
+
+function lockAge(lock: string): number {
+  try {
+    return Date.now() - statSync(lock).mtimeMs
+  } catch (error) {
+    if (isCode(error, 'ENOENT')) return 0
+    throw error
+  }
+}
+
+/** Flushes a rename to disk. Some filesystems refuse to sync a directory; the rename stands either way. */
+function syncDirectory(directory: string): void {
+  let descriptor: number | null = null
+  try {
+    descriptor = openSync(directory, 'r')
+    fsyncSync(descriptor)
+  } catch (error) {
+    if (!isCode(error, 'EINVAL') && !isCode(error, 'EISDIR') && !isCode(error, 'EPERM')) throw error
+  } finally {
+    if (descriptor !== null) closeSync(descriptor)
+  }
+}
+
+function isCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code
 }
 
 function breaksLine(value: string): boolean {

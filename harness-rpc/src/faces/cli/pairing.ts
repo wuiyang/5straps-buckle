@@ -3,7 +3,7 @@ import { createDeferredApprovalChannel } from '../../adapters/approval/deferred-
 import { loadConfig } from '../../config.js'
 import { logger } from '../../logger.js'
 import { createRuntime } from '../../runtime.js'
-import { editEnvironmentVariable, writeFileAtomically } from './environment-file.js'
+import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from './environment-file.js'
 
 /** Where Rings takes a node's action log and its pending approvals. */
 const REPORT_PATH = '/api/v1/buckle-reports'
@@ -82,22 +82,20 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
  * the environment file, never printed and never passed in argv, along with the two Rings routes it
  * authenticates: the action log, and the approvals a person has to be reached about.
  */
-function recordReportCredential(input: { environmentFile: string; environmentText: string; ringsUrl: string; reportToken: string }): string {
+function recordReportCredential(input: { environmentFile: string; ringsUrl: string; reportToken: string }): string {
   const settings = [
     { name: 'BUCKLE_REPORT_URL', value: new URL(REPORT_PATH, input.ringsUrl).toString() },
     { name: 'BUCKLE_REPORT_TOKEN', value: input.reportToken },
     { name: 'BUCKLE_APPROVAL_WEBHOOK', value: new URL(APPROVALS_PATH, input.ringsUrl).toString() },
   ]
-  const text = settings.reduce<string | null>((carried, setting) => {
-    if (carried === null) return null
-    const edit = editEnvironmentVariable({ text: carried, ...setting })
-    return edit.ok ? edit.text : null
-  }, input.environmentText)
-  if (text === null) {
-    return `Rings minted a report credential for this node, but ${input.environmentFile} sets one of BUCKLE_REPORT_URL, BUCKLE_REPORT_TOKEN or BUCKLE_APPROVAL_WEBHOOK in a form Buckle does not edit, so nothing was written. Fix those lines by hand and pair again.`
-  }
+  const edit = (text: string): EnvironmentEdit => settings.reduce<EnvironmentEdit>(
+    (carried, setting) => (carried.ok ? editEnvironmentVariable({ text: carried.text, ...setting }) : carried),
+    { ok: true, text },
+  )
   try {
-    writeFileAtomically(input.environmentFile, text)
+    if (!updateEnvironmentFile(input.environmentFile, edit).ok) {
+      return `Rings minted a report credential for this node, but ${input.environmentFile} sets one of BUCKLE_REPORT_URL, BUCKLE_REPORT_TOKEN or BUCKLE_APPROVAL_WEBHOOK in a form Buckle does not edit, so nothing was written. Fix those lines by hand and pair again.`
+    }
   } catch (error) {
     logger.error('Could not write the report credential Rings minted', { message: error instanceof Error ? error.message : 'Unknown error' })
     return `Rings minted a report credential for this node, but ${input.environmentFile} could not be written; pair again once it is writable. Remote reporting is unavailable until the new credential is saved and Buckle is restarted.`
