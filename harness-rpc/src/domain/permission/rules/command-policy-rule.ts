@@ -11,8 +11,12 @@ const MAX_SUBJECT_LENGTH = 300
  * would approve its own calls, so they are refused whatever the owner's patterns say. `approvals`
  * is named apart from `approve`: reading the pending queue is how a tool would learn the token
  * it needs to approve itself.
+ *
+ * The binary is matched by its basename, so a path to it (`/usr/local/bin/buckle`,
+ * `./node_modules/.bin/buckle`, or one handed to `node`) and a quoted one in a script body are
+ * refused the same way.
  */
-const SELF_ADMINISTRATION = /(^|\s)buckle\s+(approvals|approve|check-url|grants|policy|init|plugin|serve|mcp|workspaces?|history)\b/
+const SELF_ADMINISTRATION = /(^|[\s/\\'"])buckle['"]?\s+(approvals|approve|check-url|grants|policy|init|plugin|serve|mcp|workspaces?|history)\b/
 
 /**
  * The owner's command globs, judged one shell word at a time on the parsed command line. Deny

@@ -163,8 +163,21 @@ describe('what no pattern can change', () => {
     expect(evaluate('bash', ['-c', `buckle ${command} list`], { allow: ['bash -c *'] }).kind).toBe('deny')
   })
 
+  it.each([
+    ['buckle', ['approve', 'abc']],
+    ['/usr/local/bin/buckle', ['approve', 'abc']],
+    ['./node_modules/.bin/buckle', ['approve', 'abc']],
+    ['node', ['./node_modules/.bin/buckle', 'approve', 'abc']],
+    ['bash', ['-c', '/usr/local/bin/buckle approve abc']],
+    ['bash', ['-c', '"./node_modules/.bin/buckle" approve abc']],
+  ] as Array<[string, string[]]>)('refuses %s %j, whatever path names the binary', (command, args) => {
+    expect(reasonOf(evaluate(command, args, { allow: ['*', 'bash -c *'] }))).toContain('cannot administer')
+  })
+
   it('still lets a tool drive the node the ordinary way', () => {
     expect(evaluate('buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
+    expect(evaluate('/usr/local/bin/buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
+    expect(evaluate('/opt/notbuckle', ['approve', 'abc']).kind).toBe('allow')
   })
 
   it('keeps the destructive gate under an allow pattern, so rm -rf still asks', () => {
