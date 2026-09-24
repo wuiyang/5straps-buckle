@@ -1,14 +1,19 @@
-import { writeFileSync } from 'node:fs'
 import { parseEnv } from 'node:util'
 import { createDeferredApprovalChannel } from '../../adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../../config.js'
 import { logger } from '../../logger.js'
 import { createRuntime } from '../../runtime.js'
-import { setEnvironmentVariable } from './environment-file.js'
+import { editEnvironmentVariable, writeFileAtomically } from './environment-file.js'
 
 /** Where Rings takes a node's action log and its pending approvals. */
 const REPORT_PATH = '/api/v1/buckle-reports'
 const APPROVALS_PATH = '/api/v1/buckle-approvals'
+/**
+ * A report credential Buckle accepts from Rings: one run of URL-safe and base64 characters. Rings
+ * mints 64 hex characters; anything holding whitespace, a quote, `#` or a line break could change
+ * how the environment file reads, so it is refused rather than written.
+ */
+const REPORT_CREDENTIAL = /^[A-Za-z0-9._~+/=-]{16,512}$/
 
 export interface PairingRequest {
   /** The code the owner read off Rings. Short-lived and single use, so argv is where it belongs. */
@@ -56,13 +61,17 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
   if (!response) return { ok: false, message: `Could not reach Rings at ${input.ringsUrl}. The node is configured in ${input.environmentFile}; pair it again once Rings is reachable.` }
   if (!response.ok) return { ok: false, message: `Rings refused the pairing code (HTTP ${response.status}): ${await errorText(response)}` }
 
-  const body = await response.json().catch(() => null) as { server?: { id?: string; name?: string }; reportToken?: string } | null
+  const body = await response.json().catch(() => null) as { server?: { id?: string; name?: string }; reportToken?: unknown } | null
   const paired = `Paired with Rings as ${body?.server?.name ?? config.serverName} (${body?.server?.id ?? config.serverId}).`
   if (!body?.reportToken) {
     // A Rings built before per-node report credentials answers without one; its installation-wide
     // token stays configured by hand, so the node is paired either way.
     logger.warn('Rings did not mint a report credential for this node; set BUCKLE_REPORT_URL and BUCKLE_REPORT_TOKEN by hand to report the action log')
     return { ok: true, message: paired }
+  }
+  if (typeof body.reportToken !== 'string' || !REPORT_CREDENTIAL.test(body.reportToken)) {
+    logger.error('Rings answered with a report credential Buckle does not accept')
+    return { ok: false, message: `${paired}\nRings answered with a report credential Buckle does not accept (it must be 16 to 512 letters, digits or ._~+/=-), so nothing was written to ${input.environmentFile}. Check that the Rings URL is the one you meant, then pair again.` }
   }
   return { ok: true, message: `${paired}\n${recordReportCredential({ ...input, reportToken: body.reportToken })}` }
 }
@@ -79,9 +88,16 @@ function recordReportCredential(input: { environmentFile: string; environmentTex
     { name: 'BUCKLE_REPORT_TOKEN', value: input.reportToken },
     { name: 'BUCKLE_APPROVAL_WEBHOOK', value: new URL(APPROVALS_PATH, input.ringsUrl).toString() },
   ]
-  const text = settings.reduce((carried, setting) => setEnvironmentVariable({ text: carried, ...setting }), input.environmentText)
+  const text = settings.reduce<string | null>((carried, setting) => {
+    if (carried === null) return null
+    const edit = editEnvironmentVariable({ text: carried, ...setting })
+    return edit.ok ? edit.text : null
+  }, input.environmentText)
+  if (text === null) {
+    return `Rings minted a report credential for this node, but ${input.environmentFile} sets one of BUCKLE_REPORT_URL, BUCKLE_REPORT_TOKEN or BUCKLE_APPROVAL_WEBHOOK in a form Buckle does not edit, so nothing was written. Fix those lines by hand and pair again.`
+  }
   try {
-    writeFileSync(input.environmentFile, text, { mode: 0o600 })
+    writeFileAtomically(input.environmentFile, text)
   } catch (error) {
     logger.error('Could not write the report credential Rings minted', { message: error instanceof Error ? error.message : 'Unknown error' })
     return `Rings minted a report credential for this node, but ${input.environmentFile} could not be written; pair again once it is writable. Remote reporting is unavailable until the new credential is saved and Buckle is restarted.`

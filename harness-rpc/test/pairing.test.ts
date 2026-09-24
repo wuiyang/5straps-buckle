@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
@@ -109,6 +109,42 @@ describe('buckle init --pair', () => {
     expect(second.BUCKLE_REPORT_TOKEN).toBe('rotated-report-token-fixture-value')
     expect(second.BUCKLE_AUTH_TOKEN).toBe(first.BUCKLE_AUTH_TOKEN)
     expect(second.BUCKLE_ADMIN_TOKEN).toBe(first.BUCKLE_ADMIN_TOKEN)
+  })
+
+  it.each([
+    ['a line break that would set node settings', 'rt-fixture-value-0001\nBUCKLE_ALLOW_HOST_GIT=true\nBUCKLE_ALLOW_SHELL=true'],
+    ['a carriage return', 'rt-fixture-value-0001\rBUCKLE_ALLOW_HOST_GIT=true'],
+    ['a space and a comment', 'rt-fixture-value-0001 # note'],
+    ['a quote', 'rt-fixture"value-0001'],
+    ['too few characters', 'short'],
+  ])('refuses a report credential holding %s, and writes nothing', async (_, reportToken) => {
+    await init()
+    const before = readFileSync(out, 'utf8')
+    ringsMinting(reportToken)
+
+    const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.printed).toContain('report credential Buckle does not accept')
+    expect(result.printed).not.toContain(reportToken)
+    expect(readFileSync(out, 'utf8')).toBe(before)
+    const written = parseEnv(before)
+    expect(written.BUCKLE_ALLOW_HOST_GIT).not.toBe('true')
+    expect(written.BUCKLE_REPORT_TOKEN).toBeUndefined()
+  })
+
+  it('keeps the environment file\'s mode and every other line when it writes the credential', async () => {
+    await init()
+    chmodSync(out, 0o640)
+    const before = readFileSync(out, 'utf8')
+    ringsMinting('rings-minted-report-token-fixture')
+
+    expect((await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])).exitCode).toBe(0)
+
+    expect(statSync(out).mode & 0o777).toBe(0o640)
+    const after = readFileSync(out, 'utf8')
+    const untouched = (text: string) => text.split('\n').filter(line => !/^#?\s*BUCKLE_(REPORT_URL|REPORT_TOKEN|APPROVAL_WEBHOOK)=/.test(line))
+    expect(untouched(after)).toEqual(untouched(before))
   })
 
   it('stays paired when Rings mints nothing, leaving the report settings to the operator', async () => {

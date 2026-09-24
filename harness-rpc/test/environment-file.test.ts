@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { setEnvironmentVariable } from '../src/faces/cli/environment-file.js'
+import { editEnvironmentVariable, setEnvironmentVariable } from '../src/faces/cli/environment-file.js'
 
 describe('writing one variable back into an environment file', () => {
   it('fills in the commented placeholder buckle init left, keeping its position', () => {
@@ -35,5 +35,13 @@ describe('writing one variable back into an environment file', () => {
     const written = setEnvironmentVariable({ text, name: 'BUCKLE_REPORT_URL', value: 'http://rings.test/reports' })
 
     expect(written).toContain('BUCKLE_AUTH_TOKEN=agent\nBUCKLE_ADMIN_TOKEN=admin\n')
+  })
+
+  it.each(['\n', '\r', '\0'])('refuses a value holding %j whoever calls it, so no second variable can be set', breaker => {
+    const text = 'BUCKLE_ALLOW_SHELL=false\n# BUCKLE_ALLOW_HOST_GIT=true\n# BUCKLE_REPORT_TOKEN=\n'
+    const value = `rt-fixture${breaker}BUCKLE_ALLOW_HOST_GIT=true${breaker}BUCKLE_ALLOW_SHELL=true`
+
+    expect(() => setEnvironmentVariable({ text, name: 'BUCKLE_REPORT_TOKEN', value })).toThrow(/line break or NUL/)
+    expect(editEnvironmentVariable({ text, name: 'BUCKLE_REPORT_TOKEN', value })).toEqual({ ok: false, reason: 'BUCKLE_REPORT_TOKEN cannot hold a line break or NUL' })
   })
 })

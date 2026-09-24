@@ -9,9 +9,12 @@ import { parseEnv } from 'node:util'
  * otherwise it is appended. Keeping the file's shape is what lets a credential be written back
  * beside the ones already in it without an operator's comments or ordering being lost.
  *
- * The replacement goes through a function, so a `$&` in a credential is a literal.
+ * The replacement goes through a function, so a `$&` in a credential is a literal. A value holding a
+ * line break or NUL is refused whoever the caller is: it would end the line and start another, so
+ * a value from elsewhere could set any variable it liked.
  */
 export function setEnvironmentVariable(input: { text: string; name: string; value: string }): string {
+  if (breaksLine(input.value)) throw new Error(`${input.name} holds a line break or NUL, which an environment file cannot hold in one line; nothing was written`)
   const assignment = `${input.name}=${input.value}`
   const set = new RegExp(`^${input.name}=.*$`, 'm')
   if (set.test(input.text)) return input.text.replace(set, () => assignment)
@@ -32,6 +35,7 @@ export type EnvironmentEdit = { ok: true; text: string } | { ok: false; reason: 
  * by hand. A value the plain form would read differently is written in double quotes.
  */
 export function editEnvironmentVariable(input: { text: string; name: string; value: string | null }): EnvironmentEdit {
+  if (input.value !== null && breaksLine(input.value)) return { ok: false, reason: `${input.name} cannot hold a line break or NUL` }
   const handEdit = `${input.name} is written in a form this command does not edit; change it by hand`
   const lines = input.text.split('\n')
   const mentions = lines.filter(line => new RegExp(`^\\s*(export\\s+)?${input.name}\\s*=`).test(line))
@@ -66,6 +70,10 @@ export function writeFileAtomically(path: string, text: string): void {
     rmSync(temporary, { force: true })
     throw error
   }
+}
+
+function breaksLine(value: string): boolean {
+  return /[\n\r\0]/.test(value)
 }
 
 function sameVariables(actual: Record<string, string | undefined>, expected: Record<string, string | undefined>): boolean {
