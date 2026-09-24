@@ -39,7 +39,7 @@ import { intersectUrlMatchers, type UrlMatcher } from './domain/url-pattern.js'
 import type { PermissionRule } from './domain/permission/decision.js'
 import { workspaceStateKey } from './domain/workspace-key.js'
 import { logger } from './logger.js'
-import { createBuiltinPacks } from './packs/index.js'
+import { createBuiltinPacks, unmetPackPrerequisite } from './packs/index.js'
 import { loadRootSkill } from './packs/pack-skill.js'
 import type { ActionLog } from './ports/action-log.js'
 import type { ApprovalChannel } from './ports/approval-channel.js'
@@ -318,7 +318,10 @@ async function buildPacks(input: {
   const selected = input.config.enabledPacks
   if (selected) {
     const unknown = selected.filter(id => !builtin.some(pack => pack.id === id))
-    if (unknown.length) throw new Error(`Unknown BUCKLE_PACKS: ${unknown.join(', ')}`)
+    if (unknown.length) {
+      const named = unknown.map(id => { const reason = unmetPackPrerequisite(id, input.config); return reason ? `${id} (${reason})` : id })
+      throw new Error(`Unknown BUCKLE_PACKS: ${named.join(', ')}`)
+    }
     return builtin.filter(pack => selected.includes(pack.id))
   }
   const filesystemRestricted = Boolean(input.compiled.policy.filesystem?.rules.length || input.ceiling?.policy.filesystem?.rules.length)

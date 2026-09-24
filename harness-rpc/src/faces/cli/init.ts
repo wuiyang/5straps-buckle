@@ -198,7 +198,7 @@ async function askValid(prompt: InitPrompt, text: string, key: string): Promise<
   for (;;) {
     const answer = (await prompt.question(text)).trim()
     if (!answer) return null
-    const value = normaliseSetting({ setting, raw: answer, cwd: process.cwd(), isDirectory: () => false })
+    const value = normaliseSetting({ setting, raw: answer, cwd: process.cwd(), isDirectory: () => false, environment: process.env })
     if (value.ok) return value.value
     prompt.say(value.reason)
   }

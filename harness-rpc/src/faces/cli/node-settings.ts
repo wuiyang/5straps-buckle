@@ -1,6 +1,6 @@
 import { isAbsolute, resolve } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
-import { BUILTIN_PACKS } from '../../packs/index.js'
+import { BUILTIN_PACKS, unmetPackPrerequisite } from '../../packs/index.js'
 import { compilePolicy, PolicyError, refusedNetworkEntries } from '../../domain/policy.js'
 import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
 
@@ -43,9 +43,11 @@ export type SettingValue = { ok: true; value: string } | { ok: false; reason: st
 
 /**
  * The value as the environment file will hold it, or why it is refused. Lists are written comma
- * separated with no spaces, booleans as `true` or `false`, directories as absolute paths.
+ * separated with no spaces, booleans as `true` or `false`, directories as absolute paths. A pack
+ * whose prerequisite `environment` (the file and process environment the node will start with)
+ * does not meet is refused, naming it.
  */
-export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd: string; isDirectory: (path: string) => boolean }): SettingValue {
+export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd: string; isDirectory: (path: string) => boolean; environment: NodeJS.ProcessEnv }): SettingValue {
   const raw = input.raw.trim()
   if (/[\r\n\0"]/.test(raw)) return refuse(`${input.setting.key} cannot hold a newline or a double quote`)
   switch (input.setting.kind) {
@@ -60,6 +62,9 @@ export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd
       if (ids.length === 0) return refuse(`${input.setting.key} needs at least one pack; unset it to enable every pack`)
       const unknown = ids.filter(id => !BUILTIN_PACKS.some(pack => pack.id === id))
       if (unknown.length) return refuse(`Unknown pack ${unknown.join(', ')}. Packs: ${BUILTIN_PACKS.map(pack => pack.id).join(', ')}`)
+      const packOptions = { environmentValidator: input.environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined }
+      const unmet = ids.flatMap(id => { const reason = unmetPackPrerequisite(id, packOptions); return reason ? [`${id} (${reason})`] : [] })
+      if (unmet.length) return refuse(`The node would not start with pack ${unmet.join(', ')}. Set the prerequisite first, or leave the pack out`)
       return { ok: true, value: ids.join(',') }
     }
     case 'host-list': {

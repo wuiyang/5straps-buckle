@@ -7,7 +7,7 @@ import { runProcess } from '../src/adapters/process-runner.js'
 import { createPathView } from '../src/domain/path-view.js'
 import { editEnvironmentVariable } from '../src/faces/cli/environment-file.js'
 import { settingsCommand } from '../src/faces/cli/settings.js'
-import { BUILTIN_PACKS, createBuiltinPacks } from '../src/packs/index.js'
+import { BUILTIN_PACKS, createBuiltinPacks, unmetPackPrerequisite } from '../src/packs/index.js'
 
 const SECRET = 'fixture-secret-value-never-printed-7f3a'
 
@@ -224,16 +224,37 @@ describe('an environment file this command will not edit line by line', () => {
 })
 
 describe('the pack catalogue init and settings name', () => {
-  it('lists every built-in pack createBuiltinPacks builds, in the same order', () => {
+  function built(environmentValidator: string | undefined): string[] {
     const paths = createPathView({ root, mount: null, scratchRoots: [] })
     const sandbox = { mode: 'none', supportsMount: false, wrap: (input: never) => input } as never
-    const packs = createBuiltinPacks({
+    return createBuiltinPacks({
       cwd: root, paths, runProcess, sandbox, writableRoots: [root], hiddenPaths: [], mountReadOnlyPaths: [], approvedUrls: null,
       forge: { apiUrl: 'https://api.github.com', author: { name: 'a', email: 'a@b.c' } }, stateDirectory: state, allowedHosts: [],
       agentBrowserCommand: 'agent-browser', browserStateDirectory: state, browserHeaded: false, enableShell: false,
-      environmentValidator: 'varlock', sandboxUnavailableReason: null,
-    })
+      environmentValidator, sandboxUnavailableReason: null,
+    }).map(pack => pack.id)
+  }
 
-    expect(packs.map(pack => pack.id)).toEqual(BUILTIN_PACKS.map(pack => pack.id))
+  it.each([['with', 'varlock'], ['without', undefined]])('builds exactly the catalogue packs whose prerequisites are met, %s a validator', (_, environmentValidator) => {
+    expect(built(environmentValidator)).toEqual(BUILTIN_PACKS.filter(pack => unmetPackPrerequisite(pack.id, { environmentValidator }) === null).map(pack => pack.id))
+  })
+
+  it('refuses the environment pack while BUCKLE_ENV_VALIDATOR_COMMAND is unset, since the node would then not start', async () => {
+    const result = await settings(['set', 'packs', 'fs,environment'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.err).toContain('environment (BUCKLE_ENV_VALIDATOR_COMMAND is not set)')
+    expect(readFileSync(file, 'utf8')).toBe(original)
+  })
+
+  it.each([
+    ['in the environment file', true],
+    ['in the process environment', false],
+  ])('takes the environment pack once BUCKLE_ENV_VALIDATOR_COMMAND is set %s', async (_, inFile) => {
+    if (inFile) writeFileSync(file, `${original}BUCKLE_ENV_VALIDATOR_COMMAND=varlock load\n`)
+    const result = await settings(['set', 'packs', 'fs,environment'], inFile ? {} : { BUCKLE_ENV_VALIDATOR_COMMAND: 'varlock load' })
+
+    expect(result.exitCode).toBe(0)
+    expect(readFileSync(file, 'utf8')).toContain('BUCKLE_PACKS=fs,environment\n')
   })
 })

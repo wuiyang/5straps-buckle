@@ -84,6 +84,18 @@ describe('buckle init asks for node settings after the workspace', () => {
     expect(parseEnv(result.written)).toMatchObject({ BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'true' })
     expect(parseEnv(result.written).BUCKLE_NETWORK_ALLOW).toBeUndefined()
   })
+
+  it('asks again for the environment pack while BUCKLE_ENV_VALIDATOR_COMMAND is unset, naming it, and takes it once set', async () => {
+    vi.stubEnv('BUCKLE_ENV_VALIDATOR_COMMAND', '')
+    const refused = scripted([workspace, '', 'Fixture', 'fs,environment', 'fs'])
+    expect(parseEnv((await init(refused)).written).BUCKLE_PACKS).toBe('fs')
+    expect(refused.said).toContainEqual(expect.stringContaining('environment (BUCKLE_ENV_VALIDATOR_COMMAND is not set)'))
+
+    vi.stubEnv('BUCKLE_ENV_VALIDATOR_COMMAND', 'varlock load')
+    const accepted = scripted([workspace, '', 'Fixture', 'fs,environment'])
+    expect(parseEnv((await init(accepted, ['--force'])).written).BUCKLE_PACKS).toBe('fs,environment')
+    vi.unstubAllEnvs()
+  })
 })
 
 describe('buckle init without questions', () => {

@@ -105,7 +105,7 @@ function write(context: SettingsContext, name: string, raw: string | null): CliR
 
 /** A workspace root holding the state directory is refused here, as the node would refuse it at start. */
 function normalise(setting: NodeSetting, raw: string, context: SettingsContext) {
-  const value = normaliseSetting({ setting, raw, cwd: context.cwd, isDirectory: path => existsSync(path) && statSync(path).isDirectory() })
+  const value = normaliseSetting({ setting, raw, cwd: context.cwd, isDirectory: path => existsSync(path) && statSync(path).isDirectory(), environment: context.merged })
   if (value.ok && setting.key === 'BUCKLE_WORKSPACE_ROOT' && isInside(value.value, stateDirectoryOf(context.merged))) {
     return { ok: false as const, reason: `${value.value} holds the state directory ${stateDirectoryOf(context.merged)}; an agent writes anywhere in the workspace, so Buckle refuses to start with it as the root` }
   }

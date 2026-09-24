@@ -65,6 +65,16 @@ export const BUILTIN_PACKS: ReadonlyArray<{ id: string; summary: string }> = [
   { id: 'environment', summary: 'validate environment configuration (needs BUCKLE_ENV_VALIDATOR_COMMAND)' },
 ]
 
+/**
+ * Why a built-in pack cannot be built from this configuration, or null when it can. `createBuiltinPacks`
+ * builds by this check and `buckle settings` and `buckle init` refuse by it, so a pack the node would
+ * call unknown at start is never written to `BUCKLE_PACKS`.
+ */
+export function unmetPackPrerequisite(id: string, options: Pick<BuiltinPackOptions, 'environmentValidator'>): string | null {
+  if (id === 'environment' && !options.environmentValidator) return 'BUCKLE_ENV_VALIDATOR_COMMAND is not set'
+  return null
+}
+
 /** The only place built-in packs are constructed. Plugins are appended by the plugin loader. */
 export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const packs: Pack[] = [
@@ -111,7 +121,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     allowNetwork: options.shellNetwork === true && !options.approvedUrls && options.allowedHosts.length === 0,
   }))
 
-  if (options.environmentValidator) packs.push(createEnvironmentPack({ command: options.environmentValidator, cwd: options.cwd, runProcess: options.runProcess }))
+  if (unmetPackPrerequisite('environment', options) === null) packs.push(createEnvironmentPack({ command: options.environmentValidator!, cwd: options.cwd, runProcess: options.runProcess }))
   if (!options.allowHostGit) for (const pack of packs) {
     if (pack.id === 'git' || pack.id === 'forge') pack.unavailableReason = 'Host Git can read repository data outside per-file approval checks; BUCKLE_ALLOW_HOST_GIT=true explicitly trusts repository access outside the shell sandbox'
   }
