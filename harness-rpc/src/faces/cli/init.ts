@@ -4,6 +4,8 @@ import { createInterface } from 'node:readline/promises'
 import { basename, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
+import { BUILTIN_PACKS } from '../../packs/index.js'
+import { findNodeSetting, normaliseSetting } from './node-settings.js'
 import { redeemPairingCode } from './pairing.js'
 
 export interface CliResult {
@@ -14,7 +16,9 @@ const USAGE = `Usage: buckle init [--root <dir>] [--mount <path>] [--name <name>
                   [--pair <code> --rings <url> [--url <public url>]]
 
 Writes an environment file for one workspace, with a fresh agent token and a fresh admin
-credential. Asks for the few decisions when run in a terminal; --yes takes the defaults.
+credential. Asks for the few decisions when run in a terminal: the workspace, which packs to
+enable, the shell, host Git and the network lists. --yes, or no terminal, takes the defaults and
+says what it kept. Change any of them later with buckle settings set.
 
 With --pair, the node registers itself with Rings by redeeming a code issued there, so no
 credential is typed from one screen into another. --url is where Rings reaches this node, and
@@ -27,7 +31,31 @@ beside an existing environment file keeps its credentials and updates the node's
  * agent token is what a harness or Rings calls tools with; the admin credential is what Rings
  * configures the node with, and no tool call can present it.
  */
-export async function runInit(argv: string[]): Promise<CliResult> {
+/** Where the questions are asked. A terminal by default; a test hands in scripted answers. */
+export interface InitPrompt {
+  interactive: boolean
+  question(text: string): Promise<string>
+  /** Explanations beside a question, on the same stream the questions use. */
+  say(text: string): void
+  close(): void
+}
+
+/**
+ * The node settings `buckle init` asks for after the workspace, each shown with the shipped
+ * default. Enter keeps it: a default grants an agent nothing an unedited install would not.
+ */
+export interface NodeChoices {
+  /** Null keeps every built-in pack and plugins; a list names the packs, which drops plugins. */
+  packs: string[] | null
+  shell: boolean
+  hostGit: boolean
+  networkAllow: string | null
+  allowedHosts: string | null
+}
+
+const DEFAULT_CHOICES: NodeChoices = { packs: null, shell: true, hostGit: false, networkAllow: null, allowedHosts: null }
+
+export async function runInit(argv: string[], prompt: InitPrompt = terminalPrompt()): Promise<CliResult> {
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -63,10 +91,17 @@ export async function runInit(argv: string[]): Promise<CliResult> {
     return { exitCode: 1 }
   }
 
-  const interactive = process.stdin.isTTY && !values.yes
-  const answers = interactive
-    ? await askInTerminal({ root: values.root, mount: values.mount, name: values.name })
-    : { root: values.root ?? process.cwd(), mount: values.mount ?? null, name: values.name ?? null }
+  const interactive = prompt.interactive && !values.yes
+  let answers: { root: string; mount: string | null; name: string | null }
+  let choices = DEFAULT_CHOICES
+  try {
+    answers = interactive
+      ? await askWorkspace(prompt, { root: values.root, mount: values.mount, name: values.name })
+      : { root: values.root ?? process.cwd(), mount: values.mount ?? null, name: values.name ?? null }
+    if (interactive) choices = await askNodeChoices(prompt)
+  } finally {
+    prompt.close()
+  }
 
   const root = resolve(answers.root)
   const mount = answers.mount?.trim() || null
@@ -83,7 +118,7 @@ export async function runInit(argv: string[]): Promise<CliResult> {
 
   const authToken = token()
   const adminToken = token()
-  const contents = renderEnv({ root, mount, name, port, authToken, adminToken })
+  const contents = renderEnv({ root, mount, name, port, authToken, adminToken, choices })
   writeFileSync(out, contents, { mode: 0o600 })
 
   process.stdout.write(`Wrote ${out}
@@ -91,6 +126,7 @@ export async function runInit(argv: string[]): Promise<CliResult> {
   Workspace   ${root}
   Seen as     ${mount ?? root}
   Name        ${name}
+${describeChoices(choices)}${interactive ? '' : 'These are the defaults, kept because nothing was asked. Change one with: buckle settings set <key> <value>\n'}
 
 Next:
   1. Start the node:            buckle serve        (reads ${basename(out)} from this directory)
@@ -125,20 +161,76 @@ async function pair(input: { out: string; contents: string; code: string; rings:
   return { exitCode: result.ok ? 0 : 1 }
 }
 
-async function askInTerminal(defaults: { root?: string; mount?: string; name?: string }) {
-  const readline = createInterface({ input: process.stdin, output: process.stderr })
-  try {
-    const root = (await readline.question(`Workspace root [${defaults.root ?? process.cwd()}]: `)).trim() || defaults.root || process.cwd()
-    const mountAnswer = (await readline.question(`Show it to the agent as a virtual path? Enter one like /workspace, or leave empty [${defaults.mount ?? 'no'}]: `)).trim()
-    const mount = mountAnswer || defaults.mount || null
-    const name = (await readline.question(`Name for this node [${defaults.name ?? `${basename(resolve(root))} on ${hostnameShort()}`}]: `)).trim() || defaults.name || null
-    return { root, mount, name }
-  } finally {
-    readline.close()
+/** Questions on stderr, so stdout stays the summary; the readline is opened only when one is asked. */
+function terminalPrompt(): InitPrompt {
+  let readline: ReturnType<typeof createInterface> | null = null
+  return {
+    interactive: Boolean(process.stdin.isTTY),
+    question: text => (readline ??= createInterface({ input: process.stdin, output: process.stderr })).question(text),
+    say: text => void process.stderr.write(`${text}\n`),
+    close: () => readline?.close(),
   }
 }
 
-function renderEnv(input: { root: string; mount: string | null; name: string; port: string; authToken: string; adminToken: string }): string {
+async function askWorkspace(prompt: InitPrompt, defaults: { root?: string; mount?: string; name?: string }) {
+  const root = (await prompt.question(`Workspace root [${defaults.root ?? process.cwd()}]: `)).trim() || defaults.root || process.cwd()
+  const mountAnswer = (await prompt.question(`Show it to the agent as a virtual path? Enter one like /workspace, or leave empty [${defaults.mount ?? 'no'}]: `)).trim()
+  const mount = mountAnswer || defaults.mount || null
+  const name = (await prompt.question(`Name for this node [${defaults.name ?? `${basename(resolve(root))} on ${hostnameShort()}`}]: `)).trim() || defaults.name || null
+  return { root, mount, name }
+}
+
+async function askNodeChoices(prompt: InitPrompt): Promise<NodeChoices> {
+  prompt.say('\nPacks this node offers:')
+  for (const pack of BUILTIN_PACKS) prompt.say(`  ${pack.id.padEnd(12)} ${pack.summary}`)
+  const packs = await askValid(prompt, 'Packs to enable, comma separated; naming them turns plugins off [all]: ', 'BUCKLE_PACKS')
+  const shell = await askYesNo(prompt, 'Shell tools on? [Y/n]: ', true)
+  prompt.say('Host Git and forge tools read the repository outside the sandbox\'s per-file checks, so they start off (BUCKLE-D17).')
+  const hostGit = await askYesNo(prompt, 'Host Git and forge tools on? [y/N]: ', false)
+  const networkAllow = await askValid(prompt, 'Approved hosts and URLs, the only ones fetches and pages may reach, e.g. localhost:3000,*.example.com [none]: ', 'BUCKLE_NETWORK_ALLOW')
+  const allowedHosts = await askValid(prompt, 'Private-address hosts web_fetch may reach, e.g. db.internal,*.internal.test [none]: ', 'BUCKLE_ALLOWED_HOSTS')
+  return { packs: packs === null ? null : packs.split(','), shell, hostGit, networkAllow, allowedHosts }
+}
+
+/** Asks until the answer passes the same check `buckle settings set` applies; empty keeps the default. */
+async function askValid(prompt: InitPrompt, text: string, key: string): Promise<string | null> {
+  const setting = findNodeSetting(key)!
+  for (;;) {
+    const answer = (await prompt.question(text)).trim()
+    if (!answer) return null
+    const value = normaliseSetting({ setting, raw: answer, cwd: process.cwd(), isDirectory: () => false })
+    if (value.ok) return value.value
+    prompt.say(value.reason)
+  }
+}
+
+async function askYesNo(prompt: InitPrompt, text: string, fallback: boolean): Promise<boolean> {
+  for (;;) {
+    const answer = (await prompt.question(text)).trim().toLowerCase()
+    if (!answer) return fallback
+    if (['y', 'yes', 'on', 'true'].includes(answer)) return true
+    if (['n', 'no', 'off', 'false'].includes(answer)) return false
+    prompt.say('Answer y or n, or press Enter for the default.')
+  }
+}
+
+function describeChoices(choices: NodeChoices): string {
+  return `  Packs       ${choices.packs?.join(', ') ?? 'all, and plugins'}
+  Shell       ${choices.shell ? 'on' : 'off'}
+  Host Git    ${choices.hostGit ? 'on' : 'off'}
+  Network     ${choices.networkAllow ?? 'no approved list'}; private hosts ${choices.allowedHosts ?? 'none'}
+`
+}
+
+/** Only an answer that moved off the default adds a line; the rest stay as commented placeholders. */
+function renderChoices(choices: NodeChoices): string {
+  return `${choices.packs ? `BUCKLE_PACKS=${choices.packs.join(',')}` : '# BUCKLE_PACKS=fs,web,shell'}
+BUCKLE_ALLOW_SHELL=${choices.shell}
+# Host Git and forge tools read the repository outside per-file checks (BUCKLE-D17).
+${choices.hostGit ? 'BUCKLE_ALLOW_HOST_GIT=true' : '# BUCKLE_ALLOW_HOST_GIT=true'}`
+}
+
+function renderEnv(input: { root: string; mount: string | null; name: string; port: string; authToken: string; adminToken: string; choices: NodeChoices }): string {
   return `# Written by buckle init on ${new Date().toISOString()}
 # The node reads this file from its working directory. Only BUCKLE_* names are taken from it.
 
@@ -159,7 +251,7 @@ BUCKLE_SETUP_TOKEN=${input.adminToken}
 BUCKLE_WORKSPACE_ROOT=${input.root}
 ${input.mount ? `BUCKLE_WORKSPACE_MOUNT=${input.mount}` : '# BUCKLE_WORKSPACE_MOUNT=/workspace'}
 BUCKLE_SANDBOX=auto
-BUCKLE_ALLOW_SHELL=true
+${renderChoices(input.choices)}
 
 # The owner's constraints, as shell-word globs. One pattern per line inside double quotes, or
 # separated by ;;  An allow glob covers the whole line, a deny glob everything starting with it.
@@ -167,7 +259,8 @@ BUCKLE_ALLOW_SHELL=true
 # BUCKLE_COMMAND_DENY="{sh,bash,node,python,python3,curl,wget}"
 # Commands that ask first, added to the built-in destructive list, which nothing removes.
 # BUCKLE_COMMAND_DESTRUCTIVE="terraform destroy *"
-# BUCKLE_NETWORK_ALLOW=localhost:3000,*.example.com
+${input.choices.networkAllow ? `BUCKLE_NETWORK_ALLOW=${input.choices.networkAllow}` : '# BUCKLE_NETWORK_ALLOW=localhost:3000,*.example.com'}
+${input.choices.allowedHosts ? `BUCKLE_ALLOWED_HOSTS=${input.choices.allowedHosts}` : '# BUCKLE_ALLOWED_HOSTS=db.internal'}
 
 # Where this node reports what it did, and where a request waiting for a decision is announced.
 # buckle init --pair fills all three in from Rings, with the report credential Rings mints for

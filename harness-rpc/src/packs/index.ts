@@ -50,6 +50,21 @@ export interface BuiltinPackOptions {
   sandboxUnavailableReason: string | null
 }
 
+/**
+ * The built-in packs by id, in manifest order, for `buckle init` and `buckle settings`, which
+ * name them without building any. A test keeps this list and `createBuiltinPacks` in step.
+ */
+export const BUILTIN_PACKS: ReadonlyArray<{ id: string; summary: string }> = [
+  { id: 'fs', summary: 'read, write and search files' },
+  { id: 'web', summary: 'fetch URLs and search the web' },
+  { id: 'git', summary: 'read the repository: status, diff, log, blame, branches (needs host Git on)' },
+  { id: 'forge', summary: 'commit, push and open pull requests (needs host Git on and a forge token)' },
+  { id: 'dev', summary: 'language-server navigation and diagnostics' },
+  { id: 'browser', summary: 'drive an isolated agent-browser session' },
+  { id: 'shell', summary: 'run commands in the sandbox (needs the shell on)' },
+  { id: 'environment', summary: 'validate environment configuration (needs BUCKLE_ENV_VALIDATOR_COMMAND)' },
+]
+
 /** The only place built-in packs are constructed. Plugins are appended by the plugin loader. */
 export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const packs: Pack[] = [
