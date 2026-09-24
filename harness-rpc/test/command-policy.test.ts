@@ -178,6 +178,8 @@ describe('what no pattern can change', () => {
     expect(evaluate('buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
     expect(evaluate('/usr/local/bin/buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
     expect(evaluate('/opt/notbuckle', ['approve', 'abc']).kind).toBe('allow')
+    expect(evaluate('pnpm', ['--filter', '@5straps/buckle', 'mcp-probe']).kind).toBe('allow')
+    expect(evaluate('cat', ['/srv/buckle', 'policy.json']).kind).toBe('allow')
   })
 
   it('keeps the destructive gate under an allow pattern, so rm -rf still asks', () => {
