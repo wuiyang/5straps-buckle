@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
-import { destructivePatterns, emptyWorkspacePolicy, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
+import { destructivePatterns, emptyWorkspacePolicy, isWorkspaceToolAllowed, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createFilePolicyStore } from '../../adapters/policy-store/file-policy-store.js'
 import { policyPath, type BuckleConfig } from '../../config.js'
 import { PolicyError, refusedNetworkEntries, type SkippedEntry } from '../../domain/policy.js'
@@ -18,6 +18,8 @@ const USAGE = `Usage:
   buckle policy destructive-command <glob>    Matching command lines ask first, once or per session
   buckle policy allow-url <host|url-prefix>   Only listed hosts and URLs may be reached
   buckle policy mount <path> | unmount        Show the workspace to the agent as this path
+  buckle policy deny-tool <tool>              Refuse this tool outright, whatever its pack allows
+  buckle policy allow-tool <tool>             Lift that refusal; a tool in a withheld pack stays withheld
   buckle policy remove <pattern>              Drop a pattern from every list
   buckle policy import <file.json>            Replace the stored policy from a file
   buckle policy export                        Print the stored policy as JSON
@@ -55,6 +57,10 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
         return await save(runtime, edit(current(), policy => { policy.mount = required(rest[0], action) }))
       case 'unmount':
         return await save(runtime, edit(current(), policy => { policy.mount = null }))
+      case 'deny-tool':
+        return await saveTool(runtime, toolName(rest[0], action), edit(current(), policy => denyTool(policy, toolName(rest[0], action))))
+      case 'allow-tool':
+        return await saveTool(runtime, toolName(rest[0], action), edit(current(), policy => allowTool(policy, toolName(rest[0], action))))
       case 'remove':
         return await save(runtime, remove(current(), required(rest[0], action)))
       case 'import':
@@ -195,6 +201,39 @@ function remove(policy: WorkspacePolicy, pattern: string): WorkspacePolicy {
   })
 }
 
+function toolName(value: string | undefined, action: string): string {
+  const parsed = ToolNameSchema.safeParse(required(value, action))
+  if (!parsed.success) throw new UsageError(`${value} is not a tool name, such as fs_write or shell_exec`)
+  return parsed.data
+}
+
+function denyTool(policy: WorkspacePolicy, tool: string): void {
+  const deny = policy.tools?.deny ?? []
+  policy.tools = { ...(policy.tools?.allow !== undefined ? { allow: policy.tools.allow } : {}), deny: deny.includes(tool) ? deny : [...deny, tool] }
+}
+
+/** A stored allow list that leaves the tool out would still refuse it, so the tool joins that list too. */
+function allowTool(policy: WorkspacePolicy, tool: string): void {
+  if (!policy.tools) return
+  const allow = policy.tools.allow
+  policy.tools = { ...(allow !== undefined ? { allow: allow.includes(tool) ? allow : [...allow, tool] } : {}), deny: policy.tools.deny.filter(name => name !== tool) }
+}
+
+/**
+ * Saves a per-tool switch, then says what still decides the tool: the pack gates run first, so
+ * `allow-tool` never brings back a tool its pack withholds, and the node's own policy over a
+ * registered workspace can still refuse it.
+ */
+async function saveTool(runtime: BuckleRuntime, tool: string, policy: WorkspacePolicy): Promise<CliResult> {
+  const result = await save(runtime, policy)
+  const pack = runtime.manifest().packs.find(candidate => candidate.toolNames.includes(tool))
+  if (!pack) process.stdout.write(`\n${tool} is not a tool on this node now; the switch is stored and applies if a pack brings it.\n`)
+  else if (pack.unavailableReason) process.stdout.write(`\n${tool} stays unavailable: its pack ${pack.id} is withheld. ${pack.unavailableReason}\n`)
+  const ceiling = runtime.policy.ceiling()
+  if (ceiling && !isWorkspaceToolAllowed(ceiling, tool)) process.stdout.write(`\n${tool} stays refused by the node's own tool policy over this workspace.\n`)
+  return result
+}
+
 async function save(runtime: BuckleRuntime, policy: WorkspacePolicy): Promise<CliResult> {
   await runtime.policy.apply(policy)
   return show(runtime, [])
@@ -229,6 +268,8 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   section('Command deny list (refused outright)', effective.commands.deny, policy => policy.commands.deny)
   section('Destructive additions (these ask, on top of the built-in floor)', destructivePatterns(effective), destructivePatterns)
   section('Approved hosts and URLs (only these may be reached)', effective.network.allow, policy => policy.network.allow)
+  section('Denied tools (refused outright, whatever the pack allows)', effective.tools?.deny ?? [], policy => policy.tools?.deny ?? [])
+  if (effective.tools?.allow !== undefined) section('Tool allow list (only these tools may run)', effective.tools.allow, policy => policy.tools?.allow ?? [])
   if (skipped.length > 0) process.stdout.write('\nA SKIPPED entry fails the host grammar and covers nothing. Drop it with `buckle policy migrate --write`.\n')
   process.stdout.write(`\nStored ${stored?.updatedAt ? `at ${stored.updatedAt}` : 'nothing'}; environment and stored parts are unioned.\n`)
   return { exitCode: 0 }
