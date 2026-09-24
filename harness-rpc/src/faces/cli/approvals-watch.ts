@@ -2,6 +2,7 @@ import { createInterface, type Interface } from 'node:readline/promises'
 import type { Readable, Writable } from 'node:stream'
 import type { ApprovalDecision, ApprovalRequest, GrantScope } from '@5straps/protocol'
 import { describeQuestion } from '../../adapters/approval/cli-approval-channel.js'
+import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from '../../adapters/approval/terminal-keys.js'
 import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand } from '../../domain/approval-instruction.js'
 import type { ApprovalRegistry } from '../../services/approval-registry.js'
@@ -13,11 +14,14 @@ import type { ApprovalRegistry } from '../../services/approval-registry.js'
  */
 export const WATCH_POLL_MS = { first: 500, idle: 2_000 }
 
-/** A grant needs its own key. Enter and anything unrecognised grant nothing and ask again. */
+/**
+ * A grant needs its own key. Enter and anything unrecognised grant nothing and ask again. A
+ * persisted grant takes the whole word, so no stray single key can write one.
+ */
 const SCOPE_KEYS: Array<{ key: string; scope: GrantScope; label: string }> = [
   { key: 'o', scope: 'once', label: 'once' },
   { key: 's', scope: 'session', label: 'session' },
-  { key: 'a', scope: 'always', label: 'always' },
+  { key: 'always', scope: 'always', label: 'always' },
 ]
 
 export interface ApprovalWatchOptions {
@@ -41,14 +45,22 @@ type Outcome = { exitCode: number }
  * Each request is asked once. A skipped one stays waiting for another route, and a question whose
  * request expires or is answered elsewhere while on screen is dropped with a note. The first
  * Ctrl-C stops the watch; nothing is answered on the way out.
+ *
+ * No key answers a question the owner has not seen. A question takes keys only once the keyboard
+ * has been still for `QUIET_MS` with it on screen, and a line typed before that is thrown away.
+ * After a drop the next question also waits for a bare Enter, because the owner was mid-answer.
  */
 export async function watchApprovals(options: ApprovalWatchOptions): Promise<Outcome> {
   const poll = options.pollMs ?? WATCH_POLL_MS
   const stopped = new AbortController()
-  const readline = createInterface({ input: options.input, output: options.output })
+  // Terminal mode, so a half-typed line can be thrown away; no history, so an arrow key cannot
+  // bring back an earlier answer.
+  const readline = createInterface({ input: options.input, output: options.output, terminal: true, historySize: 0 })
+  const keys = watchKeys(options.input)
   const stop = () => {
     if (stopped.signal.aborted) return
     stopped.abort()
+    keys.stop()
     readline.close()
     options.output.write(`\nStopped watching workspace ${options.workspaceId}.\n`)
   }
@@ -57,9 +69,10 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
   readline.on('close', stop)
   options.signal?.addEventListener('abort', stop, { once: true })
 
-  options.output.write(`Watching workspace ${options.workspaceId} for approvals. Keys: o once, s session, a always, d deny, n skip; Enter grants nothing. Ctrl-C stops.\n`)
+  options.output.write(`Watching workspace ${options.workspaceId} for approvals. Keys: o once, s session, the word always, d deny, n skip; Enter grants nothing. Ctrl-C stops.\n`)
   const seen = new Set<string>()
   let wait = poll.first
+  let afterDrop = false
   try {
     while (!stopped.signal.aborted) {
       const pending = readPending(options)
@@ -71,18 +84,41 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
         continue
       }
       wait = poll.first
+      if (afterDrop) {
+        afterDrop = false
+        // Read the queue again after the Enter: the request may have gone while the owner looked.
+        if (await awaitEnter(readline, options.output, stopped.signal)) continue
+        break
+      }
       seen.add(next.token)
-      await askOne({ ...options, readline, request: next, stopped: stopped.signal, recheckMs: poll.first })
+      afterDrop = await askOne({ ...options, readline, keys, request: next, stopped: stopped.signal, recheckMs: poll.first }) === 'dropped'
     }
     return { exitCode: 0 }
   } finally {
     options.signal?.removeEventListener('abort', stop)
     readline.off('close', stop)
+    keys.stop()
     readline.close()
   }
 }
 
-async function askOne(context: ApprovalWatchOptions & { readline: Interface; request: ApprovalRequest; stopped: AbortSignal; recheckMs: number }): Promise<void> {
+/** False when the watch stopped instead. Keys typed before the note are already gone. */
+async function awaitEnter(readline: Interface, output: Writable, stopped: AbortSignal): Promise<boolean> {
+  output.write('  Another request is waiting. Press Enter to see it.\n')
+  for (;;) {
+    discardTypedLine(readline)
+    try {
+      if ((await readline.question('  > ', { signal: stopped })).trim() === '') return true
+    } catch {
+      return false
+    }
+    output.write('  Ignored; that answered nothing. Press Enter alone to see the next request.\n')
+  }
+}
+
+type Ending = 'answered' | 'skipped' | 'dropped' | 'stopped'
+
+async function askOne(context: ApprovalWatchOptions & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; stopped: AbortSignal; recheckMs: number }): Promise<Ending> {
   const { request, output } = context
   const offered = SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope))
   const prompt = `  ${[...offered.map(entry => `${entry.key}) ${entry.label}`), 'd) deny', 'n) skip'].join('  ')} > `
@@ -95,20 +131,28 @@ async function askOne(context: ApprovalWatchOptions & { readline: Interface; req
   }, context.recheckMs)
   const signal = AbortSignal.any([context.stopped, dropped.signal, AbortSignal.timeout(Math.max(remainingMs(request.expiresAt), 1))])
   try {
+    // Keys already on their way were meant for the question before this one.
+    await context.keys.quiet(QUIET_MS, signal)
     for (;;) {
       let answer: string
       try {
+        signal.throwIfAborted()
+        discardTypedLine(context.readline)
         answer = (await context.readline.question(prompt, { signal })).trim().toLowerCase()
       } catch {
-        if (!context.stopped.aborted) output.write(`  ${request.token} ${remainingMs(request.expiresAt) === 0 ? 'expired' : 'was answered elsewhere'}; dropped.\n`)
-        return
+        if (context.stopped.aborted) return 'stopped'
+        output.write(`  ${request.token} ${remainingMs(request.expiresAt) === 0 ? 'expired' : 'was answered elsewhere'}; dropped.\n`)
+        return 'dropped'
       }
       if (answer === 'n') {
         output.write(`  Skipped; still waiting. Answer later with: ${approveCommand({ request, workspaceId: context.workspaceId })}\n`)
-        return
+        return 'skipped'
       }
       const decision = decide(request, answer, offered)
-      if (decision) return record(context, decision)
+      if (decision) {
+        record(context, decision)
+        return 'answered'
+      }
       output.write(`  Nothing granted. Type ${offered.map(entry => entry.key).join(', ')}, d or n.\n`)
     }
   } finally {
@@ -143,16 +187,4 @@ function readPending(options: Pick<ApprovalWatchOptions, 'approvals'>): { ok: tr
 function unreachable(options: ApprovalWatchOptions, message: string): Outcome {
   options.errors.write(`Cannot read the approvals waiting in workspace ${options.workspaceId}: ${message}. Check that BUCKLE_STATE_DIR names the state directory of the running node.\n`)
   return { exitCode: 1 }
-}
-
-function pause(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise(resolve => {
-    const done = () => {
-      clearTimeout(timer)
-      signal.removeEventListener('abort', done)
-      resolve()
-    }
-    const timer = setTimeout(done, ms)
-    signal.addEventListener('abort', done, { once: true })
-  })
 }

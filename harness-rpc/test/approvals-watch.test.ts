@@ -53,6 +53,23 @@ function watch(approvals: Pick<ApprovalRegistry, 'pending' | 'resolve'>, termina
 }
 
 const count = (text: string, pattern: RegExp) => text.match(pattern)?.length ?? 0
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+/** A question takes keys only after the keyboard has been still with it on screen, so wait for its prompt. */
+async function prompted(terminal: ReturnType<typeof keyboardTerminal>, times = 1) {
+  await vi.waitFor(() => expect(count(terminal.shown(), /n\) skip > /g)).toBe(times), { timeout: 3_000 })
+}
+
+/** A private address web_fetch asks about, which offers the persisted scope too. */
+function issuePrivate(registry: ApprovalRegistry, subject: string): string {
+  const [request] = registry.issue({
+    tool: 'web_fetch', sessionId: 'chat-1',
+    asks: [{ kind: 'ask', rule: 'network_egress', subject, reason: `${subject} is private`, offeredScopes: ['once', 'session', 'always'] }],
+  })
+  return request!.token
+}
+
+const grantsOf = (config: BuckleConfig) => createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }).list()
 
 describe('buckle approvals --watch', () => {
   it('answers a waiting approval, and the gated tool call proceeds', async () => {
@@ -63,7 +80,8 @@ describe('buckle approvals --watch', () => {
 
     const { terminal, done } = watch(registryOf(config))
     await vi.waitFor(() => expect(terminal.shown()).toContain('fs_write needs approval'))
-    expect(terminal.shown()).toContain('o) once  s) session  a) always  d) deny  n) skip')
+    await prompted(terminal)
+    expect(terminal.shown()).toContain('o) once  s) session  always) always  d) deny  n) skip')
     terminal.type('s\r')
 
     expect(await call).toMatchObject({ outcome: 'ok' })
@@ -77,7 +95,7 @@ describe('buckle approvals --watch', () => {
     const config = node()
     const token = issue(registryOf(config))
     const { terminal, done } = watch(registryOf(config))
-    await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+    await prompted(terminal)
 
     terminal.type('n\r')
     await vi.waitFor(() => expect(terminal.shown()).toContain(`Skipped; still waiting. Answer later with: buckle approve ${token}`))
@@ -93,7 +111,7 @@ describe('buckle approvals --watch', () => {
     const config = node()
     const token = issue(registryOf(config))
     const { terminal, done } = watch(registryOf(config))
-    await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+    await prompted(terminal)
 
     // `a` is not a key for this request, which offers once and session alone.
     for (const [index, keys] of ['\r', 'y\r', 'a\r'].entries()) {
@@ -112,7 +130,7 @@ describe('buckle approvals --watch', () => {
     const config = node()
     const token = issue(registryOf(config))
     const { terminal, done } = watch(registryOf(config))
-    await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
+    await prompted(terminal)
 
     terminal.type('d\r')
     await vi.waitFor(() => expect(terminal.shown()).toContain(`Denied ${token}`))
@@ -188,5 +206,86 @@ describe('buckle approvals --watch', () => {
     expect(terminal.refused()).toContain('Cannot read the approvals waiting in workspace default')
     expect(terminal.refused()).toContain('BUCKLE_STATE_DIR')
     expect(existsSync(approvalsPath(config))).toBe(true)
+  })
+})
+
+describe('buckle approvals --watch, keys meant for another question', () => {
+  it('lets no key typed just after a drop answer the next request, which waits for a bare Enter', async () => {
+    const config = node()
+    const registry = registryOf(config)
+    const first = issuePrivate(registry, '10.0.0.1')
+    await sleep(5)
+    const second = issuePrivate(registry, '10.0.0.2')
+    const { terminal, done } = watch(registryOf(config))
+    await prompted(terminal)
+    expect(terminal.shown()).toContain('subject: 10.0.0.1')
+
+    registry.resolve({ token: first, approved: false, scope: 'once' })
+    await vi.waitFor(() => expect(terminal.shown()).toContain(`${first} was answered elsewhere; dropped.`))
+    // Reaction time: the owner was answering the first question when it went.
+    await sleep(250)
+    terminal.type('always\r')
+    await sleep(700)
+
+    expect(grantsOf(config)).toEqual([])
+    expect(terminal.shown()).not.toContain('subject: 10.0.0.2')
+    expect(terminal.shown()).toContain('Ignored; that answered nothing.')
+
+    terminal.type('\r')
+    await prompted(terminal, 2)
+    expect(terminal.shown()).toContain('subject: 10.0.0.2')
+    terminal.type('d\r')
+    await vi.waitFor(() => expect(terminal.shown()).toContain(`Denied ${second}`))
+    expect(grantsOf(config)).toEqual([])
+    terminal.type('\x03')
+    expect(await done).toEqual({ exitCode: 0 })
+  })
+
+  it('does not let a double press answer two requests', async () => {
+    const config = node()
+    const registry = registryOf(config)
+    issuePrivate(registry, '10.0.0.1')
+    await sleep(5)
+    const second = issuePrivate(registry, '10.0.0.2')
+    const { terminal, done } = watch(registryOf(config))
+    await prompted(terminal)
+
+    // `a` alone is not the persisted scope, so twice in a row grants nothing at all.
+    terminal.type('a\r')
+    await new Promise(resolve => setImmediate(resolve))
+    terminal.type('a\r')
+    await vi.waitFor(() => expect(count(terminal.shown(), /Nothing granted/g)).toBe(2))
+    expect(grantsOf(config)).toEqual([])
+
+    terminal.type('always\r')
+    await new Promise(resolve => setImmediate(resolve))
+    terminal.type('always\r')
+    await sleep(200)
+
+    expect(grantsOf(config).map(grant => [grant.subject, grant.scope])).toEqual([['10.0.0.1', 'always']])
+    expect(registryOf(config).pending().map(request => request.token)).toEqual([second])
+    // The first question was asked three times, so the second one's prompt is the fourth.
+    await prompted(terminal, 4)
+    expect(terminal.shown()).toContain('subject: 10.0.0.2')
+    terminal.type('\x03')
+    expect(await done).toEqual({ exitCode: 0 })
+    expect(registryOf(config).pending().map(request => request.token)).toEqual([second])
+  })
+
+  it('throws away a line typed before the question took keys', async () => {
+    const config = node()
+    const token = issuePrivate(registryOf(config), '10.0.0.1')
+    const { terminal, done } = watch(registryOf(config))
+    await vi.waitFor(() => expect(terminal.shown()).toContain('subject: 10.0.0.1'))
+
+    terminal.type('o')
+    await prompted(terminal)
+    terminal.type('\r')
+
+    await vi.waitFor(() => expect(count(terminal.shown(), /Nothing granted/g)).toBe(1))
+    expect(grantsOf(config)).toEqual([])
+    expect(registryOf(config).pending().map(request => request.token)).toEqual([token])
+    terminal.type('\x03')
+    await done
   })
 })
