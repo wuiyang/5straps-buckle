@@ -105,6 +105,12 @@ describe('host patterns, one grammar for lists, BUCKLE_ALLOWED_HOSTS and grants 
     expect(covers('*.example.com', 'ftp://api.example.com/')).toBe(false)
   })
 
+  it('accept an underscore in a label, as the URL parser and the matcher before patterns did', () => {
+    expect(covers('my_db', 'http://my_db:5432/')).toBe(true)
+    expect(covers('my_db:5432', 'http://my_db:5432/')).toBe(true)
+    expect(covers('*.compose_net', 'http://api.compose_net/')).toBe(true)
+  })
+
   it('keep an exact host exact, and read a bare IPv6 literal as its bracketed form', () => {
     expect(covers('example.com', 'https://api.example.com/')).toBe(false)
     expect(covers('::1', 'http://[::1]:8080/')).toBe(true)

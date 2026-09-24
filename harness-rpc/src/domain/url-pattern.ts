@@ -24,7 +24,8 @@ export class UrlPatternError extends Error {}
 
 type Compiled = (url: URL) => boolean
 
-const HOST_PATTERN = /^(\*\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])(?::(\d{1,5}))?$/i
+// A label may hold `_`, as the URL parser allows and compose service names use (`my_db`).
+const HOST_PATTERN = /^(\*\.)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)*|\[[0-9a-f:.]+\])(?::(\d{1,5}))?$/i
 
 export function compileUrlPatterns(patterns: string[]): UrlMatcher {
   const compiled = patterns.map(compileOne)

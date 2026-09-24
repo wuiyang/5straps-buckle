@@ -183,6 +183,8 @@ describe('BUCKLE_ALLOWED_HOSTS at load', () => {
     expect(loadConfig(environment('db.internal, *.internal.test:8080')).allowedHosts).toEqual(['db.internal', '*.internal.test:8080'])
     expect(() => loadConfig(environment('*.*.test'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: A wildcard stands only as the whole leftmost label/)
     expect(() => loadConfig(environment('https://db.internal'))).toThrow(/names no scheme/)
+    expect(loadConfig(environment('my_db, my_db:5432, *.compose_net')).allowedHosts).toEqual(['my_db', 'my_db:5432', '*.compose_net'])
+    expect(() => loadConfig(environment('db.internal.'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry/)
     expect(() => loadConfig(environment('*.0.0.1'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: A wildcard covers a domain, not an address/)
   })
 })
