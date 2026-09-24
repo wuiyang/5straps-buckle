@@ -31,13 +31,14 @@ import { createProcessProbeRule } from './domain/permission/rules/process-probe-
 import { createReadScopeRule } from './domain/permission/rules/read-scope-rule.js'
 import { createSensitivePathRule } from './domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from './domain/permission/rules/write-scope-rule.js'
-import { compilePolicy, mergePolicies, policyRevision, PolicyConflictError, type CompiledPolicy } from './domain/policy.js'
+import { compilePolicy, mergePolicies, policyRevision, PolicyConflictError, type CompiledPolicy, type SkippedEntry } from './domain/policy.js'
 import { loadSkills } from './domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from './domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from './domain/tool-registry.js'
 import { intersectUrlMatchers, type UrlMatcher } from './domain/url-pattern.js'
 import type { PermissionRule } from './domain/permission/decision.js'
 import { workspaceStateKey } from './domain/workspace-key.js'
+import { logger } from './logger.js'
 import { createBuiltinPacks } from './packs/index.js'
 import { loadRootSkill } from './packs/pack-skill.js'
 import type { ActionLog } from './ports/action-log.js'
@@ -62,6 +63,8 @@ export interface PolicyHandle {
   ceiling(): WorkspacePolicy | null
   /** A fresh egress rule and approved list, built by the same construction the engine and packs use, for `buckle check-url`. */
   network(): { rule: PermissionRule; approved: UrlMatcher | null }
+  /** Approved-list entries in force that the host grammar refuses, skipped at load; `buckle policy migrate --write` drops the stored ones. */
+  skipped(): SkippedEntry[]
   /** Validates against the base, stores, and rebuilds the rules and packs. Throws PolicyError. */
   revision(): string
   apply(policy: WorkspacePolicy, expectedRevision?: string): Promise<WorkspacePolicy>
@@ -100,7 +103,8 @@ export async function createRuntime(input: {
   reporter?: Reporter
 }): Promise<BuckleRuntime> {
   const { config } = input
-  const ceiling = config.nodePolicy ? compilePolicy(config.nodePolicy) : null
+  const ceiling = config.nodePolicy ? compilePolicy(config.nodePolicy, { tolerated: () => true }) : null
+  if (ceiling) warnSkipped(ceiling.skipped)
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
   const history = createChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: [config.nodeStateDirectory ?? config.stateDirectory], maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays })
@@ -190,11 +194,13 @@ export async function createRuntime(input: {
       stored: () => policyStore.read(),
       effective: () => compiled.policy,
       ceiling: () => ceiling?.policy ?? null,
+      skipped: () => compiled.skipped,
       network: () => ({ rule: networkEgressRule(compiled, ceiling), approved: approvedUrls(compiled, ceiling) }),
       revision: () => policyRevision(policyStore.read()),
       async apply(policy, expectedRevision) {
         if (runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
-        compileEffective(policy)
+        const inForce = new Set([...config.policy.network.allow, ...policyStore.read()?.network.allow ?? []])
+        compileEffective(policy, entry => inForce.has(entry))
         policyStore.write({ ...policy, updatedAt: new Date().toISOString() }, expectedRevision)
         await runtime.reload()
         return compiled.policy
@@ -241,11 +247,14 @@ export async function createRuntime(input: {
     onToolsChanged: listener => void listeners.push(listener),
   }
 
-  function compileEffective(stored = policyStore.read()): CompiledPolicy {
+  /** At load every entry is already in force, so any the grammar refuses is skipped; `apply` narrows that to the entries it found. */
+  function compileEffective(stored = policyStore.read(), tolerated: (entry: string) => boolean = () => true): CompiledPolicy {
     const policy = ceiling
       ? { ...(stored ?? config.policy), mount: config.policy.mount }
       : mergePolicies(config.policy, stored)
-    return compilePolicy(policy)
+    const result = compilePolicy(policy, { tolerated })
+    warnSkipped(result.skipped)
+    return result
   }
 
   function allSkills(): LoadedSkill[] {
@@ -259,6 +268,16 @@ export async function createRuntime(input: {
   }
 
   return runtime
+}
+
+const warnedSkipped = new Set<string>()
+
+function warnSkipped(skipped: SkippedEntry[]): void {
+  for (const { entry, reason } of skipped) {
+    if (warnedSkipped.has(entry)) continue
+    warnedSkipped.add(entry)
+    logger.warn('Approved list entry skipped: it covers nothing. Remove it with buckle policy migrate --write or buckle policy remove', { entry, reason })
+  }
 }
 
 async function buildPacks(input: {

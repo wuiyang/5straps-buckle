@@ -51,6 +51,16 @@ describe('compiling', () => {
     expect(compilePolicy(policy({ mount })).mount).toBe(mount)
   })
 
+  it('skips a network entry the grammar refuses only when it was already in force, and a list left empty reaches nothing', () => {
+    const inForce = () => true
+    const compiled = compilePolicy(policy({ network: ['example.com', '*.127.0.0.1'] }), { tolerated: inForce })
+    expect(compiled.skipped).toEqual([{ entry: '*.127.0.0.1', reason: expect.stringContaining('covers a domain, not an address') }])
+    expect(compiled.network?.matches(new URL('https://example.com/'))).toBe(true)
+    expect(compiled.network?.matches(new URL('http://127.0.0.1/'))).toBe(false)
+    expect(compilePolicy(policy({ network: ['*.127.0.0.1'] }), { tolerated: inForce }).network?.matches(new URL('https://example.com/'))).toBe(false)
+    expect(() => compilePolicy(policy({ network: ['*.127.0.0.1'] }))).toThrow(PolicyError)
+  })
+
   it('leaves the network rule to its defaults when no list is set', () => {
     expect(compilePolicy(policy({})).network).toBeNull()
   })

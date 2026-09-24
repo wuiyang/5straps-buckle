@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util'
 import { destructivePatterns, emptyWorkspacePolicy, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createFilePolicyStore } from '../../adapters/policy-store/file-policy-store.js'
 import { policyPath, type BuckleConfig } from '../../config.js'
-import { PolicyError } from '../../domain/policy.js'
+import { PolicyError, refusedNetworkEntries, type SkippedEntry } from '../../domain/policy.js'
 import { migrateCommandPattern, type PatternMigration } from '../../domain/policy-migration.js'
 import type { BuckleRuntime } from '../../runtime.js'
 
@@ -22,7 +22,8 @@ const USAGE = `Usage:
   buckle policy import <file.json>            Replace the stored policy from a file
   buckle policy export                        Print the stored policy as JSON
   buckle policy clear                         Drop the stored policy, leaving the environment's
-  buckle policy migrate [--write]             Turn stored regular expressions into globs
+  buckle policy migrate [--write]             Turn stored regular expressions into globs, and
+                                              drop approved-list entries the host grammar refuses
 
 A command glob is matched one shell word at a time. 'pnpm {build,test} *' allows 'pnpm build'
 with any arguments after it: * stands for one word, and a trailing * for the rest of the line.
@@ -89,7 +90,8 @@ interface ListedMigration extends PatternMigration {
 /**
  * Reads the stored and environment patterns straight from disk, because a stored regular
  * expression is exactly what stops the runtime from being built. Writes nothing without
- * `--write`, and never writes a pattern it could not read.
+ * `--write`, and never writes a pattern it could not read. Approved-list entries the host grammar
+ * refuses (`BUCKLE-D18`) are skipped at load; `--write` drops the stored ones too.
  */
 export function policyMigrateCommand(input: { config: BuckleConfig; argv: string[] }): CliResult {
   const { values } = parseArgs({ args: input.argv, options: { write: { type: 'boolean' } }, allowPositionals: false })
@@ -97,14 +99,18 @@ export function policyMigrateCommand(input: { config: BuckleConfig; argv: string
   const stored = store.read()
   const storedMigrations = migrationsOf(stored)
   const environmentMigrations = migrationsOf(input.config.policy)
+  const storedRefused = refusedNetworkEntries(stored?.network.allow ?? [])
+  const environmentRefused = refusedNetworkEntries(input.config.policy.network.allow)
 
-  if (storedMigrations.length === 0 && environmentMigrations.length === 0) {
-    process.stdout.write('No command patterns are stored or configured; there is nothing to migrate.\n')
+  if (storedMigrations.length + environmentMigrations.length + storedRefused.length + environmentRefused.length === 0) {
+    process.stdout.write('No command patterns or refused approved-list entries are stored or configured; there is nothing to migrate.\n')
     return { exitCode: 0 }
   }
 
   printMigrations(`Stored policy (${policyPath(input.config)})`, storedMigrations)
   printMigrations('Environment (BUCKLE_COMMAND_ALLOW and friends)', environmentMigrations)
+  printRefused(`Stored approved list (${policyPath(input.config)}), entries skipped at load`, storedRefused)
+  printRefused('Environment (BUCKLE_NETWORK_ALLOW), entries skipped at load', environmentRefused)
 
   const unreadable = [...storedMigrations, ...environmentMigrations].filter(migration => migration.glob === null)
   if (unreadable.length > 0) {
@@ -115,17 +121,20 @@ export function policyMigrateCommand(input: { config: BuckleConfig; argv: string
   if (environmentMigrations.length > 0) {
     process.stdout.write('\nEnvironment patterns live in the environment file; paste the globs above over them.\n')
   }
+  if (environmentRefused.length > 0) {
+    process.stdout.write('\nRemove the refused BUCKLE_NETWORK_ALLOW entries from the environment file.\n')
+  }
   if (!values.write) {
-    process.stdout.write('\nNothing written. Run `buckle policy migrate --write` to store the conversions above.\n')
+    process.stdout.write('\nNothing written. Run `buckle policy migrate --write` to store the conversions and removals above.\n')
     return { exitCode: 0 }
   }
-  if (!stored) {
+  if (!stored || storedMigrations.length + storedRefused.length === 0) {
     process.stdout.write('\nNo stored policy to write.\n')
     return { exitCode: 0 }
   }
 
-  store.write(applyMigrations(stored, storedMigrations))
-  process.stdout.write('\nStored policy rewritten as globs.\n')
+  store.write(applyMigrations(stored, storedMigrations, storedRefused))
+  process.stdout.write('\nStored policy rewritten: command patterns as globs, refused approved-list entries dropped.\n')
   return { exitCode: 0 }
 }
 
@@ -148,11 +157,18 @@ function printMigrations(title: string, migrations: ListedMigration[]): void {
   }
 }
 
-function applyMigrations(policy: WorkspacePolicy, migrations: ListedMigration[]): WorkspacePolicy {
+function printRefused(title: string, refused: SkippedEntry[]): void {
+  if (refused.length === 0) return
+  process.stdout.write(`${title}\n`)
+  for (const { entry, reason } of refused) process.stdout.write(`  ${entry.padEnd(40)} -> remove (${reason})\n`)
+}
+
+function applyMigrations(policy: WorkspacePolicy, migrations: ListedMigration[], refused: SkippedEntry[]): WorkspacePolicy {
   return edit(policy, next => {
     for (const list of COMMAND_LISTS) {
       next.commands[list] = migrations.flatMap(migration => (migration.list === list && migration.glob ? [migration.glob] : []))
     }
+    next.network.allow = next.network.allow.filter(entry => !refused.some(item => item.entry === entry))
     next.updatedAt = new Date().toISOString()
   })
 }
@@ -189,17 +205,22 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   const effective = runtime.policy.effective()
   const base = runtime.policy.base()
   const stored = runtime.policy.stored()
-  if (values.json) return print({ effective, base, stored })
+  const skipped = runtime.policy.skipped()
+  if (values.json) return print({ effective, base, stored, skipped })
 
   const origin = (list: (policy: WorkspacePolicy) => string[], item: string): string => {
     const fromBase = list(base).includes(item)
     const fromStored = stored ? list(stored).includes(item) : false
     return fromBase && fromStored ? 'env+stored' : fromBase ? 'env' : 'stored'
   }
+  const note = (item: string): string => {
+    const refused = skipped.find(entry => entry.entry === item)
+    return refused ? `  SKIPPED, covers nothing: ${refused.reason}` : ''
+  }
   const section = (title: string, items: string[], list: (policy: WorkspacePolicy) => string[]): void => {
     process.stdout.write(`${title}\n`)
     if (items.length === 0) process.stdout.write('  (none)\n')
-    for (const item of items) process.stdout.write(`  ${item.padEnd(48)} ${origin(list, item)}\n`)
+    for (const item of items) process.stdout.write(`  ${item.padEnd(48)} ${origin(list, item)}${note(item)}\n`)
   }
 
   process.stdout.write(`Workspace ${runtime.paths().root}\n`)
@@ -208,6 +229,7 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   section('Command deny list (refused outright)', effective.commands.deny, policy => policy.commands.deny)
   section('Destructive additions (these ask, on top of the built-in floor)', destructivePatterns(effective), destructivePatterns)
   section('Approved hosts and URLs (only these may be reached)', effective.network.allow, policy => policy.network.allow)
+  if (skipped.length > 0) process.stdout.write('\nA SKIPPED entry fails the host grammar and covers nothing. Drop it with `buckle policy migrate --write`.\n')
   process.stdout.write(`\nStored ${stored?.updatedAt ? `at ${stored.updatedAt}` : 'nothing'}; environment and stored parts are unioned.\n`)
   return { exitCode: 0 }
 }

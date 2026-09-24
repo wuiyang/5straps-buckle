@@ -13,6 +13,13 @@ export interface CompiledPolicy {
   /** Null when the owner set no approved list, which leaves the network rule to its defaults. */
   network: UrlMatcher | null
   mount: string | null
+  /** Approved-list entries left out because the host grammar refuses them; see `compilePolicy`. */
+  skipped: SkippedEntry[]
+}
+
+export interface SkippedEntry {
+  entry: string
+  reason: string
 }
 
 export class PolicyError extends Error {}
@@ -27,7 +34,15 @@ const RESERVED_MOUNTS = new Set([
   '/sbin', '/sys', '/tmp', '/usr', '/var',
 ])
 
-export function compilePolicy(policy: WorkspacePolicy): CompiledPolicy {
+/**
+ * `tolerated` names the approved-list entries that were already in force before this compile, on
+ * disk or in the environment. One of those the host grammar now refuses (`*.127.0.0.1`, written
+ * before `BUCKLE-D18`) is skipped rather than stopping the node and every `buckle` command: it
+ * covers nothing, and a list left empty that way still reaches nothing. A new entry is refused.
+ */
+export function compilePolicy(policy: WorkspacePolicy, options: { tolerated?: (entry: string) => boolean } = {}): CompiledPolicy {
+  const skipped = refusedNetworkEntries(policy.network.allow).filter(item => options.tolerated?.(item.entry))
+  const usable = policy.network.allow.filter(entry => !skipped.some(item => item.entry === entry))
   return {
     policy,
     commands: {
@@ -35,9 +50,23 @@ export function compilePolicy(policy: WorkspacePolicy): CompiledPolicy {
       deny: compileGlobs(policy.commands.deny),
       destructive: compileGlobs(destructivePatterns(policy)),
     },
-    network: policy.network.allow.length > 0 ? compileNetwork(policy.network.allow) : null,
+    network: policy.network.allow.length > 0 ? compileNetwork(usable) : null,
     mount: validateMount(policy.mount),
+    skipped,
   }
+}
+
+/** Each approved-list entry the grammar refuses, with its reason, for loading and `buckle policy migrate`. */
+export function refusedNetworkEntries(entries: string[]): SkippedEntry[] {
+  return entries.flatMap(entry => {
+    try {
+      compileUrlPatterns([entry])
+      return []
+    } catch (error) {
+      if (error instanceof UrlPatternError) return [{ entry, reason: error.message }]
+      throw error
+    }
+  })
 }
 
 /**
