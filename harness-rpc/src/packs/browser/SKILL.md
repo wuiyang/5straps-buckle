@@ -32,11 +32,16 @@ loopback address asks first: relay the `buckle approve <token>` line to the pers
 answer in `buckle approvals --watch` on the Buckle machine, then retry. A page named without a scheme is opened and judged as
 `https://<page>`, and `localhost:3000` is host `localhost` on port 3000. Most dev servers speak
 plain HTTP, so write `http://localhost:3000` for one. `open` takes exactly one page. Only the page
-a command names is judged by Buckle's rules. When the workspace has an approved list, Buckle also
-starts the browser with that list as agent-browser's `--allowed-domains`, so clicks, redirects and
-page requests to other hosts are blocked inside the browser. A list entry agent-browser cannot
-express (a port, an address, a URL prefix) stops the browser from starting, and the refusal names
-it. Without an approved list, clicks and redirects are not judged.
+a command names is judged by Buckle's rules, down to its port and path. When an approved list is
+set (the node's or the workspace's), Buckle also starts the browser with the hosts both lists
+allow as agent-browser's `--allowed-domains`, so clicks, redirects and page requests to other
+hosts are blocked inside the browser. That containment is by host: for an entry such as
+`localhost:3000` or `https://app.example.com/admin`, the port and path hold for the page a command
+names, but inside the page that host is reachable on any port and path. When the node and
+workspace lists share no host and port, the browser does not start, and the refusal names the
+list to change. When the allowed hosts change, the next call relaunches the browser, which resets
+open tabs and cookies, and its result carries a `notice` saying so. Without an approved list,
+clicks and redirects are not judged.
 
 Paths given to `screenshot`, `pdf`, `upload` and `download` are judged by the same path rules as
 `fs` tools, so writing outside the workspace asks. Name such a path as a positional argument,

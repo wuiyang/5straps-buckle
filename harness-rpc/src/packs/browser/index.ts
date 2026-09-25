@@ -9,14 +9,24 @@ import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../domain/tool.js'
 import type { ProcessRunner } from '../../ports/process-runner.js'
+import { logger } from '../../logger.js'
 import { loadPackSkill } from '../pack-skill.js'
-import { browserAllowedDomains } from './allowed-domains.js'
+import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
 
 const FRESH_COMMANDS = new Set(['open', 'snapshot', 'click', 'dblclick', 'fill', 'type', 'press', 'keydown', 'keyup', 'hover', 'focus', 'check', 'uncheck', 'select', 'scroll', 'scrollintoview', 'drag', 'upload', 'download', 'screenshot', 'pdf', 'get', 'is', 'wait', 'eval', 'back', 'forward', 'reload', 'tab', 'frame', 'dialog', 'console', 'errors', 'highlight', 'close', 'find', 'mouse', 'touch', 'set'])
+
+/** Fixed text, so the agent reads the same sentence whichever browser was reset. */
+const RELAUNCH_NOTICE = 'The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.'
+
+const SessionsSchema = z.object({
+  sessions: z.record(z.string(), z.string()),
+  /** The --allowed-domains each session last ran with, null for none, so a change can be told. */
+  allowedDomains: z.record(z.string(), z.string().nullable()).default({}),
+})
 
 const commandInput = z.object({
   command: z.string().regex(/^[a-z][a-z0-9-]*$/).max(100),
@@ -35,21 +45,23 @@ export interface BrowserPackOptions {
   headed: boolean
   available: boolean
   /**
-   * The entries of each configured approved list, node ceiling and workspace, empty when none is
-   * set. Passed on every call as --allowed-domains, so clicks, redirects and page requests stay on
-   * them too; the pack is rebuilt when the policy changes, and agent-browser relaunches the
-   * browser when a call brings a different list.
+   * Each configured approved list, node ceiling first, empty when none is set. Passed on every
+   * call as --allowed-domains, so clicks, redirects and page requests stay on their hosts too; the
+   * pack is rebuilt when the policy changes, and agent-browser relaunches the browser when a call
+   * brings a different list.
    */
-  approvedLists: string[][]
+  approvedLists: ApprovedList[]
 }
 
 /** Names the setting, never its value, which can be a path outside the workspace. */
 export const BROWSER_UNAVAILABLE = 'agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it'
 
 export function createBrowserPack(options: BrowserPackOptions): Pack {
-  const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: z.object({ sessions: z.record(z.string(), z.string()) }), fallback: { sessions: {} } })
+  const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: { sessions: {}, allowedDomains: {} } })
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
   const allowedDomains = browserAllowedDomains(options.approvedLists)
+  const flag = 'value' in allowedDomains ? allowedDomains.value : null
+  if ('loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
   return {
     id: PACK_ID,
     version: '1.0.0',
@@ -84,9 +96,9 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           const passed = input.args.map((argument, index) => targets.get(index) ?? (filePaths.has(argument) ? options.paths.resolve(argument) : realPath(argument, options.paths)))
           const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
           const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
-          const session = sessions.update(state => state.sessions[key] ??= `buckle-${randomUUID()}`)
+          const { session, previous } = sessions.update(state => ({ session: state.sessions[key] ??= `buckle-${randomUUID()}`, previous: state.allowedDomains[key] }))
           args.push('--config', configFile, '--session', session, '--idle-timeout', '300000')
-          if ('value' in allowedDomains && allowedDomains.value !== null) args.push('--allowed-domains', allowedDomains.value)
+          if (flag !== null) args.push('--allowed-domains', flag)
           if (options.headed && !input.args.includes('--headed')) args.push('--headed')
 
           mkdirSync(options.sessionDirectory, { recursive: true, mode: 0o700 })
@@ -102,12 +114,25 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           if (result.exitCode !== 0) {
             throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
           }
-          if (input.command === 'close') sessions.update(state => { delete state.sessions[key] })
-          return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated }
+          if (input.command === 'close') sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key] })
+          else sessions.update(state => { state.allowedDomains[key] = flag })
+          const relaunched = input.command !== 'close' && previous !== undefined && previous !== flag
+          if (relaunched) logger.warn('Browser relaunched because its allowed domains changed', { previous: previous ?? 'none', current: flag ?? 'none' })
+          return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated, ...(relaunched ? { notice: RELAUNCH_NOTICE } : {}) }
         },
       }),
     ],
   }
+}
+
+const loggedLoosened = new Set<string>()
+
+/** Once per process for each set, since the pack is rebuilt on every policy change and CLI call. */
+function logLoosened(loosened: LoosenedEntry[]): void {
+  const described = loosened.map(item => `${item.entry} (${item.list} list) as ${item.host}`).join(', ')
+  if (!described || loggedLoosened.has(described)) return
+  loggedLoosened.add(described)
+  logger.info('The browser is held to these approved hosts on any port and path; Buckle still judges the page a command names by port and path', { loosened: described })
 }
 
 function realPath(argument: string, paths: PathView): string {

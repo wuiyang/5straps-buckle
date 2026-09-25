@@ -150,7 +150,8 @@ function compilePrefix(prefix: string): Compiled {
   }
 }
 
-function effectivePort(url: URL): string {
+/** The port a URL reaches: the one written, or its scheme default. */
+export function effectivePort(url: URL): string {
   if (url.port) return url.port
   return url.protocol === 'https:' ? '443' : '80'
 }

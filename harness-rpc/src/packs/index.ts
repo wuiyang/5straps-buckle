@@ -9,6 +9,7 @@ import { createGitHubForgeClient } from '../adapters/forge/github.js'
 import type { UrlMatcher } from '../domain/url-pattern.js'
 import type { ProcessRunner } from '../ports/process-runner.js'
 import type { Sandbox } from '../ports/sandbox.js'
+import type { ApprovedList } from './browser/allowed-domains.js'
 import { createBrowserPack } from './browser/index.js'
 import { createDevPack } from './dev/index.js'
 import { createForgePack } from './forge/index.js'
@@ -30,8 +31,8 @@ export interface BuiltinPackOptions {
   mountReadOnlyPaths: string[]
   /** The owner's approved list, or null for the default egress rules. */
   approvedUrls: UrlMatcher | null
-  /** The entries of each approved list `approvedUrls` intersects, which the browser pack passes on. */
-  approvedLists: string[][]
+  /** Each approved list `approvedUrls` intersects, named, which the browser pack passes on. */
+  approvedLists: ApprovedList[]
   braveSearchApiKey?: string
   /** The owner's forge credential and where it may be spent. */
   forge: { token?: string; apiUrl: string; author: { name: string; email: string } }
