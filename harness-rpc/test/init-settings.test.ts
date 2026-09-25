@@ -126,3 +126,25 @@ describe.skipIf(process.platform === 'win32')('buckle init writes the environmen
     expect(statSync(out).mode & 0o777).toBe(0o600)
   })
 })
+
+describe('workspace-first initialization defaults', () => {
+  it.each([true, false])('uses the current root, /workspace and the full path name (interactive=%s)', async interactive => {
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace)
+    try {
+      const env = parseEnv((await init(scripted([], interactive))).written)
+      expect(env.BUCKLE_WORKSPACE_ROOT).toBe(workspace)
+      expect(env.BUCKLE_WORKSPACE_MOUNT).toBe('/workspace')
+      expect(env.BUCKLE_SERVER_NAME).toBe(workspace.replace(/[\\/]/g, '-'))
+    } finally { cwd.mockRestore() }
+  })
+  it('derives the name from an explicit root when accepting defaults with --yes', async () => {
+    const env = parseEnv((await init(scripted([]), ['--root', workspace, '--yes'])).written)
+    expect(env.BUCKLE_WORKSPACE_MOUNT).toBe('/workspace')
+    expect(env.BUCKLE_SERVER_NAME).toBe(workspace.replace(/[\\/]/g, '-'))
+  })
+  it('preserves explicit mount and name overrides', async () => {
+    const env = parseEnv((await init(scripted([]), ['--root', workspace, '--mount', '/project', '--name', 'Demo node', '--yes'])).written)
+    expect(env.BUCKLE_WORKSPACE_MOUNT).toBe('/project')
+    expect(env.BUCKLE_SERVER_NAME).toBe('Demo node')
+  })
+})

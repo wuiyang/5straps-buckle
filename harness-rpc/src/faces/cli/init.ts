@@ -16,6 +16,9 @@ export interface CliResult {
 const USAGE = `Usage: buckle init [--root <dir>] [--mount <path>] [--name <name>] [--port <n>] [--out <file>] [--yes] [--force]
                   [--pair <code> --rings <url> [--url <public url>]]
 
+Defaults: current directory as root, /workspace as mount, and the absolute root path with
+path separators replaced by hyphens as the name.
+
 Writes an environment file for one workspace, with a fresh agent token and a fresh admin
 credential. Asks for the few decisions when run in a terminal: the workspace, which packs to
 enable, the shell, host Git and the network lists. --yes, or no terminal, takes the defaults and
@@ -98,7 +101,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   try {
     answers = interactive
       ? await askWorkspace(prompt, { root: values.root, mount: values.mount, name: values.name })
-      : { root: values.root ?? process.cwd(), mount: values.mount ?? null, name: values.name ?? null }
+      : { root: values.root ?? process.cwd(), mount: values.mount ?? '/workspace', name: values.name ?? null }
     if (interactive) choices = await askNodeChoices(prompt)
   } finally {
     prompt.close()
@@ -110,7 +113,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
     process.stderr.write(`Invalid mount path: ${mount}. Use an absolute path with plain segments, e.g. /workspace\n`)
     return { exitCode: 1 }
   }
-  const name = answers.name?.trim() || `${basename(root)} on ${hostnameShort()}`
+  const name = answers.name?.trim() || defaultNodeName(root)
   const port = values.port ?? '4320'
   if (!/^\d+$/.test(port)) {
     process.stderr.write(`Invalid port: ${port}\n`)
@@ -175,9 +178,9 @@ function terminalPrompt(): InitPrompt {
 
 async function askWorkspace(prompt: InitPrompt, defaults: { root?: string; mount?: string; name?: string }) {
   const root = (await prompt.question(`Workspace root [${defaults.root ?? process.cwd()}]: `)).trim() || defaults.root || process.cwd()
-  const mountAnswer = (await prompt.question(`Show it to the agent as a virtual path? Enter one like /workspace, or leave empty [${defaults.mount ?? 'no'}]: `)).trim()
-  const mount = mountAnswer || defaults.mount || null
-  const name = (await prompt.question(`Name for this node [${defaults.name ?? `${basename(resolve(root))} on ${hostnameShort()}`}]: `)).trim() || defaults.name || null
+  const mountAnswer = (await prompt.question(`Virtual workspace path [${defaults.mount ?? '/workspace'}]: `)).trim()
+  const mount = mountAnswer || defaults.mount || '/workspace'
+  const name = (await prompt.question(`Name for this node [${defaults.name ?? defaultNodeName(resolve(root))}]: `)).trim() || defaults.name || null
   return { root, mount, name }
 }
 
@@ -283,6 +286,6 @@ function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'buckle'
 }
 
-function hostnameShort(): string {
-  return (process.env.HOSTNAME ?? process.env.COMPUTERNAME ?? 'this machine').split('.')[0] ?? 'this machine'
+function defaultNodeName(root: string): string {
+  return root.replace(/[\\/]/g, '-')
 }
