@@ -1,3 +1,4 @@
+import { parseApprovalTimeout } from '../../config.js'
 import { isAbsolute, resolve } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { BUILTIN_PACKS, unmetPackPrerequisite } from '../../packs/index.js'
@@ -13,12 +14,13 @@ export interface NodeSetting {
   key: string
   /** The short name `buckle settings set` also accepts. */
   alias: string
-  kind: 'boolean' | 'packs' | 'host-list' | 'url-list' | 'directory' | 'directory-list' | 'mount' | 'name'
+  kind: 'approval-wait' | 'boolean' | 'packs' | 'host-list' | 'url-list' | 'directory' | 'directory-list' | 'mount' | 'name'
   /** What the node does when the key is unset, as `buckle settings show` prints it. */
   fallback: string
 }
 
 export const NODE_SETTINGS: readonly NodeSetting[] = [
+  { key: 'BUCKLE_APPROVAL_TIMEOUT_MS', alias: 'approval-wait', kind: 'approval-wait', fallback: '15000' },
   { key: 'BUCKLE_SERVER_NAME', alias: 'name', kind: 'name', fallback: 'Local Buckle' },
   { key: 'BUCKLE_WORKSPACE_ROOT', alias: 'root', kind: 'directory', fallback: '(the directory buckle serve starts in)' },
   { key: 'BUCKLE_WORKSPACE_MOUNT', alias: 'mount', kind: 'mount', fallback: '(none: the real path shows through)' },
@@ -56,6 +58,12 @@ export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd
       if (TRUE_WORDS.has(word)) return { ok: true, value: 'true' }
       if (FALSE_WORDS.has(word)) return { ok: true, value: 'false' }
       return refuse(`${input.setting.key} is on or off: true, false, on, off, yes or no`)
+    }
+    case 'approval-wait': {
+      try {
+        const parsed = parseApprovalTimeout(raw, 15_000)
+        return { ok: true, value: parsed === null ? 'forever' : String(parsed) }
+      } catch { return refuse('Approval wait must be milliseconds (0 to 2147483647) or forever') }
     }
     case 'packs': {
       const ids = list(raw)

@@ -59,8 +59,8 @@ export interface BuckleConfig {
   agentBrowserCommand: string
   /** Show the browser window. Headless by default, because a Buckle node usually has no display. */
   browserHeaded: boolean
-  /** How long a gated call waits for a decision before reporting back. Zero refuses at once. */
-  approvalTimeoutMs: number
+  /** Milliseconds to wait, null for forever, or zero for immediate approval instructions. */
+  approvalTimeoutMs: number | null
   /** Where to announce a pending approval, so a person can be reached away from the machine. */
   approvalWebhook?: string
   /** The owner's constraints from the environment. Merged with what `buckle policy` or Rings stored. */
@@ -133,7 +133,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     forgeGitAuthor: parseGitAuthor(environment.BUCKLE_FORGE_GIT_AUTHOR),
     agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND ?? 'agent-browser',
     browserHeaded: environment.BUCKLE_BROWSER_HEADED === 'true',
-    approvalTimeoutMs: parseTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_TIMEOUT_MS),
+    approvalTimeoutMs: parseApprovalTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_TIMEOUT_MS),
     approvalWebhook: environment.BUCKLE_APPROVAL_WEBHOOK || undefined,
     policy: parsePolicy(environment),
     mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => resolve(path)),
@@ -235,10 +235,11 @@ function parseSandboxMode(value: string | undefined): BuckleConfig['sandboxMode'
 }
 
 /** Unlike the other durations, zero is meaningful here: it turns the grace period off. */
-function parseTimeout(value: string | undefined, fallback: number): number {
+export function parseApprovalTimeout(value: string | undefined, fallback: number): number | null {
   if (value === undefined || value === '') return fallback
-  const parsed = Number.parseInt(value, 10)
-  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`Invalid BUCKLE_APPROVAL_TIMEOUT_MS: ${value}`)
+  if (value === 'forever') return null
+  const parsed = /^\d+$/.test(value) ? Number(value) : NaN
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 2_147_483_647) throw new Error(`Invalid BUCKLE_APPROVAL_TIMEOUT_MS: ${value}`)
   return parsed
 }
 

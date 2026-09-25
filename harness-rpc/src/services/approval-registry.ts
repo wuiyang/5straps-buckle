@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, type ApprovalDecision, type ApprovalRequest, type GrantSubject, type PermissionRuleId } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, type ApprovalDecision, type ApprovalRequest, type GrantSubject, type PermissionRuleId } from '@5straps/protocol'
 import { createJsonFileStore } from '../adapters/json-file-store.js'
 import type { PermissionDecision } from '../domain/permission/decision.js'
 import type { PermissionOutcome } from '../domain/permission/engine.js'
@@ -52,12 +52,14 @@ export interface ApprovalRegistry {
     tokens: string[]; sessionId: string; tool: string
     check: (subjects: GrantSubject[]) => PermissionOutcome
   }): PermissionOutcome
+  wasDenied(tokens: string[]): boolean
+  cancel(tokens: string[]): void
   pending(): ApprovalRequest[]
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
 }
 
-export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath): ApprovalRegistry {
+export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath, waitMs: number | null = 0): ApprovalRegistry {
   const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [] } })
 
   return {
@@ -66,7 +68,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         prune(state)
         const requests = asks.map(item => ({
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: item.reason,
-          tool, offeredScopes: item.offeredScopes, expiresAt: new Date(Date.now() + PENDING_TTL_MS).toISOString(),
+          tool, offeredScopes: item.offeredScopes, expiresAt: waitMs === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + waitMs).toISOString(),
         }))
         state.pending.push(...requests.map(request => ({ request, sessionId, workspace })))
         return requests
@@ -94,7 +96,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         if (decision.approved && !approval.request.offeredScopes.includes(decision.scope)) {
           return { ok: false, reason: `Scope ${decision.scope} is not offered for this approval` }
         }
-        const { rule, subject, tool, expiresAt } = approval.request
+        const { rule, subject, tool } = approval.request
+        const expiresAt = new Date(Date.now() + PENDING_TTL_MS).toISOString()
         if (widenedTo) {
           const refusal = patternRefusal({ rule, subject, pattern: widenedTo })
           if (refusal) return { ok: false, reason: refusal }
@@ -105,7 +108,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           logger.info('Approval granted', { rule, subject: widenedTo ?? subject, ...(widenedTo ? { askedBy: subject } : {}), scope: decision.scope, tool })
         }
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
-        state.resolved.push({ workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt: approval.request.expiresAt })
+        state.resolved.push({ workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt })
         return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject } } : { ok: true }
       })
     },
@@ -130,6 +133,15 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     unspent: sessionId => store.read().once
       .filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool && entry.expiresAt && Date.parse(entry.expiresAt) > Date.now())
       .map(entry => ({ subject: entry.subject, tool: entry.tool! })),
+
+    wasDenied: tokens => store.read().resolved.some(entry => entry.workspace === workspace && tokens.includes(entry.decision.token) && !entry.decision.approved),
+
+    cancel(tokens) {
+      store.update(state => {
+        state.pending = state.pending.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.request.token))
+        state.once = state.once.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.token))
+      })
+    },
 
     pending: () => store.read().pending.filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now()).map(entry => entry.request),
   }

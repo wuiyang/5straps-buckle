@@ -89,7 +89,7 @@ export interface BuckleRuntime {
   actions: ActionLog
   plugins: PluginRegistry
   reporter: Reporter
-  invoke(input: { request: InvokeRequest; sessionId: string; channel?: ApprovalChannel }): Promise<InvokeResponse>
+  invoke(input: { request: InvokeRequest; sessionId: string; signal?: AbortSignal; channel?: ApprovalChannel }): Promise<InvokeResponse>
   reload(): Promise<void>
   onToolsChanged(listener: () => void): void
 }
@@ -117,7 +117,7 @@ export async function createRuntime(input: {
   })
 
   const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
-  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd)
+  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs)
   const actions = createFileActionLog(actionsPath(config))
   await actions.recoverInterrupted()
   const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd })
@@ -213,7 +213,7 @@ export async function createRuntime(input: {
       },
     },
 
-    async invoke({ request, sessionId, channel }) {
+    async invoke({ request, sessionId, channel, signal }) {
       activeInvocations++
       try { return await createInvoker({
       registry,
@@ -231,7 +231,7 @@ export async function createRuntime(input: {
       defaultTimeoutMs: config.defaultTimeoutMs,
       maxTimeoutMs: config.maxTimeoutMs,
       toolDenial,
-    }).invoke({ request, sessionId }) } finally { activeInvocations-- }
+    }).invoke({ request, sessionId, signal }) } finally { activeInvocations-- }
     },
 
     async reload() {

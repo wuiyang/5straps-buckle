@@ -1,3 +1,4 @@
+import { createDeferredApprovalChannel } from '../../adapters/approval/deferred-approval-channel.js'
 import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
@@ -56,6 +57,8 @@ function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprova
             context: { stageId: typeof context.mcpReq?._meta?.['5straps/stageId'] === 'string' ? String(context.mcpReq._meta['5straps/stageId']).slice(0, 200) : undefined },
           },
           sessionId: mcpSessionId(context),
+          signal: context.mcpReq.signal,
+          channel: trustedApprovalResponses && supportsElicitation(readers, context) ? createDeferredApprovalChannel() : undefined,
         })
 
         if (response.outcome === 'approval_required') {

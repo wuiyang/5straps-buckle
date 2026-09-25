@@ -68,13 +68,13 @@ describe('what a child workspace runtime inherits from the node', () => {
     expect(child.runtime.workspaceId).toBe('child')
   }, 30_000)
 
-  it('holds a call open where a webhook can reach someone, and relays at once where none can', () => {
+  it('holds child calls for owner CLI decisions with or without a webhook', () => {
     const withWebhook = { approvalWebhook: 'http://127.0.0.1:9/approvals', approvalTimeoutMs: 15_000 } as BuckleConfig
     const withoutWebhook = { approvalTimeoutMs: 15_000 } as BuckleConfig
     const approvals = {} as ApprovalRegistry
 
     expect(createChildApprovalDelivery({ config: withWebhook, approvals, workspaceId: 'child' }).id).toBe('waiting')
-    expect(createChildApprovalDelivery({ config: withoutWebhook, approvals, workspaceId: 'child' }).id).toBe('deferred')
+    expect(createChildApprovalDelivery({ config: withoutWebhook, approvals, workspaceId: 'child' }).id).toBe('waiting')
     // The node's own faces hold the call either way: a `buckle approve` elsewhere can still land.
     expect(createApprovalDelivery({ config: withoutWebhook, approvals, workspaceId: 'default', prompt: false }).id).toBe('waiting')
   })

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { ChangeHistory } from './history/journal.js'
-import type { DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
+import type { ApprovalDecision, DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { type ResolvedEffect } from '../domain/effect.js'
 import type { PathView } from '../domain/path-view.js'
 import type { PermissionEngine } from '../domain/permission/engine.js'
@@ -37,7 +37,7 @@ export interface InvokerOptions {
 }
 
 export interface Invoker {
-  invoke(input: { request: InvokeRequest; sessionId: string }): Promise<InvokeResponse>
+  invoke(input: { request: InvokeRequest; sessionId: string; signal?: AbortSignal }): Promise<InvokeResponse>
 }
 
 /** What the permission step decided, carried through so the action log can report the reason. */
@@ -53,7 +53,7 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   return {
-    async invoke({ request, sessionId }) {
+    async invoke({ request, sessionId, signal }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       options.actions.record({
@@ -68,6 +68,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
 
       const response = await (async (): Promise<InvokeResponse> => {
         try {
+          signal?.throwIfAborted()
           const reason = options.toolDenial?.(request.tool)
           if (reason) {
             const response = denied(request, reason)
@@ -77,10 +78,11 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
-          gate = await clearPermissions({ options, request, sessionId, effects })
+          gate = await clearPermissions({ options, request, sessionId, effects, signal })
+          signal?.throwIfAborted()
           if (gate.response) return gate.response
 
-          const execute = () => executeWithTimeout({ options, request, sessionId, consumed: gate.consumed ?? [], execute: prepared.execute })
+          const execute = () => executeWithTimeout({ options, request, sessionId, signal, consumed: gate.consumed ?? [], execute: prepared.execute })
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
@@ -211,6 +213,7 @@ async function clearPermissions(input: {
   request: InvokeRequest
   sessionId: string
   effects: ResolvedEffect[]
+  signal?: AbortSignal
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects } = input
   const approvedBy: string[] = []
@@ -237,7 +240,14 @@ async function clearPermissions(input: {
 
   const approvals = options.approvals.issue({ tool: request.tool, sessionId, asks: outcome.asks })
   const asked = approvals.map(approval => `${approval.rule}:${approval.subject}`)
-  const decisions = await options.channel.request(approvals)
+  let decisions: ApprovalDecision[] | null
+  try {
+    decisions = await options.channel.request(approvals, input.signal)
+    input.signal?.throwIfAborted()
+  } catch (error) {
+    options.approvals.cancel(approvals.map(approval => approval.token))
+    throw error
+  }
   if (!decisions) {
     return { response: { requestId: request.requestId, outcome: 'approval_required', approvals }, asked, approvedBy }
   }
@@ -247,7 +257,10 @@ async function clearPermissions(input: {
     if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
   }
 
-  const rechecked = evaluate([...request.approvalTokens, ...approvals.map(approval => approval.token)])
+  const tokens = approvals.map(approval => approval.token)
+  const wasDenied = options.approvals.wasDenied(tokens)
+  if (wasDenied) options.approvals.cancel(tokens)
+  const rechecked = wasDenied ? { kind: 'deny' as const } : evaluate([...request.approvalTokens, ...tokens])
   const resolvedBy = [...new Set(approvedBy)]
   if (rechecked.kind === 'allow') {
     return { response: null, asked, approvedBy: [...new Set([...resolvedBy, ...rechecked.allowedBy])], consumed }
@@ -294,6 +307,7 @@ async function executeWithTimeout(input: {
   request: InvokeRequest
   sessionId: string
   consumed: GrantSubject[]
+  signal?: AbortSignal
   execute: (context: ToolContext) => Promise<JsonValue>
 }): Promise<JsonValue> {
   const timeoutMs = Math.min(input.request.timeoutMs ?? input.options.defaultTimeoutMs, input.options.maxTimeoutMs)
@@ -305,7 +319,7 @@ async function executeWithTimeout(input: {
       sessionId: input.sessionId,
       stageId: input.request.context?.stageId ?? input.request.context?.runId,
       timeoutMs,
-      signal: controller.signal,
+      signal: input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal,
       authorizeRead: async path => {
         const effects = await resolveEffects({ effects: [{ kind: 'read_path', path }], paths: input.options.paths })
         return input.options.permissions.evaluate({

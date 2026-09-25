@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { JsonValueSchema } from './json.js'
 
+// Wire-compatible marker for an approval that waits until explicitly answered or cancelled.
+export const APPROVAL_NO_DEADLINE = '9999-12-31T23:59:59.999Z'
+
 export const GrantScopeSchema = z.enum(['once', 'session', 'always'])
 export type GrantScope = z.infer<typeof GrantScopeSchema>
 

@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { logger } from '../../logger.js'
 import type { ApprovalChannel } from '../../ports/approval-channel.js'
@@ -7,8 +8,8 @@ const POLL_INTERVAL_MS = 400
 
 export interface WaitingApprovalOptions {
   approvals: ApprovalRegistry
-  /** How long a gated call is held open. Zero refuses immediately, the old behaviour. */
-  timeoutMs: number
+  /** Milliseconds to hold a call, null for no deadline, or zero for immediate fallback. */
+  timeoutMs: number | null
   /** Told once that a decision is wanted, so a person can be reached away from the machine. */
   notify?: (requests: ApprovalRequest[]) => Promise<void>
   /** Asked directly when this process has a terminal to ask in. */
@@ -30,20 +31,27 @@ export interface WaitingApprovalOptions {
 export function createWaitingApprovalChannel(options: WaitingApprovalOptions): ApprovalChannel {
   return {
     id: 'waiting',
-    async request(requests) {
-      if (options.timeoutMs <= 0) return null
+    async request(requests, signal) {
+      signal?.throwIfAborted()
       await announce(options.notify, requests)
+      signal?.throwIfAborted()
+      if (options.timeoutMs === 0) return null
 
-      // Whichever route answers first wins, and the loser is told to let go of the terminal.
       const controller = new AbortController()
-      const prompted = promptOrWait(options.prompt, requests, controller.signal)
-      const decided = await Promise.race([prompted, waitForResolution(options.approvals, requests, options.timeoutMs)])
-      if (decided !== null || !options.prompt) {
-        controller.abort()
+      const cancelled = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+      const prompted = promptOrWait(options.prompt, requests, cancelled)
+      let keepPrompt = false
+      try {
+        const decided = await Promise.race([prompted, waitForResolution(options.approvals, requests, options.timeoutMs, cancelled)])
+        signal?.throwIfAborted()
+        if (decided === null && options.prompt) {
+          keepPrompt = true
+          keepAsking({ approvals: options.approvals, requests, prompted, controller })
+        }
         return decided
+      } finally {
+        if (!keepPrompt) controller.abort()
       }
-      keepAsking({ approvals: options.approvals, requests, prompted, controller })
-      return null
     },
   }
 }
@@ -100,19 +108,16 @@ function promptOrWait(
 async function waitForResolution(
   approvals: ApprovalRegistry,
   requests: ApprovalRequest[],
-  timeoutMs: number,
+  timeoutMs: number | null,
+  signal?: AbortSignal,
 ): Promise<ApprovalDecision[] | null> {
   const tokens = requests.map(request => request.token)
-  const deadline = Date.now() + timeoutMs
+  const deadline = timeoutMs === null ? Infinity : Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    await delay(Math.min(POLL_INTERVAL_MS, deadline - Date.now()))
+    await sleep(Math.min(POLL_INTERVAL_MS, deadline - Date.now()), undefined, { signal })
     const pending = new Set(approvals.pending().map(request => request.token))
-    if (tokens.every(token => !pending.has(token))) return []
+    if (approvals.wasDenied(tokens) || tokens.every(token => !pending.has(token))) return []
   }
   return null
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, Math.max(ms, 0)))
 }

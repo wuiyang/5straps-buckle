@@ -1,5 +1,4 @@
 import { createCliApprovalChannel } from '../adapters/approval/cli-approval-channel.js'
-import { createDeferredApprovalChannel } from '../adapters/approval/deferred-approval-channel.js'
 import { createWaitingApprovalChannel } from '../adapters/approval/waiting-approval-channel.js'
 import { createWebhookNotifier } from '../adapters/approval/webhook-notifier.js'
 import type { BuckleConfig } from '../config.js'
@@ -31,12 +30,9 @@ export function createApprovalDelivery(options: ApprovalDeliveryOptions & { prom
 }
 
 /**
- * A child workspace has no terminal of its own — the node's own process owns stdin — so it holds
- * a call open only where a configured webhook can reach somebody. With nobody to reach, waiting
- * out a grace period nobody can answer within delays the call for nothing; the invoker relays
- * `approval_required` instead, and that instruction names the node and the workspace.
+ * Child workspaces use the same wait setting. The owner can answer with the workspace CLI
+ * even when no webhook or terminal is attached.
  */
 export function createChildApprovalDelivery(options: ApprovalDeliveryOptions): ApprovalChannel {
-  if (!options.config.approvalWebhook) return createDeferredApprovalChannel()
   return createApprovalDelivery({ ...options, prompt: false })
 }

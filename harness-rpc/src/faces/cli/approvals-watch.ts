@@ -136,7 +136,10 @@ async function askOne(context: ApprovalWatchOptions & { readline: Interface; key
     const pending = readPending(context)
     if (pending.ok && !pending.requests.some(entry => entry.token === request.token)) dropped.abort()
   }, context.recheckMs)
-  const signal = AbortSignal.any([context.stopped, dropped.signal, AbortSignal.timeout(Math.max(remainingMs(request.expiresAt), 1))])
+  const remaining = remainingMs(request.expiresAt)
+  const signals = [context.stopped, dropped.signal]
+  if (remaining !== Infinity) signals.push(AbortSignal.timeout(Math.min(Math.max(remaining, 1), 2_147_483_647)))
+  const signal = AbortSignal.any(signals)
   try {
     // Keys already on their way were meant for the question before this one.
     await context.keys.quiet(QUIET_MS, signal)

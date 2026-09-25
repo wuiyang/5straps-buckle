@@ -119,7 +119,8 @@ export function describeQuestion(request: ApprovalRequest): string {
 
 /** The request's own expiry, plus whatever the caller is already watching for. */
 function questionDeadline(request: ApprovalRequest, signal: AbortSignal): AbortSignal {
-  return AbortSignal.any([signal, AbortSignal.timeout(remainingMs(request.expiresAt))])
+  const remaining = remainingMs(request.expiresAt)
+  return remaining === Infinity ? signal : AbortSignal.any([signal, AbortSignal.timeout(Math.min(remaining, 2_147_483_647))])
 }
 
 function scopeLabel(scope: GrantScope): string {

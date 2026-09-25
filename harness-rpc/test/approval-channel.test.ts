@@ -42,7 +42,7 @@ function keyboardTerminal() {
 
 /** Only `pending` is consulted by the waiting channel; the rest of the registry is not its concern. */
 function registry(pending: () => ApprovalRequest[]): ApprovalRegistry {
-  return { pending } as unknown as ApprovalRegistry
+  return { pending, wasDenied: () => false } as unknown as ApprovalRegistry
 }
 
 describe('the grace period before a gated call gives up', () => {

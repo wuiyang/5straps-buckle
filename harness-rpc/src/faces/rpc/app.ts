@@ -65,7 +65,7 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
     // to its next call. A fresh id per request made every session grant dead on arrival.
     const sessionId = parsed.data.context?.sessionId ?? ANONYMOUS_SESSION_ID
     dispatched.add(context.req.raw)
-    const response = await runtime.invoke({ request: parsed.data, sessionId })
+    const response = await runtime.invoke({ request: parsed.data, sessionId, signal: context.req.raw.signal })
     return context.json(response, response.outcome === 'error' ? 422 : 200)
   })
 
