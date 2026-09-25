@@ -150,10 +150,23 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     expect(calls().map(flagOf)).toEqual([null, null])
   })
 
-  it('starts the browser on the host part of a port or URL prefix entry, and Buckle still judges the page by its path', async () => {
+  it('starts the browser on the host part of a port or URL prefix entry, logging what it loosened at that call, not at build', async () => {
+    const info = vi.spyOn(logger, 'info')
+    const loosenedLogs = () => info.mock.calls.filter(([message]) => message.startsWith('The browser is held to these approved hosts'))
+    try {
+      const { runtime, calls } = await fixture(['https://app.example.test/admin', 'localhost:3000'])
+      expect(loosenedLogs()).toEqual([])
+      expect(await browse(runtime, { command: 'open', args: ['https://app.example.test/admin/users'] })).toMatchObject({ outcome: 'ok' })
+      expect(flagOf(calls()[0])).toBe('app.example.test,localhost')
+      expect(loosenedLogs().map(([, context]) => context)).toEqual([{ loosened: 'https://app.example.test/admin (workspace list) as app.example.test, localhost:3000 (workspace list) as localhost' }])
+    } finally {
+      info.mockRestore()
+    }
+  })
+
+  it('still judges the page a command names by the path of a URL prefix entry', async () => {
     const { runtime, calls } = await fixture(['https://app.example.test/admin', 'localhost:3000'])
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test/admin/users'] })).toMatchObject({ outcome: 'ok' })
-    expect(flagOf(calls()[0])).toBe('app.example.test,localhost')
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test/billing'] })).toMatchObject({ outcome: 'error' })
     expect(calls()).toHaveLength(1)
   })

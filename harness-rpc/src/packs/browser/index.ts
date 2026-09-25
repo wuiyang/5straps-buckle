@@ -61,7 +61,6 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
   const allowedDomains = browserAllowedDomains(options.approvedLists)
   const flag = 'value' in allowedDomains ? allowedDomains.value : null
-  if ('loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
   return {
     id: PACK_ID,
     version: '1.0.0',
@@ -99,6 +98,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           const { session, previous } = sessions.update(state => ({ session: state.sessions[key] ??= `buckle-${randomUUID()}`, previous: state.allowedDomains[key] }))
           args.push('--config', configFile, '--session', session, '--idle-timeout', '300000')
           if (flag !== null) args.push('--allowed-domains', flag)
+          if ('loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
           if (options.headed && !input.args.includes('--headed')) args.push('--headed')
 
           mkdirSync(options.sessionDirectory, { recursive: true, mode: 0o700 })
@@ -127,7 +127,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
 
 const loggedLoosened = new Set<string>()
 
-/** Once per process for each set, since the pack is rebuilt on every policy change and CLI call. */
+/** At the first browser call rather than at pack build, which every CLI command does; once per process for each set. */
 function logLoosened(loosened: LoosenedEntry[]): void {
   const described = loosened.map(item => `${item.entry} (${item.list} list) as ${item.host}`).join(', ')
   if (!described || loggedLoosened.has(described)) return
