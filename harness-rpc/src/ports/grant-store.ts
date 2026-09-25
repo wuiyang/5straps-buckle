@@ -10,6 +10,7 @@ export interface GrantStore {
     rule: PermissionRuleId
     subject: string
     scope: GrantScope
+    denied?: boolean
     pattern?: boolean
   }): GrantRecord
   list(): GrantRecord[]

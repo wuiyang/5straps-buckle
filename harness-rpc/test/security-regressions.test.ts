@@ -58,7 +58,7 @@ describe.skipIf(!hasExecutable('rg'))('recursive credential search', () => {
     expect(JSON.stringify(response)).not.toContain('private-marker')
     expect(JSON.stringify(response)).toContain('excludedFiles')
     runtime.grants.grant({ sessionId: 'search-session', rule: 'sensitive_path', subject: join(workspace, 'credentials.json'), scope: 'session' })
-    expect(JSON.stringify(await invoke('fs_search_content', { path: '.', pattern: 'marker' }))).toContain('private-marker')
+    expect(JSON.stringify(await invoke('fs_search_content', { path: '.', pattern: 'marker' }))).not.toContain('private-marker')
   })
 
   it('never searches runtime state even when it sits inside the search root', async () => {

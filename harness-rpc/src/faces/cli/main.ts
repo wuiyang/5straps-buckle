@@ -272,7 +272,7 @@ function grants(runtime: BuckleRuntime, argv: string[]): CliResult {
     return { exitCode: 0 }
   }
   for (const grant of runtime.grants.list()) {
-    process.stdout.write(`${grant.id}  ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${grant.subject}${grant.pattern ? '  (host pattern)' : ''}\n`)
+    process.stdout.write(`${grant.id}  ${grant.denied ? 'DENY ' : 'ALLOW'} ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${grant.subject}${grant.pattern ? '  (host pattern)' : ''}\n`)
   }
   return { exitCode: 0 }
 }

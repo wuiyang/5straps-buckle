@@ -8,7 +8,8 @@ import type { ApprovalAuthority } from '../../ports/approval-channel.js'
 import type { BuckleRuntime } from '../../runtime.js'
 
 interface ApprovalAnswer extends Record<string, unknown> {
-  approve: boolean
+  approve?: boolean
+  action?: 'allow_once' | 'deny' | 'deny_session' | 'always_deny'
   scope?: GrantScope
 }
 
@@ -142,7 +143,9 @@ function askForApproval(approvals: ApprovalRequest[]) {
       message: `${approval.tool}: ${approval.reason}\nSubject: ${approval.subject}`,
       requestedSchema: {
         type: 'object',
-        properties: {
+        properties: approval.rule === 'sensitive_path' ? {
+          action: { type: 'string', enum: ['allow_once', 'deny', 'deny_session', 'always_deny'], description: 'Allow once, Deny, Deny this session, Always deny' },
+        } : {
           approve: { type: 'boolean', description: 'Allow this operation' },
           scope: {
             type: 'string',
@@ -150,7 +153,7 @@ function askForApproval(approvals: ApprovalRequest[]) {
             description: 'once, this session, or always for this subject',
           },
         },
-        required: ['approve'],
+        required: [approval.rule === 'sensitive_path' ? 'action' : 'approve'],
       },
     }),
   ]))
@@ -172,8 +175,8 @@ function resolveAnswers(input: {
 
     const result = input.runtime.approvals.resolve({
       token,
-      approved: answer.approve === true,
-      scope: answer.scope ?? 'once',
+      approved: answer.action ? answer.action === 'allow_once' : answer.approve === true,
+      scope: answer.action === 'deny_session' ? 'session' : answer.action === 'always_deny' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once',
     }, input.authority)
     if (result.ok) tokens.push(token)
     else logger.warn('Elicited approval was rejected', { reason: result.reason })

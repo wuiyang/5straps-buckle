@@ -1,3 +1,4 @@
+import { realpathSync, statSync } from 'node:fs'
 import { validateSandboxMounts, type SandboxMount } from '../../domain/sandbox-mounts.js'
 import { projectFilesystemSandbox } from '../../domain/filesystem-policy.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
@@ -23,12 +24,15 @@ const RUNTIMES = {
   python: (script: string) => ({ command: 'python3', args: ['-c', script] }),
 }
 
+const sensitiveFilesInput = z.array(z.string().min(1)).max(32).default([]).describe('Exact workspace files needed by this command. Sensitive files require WARNING approval, allow once only; approved files are mounted read-only.')
+
 const execInput = z.object({
   command: z.string().min(1).max(1_000),
   args: z.array(z.string().max(100_000)).max(1_000).default([]),
   cwd: z.string().default('.'),
   env: z.record(z.string(), z.string()).default({}),
   allowNetwork: z.boolean().default(false),
+  sensitiveFiles: sensitiveFilesInput,
 })
 
 const scriptInput = z.object({
@@ -37,6 +41,7 @@ const scriptInput = z.object({
   cwd: z.string().default('.'),
   env: z.record(z.string(), z.string()).default({}),
   allowNetwork: z.boolean().default(false),
+  sensitiveFiles: sensitiveFilesInput,
 })
 
 export interface ShellPackOptions {
@@ -63,6 +68,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     cwd: string
     env: Record<string, string>
     allowNetwork: boolean
+    sensitiveFiles: string[]
     timeoutMs: number
     signal: AbortSignal
     tool: string
@@ -70,6 +76,12 @@ export function createShellPack(options: ShellPackOptions): Pack {
   }): Promise<JsonValue> => {
     const mounts = validateSandboxMounts(options.mounts ?? [], { protectedRoots: options.hiddenPaths, workspaceRoots: options.writableRoots, workspaceTarget: options.paths.displayRoot })
     if (mounts.length && options.sandbox.mode !== 'bubblewrap') throw new ToolInputError('Explicit mounts require bubblewrap', { code: 'PERMISSION_DENIED' })
+    const sensitiveFiles = [...new Set(input.sensitiveFiles)].map(path => options.paths.resolve(path))
+    if (sensitiveFiles.length && (options.sandbox.mode !== 'bubblewrap' || !options.isolation)) throw new ToolInputError('Sensitive file requests require isolated bubblewrap execution', { code: 'PERMISSION_DENIED' })
+    for (const path of sensitiveFiles) {
+      if (!isInsideAny([options.paths.root], path) || realpathSync(path) !== path || !statSync(path).isFile()) throw new ToolInputError('Sensitive file requests must name exact regular workspace files without symlink aliases')
+      if (!await input.context.authorizeRead?.(path)) throw new ToolInputError('The requested file is not approved for this call', { code: 'PERMISSION_DENIED' })
+    }
     const cwd = options.paths.resolve(input.cwd)
     if (!isInsideAny(options.writableRoots, cwd)) throw new ToolInputError('Shell working directory must be in the workspace or an owner-configured writable root', { code: 'PERMISSION_DENIED' })
     if (input.allowNetwork && !options.allowNetwork) throw new ToolInputError('Shell networking is disabled by the owner; use the web tools for scoped network access', { code: 'PERMISSION_DENIED' })
@@ -97,7 +109,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
         hiddenPaths: copyRoot ? hidden.directories.filter(path => !isInsideAny([options.paths.root], path)) : hidden.directories,
         hiddenFiles: copyRoot ? hidden.files.filter(path => !isInsideAny([options.paths.root], path)) : hidden.files,
         readOnlyPaths: options.readOnlyPaths,
-        mounts,
+        mounts: [...mounts, ...sensitiveFiles.map(source => ({ source, target: options.paths.toVirtual(source), readOnly: true as const }))],
         readOnlyWorkspacePaths: restrictions.readOnlyWorkspacePaths.map(mapped),
       })
       return options.runProcess({
@@ -110,7 +122,8 @@ export function createShellPack(options: ShellPackOptions): Pack {
     if (writableRoots.some(root => !isInsideAny([options.paths.root], root))) throw new ToolInputError('Isolated shell scratch roots must be inside the workspace', { code: 'PERMISSION_DENIED' })
     const result = await runIsolatedShell({
       isolation: options.isolation, sourceRoot: options.paths.root, writableRoots,
-      excluded: [...hidden.directories, ...hidden.files],
+      excluded: [...hidden.directories, ...hidden.files, ...sensitiveFiles],
+      readOnlyOverlayPaths: [...sensitiveFiles, ...hidden.directories.filter(directory => isInsideAny([options.paths.root], directory) && sensitiveFiles.some(path => isInsideAny([directory], path)))],
       readOnlyPaths: restrictions.readOnlyWorkspacePaths,
       details: { sessionId: input.context.sessionId, stageId: input.context.stageId ?? input.context.requestId, tool: input.tool },
       execute: run,
@@ -127,11 +140,12 @@ export function createShellPack(options: ShellPackOptions): Pack {
       defineTool(PACK_ID, {
         name: 'shell_exec',
         managesHistory: Boolean(options.isolation),
-        description: 'Run one program with an argument array. No shell interpretation, so quoting is never a hazard.',
+        description: 'Run one program with an argument array. Declare sensitiveFiles before execution to request sensitive file access; undeclared credentials stay hidden.',
         risk: 'execute',
         tags: ['shell', 'process'],
         input: execInput,
         effects: input => [
+          ...input.sensitiveFiles.map(path => ({ kind: 'read_path' as const, path })),
           { kind: 'exec', command: input.command, args: input.args },
           { kind: 'write_path', path: input.cwd },
         ],
@@ -147,6 +161,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
         effects: input => {
           const runtime = RUNTIMES[input.runtime](input.script)
           return [
+            ...input.sensitiveFiles.map(path => ({ kind: 'read_path' as const, path })),
             { kind: 'exec', command: runtime.command, args: runtime.args },
             { kind: 'write_path', path: input.cwd },
           ]
@@ -157,6 +172,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
           cwd: input.cwd,
           env: input.env,
           allowNetwork: input.allowNetwork,
+          sensitiveFiles: input.sensitiveFiles,
           timeoutMs: context.timeoutMs,
           signal: context.signal,
           context,

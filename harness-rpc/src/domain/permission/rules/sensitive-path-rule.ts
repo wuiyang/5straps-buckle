@@ -59,12 +59,13 @@ export function createSensitivePathRule(options: SensitivePathOptions = { protec
       if (isInsideAny(options.protectedRoots, effect.path)) {
         return deny('sensitive_path', effect.path, "Buckle's own state and policy are not reachable from a tool")
       }
+      if (grants.deniedSubjectsFor?.('sensitive_path').includes(effect.path)) return deny('sensitive_path', effect.path, 'The owner denied this sensitive file')
       const reason = sensitivePathReason(effect.path)
       if (!reason) return null
 
       // Matched on the exact path: a granted directory must never unlock a secret inside it.
       if (grants.subjectsFor('sensitive_path').includes(effect.path)) return allowedVia('sensitive_path', effect.path)
-      return ask('sensitive_path', effect.path, reason)
+      return ask('sensitive_path', effect.path, `WARNING: This file may contain credentials. Allowing access exposes its contents to the agent or command. ${reason}`, ['once'])
     },
   }
 }
@@ -77,6 +78,7 @@ export function sensitivePathReason(path: string): string | null {
     if (SENSITIVE_DIRECTORIES.has(part)) return `Path is inside the credential directory ${part}`
   }
   if (parts.includes('.config') && parts.includes('gcloud')) return 'Path is inside gcloud credentials'
+  if (name === '.env.schema') return null
   if (SENSITIVE_FILENAMES.has(name)) return `${name} commonly holds credentials`
   if (SENSITIVE_FILENAME_PATTERNS.some(pattern => pattern.test(name))) return `${name} matches a credential file pattern`
   return null

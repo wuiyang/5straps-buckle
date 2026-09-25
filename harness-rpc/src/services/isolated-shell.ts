@@ -22,6 +22,7 @@ interface ShellRunInput<T> {
   writableRoots: string[]
   excluded: string[]
   readOnlyPaths?: string[]
+  readOnlyOverlayPaths?: string[]
   details: Omit<HistoryInput, 'roots'>
   execute: (copyRoot: string) => Promise<T>
 }
@@ -36,7 +37,7 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
   const copyRoot = join(directory, 'workspace')
   const objects = join(directory, 'objects')
   mkdirSync(objects, { recursive: true, mode: 0o700 })
-  const metadata = { id, ...input.details, sourceRoot: input.sourceRoot, copyRoot, writableRoots: input.writableRoots, excluded: input.excluded, readOnlyPaths: input.readOnlyPaths ?? [], createdAt: new Date().toISOString() }
+  const metadata = { id, ...input.details, sourceRoot: input.sourceRoot, copyRoot, writableRoots: input.writableRoots, excluded: input.excluded, readOnlyPaths: input.readOnlyPaths ?? [], readOnlyOverlayPaths: input.readOnlyOverlayPaths ?? [], createdAt: new Date().toISOString() }
   const record = (status: string) => writeWorkspaceRecord(directory, { ...metadata, status })
   const content = (hash: string) => readFileSync(join(objects, hash))
   const save = (hash: string, buffer: Buffer) => {
@@ -54,9 +55,9 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     record('running')
     started = true
     const result = await input.execute(copyRoot)
-    const after = relocate(snapshot({ roots: [copyRoot], excluded: [], maxBytes: input.isolation.maxBytes, save }), copyRoot, input.sourceRoot)
+    const after = relocate(snapshot({ roots: [copyRoot], excluded: (input.readOnlyOverlayPaths ?? []).map(path => resolve(copyRoot, relative(input.sourceRoot, path))), maxBytes: input.isolation.maxBytes, save }), copyRoot, input.sourceRoot)
     assertPublishable({ before, after, sourceRoot: input.sourceRoot, writableRoots: input.writableRoots, excluded: input.excluded, readOnlyPaths: input.readOnlyPaths })
-    await input.isolation.history.promote({ ...input.details, roots: [input.sourceRoot] }, before, after, content, () => { publishing = true; record('publishing') })
+    await input.isolation.history.promote({ ...input.details, roots: [input.sourceRoot], excluded: input.readOnlyOverlayPaths }, before, after, content, () => { publishing = true; record('publishing') })
     record('published')
     try { removePrivateWorkspace(directory) } catch (error) {
       logger.warn('Published shell workspace cleanup failed', { id, directory, message: error instanceof Error ? error.message : 'Unknown error' })
@@ -102,7 +103,7 @@ function removePrivateWorkspace(directory: string): void {
 const workspaceIdSchema = z.string().regex(/^shell-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
 const workspaceRecordSchema = z.object({
   id: workspaceIdSchema, sessionId: z.string(), stageId: z.string(), tool: z.string(),
-  sourceRoot: z.string(), copyRoot: z.string(), writableRoots: z.array(z.string()), excluded: z.array(z.string()), readOnlyPaths: z.array(z.string()).default([]),
+  sourceRoot: z.string(), copyRoot: z.string(), writableRoots: z.array(z.string()), excluded: z.array(z.string()), readOnlyPaths: z.array(z.string()).default([]), readOnlyOverlayPaths: z.array(z.string()).default([]),
   createdAt: z.iso.datetime(), status: z.enum(['preparing', 'running', 'needs_review', 'publishing', 'publication_uncertain', 'published']),
 })
 
@@ -119,7 +120,7 @@ export function createShellWorkspaceRecovery(input: IsolatedShellOptions & { sou
     const before = snapshotSchema.parse(JSON.parse(readFileSync(join(input.directory, record.id, 'before.json'), 'utf8')))
     if (Object.keys(before).some(path => !isInside(input.sourceRoot, path))) throw new Error('Retained snapshot escapes its workspace')
     const objects = new Map<string, Buffer>()
-    const after = relocate(snapshot({ roots: [record.copyRoot], excluded: [], maxBytes: input.maxBytes, save: (hash, content) => { objects.set(hash, content) } }), record.copyRoot, input.sourceRoot)
+    const after = relocate(snapshot({ roots: [record.copyRoot], excluded: record.readOnlyOverlayPaths.map(path => resolve(record.copyRoot, relative(input.sourceRoot, path))), maxBytes: input.maxBytes, save: (hash, content) => { objects.set(hash, content) } }), record.copyRoot, input.sourceRoot)
     return { before, after, objects }
   }
   return {
@@ -141,7 +142,7 @@ export function createShellWorkspaceRecovery(input: IsolatedShellOptions & { sou
         const { before, after, objects } = capture(record)
         assertPublishable({ before, after, sourceRoot: input.sourceRoot, writableRoots: record.writableRoots, excluded: record.excluded, readOnlyPaths: record.readOnlyPaths })
         const saveStatus = (status: string) => writeWorkspaceRecord(join(input.directory, id), { ...record, status })
-        const checkpoint = await input.history.promote({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_workspace_publish', roots: [input.sourceRoot] }, before, after, hash => {
+        const checkpoint = await input.history.promote({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_workspace_publish', roots: [input.sourceRoot], excluded: record.readOnlyOverlayPaths }, before, after, hash => {
           const content = objects.get(hash)
           if (!content) throw new Error('Retained workspace content is missing')
           return content

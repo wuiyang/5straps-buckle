@@ -128,7 +128,7 @@ type Ending = 'answered' | 'skipped' | 'dropped' | 'stopped'
 async function askOne(context: ApprovalWatchOptions & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; stopped: AbortSignal; recheckMs: number }): Promise<Ending> {
   const { request, output } = context
   const offered = SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope))
-  const prompt = `  ${[...offered.map(entry => `${entry.key}) ${entry.label}`), 'd) deny', 'n) skip'].join('  ')} > `
+  const prompt = `  ${[...offered.map(entry => `${entry.key}) ${request.rule === 'sensitive_path' && entry.scope === 'once' ? 'allow once' : entry.label}`), 'd) deny', ...(request.rule === 'sensitive_path' ? ['ds) deny this session', 'da) always deny'] : []), 'n) skip'].join('  ')} > `
   output.write(`${describeQuestion(request)}  token: ${request.token}\n`)
 
   const dropped = new AbortController()
@@ -171,6 +171,7 @@ async function askOne(context: ApprovalWatchOptions & { readline: Interface; key
 }
 
 function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_KEYS): ApprovalDecision | null {
+  if (request.rule === 'sensitive_path' && (answer === 'ds' || answer === 'da')) return { token: request.token, approved: false, scope: answer === 'ds' ? 'session' : 'always' }
   if (answer === 'd') return { token: request.token, approved: false, scope: 'once' }
   const chosen = offered.find(entry => entry.key === answer)
   return chosen ? { token: request.token, approved: true, scope: chosen.scope } : null
@@ -187,7 +188,7 @@ async function record(context: ApprovalWatchOptions, decision: ApprovalDecision)
     context.output.write(`  Not recorded: ${result.reason}.\n`)
     return
   }
-  context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token} in workspace ${context.workspaceId}.\n`)
+  context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token} in workspace ${context.workspaceId} (scope: ${decision.scope}).\n`)
 }
 
 function readPending(options: Pick<ApprovalWatchOptions, 'approvals'>): { ok: true; requests: ApprovalRequest[] } | { ok: false; message: string } {

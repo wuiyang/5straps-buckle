@@ -76,7 +76,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     },
 
     resolve(decision, authority = 'admin', options = {}) {
-      if (decision.approved && decision.scope !== 'once' && authority !== 'admin') {
+      if (decision.scope !== 'once' && authority !== 'admin') {
         logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
         return { ok: false, reason: 'Only the admin credential writes an approval that outlives the call' }
       }
@@ -97,6 +97,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           return { ok: false, reason: `Scope ${decision.scope} is not offered for this approval` }
         }
         const { rule, subject, tool } = approval.request
+        if (rule === 'sensitive_path' && decision.approved && decision.scope !== 'once') return { ok: false, reason: 'Sensitive files can only be allowed once' }
+        if (!decision.approved && decision.scope !== 'once' && rule !== 'sensitive_path') return { ok: false, reason: 'Persistent denials are supported only for sensitive files' }
         const expiresAt = new Date(Date.now() + PENDING_TTL_MS).toISOString()
         if (widenedTo) {
           const refusal = patternRefusal({ rule, subject, pattern: widenedTo })
@@ -107,6 +109,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           else grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}) })
           logger.info('Approval granted', { rule, subject: widenedTo ?? subject, ...(widenedTo ? { askedBy: subject } : {}), scope: decision.scope, tool })
         }
+        if (!decision.approved && decision.scope !== 'once') grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true })
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
         state.resolved.push({ workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt })
         return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject } } : { ok: true }

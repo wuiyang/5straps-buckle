@@ -1,3 +1,4 @@
+import { deniedSubjects } from '../adapters/grant-store/file-grant-store.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -293,6 +294,7 @@ function buildLookup(input: {
   consumed: GrantSubject[]
 }): GrantLookup {
   return {
+    deniedSubjectsFor: rule => deniedSubjects(input.grants, input.sessionId, rule),
     subjectsFor: rule => [
       ...input.grants.activeSubjects({ sessionId: input.sessionId, rule }),
       ...subjectsByRule(input.consumed, rule),
@@ -324,7 +326,7 @@ async function executeWithTimeout(input: {
         const effects = await resolveEffects({ effects: [{ kind: 'read_path', path }], paths: input.options.paths })
         return input.options.permissions.evaluate({
           tool: input.request.tool, effects,
-          grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: [] }),
+          grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
         }).kind === 'allow'
       },
       judgeNetwork: url => judgeNetwork({ ...input, url }),

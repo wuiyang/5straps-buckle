@@ -104,8 +104,10 @@ async function promptOne(context: {
   await context.keys.quiet(QUIET_MS, deadline)
   deadline.throwIfAborted()
   discardTypedLine(context.readline)
-  const answer = (await context.readline.question(`  ${choices}  n) deny > `, { signal: deadline })).trim().toLowerCase()
+  const denyChoices = request.rule === 'sensitive_path' ? 'n) deny  ds) deny this session  da) always deny' : 'n) deny'
+  const answer = (await context.readline.question(`  ${choices}  ${denyChoices} > `, { signal: deadline })).trim().toLowerCase()
 
+  if (request.rule === 'sensitive_path' && (answer === 'ds' || answer === 'da')) return { token: request.token, approved: false, scope: answer === 'ds' ? 'session' : 'always' }
   const chosenIndex = Number.parseInt(answer, 10) - 1
   const scope = request.offeredScopes[chosenIndex]
   if (!scope) return { token: request.token, approved: false, scope: 'once' }

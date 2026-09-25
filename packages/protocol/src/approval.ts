@@ -45,6 +45,7 @@ export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>
 export const GrantRecordSchema = z.object({
   id: z.string().min(1),
   workspace: z.string().min(1),
+  denied: z.boolean().optional(),
   rule: PermissionRuleIdSchema,
   subject: z.string().min(1),
   scope: GrantScopeSchema,

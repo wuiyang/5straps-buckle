@@ -32,20 +32,21 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
 
   return {
     activeSubjects({ sessionId, rule }) {
-      const exact = active(sessionId, rule).filter(grant => !grant.pattern)
+      const exact = active(sessionId, rule).filter(grant => !grant.pattern && !grant.denied && rule !== 'sensitive_path')
       for (const grant of exact) warnIfStarred(grant)
       return exact.map(grant => grant.subject)
     },
 
-    activePatterns: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => grant.pattern).map(grant => grant.subject),
+    activePatterns: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => grant.pattern && !grant.denied).map(grant => grant.subject),
 
-    grant({ sessionId, rule, subject, scope, pattern }) {
+    grant({ sessionId, rule, subject, scope, pattern, denied }) {
       const record: GrantRecord = {
         id: randomUUID(),
         workspace: input.workspace,
         rule,
         subject,
         scope,
+        ...(denied ? { denied: true } : {}),
         ...(pattern ? { pattern: true as const } : {}),
         sessionId: scope === 'always' ? null : sessionId,
         createdAt: new Date().toISOString(),
@@ -93,7 +94,12 @@ function warnIfStarred(grant: GrantRecord): void {
 
 export function createGrantLookup(store: GrantStore, sessionId: string): GrantLookup {
   return {
+    deniedSubjectsFor: rule => deniedSubjects(store, sessionId, rule),
     subjectsFor: rule => store.activeSubjects({ sessionId, rule }),
     patternsFor: rule => store.activePatterns({ sessionId, rule }),
   }
+}
+
+export function deniedSubjects(store: GrantStore, sessionId: string, rule: PermissionRuleId): string[] {
+  return store.list().filter(record => record.denied && record.rule === rule && (record.sessionId === null || record.sessionId === sessionId) && (!record.expiresAt || Date.parse(record.expiresAt) > Date.now())).map(record => record.subject)
 }

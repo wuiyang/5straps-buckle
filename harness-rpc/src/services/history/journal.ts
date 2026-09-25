@@ -1,3 +1,4 @@
+import { isInside } from '../../domain/paths.js'
 import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -6,9 +7,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { applySnapshot, assertSnapshotMatches, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
 
-const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), roots: z.array(z.string()), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional() })
+const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), roots: z.array(z.string()), excluded: z.array(z.string()).optional(), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional() })
 type Checkpoint = z.infer<typeof checkpointSchema>
-export interface HistoryInput { sessionId: string; stageId: string; tool: string; roots: string[] }
+export interface HistoryInput { sessionId: string; stageId: string; tool: string; roots: string[]; excluded?: string[] }
 
 export function createChangeHistory(input: { directory: string; excluded: string[]; maxBytes: number; retentionDays: number }) {
   mkdirSync(input.directory, { recursive: true, mode: 0o700 })
@@ -32,8 +33,8 @@ export function createChangeHistory(input: { directory: string; excluded: string
       db.exec('COMMIT')
     } catch (error) { db.exec('ROLLBACK'); throw error }
   }
-  function capture(roots: string[]): Snapshot {
-    return snapshot({ roots, excluded, maxBytes: input.maxBytes, save(hash, content) {
+  function capture(roots: string[], extraExcluded: string[] = []): Snapshot {
+    return snapshot({ roots, excluded: [...excluded, ...extraExcluded], maxBytes: input.maxBytes, save(hash, content) {
       db.prepare('INSERT OR IGNORE INTO objects(hash,content) VALUES(?,?)').run(hash, content)
       checkBudget()
     } })
@@ -60,12 +61,12 @@ export function createChangeHistory(input: { directory: string; excluded: string
   function begin(details: HistoryInput, restores?: string): Checkpoint {
     if (records().some(record => record.status === 'pending')) throw new Error('An interrupted checkpoint needs owner recovery before further mutations')
     prune()
-    const record: Checkpoint = { ...details, id: `change-${randomUUID()}`, createdAt: new Date().toISOString(), status: 'pending', before: capture(details.roots), restores }
+    const record: Checkpoint = { ...details, id: `change-${randomUUID()}`, createdAt: new Date().toISOString(), status: 'pending', before: capture(details.roots, details.excluded), restores }
     save(record)
     return record
   }
   function finish(record: Checkpoint, status: 'complete' | 'interrupted' = 'complete'): void {
-    record.after = capture(record.roots)
+    record.after = capture(record.roots, record.excluded)
     record.status = status
     save(record)
   }
@@ -74,10 +75,11 @@ export function createChangeHistory(input: { directory: string; excluded: string
   }
   function restoreRecord(record: Checkpoint) {
     if (!record.after) throw new Error('Completed checkpoint not found')
-    const current = capture(record.roots)
+    const current = capture(record.roots, record.excluded)
     const paths = changedPaths(record.before, record.after)
+    assertExcludedUntouched(paths, record.excluded)
     assertSnapshotMatches({ current, expected: record.after, target: record.before, paths, operation: 'Restore' })
-    const restore = begin({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore', roots: record.roots }, record.id)
+    const restore = begin({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore', roots: record.roots, excluded: record.excluded }, record.id)
     try {
       applySnapshot({ target: record.before, current, paths, content(hash) {
         const row = db.prepare('SELECT content FROM objects WHERE hash=?').get(hash)
@@ -99,7 +101,8 @@ export function createChangeHistory(input: { directory: string; excluded: string
       return locked(async () => {
         const paths = changedPaths(expected, target)
         if (!paths.length) return null
-        const current = capture(details.roots)
+        assertExcludedUntouched(paths, details.excluded)
+        const current = capture(details.roots, details.excluded)
         assertSnapshotMatches({ current, expected, target, paths, operation: 'Promotion' })
         const record = begin(details)
         try { onCheckpoint?.(); applySnapshot({ target, current, paths, content }) }
@@ -134,10 +137,14 @@ export function createChangeHistory(input: { directory: string; excluded: string
           else delete after[path]
           seen.add(path)
         }
-        return restoreRecord({ ...selected[0]!, id: `stage:${stageId}`, roots: [...new Set(selected.flatMap(record => record.roots))], before, after })
+        return restoreRecord({ ...selected[0]!, id: `stage:${stageId}`, roots: [...new Set(selected.flatMap(record => record.roots))], excluded: [...new Set(selected.flatMap(record => record.excluded ?? []))], before, after })
       })
     },
     prune: () => locked(async () => { prune(); db.exec('VACUUM'); return { ok: true } }),
   }
 }
 export type ChangeHistory = ReturnType<typeof createChangeHistory>
+
+function assertExcludedUntouched(paths: string[], excluded: string[] = []): void {
+  if (paths.some(path => excluded.some(hidden => isInside(path, hidden) || isInside(hidden, path)))) throw new Error('Changes overlap a protected file or its parent directory')
+}

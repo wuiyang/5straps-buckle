@@ -365,3 +365,21 @@ describe('buckle approvals --watch, keys meant for another question', () => {
     await done
   })
 })
+
+it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file warning choices and persists %s denial', async (key, scope) => {
+  const config = node()
+  const registry = registryOf(config)
+  registry.issue({ tool: 'fs_read', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
+  const { terminal, done } = watch(registry)
+  try {
+    await prompted(terminal)
+    expect(terminal.shown()).toContain('WARNING')
+    expect(terminal.shown()).toContain('o) allow once')
+    expect(terminal.shown()).toContain('ds) deny this session')
+    expect(terminal.shown()).toContain('da) always deny')
+    terminal.type(`${key}\n`)
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(0))
+    const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
+    expect(grants.list()).toContainEqual(expect.objectContaining({ denied: true, scope, subject: '/workspace/.env.local' }))
+  } finally { terminal.type('\x03'); await done }
+})
