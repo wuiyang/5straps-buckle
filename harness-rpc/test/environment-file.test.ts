@@ -1,5 +1,8 @@
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { editEnvironmentVariable, setEnvironmentVariable } from '../src/faces/cli/environment-file.js'
+import { editEnvironmentVariable, setEnvironmentVariable, updateEnvironmentFile, writeEnvironmentFile } from '../src/faces/cli/environment-file.js'
 
 describe('writing one variable back into an environment file', () => {
   it('fills in the commented placeholder buckle init left, keeping its position', () => {
@@ -43,5 +46,39 @@ describe('writing one variable back into an environment file', () => {
 
     expect(() => setEnvironmentVariable({ text, name: 'BUCKLE_REPORT_TOKEN', value })).toThrow(/line break or NUL/)
     expect(editEnvironmentVariable({ text, name: 'BUCKLE_REPORT_TOKEN', value })).toEqual({ ok: false, reason: 'BUCKLE_REPORT_TOKEN cannot hold a line break or NUL' })
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('the environment file is owner-only, as RINGS-D20 rules for the approval key it holds', () => {
+  const modeOf = (path: string) => statSync(path).mode & 0o777
+  const worldReadable = (text: string) => {
+    const path = join(mkdtempSync(join(tmpdir(), 'buckle-env-mode-')), 'node.env')
+    writeFileSync(path, text)
+    chmodSync(path, 0o644)
+    return path
+  }
+
+  it('creates a new file owner-only', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'buckle-env-mode-')), 'node.env')
+    writeEnvironmentFile(path, 'BUCKLE_PORT=4320\n')
+    expect(modeOf(path)).toBe(0o600)
+  })
+
+  it('narrows an existing file to owner-only before replacing it', () => {
+    const path = worldReadable('BUCKLE_PORT=4320\n')
+    writeEnvironmentFile(path, 'BUCKLE_PORT=4321\n')
+    expect([readFileSync(path, 'utf8'), modeOf(path)]).toEqual(['BUCKLE_PORT=4321\n', 0o600])
+  })
+
+  it('rewrites an edited file owner-only', () => {
+    const path = worldReadable('BUCKLE_PORT=4320\n')
+    expect(updateEnvironmentFile(path, text => editEnvironmentVariable({ text, name: 'BUCKLE_RINGS_APPROVAL_KEY', value: 'fixture' })).ok).toBe(true)
+    expect(modeOf(path)).toBe(0o600)
+  })
+
+  it('narrows the file even when the edit is refused and nothing is written', () => {
+    const path = worldReadable('BUCKLE_PORT=4320\nexport BUCKLE_RINGS_APPROVAL_KEY=hand-written\n')
+    expect(updateEnvironmentFile(path, text => editEnvironmentVariable({ text, name: 'BUCKLE_RINGS_APPROVAL_KEY', value: 'fixture' })).ok).toBe(false)
+    expect([readFileSync(path, 'utf8'), modeOf(path)]).toEqual(['BUCKLE_PORT=4320\nexport BUCKLE_RINGS_APPROVAL_KEY=hand-written\n', 0o600])
   })
 })

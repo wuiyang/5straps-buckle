@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
@@ -115,5 +115,14 @@ describe('buckle init without questions', () => {
     expect(env.BUCKLE_ALLOW_SHELL).toBe('true')
     expect(env.BUCKLE_ALLOW_HOST_GIT).toBeUndefined()
     expect(env.BUCKLE_PACKS).toBeUndefined()
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('buckle init writes the environment file owner-only (RINGS-D20)', () => {
+  it('narrows a world-readable file it replaces with --force', async () => {
+    writeFileSync(out, 'BUCKLE_PORT=1\n')
+    chmodSync(out, 0o644)
+    await init(scripted([workspace, '', 'Fixture'], false), ['--force', '--root', workspace])
+    expect(statSync(out).mode & 0o777).toBe(0o600)
   })
 })

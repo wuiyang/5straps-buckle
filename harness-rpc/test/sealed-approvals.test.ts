@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { approvalKey, mintApprovalKey, open, seal, createMemoryNonceStore, SEALED_REPORT_PATHS, ENVELOPE_WINDOW_MS, type ApprovalKey } from '@5straps/protocol/envelope'
@@ -84,6 +84,15 @@ describe('sealed approval decisions on the setup face', () => {
     writeFileSync(join(state, 'approval-nonces.json'), JSON.stringify({ version: 1, nonces: [{ keyId: key.id, nonce: 'old', ts: Date.now() - ENVELOPE_WINDOW_MS * 5 }] }))
     await node({ key: encoded, state })
     expect(JSON.parse(readFileSync(join(state, 'approval-nonces.json'), 'utf8'))).toEqual({ version: 1, nonces: [] })
+  })
+
+  it.skipIf(process.platform === 'win32')('keeps the nonce store owner-only, narrowing one found readable by others (RINGS-D20)', async () => {
+    const state = mkdtempSync(join(tmpdir(), 'buckle-sealed-mode-'))
+    const nonces = join(state, 'approval-nonces.json')
+    writeFileSync(nonces, JSON.stringify({ version: 1, nonces: [] }))
+    chmodSync(nonces, 0o644)
+    await node({ key: mintApprovalKey(), state })
+    expect(statSync(nonces).mode & 0o777).toBe(0o600)
   })
 
   it('refuses an expired, tampered or foreign envelope and audits each reason', async () => {

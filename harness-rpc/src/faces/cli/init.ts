@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { basename, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
 import { BUILTIN_PACKS } from '../../packs/index.js'
+import { writeEnvironmentFile } from './environment-file.js'
 import { findNodeSetting, normaliseSetting } from './node-settings.js'
 import { redeemPairingCode } from './pairing.js'
 
@@ -119,7 +120,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   const authToken = token()
   const adminToken = token()
   const contents = renderEnv({ root, mount, name, port, authToken, adminToken, choices })
-  writeFileSync(out, contents, { mode: 0o600 })
+  writeEnvironmentFile(out, contents)
 
   process.stdout.write(`Wrote ${out}
 

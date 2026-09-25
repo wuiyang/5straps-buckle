@@ -175,7 +175,7 @@ describe('buckle init --pair', () => {
     expect(readFileSync(out, 'utf8')).toBe(before)
   })
 
-  it('keeps the environment file\'s mode and every other line when it writes the credential', async () => {
+  it('keeps every other line and leaves the file owner-only when it writes the credential (RINGS-D20)', async () => {
     await init()
     chmodSync(out, 0o640)
     const before = readFileSync(out, 'utf8')
@@ -183,7 +183,7 @@ describe('buckle init --pair', () => {
 
     expect((await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])).exitCode).toBe(0)
 
-    expect(statSync(out).mode & 0o777).toBe(0o640)
+    if (process.platform !== 'win32') expect(statSync(out).mode & 0o777).toBe(0o600)
     const after = readFileSync(out, 'utf8')
     const untouched = (text: string) => text.split('\n').filter(line => !/^#?\s*BUCKLE_(REPORT_URL|REPORT_TOKEN|APPROVAL_WEBHOOK)=/.test(line))
     expect(untouched(after)).toEqual(untouched(before))

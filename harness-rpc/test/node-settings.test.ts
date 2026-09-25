@@ -98,11 +98,11 @@ describe('buckle settings set', () => {
     expect(result.printed).not.toContain(SECRET)
   })
 
-  it('replaces the value in place and keeps the file mode bits', async () => {
+  it('replaces the value in place and leaves the file owner-only (RINGS-D20)', async () => {
     await settings(['set', 'BUCKLE_ALLOW_SHELL', 'off'])
 
     expect(readFileSync(file, 'utf8')).toBe(withLine('BUCKLE_ALLOW_SHELL=true', 'BUCKLE_ALLOW_SHELL=false'))
-    expect(statSync(file).mode & 0o7777).toBe(0o640)
+    expect(statSync(file).mode & 0o7777).toBe(0o600)
   })
 
   it('leaves no temporary file behind', async () => {
@@ -276,7 +276,7 @@ describe('buckle settings against other writers and links', () => {
 
     expect(lstatSync(link).isSymbolicLink()).toBe(true)
     expect(readFileSync(target, 'utf8')).toBe(withLine('BUCKLE_ALLOW_SHELL=true', 'BUCKLE_ALLOW_SHELL=false'))
-    expect(statSync(target).mode & 0o777).toBe(0o640)
+    expect(statSync(target).mode & 0o777).toBe(0o600)
     expect(readdirSync(join(root, 'real'))).toEqual(['target.env'])
   })
 
