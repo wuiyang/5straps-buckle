@@ -53,6 +53,8 @@ describe('buckle init asks for node settings after the workspace', () => {
     for (const id of ['fs', 'web', 'git', 'forge', 'dev', 'browser', 'shell', 'environment']) expect(prompt.said.join('\n')).toContain(`  ${id} `)
 
     const env = parseEnv(result.written)
+    expect(env.BUCKLE_SETUP_TOKEN).toBeUndefined()
+    expect(env.BUCKLE_ADMIN_TOKEN).toBeTruthy()
     expect(env.BUCKLE_ALLOW_SHELL).toBe('true')
     for (const key of ['BUCKLE_PACKS', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_ALLOWED_HOSTS']) expect(env[key]).toBeUndefined()
     expect(result.written).toContain('# BUCKLE_ALLOW_HOST_GIT=true')

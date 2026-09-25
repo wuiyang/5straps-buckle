@@ -261,9 +261,6 @@ BUCKLE_AUTH_TOKEN=${input.authToken}
 # What configures the node through /setup, mints workspace tokens and writes a persisted
 # approval. Rings stores this one too, apart from the first.
 BUCKLE_ADMIN_TOKEN=${input.adminToken}
-# The name the admin credential had before BUCKLE-08, written for one release so a script
-# reading the old key keeps working. Delete this line once nothing reads it.
-BUCKLE_SETUP_TOKEN=${input.adminToken}
 
 BUCKLE_WORKSPACE_ROOT=${input.root}
 ${input.state ? `BUCKLE_STATE_DIR=${input.state}` : '# BUCKLE_STATE_DIR='}

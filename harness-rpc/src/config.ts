@@ -97,7 +97,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
 
   const sandboxMode = parseSandboxMode(environment.BUCKLE_SANDBOX)
   const authToken = environment.BUCKLE_AUTH_TOKEN ?? ''
-  const adminToken = parseAdminToken(environment)
+  const adminToken = environment.BUCKLE_ADMIN_TOKEN?.trim() ?? ''
   if (adminToken && adminToken === authToken) {
     throw new Error('BUCKLE_ADMIN_TOKEN must differ from BUCKLE_AUTH_TOKEN: the credential that configures the node is never the one an agent holds')
   }
@@ -190,21 +190,6 @@ export function actionsPath(config: Pick<BuckleConfig, 'stateDirectory'>): strin
 
 export function policyPath(config: BuckleConfig): string {
   return join(config.stateDirectory, 'policy.json')
-}
-
-/**
- * The admin credential, renamed from the setup token by `BUCKLE-08`. `BUCKLE_SETUP_TOKEN` is
- * still read for one release so an install written by an earlier `buckle init` keeps starting;
- * two different values are an error rather than a silent choice between two authorities.
- */
-function parseAdminToken(environment: NodeJS.ProcessEnv): string {
-  const adminToken = environment.BUCKLE_ADMIN_TOKEN?.trim() ?? ''
-  const legacyToken = environment.BUCKLE_SETUP_TOKEN?.trim() ?? ''
-  if (adminToken && legacyToken && adminToken !== legacyToken) {
-    throw new Error('BUCKLE_ADMIN_TOKEN and BUCKLE_SETUP_TOKEN hold different values: keep BUCKLE_ADMIN_TOKEN and remove the old name')
-  }
-  if (!adminToken && legacyToken) logger.warn('BUCKLE_SETUP_TOKEN is the old name for BUCKLE_ADMIN_TOKEN and is read for one release; rename it')
-  return adminToken || legacyToken
 }
 
 /** The value is never echoed: a malformed key names the variable and the fix alone. */

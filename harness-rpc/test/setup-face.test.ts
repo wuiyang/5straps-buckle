@@ -67,9 +67,9 @@ describe('who may open the setup face', () => {
     expect(() => loadConfig({ BUCKLE_AUTH_TOKEN: 'same', BUCKLE_ADMIN_TOKEN: 'same' })).toThrow(/must differ/)
   })
 
-  it('still reads BUCKLE_SETUP_TOKEN, the name it had before BUCKLE-08', () => {
-    expect(loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_SETUP_TOKEN: SETUP }).adminToken).toBe(SETUP)
-    expect(() => loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: 'one-value', BUCKLE_SETUP_TOKEN: 'another-value' })).toThrow(/different values/)
+  it('uses only the current admin credential setting', () => {
+    expect(loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_SETUP_TOKEN: SETUP }).adminToken).toBe('')
+    expect(loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: SETUP }).adminToken).toBe(SETUP)
   })
 })
 
