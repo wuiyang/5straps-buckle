@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
@@ -194,6 +194,41 @@ describe('buckle init --pair', () => {
 
     expect(result.exitCode).toBe(0)
     expect(parseEnv(readFileSync(out, 'utf8')).BUCKLE_REPORT_TOKEN).toBeUndefined()
+  })
+
+  it('fails the pairing when the environment file holds a key line Buckle does not edit, without printing the key (RINGS-D20)', async () => {
+    await init()
+    const handWritten = mintApprovalKey()
+    writeFileSync(out, `${readFileSync(out, 'utf8')}export BUCKLE_RINGS_APPROVAL_KEY=${handWritten}\n`)
+    const before = readFileSync(out, 'utf8')
+    const approvalKey = mintApprovalKey()
+    ringsMinting('rings-minted-report-token-fixture', approvalKey)
+
+    const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.printed).toContain('The report credential and approval key Rings minted for this node were not saved')
+    expect(result.printed).toContain('issue a new pairing code for this node in Rings and run buckle init --pair <code> --rings <Rings URL> again')
+    expect(result.printed).not.toContain('Start it with')
+    for (const secret of [approvalKey, handWritten, 'rings-minted-report-token-fixture']) expect(result.printed).not.toContain(secret)
+    expect(readFileSync(out, 'utf8')).toBe(before)
+  })
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('fails the pairing when the environment file cannot be written, without printing the key (RINGS-D20)', async () => {
+    await init()
+    const approvalKey = mintApprovalKey()
+    ringsMinting('rings-minted-report-token-fixture', approvalKey)
+    // The state directory is made first, so only the directory holding the environment file refuses writes.
+    mkdirSync(join(root, 'state'))
+    chmodSync(root, 0o500)
+    try {
+      const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+
+      expect(result.exitCode).toBe(1)
+      expect(result.printed).toContain(`were not saved, and Rings already holds them, so reports and approvals between Rings and this node fail until it is paired again. ${out} could not be written`)
+      expect(result.printed).not.toContain(approvalKey)
+      expect(parseEnv(readFileSync(out, 'utf8')).BUCKLE_RINGS_APPROVAL_KEY).toBeUndefined()
+    } finally { chmodSync(root, 0o700) }
   })
 
   it('reports a refusal from Rings and keeps the environment file it wrote', async () => {

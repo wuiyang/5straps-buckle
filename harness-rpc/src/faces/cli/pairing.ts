@@ -15,6 +15,7 @@ const APPROVALS_PATH = '/api/v1/buckle-approvals'
  * how the environment file reads, so it is refused rather than written.
  */
 const REPORT_CREDENTIAL = /^[A-Za-z0-9._~+/=-]{16,512}$/
+const REPAIR = 'issue a new pairing code for this node in Rings and run buckle init --pair <code> --rings <Rings URL> again'
 
 export interface PairingRequest {
   /** The code the owner read off Rings. Short-lived and single use, so argv is where it belongs. */
@@ -81,7 +82,8 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
     return { ok: false, message: `${paired}\nRings answered with an approval key Buckle does not accept (it must be 32 bytes in base64url), so nothing was written to ${input.environmentFile}. Check that the Rings URL is the one you meant, then pair again.` }
   }
   const approvalKey = typeof body.approvalKey === 'string' ? body.approvalKey : null
-  return { ok: true, message: `${paired}\n${recordReportCredential({ ...input, reportToken: body.reportToken, approvalKey })}` }
+  const recorded = recordReportCredential({ ...input, reportToken: body.reportToken, approvalKey })
+  return { ok: recorded.ok, message: `${paired}\n${recorded.message}` }
 }
 
 /**
@@ -90,8 +92,11 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
  * the environment file, never printed and never passed in argv, along with the two Rings routes it
  * authenticates: the action log, and the approvals a person has to be reached about. The approval
  * key of `RINGS-D20` travels the same way and is removed when Rings sent none.
+ *
+ * Rings stored the new credential and key before it answered, so a file that is not written
+ * leaves the pair unable to talk: that is a failed pairing, and the owner is told to pair again.
  */
-function recordReportCredential(input: { environmentFile: string; ringsUrl: string; reportToken: string; approvalKey: string | null }): string {
+function recordReportCredential(input: { environmentFile: string; ringsUrl: string; reportToken: string; approvalKey: string | null }): PairingResult {
   const settings = [
     { name: 'BUCKLE_REPORT_URL', value: new URL(REPORT_PATH, input.ringsUrl).toString() },
     { name: 'BUCKLE_REPORT_TOKEN', value: input.reportToken },
@@ -102,15 +107,17 @@ function recordReportCredential(input: { environmentFile: string; ringsUrl: stri
     (carried, setting) => (carried.ok ? editEnvironmentVariable({ text: carried.text, ...setting }) : carried),
     { ok: true, text },
   )
+  const minted = input.approvalKey ? 'report credential and approval key' : 'report credential'
+  const unsaved = `The ${minted} Rings minted for this node were not saved, and Rings already holds them, so reports and approvals between Rings and this node fail until it is paired again.`
   try {
     if (!updateEnvironmentFile(input.environmentFile, edit).ok) {
-      return `Rings minted a report credential for this node, but ${input.environmentFile} sets one of BUCKLE_REPORT_URL, BUCKLE_REPORT_TOKEN, BUCKLE_APPROVAL_WEBHOOK or BUCKLE_RINGS_APPROVAL_KEY in a form Buckle does not edit, so nothing was written. Fix those lines by hand and pair again.`
+      return { ok: false, message: `${unsaved} ${input.environmentFile} sets one of BUCKLE_REPORT_URL, BUCKLE_REPORT_TOKEN, BUCKLE_APPROVAL_WEBHOOK or BUCKLE_RINGS_APPROVAL_KEY in a form Buckle does not edit. Fix those lines by hand, then ${REPAIR}.` }
     }
   } catch (error) {
     logger.error('Could not write the report credential Rings minted', { message: error instanceof Error ? error.message : 'Unknown error' })
-    return `Rings minted a report credential for this node, but ${input.environmentFile} could not be written; pair again once it is writable. Remote reporting is unavailable until the new credential is saved and Buckle is restarted.`
+    return { ok: false, message: `${unsaved} ${input.environmentFile} could not be written. Once it is writable, ${REPAIR}.` }
   }
-  return `Its action log and pending approvals now report to Rings under this node's own credential, written to ${input.environmentFile}. Restart any running Buckle service to load the new credential.`
+  return { ok: true, message: `Its action log and pending approvals now report to Rings under this node's own credential, written to ${input.environmentFile}. Restart any running Buckle service to load the new credential.` }
 }
 
 async function errorText(response: Response): Promise<string> {
