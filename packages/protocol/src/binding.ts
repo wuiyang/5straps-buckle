@@ -20,9 +20,9 @@ export const BindingContractSchema = z.object({
 export type BindingContract = z.infer<typeof BindingContractSchema>
 
 /**
- * A request to change a binding, feature by feature and resource by resource. It is applied by
- * AND, so what it names can only be turned off; what it asks to turn on is a question for the
- * owner rather than a change.
+ * A request to change a binding, feature by feature and resource by resource. It never widens: a
+ * spawn applies it by AND, and the permission tools refuse one that turns anything on. Only the
+ * owner widens a binding.
  */
 export const BindingPatchSchema = z.object({
   features: z.partialRecord(SessionFeatureSchema, z.boolean()).optional(),
