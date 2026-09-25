@@ -1,3 +1,4 @@
+import { createWorkspaceManager } from '../src/services/workspace-manager.js'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -155,4 +156,15 @@ it('checks policy revisions and applies read-denied paths to filesystem tools', 
   expect(response).toContain('PERMISSION_DENIED')
   const listing = await (await app.request('/workspaces/one/setup/files?path=.', { headers: headers(setup('one')) })).json() as { entries: Array<{ name: string; read: string }> }
   expect(listing.entries.find(entry => entry.name === 'hello.txt')?.read).toBe('deny')
+})
+
+it('keeps explicit credential mounts out of managed workspaces', async () => {
+  config.sandboxMounts = [{ source: join(root, 'two', 'hello.txt'), target: '/srv/auth/config.json', readOnly: true }]
+  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  app = createHttpApp({ config, runtime, authToken: NODE_AGENT })
+  expect((await register('two')).status).toBe(409)
+  expect((await register('one')).status).toBe(201)
+  const manager = createWorkspaceManager({ config, runtime })
+  const child = await manager.resolve('one')
+  expect(child.config.sandboxMounts).toEqual([])
 })

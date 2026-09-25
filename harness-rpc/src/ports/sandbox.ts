@@ -1,6 +1,8 @@
+import type { SandboxMount } from '../domain/sandbox-mounts.js'
 import type { SandboxMode } from '@5straps/protocol'
 
 export interface SandboxCommand {
+  mounts?: SandboxMount[]
   command: string
   args: string[]
   /** The real working directory. A mounted sandbox translates it to the virtual one. */

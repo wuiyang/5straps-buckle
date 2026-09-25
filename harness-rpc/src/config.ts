@@ -1,3 +1,4 @@
+import { parseSandboxMounts, type SandboxMount } from './domain/sandbox-mounts.js'
 import { isIPv6 } from 'node:net'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -67,6 +68,8 @@ export interface BuckleConfig {
   policy: WorkspacePolicy
   /** Immutable installation policy, enforced independently for managed child workspaces. */
   nodePolicy?: WorkspacePolicy
+  /** Owner-authorized read-only file and folder aliases, scoped to the default workspace. */
+  sandboxMounts?: SandboxMount[]
   /** Host directories still readable inside a mounted sandbox, for toolchains outside /usr. */
   mountReadOnlyPaths: string[]
   /** Where every refused call is posted as it happens. Rings, usually. */
@@ -136,6 +139,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     approvalTimeoutMs: parseApprovalTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_TIMEOUT_MS),
     approvalWebhook: environment.BUCKLE_APPROVAL_WEBHOOK || undefined,
     policy: parsePolicy(environment),
+    sandboxMounts: parseSandboxMounts(environment.BUCKLE_MOUNTS),
     mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => resolve(path)),
     reportUrl: environment.BUCKLE_REPORT_URL || undefined,
     reportToken: environment.BUCKLE_REPORT_TOKEN || undefined,

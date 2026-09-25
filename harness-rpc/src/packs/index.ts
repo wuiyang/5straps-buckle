@@ -1,3 +1,4 @@
+import type { SandboxMount } from '../domain/sandbox-mounts.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import type { IsolatedShellOptions } from '../services/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
@@ -19,6 +20,7 @@ import { createShellPack } from './shell/index.js'
 import { createWebPack } from './web/index.js'
 
 export interface BuiltinPackOptions {
+  sandboxMounts?: SandboxMount[]
   filesystemPolicy?: { policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null }
   cwd: string
   paths: PathView
@@ -119,6 +121,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     writableRoots: options.writableRoots,
     hiddenPaths: options.hiddenPaths,
     readOnlyPaths: options.mountReadOnlyPaths,
+    mounts: options.sandboxMounts,
     unavailableReason: shellUnavailableReason(options),
     isolation: options.shellIsolation,
     filesystemPolicy: options.filesystemPolicy,
@@ -144,6 +147,7 @@ function forgeUnavailableReason(options: BuiltinPackOptions): string | null {
 }
 
 function shellUnavailableReason(options: BuiltinPackOptions): string | null {
+  if (options.sandboxMounts?.length && options.sandbox.mode !== 'bubblewrap') return 'Explicit mounts require bubblewrap'
   if (!options.enableShell) return 'Shell tools are turned off by BUCKLE_ALLOW_SHELL=false'
   if (options.shellIsolation && options.sandbox.mode !== 'bubblewrap') return 'Isolated shell execution requires bubblewrap; BUCKLE_SHELL_ISOLATION=false opts into shared-workspace checkpoints'
   if (options.sandboxUnavailableReason) return options.sandboxUnavailableReason

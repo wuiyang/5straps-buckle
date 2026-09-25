@@ -1,3 +1,4 @@
+import { validateSandboxMounts } from './domain/sandbox-mounts.js'
 import { protectedStateRoots } from './config.js'
 import { createWorkbenchManager } from './services/workbench/manager.js'
 import { WorkbenchError, workbenchHash } from './services/workbench/storage.js'
@@ -155,6 +156,7 @@ export async function createRuntime(input: {
       if (!config.enableShell || config.enabledPacks && !config.enabledPacks.includes('shell') || sandbox.sandbox.mode !== 'bubblewrap') throw new WorkbenchError('Interactive terminals require an enabled bubblewrap sandbox', 403)
       const policies = [compiled.policy, ...(ceiling ? [ceiling.policy] : [])]
       if (policies.some(policy => policy.commands.allow.length || policy.commands.deny.length || policy.commands.destructive?.length)) throw new WorkbenchError('Interactive shells cannot enforce command allowlists, denylists or command approval rules', 403)
+      const mounts = validateSandboxMounts(config.sandboxMounts ?? [], { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' })
       const signal = AbortSignal.timeout(15_000)
       const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, ceiling: ceiling?.policy, signal })
       const hidden = await collectShellHiddenPaths({ roots: [request.root, ...config.mountReadOnlyPaths], protectedPaths: [], signal })
@@ -163,7 +165,7 @@ export async function createRuntime(input: {
         workspaceRoot: request.root, writableRoots: [request.root], mount: { root: request.root, at: '/workspace' }, commandIsPid1: true,
         allowNetwork: config.shellNetwork && !policies.some(policy => policy.network.allow.length) && config.allowedHosts.length === 0,
         hiddenPaths: [...hidden.directories, ...projection.hiddenPaths], hiddenFiles: [...hidden.files, ...projection.hiddenFiles],
-        readOnlyPaths: config.mountReadOnlyPaths, readOnlyWorkspacePaths: projection.readOnlyWorkspacePaths,
+        mounts, readOnlyPaths: config.mountReadOnlyPaths, readOnlyWorkspacePaths: projection.readOnlyWorkspacePaths,
       })
       const environment = Object.fromEntries(Object.entries(buildChildEnvironment({ parent: process.env, extra: { TERM: 'xterm-256color' } })).filter((entry): entry is [string, string] => entry[1] !== undefined))
       return { ...wrapped, cwd: request.cwd, environment, cols: request.cols, rows: request.rows }
@@ -300,6 +302,7 @@ async function buildPacks(input: {
     writableRoots: [input.config.cwd, ...input.config.scratchRoots],
     hiddenPaths: protectedStateRoots(input.config),
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
+    sandboxMounts: input.config.sandboxMounts,
     approvedUrls: approvedUrls(input.compiled, input.ceiling),
     approvedLists: [
       ...(input.ceiling?.network ? [{ name: 'node' as const, entries: input.ceiling.network.patterns }] : []),

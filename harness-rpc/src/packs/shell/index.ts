@@ -1,3 +1,4 @@
+import { validateSandboxMounts, type SandboxMount } from '../../domain/sandbox-mounts.js'
 import { projectFilesystemSandbox } from '../../domain/filesystem-policy.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import { relative, resolve } from 'node:path'
@@ -39,6 +40,7 @@ const scriptInput = z.object({
 })
 
 export interface ShellPackOptions {
+  mounts?: SandboxMount[]
   filesystemPolicy?: { policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null }
   paths: PathView
   runProcess: ProcessRunner
@@ -66,6 +68,8 @@ export function createShellPack(options: ShellPackOptions): Pack {
     tool: string
     context: ToolContext
   }): Promise<JsonValue> => {
+    const mounts = validateSandboxMounts(options.mounts ?? [], { protectedRoots: options.hiddenPaths, workspaceRoots: options.writableRoots, workspaceTarget: options.paths.displayRoot })
+    if (mounts.length && options.sandbox.mode !== 'bubblewrap') throw new ToolInputError('Explicit mounts require bubblewrap', { code: 'PERMISSION_DENIED' })
     const cwd = options.paths.resolve(input.cwd)
     if (!isInsideAny(options.writableRoots, cwd)) throw new ToolInputError('Shell working directory must be in the workspace or an owner-configured writable root', { code: 'PERMISSION_DENIED' })
     if (input.allowNetwork && !options.allowNetwork) throw new ToolInputError('Shell networking is disabled by the owner; use the web tools for scoped network access', { code: 'PERMISSION_DENIED' })
@@ -93,6 +97,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
         hiddenPaths: copyRoot ? hidden.directories.filter(path => !isInsideAny([options.paths.root], path)) : hidden.directories,
         hiddenFiles: copyRoot ? hidden.files.filter(path => !isInsideAny([options.paths.root], path)) : hidden.files,
         readOnlyPaths: options.readOnlyPaths,
+        mounts,
         readOnlyWorkspacePaths: restrictions.readOnlyWorkspacePaths.map(mapped),
       })
       return options.runProcess({

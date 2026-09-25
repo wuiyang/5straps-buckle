@@ -82,7 +82,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
   const defaultRoot = realpathSync(input.config.cwd)
   const stateRoot = realpathSync(input.config.stateDirectory)
   const store = createJsonFileStore({ filePath: join(stateRoot, 'workspaces.json'), schema: RegistrySchema, fallback: { version: 1 as const, workspaces: [] } })
-  const exposedRoots = [...input.config.mountReadOnlyPaths, dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return realpathSync(path) } catch { return path } })
+  const exposedRoots = [...input.config.mountReadOnlyPaths, ...(input.config.sandboxMounts ?? []).map(mount => mount.source), dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return realpathSync(path) } catch { return path } })
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
   const defaultDescriptor = (): WorkspaceDescriptor => ({ id: 'default', name: input.config.serverName, root: defaultRoot, enabled: true, default: true, retiredAt: null, updatedAt: null })
 
@@ -205,6 +205,8 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           stateDirectory: join(stateRoot, 'workspaces', workspace.id),
           nodeStateDirectory: stateRoot,
           scratchRoots: [],
+          // Owner credential mounts belong only to the directly configured workspace.
+          sandboxMounts: [],
           skillDirectories: [],
           strictWrites: true,
           // Every registered workspace has a hard path boundary, independent of grants.
