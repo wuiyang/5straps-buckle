@@ -1,3 +1,4 @@
+import { isManagedWorkspaceConfig, moveWorkspaceConfig } from './workspace-config.js'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseEnv } from 'node:util'
@@ -30,7 +31,7 @@ Lists are comma separated. A change takes effect when buckle serve restarts.
  * included, is kept byte for byte and shown by name at most. Each run is audited in the node's
  * action log, a write with the key and value it set.
  */
-export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string; cwd: string }): Promise<CliResult> {
+export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string; cwd: string; home?: string }): Promise<CliResult> {
   const file = resolve(input.cwd, input.environmentFile)
   const fileText = existsSync(file) ? readFileSync(file, 'utf8') : null
   const merged = { ...buckleVariables(fileText), ...input.environment }
@@ -49,6 +50,7 @@ interface SettingsContext {
   fileText: string | null
   merged: NodeJS.ProcessEnv
   cwd: string
+  home?: string
 }
 
 function dispatch(context: SettingsContext): CliResult {
@@ -89,11 +91,19 @@ function write(context: SettingsContext, name: string, raw: string | null): CliR
     process.stdout.write(`${setting.key} is not set in ${context.file}; nothing to remove.\n`)
     return { exitCode: 0 }
   }
-  let edit: EnvironmentEdit
+  if (setting.key === 'BUCKLE_WORKSPACE_ROOT' && next === null && isManagedWorkspaceConfig(context.file, context.home)) {
+    return fail('A registered workspace must have a root; set a new root instead of unsetting it')
+  }
+  let edit: EnvironmentEdit = { ok: false, reason: 'Settings update did not run' }
   try {
-    edit = updateEnvironmentFile(context.file, text => editEnvironmentVariable({ text, name: setting.key, value: next }))
+    const writeValue = () => {
+      edit = updateEnvironmentFile(context.file, text => editEnvironmentVariable({ text, name: setting.key, value: next }))
+      return edit.ok
+    }
+    if (setting.key === 'BUCKLE_WORKSPACE_ROOT' && next !== null) moveWorkspaceConfig({ file: context.file, root: next, home: context.home, write: writeValue })
+    else writeValue()
   } catch (error) {
-    return fail(`Could not write ${context.file}: ${error instanceof Error ? error.message : 'unknown error'}. Nothing was changed.`)
+    return fail(`Could not write ${context.file}: ${error instanceof Error ? error.message : 'unknown error'}. Inspect the configuration before retrying.`)
   }
   if (!edit.ok) return fail(`${edit.reason} in ${context.file}`)
 

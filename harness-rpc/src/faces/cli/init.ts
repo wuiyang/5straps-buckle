@@ -1,7 +1,8 @@
+import { findWorkspaceConfig, registerWorkspaceConfig } from './workspace-config.js'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
-import { basename, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
 import { BUILTIN_PACKS } from '../../packs/index.js'
@@ -19,7 +20,9 @@ const USAGE = `Usage: buckle init [--root <dir>] [--mount <path>] [--name <name>
 Defaults: current directory as root, /workspace as mount, and the absolute root path with
 path separators replaced by hyphens as the name.
 
-Writes an environment file for one workspace, with a fresh agent token and a fresh admin
+Writes ~/.5straps/workspaces/<id>/buckle.env and registers the root in map.json.
+--out or BUCKLE_ENV_FILE selects a custom file instead.
+Writes settings for one workspace, with a fresh agent token and a fresh admin
 credential. Asks for the few decisions when run in a terminal: the workspace, which packs to
 enable, the shell, host Git and the network lists. --yes, or no terminal, takes the defaults and
 says what it kept. Change any of them later with buckle settings set.
@@ -59,7 +62,7 @@ export interface NodeChoices {
 
 const DEFAULT_CHOICES: NodeChoices = { packs: null, shell: true, hostGit: false, networkAllow: null, allowedHosts: null }
 
-export async function runInit(argv: string[], prompt: InitPrompt = terminalPrompt()): Promise<CliResult> {
+export async function runInit(argv: string[], prompt: InitPrompt = terminalPrompt(), options: { home?: string } = {}): Promise<CliResult> {
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -87,10 +90,11 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
     return { exitCode: 1 }
   }
 
-  const out = resolve(values.out ?? '.env')
+  const explicitOut = values.out ?? process.env.BUCKLE_ENV_FILE
+  let out = explicitOut ? resolve(explicitOut) : findWorkspaceConfig({ cwd: resolve(values.root ?? process.cwd()), home: options.home, exact: true })?.file
   // Pairing beside a configured node re-pairs it: the credentials stay, the URL is what moved.
-  if (existsSync(out) && values.pair && !values.force) return pairExisting({ out, code: values.pair, rings: values.rings!, url: values.url })
-  if (existsSync(out) && !values.force) {
+  if (out && existsSync(out) && values.pair && !values.force) return pairExisting({ out, code: values.pair, rings: values.rings!, url: values.url })
+  if (out && existsSync(out) && !values.force) {
     process.stderr.write(`${out} already exists. Pass --force to replace it, or --out to write elsewhere.\n`)
     return { exitCode: 1 }
   }
@@ -122,8 +126,17 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
 
   const authToken = token()
   const adminToken = token()
-  const contents = renderEnv({ root, mount, name, port, authToken, adminToken, choices })
-  writeEnvironmentFile(out, contents)
+  let contents = renderEnv({ root, mount, name, port, authToken, adminToken, choices })
+  if (explicitOut) writeEnvironmentFile(resolve(explicitOut), contents)
+  else {
+    const registered = registerWorkspaceConfig({ root, home: options.home, write(entry) {
+      if (existsSync(entry.file) && !values.force) throw new Error('This workspace is already initialized; use --force only to replace its credentials')
+      contents = renderEnv({ root: entry.root, mount, name, port, authToken, adminToken, choices, id: entry.id, state: entry.state })
+      writeEnvironmentFile(entry.file, contents)
+    } })
+    out = registered.file
+  }
+  if (!out) throw new Error('Workspace configuration location was not selected')
 
   process.stdout.write(`Wrote ${out}
 
@@ -133,7 +146,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
 ${describeChoices(choices)}${interactive ? '' : 'These are the defaults, kept because nothing was asked. Change one with: buckle settings set <key> <value>\n'}
 
 Next:
-  1. Start the node:            buckle serve        (reads ${basename(out)} from this directory)
+  1. Start the node:            buckle serve        (discovers registered settings; custom files need BUCKLE_ENV_FILE)
   2. Register it in Rings with both credentials, or drive it directly:
        agent token        ${authToken}
        admin credential   ${adminToken}
@@ -234,11 +247,11 @@ BUCKLE_ALLOW_SHELL=${choices.shell}
 ${choices.hostGit ? 'BUCKLE_ALLOW_HOST_GIT=true' : '# BUCKLE_ALLOW_HOST_GIT=true'}`
 }
 
-function renderEnv(input: { root: string; mount: string | null; name: string; port: string; authToken: string; adminToken: string; choices: NodeChoices }): string {
+function renderEnv(input: { root: string; mount: string | null; name: string; port: string; authToken: string; adminToken: string; choices: NodeChoices; id?: string; state?: string }): string {
   return `# Written by buckle init on ${new Date().toISOString()}
-# The node reads this file from its working directory. Only BUCKLE_* names are taken from it.
+# Registered settings are discovered from the workspace path. Custom files use BUCKLE_ENV_FILE.
 
-BUCKLE_SERVER_ID=${slug(input.name)}
+BUCKLE_SERVER_ID=${input.id ?? slug(input.name)}
 BUCKLE_SERVER_NAME=${input.name}
 BUCKLE_HOST=127.0.0.1
 BUCKLE_PORT=${input.port}
@@ -253,6 +266,7 @@ BUCKLE_ADMIN_TOKEN=${input.adminToken}
 BUCKLE_SETUP_TOKEN=${input.adminToken}
 
 BUCKLE_WORKSPACE_ROOT=${input.root}
+${input.state ? `BUCKLE_STATE_DIR=${input.state}` : '# BUCKLE_STATE_DIR='}
 ${input.mount ? `BUCKLE_WORKSPACE_MOUNT=${input.mount}` : '# BUCKLE_WORKSPACE_MOUNT=/workspace'}
 BUCKLE_SANDBOX=auto
 # Milliseconds to wait for approval: 60000 = one minute; forever = no wait deadline.

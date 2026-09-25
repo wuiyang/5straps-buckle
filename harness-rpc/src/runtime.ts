@@ -1,3 +1,4 @@
+import { protectedStateRoots } from './config.js'
 import { createWorkbenchManager } from './services/workbench/manager.js'
 import { WorkbenchError, workbenchHash } from './services/workbench/storage.js'
 import { spawnPtyProcess } from './adapters/pty-process.js'
@@ -107,7 +108,7 @@ export async function createRuntime(input: {
   if (ceiling) warnSkipped(ceiling.skipped)
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
-  const history = createChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: [config.nodeStateDirectory ?? config.stateDirectory], maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays })
+  const history = createChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays })
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
 
@@ -143,7 +144,7 @@ export async function createRuntime(input: {
   const workbenches = createWorkbenchManager({
     directory: join(config.stateDirectory, 'workbenches', workspaceStateKey(config.cwd)),
     sourceRoot: config.cwd, workspaceId: input.workspaceId ?? 'default', maxBytes: config.isolationMaxBytes,
-    protectedRoots: [config.nodeStateDirectory ?? config.stateDirectory], actions, history,
+    protectedRoots: protectedStateRoots(config), actions, history,
     hasRipgrep: hasExecutable('rg'), spawnPty: spawnPtyProcess,
     policyHash: () => workbenchHash(JSON.stringify([compiled.policy, ceiling?.policy ?? null])),
     authorizeTool: tool => toolDenial(tool) === null,
@@ -297,7 +298,7 @@ async function buildPacks(input: {
     sandbox: input.sandbox.sandbox,
     sandboxUnavailableReason: input.sandbox.unavailableReason,
     writableRoots: [input.config.cwd, ...input.config.scratchRoots],
-    hiddenPaths: [input.config.nodeStateDirectory ?? input.config.stateDirectory],
+    hiddenPaths: protectedStateRoots(input.config),
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
     approvedUrls: approvedUrls(input.compiled, input.ceiling),
     approvedLists: [
@@ -350,7 +351,7 @@ function networkEgressRule(compiled: CompiledPolicy, ceiling: CompiledPolicy | n
 function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; ceiling: CompiledPolicy | null; paths: PathView }): PermissionEngine {
   const { config, compiled, ceiling, paths } = input
   return createPermissionEngine([
-    createSensitivePathRule({ protectedRoots: [config.nodeStateDirectory ?? config.stateDirectory] }),
+    createSensitivePathRule({ protectedRoots: protectedStateRoots(config) }),
     ...(ceiling ? [createCommandPolicyRule(ceiling, { enforceWrapperAllow: false })] : []),
     createCommandPolicyRule(compiled, { enforceWrapperAllow: !ceiling?.commands.allow.length }),
     createDestructiveCommandRule({ added: [...(ceiling?.commands.destructive ?? []), ...compiled.commands.destructive] }),

@@ -148,6 +148,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
   }
 }
 
+/** Node configuration and all workspace maps are owner-only, never tool-accessible. */
+export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string[] {
+  return [...new Set([join(homedir(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory])]
+}
+
 /** Where grants, approvals and the action log live, read without loading the rest of the config. */
 export function stateDirectoryOf(environment: NodeJS.ProcessEnv): string {
   return environment.BUCKLE_STATE_DIR ? resolve(environment.BUCKLE_STATE_DIR) : join(homedir(), '.5straps', 'buckle')

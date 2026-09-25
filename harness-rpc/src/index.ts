@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { workspaceEnvironmentFile } from './faces/cli/workspace-config.js'
 import { auditOperation } from './services/audit-operation.js'
 import { createFileActionLog } from './adapters/action-log/file-action-log.js'
 import { existsSync, readFileSync } from 'node:fs'
@@ -53,8 +54,7 @@ async function main(): Promise<void> {
 }
 
 /**
- * `buckle init` writes `.env` beside the workspace, so the node reads it back from its working
- * directory. Only BUCKLE_* names are taken, and a variable already in the environment wins, so
+ * Discover registered workspace settings first, then fall back to legacy local configuration. Only BUCKLE_* names are taken, and a variable already in the environment wins, so
  * a project's own `.env` never leaks into the node and an operator override still applies.
  */
 function loadEnvironmentFile(): void {
@@ -66,7 +66,7 @@ function loadEnvironmentFile(): void {
 }
 
 function environmentFilePath(): string {
-  return process.env.BUCKLE_ENV_FILE ?? '.env'
+  return workspaceEnvironmentFile({ cwd: process.cwd(), explicit: process.env.BUCKLE_ENV_FILE })
 }
 
 async function serveHttp(config: BuckleConfig): Promise<void> {
