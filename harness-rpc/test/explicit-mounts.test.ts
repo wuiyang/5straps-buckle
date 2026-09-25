@@ -30,6 +30,11 @@ it('parses explicit file and folder mounts and expands the service account home'
   expect(validate()[0]!.source).toBe(source)
   expect(validate(mounts(join(root, '.docker'), '/srv/auth'))[0]!.target).toBe('/srv/auth')
 })
+it('expands target home independently of the host home and rejects traversal', () => {
+  expect(parseSandboxMounts(JSON.stringify([{ source, target: '~/.docker/config.json' }]))).toEqual(mounts())
+  expect(() => parseSandboxMounts(JSON.stringify([{ source, target: '~/../outside' }]))).toThrow('BUCKLE_MOUNTS')
+  expect(() => parseSandboxMounts(JSON.stringify([{ source, target: '~someone/config' }]))).toThrow('BUCKLE_MOUNTS')
+})
 it.each(['not json', '[{"source":"relative","target":"/srv/auth"}]', '[{"source":"/a","target":"/srv/auth","readOnly":false}]', '[{"source":"/a","target":"/srv/../etc"}]'])('refuses malformed or writable mount configuration: %s', raw => {
   expect(() => parseSandboxMounts(raw)).toThrow('BUCKLE_MOUNTS')
 })

@@ -1,3 +1,4 @@
+import { SANDBOX_HOME } from '../../domain/sandbox-mounts.js'
 import { dirname, relative } from 'node:path'
 import type { Sandbox, SandboxCommand } from '../../ports/sandbox.js'
 
@@ -13,7 +14,7 @@ function buildArgs(command: SandboxCommand, nodePrefix: string): string[] {
   if (command.commandIsPid1) args.push('--as-pid-1')
   if (!command.allowNetwork) args.push('--unshare-net')
   for (const path of new Set([...SYSTEM_PATHS, nodePrefix, ...command.readOnlyPaths])) args.push('--ro-bind-try', path, path)
-  args.push('--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--dir', '/tmp/home', '--setenv', 'HOME', '/tmp/home')
+  args.push('--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--dir', SANDBOX_HOME, '--setenv', 'HOME', SANDBOX_HOME)
   const root = command.workspaceRoot ?? command.mount?.root ?? command.writableRoots[0] ?? command.cwd
   args.push('--ro-bind', root, sandboxPath(root, command))
   for (const path of command.writableRoots) args.push('--bind', path, sandboxPath(path, command))
