@@ -1,14 +1,11 @@
 import { RuntimeError } from '../errors.js'
 import { runInScope, useScopeSafe, type OperationScope } from '../scope/als.js'
 import { assertNoActiveTransaction } from '../transaction/guard.js'
+import { InteractionErrorCode } from './codes.js'
+import { invalidWaitError, sameEnvelope } from './envelope.js'
 import type { CliConsumer, CliOutcome, CliRequest, PendingInteraction, RequestCli, UnavailableReason } from './types.js'
 
-export const InteractionErrorCode = Object.freeze({
-  consumerAttached: 'CliConsumerAlreadyAttachedError',
-  consumerFailed: 'CliConsumerFailedError',
-  noCompletion: 'CliNoCompletionError',
-  listenerFailed: 'CliListenerFailedError',
-} as const)
+export { InteractionErrorCode } from './codes.js'
 
 export interface CliConsumerSlot {
   attach(consumer: CliConsumer): () => void
@@ -38,7 +35,7 @@ export function createCliConsumerSlot(): CliConsumerSlot {
 
 export interface CliRequesterOptions {
   slot: CliConsumerSlot
-  // Persists the request in the durable owner queue when nobody can answer now; never approves.
+  // Persists the request in the durable owner queue when nobody can answer now (including on close); never approves.
   onUnavailable?: (request: CliRequest, reason: UnavailableReason) => Promise<PendingInteraction | undefined>
 }
 
@@ -53,13 +50,16 @@ interface Entry {
   scope: OperationScope | undefined
   enqueuedAt: number
   controller: AbortController
+  outcome: Promise<CliOutcome>
+  // Callers waiting on this prompt; the prompt is cancelled when the last one with a signal leaves.
+  participants: number
   settle(outcome: CliOutcome | Error | Promise<CliOutcome>): void
   settled: boolean
 }
 
 export function createCliRequester(options: CliRequesterOptions): CliRequester {
   const queue: Entry[] = []
-  const inFlight = new Map<string, Promise<CliOutcome>>()
+  const inFlight = new Map<string, Entry>()
   let active: Entry | undefined
   let closed = false
 
@@ -70,57 +70,80 @@ export function createCliRequester(options: CliRequesterOptions): CliRequester {
 
   function requestCli(request: CliRequest, requestOptions: { signal?: AbortSignal } = {}): Promise<CliOutcome> {
     assertNoActiveTransaction(`wait for CLI interaction ${request.id}`)
-    // A reconnecting caller re-sending the same request joins the original wait instead of prompting twice.
+    const invalid = invalidWaitError(request)
+    if (invalid) return Promise.reject(invalid)
     const existing = inFlight.get(request.id)
-    if (existing) return existing
-    const outcome = enqueue(request, requestOptions.signal)
-    inFlight.set(request.id, outcome)
-    const forget = () => { inFlight.delete(request.id) }
-    outcome.then(forget, forget)
-    return outcome
+    // A reconnecting caller re-sending the same request joins the original wait instead of prompting twice.
+    if (existing && !sameEnvelope(existing.request, request)) {
+      return Promise.reject(new RuntimeError(InteractionErrorCode.requestConflict, `CLI request ${request.id} is already waiting with a different envelope`))
+    }
+    const { signal } = requestOptions
+    if (signal?.aborted) return Promise.resolve(cancelledOutcome(request, signal.reason))
+    return join(existing ?? enqueue(request), signal)
   }
 
-  function enqueue(request: CliRequest, signal: AbortSignal | undefined): Promise<CliOutcome> {
+  function join(entry: Entry, signal: AbortSignal | undefined): Promise<CliOutcome> {
+    entry.participants += 1
+    if (!signal) return entry.outcome
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        resolve(cancelledOutcome(entry.request, signal.reason))
+        leave(entry, signal.reason)
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      entry.outcome.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+    })
+  }
+
+  function leave(entry: Entry, reason: unknown): void {
+    entry.participants -= 1
+    if (entry.participants === 0) entry.settle(cancelledOutcome(entry.request, reason))
+  }
+
+  function enqueue(request: CliRequest): Entry {
     const { promise, resolve, reject } = Promise.withResolvers<CliOutcome>()
     const controller = new AbortController()
-    const cleanups: (() => void)[] = []
+    let clearTimer = () => {}
     const entry: Entry = {
       request,
       scope: useScopeSafe(),
       enqueuedAt: Date.now(),
       controller,
+      outcome: promise,
+      participants: 0,
       settled: false,
       settle(outcome) {
         if (entry.settled) return
         entry.settled = true
-        cleanups.forEach(cleanup => cleanup())
+        clearTimer()
         controller.abort()
         removeFromQueue(entry)
+        // Free the queue now: a consumer that ignores abort must not stall the requests behind it.
+        if (active === entry) {
+          active = undefined
+          queueMicrotask(pump)
+        }
         if (outcome instanceof Error) reject(outcome)
         else Promise.resolve(outcome).then(resolve, reject)
       },
     }
+    inFlight.set(request.id, entry)
+    const forget = () => { if (inFlight.get(request.id) === entry) inFlight.delete(request.id) }
+    promise.then(forget, forget)
     if (closed) settleUnavailable(entry, 'closed')
     else if (!options.slot.current()) settleUnavailable(entry, 'no_consumer')
-    else if (signal?.aborted) entry.settle(cancelledOutcome(request, signal.reason))
     else {
-      watchEntry(entry, signal, cleanups)
+      clearTimer = startTimeout(entry)
       queue.push(entry)
       pump()
     }
-    return promise
+    return entry
   }
 
-  function watchEntry(entry: Entry, signal: AbortSignal | undefined, cleanups: (() => void)[]): void {
-    if (signal) {
-      const onAbort = () => entry.settle(cancelledOutcome(entry.request, signal.reason))
-      signal.addEventListener('abort', onAbort, { once: true })
-      cleanups.push(() => signal.removeEventListener('abort', onAbort))
-    }
-    if (entry.request.wait.mode === 'finite') {
-      const timer = setTimeout(() => entry.settle({ status: 'timed_out', requestId: entry.request.id, waitedMs: Date.now() - entry.enqueuedAt }), entry.request.wait.timeoutMs)
-      cleanups.push(() => clearTimeout(timer))
-    }
+  function startTimeout(entry: Entry): () => void {
+    if (entry.request.wait.mode !== 'finite') return () => {}
+    const timer = setTimeout(() => entry.settle({ status: 'timed_out', requestId: entry.request.id, waitedMs: Date.now() - entry.enqueuedAt }), entry.request.wait.timeoutMs)
+    return () => clearTimeout(timer)
   }
 
   function pump(): void {
@@ -134,10 +157,7 @@ export function createCliRequester(options: CliRequesterOptions): CliRequester {
     running.then(
       result => entry.settle(result.status === 'answered' ? { status: 'answered', requestId: entry.request.id, answer: result.answer } : { status: 'denied', requestId: entry.request.id, reason: result.reason }),
       error => entry.settle(entry.controller.signal.aborted ? cancelledOutcome(entry.request, 'prompt aborted') : new RuntimeError(InteractionErrorCode.consumerFailed, `CLI consumer failed for request ${entry.request.id}`, { cause: error })),
-    ).finally(() => {
-      if (active === entry) active = undefined
-      pump()
-    })
+    )
   }
 
   function removeFromQueue(entry: Entry): void {
@@ -153,9 +173,14 @@ export function createCliRequester(options: CliRequesterOptions): CliRequester {
   return {
     requestCli,
     pending: () => queue.length + (active ? 1 : 0),
+    // With a durable queue, waiting requests are persisted rather than lost; without one they are cancelled.
     close(reason = 'runtime shutting down') {
       closed = true
-      for (const entry of [active, ...queue.splice(0)]) entry?.settle(cancelledOutcome(entry.request, reason))
+      for (const entry of [active, ...queue.splice(0)]) {
+        if (!entry) continue
+        if (options.onUnavailable) settleUnavailable(entry, 'closed')
+        else entry.settle(cancelledOutcome(entry.request, reason))
+      }
     },
   }
 }

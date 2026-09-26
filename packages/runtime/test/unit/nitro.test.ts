@@ -150,6 +150,19 @@ describe('createRequestCli over Nitro hooks', () => {
     expect((error as Error & { cause: Error }).cause.message).toBe('cli crashed')
   })
 
+  it('M1 passes the listener a signal that aborts when the caller cancels', async () => {
+    const { nitroApp } = createTestNitroApp({ plugins: [], routes: () => {} })
+    let listenerSignal: AbortSignal | undefined
+    registerCliListener(nitroApp, (_, __, options) => { listenerSignal = options?.signal; return new Promise(() => {}) })
+    const controller = new AbortController()
+    const waiting = createRequestCli(nitroApp)({ id: 'r1', kind: 'approval', correlationId: 'c1', action: { summary: 'x' }, wait: { mode: 'indefinite' } }, { signal: controller.signal })
+    await delay(1)
+    expect(listenerSignal?.aborted).toBe(false)
+    controller.abort('client went away')
+    await expect(waiting).resolves.toMatchObject({ status: 'cancelled' })
+    expect(listenerSignal?.aborted).toBe(true)
+  })
+
   it('treats an app without hooks as having no listener', async () => {
     const bare: NitroApp = { fetch: () => new Response() }
     await expect(createRequestCli(bare)({ id: 'r1', kind: 'approval', correlationId: 'c1', action: { summary: 'x' }, wait: { mode: 'indefinite' } })).resolves.toMatchObject({ status: 'unavailable' })

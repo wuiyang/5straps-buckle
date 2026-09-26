@@ -27,6 +27,6 @@ export function registerCliListener(nitroApp: NitroApp, listener: CliCallListene
 export function createRequestCli(nitroApp: NitroApp): RequestCli {
   return createHookRequestCli({
     hasListener: () => nitroApp.hooks !== undefined && (nitroApp as NitroApp & ListenerSlot)[CLI_LISTENER_SLOT] !== undefined,
-    dispatch: (request, respond) => Promise.resolve(nitroApp.hooks?.callHook('cli:call', request, respond)),
+    dispatch: (request, respond, options) => Promise.resolve(nitroApp.hooks?.callHook('cli:call', request, respond, options)),
   })
 }

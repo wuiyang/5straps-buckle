@@ -204,3 +204,114 @@ describe('CLI requester queue', () => {
     }
   })
 })
+
+describe('review fixes: request identity, cancellation and queue progress', () => {
+  function envelope(id: string, actor: string, target: string): CliRequest {
+    return { ...request(id, { mode: 'indefinite' }), correlationId: 'shared', actor, target }
+  }
+
+  it('H2 refuses to join a request with the same id but a different envelope', async () => {
+    const slot = createCliConsumerSlot()
+    const answer = Promise.withResolvers<{ status: 'answered'; answer: { choice: string } }>()
+    const prompt = vi.fn(() => answer.promise)
+    slot.attach({ prompt })
+    const { requestCli } = createCliRequester({ slot })
+    const alice = requestCli(envelope('confirm-delete', 'alice', 'a.txt'))
+    const mallory = await requestCli(envelope('confirm-delete', 'mallory', 'b.txt')).catch((error: unknown) => error)
+    expect(isRuntimeError(mallory, InteractionErrorCode.requestConflict)).toBe(true)
+    answer.resolve({ status: 'answered', answer: { choice: 'approve' } })
+    await expect(alice).resolves.toMatchObject({ status: 'answered' })
+    expect(prompt).toHaveBeenCalledTimes(1)
+  })
+
+  it('H2 honours each joiner signal without cancelling the shared prompt', async () => {
+    const slot = createCliConsumerSlot()
+    const answer = Promise.withResolvers<{ status: 'answered'; answer: { choice: string } }>()
+    let consumerSignal: AbortSignal | undefined
+    slot.attach({ prompt: (_, { signal }) => { consumerSignal = signal; return answer.promise } })
+    const { requestCli } = createCliRequester({ slot })
+    const originalController = new AbortController()
+    const joinerController = new AbortController()
+    const original = requestCli(envelope('r1', 'alice', 'a.txt'), { signal: originalController.signal })
+    const joiner = requestCli(envelope('r1', 'alice', 'a.txt'), { signal: joinerController.signal })
+    const patient = requestCli(envelope('r1', 'alice', 'a.txt'))
+    originalController.abort('original left')
+    await expect(original).resolves.toEqual({ status: 'cancelled', requestId: 'r1', reason: 'original left' })
+    joinerController.abort('joiner left')
+    await expect(joiner).resolves.toEqual({ status: 'cancelled', requestId: 'r1', reason: 'joiner left' })
+    expect(consumerSignal?.aborted).toBe(false)
+    answer.resolve({ status: 'answered', answer: { choice: 'approve' } })
+    await expect(patient).resolves.toMatchObject({ status: 'answered', answer: { choice: 'approve' } })
+  })
+
+  it('H2 cancels the shared prompt once every joined caller has left', async () => {
+    const slot = createCliConsumerSlot()
+    let consumerSignal: AbortSignal | undefined
+    slot.attach({ prompt: (_, { signal }) => { consumerSignal = signal; return new Promise(() => {}) } })
+    const { requestCli, pending } = createCliRequester({ slot })
+    const first = new AbortController()
+    const second = new AbortController()
+    const waits = [requestCli(envelope('r1', 'alice', 'a.txt'), { signal: first.signal }), requestCli(envelope('r1', 'alice', 'a.txt'), { signal: second.signal })]
+    first.abort('gone')
+    second.abort('gone')
+    await Promise.all(waits)
+    expect(consumerSignal?.aborted).toBe(true)
+    expect(pending()).toBe(0)
+  })
+
+  it('M1 gives the hook listener a signal that aborts when the caller settles', async () => {
+    let listenerSignal: AbortSignal | undefined
+    const requestCli = createHookRequestCli({ hasListener: () => true, dispatch: (_, __, options) => { listenerSignal = options?.signal; return new Promise(() => {}) } })
+    const controller = new AbortController()
+    const waiting = requestCli(request('a', { mode: 'indefinite' }), { signal: controller.signal })
+    await delay(1)
+    expect(listenerSignal?.aborted).toBe(false)
+    controller.abort('caller left')
+    await waiting
+    expect(listenerSignal?.aborted).toBe(true)
+  })
+
+  it('M2 moves on to the next request when the consumer ignores abort', async () => {
+    const slot = createCliConsumerSlot()
+    const prompted: string[] = []
+    slot.attach({ prompt: (item) => { prompted.push(item.id); return new Promise(() => {}) } })
+    const requester = createCliRequester({ slot })
+    const first = requester.requestCli(request('a', { mode: 'finite', timeoutMs: 20 }))
+    void requester.requestCli(request('b', { mode: 'indefinite' }))
+    await expect(first).resolves.toMatchObject({ status: 'timed_out' })
+    await delay(1)
+    expect(prompted).toEqual(['a', 'b'])
+    expect(requester.pending()).toBe(1)
+    requester.close()
+  })
+
+  it('L2 rejects waits that are not finite, positive and within the timer range', async () => {
+    const slot = createCliConsumerSlot()
+    slot.attach(answeringConsumer())
+    const { requestCli } = createCliRequester({ slot })
+    const hookRequest = createHookRequestCli({ hasListener: () => true, dispatch: async () => {} })
+    for (const timeoutMs of [30 * 24 * 60 * 60 * 1_000, Number.NaN, -1, 0, Number.POSITIVE_INFINITY]) {
+      for (const ask of [requestCli, hookRequest]) {
+        const error = await ask(request(`t-${timeoutMs}`, { mode: 'finite', timeoutMs })).catch((failure: unknown) => failure)
+        expect(isRuntimeError(error, InteractionErrorCode.invalidWait), `timeoutMs ${timeoutMs}`).toBe(true)
+      }
+    }
+    await expect(requestCli(request('ok', { mode: 'finite', timeoutMs: 2 ** 31 - 1 }))).resolves.toMatchObject({ status: 'answered' })
+  })
+
+  it('L11 routes pending requests through onUnavailable on close', async () => {
+    const slot = createCliConsumerSlot()
+    slot.attach({ prompt: () => new Promise(() => {}) })
+    const persisted: string[] = []
+    const requester = createCliRequester({ slot, onUnavailable: async (item, reason) => {
+      persisted.push(`${item.id}:${reason}`)
+      return { id: `pending-${item.id}`, instructions: 'approve later' }
+    } })
+    const active = requester.requestCli(request('a', { mode: 'indefinite' }))
+    const queued = requester.requestCli(request('b', { mode: 'indefinite' }))
+    requester.close()
+    await expect(active).resolves.toMatchObject({ status: 'unavailable', reason: 'closed', pending: { id: 'pending-a' } })
+    await expect(queued).resolves.toMatchObject({ status: 'unavailable', reason: 'closed', pending: { id: 'pending-b' } })
+    expect(persisted).toEqual(['a:closed', 'b:closed'])
+  })
+})

@@ -1,10 +1,14 @@
 import { RuntimeError } from '../errors.js'
 import { assertNoActiveTransaction } from '../transaction/guard.js'
-import { cancelledOutcome, InteractionErrorCode } from './requester.js'
+import { InteractionErrorCode } from './codes.js'
+import { invalidWaitError } from './envelope.js'
+import { cancelledOutcome } from './requester.js'
 import type { CliOutcome, CliRequest, RequestCli } from './types.js'
 
 export type CliRespond = (outcome: CliOutcome) => void
-export type CliHookDispatch = (request: CliRequest, respond: CliRespond) => Promise<unknown>
+// The signal aborts once the request settles (answer, timeout, cancel or failure) so the listener can close its prompt.
+export interface CliCallOptions { signal: AbortSignal }
+export type CliHookDispatch = (request: CliRequest, respond: CliRespond, options?: CliCallOptions) => Promise<unknown>
 
 export interface HookRequestCliOptions {
   dispatch: CliHookDispatch
@@ -16,6 +20,8 @@ export interface HookRequestCliOptions {
 export function createHookRequestCli(options: HookRequestCliOptions): RequestCli {
   return (request, requestOptions = {}) => {
     assertNoActiveTransaction(`wait for CLI interaction ${request.id}`)
+    const invalid = invalidWaitError(request)
+    if (invalid) return Promise.reject(invalid)
     const { signal } = requestOptions
     if (!options.hasListener()) return Promise.resolve({ status: 'unavailable', requestId: request.id, reason: 'no_listener' })
     if (signal?.aborted) return Promise.resolve(cancelledOutcome(request, signal.reason))
@@ -27,6 +33,7 @@ function awaitCompletion(input: { request: CliRequest; signal: AbortSignal | und
   const { request, signal } = input
   const { promise, resolve, reject } = Promise.withResolvers<CliOutcome>()
   const startedAt = Date.now()
+  const listenerController = new AbortController()
   let settled = false
   let timer: NodeJS.Timeout | undefined
   const onAbort = () => settle(cancelledOutcome(request, signal?.reason))
@@ -36,6 +43,7 @@ function awaitCompletion(input: { request: CliRequest; signal: AbortSignal | und
     settled = true
     clearTimeout(timer)
     signal?.removeEventListener('abort', onAbort)
+    listenerController.abort()
     if (outcome instanceof Error) reject(outcome)
     else resolve(outcome)
   }
@@ -43,7 +51,7 @@ function awaitCompletion(input: { request: CliRequest; signal: AbortSignal | und
   signal?.addEventListener('abort', onAbort, { once: true })
   if (request.wait.mode === 'finite') timer = setTimeout(() => settle({ status: 'timed_out', requestId: request.id, waitedMs: Date.now() - startedAt }), request.wait.timeoutMs)
   const respond: CliRespond = outcome => settle(outcome.requestId === request.id ? outcome : new RuntimeError(InteractionErrorCode.noCompletion, `CLI listener answered ${outcome.requestId} for request ${request.id}`))
-  Promise.resolve().then(() => input.dispatch(request, respond)).then(
+  Promise.resolve().then(() => input.dispatch(request, respond, { signal: listenerController.signal })).then(
     () => settle(new RuntimeError(InteractionErrorCode.noCompletion, `CLI listener finished without responding to request ${request.id}`)),
     error => settle(new RuntimeError(InteractionErrorCode.listenerFailed, `CLI listener failed for request ${request.id}`, { cause: error })),
   )
