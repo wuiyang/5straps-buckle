@@ -16,6 +16,7 @@ export const NitroErrorCode = Object.freeze({
   hostBound: 'RuntimeHostAlreadyBoundError',
   cliListenerRegistered: 'CliListenerAlreadyRegisteredError',
   hooksUnavailable: 'NitroHooksUnavailableError',
+  identityOverwrite: 'GuardIdentityOverwriteError',
 } as const)
 
 // Stored on the app object under a registered symbol so a bundled copy of this package in

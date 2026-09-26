@@ -9,6 +9,8 @@ export interface OperationContext {
   readonly sessionId?: string
   readonly projectId?: string
   readonly workspaceId?: string
+  // Client-supplied request id (x-request-id), for log correlation with the caller only; never the correlation id.
+  readonly clientRequestId?: string
   readonly attributes?: Readonly<Record<string, ScopeAttribute>>
 }
 export type OperationContextInput = Omit<OperationContext, 'correlationId'> & { correlationId?: string }

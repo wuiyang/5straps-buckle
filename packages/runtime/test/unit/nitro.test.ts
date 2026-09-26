@@ -4,7 +4,7 @@ import { HookableCore } from 'hookable'
 import type { NitroApp, NitroAppPlugin, NitroRuntimeHooks } from 'nitro/types'
 import { describe, expect, it } from 'vitest'
 import { createLogger, createRuntimeOwner, defineScoped, useScope, type LogEvent, type RuntimeOwner } from '../../src/index.js'
-import { bindHost, createRequestCli, defineContextPlugin, defineGuardedHandler, NitroErrorCode, registerCliListener, requireReady, useHost, type Guard } from '../../src/nitro/index.js'
+import { bindHost, createRequestCli, defineContextPlugin, defineGuardedHandler, NitroErrorCode, registerCliListener, requireReady, runGuards, useHost, type Guard } from '../../src/nitro/index.js'
 
 // Mirrors the createNitroApp template in nitro 3.0.260903-beta (_build/common.mjs): request hook
 // failures are captured and the request continues.
@@ -61,7 +61,9 @@ describe('Nitro host bridge and context plugin', () => {
     bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
     const response = await nitroApp.fetch(new Request('http://local/v1/notes', { headers: { authorization: 'Bearer agent', 'x-request-id': 'req-1' } }))
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ actor: 'agent', correlationId: 'req-1', same: true })
+    const body = await response.json() as { actor: string; correlationId: string; same: boolean }
+    expect(body).toEqual({ actor: 'agent', correlationId: expect.any(String), same: true })
+    expect(body.correlationId).not.toBe('req-1')
     await logger.flush()
     expect(events.at(-1)).toMatchObject({ message: 'request completed', fields: { outcome: 'ok', path: '/v1/notes' } })
   })
@@ -107,6 +109,53 @@ describe('Nitro host bridge and context plugin', () => {
     expect(requestScope?.state).toBe('disposing')
   })
 
+  it('L8 keeps a client x-request-id as a separate field, never as the correlation id', async () => {
+    const seen: { correlationId: string; clientRequestId?: string }[] = []
+    const route = defineGuardedHandler({ guards: [], handler: (_, scope) => { seen.push(scope.context); return { ok: true } } })
+    const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: app => app.get('/id', route) })
+    bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
+    await Promise.all([1, 2].map(() => nitroApp.fetch(new Request('http://local/id', { headers: { 'x-request-id': 'same-id' } }))))
+    await nitroApp.fetch(new Request('http://local/id', { headers: { 'x-request-id': 'bad id with spaces' } }))
+    expect(seen.map(context => context.clientRequestId)).toEqual(['same-id', 'same-id', undefined])
+    expect(new Set(seen.map(context => context.correlationId)).size).toBe(3)
+  })
+
+  it('L9 refuses a later guard that overwrites the actor an earlier guard set', async () => {
+    const counter = { calls: 0 }
+    const impostor: Guard = () => ({ actor: 'admin' })
+    const route = defineGuardedHandler({ guards: [agentToken, impostor], handler: () => { counter.calls += 1; return { ok: true } } })
+    const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: app => app.get('/actor', route) })
+    bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
+    const response = await nitroApp.fetch(new Request('http://local/actor', { headers: { authorization: 'Bearer agent' } }))
+    expect(response.status).toBe(500)
+    expect(counter.calls).toBe(0)
+    const error = await runGuardsForTest([agentToken, impostor]).catch((failure: unknown) => failure)
+    expect(error).toMatchObject({ code: NitroErrorCode.identityOverwrite })
+  })
+
+  it('L10 keeps the scope open for a returned ReadableStream and disposes it when an unread body goes idle', async () => {
+    const scopes: { state: string }[] = []
+    const chunks = () => new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('a'))
+      controller.enqueue(new TextEncoder().encode('b'))
+      controller.close()
+    } })
+    const plain = defineGuardedHandler({ guards: [], handler: (_, scope) => { scopes.push(scope); return chunks() } })
+    const idle = defineGuardedHandler({ guards: [], bodyIdleTimeoutMs: 30, handler: (_, scope) => { scopes.push(scope); return new Response(chunks()) } })
+    const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: (app) => { app.get('/plain', plain); app.get('/idle', idle) } })
+    bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
+    const streamed = await nitroApp.fetch(new Request('http://local/plain'))
+    expect(scopes[0]!.state).toBe('active')
+    expect(await streamed.text()).toBe('ab')
+    await delay(1)
+    expect(scopes[0]!.state).toBe('disposed')
+
+    await nitroApp.fetch(new Request('http://local/idle'))
+    expect(scopes[1]!.state).toBe('active')
+    await delay(100)
+    expect(scopes[1]!.state).toBe('disposed')
+  })
+
   it('exposes requireReady as a plain guard for middleware use', async () => {
     const event = { context: {} } as H3Event
     expect(() => requireReady(event)).toThrow(expect.objectContaining({ status: 503 }))
@@ -143,6 +192,11 @@ describe('Nitro host bridge and context plugin', () => {
     expect(scopes[1]!.state()).toBe('disposed')
   })
 })
+
+async function runGuardsForTest(guards: Guard[]): Promise<unknown> {
+  const event = { req: new Request('http://local/', { headers: { authorization: 'Bearer agent' } }), context: {} } as unknown as H3Event
+  return runGuards(event, guards)
+}
 
 describe('createRequestCli over Nitro hooks', () => {
   it('F07 answers through the registered cli:call listener', async () => {
