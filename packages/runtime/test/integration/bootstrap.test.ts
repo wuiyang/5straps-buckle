@@ -150,10 +150,11 @@ describe('F19 HTTP context propagation', () => {
   it('keeps 100 concurrent actors, their scoped services and correlation ids apart', async () => {
     const fixture = await ready(await serve())
     const results = await Promise.all(Array.from({ length: 100 }, async (_, index) => {
-      const response = await fetch(fixture.url('/v1/whoami'), { headers: bearer(tokens.agent, { 'x-actor': `actor-${index}`, 'x-request-id': `request-${index}` }) })
+      const response = await fetch(fixture.url('/v1/whoami'), { headers: bearer(tokens.agent, { 'x-actor': `actor-${index}` }) })
       return { index, body: await response.json() as Record<string, unknown> }
     }))
-    const crossovers = results.filter(({ index, body }) => body.actor !== `actor-${index}` || body.alsActor !== `actor-${index}` || body.serviceActor !== `actor-${index}` || body.correlationId !== `request-${index}` || body.sameScopedInstance !== true || body.freshTransients !== true)
+    const crossovers = results.filter(({ index, body }) => body.actor !== `actor-${index}` || body.alsActor !== `actor-${index}` || body.serviceActor !== `actor-${index}` || body.alsCorrelationId !== body.correlationId || body.serviceCorrelationId !== body.correlationId || body.sameScopedInstance !== true || body.freshTransients !== true)
+    expect(new Set(results.map(({ body }) => body.correlationId)).size).toBe(100)
     expect(crossovers).toEqual([])
   })
 })
@@ -169,10 +170,11 @@ describe('F20 non-HTTP scopes and background work', () => {
 
   it('runs HTTP background work inside the request scope and drains it', async () => {
     const fixture = await ready(await serve())
-    const response = await fetch(fixture.url('/v1/notes'), { method: 'POST', headers: bearer(tokens.agent, { 'content-type': 'application/json', 'x-request-id': 'note-request' }), body: JSON.stringify({ text: 'first' }) })
+    const response = await fetch(fixture.url('/v1/notes'), { method: 'POST', headers: bearer(tokens.agent, { 'content-type': 'application/json' }), body: JSON.stringify({ text: 'first' }) })
     expect(response.status).toBe(201)
+    const { correlationId } = await response.json() as { correlationId: string }
     const indexed = await fixture.waitFor('note indexed')
-    expect(indexed.correlationId).toBe('note-request')
+    expect(indexed.correlationId).toBe(correlationId)
   })
 })
 

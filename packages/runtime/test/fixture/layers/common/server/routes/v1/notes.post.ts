@@ -15,7 +15,7 @@ export default defineGuardedHandler({
     const note = await (await services.getNotes()).add({ text, actor: scope.context.actor ?? 'unknown' })
     // Background work belongs to the request scope, which drains it before closing (F20).
     registerBackgroundWork(delay(25).then(() => event.context.logger?.info('note indexed', { noteId: note.id })))
-    return new Response(JSON.stringify({ note }), { status: 201, headers: { 'content-type': 'application/json' } })
+    return new Response(JSON.stringify({ note, correlationId: scope.context.correlationId }), { status: 201, headers: { 'content-type': 'application/json' } })
   },
 })
 

@@ -1,5 +1,6 @@
 import type { OperationScope } from '@5straps/runtime'
 import type { AccessService } from './access.js'
+import type { ApprovalQueue } from './approvals.js'
 import type { Note } from './notes.js'
 
 export interface NoteService {
@@ -22,6 +23,7 @@ export interface TransientProbe {
 export interface FixtureServices {
   getAccess(): Promise<AccessService>
   getNotes(): Promise<NoteService>
+  getApprovals(): Promise<ApprovalQueue>
   getOperation(scope?: OperationScope): Promise<OperationService>
   createProbe(scope?: OperationScope): Promise<TransientProbe>
 }

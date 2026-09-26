@@ -1,13 +1,19 @@
-import { createCliConsumerSlot, createCliRequester, createLogger, createStderrJsonSink, useScope, useScopeSafe, withOperationScope, registerBackgroundWork, type Logger, type LoggerRoot } from '@5straps/runtime'
 import { setTimeout as delay } from 'node:timers/promises'
+import { serveStdio } from '@modelcontextprotocol/server/stdio'
+import { createLogger, createStderrJsonSink, registerBackgroundWork, useScope, useScopeSafe, withOperationScope, type Logger, type LoggerRoot } from '@5straps/runtime'
+import { setupCli } from './cli/setup.js'
 import { loadConfig, type FixtureConfig } from './common/config.js'
 import { initializeCommon, type FixtureRuntime } from './common/runtime.js'
+import { createFixtureMcpServer } from './mcp/server.js'
+import type { CliListenerMode } from './server/cli-listener.js'
 import { setupServer } from './server/setup-server.js'
 
-type Mode = 'serve' | 'cli'
+type Mode = 'serve' | 'mcp' | 'cli'
 const HEARTBEAT_MS = 1_000
+const LISTENER_MODES: readonly CliListenerMode[] = ['terminal', 'off', 'double', 'silent', 'reject']
 
-// Entry points: `serve` (HTTP), `cli <command>`. Machine output goes to stdout, diagnostics to stderr.
+// Entry points: `serve` (HTTP), `mcp` (stdio), `cli <command>`. stdout carries machine output or
+// MCP frames only; every diagnostic goes to stderr.
 async function main(argv: string[]): Promise<void> {
   const logging = createLogger({ component: 'fixture', sinks: [createStderrJsonSink()], level: 'debug' })
   trapProcessFailures(logging.logger)
@@ -15,6 +21,7 @@ async function main(argv: string[]): Promise<void> {
     const mode = parseMode(argv[0])
     const config = loadConfig(process.env)
     if (mode === 'serve') await serve({ config, logging })
+    else if (mode === 'mcp') await serveMcp({ config, logging })
     else await runCli({ config, logging, command: argv.slice(1) })
   } catch (error) {
     logging.logger.fatal('fixture failed', { error })
@@ -23,12 +30,12 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
+// setupCli, then setupServer (host + cli:call listener), then listen: nothing is accepted before
+// the interaction handler exists (coordination.md, Ownership).
 async function serve(input: { config: FixtureConfig; logging: LoggerRoot }): Promise<void> {
   const runtime = initializeCommon({ config: input.config, logger: input.logging.logger, role: 'server' })
-  const slot = createCliConsumerSlot()
-  const requester = createCliRequester({ slot })
-  runtime.onClose('waiters', 'cli requester', () => requester.close())
-  const server = await setupServer({ runtime, requestCli: requester.requestCli, entryPath: requiredEnv('FIXTURE_ENTRY') })
+  const cli = await setupCli({ runtime, terminalPath: process.env.FIXTURE_TERMINAL_SOCKET, secondTerminalPath: process.env.FIXTURE_SECOND_TERMINAL_SOCKET })
+  const server = await setupServer({ runtime, requestCli: cli.requester.requestCli, entryPath: requiredEnv('FIXTURE_ENTRY'), listenerMode: listenerMode() })
   runtime.onClose('accept', 'http server', () => server.close())
   const heartbeat = setInterval(() => runtime.logger.debug('heartbeat'), HEARTBEAT_MS)
   runtime.onClose('timers', 'heartbeat', () => clearInterval(heartbeat))
@@ -42,6 +49,19 @@ async function serve(input: { config: FixtureConfig; logging: LoggerRoot }): Pro
     process.exitCode = 1
     await shutdown()
   })
+}
+
+// MCP stdio: main injects requestCli directly; stdin/stdout belong to the protocol (F12, F18).
+async function serveMcp(input: { config: FixtureConfig; logging: LoggerRoot }): Promise<void> {
+  const runtime = initializeCommon({ config: input.config, logger: input.logging.logger, role: 'mcp' })
+  const cli = await setupCli({ runtime, terminalPath: process.env.FIXTURE_TERMINAL_SOCKET })
+  const shutdown = onceShutdown({ runtime, logging: input.logging })
+  await runtime.start()
+  const openScope = () => runtime.owner.registry.createScope({ context: { actor: 'mcp-stdio' } })
+  const stdio = serveStdio(() => createFixtureMcpServer({ services: runtime.services, requestCli: cli.requester.requestCli, version: '0.0.0', openScope }))
+  runtime.onClose('accept', 'mcp stdio', () => stdio.close())
+  process.stdin.once('end', () => { void shutdown() })
+  runtime.logger.info('mcp stdio ready')
 }
 
 async function runCli(input: { config: FixtureConfig; logging: LoggerRoot; command: string[] }): Promise<void> {
@@ -61,9 +81,10 @@ async function runCliCommand(input: { runtime: FixtureRuntime; command: string[]
   if (group === 'scope-check') return checkScopes(input.runtime)
   const scope = input.runtime.owner.registry.createScope({ context: { actor: 'owner-cli' } })
   return withOperationScope(scope, async () => {
-    const notes = await input.runtime.services.getNotes()
-    if (group === 'notes' && action === 'add' && text) return { note: await notes.add({ text, actor: useScope().context.actor ?? 'owner-cli' }) }
-    if (group === 'notes' && action === 'list') return { notes: await notes.list() }
+    const { services } = input.runtime
+    if (group === 'notes' && action === 'add' && text) return { note: await (await services.getNotes()).add({ text, actor: useScope().context.actor ?? 'owner-cli' }) }
+    if (group === 'notes' && action === 'list') return { notes: await (await services.getNotes()).list() }
+    if (group === 'approvals' && action === 'list') return { approvals: await (await services.getApprovals()).list() }
     throw new TypeError(`Unknown command: ${input.command.join(' ')}`)
   })
 }
@@ -89,6 +110,8 @@ function onceShutdown(input: { runtime: FixtureRuntime; logging: LoggerRoot }): 
         input.runtime.logger.error('close failed', { error })
         process.exitCode = 1
       })
+      // Leak evidence: after close only stdio handles may remain (no timers, sockets or databases).
+      input.runtime.logger.info('active resources after close', { resources: process.getActiveResourcesInfo() })
       input.runtime.logger.info('close step', { stage: 'sinks', name: 'logger' })
       await input.logging.close()
     })()
@@ -111,8 +134,14 @@ function trapProcessFailures(logger: Logger): void {
 }
 
 function parseMode(value: string | undefined): Mode {
-  if (value === 'serve' || value === 'cli') return value
-  throw new TypeError(`Usage: main.ts serve | cli <command>; got ${value ?? 'nothing'}`)
+  if (value === 'serve' || value === 'mcp' || value === 'cli') return value
+  throw new TypeError(`Usage: main.ts serve | mcp | cli <command>; got ${value ?? 'nothing'}`)
+}
+
+function listenerMode(): CliListenerMode {
+  const mode = (process.env.FIXTURE_CLI_LISTENER ?? 'terminal') as CliListenerMode
+  if (!LISTENER_MODES.includes(mode)) throw new TypeError(`FIXTURE_CLI_LISTENER must be one of ${LISTENER_MODES.join(', ')}`)
+  return mode
 }
 
 function requiredEnv(name: string): string {

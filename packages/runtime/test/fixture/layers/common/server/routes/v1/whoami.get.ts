@@ -18,6 +18,8 @@ export default defineGuardedHandler({
       sameScopedInstance: operation === await services.getOperation(),
       freshTransients: first.id !== second.id,
       correlationId: scope.context.correlationId,
+      alsCorrelationId: useScope().context.correlationId,
+      serviceCorrelationId: operation.correlationId,
       serial: operation.record('whoami'),
     }
   },
