@@ -49,7 +49,7 @@
     "prepack": "pnpm run build",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json && tsc -p test/types/tsconfig.json"
   },
   "dependencies": {
     "db0": "0.4.1"
@@ -69,6 +69,7 @@
   "devDependencies": {
     "@types/node": "24.10.1",
     "h3": "2.0.1-rc.32",
+    "hookable": "6.1.1",
     "nitro": "3.0.260903-beta",
     "tsx": "4.23.12",
     "typescript": "5.9.3",
