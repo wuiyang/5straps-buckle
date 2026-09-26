@@ -1,8 +1,9 @@
-import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs'
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, statSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { createDatabase, type Database } from 'db0'
 import nodeSqliteConnector from 'db0/connectors/node-sqlite'
+import type { Logger } from '../logger/types.js'
 
 // Any DB0 database on the node-sqlite connector: one from openDatabase or Nitro's useDatabase().
 export type SqliteDatabase = Database
@@ -11,20 +12,27 @@ export type PragmaValue = string | number | boolean
 export interface OpenDatabaseOptions {
   path: string
   pragmas?: Readonly<Record<string, PragmaValue>>
+  // Receives a warning when an existing parent directory is readable by other users.
+  logger?: Logger
 }
 
 export const DEFAULT_BUSY_TIMEOUT_MS = 5_000
-const DEFAULT_PRAGMAS = Object.freeze({ busy_timeout: DEFAULT_BUSY_TIMEOUT_MS, foreign_keys: true })
+const DEFAULT_PRAGMAS = Object.freeze({ busy_timeout: DEFAULT_BUSY_TIMEOUT_MS, foreign_keys: true, journal_mode: 'WAL' })
 const PRAGMA_NAME = /^[a-z_]+$/
 const PRAGMA_WORD = /^[A-Za-z_]+$/
 
 // DB0 node-sqlite with an explicit absolute path: no `.data/` fallback, directory 0700, file 0600.
-export async function openDatabase(options: OpenDatabaseOptions): Promise<SqliteDatabase> {
+export function openDatabase(options: OpenDatabaseOptions): Promise<SqliteDatabase> {
+  return openSqlite(options, DEFAULT_PRAGMAS)
+}
+
+// Shared by openDatabase and the lock connections, which keep the file's own journal mode.
+export async function openSqlite(options: OpenDatabaseOptions, defaults: Readonly<Record<string, PragmaValue>>): Promise<SqliteDatabase> {
   const path = requireExplicitPath(options.path)
-  prepareDatabaseFile(path)
+  prepareDatabaseFile(path, options.logger)
   const db = createDatabase(nodeSqliteConnector({ path }))
   try {
-    applyPragmas(await rawConnection(db), { ...DEFAULT_PRAGMAS, ...options.pragmas })
+    applyPragmas(await rawConnection(db), { ...defaults, ...options.pragmas })
   } catch (error) {
     await db.dispose()
     throw error
@@ -50,12 +58,40 @@ function requireExplicitPath(path: string): string {
   return path
 }
 
-function prepareDatabaseFile(path: string): void {
-  const directory = dirname(path)
-  mkdirSync(directory, { recursive: true, mode: 0o700 })
-  chmodSync(directory, 0o700)
-  closeSync(openSync(path, 'a', 0o600))
+function prepareDatabaseFile(path: string, logger: Logger | undefined): void {
+  prepareDirectory(dirname(path), logger)
+  createFileIfAbsent(path)
   chmodSync(path, 0o600)
+}
+
+// Only directories this call created get 0700; an existing (possibly shared or mounted) one is left alone.
+function prepareDirectory(directory: string, logger: Logger | undefined): void {
+  const firstCreated = mkdirSync(directory, { recursive: true, mode: 0o700 })
+  if (firstCreated === undefined) return warnIfShared(directory, logger)
+  for (let current = directory; ; current = dirname(current)) {
+    chmodSync(current, 0o700)
+    if (current === firstCreated) return
+  }
+}
+
+function warnIfShared(directory: string, logger: Logger | undefined): void {
+  const mode = statSync(directory).mode & 0o777
+  if ((mode & 0o077) !== 0) logger?.warn('SQLite directory is accessible to other users; its mode was left unchanged', { directory, mode: mode.toString(8) })
+}
+
+// Never open an existing database through fs: POSIX close() drops every fcntl lock this process
+// holds on the inode, including SQLite's, so a second open would free another connection's lock.
+function createFileIfAbsent(path: string): void {
+  const existing = lstatSync(path, { throwIfNoEntry: false })
+  if (existing) {
+    if (!existing.isFile()) throw new TypeError(`SQLite path must be a regular file; got ${JSON.stringify(path)}`)
+    return
+  }
+  try {
+    closeSync(openSync(path, 'wx', 0o600))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
 }
 
 function applyPragmas(connection: DatabaseSync, pragmas: Readonly<Record<string, PragmaValue>>): void {

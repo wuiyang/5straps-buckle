@@ -1,13 +1,17 @@
-import { setTimeout as delay } from 'node:timers/promises'
 import { RuntimeError, RuntimeErrorCode } from '../errors.js'
 import type { RuntimeOwner } from '../lifecycle/owner.js'
-import { isSqliteBusy } from './busy.js'
+import type { Logger } from '../logger/types.js'
+import { runInTransactionMarker } from '../transaction/guard.js'
 import type { DatabaseSync } from 'node:sqlite'
-import { openDatabase, rawConnection, type SqliteDatabase } from './database.js'
+import { beginImmediateWithinDeadline } from './begin.js'
+import { isSqliteBusy } from './busy.js'
+import { openSqlite, rawConnection, type SqliteDatabase } from './database.js'
 
 // Same defaults as Buckle's history execution lock (harness-rpc journal.ts).
 export const DEFAULT_LOCK_DEADLINE_MS = 300_000
 export const DEFAULT_LOCK_POLL_MS = 25
+// No journal_mode: a lock connection keeps whatever mode the file already has.
+const LOCK_PRAGMAS = Object.freeze({ busy_timeout: 0, foreign_keys: true })
 
 export type LockWait = 'none' | { deadlineMs: number; pollMs?: number }
 
@@ -15,6 +19,7 @@ export interface FileLockOptions {
   path: string
   wait: LockWait
   signal?: AbortSignal
+  logger?: Logger
 }
 
 export interface FileLock {
@@ -26,10 +31,11 @@ export interface FileLock {
 // One independently owned DB0 connection per acquisition; the SQLite RESERVED lock is the file lock.
 // The OS drops it when the process dies, so a killed holder never leaves a stale lock.
 export async function acquireFileLock(options: FileLockOptions): Promise<FileLock> {
-  const db = await openDatabase({ path: options.path, pragmas: { busy_timeout: 0 } })
+  if (options.signal?.aborted) throw lockAborted(options.path, options.signal.reason)
+  const db = await openSqlite({ path: options.path, logger: options.logger }, LOCK_PRAGMAS)
   const connection = await rawConnection(db)
   try {
-    await beginWithinDeadline(connection, options)
+    await beginLock(connection, options)
   } catch (error) {
     await db.dispose()
     throw error
@@ -37,35 +43,40 @@ export async function acquireFileLock(options: FileLockOptions): Promise<FileLoc
   return heldLock({ db, connection, path: options.path })
 }
 
+// The operation runs under the transaction marker: a lock is an open BEGIN IMMEDIATE, so no human waits inside it.
 export async function withFileLock<T>(options: FileLockOptions, operation: () => Promise<T>): Promise<T> {
   const lock = await acquireFileLock(options)
   try {
-    return await operation()
+    return await runInTransactionMarker(`lock:${options.path}`, operation)
   } finally {
     await lock.release()
   }
 }
 
 // Held for the owner's lifetime and released in its `locks` close stage.
-export async function acquireOwnershipLock(options: { path: string; owner: RuntimeOwner }): Promise<FileLock> {
-  const lock = await acquireFileLock({ path: options.path, wait: 'none' })
-  options.owner.onClose('locks', `ownership lock ${options.path}`, () => lock.release())
+export async function acquireOwnershipLock(options: { path: string; owner: RuntimeOwner; logger?: Logger }): Promise<FileLock> {
+  const lock = await acquireFileLock({ path: options.path, wait: 'none', logger: options.logger })
+  try {
+    options.owner.onClose('locks', `ownership lock ${options.path}`, () => lock.release())
+  } catch (error) {
+    await lock.release()
+    throw error
+  }
   return lock
 }
 
-async function beginWithinDeadline(connection: DatabaseSync, options: FileLockOptions): Promise<void> {
-  const deadline = options.wait === 'none' ? 0 : Date.now() + options.wait.deadlineMs
-  const pollMs = options.wait === 'none' ? 0 : options.wait.pollMs ?? DEFAULT_LOCK_POLL_MS
-  while (true) {
-    try {
-      connection.exec('BEGIN IMMEDIATE')
-      return
-    } catch (error) {
-      if (!isSqliteBusy(error)) throw error
-      if (Date.now() >= deadline) throw new RuntimeError(RuntimeErrorCode.lockBusy, `Lock ${options.path} is held by another owner`, { cause: error })
-    }
-    await delay(pollMs, undefined, options.signal ? { signal: options.signal } : undefined)
+async function beginLock(connection: DatabaseSync, options: FileLockOptions): Promise<void> {
+  const wait = options.wait === 'none' ? { deadlineMs: 0, pollMs: 0 } : { deadlineMs: options.wait.deadlineMs, pollMs: options.wait.pollMs ?? DEFAULT_LOCK_POLL_MS }
+  try {
+    await beginImmediateWithinDeadline(connection, { ...wait, signal: options.signal, onAbort: reason => lockAborted(options.path, reason), onBegin: () => undefined })
+  } catch (error) {
+    if (isSqliteBusy(error)) throw new RuntimeError(RuntimeErrorCode.lockBusy, `Lock ${options.path} is held by another owner`, { cause: error })
+    throw error
   }
+}
+
+function lockAborted(path: string, reason: unknown): RuntimeError {
+  return new RuntimeError(RuntimeErrorCode.lockAborted, `Waiting for lock ${path} was cancelled`, { cause: reason })
 }
 
 function heldLock({ db, connection, path }: { db: SqliteDatabase; connection: DatabaseSync; path: string }): FileLock {

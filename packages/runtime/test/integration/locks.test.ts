@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { createRuntimeOwner, isRuntimeError, RuntimeErrorCode } from '../../src/index.js'
-import { acquireFileLock, acquireOwnershipLock, DEFAULT_LOCK_DEADLINE_MS, DEFAULT_LOCK_POLL_MS, openDatabase, withFileLock } from '../../src/sqlite/index.js'
+import { createCliConsumerSlot, createCliRequester, createRuntimeOwner, isRuntimeError, RuntimeErrorCode } from '../../src/index.js'
+import { acquireFileLock, acquireOwnershipLock, DEFAULT_LOCK_DEADLINE_MS, DEFAULT_LOCK_POLL_MS, openDatabase, rawConnection, withFileLock } from '../../src/sqlite/index.js'
 import { startWorker } from './support/workers.js'
 
 function lockPath(name = 'execution.lock.sqlite'): string {
@@ -98,5 +98,68 @@ describe('cross-process SQLite coordination', () => {
     await owner.close()
     const next = await acquireFileLock({ path, wait: 'none' })
     await next.release()
+  })
+})
+
+async function childSeesBusy(path: string): Promise<boolean> {
+  const probe = startWorker(['try-lock', path])
+  const message = await probe.next(item => 'busy' in item)
+  await probe.exited
+  return message.busy === true
+}
+
+describe('same-process opens keep SQLite locks (review H1, L5 to L7)', () => {
+  it('H1 a second acquire in the holder process leaves the OS lock in place and release() still works', async () => {
+    const path = lockPath()
+    const lock = await acquireFileLock({ path, wait: 'none' })
+    await expectLockBusy(acquireFileLock({ path, wait: 'none' }))
+    expect(await childSeesBusy(path)).toBe(true)
+    await lock.release()
+    expect(lock.held).toBe(false)
+    expect(await childSeesBusy(path)).toBe(false)
+  }, 20_000)
+
+  it('H1 a second openDatabase of a database with an open write transaction keeps the writer lock', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'writer-')), 'main.sqlite')
+    const writer = await openDatabase({ path, pragmas: { journal_mode: 'DELETE' } })
+    await writer.exec('CREATE TABLE t (id INTEGER)')
+    const connection = await rawConnection(writer)
+    connection.exec('BEGIN IMMEDIATE')
+    const second = await openDatabase({ path, pragmas: { journal_mode: 'DELETE', busy_timeout: 0 } })
+    expect(await childSeesBusy(path)).toBe(true)
+    connection.exec('COMMIT')
+    await Promise.all([writer.dispose(), second.dispose()])
+  }, 20_000)
+
+  it('L5 releases the lock when the owner refuses the close step', async () => {
+    const path = lockPath('owner.sqlite')
+    const owner = createRuntimeOwner({ services: [] })
+    await owner.start(() => {})
+    await owner.close()
+    const refused = await acquireOwnershipLock({ path, owner }).catch((error: unknown) => error)
+    expect(isRuntimeError(refused, RuntimeErrorCode.disposedRuntime)).toBe(true)
+    const next = await acquireFileLock({ path, wait: 'none' })
+    await next.release()
+  })
+
+  it('L6 checks the signal before the first attempt and fails a cancelled wait with a typed error', async () => {
+    const path = lockPath()
+    const early = await acquireFileLock({ path, wait: { deadlineMs: 1_000 }, signal: AbortSignal.abort('stop') }).catch((error: unknown) => error)
+    expect(isRuntimeError(early, RuntimeErrorCode.lockAborted)).toBe(true)
+    const holder = await acquireFileLock({ path, wait: 'none' })
+    const controller = new AbortController()
+    const waiting = acquireFileLock({ path, wait: { deadlineMs: 5_000 }, signal: controller.signal }).catch((error: unknown) => error)
+    await delay(30)
+    controller.abort('caller left')
+    expect(isRuntimeError(await waiting, RuntimeErrorCode.lockAborted)).toBe(true)
+    await holder.release()
+  })
+
+  it('L7 refuses a human wait while a file lock is held', async () => {
+    const slot = createCliConsumerSlot()
+    slot.attach({ prompt: async () => ({ status: 'answered', answer: { choice: 'yes' } }) })
+    const { requestCli } = createCliRequester({ slot })
+    const refused = await withFileLock({ path: lockPath(), wait: 'none' }, () => requestCli({ id: 'r1', kind: 'approval', correlationId: 'c1', action: { summary: 'x' }, wait: { mode: 'indefinite' } })).catch((error: unknown) => error)
+    expect(isRuntimeError(refused, RuntimeErrorCode.waitInsideTransaction)).toBe(true)
   })
 })

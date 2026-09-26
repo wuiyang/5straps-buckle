@@ -27,6 +27,7 @@ export const RuntimeErrorCode = Object.freeze({
   disposal: 'DisposalError',
   waitInsideTransaction: 'WaitInsideTransactionError',
   lockBusy: 'LockBusyError',
+  lockAborted: 'LockAbortedError',
   asyncTransactionBody: 'AsyncTransactionBodyError',
 } as const)
 

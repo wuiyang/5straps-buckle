@@ -1,10 +1,10 @@
-import { existsSync, mkdtempSync, statSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { createCliConsumerSlot, createCliRequester, isRuntimeError, RuntimeErrorCode } from '../../src/index.js'
-import { createConnectionOwner, openDatabase, rawConnection, readPragma, SqliteErrorCode, type SqliteDatabase } from '../../src/sqlite/index.js'
+import { createCliConsumerSlot, createCliRequester, createLogger, isRuntimeError, RuntimeErrorCode, type LogEvent } from '../../src/index.js'
+import { createConnectionOwner, isSqliteBusy, openDatabase, rawConnection, readPragma, SqliteErrorCode, type SqliteDatabase } from '../../src/sqlite/index.js'
 
 function databasePath(name = 'app.sqlite'): string {
   return join(mkdtempSync(join(tmpdir(), 'sqlite-')), 'state', name)
@@ -140,5 +140,102 @@ describe('connection owner transactions', () => {
     expect(injected.disposed).toBe(false)
     expect((await rawConnection(injected)).isOpen).toBe(true)
     await injected.dispose()
+  })
+})
+
+describe('review fixes: directories, journal mode, guarded view, non-blocking begin', () => {
+  it('M7 sets 0700 only on directories it created and warns about an existing shared one without changing it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dirs-'))
+    const created = await openDatabase({ path: join(root, 'a', 'b', 'app.sqlite') })
+    expect(statSync(join(root, 'a')).mode & 0o777).toBe(0o700)
+    expect(statSync(join(root, 'a', 'b')).mode & 0o777).toBe(0o700)
+    await created.dispose()
+
+    const shared = join(root, 'shared')
+    mkdirSync(shared)
+    chmodSync(shared, 0o755)
+    const events: LogEvent[] = []
+    const logs = createLogger({ component: 'sqlite', sinks: [{ name: 'memory', write: (event) => { events.push(event) } }] })
+    const db = await openDatabase({ path: join(shared, 'app.sqlite'), logger: logs.logger })
+    expect(statSync(shared).mode & 0o777).toBe(0o755)
+    await logs.flush()
+    expect(events).toEqual([expect.objectContaining({ level: 'warn', fields: expect.objectContaining({ mode: '755' }) })])
+    await db.dispose()
+  })
+
+  it('L12 defaults journal_mode to WAL and lets the caller choose another', async () => {
+    const wal = await openDatabase({ path: databasePath() })
+    expect(await readPragma(wal, 'journal_mode')).toBe('wal')
+    await wal.dispose()
+    const plain = await openDatabase({ path: databasePath(), pragmas: { journal_mode: 'DELETE' } })
+    expect(await readPragma(plain, 'journal_mode')).toBe('delete')
+    await plain.dispose()
+  })
+
+  it('M10 the raw handle loses a write to a foreign rollback; the guarded view refuses it with a typed error', async () => {
+    const owner = createConnectionOwner(await notesDatabase(), { owned: true })
+    const aborted = (label: string) => owner.transaction(async (tx) => {
+      await tx.sql`INSERT INTO notes (text) VALUES (${label})`
+      await delay(10)
+      throw new Error(`${label} rolls back`)
+    })
+    const rawA = aborted('A1')
+    await delay(1)
+    await owner.db.sql`INSERT INTO notes (text) VALUES (${'raw B'})`
+    await expect(rawA).rejects.toThrow('A1 rolls back')
+    expect(await owner.run(noteTexts)).toEqual([])
+
+    const guardedA = aborted('A2')
+    await delay(1)
+    const refused = await owner.guardedDb.sql`INSERT INTO notes (text) VALUES (${'guarded B'})`.catch((error: unknown) => error)
+    expect(isRuntimeError(refused, SqliteErrorCode.foreignTransaction)).toBe(true)
+    const refusedPrepared = await owner.guardedDb.prepare('INSERT INTO notes (text) VALUES (?)').run('prepared B').catch((error: unknown) => error)
+    expect(isRuntimeError(refusedPrepared, SqliteErrorCode.foreignTransaction)).toBe(true)
+    await expect(guardedA).rejects.toThrow('A2 rolls back')
+
+    await owner.transaction(async () => { await owner.guardedDb.sql`INSERT INTO notes (text) VALUES (${'inside own'})` })
+    await owner.guardedDb.sql`INSERT INTO notes (text) VALUES (${'after'})`
+    expect(await noteTexts(owner.guardedDb)).toEqual(['inside own', 'after'])
+    await owner.close()
+  })
+
+  it('M11 waits for another writer without blocking the event loop', async () => {
+    const path = databasePath()
+    const owner = createConnectionOwner(await openDatabase({ path, pragmas: { busy_timeout: 2_000 } }), { owned: true })
+    await owner.run(db => db.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT NOT NULL UNIQUE)'))
+    const other = await openDatabase({ path })
+    const otherConnection = await rawConnection(other)
+    otherConnection.exec('BEGIN IMMEDIATE')
+    let ticks = 0
+    const ticker = setInterval(() => { ticks += 1 }, 5)
+    setTimeout(() => otherConnection.exec('COMMIT'), 150)
+    await owner.transaction(async (tx) => { await tx.sql`INSERT INTO notes (text) VALUES (${'after wait'})` })
+    clearInterval(ticker)
+    expect(ticks).toBeGreaterThan(3)
+    expect(await readPragma(owner.db, 'busy_timeout')).toBe(2_000)
+    expect(await owner.run(noteTexts)).toEqual(['after wait'])
+    await Promise.all([owner.close(), other.dispose()])
+  })
+
+  it('M11 still gives up with a busy error once the busy timeout passes', async () => {
+    const path = databasePath()
+    const owner = createConnectionOwner(await openDatabase({ path, pragmas: { busy_timeout: 100 } }), { owned: true })
+    const other = await openDatabase({ path })
+    const otherConnection = await rawConnection(other)
+    otherConnection.exec('BEGIN IMMEDIATE')
+    const failure = await owner.transaction(async () => undefined).catch((error: unknown) => error)
+    expect(isSqliteBusy(failure)).toBe(true)
+    otherConnection.exec('COMMIT')
+    await Promise.all([owner.close(), other.dispose()])
+  })
+
+  it('L1 keeps the body error when SQLite already rolled back', async () => {
+    const owner = createConnectionOwner(await notesDatabase(), { owned: true })
+    const failure = owner.nativeTransaction((connection) => {
+      connection.exec('ROLLBACK')
+      throw new Error('original failure')
+    })
+    await expect(failure).rejects.toThrow('original failure')
+    await owner.close()
   })
 })

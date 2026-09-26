@@ -30,6 +30,18 @@ async function holdLock(holdMs: number): Promise<void> {
   report({ released: true })
 }
 
+// Reports whether another owner holds the lock right now; used to prove the parent's lock survived.
+async function tryLock(): Promise<void> {
+  try {
+    const lock = await acquireFileLock({ path: path!, wait: 'none' })
+    await lock.release()
+    report({ busy: false })
+  } catch (error) {
+    report({ busy: (error as { code?: string }).code === 'LockBusyError' })
+  }
+}
+
 if (mode === 'sequence') await allocateSequence(Number(rest[0]), rest[1] ?? String(process.pid))
 else if (mode === 'hold-lock') await holdLock(Number(rest[0]))
+else if (mode === 'try-lock') await tryLock()
 else throw new Error(`unknown mode ${mode}`)
