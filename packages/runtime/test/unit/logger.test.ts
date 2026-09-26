@@ -156,7 +156,7 @@ describe('F53 logger sinks', () => {
     const root = createLogger({ component: 'svc', sinks: [sink], queueLimit: 5 })
     for (let index = 0; index < 8; index += 1) root.logger.info(`event ${index}`)
     await root.flush()
-    expect(sink.events).toHaveLength(5)
+    expect(sink.events.filter(event => event.level === 'info')).toHaveLength(5)
     expect(root.stats().dropped).toBe(3)
   })
 

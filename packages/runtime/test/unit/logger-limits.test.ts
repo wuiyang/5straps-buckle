@@ -1,0 +1,110 @@
+import { setTimeout as delay } from 'node:timers/promises'
+import { describe, expect, it } from 'vitest'
+import { createLogger, type LogEvent, type LogSink } from '../../src/index.js'
+
+function memorySink(): LogSink & { events: LogEvent[] } {
+  const events: LogEvent[] = []
+  return { name: 'memory', events, write: (event) => { events.push(event) } }
+}
+
+async function logOnce(fields: Record<string, unknown>, options: { omitKeys?: string[]; message?: string } = {}): Promise<LogEvent> {
+  const sink = memorySink()
+  const root = createLogger({ component: 'test', sinks: [sink], omitKeys: options.omitKeys })
+  root.logger.info(options.message ?? 'event', fields)
+  await root.flush()
+  return sink.events[0]!
+}
+
+describe('logger shapes and limits (review M4)', () => {
+  it('omits byte views with their size', async () => {
+    const event = await logOnce({ chunk: Buffer.alloc(3_000), view: new Uint8Array(12), raw: new ArrayBuffer(7) })
+    expect(event.fields).toEqual({ chunk: '[omitted 3000 bytes]', view: '[omitted 12 bytes]', raw: '[omitted 7 bytes]' })
+  })
+
+  it('caps keys per object and bytes per event', async () => {
+    const wide = Object.fromEntries(Array.from({ length: 20_000 }, (_, index) => [`k${index}`, index]))
+    const event = await logOnce({ wide })
+    expect(Object.keys(event.fields!.wide as object).length).toBeLessThanOrEqual(101)
+    expect(JSON.stringify(event).length).toBeLessThan(70_000)
+
+    const heavy = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`k${index}`, 'x'.repeat(8_000)]))
+    const capped = await logOnce({ heavy })
+    expect(JSON.stringify(capped).length).toBeLessThan(70_000)
+    expect(capped.fields).toEqual({ '[truncated]': expect.stringContaining('exceeded') })
+  })
+
+  it('redacts secret-named query parameters and URL passwords inside strings', async () => {
+    const event = await logOnce({ url: 'https://api.example.com/v1?token=abc123&page=2', note: 'fetch https://user:hunter2@example.com/x?api_key=zzz9 failed' }, { message: 'GET https://example.com/cb?code=1&access_token=qqq7' })
+    const serialized = JSON.stringify(event)
+    for (const secret of ['abc123', 'hunter2', 'zzz9', 'qqq7']) expect(serialized).not.toContain(secret)
+    expect(event.fields!.url).toContain('page=2')
+  })
+
+  it('redacts header tuple arrays and Headers objects by name', async () => {
+    const event = await logOnce({ headers: [['x-api-key', 'k1'], ['accept', 'json']], fetched: new Headers({ authorization: 'Bearer zz', accept: 'json' }) })
+    expect(event.fields).toEqual({ headers: [['x-api-key', '[redacted]'], ['accept', 'json']], fetched: { authorization: '[redacted]', accept: 'json' } })
+  })
+
+  it('omits keys named in omitKeys', async () => {
+    const event = await logOnce({ input: 'user prompt text', text: 'model reply' }, { omitKeys: ['input', 'text'] })
+    expect(event.fields).toEqual({ input: '[omitted 16 bytes]', text: '[omitted 11 bytes]' })
+  })
+})
+
+describe('logger keeps useful data (review M5)', () => {
+  it('keeps token counts, file paths, stack paths and git SHAs', async () => {
+    const path = '/home/user/projects/buckle/packages/runtime/src/logger/sanitize.ts'
+    const sha = '6ec41b3a1f2e4d5c6b7a8f9e0d1c2b3a4f5e6d7c'
+    const event = await logOnce({ inputTokens: 1_200, outputTokens: 30, file: path, commit: sha }, { message: `at ${path}:12:3 in ${sha}` })
+    expect(event.fields).toEqual({ inputTokens: 1_200, outputTokens: 30, file: path, commit: sha })
+    expect(event.message).toBe(`at ${path}:12:3 in ${sha}`)
+  })
+
+  it('still redacts secret-named keys by word', async () => {
+    const sha = '6ec41b3a1f2e4d5c6b7a8f9e0d1c2b3a4f5e6d7c'
+    const event = await logOnce({ accessToken: 'a', auth: 'b', apiKey: 'c', client_secret: 'd', webhookSecret: sha, sessionToken: 'e' })
+    expect(Object.values(event.fields!)).toEqual(Array(6).fill('[redacted]'))
+  })
+})
+
+describe('sink recursion across awaits (review M6)', () => {
+  it('sends a log line from inside an async sink to the fallback only', async () => {
+    const fallback: string[] = []
+    let writes = 0
+    let root: ReturnType<typeof createLogger> | undefined
+    const sink: LogSink = { name: 'async', async write() {
+      writes += 1
+      await delay(1)
+      root!.logger.info('from inside the sink')
+    } }
+    root = createLogger({ component: 'svc', sinks: [sink], fallback: line => fallback.push(line) })
+    root.logger.info('one')
+    await delay(20)
+    await root.flush()
+    expect(writes).toBe(1)
+    expect(fallback.filter(line => line.includes('from inside the sink'))).toHaveLength(1)
+  })
+})
+
+describe('close and drops (review L3)', () => {
+  it('drops and counts events logged once close has started', async () => {
+    const sink = memorySink()
+    const root = createLogger({ component: 'svc', sinks: [sink] })
+    root.logger.info('before')
+    const closing = root.close()
+    root.logger.info('during close')
+    await closing
+    root.logger.info('after close')
+    expect(sink.events.map(event => event.message)).toEqual(['before'])
+    expect(root.stats().dropped).toBe(2)
+  })
+
+  it('emits one warning event when drops start', async () => {
+    const sink = memorySink()
+    const root = createLogger({ component: 'svc', sinks: [sink], queueLimit: 5 })
+    for (let index = 0; index < 8; index += 1) root.logger.info(`event ${index}`)
+    await root.flush()
+    expect(sink.events.filter(event => event.level === 'warn')).toEqual([expect.objectContaining({ message: 'log events dropped: queue full' })])
+    expect(root.stats().dropped).toBe(3)
+  })
+})
