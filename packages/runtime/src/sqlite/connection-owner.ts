@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { Primitive, Statement } from 'db0'
 import { RuntimeError, RuntimeErrorCode } from '../errors.js'
+import { globalSlot } from '../internal/async-slots.js'
 import { runInTransactionMarker } from '../transaction/guard.js'
 import { beginImmediateWithinDeadline, readBusyTimeout } from './begin.js'
 import { rawConnection, type SqliteDatabase } from './database.js'
@@ -27,7 +28,7 @@ export interface ConnectionOwner {
 const TRANSACTION_BEGIN_POLL_MS = 10
 
 // Which exclusive section (run or transaction) the current async flow is inside, so its own statements skip the queue.
-const currentSection = new AsyncLocalStorage<string>()
+const currentSection = globalSlot('sqlite-section', () => new AsyncLocalStorage<string>())
 
 // SQLite transactions belong to the connection, not to an async flow: every access queues behind an open transaction.
 export function createConnectionOwner(db: SqliteDatabase, options: { owned: boolean; label?: string }): ConnectionOwner {

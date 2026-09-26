@@ -5,7 +5,8 @@ import { createServiceRegistry, type AnyServiceDefinition, type ServiceRegistry 
 export const CLOSE_STAGES = ['accept', 'timers', 'waiters', 'jobs', 'streams', 'locks', 'services', 'databases', 'sinks'] as const
 export type CloseStage = typeof CLOSE_STAGES[number]
 export type RuntimeState = 'created' | 'starting' | 'ready' | 'failed' | 'closing' | 'closed'
-export type Closer = () => void | Promise<void>
+// The signal aborts when the step exceeds its time bound, so the step can stop touching resources later stages close.
+export type Closer = (signal?: AbortSignal) => void | Promise<void>
 
 export interface RuntimeOwner {
   readonly registry: ServiceRegistry
@@ -103,12 +104,17 @@ export function createRuntimeOwner(options: RuntimeOwnerOptions): RuntimeOwner {
 
 // Each close step is bounded so one stuck resource cannot stop later stages from running.
 async function runCloseStep(step: { name: string; closer: Closer; timeoutMs: number }): Promise<unknown> {
+  const controller = new AbortController()
   let timer: NodeJS.Timeout | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Close step ${step.name} exceeded ${step.timeoutMs} ms`)), step.timeoutMs)
+    timer = setTimeout(() => {
+      const error = new RuntimeError(RuntimeErrorCode.closeStepTimeout, `Close step ${step.name} exceeded ${step.timeoutMs} ms`)
+      controller.abort(error)
+      reject(error)
+    }, step.timeoutMs)
   })
   try {
-    await Promise.race([Promise.resolve().then(step.closer), timeout])
+    await Promise.race([Promise.resolve().then(() => step.closer(controller.signal)), timeout])
     return undefined
   } catch (error) {
     return error

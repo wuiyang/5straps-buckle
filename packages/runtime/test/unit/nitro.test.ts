@@ -93,6 +93,20 @@ describe('Nitro host bridge and context plugin', () => {
     expect(captured).toEqual([new Error('request hook exploded')])
   })
 
+  it('M8 responds while hung background work is still draining', async () => {
+    let requestScope: { state: string } | undefined
+    const hung = defineGuardedHandler({ guards: [], handler: (_, scope) => {
+      requestScope = scope
+      scope.registerBackgroundWork(new Promise(() => {}))
+      return { ok: true }
+    } })
+    const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: app => app.get('/hung', hung) })
+    bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
+    const response = await Promise.race([nitroApp.fetch(new Request('http://local/hung')), delay(1_000).then(() => undefined)])
+    expect(response?.status).toBe(200)
+    expect(requestScope?.state).toBe('disposing')
+  })
+
   it('exposes requireReady as a plain guard for middleware use', async () => {
     const event = { context: {} } as H3Event
     expect(() => requireReady(event)).toThrow(expect.objectContaining({ status: 503 }))

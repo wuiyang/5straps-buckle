@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { DisposalError, RuntimeError, RuntimeErrorCode } from '../errors.js'
+import { runDetached } from '../internal/async-slots.js'
 import { createOperationScope, useScope, type CreateScopeOptions, type OperationScope } from '../scope/als.js'
 
 export type Lifetime = 'singleton' | 'scoped' | 'transient'
@@ -47,7 +48,11 @@ export interface ServiceRegistry {
 }
 
 interface Created { definition: AnyServiceDefinition; value: unknown }
-interface ScopeCache { inFlight: Map<AnyServiceDefinition, Promise<unknown>> }
+interface ScopeCache {
+  inFlight: Map<AnyServiceDefinition, Promise<unknown>>
+  // Every scoped or transient construction still running; scope disposal waits for them.
+  constructing: Set<Promise<unknown>>
+}
 type Owner = { kind: 'runtime' } | { kind: 'scope'; scope: OperationScope }
 
 export function createServiceRegistry(options: { services: readonly AnyServiceDefinition[]; name?: string }): ServiceRegistry {
@@ -84,18 +89,34 @@ export function createServiceRegistry(options: { services: readonly AnyServiceDe
         return resolve(dependency, holder)
       },
     }
-    return Promise.resolve().then(() => definition.create(context)).then((value) => {
-      if (definition.dispose) track(holder, { definition, value })
+    const creating = Promise.resolve().then(() => definition.create(context)).then(async (value) => {
+      if (definition.dispose) await track(holder, { definition, value })
       return value
     })
+    if (holder.kind === 'scope') trackConstruction(holder.scope, creating)
+    return creating
   }
 
-  function track(holder: Owner, created: Created): void {
+  function trackConstruction(scope: OperationScope, creating: Promise<unknown>): void {
+    const constructing = scopeCaches.get(scope)?.constructing
+    if (!constructing) return
+    constructing.add(creating)
+    const done = () => { constructing.delete(creating) }
+    creating.then(done, done)
+  }
+
+  async function track(holder: Owner, created: Created): Promise<void> {
     if (holder.kind === 'runtime') {
       runtimeCreated.push(created)
       return
     }
-    holder.scope.onDispose(() => created.definition.dispose?.(created.value))
+    if (holder.scope.state === 'active') {
+      holder.scope.onDispose(() => created.definition.dispose?.(created.value))
+      return
+    }
+    // Finished after its scope began closing: dispose now and refuse to hand it out.
+    await created.definition.dispose?.(created.value)
+    throw new RuntimeError(RuntimeErrorCode.disposedScope, `${created.definition.name} finished after operation scope ${holder.scope.context.correlationId} closed`)
   }
 
   function resolve<T>(definition: ServiceDefinition<T>, holder: Owner): Promise<T> {
@@ -110,7 +131,7 @@ export function createServiceRegistry(options: { services: readonly AnyServiceDe
   function resolveSingleton<T>(definition: ServiceDefinition<T>): Promise<T> {
     const existing = singletons.get(definition)
     if (existing) return existing as Promise<T>
-    const creating = construct(definition, { kind: 'runtime' })
+    const creating = runDetached(() => construct(definition, { kind: 'runtime' }))
     singletons.set(definition, creating)
     // A failed factory is retried by the next getter rather than cached.
     creating.catch(() => { if (singletons.get(definition) === creating) singletons.delete(definition) })
@@ -160,9 +181,14 @@ export function createServiceRegistry(options: { services: readonly AnyServiceDe
     createScope(scopeOptions) {
       if (disposal) throw new RuntimeError(RuntimeErrorCode.disposedRuntime, 'Cannot open an operation scope: the runtime is disposed')
       const scope = createOperationScope({ ...scopeOptions, owner })
-      scopeCaches.set(scope, { inFlight: new Map() })
+      const cache: ScopeCache = { inFlight: new Map(), constructing: new Set() }
+      scopeCaches.set(scope, cache)
       activeScopes.add(scope)
-      scope.onDispose(() => { activeScopes.delete(scope) })
+      // Registered first, so it runs last: constructions that finish during disposal dispose themselves first.
+      scope.onDispose(async () => {
+        await Promise.allSettled([...cache.constructing])
+        activeScopes.delete(scope)
+      })
       return scope
     },
     dispose() {

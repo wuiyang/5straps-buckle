@@ -1,6 +1,10 @@
+// Checked structurally, so a RuntimeError from another loaded copy of this package still matches.
+const RUNTIME_ERROR_BRAND = Symbol.for('@5straps/runtime/error')
+
 // Typed runtime failures. Callers branch on `code`, never on message text.
 export class RuntimeError extends Error {
   readonly code: string
+  readonly [RUNTIME_ERROR_BRAND] = true
 
   constructor(code: string, message: string, options?: ErrorOptions) {
     super(message, options)
@@ -10,7 +14,8 @@ export class RuntimeError extends Error {
 }
 
 export function isRuntimeError(error: unknown, code?: string): error is RuntimeError {
-  return error instanceof RuntimeError && (code === undefined || error.code === code)
+  if (!(error instanceof Error) || (error as Partial<RuntimeError>)[RUNTIME_ERROR_BRAND] !== true) return false
+  return code === undefined || (error as RuntimeError).code === code
 }
 
 export const RuntimeErrorCode = Object.freeze({
@@ -29,13 +34,16 @@ export const RuntimeErrorCode = Object.freeze({
   lockBusy: 'LockBusyError',
   lockAborted: 'LockAbortedError',
   asyncTransactionBody: 'AsyncTransactionBodyError',
+  drainTimeout: 'DrainTimeoutError',
+  closeStepTimeout: 'CloseStepTimeoutError',
 } as const)
 
 export class DisposalError extends AggregateError {
   readonly code = RuntimeErrorCode.disposal
 
+  // The original failure leads: first in errors, named in the message, and the cause.
   constructor(errors: unknown[], message: string, original?: unknown) {
-    super(original === undefined ? errors : [original, ...errors], message, original === undefined ? undefined : { cause: original })
+    super(original === undefined ? errors : [original, ...errors], original === undefined ? message : `${message}: ${toError(original).message}`, original === undefined ? undefined : { cause: original })
     this.name = RuntimeErrorCode.disposal
   }
 }

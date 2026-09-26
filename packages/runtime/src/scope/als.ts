@@ -1,6 +1,6 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { DisposalError, RuntimeError, RuntimeErrorCode } from '../errors.js'
+import { scopeStorage } from '../internal/async-slots.js'
 
 export type ScopeAttribute = string | number | boolean
 export interface OperationContext {
@@ -31,16 +31,20 @@ export interface CreateScopeOptions {
   context: OperationContextInput
   signal?: AbortSignal
   maxBackgroundWork?: number
+  // Bound on waiting for background work at disposal (runtime.md: drain within a configured bound).
+  drainTimeoutMs?: number
 }
 
 const DEFAULT_MAX_BACKGROUND_WORK = 64
-const storage = new AsyncLocalStorage<OperationScope>()
+export const DEFAULT_DRAIN_TIMEOUT_MS = 10_000
+const storage = scopeStorage
 
 export function createOperationScope(options: CreateScopeOptions): OperationScope {
   const context = freezeContext(options.context)
   const controller = new AbortController()
   const detachSignal = linkSignal(options.signal, controller)
   const maxBackgroundWork = options.maxBackgroundWork ?? DEFAULT_MAX_BACKGROUND_WORK
+  const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS
   const pending = new Set<Promise<unknown>>()
   const workErrors: unknown[] = []
   const cleanups: ScopeCleanup[] = []
@@ -56,8 +60,8 @@ export function createOperationScope(options: CreateScopeOptions): OperationScop
     controller.abort(new RuntimeError(RuntimeErrorCode.disposedScope, `Operation scope ${context.correlationId} closed`))
     detachSignal()
     // Drain work before cleanups: background work may still use scoped services.
-    await Promise.allSettled([...pending])
-    const errors = [...workErrors]
+    const drained = await settleWithin([...pending], drainTimeoutMs)
+    const errors = drained ? [...workErrors] : [new RuntimeError(RuntimeErrorCode.drainTimeout, `Operation scope ${context.correlationId} left ${pending.size} background tasks running after ${drainTimeoutMs} ms`), ...workErrors]
     for (const cleanup of cleanups.splice(0).reverse()) {
       try { await cleanup() } catch (error) { errors.push(error) }
     }
@@ -124,6 +128,16 @@ export async function withOperationScope<T>(scope: OperationScope, fn: (scope: O
   }
   await scope.dispose()
   return result
+}
+
+async function settleWithin(work: Promise<unknown>[], timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined
+  const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs) })
+  try {
+    return await Promise.race([Promise.allSettled(work).then(() => true), timedOut])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function freezeContext(input: OperationContextInput): OperationContext {

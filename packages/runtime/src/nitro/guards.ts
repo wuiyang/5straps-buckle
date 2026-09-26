@@ -56,15 +56,16 @@ export async function runRequestInScope<T>(input: { event: H3Event; scope: Opera
     event.context.logger?.info('request completed', { method: event.req.method, path: event.url.pathname, outcome, durationMs: Math.round(performance.now() - startedAt) })
     return scope.dispose().catch((error: unknown) => event.context.logger?.error('request scope failed to close', { error }))
   }
+  // Respond first: disposal (bounded by the scope's drainTimeoutMs) runs after the response, so hung background work cannot hold it.
   let result: T
   try {
     result = await runInScope(scope, () => input.handler(event, scope))
   } catch (error) {
-    await finish(HTTPError.isError(error) ? `error ${error.status}` : 'error')
+    void finish(HTTPError.isError(error) ? `error ${error.status}` : 'error')
     throw error
   }
   if (result instanceof Response && result.body) return ownResponseBody(result, () => { void finish(`streamed ${result.status}`) })
-  await finish(result instanceof Response ? `ok ${result.status}` : 'ok')
+  void finish(result instanceof Response ? `ok ${result.status}` : 'ok')
   return result
 }
 
