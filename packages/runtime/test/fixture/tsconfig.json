@@ -1,0 +1,12 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@5straps/runtime": ["../../src/index.ts"],
+      "@5straps/runtime/sqlite": ["../../src/sqlite/index.ts"],
+      "@5straps/runtime/nitro": ["../../src/nitro/index.ts"]
+    }
+  },
+  "include": ["./**/*.ts"],
+  "exclude": [".data/**"]
+}
