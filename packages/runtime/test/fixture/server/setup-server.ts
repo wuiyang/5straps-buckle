@@ -25,6 +25,13 @@ export async function setupServer(input: { runtime: FixtureRuntime; requestCli: 
   wireCliListener({ nitroApp: entry.nitroApp, requestCli: input.requestCli, mode: input.listenerMode })
   runtime.logger.info('cli listener registered', { mode: input.listenerMode })
   const server = createServer(withScopeProbe({ runtime, middleware: entry.middleware }))
+  closeIdleAfterEachResponse(server)
+  server.on('upgrade', (request, socket, head) => {
+    entry.handleUpgrade(request, socket, head).catch((error: unknown) => {
+      runtime.logger.error('websocket upgrade failed', { error })
+      socket.destroy()
+    })
+  })
   return {
     listen: options => listen(server, options),
     close: () => closeServer(server),
@@ -52,10 +59,18 @@ function listen(server: ReturnType<typeof createServer>, options: { port: number
   })
 }
 
+// Stops accepting, then drops each keep-alive connection as soon as its in-flight response ends,
+// so a stream ended by shutdown does not hold close open until the keep-alive timeout.
 function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
   if (!server.listening) return Promise.resolve()
   return new Promise((resolve, reject) => {
     server.close(error => (error ? reject(error) : resolve()))
     server.closeIdleConnections()
   })
+}
+
+function closeIdleAfterEachResponse(server: ReturnType<typeof createServer>): void {
+  server.on('request', (_request, response) => response.once('close', () => {
+    if (!server.listening) setImmediate(() => server.closeIdleConnections())
+  }))
 }

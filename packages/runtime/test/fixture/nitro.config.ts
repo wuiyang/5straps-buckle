@@ -12,6 +12,7 @@ export default defineConfig({
   serverEntry: false,
   serverDir: false,
   errorHandler: './server/error.ts',
+  features: { websocket: true },
   extends: ['./layers/common', './layers/mcp', ...(adminLayer ? ['./layers/admin'] : [])],
   experimental: { database: true },
   // F39: these options are serialised into the build; useDatabase() cannot see a startup-resolved path.

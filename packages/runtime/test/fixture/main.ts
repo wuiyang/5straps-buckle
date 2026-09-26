@@ -39,12 +39,13 @@ async function serve(input: { config: FixtureConfig; logging: LoggerRoot }): Pro
   runtime.onClose('accept', 'http server', () => server.close())
   const heartbeat = setInterval(() => runtime.logger.debug('heartbeat'), HEARTBEAT_MS)
   runtime.onClose('timers', 'heartbeat', () => clearInterval(heartbeat))
-  const shutdown = onceShutdown({ runtime, logging: input.logging })
+  const { shutdown, requested } = onceShutdown({ runtime, logging: input.logging })
   const port = await server.listen({ port: Number(process.env.FIXTURE_PORT ?? 0), host: '127.0.0.1' })
   runtime.logger.info('listening', { port })
   writeMachineLine({ event: 'listening', port })
   // Listening before readiness is deliberate: the startup window answers 503, never 500 (F05, F21).
   await runtime.start().catch(async (error: unknown) => {
+    if (requested()) return runtime.logger.info('startup interrupted by shutdown')
     runtime.logger.fatal('startup failed', { error })
     process.exitCode = 1
     await shutdown()
@@ -55,7 +56,7 @@ async function serve(input: { config: FixtureConfig; logging: LoggerRoot }): Pro
 async function serveMcp(input: { config: FixtureConfig; logging: LoggerRoot }): Promise<void> {
   const runtime = initializeCommon({ config: input.config, logger: input.logging.logger, role: 'mcp' })
   const cli = await setupCli({ runtime, terminalPath: process.env.FIXTURE_TERMINAL_SOCKET })
-  const shutdown = onceShutdown({ runtime, logging: input.logging })
+  const { shutdown } = onceShutdown({ runtime, logging: input.logging })
   await runtime.start()
   const openScope = () => runtime.owner.registry.createScope({ context: { actor: 'mcp-stdio' } })
   const stdio = serveStdio(() => createFixtureMcpServer({ services: runtime.services, requestCli: cli.requester.requestCli, version: '0.0.0', openScope }))
@@ -100,7 +101,7 @@ async function checkScopes(runtime: FixtureRuntime): Promise<unknown> {
   return { outsideError: outside, outsideSafe: await new Promise(resolve => setImmediate(() => resolve(useScopeSafe() ?? null))), drainedBeforeClose: drained, scopeState: scope.state }
 }
 
-function onceShutdown(input: { runtime: FixtureRuntime; logging: LoggerRoot }): () => Promise<void> {
+function onceShutdown(input: { runtime: FixtureRuntime; logging: LoggerRoot }): { shutdown: () => Promise<void>; requested: () => boolean } {
   let closing: Promise<void> | undefined
   const shutdown = () => {
     closing ??= (async () => {
@@ -123,7 +124,7 @@ function onceShutdown(input: { runtime: FixtureRuntime; logging: LoggerRoot }): 
   }
   process.once('SIGTERM', onSignal)
   process.once('SIGINT', onSignal)
-  return shutdown
+  return { shutdown, requested: () => closing !== undefined }
 }
 
 function trapProcessFailures(logger: Logger): void {

@@ -1,6 +1,5 @@
-import { HTTPError, type H3Event } from 'h3'
-import { useNitroApp } from 'nitro/app'
-import { InteractionErrorCode, isRuntimeError, type RequestCli } from '@5straps/runtime'
+import { HTTPError } from 'h3'
+import { InteractionErrorCode, isRuntimeError } from '@5straps/runtime'
 import { defineGuardedHandler } from '@5straps/runtime/nitro'
 import { askOwner } from '../../../../../common/interaction.js'
 import { requireAgent, useServices } from '../../utils/guards.js'
@@ -15,9 +14,12 @@ export default defineGuardedHandler({
   handler: async (event, scope) => {
     const input = await readAsk(event.req)
     const services = useServices(event)
+    const requestCli = event.context.requestCli
+    if (!requestCli) throw HTTPError.status(503, 'Service Unavailable', { message: 'CLI interaction is not attached' })
     ;(await services.getOperation()).record('ask')
     try {
-      const outcome = await askOwner({ ...input, requestCli: withdrawOnAbort(event), approvals: await services.getApprovals(), signal: event.req.signal })
+      // The request signal aborts on disconnect; the runtime then aborts the listener's signal and the prompt is withdrawn (F16).
+      const outcome = await askOwner({ ...input, requestCli, approvals: await services.getApprovals(), signal: event.req.signal })
       return { outcome, correlationId: scope.context.correlationId }
     } catch (error) {
       // F09: a failed or silent listener is a typed server error, never a hung request.
@@ -26,15 +28,6 @@ export default defineGuardedHandler({
     }
   },
 })
-
-function withdrawOnAbort(event: H3Event): RequestCli {
-  const requestCli = event.context.requestCli
-  if (!requestCli) throw HTTPError.status(503, 'Service Unavailable', { message: 'CLI interaction is not attached' })
-  return (request, options) => {
-    event.req.signal.addEventListener('abort', () => { void useNitroApp().hooks?.callHook('cli:cancel', request.id) }, { once: true })
-    return requestCli(request, options)
-  }
-}
 
 async function readAsk(request: Request): Promise<{ summary: string; timeoutMs?: number }> {
   const body = await request.json().catch(() => undefined) as { summary?: unknown; timeoutMs?: unknown } | undefined
