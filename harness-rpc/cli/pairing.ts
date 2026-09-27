@@ -26,6 +26,8 @@ export interface PairingRequest {
   /** The environment file just written or reused: the credentials never leave it in argv. */
   environmentFile: string
   environmentText: string
+  /** Where the environment-file lock lives (~/.5straps/locks); the owner's home by default. */
+  home?: string
 }
 
 export interface PairingResult {
@@ -82,7 +84,7 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
     return { ok: false, message: `${paired}\nRings answered with an approval key Buckle does not accept (it must be 32 bytes in base64url), so nothing was written to ${input.environmentFile}. Check that the Rings URL is the one you meant, then pair again.` }
   }
   const approvalKey = typeof body.approvalKey === 'string' ? body.approvalKey : null
-  const recorded = recordReportCredential({ ...input, reportToken: body.reportToken, approvalKey })
+  const recorded = await recordReportCredential({ ...input, reportToken: body.reportToken, approvalKey })
   return { ok: recorded.ok, message: `${paired}\n${recorded.message}` }
 }
 
@@ -96,7 +98,7 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
  * Rings stored the new credential and key before it answered, so a file that is not written
  * leaves the pair unable to talk: that is a failed pairing, and the owner is told to pair again.
  */
-function recordReportCredential(input: { environmentFile: string; ringsUrl: string; reportToken: string; approvalKey: string | null }): PairingResult {
+async function recordReportCredential(input: { environmentFile: string; ringsUrl: string; reportToken: string; approvalKey: string | null; home?: string }): Promise<PairingResult> {
   const settings = [
     { name: 'BUCKLE_REPORT_URL', value: new URL(REPORT_PATH, input.ringsUrl).toString() },
     { name: 'BUCKLE_REPORT_TOKEN', value: input.reportToken },
@@ -110,7 +112,7 @@ function recordReportCredential(input: { environmentFile: string; ringsUrl: stri
   const minted = input.approvalKey ? 'report credential and approval key' : 'report credential'
   const unsaved = `The ${minted} Rings minted for this node were not saved, and Rings already holds them, so reports and approvals between Rings and this node fail until it is paired again.`
   try {
-    if (!updateEnvironmentFile(input.environmentFile, edit).ok) {
+    if (!(await updateEnvironmentFile(input.environmentFile, edit, { ...(input.home ? { home: input.home } : {}) })).ok) {
       return { ok: false, message: `${unsaved} ${input.environmentFile} sets one of BUCKLE_REPORT_URL, BUCKLE_REPORT_TOKEN, BUCKLE_APPROVAL_WEBHOOK or BUCKLE_RINGS_APPROVAL_KEY in a form Buckle does not edit. Fix those lines by hand, then ${REPAIR}.` }
     }
   } catch (error) {

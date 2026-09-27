@@ -27,7 +27,7 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals() })
 
 function init(extra: string[] = []) {
-  return runInit(['--root', workspace, '--out', out, '--name', 'Paired', '--port', '4399', '--yes', ...extra])
+  return runInit(['--root', workspace, '--out', out, '--name', 'Paired', '--port', '4399', '--yes', ...extra], undefined, { home: root })
 }
 
 /** Rings mints a report credential, and since RINGS-D20 an approval key, in its redeem answer, readable that once. */

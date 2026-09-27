@@ -2,132 +2,162 @@ import { isInside } from '../../domain/paths.js'
 import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
-import { setTimeout as delay } from 'node:timers/promises'
+import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
+import { createConnectionOwner, openDatabase, rawConnection, withFileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { applySnapshot, assertSnapshotMatches, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
 
 const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), roots: z.array(z.string()), excluded: z.array(z.string()).optional(), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional() })
 type Checkpoint = z.infer<typeof checkpointSchema>
 export interface HistoryInput { sessionId: string; stageId: string; tool: string; roots: string[]; excluded?: string[] }
+export type CheckpointSummary = ReturnType<typeof summary>
 
-export function createChangeHistory(input: { directory: string; excluded: string[]; maxBytes: number; retentionDays: number }) {
+// The synchronous handle behind the owner's connection; the runtime owns the driver.
+type DatabaseSync = Awaited<ReturnType<typeof rawConnection>>
+
+const SCHEMA = 'CREATE TABLE IF NOT EXISTS objects (hash TEXT PRIMARY KEY, content BLOB NOT NULL); CREATE TABLE IF NOT EXISTS checkpoints (id TEXT PRIMARY KEY, data TEXT NOT NULL)'
+// One execution at a time per workspace, across processes: the wait matches the lock it replaces.
+const EXECUTION_LOCK_DEADLINE_MS = 300_000
+const EXECUTION_LOCK_POLL_MS = 25
+
+/** Another execution held the workspace's history lock past the deadline. */
+export class HistoryBusyError extends Error {}
+
+export interface ChangeHistoryOptions {
+  directory: string
+  excluded: string[]
+  maxBytes: number
+  retentionDays: number
+  label?: string
+  lockDeadlineMs?: number
+}
+
+/**
+ * The workspace's change history in history.sqlite, owned by one connection owner. Each step's SQL
+ * runs synchronously inside one owner section, so no await splits a capture from its save.
+ */
+export async function openChangeHistory(input: ChangeHistoryOptions) {
   mkdirSync(input.directory, { recursive: true, mode: 0o700 })
   chmodSync(input.directory, 0o700)
-  const db = new DatabaseSync(join(input.directory, 'history.sqlite'))
-  db.exec('PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS objects (hash TEXT PRIMARY KEY, content BLOB NOT NULL); CREATE TABLE IF NOT EXISTS checkpoints (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
-  chmodSync(join(input.directory, 'history.sqlite'), 0o600)
+  // It holds copies of workspace files, secrets included.
+  const db = await openDatabase({ path: join(input.directory, 'history.sqlite'), pragmas: { busy_timeout: 5_000 }, requireOwnerOnlyDirectory: true })
+  const owner = createConnectionOwner(db, { owned: true, label: input.label ?? `history:${input.directory}` })
   const excluded = [...input.excluded, input.directory]
+  const lockDeadlineMs = input.lockDeadlineMs ?? EXECUTION_LOCK_DEADLINE_MS
+  await section(connection => connection.exec(SCHEMA))
 
-  function records(): Checkpoint[] { return db.prepare('SELECT data FROM checkpoints ORDER BY rowid').all().map(row => checkpointSchema.parse(JSON.parse(String(row.data)))) }
-  function checkBudget(): void {
-    const pages = Number(db.prepare('PRAGMA page_count').get()!.page_count)
-    const pageSize = Number(db.prepare('PRAGMA page_size').get()!.page_size)
+  function section<T>(body: (connection: DatabaseSync) => T): Promise<T> {
+    return owner.run(async raw => body(await rawConnection(raw)))
+  }
+
+  function records(connection: DatabaseSync): Checkpoint[] {
+    return connection.prepare('SELECT data FROM checkpoints ORDER BY rowid').all().map(row => checkpointSchema.parse(JSON.parse(String(row.data))))
+  }
+  function checkBudget(connection: DatabaseSync): void {
+    const pages = Number(connection.prepare('PRAGMA page_count').get()!.page_count)
+    const pageSize = Number(connection.prepare('PRAGMA page_size').get()!.page_size)
     if (pages * pageSize > input.maxBytes) throw new Error('History disk budget reached; increase the limit or prune expired history before more changes')
   }
-  function save(record: Checkpoint): void {
-    db.exec('BEGIN IMMEDIATE')
-    try {
-      db.prepare('INSERT OR REPLACE INTO checkpoints(id,data) VALUES(?,?)').run(record.id, JSON.stringify(record))
-      checkBudget()
-      db.exec('COMMIT')
-    } catch (error) { db.exec('ROLLBACK'); throw error }
+  function save(record: Checkpoint): Promise<void> {
+    return owner.nativeTransaction(connection => {
+      connection.prepare('INSERT OR REPLACE INTO checkpoints(id,data) VALUES(?,?)').run(record.id, JSON.stringify(record))
+      checkBudget(connection)
+    })
   }
-  function capture(roots: string[], extraExcluded: string[] = []): Snapshot {
+  function capture(connection: DatabaseSync, roots: string[], extraExcluded: string[] = []): Snapshot {
     return snapshot({ roots, excluded: [...excluded, ...extraExcluded], maxBytes: input.maxBytes, save(hash, content) {
-      db.prepare('INSERT OR IGNORE INTO objects(hash,content) VALUES(?,?)').run(hash, content)
-      checkBudget()
+      connection.prepare('INSERT OR IGNORE INTO objects(hash,content) VALUES(?,?)').run(hash, content)
+      checkBudget(connection)
     } })
   }
-  async function locked<T>(operation: () => Promise<T>): Promise<T> {
-    const lock = new DatabaseSync(join(input.directory, 'execution.lock.sqlite'), { timeout: 0 })
-    const deadline = Date.now() + 300_000
+  function readObject(connection: DatabaseSync, hash: string): Buffer {
+    const row = connection.prepare('SELECT content FROM objects WHERE hash=?').get(hash)
+    if (!row || !(row.content instanceof Uint8Array)) throw new Error('History content is missing')
+    return Buffer.from(row.content)
+  }
+  async function locked<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     try {
-      while (true) {
-        try { lock.exec('BEGIN IMMEDIATE'); break } catch (error) {
-          if (!(error instanceof Error) || !/locked|busy/i.test(error.message) || Date.now() >= deadline) throw error
-          await delay(25)
-        }
-      }
-      return await operation()
-    } finally { lock.close() }
+      return await withFileLock({ path: join(input.directory, 'execution.lock.sqlite'), wait: { deadlineMs: lockDeadlineMs, pollMs: EXECUTION_LOCK_POLL_MS }, ...(signal ? { signal } : {}) }, operation)
+    } catch (error) {
+      if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new HistoryBusyError(`Another execution held this workspace's history for ${Math.round(lockDeadlineMs / 1000)} s; retry once it finishes`, { cause: error })
+      throw error
+    }
   }
-  function prune(): void {
+  function prune(connection: DatabaseSync): void {
     const cutoff = Date.now() - input.retentionDays * 86_400_000
-    for (const record of records()) if (record.status !== 'pending' && Date.parse(record.createdAt) < cutoff) db.prepare('DELETE FROM checkpoints WHERE id=?').run(record.id)
-    const referenced = new Set(records().flatMap(record => [...Object.values(record.before), ...Object.values(record.after ?? {})].flatMap(entry => entry.hash ? [entry.hash] : [])))
-    for (const row of db.prepare('SELECT hash FROM objects').all()) if (!referenced.has(String(row.hash))) db.prepare('DELETE FROM objects WHERE hash=?').run(String(row.hash))
+    for (const record of records(connection)) if (record.status !== 'pending' && Date.parse(record.createdAt) < cutoff) connection.prepare('DELETE FROM checkpoints WHERE id=?').run(record.id)
+    const referenced = new Set(records(connection).flatMap(record => [...Object.values(record.before), ...Object.values(record.after ?? {})].flatMap(entry => entry.hash ? [entry.hash] : [])))
+    for (const row of connection.prepare('SELECT hash FROM objects').all()) if (!referenced.has(String(row.hash))) connection.prepare('DELETE FROM objects WHERE hash=?').run(String(row.hash))
   }
-  function begin(details: HistoryInput, restores?: string): Checkpoint {
-    if (records().some(record => record.status === 'pending')) throw new Error('An interrupted checkpoint needs owner recovery before further mutations')
-    prune()
-    const record: Checkpoint = { ...details, id: `change-${randomUUID()}`, createdAt: new Date().toISOString(), status: 'pending', before: capture(details.roots, details.excluded), restores }
-    save(record)
+  async function begin(details: HistoryInput, restores?: string): Promise<Checkpoint> {
+    const record = await section((connection): Checkpoint => {
+      if (records(connection).some(item => item.status === 'pending')) throw new Error('An interrupted checkpoint needs owner recovery before further mutations')
+      prune(connection)
+      return { ...details, id: `change-${randomUUID()}`, createdAt: new Date().toISOString(), status: 'pending', before: capture(connection, details.roots, details.excluded), restores }
+    })
+    await save(record)
     return record
   }
-  function finish(record: Checkpoint, status: 'complete' | 'interrupted' = 'complete'): void {
-    record.after = capture(record.roots, record.excluded)
+  async function finish(record: Checkpoint, status: 'complete' | 'interrupted' = 'complete'): Promise<void> {
+    record.after = await section(connection => capture(connection, record.roots, record.excluded))
     record.status = status
-    save(record)
+    await save(record)
   }
-  function summary(record: Checkpoint) {
-    return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, createdAt: record.createdAt, status: record.status, restores: record.restores, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changedPaths(record.before, record.after).map(path => ({ path, kind: !record.before[path] ? 'created' : !record.after![path] ? 'deleted' : 'modified' })) : [] }
+  async function findRecord(predicate: (record: Checkpoint) => boolean): Promise<Checkpoint | undefined> {
+    return section(connection => records(connection).find(predicate))
   }
-  function restoreRecord(record: Checkpoint) {
+  async function restoreRecord(record: Checkpoint) {
     if (!record.after) throw new Error('Completed checkpoint not found')
-    const current = capture(record.roots, record.excluded)
-    const paths = changedPaths(record.before, record.after)
+    const after = record.after
+    const paths = changedPaths(record.before, after)
     assertExcludedUntouched(paths, record.excluded)
-    assertSnapshotMatches({ current, expected: record.after, target: record.before, paths, operation: 'Restore' })
-    const restore = begin({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore', roots: record.roots, excluded: record.excluded }, record.id)
+    const current = await section(connection => capture(connection, record.roots, record.excluded))
+    assertSnapshotMatches({ current, expected: after, target: record.before, paths, operation: 'Restore' })
+    const restore = await begin({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore', roots: record.roots, excluded: record.excluded }, record.id)
     try {
-      applySnapshot({ target: record.before, current, paths, content(hash) {
-        const row = db.prepare('SELECT content FROM objects WHERE hash=?').get(hash)
-        if (!row || !(row.content instanceof Uint8Array)) throw new Error('History content is missing')
-        return Buffer.from(row.content)
-      } })
-    } finally { finish(restore) }
+      await section(connection => applySnapshot({ target: record.before, current, paths, content: hash => readObject(connection, hash) }))
+    } finally { await finish(restore) }
     return summary(restore)
   }
   return {
-    list: () => records().map(summary),
-    async run<T>(details: HistoryInput, execute: () => Promise<T>): Promise<T> {
+    list: () => section(connection => records(connection).map(summary)),
+    async run<T>(details: HistoryInput, execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
       return locked(async () => {
-        const record = begin(details)
-        try { return await execute() } finally { finish(record) }
-      })
+        const record = await begin(details)
+        try { return await execute() } finally { await finish(record) }
+      }, signal)
     },
     async promote(details: HistoryInput, expected: Snapshot, target: Snapshot, content: (hash: string) => Buffer, onCheckpoint?: () => void) {
       return locked(async () => {
         const paths = changedPaths(expected, target)
         if (!paths.length) return null
         assertExcludedUntouched(paths, details.excluded)
-        const current = capture(details.roots, details.excluded)
+        const current = await section(connection => capture(connection, details.roots, details.excluded))
         assertSnapshotMatches({ current, expected, target, paths, operation: 'Promotion' })
-        const record = begin(details)
+        const record = await begin(details)
         try { onCheckpoint?.(); applySnapshot({ target, current, paths, content }) }
-        finally { finish(record) }
+        finally { await finish(record) }
         return summary(record)
       })
     },
     async recover(id: string) {
       return locked(async () => {
-        const record = records().find(record => record.id === id)
+        const record = await findRecord(item => item.id === id)
         if (!record || record.status !== 'pending') throw new Error('Pending checkpoint not found')
-        finish(record, 'interrupted')
+        await finish(record, 'interrupted')
         return summary(record)
       })
     },
     async restore(id: string) {
       return locked(async () => {
-        const record = records().find(record => record.id === id)
+        const record = await findRecord(item => item.id === id)
         if (!record) throw new Error('Checkpoint not found')
         return restoreRecord(record)
       })
     },
     async restoreStage(stageId: string, sessionId: string) {
       return locked(async () => {
-        const selected = records().filter(record => record.stageId === stageId && record.sessionId === sessionId && !record.restores)
+        const selected = await section(connection => records(connection).filter(record => record.stageId === stageId && record.sessionId === sessionId && !record.restores))
         if (!selected.length || selected.some(record => !record.after)) throw new Error('Completed stage not found')
         const before: Snapshot = { ...selected[0]!.before }; const after: Snapshot = { ...selected[0]!.before }; const seen = new Set<string>()
         for (const record of selected) for (const path of changedPaths(record.before, record.after!)) {
@@ -140,10 +170,16 @@ export function createChangeHistory(input: { directory: string; excluded: string
         return restoreRecord({ ...selected[0]!, id: `stage:${stageId}`, roots: [...new Set(selected.flatMap(record => record.roots))], excluded: [...new Set(selected.flatMap(record => record.excluded ?? []))], before, after })
       })
     },
-    prune: () => locked(async () => { prune(); db.exec('VACUUM'); return { ok: true } }),
+    prune: () => locked(async () => { await section(connection => { prune(connection); connection.exec('VACUUM') }); return { ok: true } }),
+    /** Closes the database once queued sections finish; later calls are refused. */
+    close: () => owner.close(),
   }
 }
-export type ChangeHistory = ReturnType<typeof createChangeHistory>
+export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
+
+function summary(record: Checkpoint) {
+  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, createdAt: record.createdAt, status: record.status, restores: record.restores, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changedPaths(record.before, record.after).map(path => ({ path, kind: !record.before[path] ? 'created' : !record.after![path] ? 'deleted' : 'modified' })) : [] }
+}
 
 function assertExcludedUntouched(paths: string[], excluded: string[] = []): void {
   if (paths.some(path => excluded.some(hidden => isInside(path, hidden) || isInside(hidden, path)))) throw new Error('Changes overlap a protected file or its parent directory')

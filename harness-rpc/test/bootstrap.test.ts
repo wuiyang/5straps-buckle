@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -134,7 +134,11 @@ describe('buckle serve bootstrap (built dist)', () => {
     expect(steps).toEqual(expect.arrayContaining([
       { stage: 'accept', name: 'http server' },
       { stage: 'streams', name: 'http server connections' },
+      { stage: 'locks', name: 'workbench ownership' },
+      { stage: 'locks', name: 'registered workspace workbenches' },
       { stage: 'services', name: 'service registry' },
+      { stage: 'databases', name: 'workspace history' },
+      { stage: 'databases', name: 'registered workspace history' },
       { stage: 'sinks', name: 'logger' },
     ]))
     const order = stageOrder(steps)
@@ -167,6 +171,20 @@ describe('buckle serve bootstrap (built dist)', () => {
     expect(failure).toMatchObject({ level: 'fatal', error: { message: expect.stringContaining('Unknown BUCKLE_PACKS: no-such-pack') } })
     expect(buckle.lines().some(line => line.message === '5straps Buckle listening')).toBe(false)
     expect(existsSync(join(node.state, 'actions.jsonl'))).toBe(false)
+  }, 60_000)
+})
+
+describe('a state directory other users can reach (ruling 7)', () => {
+  it('refuses serve, mcp and CLI commands, naming the repair, and touches nothing inside', async () => {
+    const node = await prepareNode()
+    chmodSync(node.state, 0o755)
+    for (const args of [['serve'], ['mcp'], ['tools']]) {
+      const run = spawnBuckle({ entry, args, env: node.env, cwd: node.workspace })
+      running.push(run)
+      expect(await run.exited).toEqual({ code: 1, signal: null })
+      expect(run.stderr()).toContain(`chmod 700 ${node.state}`)
+    }
+    expect(readdirSync(node.state)).toEqual([])
   }, 60_000)
 })
 

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ActionLogEntry } from '../common/types/ports/action-log.js'
 import type { PtyProcess, PtySpawnRequest } from '../common/types/ports/pty-process.js'
-import { createChangeHistory } from '../common/services/history/journal.js'
+import { openChangeHistory } from '../common/services/history/journal.js'
 import { createWorkbenchManager, type WorkbenchManager } from '../common/services/workbench/manager.js'
 import { workbenchHash } from '../common/services/workbench/storage.js'
 
@@ -32,7 +32,7 @@ async function fixture() {
   writeFileSync(join(sourceRoot, '.env'), 'SYNTHETIC_PRIVATE=value')
   mkdirSync(join(sourceRoot, 'private')); writeFileSync(join(sourceRoot, 'private', 'hidden.txt'), 'private file')
   const audit: ActionLogEntry[] = []
-  const history = createChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 10_000_000, retentionDays: 30 })
+  const history = await openChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 10_000_000, retentionDays: 30 })
   let clock = Date.now()
   let policy = 'initial'
   let denyWrites = false
@@ -71,8 +71,8 @@ describe('staged workbench files and publication', () => {
   it('persists only a token hash, binds the grant to one chat, and makes setup retries idempotent', async () => {
     const f = await fixture()
     expect(await f.manager.provision(f.grant)).toMatchObject({ id: f.grant.id, chatId: 'chat-a' })
-    expect(f.manager.authenticate(f.grant.id, 'Bearer ' + f.grant.token)).toBe(true)
-    expect(f.manager.authenticate(f.grant.id, 'Bearer agent-token')).toBe(false)
+    expect(await f.manager.authenticate(f.grant.id, 'Bearer ' + f.grant.token)).toBe(true)
+    expect(await f.manager.authenticate(f.grant.id, 'Bearer agent-token')).toBe(false)
     expect(readFileSync(join(f.options.directory, f.grant.id, 'state.json'), 'utf8')).not.toContain(f.grant.token)
     await expect(f.manager.provision({ ...f.grant, token: 'different-workbench-fixture-secret-token' })).rejects.toThrow('conflicts')
     await expect(f.manager.provision({ ...f.grant, id: randomUUID() })).rejects.toThrow('unresolved')
@@ -92,7 +92,7 @@ describe('staged workbench files and publication', () => {
     const applied = await f.manager.apply(f.grant.id, { actorId: 'alice', reviewId: review.id })
     expect(applied.workbench.status).toBe('applied')
     expect(readFileSync(join(f.sourceRoot, 'note.txt'), 'utf8')).toBe('staged')
-    expect(f.manager.hasActiveWork()).toBe(false)
+    expect(await f.manager.hasActiveWork()).toBe(false)
     await f.history.restore(applied.checkpoint!.id)
     expect(readFileSync(join(f.sourceRoot, 'note.txt'), 'utf8')).toBe('original')
   })
@@ -105,7 +105,7 @@ describe('staged workbench files and publication', () => {
     await expect(f.manager.apply(f.grant.id, { actorId: 'alice', reviewId: review.id })).rejects.toThrow('Workspace changed')
     expect(readFileSync(join(f.sourceRoot, 'note.txt'), 'utf8')).toBe('external')
     expect(readFileSync(join(f.copyRoot, 'note.txt'), 'utf8')).toBe('staged')
-    expect(f.history.list()).toHaveLength(0)
+    expect(await f.history.list()).toHaveLength(0)
   })
 
   it('invalidates a review when the staged file changes through editor or another writer', async () => {
@@ -145,7 +145,7 @@ describe('staged workbench files and publication', () => {
     const promote = f.history.promote
     f.history.promote = async (_details, _expected, _target, _content, checkpoint) => { checkpoint?.(); throw new Error('fixture interruption') }
     await expect(f.manager.apply(f.grant.id, { actorId: 'alice', reviewId: review.id })).rejects.toThrow('fixture interruption')
-    expect(f.manager.get(f.grant.id).status).toBe('apply_uncertain')
+    expect((await f.manager.get(f.grant.id)).status).toBe('apply_uncertain')
     await expect(f.manager.discard(f.grant.id, 'alice')).rejects.toThrow('uncertain')
     f.history.promote = promote
   })
@@ -184,7 +184,7 @@ describe('staged workbench files and publication', () => {
     await f.manager.discard(f.grant.id, 'alice')
     expect(existsSync(f.copyRoot)).toBe(false)
     expect(readFileSync(join(f.sourceRoot, 'note.txt'), 'utf8')).toBe('original')
-    expect(f.manager.hasActiveWork()).toBe(false)
+    expect(await f.manager.hasActiveWork()).toBe(false)
     await expect(f.manager.provision({ ...f.grant, id: randomUUID() })).resolves.toMatchObject({ status: 'open' })
   })
 })
@@ -215,7 +215,7 @@ describe('terminal control and recovery', () => {
     const released = await f.manager.controlTerminal(f.grant.id, terminal.id, { actorId: 'bob', generation: handoff.terminal.generation, action: 'release' })
     expect(released.terminal).toMatchObject({ controllerId: null, lastControllerId: 'bob' })
     await f.restart()
-    expect(f.manager.get(f.grant.id).terminals[0]?.lastControllerId).toBe('bob')
+    expect((await f.manager.get(f.grant.id)).terminals[0]?.lastControllerId).toBe('bob')
     expect(JSON.stringify(f.audit)).not.toContain('echo fixture')
   })
 
@@ -233,14 +233,14 @@ describe('terminal control and recovery', () => {
     const f = await fixture()
     const { terminal } = await f.manager.startTerminal(f.grant.id, { actorId: 'alice', cwd: '.', cols: 80, rows: 24 })
     f.processes[0]!.output('x'.repeat(2_000_000))
-    const first = f.manager.terminalEvents(f.grant.id, terminal.id, 0)
+    const first = await f.manager.terminalEvents(f.grant.id, terminal.id, 0)
     expect(first.truncated).toBe(true)
     expect(Buffer.byteLength(JSON.stringify(first.events))).toBeLessThan(270_000)
-    const next = f.manager.terminalEvents(f.grant.id, terminal.id, first.nextSequence)
+    const next = await f.manager.terminalEvents(f.grant.id, terminal.id, first.nextSequence)
     expect(next.events[0]!.sequence).toBe(first.nextSequence + 1)
     await f.manager.stopTerminal(f.grant.id, terminal.id, 'alice')
     await f.restart()
-    expect(f.manager.terminalEvents(f.grant.id, terminal.id, 0).events.length).toBeGreaterThan(0)
+    expect((await f.manager.terminalEvents(f.grant.id, terminal.id, 0)).events.length).toBeGreaterThan(0)
   })
 
   it('recovers interrupted process metadata while retaining the working copy', async () => {
@@ -254,14 +254,14 @@ describe('terminal control and recovery', () => {
     stored.terminals[0].controllerId = 'alice'
     writeFileSync(file, JSON.stringify(stored))
     await f.restart()
-    expect(f.manager.get(f.grant.id).terminals[0]).toMatchObject({ id: terminal.id, status: 'interrupted', controllerId: null })
+    expect((await f.manager.get(f.grant.id)).terminals[0]).toMatchObject({ id: terminal.id, status: 'interrupted', controllerId: null })
     expect(readFileSync(join(f.copyRoot, 'note.txt'), 'utf8')).toBe('retained')
   })
 
   it('refuses a second process from owning the same working copies concurrently', async () => {
     const f = await fixture()
     const other = createWorkbenchManager(f.options)
-    expect(() => other.get(f.grant.id)).toThrow('another Buckle process')
+    await expect(other.get(f.grant.id)).rejects.toThrow('another Buckle process')
     await other.close()
   })
 
@@ -270,7 +270,7 @@ describe('terminal control and recovery', () => {
     await f.manager.startTerminal(f.grant.id, { actorId: 'alice', cwd: '.', cols: 80, rows: 24 })
     f.changePolicy()
     await f.manager.policyChanged()
-    expect(f.manager.get(f.grant.id)).toMatchObject({ status: 'interrupted', terminals: [{ status: 'exited', controllerId: null }] })
+    expect(await f.manager.get(f.grant.id)).toMatchObject({ status: 'interrupted', terminals: [{ status: 'exited', controllerId: null }] })
   })
 })
 

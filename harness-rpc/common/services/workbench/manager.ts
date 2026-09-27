@@ -43,9 +43,9 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     return auditId
   }
   const terminals = createWorkbenchTerminals({ directory: options.directory, spawn: options.spawnPty, save, audit, checkBudget: record => files.checkBudget(record.id), now })
-  function own(force = false): void {
+  async function own(force = false): Promise<void> {
     if (!force && records.size === 0 && storage.list().length === 0) return
-    if (!storage.own()) return
+    if (!await storage.own()) return
     for (const record of storage.list()) {
       let recovered = false
       if (record.status === 'preparing' || record.status === 'applying') { record.status = record.status === 'applying' ? 'apply_uncertain' : 'interrupted'; recovered = true }
@@ -57,8 +57,8 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       records.set(record.id, record)
     }
   }
-  function get(id: string): StoredWorkbench {
-    own()
+  async function get(id: string): Promise<StoredWorkbench> {
+    await own()
     const record = records.get(id)
     if (!record) throw new WorkbenchError('Workbench not found', 404)
     return record
@@ -78,7 +78,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     if (terminals.isRunning(record)) throw new WorkbenchError('Stop all terminals before reviewing, applying or discarding')
   }
   async function operation<T>(id: string, tool: string, actorId: string, args: Record<string, string | number>, execute: (record: StoredWorkbench) => Promise<T> | T): Promise<T> {
-    const record = get(id)
+    const record = await get(id)
     const auditId = await audit(record, tool, actorId, args, 'attempt')
     try {
       if (active.has(id)) throw new WorkbenchError('Another workbench operation is running')
@@ -91,12 +91,12 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     } catch (error) { await audit(record, tool, actorId, args, 'result', auditId, 'error'); throw error }
   }
   return {
-    get: (id: string) => publicWorkbench(get(id)),
-    list() { own(); return [...records.values()].map(publicWorkbench) },
-    hasActiveWork() { own(); return [...records.values()].some(record => !CLOSED.has(record.status)) },
-    authenticate(id: string, authorization: string | undefined): boolean {
+    get: async (id: string) => publicWorkbench(await get(id)),
+    async list() { await own(); return [...records.values()].map(publicWorkbench) },
+    async hasActiveWork() { await own(); return [...records.values()].some(record => !CLOSED.has(record.status)) },
+    async authenticate(id: string, authorization: string | undefined): Promise<boolean> {
       try {
-        const record = get(id)
+        const record = await get(id)
         const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : ''
         const candidate = workbenchHash(token)
         return token.length >= 32 && timingSafeEqual(Buffer.from(record.tokenHash, 'hex'), Buffer.from(candidate, 'hex'))
@@ -104,7 +104,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     },
     async provision(input: WorkbenchProvision) {
       const parsed = WorkbenchProvisionSchema.parse(input)
-      own(true)
+      await own(true)
       const existing = records.get(parsed.id)
       if (existing) {
         if (existing.tokenHash !== workbenchHash(parsed.token) || existing.projectId !== parsed.projectId || existing.chatId !== parsed.chatId || existing.allowShell !== parsed.allowShell) throw new WorkbenchError('Workbench provision conflicts with its existing grant')
@@ -144,9 +144,9 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
         return { terminal: structuredClone(terminal) }
       })
     },
-    terminalEvents(id: string, terminalId: string, after: number) {
+    async terminalEvents(id: string, terminalId: string, after: number) {
       if (!Number.isSafeInteger(after) || after < 0) throw new WorkbenchError('Invalid terminal cursor', 400)
-      return terminals.events(get(id), terminalId, after)
+      return terminals.events(await get(id), terminalId, after)
     },
     controlTerminal(id: string, terminalId: string, input: z.infer<typeof WorkbenchControlSchema>) {
       const parsed = WorkbenchControlSchema.parse(input)
@@ -220,10 +220,10 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       })
     },
     recover(id: string) {
-      return operation(id, 'recover_apply', 'workspace-setup', {}, record => {
+      return operation(id, 'recover_apply', 'workspace-setup', {}, async record => {
         if (!['apply_uncertain', 'applying'].includes(record.status)) throw new WorkbenchError('Only uncertain publication needs setup recovery')
         if (terminals.isRunning(record)) throw new WorkbenchError('Stop terminals before recovery')
-        if (options.history.list().some(checkpoint => checkpoint.stageId === id && checkpoint.status === 'pending')) throw new WorkbenchError('Recover the pending file-history checkpoint before reconciling this workbench')
+        if ((await options.history.list()).some(checkpoint => checkpoint.stageId === id && checkpoint.status === 'pending')) throw new WorkbenchError('Recover the pending file-history checkpoint before reconciling this workbench')
         const review = reviewStorageSchema.parse(JSON.parse(readFileSync(join(storage.location(id), 'review.json'), 'utf8')))
         const before = files.base(id), current = files.current(id), paths = changedPaths(before, review.target)
         function matches(expected: typeof before): boolean {
@@ -237,15 +237,16 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       })
     },
     async policyChanged() {
-      own()
+      await own()
       for (const record of records.values()) {
         await terminals.stopAll(record)
         if (!CLOSED.has(record.status) && record.status !== 'apply_uncertain') { record.status = 'interrupted'; record.reviewId = null; record.revision++; save(record) }
       }
     },
+    /** Stops terminals and releases workbench ownership. */
     async close() {
       for (const record of records.values()) await terminals.stopAll(record)
-      storage.close()
+      await storage.close()
     },
     async auditRejected() {
       const id = randomUUID()

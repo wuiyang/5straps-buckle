@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { DatabaseSync } from 'node:sqlite'
+import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
+import { acquireFileLock, type FileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import type { ActionLogEntry } from '../../types/ports/action-log.js'
 import { createJsonFileStore } from '../json-file-store.js'
@@ -40,14 +41,10 @@ export function createPendingAudit(input: {
     async recover(): Promise<number> {
       const pending = store.read().pending
       if (!Object.keys(pending).length) return 0
-      const lock = new DatabaseSync(`${input.filePath}.recovery.sqlite`, { timeout: 0 })
-      let locked = false
+      const lock = await tryRecoveryLock(`${input.filePath}.recovery.sqlite`)
+      // Another process is recovering this log right now.
+      if (!lock) return 0
       try {
-        try { lock.exec('BEGIN IMMEDIATE'); locked = true }
-        catch (error) {
-          if (error instanceof Error && error.message.includes('locked')) return 0
-          throw error
-        }
         let recovered = 0
         for (const [auditId, item] of Object.entries(store.read().pending)) {
           const sameProcess = item.processId === process.pid && item.processInstanceId === input.processInstanceId
@@ -64,10 +61,18 @@ export function createPendingAudit(input: {
         }
         return recovered
       } finally {
-        if (locked) lock.exec('COMMIT')
-        lock.close()
+        await lock.release()
       }
     },
+  }
+}
+
+async function tryRecoveryLock(path: string): Promise<FileLock | null> {
+  try {
+    return await acquireFileLock({ path, wait: 'none' })
+  } catch (error) {
+    if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) return null
+    throw error
   }
 }
 

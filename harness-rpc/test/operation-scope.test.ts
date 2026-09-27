@@ -7,7 +7,7 @@ import { operationScopes, type ScopeEnv } from '../server/hono/operation-scope.j
 
 function probeApp() {
   const owner = createRuntimeOwner({ services: [] })
-  const services: BuckleServices = { getWorkspaceRuntime: () => Promise.reject(new Error('not needed here')) }
+  const services: BuckleServices = { getWorkspaceRuntime: () => Promise.reject(new Error('not needed here')), getWorkspaces: () => Promise.reject(new Error('not needed here')) }
   const common: BuckleCommon = { role: 'server', owner, services, start: () => owner.start(() => {}) }
   const seen: Array<{ scope: OperationScope; ambient: OperationScope; services: BuckleServices }> = []
   const app = new Hono<ScopeEnv>()

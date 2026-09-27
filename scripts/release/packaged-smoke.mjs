@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -45,7 +45,9 @@ function run(command, args, options = {}) {
 }
 
 function prepareInstallation() {
-  for (const directory of [packageDirectory, installation, workspace, state]) mkdirSync(directory)
+  for (const directory of [packageDirectory, installation, workspace]) mkdirSync(directory)
+  // The state directory holds workspace credentials; Buckle refuses one other users can reach.
+  mkdirSync(state, { mode: 0o700 })
   writeFileSync(join(root, 'npmrc'), '')
   for (const name of ['protocol', 'runtime', 'buckle']) {
     run('pnpm', ['--filter', `@5straps/${name}`, 'pack', '--pack-destination', packageDirectory], { cwd: repository })
@@ -168,6 +170,8 @@ async function checkBackupAndRestore() {
   rmSync(state, { recursive: true })
   cpSync(join(backup, 'workspace'), workspace, { recursive: true })
   cpSync(join(backup, 'state'), state, { recursive: true })
+  // A copy does not keep the directory's mode, and the node refuses a state directory others can reach.
+  chmodSync(state, 0o700)
   await startService()
   const audit = await request('/setup/audit')
   assert(audit.entries.some(entry => entry.tool === 'fs_write' && entry.outcome === 'ok'))

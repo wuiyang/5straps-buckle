@@ -34,7 +34,7 @@ process.exit(failed ? 1 : 0)
 async function probe(run) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-mcp-probe-'))
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
-  const state = join(root, 'state'); mkdirSync(state)
+  const state = join(root, 'state'); mkdirSync(state, { mode: 0o700 })
 
   const elicitations = []
   const client = new Client({ name: 'buckle-mcp-probe', version: '0.0.0' }, {

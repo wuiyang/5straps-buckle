@@ -1,6 +1,6 @@
 import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { editEnvironmentVariable, setEnvironmentVariable, updateEnvironmentFile, writeEnvironmentFile } from '../cli/environment-file.js'
 
@@ -70,15 +70,15 @@ describe.skipIf(process.platform === 'win32')('the environment file is owner-onl
     expect([readFileSync(path, 'utf8'), modeOf(path)]).toEqual(['BUCKLE_PORT=4321\n', 0o600])
   })
 
-  it('rewrites an edited file owner-only', () => {
+  it('rewrites an edited file owner-only', async () => {
     const path = worldReadable('BUCKLE_PORT=4320\n')
-    expect(updateEnvironmentFile(path, text => editEnvironmentVariable({ text, name: 'BUCKLE_RINGS_APPROVAL_KEY', value: 'fixture' })).ok).toBe(true)
+    expect((await updateEnvironmentFile(path, text => editEnvironmentVariable({ text, name: 'BUCKLE_RINGS_APPROVAL_KEY', value: 'fixture' }), { home: dirname(path) })).ok).toBe(true)
     expect(modeOf(path)).toBe(0o600)
   })
 
-  it('narrows the file even when the edit is refused and nothing is written', () => {
+  it('narrows the file even when the edit is refused and nothing is written', async () => {
     const path = worldReadable('BUCKLE_PORT=4320\nexport BUCKLE_RINGS_APPROVAL_KEY=hand-written\n')
-    expect(updateEnvironmentFile(path, text => editEnvironmentVariable({ text, name: 'BUCKLE_RINGS_APPROVAL_KEY', value: 'fixture' })).ok).toBe(false)
+    expect((await updateEnvironmentFile(path, text => editEnvironmentVariable({ text, name: 'BUCKLE_RINGS_APPROVAL_KEY', value: 'fixture' }), { home: dirname(path) })).ok).toBe(false)
     expect([readFileSync(path, 'utf8'), modeOf(path)]).toEqual(['BUCKLE_PORT=4320\nexport BUCKLE_RINGS_APPROVAL_KEY=hand-written\n', 0o600])
   })
 })

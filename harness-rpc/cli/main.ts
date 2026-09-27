@@ -8,7 +8,7 @@ import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { approveCommand } from '../common/domain/approval-instruction.js'
-import { WorkspaceError, createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
 import { withOperationScope } from '@5straps/runtime'
@@ -17,6 +17,7 @@ import { createCliApprovalChannel } from '../common/adapters/approval/cli-approv
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, repairStoredPolicy } from './policy.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
+import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { watchApprovals } from './approvals-watch.js'
 import { CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
 import { workspaceRegistryCommand } from './workspace.js'
@@ -48,6 +49,9 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   const common = initializeCommon({ config: input.config, role: 'cli', adapters: { approvalChannel: () => createCliApprovalChannel() } })
   try {
     return await runCliCommand({ common, config: input.config, command, rest })
+  } catch (error) {
+    if (error instanceof StateBusyError) return fail(error.message)
+    throw error
   } finally {
     await common.owner.close().catch((error: unknown) => {
       logger.error('Buckle closed with errors', { error })
@@ -66,11 +70,12 @@ async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig
     throw error
   }
   const runtime = await common.services.getWorkspaceRuntime()
+  const workspaces = await common.services.getWorkspaces()
   const scope = common.owner.registry.createScope({ context: { actor: 'local-owner' } })
-  return withOperationScope(scope, () => runAuditedCommand({ runtime, config: input.config, command, rest }))
+  return withOperationScope(scope, () => runAuditedCommand({ runtime, workspaces, config: input.config, command, rest }))
 }
 
-async function runAuditedCommand(input: { runtime: BuckleRuntime; config: BuckleConfig; command: string; rest: string[] }): Promise<CliResult> {
+async function runAuditedCommand(input: CommandContext): Promise<CliResult> {
   const { runtime, command } = input
   try {
     if (['approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
@@ -88,14 +93,16 @@ async function runAuditedCommand(input: { runtime: BuckleRuntime; config: Buckle
   }
 }
 
-function dispatchRuntimeCommand(input: { runtime: BuckleRuntime; config: BuckleConfig; command: string; rest: string[] }): CliResult | Promise<CliResult> {
+interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: BuckleConfig; command: string; rest: string[] }
+
+function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliResult> {
   const { runtime, command, rest } = input
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
   if (command === 'skills') return printSkills(runtime, rest)
-  if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, argv: rest }))
-  if (command === 'approvals') return reportWorkspaceErrors(() => approvals({ config: input.config, runtime, argv: rest }))
-  if (command === 'check-url') return checkUrlCommand({ argv: rest, allowedHosts: input.config.allowedHosts, runtimeFor: workspace => runtimeForWorkspace({ config: input.config, runtime, workspace }) })
+  if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, workspaces: input.workspaces, argv: rest }))
+  if (command === 'approvals') return reportWorkspaceErrors(() => approvals({ config: input.config, runtime, workspaces: input.workspaces, argv: rest }))
+  if (command === 'check-url') return checkUrlCommand({ argv: rest, allowedHosts: input.config.allowedHosts, runtimeFor: workspace => runtimeForWorkspace({ runtime, workspaces: input.workspaces, workspace }) })
   if (command === 'grants') return grants(runtime, rest)
   if (command === 'workspace') return workspaceRegistryCommand({ config: input.config, runtime, argv: rest })
   if (command === 'workspaces') return shellWorkspacesCommand(runtime, rest)
@@ -210,6 +217,7 @@ async function reportWorkspaceErrors(operation: () => Promise<CliResult>): Promi
 interface CommandInput {
   config: BuckleConfig
   runtime: BuckleRuntime
+  workspaces: WorkspaceManager
   argv: string[]
 }
 
@@ -218,10 +226,9 @@ interface CommandInput {
  * so a request from a registered child workspace is reachable only through that workspace's
  * runtime; the node's own is the default.
  */
-async function runtimeForWorkspace(input: { config: BuckleConfig; runtime: BuckleRuntime; workspace?: string }): Promise<BuckleRuntime> {
+async function runtimeForWorkspace(input: { runtime: BuckleRuntime; workspaces: WorkspaceManager; workspace?: string }): Promise<BuckleRuntime> {
   if (!input.workspace || input.workspace === 'default') return input.runtime
-  const manager = createWorkspaceManager({ config: input.config, runtime: input.runtime })
-  return (await manager.resolve(input.workspace)).runtime
+  return (await input.workspaces.resolve(input.workspace)).runtime
 }
 
 /**
@@ -402,7 +409,7 @@ function fail(message: string): CliResult {
 
 async function historyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
   const [command = 'list', id] = argv
-  if (command === 'list') return print(runtime.history.list())
+  if (command === 'list') return print(await runtime.history.list())
   if (command === 'prune') return print(await runtime.history.prune())
   if (command === 'restore-stage' && id && argv[2]) return print(await runtime.history.restoreStage(id, argv[2]))
   if (command === 'restore' && id) return print(await runtime.history.restore(id))

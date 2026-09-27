@@ -98,12 +98,12 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   }
   let edit: EnvironmentEdit = { ok: false, reason: 'Settings update did not run' }
   try {
-    const writeValue = () => {
-      edit = updateEnvironmentFile(context.file, text => editEnvironmentVariable({ text, name: setting.key, value: next }))
+    const writeValue = async () => {
+      edit = await updateEnvironmentFile(context.file, text => editEnvironmentVariable({ text, name: setting.key, value: next }), { ...(context.home ? { home: context.home } : {}) })
       return edit.ok
     }
     if (setting.key === 'BUCKLE_WORKSPACE_ROOT' && next !== null) await moveWorkspaceConfig({ file: context.file, root: next, home: context.home, write: writeValue })
-    else writeValue()
+    else await writeValue()
   } catch (error) {
     return fail(`Could not write ${context.file}: ${error instanceof Error ? error.message : 'unknown error'}. Inspect the configuration before retrying.`)
   }

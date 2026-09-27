@@ -1,20 +1,23 @@
 import { execFile } from 'node:child_process'
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv, promisify } from 'node:util'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { runProcess } from '../common/adapters/process-runner.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { editEnvironmentVariable } from '../cli/environment-file.js'
+import { acquireFileLock } from '@5straps/runtime/sqlite'
+import { editEnvironmentVariable, environmentLockPath } from '../cli/environment-file.js'
 import { settingsCommand } from '../cli/settings.js'
+import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 import { BUILTIN_PACKS, createBuiltinPacks, unmetPackPrerequisite } from '../common/services/packs/index.js'
 
 const SECRET = 'fixture-secret-value-never-printed-7f3a'
 
 let root: string
+let home: string
 let workspace: string
 let state: string
 let file: string
@@ -22,6 +25,7 @@ let original: string
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'buckle-settings-'))
+  home = mkdtempSync(join(tmpdir(), 'buckle-settings-home-'))
   workspace = join(root, 'workspace')
   state = join(root, 'state')
   mkdirSync(workspace)
@@ -49,7 +53,7 @@ async function settings(argv: string[], environment: NodeJS.ProcessEnv = {}) {
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { out += String(chunk); return true })
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { err += String(chunk); return true })
   try {
-    const result = await settingsCommand({ argv, environment, environmentFile: file, cwd: root })
+    const result = await settingsCommand({ argv, environment, environmentFile: file, cwd: root, home })
     return { ...result, out, err, printed: out + err }
   } finally { stdout.mockRestore(); stderr.mockRestore() }
 }
@@ -231,7 +235,7 @@ describe('buckle settings against other writers and links', () => {
 
   function settingsProcess(...argv: string[]) {
     return promisify(execFile)(process.execPath, ['--import', import.meta.resolve('tsx'), entry, 'settings', ...argv], {
-      cwd: root, env: { PATH: process.env.PATH, HOME: root, BUCKLE_ENV_FILE: file },
+      cwd: root, env: { PATH: process.env.PATH, HOME: home, BUCKLE_ENV_FILE: file },
     })
   }
 
@@ -245,20 +249,21 @@ describe('buckle settings against other writers and links', () => {
       ])
 
       expect(parseEnv(readFileSync(file, 'utf8'))).toMatchObject({ BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_PACKS: 'fs,web', BUCKLE_AUTH_TOKEN: SECRET })
+      // The lock lives under ~/.5straps/locks, never beside the file.
       expect(readdirSync(root).sort()).toEqual(['node.env', 'state', 'workspace'])
+      expect(readdirSync(join(home, '.5straps', 'locks'))).toEqual([basename(environmentLockPath({ target: realpathSync(file), home }))])
     }
   }, 30_000)
 
   it('waits for a writer holding the lock, then edits the text that writer left', async () => {
-    const lock = join(root, '.node.env.lock')
-    writeFileSync(lock, '')
+    const lock = await acquireFileLock({ path: environmentLockPath({ target: realpathSync(file), home }), wait: 'none' })
     const waiting = settingsProcess('set', 'shell', 'off')
     await new Promise(resolve => setTimeout(resolve, 1_500))
     expect(readFileSync(file, 'utf8')).toBe(original)
 
     const other = withLine('BUCKLE_SERVER_NAME=Fixture node', 'BUCKLE_SERVER_NAME=Written meanwhile')
     writeFileSync(file, other)
-    rmSync(lock)
+    await lock.release()
     await waiting
 
     expect(parseEnv(readFileSync(file, 'utf8'))).toMatchObject({ BUCKLE_SERVER_NAME: 'Written meanwhile', BUCKLE_ALLOW_SHELL: 'false' })
@@ -280,16 +285,14 @@ describe('buckle settings against other writers and links', () => {
     expect(readdirSync(join(root, 'real'))).toEqual(['target.env'])
   })
 
-  it('takes over a lock left by a writer that died', async () => {
-    const lock = join(root, '.node.env.lock')
-    writeFileSync(lock, '')
-    const old = new Date(Date.now() - 60_000)
-    utimesSync(lock, old, old)
+  it('writes at once after a writer holding the lock is killed, with no stale-lock wait', async () => {
+    await killHolder(await holdLockInProcess(environmentLockPath({ target: realpathSync(file), home })))
 
+    const started = Date.now()
     expect((await settings(['set', 'shell', 'off'])).exitCode).toBe(0)
+    expect(Date.now() - started).toBeLessThan(2_000)
     expect(parseEnv(readFileSync(file, 'utf8')).BUCKLE_ALLOW_SHELL).toBe('false')
-    expect(readdirSync(root)).not.toContain('.node.env.lock')
-  })
+  }, 30_000)
 })
 
 describe('the pack catalogue init and settings name', () => {

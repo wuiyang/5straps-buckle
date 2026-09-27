@@ -201,7 +201,9 @@ describe('buckle check-url', () => {
   it('denies what the node\'s limit over a registered workspace leaves off, whatever pattern grant it holds', async () => {
     const withGrant = async (environment: Record<string, string>) => {
       const root = mkdtempSync(join(tmpdir(), 'buckle-check-url-limit-'))
-      for (const directory of ['default', 'child', 'state']) mkdirSync(join(root, directory))
+      for (const directory of ['default', 'child']) mkdirSync(join(root, directory))
+      // Owner-only, as the node requires of a directory holding workspace credentials.
+      mkdirSync(join(root, 'state'), { mode: 0o700 })
       const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', ...environment })
       const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
       await createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy: emptyWorkspacePolicy() })

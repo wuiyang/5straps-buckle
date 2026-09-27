@@ -11,7 +11,7 @@ import { createPathView } from '../dist/common/domain/path-view.js'
 import { logger } from '../dist/common/runtime/log.js'
 import { createShellPack } from '../dist/common/services/packs/shell/index.js'
 import { initializeCommon } from '../dist/common/runtime/initialize.js'
-import { createChangeHistory } from '../dist/common/services/history/journal.js'
+import { openChangeHistory } from '../dist/common/services/history/journal.js'
 
 const checks = { browser: checkBrowser, sandbox: checkSandbox }
 const selected = process.argv[2] ?? 'all'
@@ -91,7 +91,7 @@ async function checkSandbox() {
     const outside = join(root, 'outside'); writeFileSync(outside, 'synthetic outside marker')
     writeFileSync(join(workspace, '.env'), 'SYNTHETIC=private')
     writeFileSync(join(workspace, 'file'), 'before')
-    const history = createChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 1_048_576, retentionDays: 30 })
+    const history = await openChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 1_048_576, retentionDays: 30 })
     const pack = createShellPack({ paths: createPathView({ root: workspace, mount: '/workspace' }), sandbox,
       isolation: { directory: join(state, 'isolated-shell'), maxBytes: 1_048_576, history },
       writableRoots: [workspace], hiddenPaths: [state], readOnlyPaths: [], unavailableReason: null, runProcess })

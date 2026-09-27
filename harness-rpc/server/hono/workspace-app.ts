@@ -9,16 +9,17 @@ import { bodyLimit } from 'hono/body-limit'
 import { z } from 'zod'
 import type { BuckleConfig } from '../../common/runtime/config.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
-import { createWorkspaceManager, WorkspaceError, WorkspaceRegistrationSchema, WorkspacePatchSchema, WorkspaceTokenInputSchema } from '../../common/services/workspaces/workspace-manager.js'
+import { createWorkspaceManager, type WorkspaceManager, WorkspaceError, WorkspaceRegistrationSchema, WorkspacePatchSchema, WorkspaceTokenInputSchema } from '../../common/services/workspaces/workspace-manager.js'
 import { matchesTokenSource } from '../../common/services/access/tokens.js'
 import { requireBearerToken } from './auth.js'
 import { allowPostOnly } from './mcp-allow.js'
 import { createRpcApp } from './rpc-app.js'
 import { createSetupApp } from './setup-app.js'
 import { logger } from '../../common/runtime/log.js'
+import { stateBusyResponse } from './state-busy.js'
 
-export function createWorkspaceApp(input: { config: BuckleConfig; runtime: BuckleRuntime }): Hono {
-  const manager = createWorkspaceManager(input)
+export function createWorkspaceApp(input: { config: BuckleConfig; runtime: BuckleRuntime; workspaces?: WorkspaceManager }): Hono {
+  const manager = input.workspaces ?? createWorkspaceManager(input)
   const app = new Hono()
   const faces = new Map<string, Hono>()
   const nodeAudit = auditHttpRequest({ actions: input.runtime.actions, workspaceId: 'default', face: 'http_workspace_registry' })
@@ -88,7 +89,7 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     if (path.startsWith('/v1/workbenches/')) {
       const { runtime } = await manager.resolve(id)
       const workbenchId = path.split('/')[3] ?? ''
-      if (!runtime.workbenches.authenticate(workbenchId, context.req.header('authorization'))) {
+      if (!await runtime.workbenches.authenticate(workbenchId, context.req.header('authorization'))) {
         await runtime.workbenches.auditRejected()
         return context.json({ error: 'Unauthorized' }, 401)
       }
@@ -131,6 +132,8 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
 
   app.onError((error, context) => {
     if (error instanceof WorkspaceError) return context.json({ error: error.message }, error.status)
+    const busy = stateBusyResponse(error, context)
+    if (busy) return busy
     logger.error('Workspace request failed', { message: error.message })
     return context.json({ error: 'Workspace request failed; inspect local owner logs' }, 500)
   })

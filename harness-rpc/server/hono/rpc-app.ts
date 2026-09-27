@@ -8,6 +8,7 @@ import { requireBearerToken } from './auth.js'
 import { toDescriptor } from '../../common/domain/skill.js'
 import { logger } from '../../common/runtime/log.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
+import { stateBusyResponse } from './state-busy.js'
 
 export interface RpcAppDependencies {
   config: BuckleConfig
@@ -71,6 +72,8 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
   })
 
   app.onError((error, context) => {
+    const busy = stateBusyResponse(error, context)
+    if (busy) return busy
     logger.error('Unhandled Buckle request error', { message: error.message, path: context.req.path })
     return context.json({ error: 'Internal Buckle error' }, 500)
   })

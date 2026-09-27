@@ -82,7 +82,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     await runtime.actions.recoverInterrupted()
     return context.json(runtime.actions.page(parsed.data))
   })
-  app.get('/history', context => context.json({ checkpoints: runtime.history.list() }))
+  app.get('/history', async context => context.json({ checkpoints: await runtime.history.list() }))
   app.post('/history/:id/restore', async context => historyResponse(context, () => runtime.history.restore(context.req.param('id'))))
   app.post('/history/:id/recover', async context => historyResponse(context, () => runtime.history.recover(context.req.param('id'))))
 
@@ -110,7 +110,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     return context.body(null, 204)
   })
 
-  app.get('/status', context => {
+  app.get('/status', async context => {
     const manifest = runtime.manifest()
     const effective = runtime.policy.effective()
     return context.json({
@@ -125,7 +125,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
       policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },
       reporting: runtime.reporter.configured,
       approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',
-      activeWork: runtime.hasActiveWork(),
+      activeWork: await runtime.hasActiveWork(),
     })
   })
 

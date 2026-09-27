@@ -1,7 +1,10 @@
-import { randomBytes } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, fchmodSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { chmodSync, closeSync, existsSync, fchmodSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { parseEnv } from 'node:util'
+import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
+import { withFileLock } from '@5straps/runtime/sqlite'
 
 /**
  * Sets one variable in an environment file's text, in place where it is already there: the line
@@ -72,9 +75,8 @@ export function writeEnvironmentFile(path: string, text: string): void {
   writeFileAtomically(path, text)
 }
 
-/** A lock older than this was left by a writer that died; a real edit takes milliseconds. */
-const STALE_LOCK_MS = 30_000
 const LOCK_WAIT_MS = 10_000
+const LOCK_POLL_MS = 25
 
 /**
  * Reads, edits and replaces an environment file as one step against other writers: the edit runs
@@ -82,9 +84,9 @@ const LOCK_WAIT_MS = 10_000
  * once both land. A symlinked file is followed and its target edited, the link kept. Nothing is
  * written when the edit refuses, but the file is made owner-only either way.
  */
-export function updateEnvironmentFile(path: string, edit: (text: string) => EnvironmentEdit): EnvironmentEdit {
+export function updateEnvironmentFile(path: string, edit: (text: string) => EnvironmentEdit, options: { home?: string } = {}): Promise<EnvironmentEdit> {
   const target = realpathSync(path)
-  return withFileLock(target, () => {
+  return withEnvironmentLock({ target, home: options.home ?? homedir() }, () => {
     chmodSync(target, OWNER_ONLY)
     const text = readFileSync(target, 'utf8')
     const result = edit(text)
@@ -120,32 +122,19 @@ export function writeFileAtomically(path: string, text: string): void {
   syncDirectory(directory)
 }
 
-function withFileLock<T>(target: string, operation: () => T): T {
-  const lock = join(dirname(target), `.${basename(target)}.lock`)
-  const deadline = Date.now() + LOCK_WAIT_MS
-  for (;;) {
-    try {
-      closeSync(openSync(lock, 'wx', 0o600))
-      break
-    } catch (error) {
-      if (!isCode(error, 'EEXIST')) throw error
-      if (lockAge(lock) > STALE_LOCK_MS) { rmSync(lock, { force: true }); continue }
-      if (Date.now() > deadline) throw new Error(`Another writer holds ${lock}; if no buckle command is running, remove that file and try again`)
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
-    }
-  }
-  try {
-    return operation()
-  } finally {
-    rmSync(lock, { force: true })
-  }
+/**
+ * One lock per real file, under the owner's ~/.5straps/locks rather than beside the file, so no
+ * lock is ever left in a project directory. The OS releases it when a writer dies.
+ */
+export function environmentLockPath(input: { target: string; home: string }): string {
+  return join(input.home, '.5straps', 'locks', `env-${createHash('sha256').update(input.target).digest('hex')}.lock.sqlite`)
 }
 
-function lockAge(lock: string): number {
+async function withEnvironmentLock<T>(input: { target: string; home: string }, operation: () => T): Promise<T> {
   try {
-    return Date.now() - statSync(lock).mtimeMs
+    return await withFileLock({ path: environmentLockPath(input), wait: { deadlineMs: LOCK_WAIT_MS, pollMs: LOCK_POLL_MS } }, async () => operation())
   } catch (error) {
-    if (isCode(error, 'ENOENT')) return 0
+    if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new Error(`Another buckle command is writing ${input.target}; try again once it finishes`, { cause: error })
     throw error
   }
 }

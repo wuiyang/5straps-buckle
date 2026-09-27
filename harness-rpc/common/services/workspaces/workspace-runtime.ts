@@ -11,7 +11,7 @@ import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSa
 import { createShellWorkspaceRecovery } from '../shell/isolated-shell.js'
 import { join, dirname } from 'node:path'
 import { existsSync, realpathSync } from 'node:fs'
-import { createChangeHistory, type ChangeHistory } from '../history/journal.js'
+import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
 import { PROTOCOL_VERSION, isWorkspaceToolAllowed, type HarnessManifest, type InvokeRequest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
@@ -74,7 +74,7 @@ export interface PolicyHandle {
 export interface BuckleRuntime {
   readonly workspaceId: string
   workbenches: ReturnType<typeof createWorkbenchManager>
-  hasActiveWork(): boolean
+  hasActiveWork(): Promise<boolean>
   manifest(): HarnessManifest
   toolCatalog(): { tools: ToolCapability[]; unavailable: Array<{ name: string; reason: string }> }
   registry(): ToolRegistry
@@ -107,7 +107,7 @@ export async function createRuntime(input: {
   const ceiling = config.nodePolicy ? compilePolicy(config.nodePolicy) : null
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
-  const history = createChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays })
+  const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? 'default'}` })
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
 
@@ -174,7 +174,7 @@ export async function createRuntime(input: {
   const runtime: BuckleRuntime = {
     workspaceId: input.workspaceId ?? 'default',
     workbenches,
-    hasActiveWork: () => activeInvocations > 0 || workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
+    hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: registry.capabilities().filter(tool => toolDenial(tool.name) === null) }),
     toolCatalog: () => ({ tools: registry.capabilities(), unavailable: registry.capabilities().flatMap(tool => {
       const reason = toolDenial(tool.name)
@@ -200,14 +200,14 @@ export async function createRuntime(input: {
       network: () => ({ rule: networkEgressRule(compiled, ceiling), approved: approvedUrls(compiled, ceiling) }),
       revision: () => policyRevision(policyStore.read()),
       async apply(policy, expectedRevision) {
-        if (runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
+        if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
         compileEffective(policy)
         await policyStore.write({ ...policy, updatedAt: new Date().toISOString() }, expectedRevision)
         await runtime.reload()
         return compiled.policy
       },
       async clear(expectedRevision) {
-        if (runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
+        if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
         await policyStore.clear(expectedRevision)
         await runtime.reload()
         return compiled.policy

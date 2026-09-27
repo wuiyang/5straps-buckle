@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createChangeHistory } from '../common/services/history/journal.js'
+import { openChangeHistory } from '../common/services/history/journal.js'
 import { createShellWorkspaceRecovery, runIsolatedShell } from '../common/services/shell/isolated-shell.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
 import { createPathView } from '../common/domain/path-view.js'
@@ -10,11 +10,11 @@ import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-function fixture() {
+async function fixture() {
   const root = mkdtempSync('/tmp/buckle-isolated-shell-'); roots.push(root)
   const sourceRoot = join(root, 'source'); mkdirSync(sourceRoot)
   const state = join(root, 'state')
-  const history = createChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30 })
+  const history = await openChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30 })
   const isolation = { directory: join(state, 'shell'), maxBytes: 1_000_000, history }
   const input = { isolation, sourceRoot, writableRoots: [sourceRoot], excluded: [state], details: { sessionId: 'caller', stageId: 'message', tool: 'shell_exec' } }
   return { root, sourceRoot, state, history, isolation, input }
@@ -22,47 +22,47 @@ function fixture() {
 
 describe('isolated shell publication', () => {
   it('keeps changes private until completion and publishes an undoable checkpoint', async () => {
-    const { sourceRoot, history, input, isolation } = fixture()
+    const { sourceRoot, history, input, isolation } = await fixture()
     writeFileSync(join(sourceRoot, 'file'), 'before')
     await runIsolatedShell({ ...input, execute: async copy => {
       writeFileSync(join(copy, 'file'), 'agent')
       expect(readFileSync(join(sourceRoot, 'file'), 'utf8')).toBe('before')
     } })
     expect(readFileSync(join(sourceRoot, 'file'), 'utf8')).toBe('agent')
-    expect(history.list()).toHaveLength(1)
-    await history.restore(history.list()[0]!.id)
+    expect(await history.list()).toHaveLength(1)
+    await history.restore((await history.list())[0]!.id)
     expect(readFileSync(join(sourceRoot, 'file'), 'utf8')).toBe('before')
     expect(readdirSync(isolation.directory)).toEqual([])
   })
 
   it('keeps unrelated owner edits out of the agent checkpoint', async () => {
-    const { sourceRoot, history, input } = fixture()
+    const { sourceRoot, history, input } = await fixture()
     writeFileSync(join(sourceRoot, 'file'), 'before')
     await runIsolatedShell({ ...input, execute: async copy => {
       writeFileSync(join(copy, 'file'), 'agent')
       writeFileSync(join(sourceRoot, 'owner'), 'concurrent owner edit')
     } })
-    expect(history.list()[0]!.paths).toEqual([join(sourceRoot, 'file')])
-    await history.restore(history.list()[0]!.id)
+    expect((await history.list())[0]!.paths).toEqual([join(sourceRoot, 'file')])
+    await history.restore((await history.list())[0]!.id)
     expect(readFileSync(join(sourceRoot, 'owner'), 'utf8')).toBe('concurrent owner edit')
   })
 
   it('retains a conflicted private copy without overwriting owner edits', async () => {
-    const { sourceRoot, history, input, isolation } = fixture()
+    const { sourceRoot, history, input, isolation } = await fixture()
     writeFileSync(join(sourceRoot, 'file'), 'before')
     await expect(runIsolatedShell({ ...input, execute: async copy => {
       writeFileSync(join(copy, 'file'), 'agent')
       writeFileSync(join(sourceRoot, 'file'), 'owner')
     } })).rejects.toThrow('owner review')
     expect(readFileSync(join(sourceRoot, 'file'), 'utf8')).toBe('owner')
-    expect(history.list()).toEqual([])
+    expect(await history.list()).toEqual([])
     const retained = join(isolation.directory, readdirSync(isolation.directory)[0]!)
     expect(JSON.parse(readFileSync(join(retained, 'run.json'), 'utf8')).status).toBe('needs_review')
     expect(readFileSync(join(retained, 'workspace', 'file'), 'utf8')).toBe('agent')
   })
 
   it('does not copy credentials or permit new credential files to be published', async () => {
-    const { sourceRoot, input } = fixture()
+    const { sourceRoot, input } = await fixture()
     const credential = join(sourceRoot, '.env'); writeFileSync(credential, 'SYNTHETIC=private')
     await expect(runIsolatedShell({ ...input, excluded: [...input.excluded, credential], execute: async copy => {
       expect(existsSync(join(copy, '.env'))).toBe(false)
@@ -73,7 +73,7 @@ describe('isolated shell publication', () => {
   })
 
   it('refuses removal of an owner directory containing an excluded credential', async () => {
-    const { sourceRoot, input } = fixture()
+    const { sourceRoot, input } = await fixture()
     const folder = join(sourceRoot, 'folder'); mkdirSync(folder)
     const credential = join(folder, '.env'); writeFileSync(credential, 'SYNTHETIC=private')
     await expect(runIsolatedShell({ ...input, excluded: [...input.excluded, credential], execute: async copy => {
@@ -83,7 +83,7 @@ describe('isolated shell publication', () => {
   })
 
   it('rejects changes outside the admitted working directory', async () => {
-    const { sourceRoot, input } = fixture()
+    const { sourceRoot, input } = await fixture()
     const allowed = join(sourceRoot, 'allowed'); mkdirSync(allowed)
     await expect(runIsolatedShell({ ...input, writableRoots: [allowed], execute: async copy => {
       writeFileSync(join(copy, 'outside'), 'agent')
@@ -92,7 +92,7 @@ describe('isolated shell publication', () => {
   })
 
   it('refuses publication through an owner-replaced parent symlink', async () => {
-    const { sourceRoot, root, input } = fixture()
+    const { sourceRoot, root, input } = await fixture()
     mkdirSync(join(sourceRoot, 'folder'))
     const outside = join(root, 'outside'); mkdirSync(outside)
     await expect(runIsolatedShell({ ...input, execute: async copy => {
@@ -104,7 +104,7 @@ describe('isolated shell publication', () => {
   })
 
   it('cleans private read-only directories without following their symlinks', async () => {
-    const { sourceRoot, input, isolation } = fixture()
+    const { sourceRoot, input, isolation } = await fixture()
     await runIsolatedShell({ ...input, execute: async copy => {
       mkdirSync(join(copy, 'readonly'))
       writeFileSync(join(copy, 'readonly', 'file'), 'agent')
@@ -117,29 +117,29 @@ describe('isolated shell publication', () => {
   })
 
   it('rejects new symbolic links out of the workspace', async () => {
-    const { sourceRoot, input } = fixture()
+    const { sourceRoot, input } = await fixture()
     await expect(runIsolatedShell({ ...input, execute: async copy => { symlinkSync('/outside', join(copy, 'escape')) } })).rejects.toThrow('owner review')
     expect(existsSync(join(sourceRoot, 'escape'))).toBe(false)
   })
 
   it('retains changes when execution fails before a final process result', async () => {
-    const { sourceRoot, input, history } = fixture()
+    const { sourceRoot, input, history } = await fixture()
     await expect(runIsolatedShell({ ...input, execute: async copy => { writeFileSync(join(copy, 'partial'), 'agent'); throw new Error('process interrupted') } })).rejects.toThrow('owner review')
     expect(existsSync(join(sourceRoot, 'partial'))).toBe(false)
-    expect(history.list()).toEqual([])
+    expect(await history.list()).toEqual([])
   })
 
   it('publishes known edits from a nonzero process exit so they remain undoable', async () => {
-    const { sourceRoot, input, history } = fixture()
+    const { sourceRoot, input, history } = await fixture()
     const result = await runIsolatedShell({ ...input, execute: async copy => { writeFileSync(join(copy, 'partial'), 'agent'); return { exitCode: 1 } } })
     expect(result.exitCode).toBe(1)
-    await history.restore(history.list()[0]!.id)
+    await history.restore((await history.list())[0]!.id)
     expect(existsSync(join(sourceRoot, 'partial'))).toBe(false)
   })
 })
 
 it('mounts only the private copy as writable and uses the command as namespace PID 1', async () => {
-  const { sourceRoot, isolation, state, history } = fixture()
+  const { sourceRoot, isolation, state, history } = await fixture()
   const calls: ProcessRequest[] = []
   const pack = createShellPack({ paths: createPathView({ root: sourceRoot, mount: '/workspace' }), isolation, sandbox: createBubblewrapSandbox('/usr/bin/bwrap'), writableRoots: [sourceRoot], hiddenPaths: [state], readOnlyPaths: [], unavailableReason: null, runProcess: async request => {
     calls.push(request)
@@ -157,18 +157,18 @@ it('mounts only the private copy as writable and uses the command as namespace P
   expect(calls[0]!.args[binding + 1]).not.toBe(sourceRoot)
   expect(calls[0]!.args[binding + 2]).toBe('/workspace')
   expect(readFileSync(join(sourceRoot, 'file'), 'utf8')).toBe('sandbox result')
-  expect(history.list()[0]!.stageId).toBe('message')
+  expect((await history.list())[0]!.stageId).toBe('message')
 })
 
 describe('owner retained workspace recovery', () => {
-  function recoveryFixture() {
-    const base = fixture()
+  async function recoveryFixture() {
+    const base = await fixture()
     const recovery = createShellWorkspaceRecovery({ ...base.isolation, sourceRoot: base.sourceRoot, retentionDays: 30 })
     return { ...base, recovery }
   }
 
   it('publishes an interrupted copy into an undoable checkpoint', async () => {
-    const { input, sourceRoot, recovery, history } = recoveryFixture()
+    const { input, sourceRoot, recovery, history } = await recoveryFixture()
     await expect(runIsolatedShell({ ...input, execute: async copy => {
       writeFileSync(join(copy, 'recovered'), 'partial work')
       throw new Error('interrupted')
@@ -184,7 +184,7 @@ describe('owner retained workspace recovery', () => {
   })
 
   it('refuses inspect, publish and discard while another runtime holds the workspace', async () => {
-    const { input, recovery } = recoveryFixture()
+    const { input, recovery } = await recoveryFixture()
     await runIsolatedShell({ ...input, execute: async () => {
       const id = recovery.list()[0]!.id
       await expect(recovery.inspect(id)).rejects.toThrow('active')
@@ -195,7 +195,7 @@ describe('owner retained workspace recovery', () => {
   })
 
   it('keeps owner conflicts unchanged until the retained copy is explicitly discarded', async () => {
-    const { input, recovery, sourceRoot } = recoveryFixture()
+    const { input, recovery, sourceRoot } = await recoveryFixture()
     writeFileSync(join(sourceRoot, 'file'), 'before')
     await expect(runIsolatedShell({ ...input, execute: async copy => {
       writeFileSync(join(copy, 'file'), 'agent')
@@ -209,7 +209,7 @@ describe('owner retained workspace recovery', () => {
   })
 
   it('refuses replay of uncertain publication and never prunes unresolved work', async () => {
-    const { input, recovery, isolation } = recoveryFixture()
+    const { input, recovery, isolation } = await recoveryFixture()
     await expect(runIsolatedShell({ ...input, execute: async () => { throw new Error('interrupted') } })).rejects.toThrow('owner review')
     const record = recovery.list()[0]!
     const metadata = join(isolation.directory, record.id, 'run.json')
@@ -221,7 +221,7 @@ describe('owner retained workspace recovery', () => {
   })
 
   it('rejects traversal and cross-workspace metadata before touching files', async () => {
-    const { input, recovery, isolation } = recoveryFixture()
+    const { input, recovery, isolation } = await recoveryFixture()
     await expect(recovery.discard('../outside')).rejects.toThrow()
     await expect(runIsolatedShell({ ...input, execute: async () => { throw new Error('interrupted') } })).rejects.toThrow('owner review')
     const record = recovery.list()[0]!

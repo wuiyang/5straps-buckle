@@ -160,11 +160,12 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
     async update(id: string, input: z.infer<typeof WorkspacePatchSchema> & { retired?: boolean }): Promise<WorkspaceDescriptor> {
       if (id === 'default') throw new WorkspaceError('The default workspace is controlled by the node process', 409)
       const resolved = await manager.resolve(id, { setup: true })
+      const busy = input.retired || input.enabled === false ? await resolved.runtime.hasActiveWork() : false
       return store.update(state => {
         const workspace = state.workspaces.find(item => item.id === id)
         if (!workspace) throw new WorkspaceError('Workspace not found', 404)
         if (input.expectedUpdatedAt !== undefined && workspace.updatedAt !== input.expectedUpdatedAt) throw new WorkspaceError('Workspace changed; reload before saving', 409)
-        if ((input.retired || input.enabled === false) && resolved.runtime.hasActiveWork()) throw new WorkspaceError('Resolve active tools and staged work before disabling this workspace', 409)
+        if (busy) throw new WorkspaceError('Resolve active tools and staged work before disabling this workspace', 409)
         if (input.enabled === true && workspace.retiredAt && input.retired !== false) throw new WorkspaceError('Reactivate the retired workspace before enabling it', 409)
         if (input.name !== undefined) workspace.name = input.name
         if (input.enabled !== undefined) workspace.enabled = input.enabled
@@ -215,9 +216,15 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       }
       return pending
     },
+    /** The registered workspaces opened so far, so their owner can close them. */
+    async opened(): Promise<BuckleRuntime[]> {
+      const settled = await Promise.allSettled([...runtimes.values()])
+      return settled.flatMap(result => result.status === 'fulfilled' ? [result.value.runtime] : [])
+    },
   }
   return manager
 }
+export type WorkspaceManager = ReturnType<typeof createWorkspaceManager>
 
 function requireStored(state: { workspaces: StoredWorkspace[] }, id: string): StoredWorkspace {
   const workspace = state.workspaces.find(item => item.id === id)

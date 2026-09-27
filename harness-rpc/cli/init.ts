@@ -93,7 +93,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   const explicitOut = values.out ?? process.env.BUCKLE_ENV_FILE
   let out = explicitOut ? resolve(explicitOut) : findWorkspaceConfig({ cwd: resolve(values.root ?? process.cwd()), home: options.home, exact: true })?.file
   // Pairing beside a configured node re-pairs it: the credentials stay, the URL is what moved.
-  if (out && existsSync(out) && values.pair && !values.force) return pairExisting({ out, code: values.pair, rings: values.rings!, url: values.url })
+  if (out && existsSync(out) && values.pair && !values.force) return pairExisting({ out, code: values.pair, rings: values.rings!, url: values.url, home: options.home })
   if (out && existsSync(out) && !values.force) {
     process.stderr.write(`${out} already exists. Pass --force to replace it, or --out to write elsewhere.\n`)
     return { exitCode: 1 }
@@ -159,20 +159,20 @@ they are the same value.
 `)
 
   if (!values.pair) return { exitCode: 0 }
-  return pair({ out, contents, code: values.pair, rings: values.rings!, url: values.url, port })
+  return pair({ out, contents, code: values.pair, rings: values.rings!, url: values.url, port, home: options.home })
 }
 
 /** Re-pairs a node that already has an environment file, keeping the credentials it holds. */
-async function pairExisting(input: { out: string; code: string; rings: string; url?: string }): Promise<CliResult> {
+async function pairExisting(input: { out: string; code: string; rings: string; url?: string; home?: string }): Promise<CliResult> {
   const contents = readFileSync(input.out, 'utf8')
   const port = /^BUCKLE_PORT=(\d+)$/m.exec(contents)?.[1] ?? '4320'
   process.stdout.write(`Pairing the node configured in ${input.out}; its credentials are unchanged.\n`)
   return pair({ ...input, contents, port })
 }
 
-async function pair(input: { out: string; contents: string; code: string; rings: string; url?: string; port: string }): Promise<CliResult> {
+async function pair(input: { out: string; contents: string; code: string; rings: string; url?: string; port: string; home?: string }): Promise<CliResult> {
   const baseUrl = input.url?.trim() || `http://127.0.0.1:${input.port}`
-  const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, environmentText: input.contents })
+  const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, environmentText: input.contents, ...(input.home ? { home: input.home } : {}) })
   process.stdout.write(`\n${result.message}\n`)
   if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}. Start it with: buckle serve\n`)
   return { exitCode: result.ok ? 0 : 1 }

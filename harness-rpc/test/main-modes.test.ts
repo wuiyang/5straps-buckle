@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 
-const config = { serverId: 'mode-dispatch' } as BuckleConfig
+const config = { serverId: 'mode-dispatch', stateDirectory: '/nonexistent/buckle-mode-dispatch-state' } as BuckleConfig
 const entry = vi.hoisted(() => ({
   loadEnvironmentFile: vi.fn(),
   loadConfig: vi.fn(),

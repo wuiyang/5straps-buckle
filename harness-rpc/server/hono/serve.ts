@@ -23,7 +23,7 @@ export async function serveHttp(input: { config: BuckleConfig; common: BuckleCom
   const address = await http.listen({ host: config.host, port: config.port })
   await common.start()
   const runtime = await common.services.getWorkspaceRuntime()
-  http.mount(createHttpApp({ config, runtime, authToken }))
+  http.mount(createHttpApp({ config, runtime, authToken, workspaces: await common.services.getWorkspaces() }))
   logListening({ logger: input.logger, config, runtime, address })
 }
 

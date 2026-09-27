@@ -12,7 +12,7 @@ import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { createChangeHistory } from '../common/services/history/journal.js'
+import { openChangeHistory } from '../common/services/history/journal.js'
 import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 
 let root: string
@@ -56,7 +56,7 @@ it('declares shell file effects, checks approval and overlays read-only without 
   const state = join(root, 'state'); mkdirSync(state)
   const secret = join(workspace, '.env.local'); writeFileSync(secret, 'SYNTHETIC=private')
   writeFileSync(join(workspace, '.env.schema'), 'SCHEMA=true')
-  const history = createChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30 })
+  const history = await openChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30 })
   const runProcess = vi.fn<ProcessRunner>(async request => {
     expect(existsSync(join(request.cwd, '.env.local'))).toBe(false)
     expect(readFileSync(join(request.cwd, '.env.schema'), 'utf8')).toBe('SCHEMA=true')
@@ -75,7 +75,7 @@ it('declares shell file effects, checks approval and overlays read-only without 
   expect(runProcess).not.toHaveBeenCalled()
   await call.execute({ ...context, authorizeRead: async path => path === secret })
   expect(readFileSync(secret, 'utf8')).toBe('SYNTHETIC=private')
-  expect(history.list()[0]!.paths).toEqual([join(workspace, 'result.txt')])
+  expect((await history.list())[0]!.paths).toEqual([join(workspace, 'result.txt')])
   expect(readFileSync(join(state, 'history/history.sqlite')).includes(Buffer.from('SYNTHETIC=private'))).toBe(false)
   expect(pack.tools[1]!.prepare({ runtime: 'node', script: 'void 0', sensitiveFiles: ['/workspace/.env.local'] }).effects).toContainEqual({ kind: 'read_path', path: '/workspace/.env.local' })
 })

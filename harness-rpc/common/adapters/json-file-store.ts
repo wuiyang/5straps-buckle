@@ -1,13 +1,21 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
+import { withFileLock } from '@5straps/runtime/sqlite'
 import { ZodError, type z } from 'zod'
 import { logger } from '../runtime/log.js'
 
 /** A state file that exists but cannot be used; the message names the file and the invalid fields, never a value. */
 export class StateFileError extends Error {}
+
+/** Another process held the state file's lock past the wait; HTTP answers 503, the CLI exits 1. */
+export class StateBusyError extends Error {}
+
+// Same bound as the busy timeout it replaces, now polled so the event loop keeps running.
+const LOCK_DEADLINE_MS = 5_000
+const LOCK_POLL_MS = 25
 
 export interface JsonFileStore<T> {
   /** Lock-free: every write is an atomic rename. */
@@ -33,7 +41,7 @@ function inTurn<R>(key: string, operation: () => Promise<R>): Promise<R> {
   return result
 }
 
-export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodType<T>; fallback: T }): JsonFileStore<T> {
+export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodType<T>; fallback: T; lockDeadlineMs?: number }): JsonFileStore<T> {
   function read(): T {
     try {
       return input.schema.parse(JSON.parse(readFileSync(input.filePath, 'utf8')))
@@ -47,16 +55,13 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
 
   function locked<R>(operation: () => R | Promise<R>): Promise<R> {
     return inTurn(resolve(input.filePath), async () => {
-      mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 })
       // SQLite supplies an OS-released cross-process lock; JSON remains the data format.
-      const lock = new DatabaseSync(`${input.filePath}.lock.sqlite`, { timeout: 5_000 })
+      const wait = { deadlineMs: input.lockDeadlineMs ?? LOCK_DEADLINE_MS, pollMs: LOCK_POLL_MS }
       try {
-        lock.exec('BEGIN IMMEDIATE')
-        const result = await operation()
-        lock.exec('COMMIT')
-        return result
-      } finally {
-        lock.close()
+        return await withFileLock({ path: `${input.filePath}.lock.sqlite`, wait }, async () => operation())
+      } catch (error) {
+        if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new StateBusyError(`State file ${input.filePath} is busy in another Buckle process; retry shortly`, { cause: error })
+        throw error
       }
     })
   }

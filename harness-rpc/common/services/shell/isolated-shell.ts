@@ -1,4 +1,5 @@
-import { DatabaseSync } from 'node:sqlite'
+import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
+import { withFileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -180,15 +181,12 @@ async function withWorkspaceLock<T>(directory: string, id: string, operation: ()
   const locks = `${directory}.locks`
   mkdirSync(locks, { recursive: true, mode: 0o700 })
   const lockPath = join(locks, `${id}.sqlite`)
-  const lock = new DatabaseSync(lockPath, { timeout: 0 })
   try {
-    try { lock.exec('BEGIN IMMEDIATE') } catch (error) {
-      if (error instanceof Error && /locked|busy/i.test(error.message)) throw new WorkspaceActiveError('Shell workspace is active; wait for execution or recovery to finish')
-      throw error
-    }
-    return await operation()
+    return await withFileLock({ path: lockPath, wait: 'none' }, operation)
+  } catch (error) {
+    if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new WorkspaceActiveError('Shell workspace is active; wait for execution or recovery to finish')
+    throw error
   } finally {
-    lock.close()
     if (!existsSync(join(directory, id))) rmSync(lockPath, { force: true })
   }
 }

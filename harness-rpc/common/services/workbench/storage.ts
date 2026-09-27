@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
+import { acquireFileLock, type FileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { WorkbenchIdSchema, WorkbenchRecordSchema, type WorkbenchRecord } from '@5straps/protocol'
 
@@ -23,12 +24,25 @@ export function writeWorkbenchJson(path: string, value: unknown): void {
 }
 export function createWorkbenchStorage(directory: string) {
   mkdirSync(directory, { recursive: true, mode: 0o700 }); chmodSync(directory, 0o700)
-  let lock: DatabaseSync | undefined
-  function own(): boolean {
-    if (lock) return false
-    const candidate = new DatabaseSync(join(directory, 'manager.lock.sqlite'), { timeout: 0 })
-    try { candidate.exec('BEGIN IMMEDIATE'); lock = candidate } catch { candidate.close(); throw new WorkbenchError('Workbench execution is owned by another Buckle process') }
+  let lock: Promise<FileLock> | undefined
+  // True for the call that took ownership; the lock is held until close().
+  async function own(): Promise<boolean> {
+    if (lock) {
+      await lock
+      return false
+    }
+    lock = acquireOwnership()
+    await lock
     return true
+  }
+  async function acquireOwnership(): Promise<FileLock> {
+    try {
+      return await acquireFileLock({ path: join(directory, 'manager.lock.sqlite'), wait: 'none' })
+    } catch (error) {
+      lock = undefined
+      if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new WorkbenchError('Workbench execution is owned by another Buckle process')
+      throw error
+    }
   }
   function location(id: string): string { WorkbenchIdSchema.parse(id); return join(directory, id) }
   function read(id: string): StoredWorkbench {
@@ -44,6 +58,10 @@ export function createWorkbenchStorage(directory: string) {
       mkdirSync(location(record.id), { recursive: true, mode: 0o700 })
       writeWorkbenchJson(join(location(record.id), 'state.json'), record)
     },
-    close() { lock?.close(); lock = undefined },
+    async close() {
+      const held = lock
+      lock = undefined
+      await held?.then(owned => owned.release(), () => undefined)
+    },
   }
 }
