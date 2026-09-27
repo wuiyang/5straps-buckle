@@ -1,5 +1,4 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
-import { globalSlot } from '../internal/async-slots.js'
+import { runDetached, sinkStorage } from '../internal/async-slots.js'
 import { useScopeSafe } from '../scope/als.js'
 import { normalizeError, sanitizeFields, sanitizeString, truncateText, type SanitizeOptions } from './sanitize.js'
 import { levelRank, LOG_LEVELS, type LogEvent, type LogFields, type Logger, type LogLevel, type LogSink, type NormalizedError } from './types.js'
@@ -45,8 +44,6 @@ const ERROR_TRIMS: readonly ErrorTrim[] = [
   { maxErrors: 0, maxStackBytes: 0, maxMessageBytes: 1_024, maxCauseDepth: 0 },
 ]
 const SMALL_FIELD_BYTES = 256
-// Set while any sink runs, across its awaits, so a sink that logs cannot feed itself.
-const insideSink = globalSlot('logger-sink', () => new AsyncLocalStorage<true>())
 
 export function createLogger(options: LoggerOptions): LoggerRoot {
   const threshold = levelRank(options.level ?? 'info')
@@ -61,11 +58,15 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
     omitKeys: new Set(options.omitKeys ?? []),
   }
   const fallback = options.fallback ?? writeFallbackLine
+  // Marks this root's sinks while they run: a sink that logs through this root goes to the fallback,
+  // while another root used inside a sink (an error reporter's HTTP client) still reaches its own sinks.
+  const rootId = Symbol(options.component)
   const queue: LogEvent[] = []
   const reportedErrors = new WeakSet<object>()
   const stats: LoggerStats = { dropped: 0, sinkFailures: 0 }
   let pumping: Promise<void> | undefined
   let dropping = false
+  let droppedInEpisode = 0
   let closed = false
 
   function emit(level: LogLevel, component: string, bindings: LogFields, message: string, fields: LogFields | undefined): void {
@@ -74,11 +75,19 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
       stats.dropped += 1
       return
     }
-    const event = buildEvent({ level, component, bindings, message, fields })
-    // A sink that logs while writing must not feed itself; that line goes to the fallback only.
-    if (insideSink.getStore()) return fallback(JSON.stringify(event))
+    const event = buildEventSafely({ level, component, bindings, message, fields })
+    if (sinkStorage.getStore() === rootId) return fallback(JSON.stringify(event))
     if (queue.length >= queueLimit) return drop(component)
     enqueue(event)
+  }
+
+  // Diagnostics may degrade but never fail the caller (data.md): a field that cannot be read becomes a marker.
+  function buildEventSafely(input: { level: LogLevel; component: string; bindings: LogFields; message: string; fields: LogFields | undefined }): LogEvent {
+    try {
+      return buildEvent(input)
+    } catch (error) {
+      return buildEvent({ ...input, message: typeof input.message === 'string' ? input.message : '[unloggable message]', bindings: {}, fields: { '[unloggable]': error instanceof Error ? error.name : typeof error } })
+    }
   }
 
   function enqueue(event: LogEvent): void {
@@ -87,11 +96,19 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
   }
 
   // One warning per episode, allowed past the limit, so a full queue is visible in the sinks themselves.
+  // Built detached: the drop belongs to no request.
   function drop(component: string): void {
     stats.dropped += 1
+    droppedInEpisode += 1
     if (dropping) return
     dropping = true
-    enqueue(buildEvent({ level: 'warn', component, bindings: {}, message: 'log events dropped: queue full', fields: { queueLimit } }))
+    if (levelRank('warn') >= threshold) enqueue(runDetached(() => buildEvent({ level: 'warn', component, bindings: {}, message: 'log events dropped: queue full', fields: { queueLimit } })))
+  }
+
+  function dropSummary(): LogEvent {
+    const dropped = droppedInEpisode
+    droppedInEpisode = 0
+    return runDetached(() => buildEvent({ level: 'warn', component: options.component, bindings: {}, message: 'log events dropped: queue drained', fields: { queueLimit, dropped } }))
   }
 
   function buildEvent(input: { level: LogLevel; component: string; bindings: LogFields; message: string; fields: LogFields | undefined }): LogEvent {
@@ -102,7 +119,7 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
       timestamp: new Date().toISOString(),
       level: input.level,
       component: input.component,
-      message: sanitizeString(input.message, sanitize),
+      message: sanitizeString(String(input.message), sanitize),
       ...(correlationId ? { correlationId } : {}),
       ...(Object.keys(fields).length > 0 ? { fields: capFields(fields) } : {}),
       ...(error !== undefined ? { error: markRepeated(error) } : {}),
@@ -142,13 +159,16 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
     while (queue.length > 0) {
       const event = queue.shift()!
       await Promise.all(options.sinks.map(sink => writeToSink(sink, event)))
+      // The episode ends once the queue has drained: report how many events were lost.
+      if (queue.length === 0 && droppedInEpisode > 0 && levelRank('warn') >= threshold) queue.push(dropSummary())
     }
+    droppedInEpisode = 0
     dropping = false
   }
 
   async function writeToSink(sink: LogSink, event: LogEvent): Promise<void> {
     try {
-      await insideSink.run(true, () => sink.write(event))
+      await sinkStorage.run(rootId, () => sink.write(event))
     } catch (error) {
       stats.sinkFailures += 1
       fallback(JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', component: 'logger', message: `Log sink ${sink.name} failed`, error: normalizeError(error, sanitize), dropped: { level: event.level, message: event.message } }))
@@ -161,7 +181,7 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
   }
 
   async function callSink(sink: LogSink, method: 'flush' | 'close'): Promise<void> {
-    try { await sink[method]?.() } catch (error) {
+    try { await sinkStorage.run(rootId, () => sink[method]?.()) } catch (error) {
       stats.sinkFailures += 1
       fallback(JSON.stringify({ level: 'error', component: 'logger', message: `Log sink ${sink.name} failed to ${method}`, error: normalizeError(error, sanitize) }))
     }

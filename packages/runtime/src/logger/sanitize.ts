@@ -21,8 +21,11 @@ const TOKEN_COUNT_QUALIFIERS = ['input', 'output', 'prompt', 'completion', 'tota
 const TOKEN_COUNT_SUFFIXES = ['count', 'counts', 'usage', 'limit', 'budget', 'total', 'used']
 const TOKEN_WORD = /^tokens?$/
 const RUN_TOGETHER_TOKEN_COUNT = new RegExp(`^(?:${TOKEN_COUNT_QUALIFIERS.join('|')})tokens?$|^tokens?(?:${TOKEN_COUNT_SUFFIXES.join('|')})$`)
-// Keys whose values are file contents or full tool payloads.
+// Keys whose values are file contents or full tool payloads; also any key whose last word is one of CONTENT_LAST_WORDS (requestBody).
 const CONTENT_KEY = /^(content|contents|file[-_]?contents?|body|payload|arguments|args|tool[-_]?(input|output)|stdin|stdout|stderr|data)$/i
+const CONTENT_LAST_WORDS = new Set(['body', 'content', 'contents', 'payload'])
+// Flat [name, value, name, value] header lists (IncomingMessage.rawHeaders) under a key ending in header(s).
+const HEADER_LIST_WORD = /^headers?$/
 // Bearer/Basic headers, JWTs, sk-/ghp-style keys and hex runs of 32+ characters inside free text.
 const SECRET_VALUE = /\b(?:Bearer|Basic)\s+[\w.~+/=-]+|\beyJ[\w-]+\.[\w-]+\.[\w-]+|\b(?:sk|pk|rk|ghp|gho|ghs|xox[abp])[-_][\w-]{10,}|\b[a-fA-F0-9]{32,}\b/g
 // Long base64-like runs. The slash is included so it cannot split an AWS or base64 secret; redactOpaqueRun keeps paths readable.
@@ -35,16 +38,31 @@ const LOWER_TO_UPPER = /[a-z][A-Z]/g
 const GIT_SHA = /^[a-f0-9]{40}$/
 const SHA_CONTEXT_CHARS = 32
 const CREDENTIAL_NEARBY = /token|secret|passw(?:or)?d|passphrase|credential|cookie|signature|bearer|api[-_ ]?key|private[-_ ]?key|\b(?:pat|key|auth)\b|=\s*$/i
-const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>]+/g
+// A URL with any scheme, or a request target starting with '/', up to whitespace or a quote.
+const URL_LIKE = /(?:\b[a-z][a-z0-9+.-]*:\/\/|(?<=^|[\s("'=<>])\/)[^\s"'<>]*/gi
+const USERINFO_PASSWORD = /^([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#@]+)@/i
+// name=value in a query or fragment; the value stops at the next separator.
+const URL_PARAM = /([?&#;])([^=&#;?]+)=([^&#;]*)/g
+const TRAILING_PUNCTUATION = /[).,;:!?]+$/
+// Credential parameters whose names are not credential words: Google API keys, SAS signatures, OAuth codes.
+const SECRET_QUERY_NAMES = new Set(['key', 'sig', 'code'])
 
 const HAS_DIGIT = /\d/
 const HAS_LETTER = /[A-Za-z]/
 // Slack beyond the byte limit so a secret straddling the cut is still matched whole before truncation.
 const REDACTION_SLACK_BYTES = 512
 
+function keyWords(key: string): string[] {
+  return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+}
+
 export function isSecretKey(key: string): boolean {
-  const words = key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  const words = keyWords(key)
   return words.some((word, index) => isSecretWord({ word, previous: words[index - 1], next: words[index + 1] }))
+}
+
+function isContentKey(key: string): boolean {
+  return CONTENT_KEY.test(key) || CONTENT_LAST_WORDS.has(keyWords(key).at(-1) ?? '')
 }
 
 function isSecretWord({ word, previous, next }: { word: string; previous?: string; next?: string }): boolean {
@@ -82,23 +100,14 @@ function isOpaque(text: string): boolean {
   return text.length >= OPAQUE_MIN_LENGTH && !GIT_SHA.test(text) && HAS_DIGIT.test(text) && HAS_LETTER.test(text)
 }
 
-// Secret-named query parameters and userinfo passwords inside any URL in the text.
+// Userinfo passwords and secret-named query or fragment parameters in any URL or request target.
+// Only the secret value is rewritten, so the rest stays exactly as written.
 function redactUrls(text: string): string {
-  return text.replace(URL_IN_TEXT, (match) => {
-    let url: URL
-    try { url = new URL(match) } catch { return match }
-    let changed = false
-    if (url.password) {
-      url.password = REDACTED
-      changed = true
-    }
-    for (const name of [...url.searchParams.keys()]) {
-      if (!isSecretKey(name)) continue
-      url.searchParams.set(name, REDACTED)
-      changed = true
-    }
-    return changed ? url.toString() : match
-  })
+  return text.replace(URL_LIKE, url => url.replace(USERINFO_PASSWORD, `$1${REDACTED}@`).replace(URL_PARAM, (pair, separator: string, name: string, value: string) => {
+    if (!isSecretKey(name) && !SECRET_QUERY_NAMES.has(name.toLowerCase())) return pair
+    const trailing = TRAILING_PUNCTUATION.exec(value)?.[0] ?? ''
+    return `${separator}${name}=${REDACTED}${trailing}`
+  }))
 }
 
 export function truncateText(text: string, maxBytes: number): string {
@@ -107,7 +116,7 @@ export function truncateText(text: string, maxBytes: number): string {
 }
 
 function sliceBytes(text: string, maxBytes: number): string {
-  return Buffer.from(text).subarray(0, maxBytes).toString('utf8').replace(/�$/, '')
+  return Buffer.from(text).subarray(0, maxBytes).toString('utf8').replace(/\uFFFD$/, '')
 }
 
 export function sanitizeString(text: string, options: SanitizeOptions): string {
@@ -124,7 +133,7 @@ export function sanitizeFields(fields: Record<string, unknown>, options: Sanitiz
 function sanitizeValue(key: string, value: unknown, options: SanitizeOptions, depth: number, seen: WeakSet<object>): unknown {
   if (!options.allowKeys.has(key)) {
     if (isSecretKey(key)) return REDACTED
-    if ((CONTENT_KEY.test(key) || options.omitKeys.has(key)) && value !== undefined && value !== null) return `[omitted ${describeSize(value)}]`
+    if ((isContentKey(key) || options.omitKeys.has(key)) && value !== undefined && value !== null) return `[omitted ${describeSize(value)}]`
   }
   if (typeof value === 'string') return sanitizeString(value, options)
   if (typeof value === 'bigint') return value.toString()
@@ -137,6 +146,7 @@ function sanitizeValue(key: string, value: unknown, options: SanitizeOptions, de
   if (depth >= options.maxDepth) return '[max depth]'
   seen.add(value)
   if (value instanceof Headers) return sanitizeObject([...value.entries()], options, depth + 1, seen)
+  if (isHeaderList(key, value)) return sanitizeHeaderList(value, options, depth, seen)
   if (Array.isArray(value)) return sanitizeArray(key, value, options, depth, seen)
   return sanitizeObject(Object.entries(value), options, depth + 1, seen)
 }
@@ -155,9 +165,21 @@ function sanitizePair([name, value]: [string, unknown], options: SanitizeOptions
   return [sanitizeString(name, options), sanitizeValue(name, value, options, depth + 1, seen)]
 }
 
+function isHeaderList(key: string, value: unknown): value is string[] {
+  return Array.isArray(value) && value.length % 2 === 0 && HEADER_LIST_WORD.test(keyWords(key).at(-1) ?? '') && value.every(item => typeof item === 'string')
+}
+
+// Each value is judged by the header name before it.
+function sanitizeHeaderList(value: string[], options: SanitizeOptions, depth: number, seen: WeakSet<object>): unknown[] {
+  const headers = value.length / 2
+  const kept = Array.from({ length: Math.min(headers, options.maxArrayItems) }, (_, index) => sanitizePair([value[index * 2]!, value[index * 2 + 1]], options, depth, seen)).flat()
+  return headers > options.maxArrayItems ? [...kept, `[${headers - options.maxArrayItems} more headers]`] : kept
+}
+
+// Keys are text too: a secret used as a map key is redacted like any value.
 function sanitizeObject(entries: [string, unknown][], options: SanitizeOptions, depth: number, seen: WeakSet<object>): Record<string, unknown> {
   const result: Record<string, unknown> = {}
-  for (const [key, item] of entries.slice(0, options.maxObjectKeys)) result[key] = sanitizeValue(key, item, options, depth, seen)
+  for (const [key, item] of entries.slice(0, options.maxObjectKeys)) result[sanitizeString(key, options)] = sanitizeValue(key, item, options, depth, seen)
   if (entries.length > options.maxObjectKeys) result['[truncated]'] = `[${entries.length - options.maxObjectKeys} more keys]`
   return result
 }

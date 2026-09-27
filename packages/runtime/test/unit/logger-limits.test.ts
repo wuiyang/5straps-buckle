@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { createLogger, type LogEvent, type LogSink } from '../../src/index.js'
+import { createLogger, createOperationScope, runInScope, type LogEvent, type LogSink } from '../../src/index.js'
 
 function memorySink(): LogSink & { events: LogEvent[] } {
   const events: LogEvent[] = []
@@ -153,12 +153,97 @@ describe('close and drops (review L3)', () => {
     expect(root.stats().dropped).toBe(2)
   })
 
-  it('emits one warning event when drops start', async () => {
+  it('emits one warning event when drops start and one with the count once the queue drains', async () => {
     const sink = memorySink()
     const root = createLogger({ component: 'svc', sinks: [sink], queueLimit: 5 })
     for (let index = 0; index < 8; index += 1) root.logger.info(`event ${index}`)
     await root.flush()
-    expect(sink.events.filter(event => event.level === 'warn')).toEqual([expect.objectContaining({ message: 'log events dropped: queue full' })])
+    expect(sink.events.filter(event => event.level === 'warn')).toEqual([expect.objectContaining({ message: 'log events dropped: queue full' }), expect.objectContaining({ message: 'log events dropped: queue drained', fields: { queueLimit: 5, dropped: 3 } })])
     expect(root.stats().dropped).toBe(3)
+  })
+})
+
+describe('logger lows (logger-fixes-3, -6, -7, -8, -9, -11, -12, -13)', () => {
+  it('logger-fixes-3 redacts credentials in any URL scheme, fragments and bare request targets', async () => {
+    const token = 'tok_9f8e7d6c5b4a'
+    const event = await logOnce({
+      wss: `wss://user:${token}@ws.example.com/?token=${token}`,
+      target: `/api/callback?access_token=${token}&state=ok`,
+      fragment: `https://app.example.com/cb#access_token=${token}&expires_in=3600`,
+      dsn: `postgres://admin:${token}@db.internal/app`,
+      google: `https://maps.example.com/api?key=${token}`,
+      sas: `https://blob.example.com/c?sv=2024&sig=${token}`,
+    })
+    expect(JSON.stringify(event)).not.toContain(token)
+    expect(event.fields).toMatchObject({ target: '/api/callback?access_token=[redacted]&state=ok', fragment: 'https://app.example.com/cb#access_token=[redacted]&expires_in=3600', dsn: 'postgres://admin:[redacted]@db.internal/app' })
+  })
+
+  it('logger-fixes-9 rewrites only the secret value, keeping punctuation and other parameters as written', async () => {
+    const event = await logOnce({ note: 'see (https://x.example/?token=abc123&q=a%20b).' })
+    expect(event.fields!.note).toBe('see (https://x.example/?token=[redacted]&q=a%20b).')
+  })
+
+  it('logger-fixes-6 omits body and content fields by their last key word', async () => {
+    const event = await logOnce({ requestBody: 'secret file', responseBody: 'reply', fileContents: 'text', toolPayload: '{}', bodyLength: 12 })
+    expect(event.fields).toEqual({ requestBody: '[omitted 11 bytes]', responseBody: '[omitted 5 bytes]', fileContents: '[omitted 4 bytes]', toolPayload: '[omitted 2 bytes]', bodyLength: 12 })
+  })
+
+  it('logger-fixes-7 redacts secret-shaped object keys and header values in flat header arrays', async () => {
+    const token = 'sk_live_0123456789abcdefghij'
+    const event = await logOnce({ sessions: { [token]: 1 }, rawHeaders: ['Cookie', 'sid=abc', 'X-Api-Key', 'k-123', 'Accept', 'json'], header: ['x-api-key', 'k-456'] })
+    expect(JSON.stringify(event)).not.toContain(token)
+    expect(event.fields).toMatchObject({ rawHeaders: ['Cookie', '[redacted]', 'X-Api-Key', '[redacted]', 'Accept', 'json'], header: ['x-api-key', '[redacted]'] })
+  })
+
+  it('logger-fixes-8 keeps a flushing sink from feeding itself and lets another root log from inside a sink', async () => {
+    const fallback: string[] = []
+    const inner = memorySink()
+    const innerRoot = createLogger({ component: 'http-client', sinks: [inner] })
+    const outer = memorySink()
+    let root: ReturnType<typeof createLogger> | undefined
+    const flushing: LogSink = { name: 'flushing', write: async () => { innerRoot.logger.warn('reporter http failed') }, flush: () => { root!.logger.info('flushed') } }
+    root = createLogger({ component: 'svc', sinks: [outer, flushing], fallback: line => fallback.push(line) })
+    root.logger.error('boom')
+    await root.flush()
+    await innerRoot.flush()
+    expect(outer.events.map(event => event.message)).toEqual(['boom'])
+    expect(fallback.filter(line => line.includes('flushed'))).toHaveLength(1)
+    expect(inner.events.map(event => event.message)).toEqual(['reporter http failed'])
+  })
+
+  it('logger-fixes-11 never throws into the caller for a field it cannot read', async () => {
+    const sink = memorySink()
+    const root = createLogger({ component: 'svc', sinks: [sink] })
+    expect(() => root.logger.info('bad', { bad: { get x() { throw new Error('getter boom') } } })).not.toThrow()
+    expect(() => root.logger.info({ not: 'a string' } as unknown as string)).not.toThrow()
+    await root.flush()
+    expect(sink.events[0]).toMatchObject({ message: 'bad', fields: { '[unloggable]': 'Error' } })
+    expect(sink.events).toHaveLength(2)
+  })
+
+  it('logger-fixes-12 reports drops without a request correlation id, with the count, and respects the level', async () => {
+    const sink = memorySink()
+    const root = createLogger({ component: 'svc', sinks: [sink], queueLimit: 3 })
+    const scope = createOperationScope({ owner: Symbol('t'), context: { correlationId: 'unrelated-request' } })
+    runInScope(scope, () => { for (let index = 0; index < 8; index += 1) root.logger.info(`event ${index}`) })
+    await root.flush()
+    const warnings = sink.events.filter(event => event.level === 'warn')
+    expect(warnings.map(event => [event.message, event.correlationId, event.fields])).toEqual([
+      ['log events dropped: queue full', undefined, { queueLimit: 3 }],
+      ['log events dropped: queue drained', undefined, { queueLimit: 3, dropped: 5 }],
+    ])
+    const quiet = memorySink()
+    const errorsOnly = createLogger({ component: 'svc', sinks: [quiet], queueLimit: 1, level: 'error' })
+    for (let index = 0; index < 4; index += 1) errorsOnly.logger.error(`failure ${index}`)
+    await errorsOnly.flush()
+    expect(quiet.events.filter(event => event.level === 'warn')).toEqual([])
+  })
+
+  it('logger-fixes-13 drops a multibyte character cut by truncation', async () => {
+    const sink = memorySink()
+    const root = createLogger({ component: 'svc', sinks: [sink], maxStringBytes: 5 })
+    root.logger.info('x', { text: 'ab\u{1F600}cd' })
+    await root.flush()
+    expect(sink.events[0]!.fields!.text).toBe('ab...[truncated 3 bytes]')
   })
 })
