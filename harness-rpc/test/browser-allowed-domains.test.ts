@@ -138,7 +138,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     } finally {
       warn.mockRestore()
     }
-  })
+  }, 20000) // three real agent-browser spawns in sequence; default 5000ms is tight under a loaded gate
 
   it('leaves the flag off when a grant is added mid-session, since grants only answer questions a list never asks', async () => {
     const { runtime, calls } = await fixture([])
