@@ -230,6 +230,23 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
     await Promise.all([owner.close(), other.dispose()])
   })
 
+  it('sqlite-fixes-1 rolls back and rejects a native transaction whose COMMIT fails', async () => {
+    const path = databasePath()
+    const db = await openDatabase({ path })
+    await db.exec('CREATE TABLE parent (id INTEGER PRIMARY KEY); CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED)')
+    const owner = createConnectionOwner(db, { owned: true })
+    // The deferred foreign key is checked at COMMIT, which fails and leaves SQLite's transaction open.
+    const failure = await owner.nativeTransaction((connection) => { connection.prepare('INSERT INTO child (parent_id) VALUES (?)').run(99) }).catch((error: unknown) => error)
+    expect(failure).toMatchObject({ message: expect.stringContaining('FOREIGN KEY constraint failed') })
+    expect((await rawConnection(db)).isTransaction).toBe(false)
+    await owner.transaction(async (tx) => { await tx.sql`INSERT INTO parent (id) VALUES (${1})` })
+    await owner.close()
+    const reopened = await openDatabase({ path })
+    expect((await reopened.sql`SELECT id FROM parent`).rows).toEqual([{ id: 1 }])
+    expect((await reopened.sql`SELECT id FROM child`).rows).toEqual([])
+    await reopened.dispose()
+  })
+
   it('L1 keeps the body error when SQLite already rolled back', async () => {
     const owner = createConnectionOwner(await notesDatabase(), { owned: true })
     const failure = owner.nativeTransaction((connection) => {

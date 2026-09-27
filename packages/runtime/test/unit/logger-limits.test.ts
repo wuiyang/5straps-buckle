@@ -67,6 +67,33 @@ describe('logger keeps useful data (review M5)', () => {
   })
 })
 
+describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () => {
+  it('redacts plural and run-together secret key names while token counts stay numbers', async () => {
+    const secretKeys = ['tokens', 'secrets', 'cookies', 'passwords', 'apiKeys', 'api_keys', 'accessTokens', 'refreshTokens', 'accesstoken', 'authtoken', 'csrftoken', 'clientsecret', 'secretkey', 'newpassword', 'PGPASSWORD', 'credentials']
+    const countKeys = ['inputTokens', 'outputTokens', 'input_tokens', 'maxTokens', 'max_tokens', 'totalTokenCount', 'tokenCount', 'token_count', 'cachedInputTokens']
+    const event = await logOnce({ ...Object.fromEntries(secretKeys.map(key => [key, 'short-opaque-19char'])), ...Object.fromEntries(countKeys.map((key, index) => [key, index])) })
+    expect(Object.fromEntries(secretKeys.map(key => [key, event.fields![key]]))).toEqual(Object.fromEntries(secretKeys.map(key => [key, '[redacted]'])))
+    expect(Object.fromEntries(countKeys.map(key => [key, event.fields![key]]))).toEqual(Object.fromEntries(countKeys.map((key, index) => [key, index])))
+  })
+
+  it('redacts base64 and AWS-style secrets that contain a slash, in fields and messages', async () => {
+    const aws = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+    const base64 = 'K7gNU3sdo+OL0wNhqoVWhr3g6s1xYv72ol/pe/Unols='
+    const leadingSlash = '/7gNU3sdo+OL0wNhqoVWhr3g6s1xYv72ol/pe/Unols='
+    const accountKey = `${'Ab3/'.repeat(21)}Zz==`
+    const event = await logOnce({ note: `k=${aws}`, cmd: `aws configure set aws_secret_access_key ${aws}`, b64: `k=${base64}`, slash: leadingSlash, azure: `DefaultEndpointsProtocol=https;AccountKey=${accountKey};EndpointSuffix=core.windows.net` }, { message: `retrying with ${base64}` })
+    const serialized = JSON.stringify(event)
+    for (const secret of [aws, base64, leadingSlash, accountKey, 'K7MDENG', 'pe/Unols']) expect(serialized).not.toContain(secret)
+  })
+
+  it('keeps absolute and relative paths and stack frames readable', async () => {
+    const relative = 'packages/runtime/test/fixture/layers/common/server/routes/v1/database/baked'
+    const frame = 'at runRequestInScope (file:///home/user/projects/buckle/packages/runtime/src/nitro/guards.ts:125:29)'
+    const event = await logOnce({ relative, frame, dir: '/home/user/.5straps/buckle/workspaces/2f9c1d/history' })
+    expect(event.fields).toEqual({ relative, frame, dir: '/home/user/.5straps/buckle/workspaces/2f9c1d/history' })
+  })
+})
+
 describe('sink recursion across awaits (review M6)', () => {
   it('sends a log line from inside an async sink to the fallback only', async () => {
     const fallback: string[] = []

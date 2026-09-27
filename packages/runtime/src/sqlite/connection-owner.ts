@@ -112,16 +112,16 @@ function finishNativeTransaction<T>(connection: DatabaseSync, body: (connection:
   let result: T
   try {
     result = body(connection)
+    if (result instanceof Promise) {
+      result.catch(() => undefined)
+      throw asyncBodyError(label)
+    }
+    // A failed COMMIT (deferred foreign key, SQLITE_BUSY, SQLITE_FULL) leaves the transaction open.
+    connection.exec('COMMIT')
   } catch (error) {
     rollbackKeepingError(connection)
     throw error
   }
-  if (result instanceof Promise) {
-    rollbackKeepingError(connection)
-    result.catch(() => undefined)
-    throw asyncBodyError(label)
-  }
-  connection.exec('COMMIT')
   return result
 }
 

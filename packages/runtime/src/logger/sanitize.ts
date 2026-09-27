@@ -10,15 +10,27 @@ export interface SanitizeOptions {
 }
 
 const REDACTED = '[redacted]'
-// Key words whose values are credentials; keys are split into words, so inputTokens is not a token.
-const SECRET_WORDS = new Set(['authorization', 'auth', 'cookie', 'token', 'secret', 'password', 'passphrase', 'passwd', 'credential', 'credentials', 'signature', 'apikey', 'privatekey'])
-const SECRET_WORD_PAIRS = new Set(['api key', 'private key'])
+// Credential words, matched inside each key word so plurals and run-together names (accesstoken, PGPASSWORD) count.
+const SECRET_WORD = /authorization|token|secret|passw(?:or)?d|passphrase|cookie|credential|signature|apikey|privatekey/
+const SECRET_WHOLE_WORDS = new Set(['auth'])
+// Two-word names such as 'api key' and 'private keys'.
+const KEY_PREFIXES = new Set(['api', 'private'])
+const KEY_WORD = /^keys?$/
+// Token counts, not credentials: a qualifier before token(s) or a count word after it (inputTokens, tokenCount, max_tokens).
+const TOKEN_COUNT_QUALIFIERS = ['input', 'output', 'prompt', 'completion', 'total', 'max', 'min', 'cache', 'cached', 'reasoning', 'context', 'remaining', 'used']
+const TOKEN_COUNT_SUFFIXES = ['count', 'counts', 'usage', 'limit', 'budget', 'total', 'used']
+const TOKEN_WORD = /^tokens?$/
+const RUN_TOGETHER_TOKEN_COUNT = new RegExp(`^(?:${TOKEN_COUNT_QUALIFIERS.join('|')})tokens?$|^tokens?(?:${TOKEN_COUNT_SUFFIXES.join('|')})$`)
 // Keys whose values are file contents or full tool payloads.
 const CONTENT_KEY = /^(content|contents|file[-_]?contents?|body|payload|arguments|args|tool[-_]?(input|output)|stdin|stdout|stderr|data)$/i
 // Bearer/Basic headers, JWTs, sk-/ghp-style keys and hex runs of 32+ characters inside free text.
 const SECRET_VALUE = /\b(?:Bearer|Basic)\s+[\w.~+/=-]+|\beyJ[\w-]+\.[\w-]+\.[\w-]+|\b(?:sk|pk|rk|ghp|gho|ghs|xox[abp])[-_][\w-]{10,}|\b[a-fA-F0-9]{32,}\b/g
-// Long opaque base64-like runs; redacted only when they mix letters and digits, so prose survives. No `/`, so paths survive.
-const OPAQUE_VALUE = /[A-Za-z0-9+_-]{40,}={0,2}/g
+// Long base64-like runs. The slash is included so it cannot split an AWS or base64 secret; redactOpaqueRun keeps paths readable.
+const OPAQUE_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/g
+const OPAQUE_MIN_LENGTH = 40
+// '+' or '=' padding only appear in encoded values, never in path segments.
+const BASE64_MARK = /\+|=$/
+const LOWER_TO_UPPER = /[a-z][A-Z]/g
 // A 40-character hex run is a git SHA-1, kept unless its key is secret-named.
 const GIT_SHA = /^[a-f0-9]{40}$/i
 const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>]+/g
@@ -29,14 +41,39 @@ const HAS_LETTER = /[A-Za-z]/
 const REDACTION_SLACK_BYTES = 512
 
 export function isSecretKey(key: string): boolean {
-  const words = key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
-  return words.some((word, index) => SECRET_WORDS.has(word) || SECRET_WORD_PAIRS.has(`${word} ${words[index + 1]}`))
+  const words = key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  return words.some((word, index) => isSecretWord({ word, previous: words[index - 1], next: words[index + 1] }))
+}
+
+function isSecretWord({ word, previous, next }: { word: string; previous?: string; next?: string }): boolean {
+  if (SECRET_WHOLE_WORDS.has(word)) return true
+  if (KEY_PREFIXES.has(word) && next !== undefined && KEY_WORD.test(next)) return true
+  return SECRET_WORD.test(word) && !isTokenCount({ word, previous, next })
+}
+
+function isTokenCount({ word, previous, next }: { word: string; previous?: string; next?: string }): boolean {
+  if (RUN_TOGETHER_TOKEN_COUNT.test(word)) return true
+  if (!TOKEN_WORD.test(word)) return false
+  return (previous !== undefined && TOKEN_COUNT_QUALIFIERS.includes(previous)) || (next !== undefined && TOKEN_COUNT_SUFFIXES.includes(next))
 }
 
 export function redactText(text: string): string {
   return redactUrls(text)
     .replace(SECRET_VALUE, match => (GIT_SHA.test(match) ? match : REDACTED))
-    .replace(OPAQUE_VALUE, match => (!GIT_SHA.test(match) && HAS_DIGIT.test(match) && HAS_LETTER.test(match) ? REDACTED : match))
+    .replace(OPAQUE_RUN, redactOpaqueRun)
+}
+
+// Absolute paths start with '/', and relative ones read as words; an encoded value mixes camel humps and digits throughout.
+function redactOpaqueRun(run: string): string {
+  if (!run.includes('/')) return isOpaque(run) ? REDACTED : run
+  if (BASE64_MARK.test(run) && isOpaque(run)) return REDACTED
+  if (!run.startsWith('/') && HAS_DIGIT.test(run) && (run.match(LOWER_TO_UPPER)?.length ?? 0) >= 2) return REDACTED
+  return run.split('/').map(segment => (isOpaque(segment) ? REDACTED : segment)).join('/')
+}
+
+// Redacted only when letters and digits mix, so prose and long words survive.
+function isOpaque(text: string): boolean {
+  return text.length >= OPAQUE_MIN_LENGTH && !GIT_SHA.test(text) && HAS_DIGIT.test(text) && HAS_LETTER.test(text)
 }
 
 // Secret-named query parameters and userinfo passwords inside any URL in the text.
