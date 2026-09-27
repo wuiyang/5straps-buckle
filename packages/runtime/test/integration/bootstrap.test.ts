@@ -1,24 +1,30 @@
 import { execFile } from 'node:child_process'
+import { once } from 'node:events'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { CLOSE_STAGES } from '../../src/index.js'
 import { acquireFileLock } from '../../src/sqlite/index.js'
-import { bearer, createDataDir, createTokens, expectCleanDiagnostics, fixtureEnv, runFixtureCli, serveFixture, type FixtureProcess, type LogLine } from './support/fixture-process.js'
+import { bearer, createDataDir, createTokens, expectCleanDiagnostics, fixtureEnv, runFixtureCli, serveFixture, startFixture, type FixtureProcess, type LogLine } from './support/fixture-process.js'
 import { fixtureRoot, packageRoot } from './support/paths.js'
+import { startHuman, type Human } from './support/human.js'
 import { expectNoLeakedResources, resourceSnapshot } from './support/resources.js'
 
 const run = promisify(execFile)
 const build = inject('fixtureBuild')
 const tokens = createTokens()
 const started: FixtureProcess[] = []
+const humans: Human[] = []
 let resourcesBefore: Record<string, number>
 
 beforeAll(() => { resourcesBefore = resourceSnapshot() })
 afterAll(async () => {
   await Promise.all(started.map(fixture => fixture.stop()))
+  await Promise.all(humans.map(human => human.close()))
   for (const fixture of started) expectCleanDiagnostics(fixture)
   await expectNoLeakedResources(resourcesBefore)
 })
@@ -66,20 +72,50 @@ describe('F01 file routing through extended layers', () => {
 describe('F02 duplicate route registrations fail the project check', () => {
   const script = join(packageRoot, '../../scripts/check-duplicate-routes.mjs')
 
+  // A throwaway Nitro project: files relative to its root, config as source text.
+  function project(files: Record<string, string>, config: string): string {
+    const root = mkdtempSync(join(tmpdir(), 'duplicate-routes-'))
+    mkdirSync(join(root, 'node_modules'))
+    symlinkSync(join(packageRoot, 'node_modules/nitro'), join(root, 'node_modules/nitro'), 'dir')
+    for (const [path, source] of Object.entries(files)) {
+      mkdirSync(join(root, path, '..'), { recursive: true })
+      writeFileSync(join(root, path), source)
+    }
+    writeFileSync(join(root, 'nitro.config.ts'), `export default ${config}\n`)
+    return root
+  }
+
+  async function checkFails(root: string): Promise<string> {
+    const failure = await run(process.execPath, [script, root]).catch((error: unknown) => error as { code: number; stderr: string })
+    expect(failure).toMatchObject({ code: 1 })
+    return (failure as { stderr: string }).stderr
+  }
+
+  const handler = 'export default () => "ok"\n'
+  const twoLayers = '{ preset: "node_middleware", scanDirs: ["./first", "./second"] }'
+
   it('passes the fixture and names both files when two layers claim GET /health', async () => {
     await expect(run(process.execPath, [script, build.fixtureRoot])).resolves.toMatchObject({ stdout: expect.stringContaining('No duplicate Nitro routes') })
+    const stderr = await checkFails(project({ 'first/routes/health.get.ts': handler, 'second/routes/health.ts': handler }, twoLayers))
+    expect(stderr).toMatch(/GET \/health: .*first\/routes\/health\.get\.ts, .*second\/routes\/health\.ts/)
+  })
 
-    const project = mkdtempSync(join(tmpdir(), 'duplicate-routes-'))
-    mkdirSync(join(project, 'node_modules'))
-    symlinkSync(join(packageRoot, 'node_modules/nitro'), join(project, 'node_modules/nitro'), 'dir')
-    for (const [layer, file] of [['first', 'health.get.ts'], ['second', 'health.ts']] as const) {
-      mkdirSync(join(project, layer, 'routes'), { recursive: true })
-      writeFileSync(join(project, layer, 'routes', file), 'export default () => "ok"\n')
-    }
-    writeFileSync(join(project, 'nitro.config.ts'), 'export default { preset: "node_middleware", scanDirs: ["./first", "./second"] }\n')
-    const failure = await run(process.execPath, [script, project]).catch((error: unknown) => error as { code: number; stderr: string })
-    expect(failure).toMatchObject({ code: 1 })
-    expect((failure as { stderr: string }).stderr).toMatch(/GET \/health: .*first\/routes\/health\.get\.ts, .*second\/routes\/health\.ts/)
+  it('packaging-ci-2 treats named and unnamed catch-alls at one prefix as the same route', async () => {
+    const stderr = await checkFails(project({ 'first/routes/files/[...].get.ts': handler, 'second/routes/files/[...path].get.ts': handler }, twoLayers))
+    expect(stderr).toMatch(/GET \/files\/\*\*.*first\/routes\/files\/\[\.\.\.\]\.get\.ts, .*second\/routes\/files\/\[\.\.\.path\]\.get\.ts/)
+  })
+
+  it('packaging-ci-1 scans dot directories the way Nitro does', async () => {
+    const stderr = await checkFails(project({ 'first/routes/.well-known/security.get.ts': handler, 'second/routes/.well-known/security.get.ts': handler }, twoLayers))
+    expect(stderr).toMatch(/GET \/\.well-known\/security: .*first.*second/)
+  })
+
+  it('routing-bootstrap-4 counts routes and handlers registered in the Nitro config', async () => {
+    // Config entries are listed first: Nitro registers them ahead of scanned files, so they win.
+    const routes = await checkFails(project({ 'first/routes/health.get.ts': handler, 'h.ts': handler }, '{ preset: "node_middleware", scanDirs: ["./first"], routes: { "/health": "./h.ts" } }'))
+    expect(routes).toMatch(/GET \/health: .*h\.ts \(nitro config\), .*first\/routes\/health\.get\.ts/)
+    const handlers = await checkFails(project({ 'first/routes/health.get.ts': handler, 'h.ts': handler }, '{ preset: "node_middleware", scanDirs: ["./first"], handlers: [{ route: "/health", method: "get", handler: "./h.ts" }] }'))
+    expect(handlers).toMatch(/GET \/health: .*h\.ts \(nitro config\), .*first\/routes\/health\.get\.ts/)
   })
 })
 
@@ -199,18 +235,71 @@ describe('F21 readiness', () => {
 })
 
 describe('F22 close order', () => {
-  it('closes stage by stage on SIGTERM, releases the lock and exits 0 on its own', async () => {
+  it('under load: cancels the waiter durably, drains the job, ends the stream, releases the lock, then exits 0', async () => {
     const dataDir = createDataDir()
-    const fixture = await ready(await serve({ dataDir }))
-    expect((await fetch(fixture.url('/v1/notes'), { headers: bearer(tokens.agent) })).status).toBe(200)
+    const person = await startHuman()
+    humans.push(person)
+    const fixture = await ready(await serve({ dataDir, extra: { FIXTURE_TERMINAL_SOCKET: person.path } }))
+    await person.connected
+    const ask = fetch(fixture.url('/v1/ask'), { method: 'POST', headers: bearer(tokens.agent, { 'content-type': 'application/json' }), body: JSON.stringify({ summary: 'pending at shutdown' }) })
+    const prompt = await person.waitForPrompt()
+    const job = await fetch(fixture.url('/v1/notes'), { method: 'POST', headers: bearer(tokens.agent, { 'content-type': 'application/json' }), body: JSON.stringify({ text: 'indexed at shutdown', indexDelayMs: 300 }) })
+    expect(job.status).toBe(201)
+    const stream = (await fetch(fixture.url('/v1/stream?events=100'), { headers: bearer(tokens.agent) })).body!.getReader()
+    await stream.read()
+
     expect(await fixture.stop('SIGTERM')).toBe(0)
-    const steps = fixture.events.filter(event => event.message === 'close step').map(event => `${String(event.fields?.stage)}:${String(event.fields?.name)}`)
-    // The ownership lock closes in the locks stage inside the runtime (acquireOwnershipLock); reacquiring it below proves the release.
-    expect(steps).toEqual(['accept:http server', 'timers:heartbeat', 'waiters:cli requester', 'databases:notes database', 'sinks:logger'])
-    const stageOrder = steps.map(step => step.split(':')[0])
-    expect(stageOrder).toEqual([...stageOrder].sort((a, b) => CLOSE_STAGES.indexOf(a as never) - CLOSE_STAGES.indexOf(b as never)))
+    const answer = await ask
+    expect(answer.status).toBe(200)
+    const { outcome } = await answer.json() as { outcome: Record<string, unknown> }
+    expect(outcome).toMatchObject({ status: 'unavailable', requestId: prompt.id, pending: { id: prompt.id } })
+    while (!(await stream.read()).done) { /* the stream ended at shutdown */ }
+
+    const order = fixture.events.flatMap((event) => {
+      if (event.message === 'close step') return [`${String(event.fields?.stage)}:${String(event.fields?.name).replace(dataDir, '<data>')}`]
+      if (event.message === 'stream ended' || event.message === 'note indexed') return [event.message]
+      return []
+    })
+    expect(order.filter(item => item.includes(':'))).toEqual(['accept:http server', 'timers:heartbeat', 'waiters:terminal', 'waiters:cli requester', 'streams:http server connections', 'locks:ownership lock <data>/server.lock', 'services:service registry', 'databases:notes database', 'sinks:logger'])
+    expect(order.indexOf('stream ended')).toBeLessThan(order.indexOf('streams:http server connections'))
+    expect(order.indexOf('note indexed')).toBeLessThan(order.indexOf('databases:notes database'))
+    const leftover = (fixture.events.find(event => event.message === 'active resources after close')?.fields?.resources ?? []) as string[]
+    expect(leftover.filter(kind => ['Timeout', 'TCPServerWrap', 'TCPSocketWrap'].includes(kind))).toEqual([])
     const lock = await acquireFileLock({ path: join(dataDir, 'server.lock'), wait: 'none' })
     await lock.release()
+    const queued = await runFixtureCli({ dataDir, tokens, args: ['approvals', 'list'] })
+    expect(queued.output).toMatchObject({ approvals: [{ id: prompt.id, summary: 'pending at shutdown', status: 'pending' }] })
+  })
+})
+
+describe('restart and failed listen (routing-bootstrap-6, routing-bootstrap-2)', () => {
+  it('a restart on the same data directory reacquires the lock, initialises once and keeps the data', async () => {
+    const dataDir = createDataDir()
+    const first = await ready(await serve({ dataDir }))
+    const created = await fetch(first.url('/v1/notes'), { method: 'POST', headers: bearer(tokens.agent, { 'content-type': 'application/json' }), body: JSON.stringify({ text: 'before restart' }) })
+    expect(created.status).toBe(201)
+    expect(await first.stop('SIGTERM')).toBe(0)
+    const second = await ready(await serve({ dataDir }))
+    expect(await (await fetch(second.url('/v1/notes'), { headers: bearer(tokens.agent) })).json()).toEqual({ notes: [{ id: 1, text: 'before restart', actor: 'agent' }] })
+    for (const run of [first, second]) {
+      expect(run.events.filter(event => event.message === 'common initialized')).toHaveLength(1)
+      expect(run.events.filter(event => event.message === 'ownership lock held')).toHaveLength(1)
+    }
+  })
+
+  it('closes what it opened and exits 1 when listen fails', async () => {
+    const blocker = createServer().listen(0, '127.0.0.1')
+    await once(blocker, 'listening')
+    try {
+      const port = (blocker.address() as AddressInfo).port
+      const fixture = startFixture({ args: ['serve'], env: fixtureEnv({ dataDir: createDataDir(), tokens, entry: build.full.entry, extra: { FIXTURE_PORT: String(port) } }) })
+      expect(await fixture.exited).toBe(1)
+      expect(fixture.events.some(event => event.message === 'listening')).toBe(false)
+      expect(fixture.events.find(event => event.message === 'serve failed')?.error).toMatchObject({ code: 'EADDRINUSE' })
+      expect(fixture.events.filter(event => event.message === 'close step').map(event => event.fields?.name)).toEqual(expect.arrayContaining(['heartbeat', 'http server', 'cli requester', 'service registry']))
+    } finally {
+      blocker.close()
+    }
   })
 })
 

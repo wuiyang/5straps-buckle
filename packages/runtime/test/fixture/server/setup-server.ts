@@ -1,16 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { pathToFileURL } from 'node:url'
-import { runInScope, type RequestCli } from '@5straps/runtime'
+import { registerHttpServerClose, runInScope, type RequestCli } from '@5straps/runtime'
 import { bindHost } from '@5straps/runtime/nitro'
 import type { FixtureRuntime } from '../common/runtime.js'
 import type { BuiltEntry } from './built-entry.js'
 import { wireCliListener, type CliListenerMode } from './cli-listener.js'
 import { pluginOrder } from './plugin-order.js'
 
+// Close steps are registered on the runtime owner: stop accepting at 'accept', connections drained at 'streams'.
 export interface ServerAdapter {
   listen(options: { port: number; host: string }): Promise<number>
-  close(): Promise<void>
 }
 
 const SCOPE_PROBE_PATH = '/v1/scope-probe'
@@ -25,17 +25,19 @@ export async function setupServer(input: { runtime: FixtureRuntime; requestCli: 
   wireCliListener({ nitroApp: entry.nitroApp, requestCli: input.requestCli, mode: input.listenerMode })
   runtime.logger.info('cli listener registered', { mode: input.listenerMode })
   const server = createServer(withScopeProbe({ runtime, middleware: entry.middleware }))
-  closeIdleAfterEachResponse(server)
+  registerHttpServerClose({ server, owner: runtime.owner })
   server.on('upgrade', (request, socket, head) => {
+    // Node drops its own socket error handler before 'upgrade'; a client that resets mid-reply must not crash the process.
+    socket.on('error', (error) => {
+      runtime.logger.debug('upgrade socket error', { error })
+      socket.destroy()
+    })
     entry.handleUpgrade(request, socket, head).catch((error: unknown) => {
       runtime.logger.error('websocket upgrade failed', { error })
       socket.destroy()
     })
   })
-  return {
-    listen: options => listen(server, options),
-    close: () => closeServer(server),
-  }
+  return { listen: options => listen(server, options) }
 }
 
 // F-one-copy: a scope opened here in main must be visible inside the bundled route.
@@ -57,20 +59,4 @@ function listen(server: ReturnType<typeof createServer>, options: { port: number
       resolve((server.address() as AddressInfo).port)
     })
   })
-}
-
-// Stops accepting, then drops each keep-alive connection as soon as its in-flight response ends,
-// so a stream ended by shutdown does not hold close open until the keep-alive timeout.
-function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
-  if (!server.listening) return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    server.close(error => (error ? reject(error) : resolve()))
-    server.closeIdleConnections()
-  })
-}
-
-function closeIdleAfterEachResponse(server: ReturnType<typeof createServer>): void {
-  server.on('request', (_request, response) => response.once('close', () => {
-    if (!server.listening) setImmediate(() => server.closeIdleConnections())
-  }))
 }

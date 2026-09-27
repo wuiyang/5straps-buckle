@@ -15,9 +15,22 @@ export const handleUpgrade = wsAdapter({ resolve: resolveWebSocketHooks }).handl
 
 // Nitro's resolveWebsocketHooks returns {} when the route answers without hooks, and crossws then
 // accepts the upgrade with no handlers. Fail closed: a refused or unmatched upgrade ends with the
-// route's own response (401, 404, 503) instead of an open socket.
+// route's own status and headers (401, 404, 503) instead of an open socket.
 async function resolveWebSocketHooks(request: Request): Promise<WebSocketHooks> {
   const response = await nitroApp.fetch(request) as Response & { crossws?: WebSocketHooks }
   const carrier = request as Request & HookCarrier
-  return response.crossws ?? carrier[WEBSOCKET_HOOKS] ?? carrier.context?.[WEBSOCKET_HOOKS] ?? { upgrade: () => response }
+  const hooks = response.crossws ?? carrier[WEBSOCKET_HOOKS] ?? carrier.context?.[WEBSOCKET_HOOKS]
+  if (hooks) return hooks
+  const refusal = await withoutBody(response)
+  return { upgrade: () => refusal }
+}
+
+// crossws writes a body without watching the socket, so a streamed body would outlive the client; the
+// body is cancelled here, which also releases the route's request scope.
+async function withoutBody(response: Response): Promise<Response> {
+  await response.body?.cancel().catch(() => undefined)
+  const headers = new Headers(response.headers)
+  headers.delete('content-length')
+  headers.set('connection', 'close')
+  return new Response(null, { status: response.status, statusText: response.statusText, headers })
 }

@@ -34,13 +34,16 @@ async function main(argv: string[]): Promise<void> {
 // the interaction handler exists (coordination.md, Ownership).
 async function serve(input: { config: FixtureConfig; logging: LoggerRoot }): Promise<void> {
   const runtime = initializeCommon({ config: input.config, logger: input.logging.logger, role: 'server' })
-  const cli = await setupCli({ runtime, terminalPath: process.env.FIXTURE_TERMINAL_SOCKET, secondTerminalPath: process.env.FIXTURE_SECOND_TERMINAL_SOCKET })
-  const server = await setupServer({ runtime, requestCli: cli.requester.requestCli, entryPath: requiredEnv('FIXTURE_ENTRY'), listenerMode: listenerMode() })
-  runtime.onClose('accept', 'http server', () => server.close())
-  const heartbeat = setInterval(() => runtime.logger.debug('heartbeat'), HEARTBEAT_MS)
-  runtime.onClose('timers', 'heartbeat', () => clearInterval(heartbeat))
   const { shutdown, requested } = onceShutdown({ runtime, logging: input.logging })
-  const port = await server.listen({ port: Number(process.env.FIXTURE_PORT ?? 0), host: '127.0.0.1' })
+  let port: number
+  try {
+    port = await listenServer(runtime)
+  } catch (error) {
+    // Close steps registered before the failure still run (runtime.md: cleanup after partially failed initialization).
+    runtime.logger.fatal('serve failed', { error })
+    process.exitCode = 1
+    return shutdown()
+  }
   runtime.logger.info('listening', { port })
   writeMachineLine({ event: 'listening', port })
   // Listening before readiness is deliberate: the startup window answers 503, never 500 (F05, F21).
@@ -50,6 +53,14 @@ async function serve(input: { config: FixtureConfig; logging: LoggerRoot }): Pro
     process.exitCode = 1
     await shutdown()
   })
+}
+
+async function listenServer(runtime: FixtureRuntime): Promise<number> {
+  const cli = await setupCli({ runtime, terminalPath: process.env.FIXTURE_TERMINAL_SOCKET, secondTerminalPath: process.env.FIXTURE_SECOND_TERMINAL_SOCKET })
+  const server = await setupServer({ runtime, requestCli: cli.requester.requestCli, entryPath: requiredEnv('FIXTURE_ENTRY'), listenerMode: listenerMode() })
+  const heartbeat = setInterval(() => runtime.logger.debug('heartbeat'), HEARTBEAT_MS)
+  runtime.onClose('timers', 'heartbeat', () => clearInterval(heartbeat))
+  return server.listen({ port: Number(process.env.FIXTURE_PORT ?? 0), host: '127.0.0.1' })
 }
 
 // MCP stdio: main injects requestCli directly; stdin/stdout belong to the protocol (F12, F18).

@@ -1,5 +1,6 @@
 import { DisposalError, RuntimeError, RuntimeErrorCode, toError } from '../errors.js'
 import { assertTimerMs } from '../internal/timeouts.js'
+import type { Logger } from '../logger/types.js'
 import { DEFAULT_DRAIN_TIMEOUT_MS } from '../scope/operation-scope.js'
 import { createServiceRegistry, type AnyServiceDefinition, type ServiceRegistry } from '../services/registry.js'
 
@@ -27,6 +28,8 @@ export interface RuntimeOwnerOptions {
   closeStepTimeoutMs?: number
   // Default drain bound for the owner's operation scopes; below closeStepTimeoutMs so the services step can finish.
   drainTimeoutMs?: number
+  // Receives a 'close step' line ({ stage, name }) before each step runs, so close order is observable.
+  logger?: Logger
 }
 
 const DEFAULT_CLOSE_STEP_TIMEOUT_MS = 10_000
@@ -85,6 +88,7 @@ export function createRuntimeOwner(options: RuntimeOwnerOptions): RuntimeOwner {
     const errors: unknown[] = []
     for (const stage of CLOSE_STAGES) {
       for (const { name, closer } of closers.get(stage)!.splice(0).reverse()) {
+        options.logger?.info('close step', { stage, name })
         const error = await runCloseStep({ name, closer, timeoutMs: closeStepTimeoutMs })
         if (error !== undefined) errors.push(...flattenDisposal(error))
       }

@@ -1,6 +1,9 @@
+import { once } from 'node:events'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { CLOSE_STAGES, createRuntimeOwner, defineSingleton, DisposalError, isRuntimeError, RuntimeErrorCode } from '../../src/index.js'
+import { CLOSE_STAGES, createRuntimeOwner, defineSingleton, DisposalError, isRuntimeError, registerHttpServerClose, RuntimeErrorCode } from '../../src/index.js'
 
 describe('runtime owner lifecycle', () => {
   it('F21 refuses business work while starting and after failed readiness', async () => {
@@ -95,5 +98,26 @@ describe('runtime owner lifecycle', () => {
     gate.resolve()
     const error = await starting.then(() => undefined, (failure: unknown) => failure)
     expect(isRuntimeError(error, RuntimeErrorCode.notReady)).toBe(true)
+  })
+})
+
+describe('HTTP server close (coordination-1, routing-bootstrap-1)', () => {
+  it('stops accepting at once, lets a later stage settle the in-flight request, then drains its keep-alive connection', async () => {
+    const gate = Promise.withResolvers<void>()
+    const server = createServer((_, response) => { void gate.promise.then(() => response.end('released')) })
+    const order: string[] = []
+    const owner = createRuntimeOwner({ services: [], closeStepTimeoutMs: 1_000 })
+    registerHttpServerClose({ server, owner })
+    owner.onClose('waiters', 'cli requester', () => { order.push(`waiters: listening ${server.listening}`); gate.resolve() })
+    owner.onClose('locks', 'lock', () => { order.push('locks') })
+    await owner.start(() => {})
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const pending = fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/`).then(response => response.text())
+    await delay(50)
+    // A step that waited for the request would hit its 1 s bound and reject with a DisposalError.
+    await owner.close()
+    expect(await pending).toBe('released')
+    expect(order).toEqual(['waiters: listening false', 'locks'])
   })
 })

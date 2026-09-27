@@ -14,7 +14,7 @@ export interface FixtureRuntime {
   services: FixtureServices
   logger: Logger
   start(): Promise<void>
-  // Registers a close step that is logged when it runs, so close order is observable.
+  // The owner logs each close step as it runs, so close order is observable.
   onClose(stage: CloseStage, name: string, closer: Closer): void
 }
 
@@ -25,11 +25,8 @@ export function initializeCommon(input: { config: FixtureConfig; logger: Logger;
   const { config, logger, role } = input
   const ports: Ports = {}
   const definitions = defineFixtureServices({ config, logger, ports })
-  const owner = createRuntimeOwner({ name: `fixture-${role}`, services: Object.values(definitions), closeStepTimeoutMs: config.closeStepTimeoutMs })
-  const onClose = (stage: CloseStage, name: string, closer: Closer) => owner.onClose(stage, name, () => {
-    logger.info('close step', { stage, name })
-    return closer()
-  })
+  const owner = createRuntimeOwner({ name: `fixture-${role}`, services: Object.values(definitions), closeStepTimeoutMs: config.closeStepTimeoutMs, logger })
+  const onClose = (stage: CloseStage, name: string, closer: Closer) => owner.onClose(stage, name, closer)
   const services: FixtureServices = {
     getAccess: () => owner.registry.useSingleton(definitions.access),
     getNotes: () => owner.registry.useSingleton(definitions.notes),
