@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createCliConsumerSlot, createCliRequester, createHookRequestCli, createOperationScope, InteractionErrorCode, isRuntimeError, runInScope,
-  runInTransactionMarker, RuntimeErrorCode, useScopeSafe, type CliConsumer, type CliOutcome, type CliRequest, type CliRespond,
+  runInTransactionMarker, RuntimeErrorCode, useScopeSafe, type CliConsumer, type CliConsumerResult, type CliOutcome, type CliRequest, type CliRespond,
 } from '../../src/index.js'
 
 function request(id: string, wait: CliRequest['wait'] = { mode: 'finite', timeoutMs: 1_000 }): CliRequest {
@@ -314,5 +314,61 @@ describe('review fixes: request identity, cancellation and queue progress', () =
     await expect(active).resolves.toMatchObject({ status: 'unavailable', reason: 'closed', pending: { id: 'pending-a' } })
     await expect(queued).resolves.toMatchObject({ status: 'unavailable', reason: 'closed', pending: { id: 'pending-b' } })
     expect(persisted).toEqual(['a:closed', 'b:closed'])
+  })
+})
+
+describe('requester close and consumer guards (coordination-2, coordination-5)', () => {
+  it('coordination-2 close() resolves only after every durable write it started, detached ones included', async () => {
+    const slot = createCliConsumerSlot()
+    const detach = slot.attach({ prompt: () => new Promise(() => {}) })
+    const recorded: string[] = []
+    const requester = createCliRequester({ slot, onUnavailable: async (item, reason) => {
+      await delay(50)
+      recorded.push(`${item.id}:${reason}`)
+      return { id: `pending-${item.id}`, instructions: 'approve later' }
+    } })
+    const detached = requester.requestCli(request('a', { mode: 'indefinite' }))
+    await delay(1)
+    detach()
+    slot.attach({ prompt: () => new Promise(() => {}) })
+    const closedOut = requester.requestCli(request('b', { mode: 'indefinite' }))
+    await delay(1)
+    await requester.close()
+    expect(recorded.sort()).toEqual(['a:consumer_detached', 'b:closed'])
+    await expect(detached).resolves.toMatchObject({ status: 'unavailable', pending: { id: 'pending-a' } })
+    await expect(closedOut).resolves.toMatchObject({ status: 'unavailable', pending: { id: 'pending-b' } })
+  })
+
+  it('coordination-5 settles a prompt that throws synchronously or answers malformed, and keeps serving', async () => {
+    const slot = createCliConsumerSlot()
+    let calls = 0
+    const gate = Promise.withResolvers<CliConsumerResult>()
+    slot.attach({ prompt: () => {
+      calls += 1
+      if (calls === 1) return gate.promise
+      if (calls === 2) throw new Error('tty closed')
+      if (calls === 3) return Promise.resolve({ status: 'maybe' } as unknown as CliConsumerResult)
+      return Promise.resolve({ status: 'answered', answer: { choice: 'ok' } })
+    } })
+    const requester = createCliRequester({ slot })
+    const first = requester.requestCli(request('a', { mode: 'indefinite' }))
+    const second = requester.requestCli(request('b', { mode: 'indefinite' })).catch((error: unknown) => error)
+    const third = requester.requestCli(request('c', { mode: 'indefinite' })).catch((error: unknown) => error)
+    const fourth = requester.requestCli(request('d', { mode: 'indefinite' }))
+    gate.resolve({ status: 'denied', reason: 'no' })
+    await expect(first).resolves.toEqual({ status: 'denied', requestId: 'a', reason: 'no' })
+    expect(isRuntimeError(await second, InteractionErrorCode.consumerFailed)).toBe(true)
+    expect(isRuntimeError(await third, InteractionErrorCode.consumerFailed)).toBe(true)
+    await expect(fourth).resolves.toEqual({ status: 'answered', requestId: 'd', answer: { choice: 'ok' } })
+    expect(requester.pending()).toBe(0)
+  })
+
+  it('coordination-5 turns a synchronous throw on the first prompt into a rejection', async () => {
+    const slot = createCliConsumerSlot()
+    slot.attach({ prompt: () => { throw new Error('tty closed') } })
+    const requester = createCliRequester({ slot })
+    const failed = await Promise.resolve().then(() => requester.requestCli(request('a'))).catch((error: unknown) => error)
+    expect(isRuntimeError(failed, InteractionErrorCode.consumerFailed)).toBe(true)
+    expect(requester.pending()).toBe(0)
   })
 })

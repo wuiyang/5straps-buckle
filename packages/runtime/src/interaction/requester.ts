@@ -1,9 +1,10 @@
 import { RuntimeError } from '../errors.js'
 import { runInScope, useScopeSafe, type OperationScope } from '../scope/als.js'
+import { isScopeUsable } from '../scope/operation-scope.js'
 import { assertNoActiveTransaction } from '../transaction/guard.js'
 import { InteractionErrorCode } from './codes.js'
 import { invalidWaitError, sameEnvelope } from './envelope.js'
-import type { CliConsumer, CliOutcome, CliRequest, PendingInteraction, RequestCli, UnavailableReason } from './types.js'
+import type { CliConsumer, CliConsumerResult, CliOutcome, CliRequest, PendingInteraction, RequestCli, UnavailableReason } from './types.js'
 
 export { InteractionErrorCode } from './codes.js'
 
@@ -42,7 +43,8 @@ export interface CliRequesterOptions {
 export interface CliRequester {
   requestCli: RequestCli
   pending(): number
-  close(reason?: string): void
+  // Resolves once every durable write it started (onUnavailable, detach included) has settled, so a close step can wait for them.
+  close(reason?: string): Promise<void>
 }
 
 interface Entry {
@@ -60,6 +62,7 @@ interface Entry {
 export function createCliRequester(options: CliRequesterOptions): CliRequester {
   const queue: Entry[] = []
   const inFlight = new Map<string, Entry>()
+  const persisting = new Set<Promise<unknown>>()
   let active: Entry | undefined
   let closed = false
 
@@ -153,9 +156,10 @@ export function createCliRequester(options: CliRequesterOptions): CliRequester {
     if (!entry) return
     active = entry
     const prompt = () => consumer.prompt(entry.request, { signal: entry.controller.signal })
-    const running = entry.scope?.state === 'active' ? runInScope(entry.scope, prompt) : prompt()
+    // A consumer that throws synchronously or returns a plain value must settle its entry, never stall the queue.
+    const running = new Promise<unknown>((resolve) => { resolve(entry.scope && isScopeUsable(entry.scope) ? runInScope(entry.scope, prompt) : prompt()) })
     running.then(
-      result => entry.settle(result.status === 'answered' ? { status: 'answered', requestId: entry.request.id, answer: result.answer } : { status: 'denied', requestId: entry.request.id, reason: result.reason }),
+      result => entry.settle(consumerOutcome(entry.request, result)),
       error => entry.settle(entry.controller.signal.aborted ? cancelledOutcome(entry.request, 'prompt aborted') : new RuntimeError(InteractionErrorCode.consumerFailed, `CLI consumer failed for request ${entry.request.id}`, { cause: error })),
     )
   }
@@ -166,8 +170,13 @@ export function createCliRequester(options: CliRequesterOptions): CliRequester {
   }
 
   function settleUnavailable(entry: Entry, reason: UnavailableReason): void {
+    if (entry.settled) return
     const persist = options.onUnavailable ?? (() => Promise.resolve(undefined))
-    entry.settle(Promise.resolve().then(() => persist(entry.request, reason)).then(pending => ({ status: 'unavailable', requestId: entry.request.id, reason, ...(pending ? { pending } : {}) })))
+    const outcome: Promise<CliOutcome> = Promise.resolve().then(() => persist(entry.request, reason)).then(pending => ({ status: 'unavailable', requestId: entry.request.id, reason, ...(pending ? { pending } : {}) }))
+    persisting.add(outcome)
+    const done = () => { persisting.delete(outcome) }
+    outcome.then(done, done)
+    entry.settle(outcome)
   }
 
   return {
@@ -181,8 +190,25 @@ export function createCliRequester(options: CliRequesterOptions): CliRequester {
         if (options.onUnavailable) settleUnavailable(entry, 'closed')
         else entry.settle(cancelledOutcome(entry.request, reason))
       }
+      return Promise.allSettled([...persisting]).then(() => undefined)
     },
   }
+}
+
+function consumerOutcome(request: CliRequest, result: unknown): CliOutcome | RuntimeError {
+  if (isAnswered(result)) return { status: 'answered', requestId: request.id, answer: result.answer }
+  if (isDenied(result)) return { status: 'denied', requestId: request.id, reason: result.reason }
+  return new RuntimeError(InteractionErrorCode.consumerFailed, `CLI consumer returned an invalid result for request ${request.id}`)
+}
+
+function isAnswered(result: unknown): result is Extract<CliConsumerResult, { status: 'answered' }> {
+  const candidate = result as { status?: unknown; answer?: { choice?: unknown; note?: unknown } } | null
+  return candidate?.status === 'answered' && typeof candidate.answer?.choice === 'string' && (candidate.answer.note === undefined || typeof candidate.answer.note === 'string')
+}
+
+function isDenied(result: unknown): result is Extract<CliConsumerResult, { status: 'denied' }> {
+  const candidate = result as { status?: unknown; reason?: unknown } | null
+  return candidate?.status === 'denied' && (candidate.reason === undefined || typeof candidate.reason === 'string')
 }
 
 export function cancelledOutcome(request: CliRequest, reason: unknown): CliOutcome {
