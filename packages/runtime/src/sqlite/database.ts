@@ -14,8 +14,10 @@ export type PragmaValue = string | number | boolean
 export interface OpenDatabaseOptions {
   path: string
   pragmas?: Readonly<Record<string, PragmaValue>>
-  // Receives a warning when an existing parent directory is readable by other users.
+  // Receives a warning when the parent directory is accessible to other users or a mode cannot be set (EPERM).
   logger?: Logger
+  // Refuse instead of warn when the parent directory is accessible to other users (it holds credentials).
+  requireOwnerOnlyDirectory?: boolean
 }
 
 export const DEFAULT_BUSY_TIMEOUT_MS = 5_000
@@ -39,7 +41,7 @@ export function openDatabase(options: OpenDatabaseOptions): Promise<SqliteDataba
 // Shared by openDatabase and the lock connections, which keep the file's own journal mode.
 export async function openSqlite(options: OpenDatabaseOptions, pragmas: SqlitePragmaDefaults): Promise<SqliteDatabase> {
   const path = requireExplicitPath(options.path)
-  const isNew = prepareDatabaseFile(path, options.logger)
+  const isNew = prepareDatabaseFile({ path, logger: options.logger, requireOwnerOnlyDirectory: options.requireOwnerOnlyDirectory === true })
   const db = createDatabase(nodeSqliteConnector({ path }))
   try {
     applyPragmas({ connection: await rawConnection(db), pragmas: { ...pragmas.defaults, ...(isNew ? pragmas.newDatabase : {}), ...options.pragmas }, logger: options.logger })
@@ -69,35 +71,59 @@ function requireExplicitPath(path: string): string {
   return resolve(path)
 }
 
+interface PrepareFileInput {
+  path: string
+  logger: Logger | undefined
+  requireOwnerOnlyDirectory: boolean
+}
+
 // Returns whether the database is new: this call created the file, or it is still empty.
-function prepareDatabaseFile(path: string, logger: Logger | undefined): boolean {
-  prepareDirectory(dirname(path), logger)
+function prepareDatabaseFile(input: PrepareFileInput): boolean {
+  const { path, logger } = input
+  prepareDirectory({ ...input, directory: dirname(path) })
   const isNew = createFileIfAbsent(path)
-  chmodSync(path, 0o600)
-  restrictSidecars(path)
+  restrictMode({ path, mode: 0o600, logger })
+  restrictSidecars(path, logger)
   return isNew
 }
 
 // SQLite gives a new -wal or -shm file the database's mode, but files made under an older, looser mode keep it.
-function restrictSidecars(path: string): void {
+function restrictSidecars(path: string, logger: Logger | undefined): void {
   for (const sidecar of SIDECAR_SUFFIXES.map(suffix => `${path}${suffix}`)) {
-    if (lstatSync(sidecar, { throwIfNoEntry: false })?.isFile()) chmodSync(sidecar, 0o600)
+    if (lstatSync(sidecar, { throwIfNoEntry: false })?.isFile()) restrictMode({ path: sidecar, mode: 0o600, logger })
   }
 }
 
 // Only directories this call created get 0700; an existing (possibly shared or mounted) one is left alone.
-function prepareDirectory(directory: string, logger: Logger | undefined): void {
-  const firstCreated = mkdirSync(directory, { recursive: true, mode: 0o700 })
-  if (firstCreated === undefined) return warnIfShared(directory, logger)
+function prepareDirectory(input: Omit<PrepareFileInput, 'path'> & { directory: string }): void {
+  const firstCreated = mkdirSync(input.directory, { recursive: true, mode: 0o700 })
+  if (firstCreated !== undefined) restrictCreatedDirectories({ ...input, firstCreated })
+  checkDirectoryAccess(input)
+}
+
+function restrictCreatedDirectories({ directory, firstCreated, logger }: { directory: string; firstCreated: string; logger: Logger | undefined }): void {
   for (let current = directory; ; current = dirname(current)) {
-    chmodSync(current, 0o700)
+    restrictMode({ path: current, mode: 0o700, logger })
     if (current === firstCreated) return
   }
 }
 
-function warnIfShared(directory: string, logger: Logger | undefined): void {
+// Warns by default; a directory that holds credentials must be owner-only, so the caller can ask for a refusal.
+function checkDirectoryAccess({ directory, logger, requireOwnerOnlyDirectory }: Omit<PrepareFileInput, 'path'> & { directory: string }): void {
   const mode = statSync(directory).mode & 0o777
-  if ((mode & 0o077) !== 0) logger?.warn('SQLite directory is accessible to other users; its mode was left unchanged', { directory, mode: mode.toString(8) })
+  if ((mode & 0o077) === 0) return
+  if (requireOwnerOnlyDirectory) throw new RuntimeError(SqliteErrorCode.directoryNotOwnerOnly, `SQLite directory ${directory} is accessible to other users (mode ${mode.toString(8)}); it holds credentials and must be 0700`)
+  logger?.warn('SQLite directory is accessible to other users; its mode was left unchanged', { directory, mode: mode.toString(8) })
+}
+
+// A file another user owns, or a filesystem without modes, refuses chmod with EPERM: warn and keep going.
+function restrictMode({ path, mode, logger }: { path: string; mode: number; logger: Logger | undefined }): void {
+  try {
+    chmodSync(path, mode)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error
+    logger?.warn('SQLite file mode could not be restricted', { path, mode: mode.toString(8), code: 'EPERM' })
+  }
 }
 
 // Never open an existing database through fs: POSIX close() drops every fcntl lock this process

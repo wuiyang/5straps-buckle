@@ -440,3 +440,43 @@ describe('bounded owner waits (rulings 1 and 6)', () => {
     await owner.close()
   })
 })
+
+describe('directory permission policy (ruling 7)', () => {
+  const NOT_OWNER_ONLY = 'DirectoryNotOwnerOnlyError'
+
+  function existingDirectory(mode: number): string {
+    const directory = join(mkdtempSync(join(tmpdir(), 'policy-')), 'state')
+    mkdirSync(directory)
+    chmodSync(directory, mode)
+    return directory
+  }
+
+  it('refuses an existing directory with any group or other bit when requireOwnerOnlyDirectory is set, before creating the file', async () => {
+    expect(SqliteErrorCode).toMatchObject({ directoryNotOwnerOnly: NOT_OWNER_ONLY })
+    for (const mode of [0o750, 0o705, 0o755, 0o710]) {
+      const path = join(existingDirectory(mode), 'credentials.sqlite')
+      const refused = await openDatabase({ path, requireOwnerOnlyDirectory: true }).catch((error: unknown) => error)
+      expect(isRuntimeError(refused, NOT_OWNER_ONLY)).toBe(true)
+      expect(existsSync(path)).toBe(false)
+    }
+  })
+
+  it('opens an owner-only existing directory and a directory it creates when requireOwnerOnlyDirectory is set', async () => {
+    const existing = await openDatabase({ path: join(existingDirectory(0o700), 'credentials.sqlite'), requireOwnerOnlyDirectory: true })
+    await existing.dispose()
+    const created = await openDatabase({ path: databasePath('credentials.sqlite'), requireOwnerOnlyDirectory: true })
+    await created.dispose()
+  })
+
+  it('warns by default about a group-readable existing directory and still opens the database', async () => {
+    const events: LogEvent[] = []
+    const logs = createLogger({ component: 'sqlite', sinks: [{ name: 'memory', write: (event) => { events.push(event) } }] })
+    const directory = existingDirectory(0o750)
+    const db = await openDatabase({ path: join(directory, 'app.sqlite'), logger: logs.logger })
+    await db.exec('CREATE TABLE t (id INTEGER)')
+    await logs.flush()
+    expect(events).toEqual([expect.objectContaining({ level: 'warn', fields: { directory, mode: '750' } })])
+    expect(statSync(directory).mode & 0o777).toBe(0o750)
+    await db.dispose()
+  })
+})

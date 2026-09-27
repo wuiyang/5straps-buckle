@@ -5,4 +5,5 @@ export const SqliteErrorCode = Object.freeze({
   connectionOwned: 'ConnectionAlreadyOwnedError',
   rawHandleRefused: 'RawHandleRefusedError',
   notRegularFile: 'NotRegularFileError',
+  directoryNotOwnerOnly: 'DirectoryNotOwnerOnlyError',
 } as const)
