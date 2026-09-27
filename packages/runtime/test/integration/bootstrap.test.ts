@@ -102,6 +102,13 @@ describe('F02 duplicate route registrations fail the project check', () => {
     expect(stderr).toMatch(/GET \/health: .*first\/routes\/health\.get\.ts, .*second\/routes\/health\.ts/)
   })
 
+  it('packaging-ci-3 fails the same way when the script is run through a symlinked path', async () => {
+    const link = join(mkdtempSync(join(tmpdir(), 'routes-link-')), 'check-duplicate-routes.mjs')
+    symlinkSync(script, link)
+    const failure = await run(process.execPath, [link, project({ 'first/routes/health.get.ts': handler, 'second/routes/health.ts': handler }, twoLayers)]).catch((error: unknown) => error)
+    expect(failure).toMatchObject({ code: 1, stderr: expect.stringContaining('GET /health') })
+  })
+
   it('packaging-ci-2 treats named and unnamed catch-alls at one prefix as the same route', async () => {
     const stderr = await checkFails(project({ 'first/routes/files/[...].get.ts': handler, 'second/routes/files/[...path].get.ts': handler }, twoLayers))
     expect(stderr).toMatch(/GET \/files\/\*\*.*first\/routes\/files\/\[\.\.\.\]\.get\.ts, .*second\/routes\/files\/\[\.\.\.path\]\.get\.ts/)

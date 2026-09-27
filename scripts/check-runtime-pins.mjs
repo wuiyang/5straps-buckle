@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isEntryPoint } from './entry-point.mjs'
 
 export const RUNTIME_PINS = Object.freeze({ nitro: '3.0.260903-beta', h3: '2.0.1-rc.32', db0: '0.4.1' })
 const PEER_ONLY = ['nitro', 'h3']
@@ -81,7 +82,7 @@ function lockSection(lock, topLevel, heading) {
   return end < 0 ? rest : rest.slice(0, end)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const root = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), '..'))
   const problems = checkRuntimePins({ root })
   if (problems.length > 0) {

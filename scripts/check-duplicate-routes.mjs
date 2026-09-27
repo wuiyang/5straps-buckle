@@ -4,7 +4,8 @@
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, matchesGlob, relative, resolve, sep } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
+import { isEntryPoint } from './entry-point.mjs'
 
 const ROUTE_FILE = /\.(?:js|mjs|cjs|ts|mts|cts|tsx|jsx)$/
 // Same suffix grammar as Nitro's scanServerRoutes at the pinned beta.
@@ -89,7 +90,7 @@ function collisions(registrations) {
   return problems
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const rootDir = resolve(process.argv[2] ?? '.')
   const problems = await findDuplicateRoutes({ rootDir })
   if (problems.length > 0) {

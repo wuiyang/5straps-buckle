@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -57,5 +57,14 @@ describe('F57 runtime pin guard', () => {
   it('rejects better-sqlite3 because the runtime uses node:sqlite', () => {
     const root = copyRepositoryPinInputs(manifest => { manifest.dependencies!['better-sqlite3'] = '13.0.3' })
     expect(runCheck(root).output).toContain('better-sqlite3 is not allowed in dependencies')
+  })
+})
+
+describe('gate scripts run through a symlinked path (packaging-ci-3)', () => {
+  it('still checks instead of exiting 0 silently', () => {
+    const link = join(mkdtempSync(join(tmpdir(), 'pins-link-')), 'check-runtime-pins.mjs')
+    symlinkSync(script, link)
+    const output = execFileSync(process.execPath, [link, repository], { encoding: 'utf8', stdio: 'pipe' })
+    expect(output).toContain('Runtime pins verified')
   })
 })
