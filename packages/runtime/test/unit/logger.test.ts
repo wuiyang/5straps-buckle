@@ -60,6 +60,14 @@ describe('F52 logger contract', () => {
     expect(sink.events[0]!.fields).toEqual({ body: 'visible' })
   })
 
+  it('never lifts redaction for a credential key, whatever allowKeys lists', async () => {
+    const sink = memorySink()
+    const root = createLogger({ component: 'test', sinks: [sink], allowKeys: ['adminToken', 'authorization', 'apiKey', 'clientSecret', 'password'] })
+    root.logger.info('debugging', { adminToken: 'plain-admin-value', authorization: 'plain-header', apiKey: 'plain-key', clientSecret: 'plain-secret', password: 'plain-password' })
+    await root.flush()
+    expect(sink.events[0]!.fields).toEqual({ adminToken: '[redacted]', authorization: '[redacted]', apiKey: '[redacted]', clientSecret: '[redacted]', password: '[redacted]' })
+  })
+
   it('truncates a 1 MB field', async () => {
     const sink = memorySink()
     const root = createLogger({ component: 'test', sinks: [sink] })

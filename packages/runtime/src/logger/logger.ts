@@ -11,7 +11,7 @@ export interface LoggerConfig {
   maxObjectKeys?: number
   // Serialized size of a whole event; an oversized event loses error detail first, then large fields.
   maxEventBytes?: number
-  /** Keys exempt from secret and content redaction; opt-in per deployment. */
+  /** Keys exempt from content redaction; opt-in per deployment. Credential keys stay redacted whatever this lists. */
   allowKeys?: readonly string[]
   /** Extra keys whose values are omitted with their size, like file contents. */
   omitKeys?: readonly string[]

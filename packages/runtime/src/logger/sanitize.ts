@@ -168,10 +168,9 @@ export function sanitizeFields(fields: Record<string, unknown>, options: Sanitiz
 }
 
 function sanitizeValue(key: string, value: unknown, options: SanitizeOptions, depth: number, seen: WeakSet<object>): unknown {
-  if (!options.allowKeys.has(key)) {
-    if (isSecretKey(key, value)) return REDACTED
-    if ((isContentKey(key) || options.omitKeys.has(key)) && value !== undefined && value !== null) return `[omitted ${describeSize(value)}]`
-  }
+  // No configuration lifts a credential key: allowKeys only exempts content and omitted keys.
+  if (isSecretKey(key, value)) return REDACTED
+  if (!options.allowKeys.has(key) && (isContentKey(key) || options.omitKeys.has(key)) && value !== undefined && value !== null) return `[omitted ${describeSize(value)}]`
   if (typeof value === 'string') return sanitizeString(value, options)
   if (typeof value === 'bigint') return value.toString()
   if (typeof value === 'function' || typeof value === 'symbol') return `[${typeof value}]`

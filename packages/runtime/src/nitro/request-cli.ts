@@ -2,10 +2,11 @@ import type { NitroApp, NitroRuntimeHooks } from 'nitro/types'
 import { RuntimeError } from '../errors.js'
 import { CliListenerUnavailableError, createHookRequestCli, type CliCallOptions, type CliRespond, type HookRequestCliOptions } from '../interaction/hook.js'
 import type { CliRequest, RequestCli } from '../interaction/types.js'
+import type { Logger } from '../logger/types.js'
 import { NitroErrorCode, useHost } from './host.js'
 
 type CliCallListener = NitroRuntimeHooks['cli:call']
-type CliCallHooks = NonNullable<NitroApp['hooks']>
+type Warn = Logger['warn']
 
 // The one interactive listener lives in this slot, not in the hook list: only it receives the
 // respond that settles a request. Raw hooks.hook('cli:call') listeners are observers.
@@ -30,11 +31,21 @@ export function registerCliListener(nitroApp: NitroApp, listener: CliCallListene
   }
 }
 
-export function createRequestCli(nitroApp: NitroApp, options: Pick<HookRequestCliOptions, 'onUnavailable'> = {}): RequestCli {
+export interface RequestCliOptions extends Pick<HookRequestCliOptions, 'onUnavailable'> {
+  // Observer warnings go to the bound host's logger; this one takes them until a host is bound.
+  logger?: Pick<Logger, 'warn'>
+}
+
+export function createRequestCli(nitroApp: NitroApp, options: RequestCliOptions = {}): RequestCli {
+  const warn = warnFor(nitroApp, options.logger)
   return createHookRequestCli({
-    ...options,
+    // Observers also hear of a request no listener could take, before its durable write.
+    onUnavailable: (request, reason) => {
+      if (reason === 'no_listener') notifyObservers({ nitroApp, request, warn, callOptions: { signal: AbortSignal.abort(reason) } })
+      return options.onUnavailable?.(request, reason) ?? Promise.resolve(undefined)
+    },
     hasListener: () => registeredEntry(nitroApp) !== undefined,
-    dispatch: (request, respond, callOptions) => dispatchToListener({ nitroApp, request, respond, callOptions }),
+    dispatch: (request, respond, callOptions) => dispatchToListener({ nitroApp, request, respond, callOptions, warn }),
   })
 }
 
@@ -42,7 +53,7 @@ function registeredEntry(nitroApp: NitroApp): ListenerEntry | undefined {
   return nitroApp.hooks ? (nitroApp as NitroApp & ListenerSlot)[CLI_LISTENER_SLOT] : undefined
 }
 
-function dispatchToListener(input: { nitroApp: NitroApp; request: CliRequest; respond: CliRespond; callOptions?: CliCallOptions }): Promise<void> {
+function dispatchToListener(input: { nitroApp: NitroApp; request: CliRequest; respond: CliRespond; callOptions?: CliCallOptions; warn: Warn }): Promise<void> {
   const entry = registeredEntry(input.nitroApp)
   if (!entry) return Promise.reject(new CliListenerUnavailableError('no_listener', `The cli:call listener was removed before request ${input.request.id} was dispatched`))
   notifyObservers(input)
@@ -59,9 +70,10 @@ function runListener(input: { entry: ListenerEntry; request: CliRequest; respond
 }
 
 // Observers see a frozen copy of the request and the settle signal, never the real respond: they can neither
-// answer, fail nor rewrite it. Each runs on its own, so one that throws or hangs never silences the rest.
-function notifyObservers(input: { nitroApp: NitroApp; request: CliRequest; callOptions?: CliCallOptions }): void {
-  const { nitroApp, request } = input
+// answer, fail nor rewrite it. They run through hookable's public callHook, which calls them in series and stops
+// at the first failure; the listener never waits for them, so none can delay or change the answer.
+function notifyObservers(input: { nitroApp: NitroApp; request: CliRequest; callOptions?: CliCallOptions; warn: Warn }): void {
+  const { nitroApp, request, warn } = input
   const hooks = nitroApp.hooks
   if (!hooks) return
   const observed = deepFreeze(structuredClone(request))
@@ -69,20 +81,20 @@ function notifyObservers(input: { nitroApp: NitroApp; request: CliRequest; callO
   const ignoredRespond: CliRespond = () => {
     if (ignoredLogged) return
     ignoredLogged = true
-    useHost(nitroApp)?.logger.warn('cli:call observer response ignored', { requestId: request.id })
+    warn('cli:call observer response ignored', { requestId: request.id })
   }
-  for (const observer of cliCallObservers(hooks)) {
-    Promise.resolve()
-      .then(() => observer(observed, ignoredRespond, input.callOptions))
-      .catch((error: unknown) => useHost(nitroApp)?.logger.warn('cli:call observer failed', { requestId: request.id, error }))
-  }
+  Promise.resolve()
+    .then(() => hooks.callHook('cli:call', observed, ignoredRespond, input.callOptions))
+    .catch((error: unknown) => warn('cli:call observer failed', { requestId: request.id, error }))
 }
 
-// Nitro's HookableCore only calls a hook's listeners in series and stops at the first failure, so the
-// observers are read from its listener table (protected in hookable 6.1.1's types, a plain field at run time).
-function cliCallObservers(hooks: CliCallHooks): CliCallListener[] {
-  const table = (hooks as unknown as { _hooks: Record<string, CliCallListener[] | undefined> })._hooks
-  return [...(table['cli:call'] ?? [])]
+// The host's logger once main binds it; before that the caller's, or a process warning, so nothing is dropped.
+function warnFor(nitroApp: NitroApp, fallback: Pick<Logger, 'warn'> | undefined): Warn {
+  return (message, fields) => {
+    const logger = useHost(nitroApp)?.logger ?? fallback
+    if (logger) logger.warn(message, fields)
+    else process.emitWarning(`${message} (request ${String(fields?.requestId)})`, { code: 'CLI_CALL_OBSERVER' })
+  }
 }
 
 function deepFreeze<T>(value: T): T {

@@ -315,8 +315,10 @@ describe('createRequestCli over Nitro hooks', () => {
     })
     await expect(createRequestCli(nitroApp)(request)).resolves.toEqual({ status: 'answered', requestId: 'r1', answer: { choice: 'approve' } })
     await hostLogger.flush()
-    expect(observed).toEqual(['r1'])
+    // Told of the request no listener could take as well as of the one the listener answered.
+    expect(observed).toEqual(['r1', 'r1'])
     expect(warnings.filter(event => event.message === 'cli:call observer response ignored')).toEqual([
+      expect.objectContaining({ level: 'warn', fields: expect.objectContaining({ requestId: 'r1' }) }),
       expect.objectContaining({ level: 'warn', fields: expect.objectContaining({ requestId: 'r1' }) }),
     ])
   })
@@ -357,18 +359,49 @@ describe('createRequestCli over Nitro hooks', () => {
     expect(warnings.filter(event => event.message === 'cli:call observer failed')).toHaveLength(1)
   })
 
-  it('L3 runs every observer even when an earlier one throws or hangs', async () => {
+  it('L3 lets no observer that hangs or throws delay or change the answer', async () => {
     const { nitroApp } = createTestNitroApp({ plugins: [], routes: () => {} })
     const observed: string[] = []
-    nitroApp.hooks.hook('cli:call', () => { throw new Error('first observer crashed') })
-    nitroApp.hooks.hook('cli:call', () => new Promise(() => {}))
     nitroApp.hooks.hook('cli:call', async (item) => { observed.push(item.id) })
+    nitroApp.hooks.hook('cli:call', () => new Promise(() => {}))
     registerCliListener(nitroApp, async (item, respond) => {
       await delay(5)
       respond({ status: 'denied', requestId: item.id })
     })
-    await createRequestCli(nitroApp)({ id: 'r5', kind: 'approval', correlationId: 'c5', action: { summary: 'x' }, wait: { mode: 'indefinite' } })
+    await expect(createRequestCli(nitroApp)({ id: 'r5', kind: 'approval', correlationId: 'c5', action: { summary: 'x' }, wait: { mode: 'indefinite' } }))
+      .resolves.toEqual({ status: 'denied', requestId: 'r5' })
     expect(observed).toEqual(['r5'])
+  })
+
+  it('L3 tells observers of a request no listener could take, with a settled signal, before its durable write', async () => {
+    const { nitroApp } = createTestNitroApp({ plugins: [], routes: () => {} })
+    const seen: Array<{ id: string; settled: boolean | undefined }> = []
+    nitroApp.hooks.hook('cli:call', async (item, _respond, options) => { seen.push({ id: item.id, settled: options?.signal.aborted }) })
+    const requestCli = createRequestCli(nitroApp, { onUnavailable: async item => ({ id: `pending-${item.id}`, instructions: 'approve later' }) })
+    await expect(requestCli({ id: 'r8', kind: 'approval', correlationId: 'c8', action: { summary: 'x' }, wait: { mode: 'indefinite' } }))
+      .resolves.toMatchObject({ status: 'unavailable', reason: 'no_listener', pending: { id: 'pending-r8' } })
+    await delay(1)
+    expect(seen).toEqual([{ id: 'r8', settled: true }])
+  })
+
+  it('L3 keeps observer warnings when no host is bound: the given logger takes them', async () => {
+    const { nitroApp } = createTestNitroApp({ plugins: [], routes: () => {} })
+    const warn = vi.fn()
+    nitroApp.hooks.hook('cli:call', async () => { throw new Error('observer crashed') })
+    await createRequestCli(nitroApp, { logger: { warn } })({ id: 'r9', kind: 'approval', correlationId: 'c9', action: { summary: 'x' }, wait: { mode: 'indefinite' } })
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith('cli:call observer failed', expect.objectContaining({ requestId: 'r9' })))
+  })
+
+  it('L3 keeps observer warnings with neither a host nor a logger, as a process warning', async () => {
+    const { nitroApp } = createTestNitroApp({ plugins: [], routes: () => {} })
+    const emitted = vi.spyOn(process, 'emitWarning').mockImplementation(() => {})
+    try {
+      nitroApp.hooks.hook('cli:call', async () => { throw new Error('observer crashed') })
+      await createRequestCli(nitroApp)({ id: 'r10', kind: 'approval', correlationId: 'c10', action: { summary: 'x' }, wait: { mode: 'indefinite' } })
+      await vi.waitFor(() => expect(emitted).toHaveBeenCalledWith(expect.stringContaining('cli:call observer failed'), expect.objectContaining({ code: 'CLI_CALL_OBSERVER' })))
+    } finally {
+      emitted.mockRestore()
+    }
   })
 
   it('L4 settles as unavailable, through onUnavailable, when the listener is removed before dispatch', async () => {
