@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { createLogger, createOperationScope, redactText, runInScope, type LogEvent, type LogSink } from '../../src/index.js'
+import { createLogger, createOperationScope, redactText, runInScope, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
 
 function memorySink(): LogSink & { events: LogEvent[] } {
   const events: LogEvent[] = []
@@ -293,8 +293,43 @@ describe('logger lows (logger-fixes-3, -6, -7, -8, -9, -11, -12, -13)', () => {
   it('logger-fixes-13 drops a multibyte character cut by truncation', async () => {
     const sink = memorySink()
     const root = createLogger({ component: 'svc', sinks: [sink], maxStringBytes: 5 })
-    root.logger.info('x', { text: 'ab\u{1F600}cd' })
+    root.logger.info('x', { note: 'ab\u{1F600}cd' })
     await root.flush()
-    expect(sink.events[0]!.fields!.text).toBe('ab...[truncated 3 bytes]')
+    expect(sink.events[0]!.fields!.note).toBe('ab...[truncated 3 bytes]')
+  })
+})
+
+describe('content keys and logger config (ruling 8)', () => {
+  it('drops input, text, prompt and messages by default, as a whole key or the last key word', async () => {
+    const event = await logOnce({ input: { path: '/etc/hosts' }, text: 'model reply', prompt: 'summarise this', messages: [{ role: 'user', content: 'hi' }], userInput: 'typed', systemPrompt: 'be brief', chatMessages: [], statusText: 'Not Found', prompts: ['a'], inputTokens: 12, message: 'kept' })
+    expect(event.fields).toEqual({ input: '[omitted object]', text: '[omitted 11 bytes]', prompt: '[omitted 14 bytes]', messages: '[omitted object]', userInput: '[omitted 5 bytes]', systemPrompt: '[omitted 8 bytes]', chatMessages: '[omitted object]', statusText: '[omitted 9 bytes]', prompts: '[omitted object]', inputTokens: 12, message: 'kept' })
+  })
+
+  it('never lets a bearer token or other text inside a dropped content key reach a sink', async () => {
+    const bearer = 'Bearer q7Zr2mXv9LpK3tHs'
+    const sink = memorySink()
+    const root = createLogger({ component: 'test', sinks: [sink] })
+    root.logger.info('model call', { request: { prompt: `use ${bearer} to call the API`, messages: [{ role: 'user', content: `my password is hunter2, header ${bearer}` }] }, input: `curl -H 'Authorization: ${bearer}'`, text: 'reply mentions hunter2' })
+    await root.flush()
+    const serialized = JSON.stringify(sink.events)
+    for (const leaked of ['q7Zr2mXv9LpK3tHs', 'hunter2', 'Bearer', 'curl']) expect(serialized).not.toContain(leaked)
+  })
+
+  it('keeps tokensUsed a number when numeric and redacts it otherwise', async () => {
+    const event = await logOnce({ tokensUsed: 1_234, tokens_used: '56', usedTokens: 7 })
+    expect(event.fields).toEqual({ tokensUsed: 1_234, tokens_used: '56', usedTokens: 7 })
+    const opaque = await logOnce({ tokensUsed: 'tok_live_abc' })
+    expect(opaque.fields).toEqual({ tokensUsed: '[redacted]' })
+  })
+
+  it('accepts omitKeys and allowKeys from a runtime config object and refuses malformed values', async () => {
+    const config: LoggerConfig = JSON.parse('{"level":"debug","omitKeys":["diff"],"allowKeys":["statusText"]}')
+    const sink = memorySink()
+    const root = createLogger({ component: 'test', sinks: [sink], ...config })
+    root.logger.debug('patched', { diff: '+ secret line', statusText: 'Not Found' })
+    await root.flush()
+    expect(sink.events[0]!.fields).toEqual({ diff: '[omitted 13 bytes]', statusText: 'Not Found' })
+    const malformed: unknown[] = [{ omitKeys: 'diff' }, { omitKeys: ['diff', 1] }, { allowKeys: 'body' }, { level: 'verbose' }, { queueLimit: 0 }, { maxStringBytes: Number.NaN }, { maxEventBytes: -1 }, { maxObjectKeys: 1.5 }]
+    for (const value of malformed) expect(() => createLogger({ component: 'test', sinks: [], ...(value as LoggerConfig) })).toThrow(TypeError)
   })
 })

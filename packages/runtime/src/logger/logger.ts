@@ -3,9 +3,8 @@ import { useScopeSafe } from '../scope/als.js'
 import { normalizeError, sanitizeFields, sanitizeString, truncateText, type SanitizeOptions } from './sanitize.js'
 import { levelRank, LOG_LEVELS, type LogEvent, type LogFields, type Logger, type LogLevel, type LogSink, type NormalizedError } from './types.js'
 
-export interface LoggerOptions {
-  component: string
-  sinks: readonly LogSink[]
+// The serializable part of LoggerOptions, so a runtime config (environment or JSON) can carry it; checked at createLogger.
+export interface LoggerConfig {
   level?: LogLevel
   queueLimit?: number
   maxStringBytes?: number
@@ -16,6 +15,11 @@ export interface LoggerOptions {
   allowKeys?: readonly string[]
   /** Extra keys whose values are omitted with their size, like file contents. */
   omitKeys?: readonly string[]
+}
+
+export interface LoggerOptions extends LoggerConfig {
+  component: string
+  sinks: readonly LogSink[]
   fallback?: (line: string) => void
 }
 
@@ -46,16 +50,16 @@ const ERROR_TRIMS: readonly ErrorTrim[] = [
 const SMALL_FIELD_BYTES = 256
 
 export function createLogger(options: LoggerOptions): LoggerRoot {
-  const threshold = levelRank(options.level ?? 'info')
-  const queueLimit = options.queueLimit ?? DEFAULT_QUEUE_LIMIT
-  const maxEventBytes = options.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES
+  const config = readLoggerConfig(options)
+  const threshold = levelRank(config.level)
+  const { queueLimit, maxEventBytes } = config
   const sanitize: SanitizeOptions = {
-    maxStringBytes: options.maxStringBytes ?? DEFAULT_MAX_STRING_BYTES,
+    maxStringBytes: config.maxStringBytes,
     maxDepth: 6,
     maxArrayItems: 50,
-    maxObjectKeys: options.maxObjectKeys ?? DEFAULT_MAX_OBJECT_KEYS,
-    allowKeys: new Set(options.allowKeys ?? []),
-    omitKeys: new Set(options.omitKeys ?? []),
+    maxObjectKeys: config.maxObjectKeys,
+    allowKeys: config.allowKeys,
+    omitKeys: config.omitKeys,
   }
   const fallback = options.fallback ?? writeFallbackLine
   // Marks this root's sinks while they run: a sink that logs through this root goes to the fallback,
@@ -208,6 +212,44 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
       await Promise.all(options.sinks.map(sink => callSink(sink, 'close')))
     },
   }
+}
+
+interface ResolvedLoggerConfig {
+  level: LogLevel
+  queueLimit: number
+  maxStringBytes: number
+  maxObjectKeys: number
+  maxEventBytes: number
+  allowKeys: ReadonlySet<string>
+  omitKeys: ReadonlySet<string>
+}
+
+// Config values may come from the environment or JSON, where a type annotation proves nothing:
+// a string omitKeys would silently omit single letters instead of the named keys.
+function readLoggerConfig(config: LoggerConfig): ResolvedLoggerConfig {
+  const level = config.level ?? 'info'
+  if (!LOG_LEVELS.includes(level)) throw new TypeError(`Logger level must be one of ${LOG_LEVELS.join(', ')}; got ${String(level)}`)
+  return {
+    level,
+    queueLimit: readLimit('queueLimit', config.queueLimit, DEFAULT_QUEUE_LIMIT),
+    maxStringBytes: readLimit('maxStringBytes', config.maxStringBytes, DEFAULT_MAX_STRING_BYTES),
+    maxObjectKeys: readLimit('maxObjectKeys', config.maxObjectKeys, DEFAULT_MAX_OBJECT_KEYS),
+    maxEventBytes: readLimit('maxEventBytes', config.maxEventBytes, DEFAULT_MAX_EVENT_BYTES),
+    allowKeys: readKeys('allowKeys', config.allowKeys),
+    omitKeys: readKeys('omitKeys', config.omitKeys),
+  }
+}
+
+function readLimit(name: string, value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback
+  if (!Number.isInteger(value) || value <= 0) throw new TypeError(`Logger ${name} must be a positive integer; got ${String(value)}`)
+  return value
+}
+
+function readKeys(name: string, keys: readonly string[] | undefined): ReadonlySet<string> {
+  if (keys === undefined) return new Set()
+  if (!Array.isArray(keys) || !keys.every(key => typeof key === 'string')) throw new TypeError(`Logger ${name} must be an array of key names`)
+  return new Set(keys)
 }
 
 function trimError(error: NormalizedError, trim: ErrorTrim, depth = 0): NormalizedError {

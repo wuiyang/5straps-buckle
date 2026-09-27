@@ -18,13 +18,14 @@ const SECRET_WHOLE_WORDS = new Set(['auth'])
 // Two-word names such as 'api key' and 'private keys'.
 const KEY_PREFIXES = new Set(['api', 'private'])
 const KEY_WORD = /^keys?$/
-// A token count is a numeric value under a key ending in a plural count word (inputTokens, tokenCount, max_tokens).
+// A token count is a numeric value under a key ending in a count word (inputTokens, tokenCount, max_tokens, tokensUsed).
 // A key ending in singular 'token' (inputToken, cacheToken) is always a credential.
-const COUNT_KEY_END = /(?:tokens|count|total|limit|usage|budget)$/
+const COUNT_KEY_END = /(?:tokens|count|total|limit|usage|budget|used)$/
 const NUMERIC_TEXT = /^\d+$/
-// Keys whose values are file contents or full tool payloads; also any key whose last word is one of CONTENT_LAST_WORDS (requestBody).
+// Keys whose values are file contents, full tool payloads, prompts or replies; also any key whose last word is one of
+// CONTENT_LAST_WORDS (requestBody, systemPrompt, chatMessages). A singular 'message' stays: it is usually a diagnostic.
 const CONTENT_KEY = /^(content|contents|file[-_]?contents?|body|payload|arguments|args|tool[-_]?(input|output)|stdin|stdout|stderr|data)$/i
-const CONTENT_LAST_WORDS = new Set(['body', 'content', 'contents', 'payload'])
+const CONTENT_LAST_WORDS = new Set(['body', 'content', 'contents', 'payload', 'input', 'inputs', 'text', 'texts', 'prompt', 'prompts', 'messages'])
 // Flat [name, value, name, value] header lists (IncomingMessage.rawHeaders) under a key ending in header(s).
 const HEADER_LIST_WORD = /^headers?$/
 // Bearer/Basic headers, JWTs, sk-/ghp-style keys and hex runs of 32+ characters inside free text.
