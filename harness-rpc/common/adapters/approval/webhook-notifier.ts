@@ -1,4 +1,4 @@
-import type { ApprovalRequest } from '@5straps/protocol'
+import type { ApprovalNotice, ApprovalRequest } from '@5straps/protocol'
 import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { sealForRings } from '../../services/approvals/approval-envelope.js'
 import { approveCommand } from '../../domain/approval-instruction.js'
@@ -39,6 +39,29 @@ export function createWebhookNotifier(options: WebhookNotifierOptions) {
       signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
     })
     if (!response.ok) logger.warn('Approval webhook refused the notification', { status: response.status })
+  }
+}
+
+/**
+ * Posts lifecycle notices for announced asks to the same URL, sealed for the same path. A Rings
+ * that does not take them yet answers 4xx; that is said once, since nothing on the node depends on it.
+ */
+export function createApprovalNoticeSender(options: WebhookNotifierOptions) {
+  let refusalLogged = false
+  return async (notices: ApprovalNotice[]): Promise<void> => {
+    const response = await fetch(options.url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+      },
+      body: JSON.stringify(sealForRings(options.approvalKey, SEALED_REPORT_PATHS.approvals, { serverId: options.serverId, workspaceId: options.workspaceId, notices })),
+      signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
+    })
+    if (response.ok) return
+    if (refusalLogged) logger.debug('Approval webhook refused a lifecycle notice', { status: response.status })
+    else logger.warn('Approval webhook refused a lifecycle notice; further refusals are logged at debug', { status: response.status })
+    refusalLogged = true
   }
 }
 

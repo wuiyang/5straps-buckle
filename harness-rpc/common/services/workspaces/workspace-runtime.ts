@@ -49,7 +49,8 @@ import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
 import type { InteractionSource } from '../approvals/interaction.js'
-import { createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
+import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
+import { createApprovalNotices } from '../approvals/approval-notices.js'
 import { createInvoker, type InvokeInput } from '../invocation/invoker.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 
@@ -133,18 +134,20 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
 
   const lockDeadlineMs = config.stateLockDeadlineMs
   const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd, lockDeadlineMs })
-  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, { lockDeadlineMs })
+  const workspaceId = input.workspaceId ?? 'default'
+  // Every notification names its workspace, whose `buckle approve --workspace` answers it.
+  const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
+  const notices = createApprovalNotices(webhook ? createApprovalNoticeSender(webhook) : undefined)
+  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, { lockDeadlineMs, onExpired: requests => notices.expired(requests) })
   const actions = createFileActionLog(actionsPath(config))
   await actions.recoverInterrupted()
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
-  const workspaceId = input.workspaceId ?? 'default'
   const approvalService = createApprovalService({
     registry: approvals, workspaceId, graceMs: config.approvalTimeoutMs,
     interaction: input.interaction ?? (async () => undefined),
-    // Every notification names its workspace, whose `buckle approve --workspace` answers it.
-    announce: config.approvalWebhook ? createWebhookNotifier({ url: config.approvalWebhook, serverId: config.serverId, workspaceId, token: config.reportToken, approvalKey: config.ringsApprovalKey }) : undefined,
-    decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
+    announce: webhook ? createWebhookNotifier(webhook) : undefined,
+    notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
   })
   const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken

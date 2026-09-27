@@ -299,20 +299,31 @@ describe('the interaction each HTTP request binds', () => {
   })
 })
 
+/** A stand-in for the approval webhook, keeping every body it receives. */
+async function captureWebhook() {
+  const bodies: Array<{ approvals?: Array<{ token: string; subject: string }>; notices?: Array<{ token: string; event: string; scope?: string; reason?: string }> }> = []
+  const server = createServer((request, response) => {
+    let body = ''
+    request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+    request.on('end', () => { bodies.push(JSON.parse(body)); response.writeHead(202).end() })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/approvals`,
+    announced: () => bodies.flatMap(body => body.approvals ?? []),
+    notices: () => bodies.flatMap(body => body.notices ?? []),
+    bodies,
+    close: () => new Promise(resolve => server.close(resolve)),
+  }
+}
+
 describe('announcing an ask to the approval webhook', () => {
   it('announces each new ask from every entry point once, including calls that do not wait', async () => {
-    const received: Array<{ approvals: Array<{ subject: string }> }> = []
-    const webhook = createServer((request, response) => {
-      let body = ''
-      request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
-      request.on('end', () => { received.push(JSON.parse(body)); response.writeHead(202).end() })
-    })
-    await new Promise<void>(resolve => webhook.listen(0, '127.0.0.1', resolve))
+    const webhook = await captureWebhook()
     try {
       const root = mkdtempSync(join(tmpdir(), 'buckle-announce-'))
       for (const directory of ['one', 'two']) mkdirSync(join(root, directory))
-      const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: `${root}-state`, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs',
-        BUCKLE_APPROVAL_WEBHOOK: `http://127.0.0.1:${(webhook.address() as AddressInfo).port}/approvals` })
+      const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: `${root}-state`, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_WEBHOOK: webhook.url })
       // No interaction bound: a CLI command without a terminal, which reports back at once.
       const runtime = await createRuntime({ config })
       const write = (requestId: string, path: string, extra = {}) => runtime.invoke({ sessionId: 'chat-1', request: { requestId, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [] }, ...extra })
@@ -322,12 +333,13 @@ describe('announcing an ask to the approval webhook', () => {
       expect(await write('elicited-call', 'two/b.md', { approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'approval_required' })
       // A re-send joining the first ask is not announced again.
       expect(await write('cli-call', 'one/a.md')).toMatchObject({ outcome: 'approval_required' })
+      await runtime.approvalService.close()
 
-      expect(received.map(body => body.approvals.map(approval => approval.subject))).toEqual([[join(root, 'one')], [join(root, 'two')]])
-      expect(received[0]).toMatchObject({ serverId: config.serverId, workspaceId: 'default', approvals: [{ tool: 'fs_write', approveCommand: expect.stringContaining('buckle approve ') }] })
+      expect(webhook.bodies.filter(body => body.approvals).map(body => body.approvals!.map(approval => approval.subject))).toEqual([[join(root, 'one')], [join(root, 'two')]])
+      expect(webhook.bodies[0]).toMatchObject({ serverId: config.serverId, workspaceId: 'default', approvals: [{ tool: 'fs_write', approveCommand: expect.stringContaining('buckle approve ') }] })
       await runtime.history.close()
     } finally {
-      await new Promise(resolve => webhook.close(resolve))
+      await webhook.close()
     }
   })
 })

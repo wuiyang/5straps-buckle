@@ -63,6 +63,7 @@ function stubQueue(requests: ApprovalRequest[]) {
       return { ok: true }
     },
     cancel: async (tokens: string[]) => { pending = pending.filter(request => !tokens.includes(request.token)) },
+    sweep: async () => undefined,
   }
   return { registry: registry as unknown as ApprovalRegistry, pending: registry.pending, resolved, answerElsewhere: (token: string) => { pending = pending.filter(request => request.token !== token) } }
 }
@@ -160,7 +161,8 @@ describe('the terminal question after the grace period', () => {
     expect(registry.pending().map(entry => entry.token)).toEqual([issued!.token])
     held.answer('session')
     await vi.waitFor(() => expect(registry.pending()).toEqual([]))
-    expect(await registry.resolve({ token: issued!.token, approved: true, scope: 'session' })).toEqual({ ok: true })
+    // The terminal's answer is the one on record: the same answer again changes nothing.
+    expect(await registry.resolve({ token: issued!.token, approved: true, scope: 'session' })).toEqual({ ok: true, repeated: true })
   })
 
   it('closes once the request expires', async () => {

@@ -1,0 +1,175 @@
+import { mkdirSync, mkdtempSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { ApprovalNotice, ApprovalWait } from '@5straps/protocol'
+import { Hono } from 'hono'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { runCli } from '../cli/main.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { initializeCommon } from '../common/runtime/initialize.js'
+import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
+import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
+import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createHttpApp } from '../server/hono/http-app.js'
+import { operationScopes, type ScopeEnv } from '../server/hono/operation-scope.js'
+import { fixedInteraction, headlessGrace } from './support/interaction.js'
+
+afterEach(() => { vi.useRealTimers() })
+
+function node(environment: Record<string, string> = {}): BuckleConfig {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-notices-'))
+  for (const directory of ['workspace', 'workspace/one', 'workspace/two', 'workspace/three']) mkdirSync(join(root, directory))
+  mkdirSync(join(root, 'state'), { mode: 0o700 })
+  return loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'notices-agent-token', BUCKLE_ADMIN_TOKEN: 'notices-admin-token', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', ...environment })
+}
+
+const write = (path: string, approvalWait?: ApprovalWait) => ({ requestId: `write-${path}`, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [], ...(approvalWait ? { context: { approvalWait } } : {}) })
+
+describe('the approval wait hint in InvokeContext', () => {
+  it('shortens the node\'s own wait', async () => {
+    const runtime = await createRuntime({ config: node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' }), interaction: fixedInteraction() })
+    let started = performance.now()
+    expect(await runtime.invoke({ sessionId: 's', request: write('one/a.md', { mode: 'finite', ms: 150 }) })).toMatchObject({ outcome: 'approval_required' })
+    expect(performance.now() - started).toBeGreaterThanOrEqual(140)
+    expect(performance.now() - started).toBeLessThan(5_000)
+    started = performance.now()
+    expect(await runtime.invoke({ sessionId: 's', request: write('two/b.md', { mode: 'none' }) })).toMatchObject({ outcome: 'approval_required' })
+    expect(performance.now() - started).toBeLessThan(1_000)
+    await runtime.history.close()
+  })
+
+  it('never lengthens it: the shorter of the hint and the node\'s grace period wins', async () => {
+    const runtime = await createRuntime({ config: node({ BUCKLE_APPROVAL_TIMEOUT_MS: '200' }), interaction: fixedInteraction() })
+    const started = performance.now()
+    expect(await runtime.invoke({ sessionId: 's', request: write('one/a.md', { mode: 'finite', ms: 60_000 }) })).toMatchObject({ outcome: 'approval_required' })
+    expect(performance.now() - started).toBeLessThan(5_000)
+    await runtime.history.close()
+  })
+
+  it('arrives over HTTP in the invoke request\'s context', async () => {
+    const config = node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const common = initializeCommon({ config, role: 'server' })
+    await common.start()
+    const app = new Hono<ScopeEnv>()
+    app.use('*', operationScopes(common, headlessGrace))
+    app.route('/', createHttpApp({ config, runtime: await common.services.getWorkspaceRuntime(), authToken: config.authToken, workspaces: await common.services.getWorkspaces() }))
+    const started = performance.now()
+    const response = await app.request('/v1/invoke', { method: 'POST', headers: { authorization: `Bearer ${config.authToken}`, 'content-type': 'application/json' }, body: JSON.stringify(write('one/a.md', { mode: 'none' })) })
+    expect(await response.json()).toMatchObject({ outcome: 'approval_required' })
+    expect(performance.now() - started).toBeLessThan(1_000)
+    await common.owner.close()
+  })
+})
+
+/** A stand-in for the approval webhook, keeping every notice it receives. */
+async function captureWebhook() {
+  const notices: ApprovalNotice[] = []
+  const bodies: unknown[] = []
+  const server = createServer((request, response) => {
+    let body = ''
+    request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+    request.on('end', () => {
+      const parsed = JSON.parse(body) as { notices?: ApprovalNotice[] }
+      bodies.push(parsed)
+      notices.push(...parsed.notices ?? [])
+      response.writeHead(202).end()
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/approvals`, notices, bodies, close: () => new Promise(resolve => server.close(resolve)) }
+}
+
+describe('lifecycle notices on the approval webhook', () => {
+  it('tell answered and denied, with the recorded scope, whichever route answered', async () => {
+    const webhook = await captureWebhook()
+    try {
+      const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url })
+      const runtime = await createRuntime({ config })
+      const app = createHttpApp({ config, runtime, authToken: config.authToken })
+      const [first, second] = await Promise.all(['one/a.md', 'two/b.md'].map(async path => {
+        const response = await runtime.invoke({ sessionId: 's', request: write(path, { mode: 'none' }) })
+        if (response.outcome !== 'approval_required') throw new Error(`expected an approval, got ${response.outcome}`)
+        return response.approvals[0]!.token
+      }))
+
+      // `buckle approve` is another process's view of the same state; the setup face is this one's.
+      expect((await runCli({ argv: ['approve', first!, '--scope', 'session'], config })).exitCode).toBe(0)
+      expect((await app.request('/setup/approvals', { method: 'POST', headers: { authorization: `Bearer ${config.adminToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ token: second, approved: false, scope: 'once' }) })).status).toBe(200)
+      await runtime.approvalService.close()
+
+      expect(webhook.notices).toEqual(expect.arrayContaining([
+        expect.objectContaining({ token: first, event: 'skipped', reason: 'caller_declined_wait' }),
+        expect.objectContaining({ token: first, event: 'answered', scope: 'session' }),
+        expect.objectContaining({ token: second, event: 'denied', scope: 'once' }),
+      ]))
+      expect(webhook.bodies[0]).toMatchObject({ serverId: config.serverId, workspaceId: 'default' })
+      await runtime.history.close()
+    } finally {
+      await webhook.close()
+    }
+  })
+})
+
+function service(input: { graceMs: number | null; interaction?: Interaction }) {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-notice-service-'))
+  const sent: ApprovalNotice[] = []
+  const notices = createApprovalNotices(async batch => { sent.push(...batch) })
+  const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, input.graceMs, { onExpired: requests => notices.expired(requests) })
+  const approvals = createApprovalService({ registry, workspaceId: 'default', graceMs: input.graceMs, interaction: fixedInteraction(input.interaction ?? headlessGrace), notices })
+  const ask = (overrides: Partial<ApprovalAskInput> = {}) => approvals.request({ sessionId: 's', requestId: `r-${Math.random()}`, tool: 'fs_write', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...overrides })
+  return { registry, approvals, sent, ask, notices }
+}
+
+describe('why a call stopped waiting while its ask stays pending', () => {
+  it.each([
+    ['no_wait', { graceMs: 0 }],
+    ['no_approver', { graceMs: 60_000, interaction: NO_INTERACTION }],
+    ['wait_elapsed', { graceMs: 100 }],
+  ] as const)('says %s', async (reason, input) => {
+    const { ask, sent, notices } = service(input)
+    const result = await ask()
+    await notices.settle()
+    expect(sent).toEqual([expect.objectContaining({ token: result.approvals[0]!.token, event: 'skipped', reason })])
+  })
+
+  it('says shutdown when the node closes during the wait, and sends it before close returns', async () => {
+    const { ask, sent, approvals, registry } = service({ graceMs: null })
+    const waiting = ask()
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    await approvals.close()
+    expect(sent).toEqual([expect.objectContaining({ event: 'skipped', reason: 'shutdown' })])
+    expect(await waiting).toMatchObject({ settled: false })
+  })
+
+  it('tells a cancelled ask when its caller leaves inside the wait', async () => {
+    const { ask, sent, notices, registry } = service({ graceMs: null })
+    const leaving = new AbortController()
+    const waiting = ask({ signal: leaving.signal })
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    const [pending] = registry.pending()
+    leaving.abort()
+    await expect(waiting).rejects.toThrow()
+    await notices.settle()
+    expect(sent).toEqual([{ token: pending!.token, event: 'cancelled', at: expect.any(String) }])
+  })
+})
+
+describe('an ask that expires unanswered', () => {
+  it('is told once, by the sweep at its expiry', async () => {
+    vi.useFakeTimers()
+    const { ask, sent, notices, registry } = service({ graceMs: 0 })
+    const [asked] = (await ask()).approvals
+    sent.splice(0)
+    await vi.advanceTimersByTimeAsync(10 * 60_000 + 1_100)
+    await notices.settle()
+    expect(sent).toEqual([{ token: asked!.token, event: 'expired', at: expect.any(String) }])
+    await registry.sweep()
+    await notices.settle()
+    expect(sent).toHaveLength(1)
+  })
+})

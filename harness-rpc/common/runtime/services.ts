@@ -40,7 +40,7 @@ export function defineBuckleServices(input: { config: BuckleConfig; interaction:
     dependencies: [workspaceRuntime],
     create: async ({ get }) => {
       const manager = createWorkspaceManager({ config: input.config, runtime: await get(workspaceRuntime), interaction: input.interaction })
-      input.onClose('waiters', 'registered workspace approval waits', async () => { for (const child of await manager.opened()) child.approvalService.close() })
+      input.onClose('waiters', 'registered workspace approval waits', async () => { for (const child of await manager.opened()) await child.approvalService.close() })
       input.onClose('locks', 'registered workspace workbenches', async () => { for (const child of await manager.opened()) await child.workbenches.close() })
       input.onClose('databases', 'registered workspace history', async () => { for (const child of await manager.opened()) await child.history.close() })
       return manager

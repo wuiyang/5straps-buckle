@@ -18,7 +18,7 @@ import { logger } from '../../runtime/log.js'
 import { resolveEffects } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ApprovalConflictError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
-import type { ApprovalService, ApprovalWait } from '../approvals/approval-service.js'
+import { shorterWait, type ApprovalService, type ApprovalWait } from '../approvals/approval-service.js'
 
 export interface InvokerOptions {
   registry: ToolRegistry
@@ -252,7 +252,9 @@ async function clearPermissions(input: {
   }
 
   // Every answer, from any route, is recorded by the service; this call only learns whether all came in.
-  const waited = await options.approvalService.request({ sessionId, requestId: request.requestId, tool: request.tool, asks: outcome.asks, signal: input.signal, wait: input.approvalWait })
+  // The caller's hint travels in the request (Rings sends none when its policy skips); the face may add its own.
+  const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
+  const waited = await options.approvalService.request({ sessionId, requestId: request.requestId, tool: request.tool, asks: outcome.asks, signal: input.signal, wait })
   const { approvals } = waited
   const asked = approvals.map(approval => `${approval.rule}:${approval.subject}`)
   if (!waited.settled) {

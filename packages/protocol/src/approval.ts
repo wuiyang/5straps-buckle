@@ -60,6 +60,41 @@ export const GrantRecordSchema = z.object({
 })
 export type GrantRecord = z.infer<typeof GrantRecordSchema>
 
+/**
+ * What became of an announced ask, told on the same sealed path as the announcement:
+ * answered or denied (with the scope recorded), expired unanswered, cancelled because its caller
+ * left while waiting, or skipped: the call returned without an answer and the ask stays pending.
+ */
+export const ApprovalLifecycleEventSchema = z.enum(['answered', 'denied', 'expired', 'cancelled', 'skipped'])
+export type ApprovalLifecycleEvent = z.infer<typeof ApprovalLifecycleEventSchema>
+
+/**
+ * Why a call stopped waiting while its ask stays pending: the caller's wait hint said none, the
+ * node holds no call (a zero grace period), nobody was at a terminal to ask, the wait ran out, or
+ * the node shut down.
+ */
+export const ApprovalSkipReasonSchema = z.enum(['caller_declined_wait', 'no_wait', 'no_approver', 'wait_elapsed', 'shutdown'])
+export type ApprovalSkipReason = z.infer<typeof ApprovalSkipReasonSchema>
+
+export const ApprovalNoticeSchema = z.object({
+  token: z.string().min(1),
+  event: ApprovalLifecycleEventSchema,
+  at: z.iso.datetime(),
+  /** The recorded scope, on answered and denied. */
+  scope: GrantScopeSchema.optional(),
+  /** Why the call stopped waiting, on skipped. */
+  reason: ApprovalSkipReasonSchema.optional(),
+})
+export type ApprovalNotice = z.infer<typeof ApprovalNoticeSchema>
+
+/** The body of a lifecycle notice: which node and workspace, and what became of which asks. */
+export const ApprovalNoticesSchema = z.object({
+  serverId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  notices: z.array(ApprovalNoticeSchema).min(1),
+})
+export type ApprovalNotices = z.infer<typeof ApprovalNoticesSchema>
+
 export const ApprovalDecisionSchema = z.object({
   token: z.string().min(1),
   approved: z.boolean(),

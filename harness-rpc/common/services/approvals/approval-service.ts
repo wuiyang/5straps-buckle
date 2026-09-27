@@ -1,5 +1,5 @@
 import { useScopeSafe, type CliOutcome, type CliRequest, type CliWait } from '@5straps/runtime'
-import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait } from '@5straps/protocol'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
 import { remainingMs } from '../../domain/approval-deadline.js'
@@ -7,6 +7,7 @@ import { approveCommand } from '../../domain/approval-instruction.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import { logger } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
+import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import type { ApprovalAuthority, ApprovalRegistry, Resolution } from './approval-registry.js'
 import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
 
@@ -14,10 +15,11 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
 /** How quickly an answer written by another process (buckle approve, a second node process) is noticed. */
 const POLL_INTERVAL_MS = 400
+const SWEEP_MARGIN_MS = 1_000
 const MAX_TIMER_MS = 2_147_483_647
 
-/** A caller's hint on how long to wait. It can only shorten Buckle's own wait, never lengthen it. */
-export type ApprovalWait = { mode: 'none' } | { mode: 'finite'; ms: number }
+/** A caller's hint on how long to wait (InvokeContext.approvalWait). It only ever shortens Buckle's own wait. */
+export type { ApprovalWait }
 
 /** What a terminal answer may choose. Its token is always the one its question asked about. */
 export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny' | 'deny_session' | 'deny_always'
@@ -68,8 +70,11 @@ export interface ApprovalService {
   decideSealed(input: { body: unknown }): Promise<SealedDecisionResult>
   /** The requests still waiting in this workspace's queue. */
   pending(): ApprovalRequest[]
-  /** Settles every open wait as still pending and ends its questions; the asks stay in the durable queue. */
-  close(): void
+  /**
+   * Settles every open wait as still pending and ends its questions, then waits for the lifecycle
+   * notices still in flight; the asks stay in the durable queue.
+   */
+  close(): Promise<void>
 }
 
 export interface ApprovalServiceOptions {
@@ -81,6 +86,8 @@ export interface ApprovalServiceOptions {
   interaction: InteractionSource
   /** Told once an ask is issued, from every entry point, so a person can be reached away from the machine. */
   announce?: (requests: ApprovalRequest[]) => Promise<void>
+  /** What became of the announced asks, on the same path; nothing is sent without one. */
+  notices?: ApprovalNotices
   /** The key Rings minted at pairing; without one a plain decision is accepted and an envelope refused. */
   decisionKey?: ApprovalKey
   /** Replay protection for opened envelopes; in memory when no key is paired. */
@@ -127,6 +134,11 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const closing = new AbortController()
   const pollMs = options.pollMs ?? POLL_INTERVAL_MS
   const nonces = options.nonces ?? createMemoryNonceClaims()
+  const notices = options.notices ?? createApprovalNotices()
+  // One sweep per issued ask at its expiry, so an ask nobody answered is reported expired on time.
+  const sweeps = new Set<NodeJS.Timeout>()
+  // Calls still waiting, so close can let each one report back before the notices are flushed.
+  const waiting = new Set<Promise<unknown>>()
   let unreadable = false
 
   const service: ApprovalService = {
@@ -136,23 +148,33 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const scope = useScopeSafe()
       const actor = scope?.context.actor
       const { requests: approvals, joined } = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, ...(actor === undefined ? {} : { actor }) })
-      if (!joined) await announce(options.announce, approvals)
+      if (!joined) {
+        await announce(options.announce, approvals)
+        scheduleSweep(approvals)
+      }
       const holdMs = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
       if (holdMs === 0 || closing.signal.aborted) {
         await cancelIfLeft({ approvals, signal: input.signal })
+        const reason = closing.signal.aborted ? 'shutdown' : input.wait?.mode === 'none' ? 'caller_declined_wait' : 'no_wait'
+        notices.skipped(approvals.map(approval => approval.token), reason)
         return { settled: false, approvals }
       }
 
       const ask = openAsk(approvals)
       ask.participants += 1
       ask.prompting ??= startQuestions({ ask, interaction, context: { correlationId: scope?.context.correlationId ?? input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId } })
-      const ending = await waitFor({ ask, hold: interaction.hold, holdMs, signal: input.signal })
-      return finish({ ask, ending, hold: interaction.hold, signal: input.signal })
+      const result = waitFor({ ask, hold: interaction.hold, holdMs, signal: input.signal }).then(ending => finish({ ask, ending, hold: interaction.hold, signal: input.signal }))
+      const tracked = result.then(() => undefined, () => undefined)
+      waiting.add(tracked)
+      void tracked.finally(() => waiting.delete(tracked))
+      return result
     },
 
     async answer(input) {
       const result = await options.registry.resolve(input.decision, input.authority, input.widenTo === undefined ? {} : { widenTo: input.widenTo })
-      if (result.ok) wake(input.decision.token)
+      if (!result.ok) return result
+      if (!result.repeated) notices.answered(input.decision)
+      wake(input.decision.token)
       return result
     },
 
@@ -167,10 +189,26 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     pending: () => options.registry.pending(),
 
-    close() {
+    async close() {
       closing.abort()
       for (const ask of [...open.values()]) ask.stop.abort()
+      for (const sweep of sweeps) clearTimeout(sweep)
+      sweeps.clear()
+      await Promise.allSettled([...waiting])
+      await notices.settle()
     },
+  }
+
+  function scheduleSweep(approvals: ApprovalRequest[]): void {
+    const remaining = Math.max(...approvals.map(approval => remainingMs(approval.expiresAt)))
+    if (remaining === Infinity || closing.signal.aborted) return
+    const sweep = setTimeout(() => {
+      sweeps.delete(sweep)
+      Promise.resolve().then(() => options.registry.sweep()).catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error }) })
+    }, Math.min(remaining + SWEEP_MARGIN_MS, MAX_TIMER_MS))
+    // A one-shot command does not stay open for it; the next update anywhere reports the expiry instead.
+    sweep.unref()
+    sweeps.add(sweep)
   }
 
   function openAsk(approvals: ApprovalRequest[]): OpenAsk {
@@ -289,13 +327,25 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     if (ending === 'aborted') {
       if (last) {
         ask.stop.abort()
-        await options.registry.cancel(ask.tokens)
+        await cancel(ask.tokens)
       }
       input.signal?.throwIfAborted()
     }
     const settled = ending === 'settled' || (ending !== 'closed' && isSettled(ask.tokens))
     if (last) release({ ask, keepAsking: !settled && ending === 'elapsed' && input.hold === 'grace' })
+    if (!settled) notices.skipped(stillPending(ask.tokens), skipReason(ending))
     return { settled, approvals }
+  }
+
+  async function cancel(tokens: string[]): Promise<void> {
+    await options.registry.cancel(tokens)
+    notices.cancelled(tokens)
+  }
+
+  /** The tokens still waiting; all of them when the queue cannot be read. */
+  function stillPending(tokens: string[]): string[] {
+    const state = readQueue(tokens)
+    return state ? tokens.filter(token => state.pending.has(token)) : tokens
   }
 
   /**
@@ -317,11 +367,25 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   async function cancelIfLeft(input: { approvals: ApprovalRequest[]; signal?: AbortSignal }): Promise<void> {
     if (!input.signal?.aborted) return
     const tokens = input.approvals.map(approval => approval.token)
-    if (![...open.values()].some(ask => ask.tokens.join(' ') === tokens.join(' '))) await options.registry.cancel(tokens)
+    if (![...open.values()].some(ask => ask.tokens.join(' ') === tokens.join(' '))) await cancel(tokens)
     input.signal.throwIfAborted()
   }
 
   return service
+}
+
+/** Why a call stopped waiting while its ask stays pending. */
+function skipReason(ending: Ending): ApprovalSkipReason {
+  if (ending === 'closed') return 'shutdown'
+  if (ending === 'prompt_ended') return 'no_approver'
+  return 'wait_elapsed'
+}
+
+/** The shorter of two hints: none beats any finite wait, and a hint beats no hint. */
+export function shorterWait(left: ApprovalWait | undefined, right: ApprovalWait | undefined): ApprovalWait | undefined {
+  if (!left || !right) return left ?? right
+  if (left.mode === 'none' || right.mode === 'none') return { mode: 'none' }
+  return { mode: 'finite', ms: Math.min(left.ms, right.ms) }
 }
 
 /** The entry point's own hold, shortened by the caller's hint and never lengthened by it. */

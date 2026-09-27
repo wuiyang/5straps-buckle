@@ -55,8 +55,11 @@ export interface ResolveOptions {
   widenTo?: string
 }
 
-/** On a widened grant, the pattern recorded and the host it was asked for, for the audit entry. */
-export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string } } | { ok: false; reason: string }
+/**
+ * On a widened grant, the pattern recorded and the host it was asked for, for the audit entry.
+ * `repeated` marks an answer identical to the one already recorded, which changes nothing.
+ */
+export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true } | { ok: false; reason: string }
 
 export interface ApprovalRegistry {
   /** Issues the asks, or returns the ones a call with the same requestId, session and actor is already waiting on. */
@@ -75,18 +78,36 @@ export interface ApprovalRegistry {
   }): Promise<PermissionOutcome>
   wasDenied(tokens: string[]): boolean
   cancel(tokens: string[]): Promise<void>
+  /** Drops the asks that expired unanswered, telling `onExpired` about them. Every update does this too. */
+  sweep(): Promise<void>
   pending(): ApprovalRequest[]
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
 }
 
-export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath, waitMs: number | null = 0, options: { lockDeadlineMs?: number } = {}): ApprovalRegistry {
+export interface ApprovalRegistryOptions {
+  lockDeadlineMs?: number
+  /** Told of this workspace's asks that expired unanswered, by whichever update drops them first. */
+  onExpired?: (requests: ApprovalRequest[]) => void
+}
+
+export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath, waitMs: number | null = 0, options: ApprovalRegistryOptions = {}): ApprovalRegistry {
   const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [] }, lockDeadlineMs: options.lockDeadlineMs })
+
+  /** Every change starts by dropping what expired; this workspace's unanswered asks among them are reported once written. */
+  async function update<R>(change: (state: State) => R | Promise<R>): Promise<R> {
+    let expired: ApprovalRequest[] = []
+    const result = await store.update(state => {
+      expired = prune(state).filter(entry => entry.workspace === workspace).map(entry => entry.request)
+      return change(state)
+    })
+    if (expired.length > 0) options.onExpired?.(expired)
+    return result
+  }
 
   const registry: ApprovalRegistry = {
     ask({ tool, sessionId, asks, requestId, actor }) {
-      return store.update(state => {
-        prune(state)
+      return update(state => {
         const waiting = requestId === undefined ? [] : state.pending.filter(entry => entry.workspace === workspace && entry.requestId === requestId && entry.sessionId === sessionId && entry.actor === actor)
         if (waiting.length > 0) {
           if (!sameAsks(waiting.map(entry => entry.request), { tool, asks })) throw new ApprovalConflictError(`Request ${requestId} is already waiting for approval of different asks`)
@@ -111,13 +132,12 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       const widening = options.widenTo === undefined ? null : checkWidening({ pattern: options.widenTo, decision, authority })
       if (widening && !widening.ok) return widening
       // The grant is written while the approvals file is still locked, so no reader sees the decision without it.
-      return store.update(async (state): Promise<Resolution> => {
-        prune(state)
+      return update(async (state): Promise<Resolution> => {
         const widenedTo = widening?.pattern
         const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
         if (previous) {
           return previous.decision.approved === decision.approved && previous.decision.scope === decision.scope && previous.widenedTo === widenedTo
-            ? { ok: true }
+            ? { ok: true, repeated: true }
             : { ok: false, reason: 'Approval already has a different decision' }
         }
         const approval = state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token)
@@ -147,8 +167,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     },
 
     evaluate({ tokens, sessionId, tool, check }) {
-      return store.update(state => {
-        prune(state)
+      return update(state => {
         const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool)
         const usable = bound.filter(entry => tokens.includes(entry.token))
         const used = [...usable, ...unclaimedReliedOn({ usable, unclaimed: bound.filter(entry => !tokens.includes(entry.token)), check })]
@@ -170,11 +189,13 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     wasDenied: tokens => store.read().resolved.some(entry => entry.workspace === workspace && tokens.includes(entry.decision.token) && !entry.decision.approved),
 
     async cancel(tokens) {
-      await store.update(state => {
+      await update(state => {
         state.pending = state.pending.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.request.token))
         state.once = state.once.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.token))
       })
     },
+
+    sweep: () => update(() => undefined),
 
     pending: () => store.read().pending.filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now()).map(entry => entry.request),
   }
@@ -260,11 +281,14 @@ function patternRefusal(input: { rule: PermissionRuleId; subject: string; patter
   return covers ? null : `The pattern ${input.pattern} does not cover ${input.subject}, the host that asked`
 }
 
-function prune(state: State): void {
+/** Drops everything past its expiry, returning the asks that expired unanswered. */
+function prune(state: State): State['pending'] {
   const now = Date.now()
+  const expired = state.pending.filter(entry => Date.parse(entry.request.expiresAt) <= now)
   state.pending = state.pending.filter(entry => Date.parse(entry.request.expiresAt) > now)
   state.once = state.once.filter(entry => Date.parse(entry.expiresAt) > now)
   state.resolved = state.resolved.filter(entry => Date.parse(entry.expiresAt) > now)
+  return expired
 }
 
 export function subjectsByRule(subjects: GrantSubject[], rule: PermissionRuleId): string[] {

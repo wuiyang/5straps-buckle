@@ -2,6 +2,16 @@ import { z } from 'zod'
 import { ApprovalRequestSchema } from './approval.js'
 import { JsonObjectSchema, JsonValueSchema } from './json.js'
 
+/**
+ * How long the caller will wait for a person to answer an approval. It can only shorten the node's
+ * own wait: the node takes the shorter of the two, and `none` returns the pending asks at once.
+ */
+export const ApprovalWaitSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('none') }),
+  z.object({ mode: z.literal('finite'), ms: z.number().int().positive().max(2_147_483_647) }),
+])
+export type ApprovalWait = z.infer<typeof ApprovalWaitSchema>
+
 export const InvokeContextSchema = z.object({
   projectId: z.string().min(1).max(200).optional(),
   actorId: z.string().min(1).max(200).optional(),
@@ -11,6 +21,7 @@ export const InvokeContextSchema = z.object({
   runId: z.string().optional(),
   stageId: z.string().min(1).max(200).optional(),
   invocationId: z.string().optional(),
+  approvalWait: ApprovalWaitSchema.optional(),
 })
 export type InvokeContext = z.infer<typeof InvokeContextSchema>
 
