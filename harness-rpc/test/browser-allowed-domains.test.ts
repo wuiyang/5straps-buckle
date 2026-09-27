@@ -6,7 +6,7 @@ import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
-import { logger } from '../common/runtime/logger.js'
+import { logger } from '../common/runtime/log.js'
 import { browserAllowedDomains, type ApprovedList } from '../common/services/packs/browser/allowed-domains.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 

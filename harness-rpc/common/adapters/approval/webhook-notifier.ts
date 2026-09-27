@@ -2,7 +2,7 @@ import type { ApprovalRequest } from '@5straps/protocol'
 import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { sealForRings } from '../../services/approvals/approval-envelope.js'
 import { approveCommand } from '../../domain/approval-instruction.js'
-import { logger } from '../../runtime/logger.js'
+import { logger } from '../../runtime/log.js'
 
 const NOTIFY_TIMEOUT_MS = 5_000
 

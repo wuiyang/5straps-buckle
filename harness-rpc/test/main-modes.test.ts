@@ -13,7 +13,7 @@ const entry = vi.hoisted(() => ({
   initializeCommon: vi.fn(() => ({ owner: { onClose: vi.fn(), close: vi.fn(async () => {}) } })),
 }))
 vi.mock('../common/runtime/environment.js', () => ({ loadEnvironmentFile: entry.loadEnvironmentFile }))
-vi.mock('../common/runtime/config.js', () => ({ loadConfig: entry.loadConfig }))
+vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
 vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runCli: entry.runCli }))
 vi.mock('../server/hono/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../mcp/stdio.js', () => ({ serveMcpStdio: entry.serveMcpStdio }))

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { ServeStdioOptions } from '@modelcontextprotocol/server/stdio'
-import { logger } from '../common/runtime/logger.js'
+import { logger } from '../common/runtime/log.js'
 import type { ActionLog, ActionLogEntry } from '../common/types/ports/action-log.js'
 
 type Transport = NonNullable<ServeStdioOptions['transport']>

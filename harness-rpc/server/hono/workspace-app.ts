@@ -15,7 +15,7 @@ import { requireBearerToken } from './auth.js'
 import { allowPostOnly } from './mcp-allow.js'
 import { createRpcApp } from './rpc-app.js'
 import { createSetupApp } from './setup-app.js'
-import { logger } from '../../common/runtime/logger.js'
+import { logger } from '../../common/runtime/log.js'
 
 export function createWorkspaceApp(input: { config: BuckleConfig; runtime: BuckleRuntime }): Hono {
   const manager = createWorkspaceManager(input)

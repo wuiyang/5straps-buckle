@@ -270,7 +270,7 @@ function parseAllowedHosts(value: string | undefined): string[] {
   return entries
 }
 
-function parseList(value: string | undefined): string[] {
+export function parseList(value: string | undefined): string[] {
   if (!value) return []
   return value.split(',').map(item => item.trim()).filter(Boolean)
 }

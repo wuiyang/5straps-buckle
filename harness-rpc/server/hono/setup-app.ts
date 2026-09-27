@@ -12,7 +12,7 @@ import { createFileNonceStore } from '../../common/adapters/approval/file-nonce-
 import { approvalNoncesPath, type BuckleConfig } from '../../common/runtime/config.js'
 import { openApprovalDecision } from '../../common/services/approvals/approval-envelope.js'
 import { isRestrictive, PolicyError } from '../../common/domain/policy.js'
-import { logger } from '../../common/runtime/logger.js'
+import { logger } from '../../common/runtime/log.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { tokenMatches } from '../../common/services/access/tokens.js'
 import { requireBearerToken } from './auth.js'

@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { Pack } from '../domain/pack.js'
 import { createJsonFileStore } from './json-file-store.js'
-import { logger } from '../runtime/logger.js'
+import { logger } from '../runtime/log.js'
 
 const entrySchema = z.object({
   id: z.string().min(1),

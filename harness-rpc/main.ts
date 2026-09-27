@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createLogger, createStderrJsonSink, type Logger, type LoggerRoot } from '@5straps/runtime'
+import type { Logger, LoggerRoot } from '@5straps/runtime'
 import { runCli, runInitCommand, runSettingsCommand } from './cli/main.js'
 import { loadConfig, type BuckleConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
-import { logger } from './common/runtime/logger.js'
+import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
 import { createApprovalDelivery } from './common/services/approvals/approval-delivery.js'
 import { serveMcpStdio } from './mcp/stdio.js'
 import { serveHttp } from './server/hono/serve.js'
@@ -37,15 +37,16 @@ export async function main(argv: readonly string[]): Promise<number | undefined>
   if (mode.kind === 'settings') return (await runSettingsCommand(mode.argv)).exitCode
 
   loadEnvironmentFile()
+  const logging = configureRootLogger(loggerConfigFrom(process.env))
   const config = loadConfig()
   if (mode.kind === 'cli') return (await runCli({ argv: mode.argv, config })).exitCode
-  await runService({ kind: mode.kind, config })
+  await runService({ kind: mode.kind, config, logging })
   return undefined
 }
 
 // One common runtime for the process; main owns its signals and closes it stage by stage.
-async function runService(input: { kind: ServiceKind; config: BuckleConfig }): Promise<void> {
-  const logging = createLogger({ component: 'buckle', sinks: [createStderrJsonSink()] })
+async function runService(input: { kind: ServiceKind; config: BuckleConfig; logging: LoggerRoot }): Promise<void> {
+  const { logging } = input
   trapUnhandledRejections(logging.logger)
   const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger, adapters: {
     approvalChannel: approvals => createApprovalDelivery({ config: input.config, approvals, workspaceId: 'default', prompt: promptsInTerminal(input.kind) }),
@@ -136,9 +137,9 @@ if (isProcessEntry()) {
   exitQuietlyOnClosedPipe()
   main(process.argv.slice(2)).then(
     exitCode => { if (exitCode !== undefined) process.exitCode = exitCode },
-    error => {
-      logger.error('Buckle failed to start', { message: error instanceof Error ? error.message : 'Unknown error' })
+    (error: unknown) => {
+      logger.fatal('Buckle failed to start', { error })
       process.exitCode = 1
     },
-  )
+  ).finally(() => flushLogs())
 }

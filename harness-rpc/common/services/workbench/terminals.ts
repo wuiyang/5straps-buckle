@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { WorkbenchTerminal, WorkbenchTerminalEvent, WorkbenchTerminalEvents } from '@5straps/protocol'
 import type { PtyProcess, PtySpawner, PtySpawnRequest } from '../../types/ports/pty-process.js'
-import { logger } from '../../runtime/logger.js'
+import { logger } from '../../runtime/log.js'
 import { WorkbenchError, writeWorkbenchJson, type StoredWorkbench } from './storage.js'
 
 const OUTPUT_BYTES = 1_048_576

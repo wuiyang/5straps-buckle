@@ -2,7 +2,7 @@ import { parseEnv } from 'node:util'
 import { APPROVAL_KEY_PATTERN } from '@5straps/protocol/envelope'
 import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
-import { logger } from '../common/runtime/logger.js'
+import { logger } from '../common/runtime/log.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from './environment-file.js'
 

@@ -3,7 +3,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rm
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { ZodError, type z } from 'zod'
-import { logger } from '../runtime/logger.js'
+import { logger } from '../runtime/log.js'
 
 /** A state file that exists but cannot be used; the message names the file and the invalid fields, never a value. */
 export class StateFileError extends Error {}

@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
-import { logger } from '../../runtime/logger.js'
+import { logger } from '../../runtime/log.js'
 import type { ApprovalChannel } from '../../types/ports/approval-channel.js'
 import type { ApprovalRegistry } from '../../services/approvals/approval-registry.js'
 

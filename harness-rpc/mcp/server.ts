@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
 import { describeApprovalRequest } from '../common/domain/approval-instruction.js'
-import { logger } from '../common/runtime/logger.js'
+import { logger } from '../common/runtime/log.js'
 import type { ApprovalAuthority } from '../common/types/ports/approval-channel.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 

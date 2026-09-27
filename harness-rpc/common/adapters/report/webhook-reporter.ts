@@ -2,7 +2,7 @@ import { ACTION_REPORT_BATCH_MAX, type ActionReport, type DeniedRunReport } from
 import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { sealForRings } from '../../services/approvals/approval-envelope.js'
 import type { Reporter } from '../../types/ports/reporter.js'
-import { logger } from '../../runtime/logger.js'
+import { logger } from '../../runtime/log.js'
 
 const REPORT_TIMEOUT_MS = 5_000
 /** How long a partial batch waits for company before it goes out on its own. */

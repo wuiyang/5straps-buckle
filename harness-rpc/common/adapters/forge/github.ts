@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { logger } from '../../runtime/logger.js'
+import { logger } from '../../runtime/log.js'
 import type { ForgeClient, ForgePullRequest, ForgeRepository, ForgeRequest } from '../../domain/forge.js'
 import { stripSecret } from '../../domain/redact.js'
 import { ToolExecutionError } from '../../domain/tool.js'

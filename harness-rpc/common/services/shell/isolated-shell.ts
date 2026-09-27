@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { isInsideAny, isInside } from '../../domain/paths.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { ToolExecutionError } from '../../domain/tool.js'
-import { logger } from '../../runtime/logger.js'
+import { logger } from '../../runtime/log.js'
 import { applySnapshot, changedPaths, snapshot, snapshotSchema, type Snapshot } from '../history/snapshot.js'
 import type { ChangeHistory, HistoryInput } from '../history/journal.js'
 

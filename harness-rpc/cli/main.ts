@@ -12,7 +12,7 @@ import { WorkspaceError, createWorkspaceManager } from '../common/services/works
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
 import { withOperationScope } from '@5straps/runtime'
-import { logger } from '../common/runtime/logger.js'
+import { logger } from '../common/runtime/log.js'
 import { createCliApprovalChannel } from '../common/adapters/approval/cli-approval-channel.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, repairStoredPolicy } from './policy.js'
@@ -50,7 +50,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
     return await runCliCommand({ common, config: input.config, command, rest })
   } finally {
     await common.owner.close().catch((error: unknown) => {
-      logger.error('Buckle closed with errors', { message: error instanceof Error ? error.message : 'Unknown error' })
+      logger.error('Buckle closed with errors', { error })
     })
   }
 }

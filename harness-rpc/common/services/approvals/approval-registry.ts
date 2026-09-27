@@ -7,7 +7,7 @@ import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { ApprovalAuthority } from '../../types/ports/approval-channel.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
-import { logger } from '../../runtime/logger.js'
+import { logger } from '../../runtime/log.js'
 
 const PENDING_TTL_MS = 10 * 60_000
 

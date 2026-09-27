@@ -15,7 +15,7 @@ import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
 import type { ApprovalChannel } from '../../types/ports/approval-channel.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
-import { logger } from '../../runtime/logger.js'
+import { logger } from '../../runtime/log.js'
 import { resolveEffects } from './resolve-effects.js'
 import { subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 

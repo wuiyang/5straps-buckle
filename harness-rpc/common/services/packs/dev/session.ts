@@ -1,4 +1,4 @@
-import { logger } from '../../../runtime/logger.js'
+import { logger } from '../../../runtime/log.js'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { resolve } from 'node:path'

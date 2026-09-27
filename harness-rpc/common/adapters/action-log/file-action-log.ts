@@ -3,7 +3,7 @@ import { createPendingAudit } from './pending-audit.js'
 import { closeSync, fsyncSync, fchmodSync, fstatSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { z } from 'zod'
-import { logger } from '../../runtime/logger.js'
+import { logger } from '../../runtime/log.js'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
 
 const PROCESS_INSTANCE_ID = randomUUID()

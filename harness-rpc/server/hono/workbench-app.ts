@@ -7,7 +7,7 @@ import {
 } from '@5straps/protocol'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { auditHttpRequest } from './audit.js'
-import { logger } from '../../common/runtime/logger.js'
+import { logger } from '../../common/runtime/log.js'
 import { WorkbenchError } from '../../common/services/workbench/storage.js'
 
 export function createWorkbenchApp(runtime: BuckleRuntime): Hono {

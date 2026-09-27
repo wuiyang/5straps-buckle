@@ -3,7 +3,7 @@ import { runInScope, type OperationContextInput, type OperationScope } from '@5s
 import type { MiddlewareHandler } from 'hono'
 import type { BuckleCommon } from '../../common/runtime/initialize.js'
 import type { BuckleServices } from '../../common/runtime/services.js'
-import { logger } from '../../common/runtime/logger.js'
+import { logger } from '../../common/runtime/log.js'
 
 export type ScopeEnv = { Bindings: HttpBindings | undefined; Variables: { services: BuckleServices; scope: OperationScope } }
 
@@ -40,6 +40,6 @@ function requestContext(clientRequestId: string | undefined): OperationContextIn
 
 function disposeScope(scope: OperationScope): void {
   scope.dispose().catch((error: unknown) => {
-    logger.warn('Operation scope closed with errors', { correlationId: scope.context.correlationId, message: error instanceof Error ? error.message : 'Unknown error' })
+    logger.warn('Operation scope closed with errors', { correlationId: scope.context.correlationId, error })
   })
 }

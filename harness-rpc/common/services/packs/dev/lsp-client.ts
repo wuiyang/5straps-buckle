@@ -3,7 +3,7 @@ import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import { connect } from 'node:net'
 import type { Readable, Writable } from 'node:stream'
 import { ToolExecutionError } from '../../../domain/tool.js'
-import { logger } from '../../../runtime/logger.js'
+import { logger } from '../../../runtime/log.js'
 
 const MAX_FRAME_BYTES = 8 * 1024 * 1024
 const HEADER_TERMINATOR = '\r\n\r\n'

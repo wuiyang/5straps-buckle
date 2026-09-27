@@ -6,7 +6,7 @@ import type { BuckleConfig } from '../../common/runtime/config.js'
 import type { TokenSource } from '../../common/services/access/tokens.js'
 import { requireBearerToken } from './auth.js'
 import { toDescriptor } from '../../common/domain/skill.js'
-import { logger } from '../../common/runtime/logger.js'
+import { logger } from '../../common/runtime/log.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 
 export interface RpcAppDependencies {
