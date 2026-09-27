@@ -107,6 +107,7 @@ export function createCliRequester(options: CliRequesterOptions): CliRequester {
     const { promise, resolve, reject } = Promise.withResolvers<CliOutcome>()
     const controller = new AbortController()
     let clearTimer = () => {}
+    const forget = () => { if (inFlight.get(request.id) === entry) inFlight.delete(request.id) }
     const entry: Entry = {
       request,
       scope: useScopeSafe(),
@@ -126,12 +127,14 @@ export function createCliRequester(options: CliRequesterOptions): CliRequester {
           active = undefined
           queueMicrotask(pump)
         }
+        // A settled request stops accepting joiners now, so a re-send in the same tick prompts again;
+        // an unavailable one stays joinable while its durable write runs (the same pending id comes back).
+        if (!(outcome instanceof Promise)) forget()
         if (outcome instanceof Error) reject(outcome)
         else Promise.resolve(outcome).then(resolve, reject)
       },
     }
     inFlight.set(request.id, entry)
-    const forget = () => { if (inFlight.get(request.id) === entry) inFlight.delete(request.id) }
     promise.then(forget, forget)
     if (closed) settleUnavailable(entry, 'closed')
     else if (!options.slot.current()) settleUnavailable(entry, 'no_consumer')

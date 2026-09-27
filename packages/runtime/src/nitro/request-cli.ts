@@ -1,6 +1,6 @@
 import type { NitroApp, NitroRuntimeHooks } from 'nitro/types'
 import { RuntimeError } from '../errors.js'
-import { createHookRequestCli } from '../interaction/hook.js'
+import { createHookRequestCli, type HookRequestCliOptions } from '../interaction/hook.js'
 import type { RequestCli } from '../interaction/types.js'
 import { NitroErrorCode } from './host.js'
 
@@ -24,8 +24,9 @@ export function registerCliListener(nitroApp: NitroApp, listener: CliCallListene
   }
 }
 
-export function createRequestCli(nitroApp: NitroApp): RequestCli {
+export function createRequestCli(nitroApp: NitroApp, options: Pick<HookRequestCliOptions, 'onUnavailable'> = {}): RequestCli {
   return createHookRequestCli({
+    ...options,
     hasListener: () => nitroApp.hooks !== undefined && (nitroApp as NitroApp & ListenerSlot)[CLI_LISTENER_SLOT] !== undefined,
     dispatch: (request, respond, options) => Promise.resolve(nitroApp.hooks?.callHook('cli:call', request, respond, options)),
   })

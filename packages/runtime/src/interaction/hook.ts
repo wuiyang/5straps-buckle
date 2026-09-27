@@ -3,7 +3,7 @@ import { assertNoActiveTransaction } from '../transaction/guard.js'
 import { InteractionErrorCode } from './codes.js'
 import { invalidWaitError } from './envelope.js'
 import { cancelledOutcome } from './requester.js'
-import type { CliOutcome, CliRequest, RequestCli } from './types.js'
+import type { CliOutcome, CliRequest, PendingInteraction, RequestCli, UnavailableReason } from './types.js'
 
 export type CliRespond = (outcome: CliOutcome) => void
 // The signal aborts once the request settles (answer, timeout, cancel or failure) so the listener can close its prompt.
@@ -13,6 +13,8 @@ export type CliHookDispatch = (request: CliRequest, respond: CliRespond, options
 export interface HookRequestCliOptions {
   dispatch: CliHookDispatch
   hasListener: () => boolean
+  // Persists the request in the durable owner queue when no listener is registered; never approves.
+  onUnavailable?: (request: CliRequest, reason: UnavailableReason) => Promise<PendingInteraction | undefined>
 }
 
 // Emits a request through a hook and waits for explicit completion through `respond`.
@@ -23,10 +25,15 @@ export function createHookRequestCli(options: HookRequestCliOptions): RequestCli
     const invalid = invalidWaitError(request)
     if (invalid) return Promise.reject(invalid)
     const { signal } = requestOptions
-    if (!options.hasListener()) return Promise.resolve({ status: 'unavailable', requestId: request.id, reason: 'no_listener' })
+    if (!options.hasListener()) return unavailable({ request, onUnavailable: options.onUnavailable })
     if (signal?.aborted) return Promise.resolve(cancelledOutcome(request, signal.reason))
     return awaitCompletion({ request, signal, dispatch: options.dispatch })
   }
+}
+
+async function unavailable(input: { request: CliRequest; onUnavailable: HookRequestCliOptions['onUnavailable'] }): Promise<CliOutcome> {
+  const pending = await input.onUnavailable?.(input.request, 'no_listener')
+  return { status: 'unavailable', requestId: input.request.id, reason: 'no_listener', ...(pending ? { pending } : {}) }
 }
 
 function awaitCompletion(input: { request: CliRequest; signal: AbortSignal | undefined; dispatch: CliHookDispatch }): Promise<CliOutcome> {

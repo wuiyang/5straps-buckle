@@ -10,9 +10,10 @@ export function invalidWaitError(request: CliRequest): RuntimeError | undefined 
   return new RuntimeError(InteractionErrorCode.invalidWait, `CLI request ${request.id} needs a finite wait between 1 and ${MAX_TIMER_MS} ms, or 'indefinite'; got ${timeoutMs}`)
 }
 
-// A re-sent request may join the original wait only when it asks the same person the same thing.
+// A re-sent request may join the original wait only when it asks the same person the same thing, with the same wait.
 export function sameEnvelope(a: CliRequest, b: CliRequest): boolean {
   return a.kind === b.kind
+    && sameWait(a.wait, b.wait)
     && a.correlationId === b.correlationId
     && a.actor === b.actor
     && a.sessionId === b.sessionId
@@ -24,4 +25,8 @@ export function sameEnvelope(a: CliRequest, b: CliRequest): boolean {
 function sameDetails(a: CliRequest['action']['details'], b: CliRequest['action']['details']): boolean {
   const left = Object.entries(a ?? {})
   return left.length === Object.keys(b ?? {}).length && left.every(([key, value]) => b !== undefined && Object.hasOwn(b, key) && b[key] === value)
+}
+
+function sameWait(a: CliRequest['wait'], b: CliRequest['wait']): boolean {
+  return a.mode === 'indefinite' ? b.mode === 'indefinite' : b.mode === 'finite' && a.timeoutMs === b.timeoutMs
 }

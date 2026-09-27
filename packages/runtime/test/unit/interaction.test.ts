@@ -372,3 +372,37 @@ describe('requester close and consumer guards (coordination-2, coordination-5)',
     expect(requester.pending()).toBe(0)
   })
 })
+
+describe('request identity lows (coordination-3, -10, -13)', () => {
+  it('coordination-3 refuses to join a request whose wait differs', async () => {
+    const slot = createCliConsumerSlot()
+    slot.attach({ prompt: () => new Promise(() => {}) })
+    const requester = createCliRequester({ slot })
+    void requester.requestCli(request('w', { mode: 'indefinite' }))
+    const conflict = await requester.requestCli(request('w', { mode: 'finite', timeoutMs: 50 })).catch((error: unknown) => error)
+    expect(isRuntimeError(conflict, InteractionErrorCode.requestConflict)).toBe(true)
+    void requester.close()
+  })
+
+  it('coordination-10 prompts again for a request re-sent in the same tick its first wait was cancelled', async () => {
+    const slot = createCliConsumerSlot()
+    const prompted: string[] = []
+    slot.attach({ prompt: (item) => { prompted.push(item.id); return new Promise(() => {}) } })
+    const requester = createCliRequester({ slot })
+    const controller = new AbortController()
+    const first = requester.requestCli(request('z', { mode: 'indefinite' }), { signal: controller.signal })
+    await delay(1)
+    controller.abort('first caller left')
+    const resent = requester.requestCli(request('z', { mode: 'indefinite' }))
+    await expect(first).resolves.toMatchObject({ status: 'cancelled' })
+    await delay(1)
+    expect(prompted).toEqual(['z', 'z'])
+    expect(await Promise.race([resent.then(() => 'settled'), delay(20).then(() => 'waiting')])).toBe('waiting')
+    void requester.close()
+  })
+
+  it('coordination-13 persists through onUnavailable when no hook listener is registered', async () => {
+    const requestCli = createHookRequestCli({ hasListener: () => false, dispatch: vi.fn(), onUnavailable: async item => ({ id: `pending-${item.id}`, instructions: 'approve later' }) })
+    await expect(requestCli(request('h'))).resolves.toEqual({ status: 'unavailable', requestId: 'h', reason: 'no_listener', pending: { id: 'pending-h', instructions: 'approve later' } })
+  })
+})
