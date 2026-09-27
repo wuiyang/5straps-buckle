@@ -16,10 +16,10 @@ import { describeExpiry, remainingMs } from '../common/domain/approval-deadline.
 const roots: string[] = []
 function directory() { const root = mkdtempSync(join(tmpdir(), 'approval-wait-')); roots.push(root); return root }
 afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-function fixture(timeoutMs: number | null) {
+async function fixture(timeoutMs: number | null) {
   const root = directory()
   const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, timeoutMs)
-  const requests = approvals.issue({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }] })
+  const requests = await approvals.issue({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }] })
   return { approvals, requests, channel: createWaitingApprovalChannel({ approvals, timeoutMs }) }
 }
 it.each(['-1', '60000ms', 'Infinity', '2147483648', '1.5'])('rejects invalid wait %s', value => {
@@ -32,7 +32,7 @@ it('accepts a minute, forever and immediate fallback', () => {
 })
 it('holds for one minute, then leaves the question answerable', async () => {
   vi.useFakeTimers()
-  const { channel, requests, approvals } = fixture(60_000)
+  const { channel, requests, approvals } = await fixture(60_000)
   let settled = false
   const waiting = channel.request(requests).then(result => { settled = true; return result })
   await vi.advanceTimersByTimeAsync(59_999)
@@ -43,21 +43,21 @@ it('holds for one minute, then leaves the question answerable', async () => {
 })
 it.each([true, false])('waits beyond ten minutes until an owner answers approved=%s', async approved => {
   vi.useFakeTimers()
-  const { channel, requests, approvals } = fixture(null)
+  const { channel, requests, approvals } = await fixture(null)
   let settled = false
   const waiting = channel.request(requests).then(result => { settled = true; return result })
   await vi.advanceTimersByTimeAsync(11 * 60_000)
   expect(settled).toBe(false)
   expect(approvals.pending()[0]?.expiresAt).toBe(APPROVAL_NO_DEADLINE)
-  expect(approvals.resolve({ token: requests[0]!.token, approved, scope: 'once' }).ok).toBe(true)
+  expect((await approvals.resolve({ token: requests[0]!.token, approved, scope: 'once' })).ok).toBe(true)
   await vi.advanceTimersByTimeAsync(400)
   expect(await waiting).toEqual([])
   expect(vi.getTimerCount()).toBe(0)
 })
-it('does not give an answered once grant an indefinite lifetime', () => {
+it('does not give an answered once grant an indefinite lifetime', async () => {
   vi.useFakeTimers()
-  const { requests, approvals } = fixture(null)
-  approvals.resolve({ token: requests[0]!.token, approved: true, scope: 'once' })
+  const { requests, approvals } = await fixture(null)
+  await approvals.resolve({ token: requests[0]!.token, approved: true, scope: 'once' })
   expect(approvals.unspent('test')).toHaveLength(1)
   vi.advanceTimersByTime(10 * 60_000 + 1)
   expect(approvals.unspent('test')).toHaveLength(0)
@@ -85,7 +85,7 @@ it.each([true, false])('finishes the same MCP call after owner decision approved
   const waiting = call(new AbortController().signal)
   await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
   const request = runtime.approvals.pending()[0]!
-  expect(runtime.approvals.resolve({ token: request.token, approved, scope: 'once' }).ok).toBe(true)
+  expect((await runtime.approvals.resolve({ token: request.token, approved, scope: 'once' })).ok).toBe(true)
   const result = await waiting
   expect(Boolean(result.isError)).toBe(!approved)
   expect(existsSync(join(runtime.paths().root, 'probe.txt'))).toBe(approved)
@@ -120,10 +120,10 @@ async function mcpFixture(nativePrompt = false) {
 
 it('ends a forever wait when one of several gates is denied', async () => {
   vi.useFakeTimers()
-  const { approvals, requests, channel } = fixture(null)
-  requests.push(...approvals.issue({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/synthetic', reason: 'second gate', offeredScopes: ['once'] }] }))
+  const { approvals, requests, channel } = await fixture(null)
+  requests.push(...await approvals.issue({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/synthetic', reason: 'second gate', offeredScopes: ['once'] }] }))
   const waiting = channel.request(requests)
-  approvals.resolve({ token: requests[0]!.token, approved: false, scope: 'once' })
+  await approvals.resolve({ token: requests[0]!.token, approved: false, scope: 'once' })
   await vi.advanceTimersByTimeAsync(400)
   expect(await waiting).toEqual([])
 })

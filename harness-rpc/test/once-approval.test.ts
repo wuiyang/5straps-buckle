@@ -17,20 +17,20 @@ function registry() {
 }
 
 describe('BUCKLE-D14: only the admin credential writes a persisted approval', () => {
-  const ask = (approvals: ReturnType<typeof registry>) => approvals.issue({ tool: 'fs_write', sessionId: 'writer', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session', 'always'] }] })[0]!
+  const ask = async (approvals: ReturnType<typeof registry>) => (await approvals.issue({ tool: 'fs_write', sessionId: 'writer', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session', 'always'] }] }))[0]!
 
-  it.each(['session', 'always'] as const)('refuses a %s decision carried by an agent credential', scope => {
+  it.each(['session', 'always'] as const)('refuses a %s decision carried by an agent credential', async scope => {
     const approvals = registry()
-    const request = ask(approvals)
-    const result = approvals.resolve({ token: request.token, approved: true, scope }, 'agent')
+    const request = await ask(approvals)
+    const result = await approvals.resolve({ token: request.token, approved: true, scope }, 'agent')
     expect(result).toMatchObject({ ok: false })
     expect(approvals.pending().map(entry => entry.token)).toEqual([request.token])
   })
 
-  it('lets an agent credential answer once, and the owner answer for good', () => {
+  it('lets an agent credential answer once, and the owner answer for good', async () => {
     const approvals = registry()
-    expect(approvals.resolve({ token: ask(approvals).token, approved: true, scope: 'once' }, 'agent').ok).toBe(true)
-    expect(approvals.resolve({ token: ask(approvals).token, approved: true, scope: 'always' }, 'admin').ok).toBe(true)
+    expect((await approvals.resolve({ token: (await ask(approvals)).token, approved: true, scope: 'once' }, 'agent')).ok).toBe(true)
+    expect((await approvals.resolve({ token: (await ask(approvals)).token, approved: true, scope: 'always' }, 'admin')).ok).toBe(true)
   })
 })
 
@@ -45,72 +45,72 @@ describe('once approvals are always bound', () => {
 })
 
 describe('once approval consumption', () => {
-  it('retains partial grants and consumes them exactly when every gate allows', () => {
+  it('retains partial grants and consumes them exactly when every gate allows', async () => {
     const approvals = registry()
-    const issued = approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [
+    const issued = await approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [
       { kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] },
       { kind: 'ask', rule: 'sensitive_path', subject: '/outside/credentials.json', reason: 'sensitive', offeredScopes: ['once'] },
     ] })
     const check = (subjects: unknown[]): PermissionOutcome => subjects.length === 2 ? { kind: 'allow', allowedBy: [] } : { kind: 'ask', asks: [] }
-    approvals.resolve({ token: issued[0]!.token, approved: true, scope: 'once' }, 'admin')
-    expect(approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check }).kind).toBe('ask')
-    approvals.resolve({ token: issued[1]!.token, approved: true, scope: 'once' }, 'admin')
-    expect(approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check }).kind).toBe('allow')
-    expect(approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check }).kind).toBe('ask')
+    await approvals.resolve({ token: issued[0]!.token, approved: true, scope: 'once' }, 'admin')
+    expect((await approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check })).kind).toBe('ask')
+    await approvals.resolve({ token: issued[1]!.token, approved: true, scope: 'once' }, 'admin')
+    expect((await approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check })).kind).toBe('allow')
+    expect((await approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check })).kind).toBe('ask')
   })
 
-  it('binds once grants to the issuing session and tool and expires pending tokens', () => {
+  it('binds once grants to the issuing session and tool and expires pending tokens', async () => {
     vi.useFakeTimers()
     const approvals = registry()
-    const [request] = approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })
+    const [request] = await approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })
     const decision = { token: request!.token, approved: true, scope: 'once' as const }
-    expect(approvals.resolve(decision, 'admin').ok).toBe(true)
-    expect(approvals.resolve(decision, 'admin').ok).toBe(true)
+    expect((await approvals.resolve(decision, 'admin')).ok).toBe(true)
+    expect((await approvals.resolve(decision, 'admin')).ok).toBe(true)
     const check = (subjects: unknown[]): PermissionOutcome => subjects.length ? { kind: 'allow', allowedBy: [] } : { kind: 'ask', asks: [] }
-    expect(approvals.evaluate({ tokens: [request!.token], sessionId: 'other-reader', tool: 'fs_read', check }).kind).toBe('ask')
-    expect(approvals.evaluate({ tokens: [request!.token], sessionId: 'reader', tool: 'fs_write', check }).kind).toBe('ask')
+    expect((await approvals.evaluate({ tokens: [request!.token], sessionId: 'other-reader', tool: 'fs_read', check })).kind).toBe('ask')
+    expect((await approvals.evaluate({ tokens: [request!.token], sessionId: 'reader', tool: 'fs_write', check })).kind).toBe('ask')
     vi.advanceTimersByTime(11 * 60_000)
     expect(approvals.pending()).toEqual([])
-    expect(approvals.evaluate({ tokens: [request!.token], sessionId: 'reader', tool: 'fs_read', check }).kind).toBe('ask')
+    expect((await approvals.evaluate({ tokens: [request!.token], sessionId: 'reader', tool: 'fs_read', check })).kind).toBe('ask')
   })
 })
 
 describe('which late onces a call spends', () => {
-  it('leaves a once whose subject a session grant already covers', () => {
+  it('leaves a once whose subject a session grant already covers', async () => {
     const approvals = registry()
-    const issued = approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [
+    const issued = await approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [
       { kind: 'ask', rule: 'read_scope', subject: '/granted', reason: 'outside', offeredScopes: ['once'] },
       { kind: 'ask', rule: 'read_scope', subject: '/needed', reason: 'outside', offeredScopes: ['once'] },
     ] })
-    for (const item of issued) approvals.resolve({ token: item.token, approved: true, scope: 'once' }, 'admin')
+    for (const item of issued) await approvals.resolve({ token: item.token, approved: true, scope: 'once' }, 'admin')
     // A session grant covers /granted, so the rule reports both subjects but needs only /needed.
     const coveredByGrant = (subjects: { subject: string }[]): PermissionOutcome => subjects.some(item => item.subject === '/needed')
       ? { kind: 'allow', allowedBy: subjects.map(item => `read_scope:${item.subject}`) }
       : { kind: 'ask', asks: [] }
     const spent: string[][] = []
     const recording = (subjects: { subject: string }[]) => { spent.push(subjects.map(item => item.subject)); return coveredByGrant(subjects) }
-    expect(approvals.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: recording }).kind).toBe('allow')
+    expect((await approvals.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: recording })).kind).toBe('allow')
     expect(spent.at(-1)).toEqual(['/needed'])
     // The once for /granted was not spent: a call that needs it still finds it.
     const needsGranted = (subjects: { subject: string }[]): PermissionOutcome => subjects.some(item => item.subject === '/granted')
       ? { kind: 'allow', allowedBy: ['read_scope:/granted'] }
       : { kind: 'ask', asks: [] }
-    expect(approvals.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: needsGranted }).kind).toBe('allow')
-    expect(approvals.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: needsGranted }).kind).toBe('ask')
+    expect((await approvals.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: needsGranted })).kind).toBe('allow')
+    expect((await approvals.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: needsGranted })).kind).toBe('ask')
   })
 })
 
- it('isolates approvals between workspaces sharing the same state directory', () => {
+ it('isolates approvals between workspaces sharing the same state directory', async () => {
   const root = mkdtempSync('/tmp/buckle-workspace-'); roots.push(root)
   const create = (workspace: string) => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), join(root, 'approvals.json'), workspace)
   const first = create('/first'); const second = create('/second')
-  const [request] = first.issue({ tool: 'fs_read', sessionId: 'shared', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })
+  const [request] = await first.issue({ tool: 'fs_read', sessionId: 'shared', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })
   const decision = { token: request!.token, approved: true, scope: 'once' as const }
   expect(second.pending()).toEqual([])
-  expect(second.resolve(decision, 'admin').ok).toBe(false)
-  expect(first.resolve(decision, 'admin').ok).toBe(true)
-  second.evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toEqual([]); return { kind: 'allow', allowedBy: [] } } })
-  create('/first').evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toHaveLength(1); return { kind: 'allow', allowedBy: [] } } })
+  expect((await second.resolve(decision, 'admin')).ok).toBe(false)
+  expect((await first.resolve(decision, 'admin')).ok).toBe(true)
+  await second.evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toEqual([]); return { kind: 'allow', allowedBy: [] } } })
+  await create('/first').evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toHaveLength(1); return { kind: 'allow', allowedBy: [] } } })
 })
 
 describe('a once approval answered after the grace period', () => {
@@ -137,7 +137,7 @@ describe('a once approval answered after the grace period', () => {
   async function answerOnceLate(context: Awaited<ReturnType<typeof setup>>) {
     const first = await context.read(context.file)
     if (first.outcome !== 'approval_required') throw new Error(`expected an approval, got ${first.outcome}`)
-    expect(context.runtime.approvals.resolve({ token: first.approvals[0]!.token, approved: true, scope: 'once' }, 'agent').ok).toBe(true)
+    expect((await context.runtime.approvals.resolve({ token: first.approvals[0]!.token, approved: true, scope: 'once' }, 'agent')).ok).toBe(true)
   }
 
   it('runs the retried call that carries no token, and is consumed by it', async () => {
@@ -159,7 +159,7 @@ describe('a once approval answered after the grace period', () => {
     const asked = [await context.read(context.file), await context.read(context.file)]
     for (const result of asked) {
       if (result.outcome !== 'approval_required') throw new Error(`expected an approval, got ${result.outcome}`)
-      expect(context.runtime.approvals.resolve({ token: result.approvals[0]!.token, approved: true, scope: 'once' }, 'agent').ok).toBe(true)
+      expect((await context.runtime.approvals.resolve({ token: result.approvals[0]!.token, approved: true, scope: 'once' }, 'agent')).ok).toBe(true)
     }
     expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
     expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })

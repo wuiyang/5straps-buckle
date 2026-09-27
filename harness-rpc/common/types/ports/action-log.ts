@@ -28,7 +28,8 @@ export interface ActionLogEntry {
 }
 
 export interface ActionLog {
-  record(entry: ActionLogEntry): void
+  /** Resolves once the entry is durable; a rejection means execution must not continue. */
+  record(entry: ActionLogEntry): Promise<void>
   recoverInterrupted(): Promise<number>
   /** Most recent entries last, so the tail of the file reads in the order things happened. */
   read(limit: number): ActionLogEntry[]

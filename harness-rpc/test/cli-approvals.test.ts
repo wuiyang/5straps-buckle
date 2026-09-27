@@ -19,13 +19,13 @@ function node(): BuckleConfig {
 }
 
 /** A request waiting on the node, written through a second registry over the same state files. */
-function pendingRequest(config: BuckleConfig): string {
+async function pendingRequest(config: BuckleConfig): Promise<string> {
   const registry = createApprovalRegistry(
     createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }),
     approvalsPath(config),
     config.cwd,
   )
-  const [request] = registry.issue({
+  const [request] = await registry.issue({
     tool: 'fs_write', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })
@@ -44,7 +44,7 @@ async function capture(input: { argv: string[]; config: BuckleConfig }): Promise
 describe('buckle approvals, the queue a person answers from', () => {
   it('names the token, tool, rule, subject, scopes and request expiry of every waiting request', async () => {
     const config = node()
-    const token = pendingRequest(config)
+    const token = await pendingRequest(config)
 
     const listed = await capture({ argv: ['approvals'], config })
 
@@ -66,7 +66,7 @@ describe('buckle approvals, the queue a person answers from', () => {
 
   it('answers --json with the requests themselves, for a relay to render', async () => {
     const config = node()
-    const token = pendingRequest(config)
+    const token = await pendingRequest(config)
 
     const listed = await capture({ argv: ['approvals', '--json'], config })
 
@@ -75,7 +75,7 @@ describe('buckle approvals, the queue a person answers from', () => {
 
   it('stops naming a request once it has been decided', async () => {
     const config = node()
-    const token = pendingRequest(config)
+    const token = await pendingRequest(config)
 
     expect((await capture({ argv: ['approve', token, '--scope', 'once'], config })).exitCode).toBe(0)
 
@@ -88,8 +88,8 @@ function registry(config: BuckleConfig) {
 }
 
 /** A private host a web_fetch asked about, waiting on the node. */
-function networkRequest(config: BuckleConfig, subject = 'app.localhost:3000'): string {
-  const [request] = registry(config).issue({
+async function networkRequest(config: BuckleConfig, subject = 'app.localhost:3000'): Promise<string> {
+  const [request] = await registry(config).issue({
     tool: 'web_fetch', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'network_egress', subject, reason: 'resolves to this machine', offeredScopes: ['once', 'session', 'always'] }],
   })
@@ -115,7 +115,7 @@ function networkSubjects(config: BuckleConfig): string[] {
 describe('buckle approve --host, widening a network approval to a pattern (BUCKLE-D18)', () => {
   it('records the pattern instead of the host when it covers the host that asked, and lists it as entered', async () => {
     const config = node()
-    const token = networkRequest(config)
+    const token = await networkRequest(config)
 
     const approved = await captureAll({ argv: ['approve', token, '--scope', 'always', '--host', '*.localhost'], config })
 
@@ -128,7 +128,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
   it('refuses a pattern that does not cover the host that asked, naming both, and leaves the request waiting', async () => {
     const config = node()
-    const token = networkRequest(config)
+    const token = await networkRequest(config)
 
     const refused = await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', '*.example.com'], config })
 
@@ -140,7 +140,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
   it('refuses to widen a once approval, which covers one call to the host that asked', async () => {
     const config = node()
-    const token = networkRequest(config)
+    const token = await networkRequest(config)
 
     const refused = await captureAll({ argv: ['approve', token, '--scope', 'once', '--host', '*.localhost'], config })
 
@@ -156,7 +156,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     ['app.localhost', '--host takes a wildcard pattern'],
   ])('refuses the malformed or exact --host %s, saying why', async (host, reason) => {
     const config = node()
-    const token = networkRequest(config)
+    const token = await networkRequest(config)
 
     const refused = await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', host], config })
 
@@ -168,7 +168,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
   it('refuses --host on a denial, which names no pattern, and leaves the request waiting', async () => {
     const config = node()
-    const token = networkRequest(config)
+    const token = await networkRequest(config)
 
     const refused = await captureAll({ argv: ['approve', token, '--deny', '--host', '*.localhost'], config })
 
@@ -180,7 +180,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
   it('refuses a wildcard over an address suffix for a request from an address, and leaves it waiting', async () => {
     const config = node()
-    const token = networkRequest(config, '127.0.0.1:3000')
+    const token = await networkRequest(config, '127.0.0.1:3000')
 
     const refused = await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', '*.0.0.1'], config })
 
@@ -192,7 +192,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
   it('widens only a network approval', async () => {
     const config = node()
-    const token = pendingRequest(config)
+    const token = await pendingRequest(config)
 
     const refused = await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', '*.localhost'], config })
 
@@ -201,29 +201,29 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     expect(registry(config).pending().map(request => request.token)).toEqual([token])
   })
 
-  it('refuses the widening from any authority but the admin credential, whatever the scope', () => {
+  it('refuses the widening from any authority but the admin credential, whatever the scope', async () => {
     const config = node()
-    const token = networkRequest(config)
+    const token = await networkRequest(config)
 
     for (const scope of ['once', 'session', 'always'] as const) {
-      expect(registry(config).resolve({ token, approved: true, scope }, 'agent', { widenTo: '*.localhost' })).toMatchObject({ ok: false })
+      expect(await registry(config).resolve({ token, approved: true, scope }, 'agent', { widenTo: '*.localhost' })).toMatchObject({ ok: false })
     }
     expect(networkSubjects(config)).toEqual([])
     expect(registry(config).pending()).toHaveLength(1)
   })
 
-  it('widens nothing from a decision that arrives with a host field, as a relay or an agent would send one', () => {
+  it('widens nothing from a decision that arrives with a host field, as a relay or an agent would send one', async () => {
     const config = node()
-    const token = networkRequest(config)
+    const token = await networkRequest(config)
 
     const decision = ApprovalDecisionSchema.parse({ token, approved: true, scope: 'session', host: '*.localhost', widenTo: '*.localhost' })
-    expect(registry(config).resolve(decision, 'admin')).toEqual({ ok: true })
+    expect(await registry(config).resolve(decision, 'admin')).toEqual({ ok: true })
     expect(networkSubjects(config)).toEqual(['app.localhost:3000'])
   })
 
   it('records the pattern and the host that asked in the approve command\'s audit entry', async () => {
     const config = node()
-    const token = networkRequest(config)
+    const token = await networkRequest(config)
 
     await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', '*.localhost:3000'], config })
 
@@ -233,7 +233,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
   it('answers a repeat of the same widening as done, and a different one as a conflict', async () => {
     const config = node()
-    const token = networkRequest(config)
+    const token = await networkRequest(config)
 
     expect((await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', '*.localhost'], config })).exitCode).toBe(0)
     expect((await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', '*.localhost'], config })).exitCode).toBe(0)
@@ -253,10 +253,10 @@ describe('a * in a URL host never becomes a pattern grant (BUCKLE-D18)', () => {
     expect(registry(config).pending()).toEqual([])
   })
 
-  it('keeps a stored grant spelled *.localhost:3000 without the pattern flag to its literal string, whatever approved it', () => {
+  it('keeps a stored grant spelled *.localhost:3000 without the pattern flag to its literal string, whatever approved it', async () => {
     const config = node()
-    const token = networkRequest(config, '*.localhost:3000')
-    expect(registry(config).resolve({ token, approved: true, scope: 'session' }, 'admin')).toEqual({ ok: true })
+    const token = await networkRequest(config, '*.localhost:3000')
+    expect(await registry(config).resolve({ token, approved: true, scope: 'session' }, 'admin')).toEqual({ ok: true })
     const now = new Date().toISOString()
     writeFileSync(grantsPath(config), JSON.stringify({ version: 1, grants: [
       ...grantStore(config).list(),

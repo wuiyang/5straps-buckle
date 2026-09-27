@@ -1,6 +1,7 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { ZodError, type z } from 'zod'
 import { logger } from '../runtime/log.js'
@@ -9,9 +10,27 @@ import { logger } from '../runtime/log.js'
 export class StateFileError extends Error {}
 
 export interface JsonFileStore<T> {
+  /** Lock-free: every write is an atomic rename. */
   read(): T
-  write(value: T): void
-  update<R>(change: (state: T) => R): R
+  write(value: T): Promise<void>
+  /** Read, change and persist under the file lock. A change that awaits keeps the lock meanwhile, so keep it short. */
+  update<R>(change: (state: T) => R | Promise<R>): Promise<R>
+}
+
+// One queue per state file in this process: local flows take turns here, and only other processes
+// contend for the file lock.
+const turns = new Map<string, Promise<unknown>>()
+// The files whose turn the current async flow holds: an update nested in one on the same file would wait for itself.
+const heldTurns = new AsyncLocalStorage<ReadonlySet<string>>()
+
+function inTurn<R>(key: string, operation: () => Promise<R>): Promise<R> {
+  const held = heldTurns.getStore() ?? new Set<string>()
+  if (held.has(key)) return Promise.reject(new Error(`State file ${key} is already being updated by this operation; nested updates are not supported`))
+  const result = (turns.get(key) ?? Promise.resolve()).then(() => heldTurns.run(new Set([...held, key]), operation))
+  const settled = result.then(() => undefined, () => undefined)
+  turns.set(key, settled)
+  void settled.then(() => { if (turns.get(key) === settled) turns.delete(key) })
+  return result
 }
 
 export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodType<T>; fallback: T }): JsonFileStore<T> {
@@ -26,18 +45,20 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
     }
   }
 
-  function locked<R>(operation: () => R): R {
-    mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 })
-    // SQLite supplies an OS-released cross-process lock; JSON remains the data format.
-    const lock = new DatabaseSync(`${input.filePath}.lock.sqlite`, { timeout: 5_000 })
-    try {
-      lock.exec('BEGIN IMMEDIATE')
-      const result = operation()
-      lock.exec('COMMIT')
-      return result
-    } finally {
-      lock.close()
-    }
+  function locked<R>(operation: () => R | Promise<R>): Promise<R> {
+    return inTurn(resolve(input.filePath), async () => {
+      mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 })
+      // SQLite supplies an OS-released cross-process lock; JSON remains the data format.
+      const lock = new DatabaseSync(`${input.filePath}.lock.sqlite`, { timeout: 5_000 })
+      try {
+        lock.exec('BEGIN IMMEDIATE')
+        const result = await operation()
+        lock.exec('COMMIT')
+        return result
+      } finally {
+        lock.close()
+      }
+    })
   }
 
   function persist(value: T): void {
@@ -60,9 +81,9 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
   return {
     read,
     write: value => locked(() => persist(value)),
-    update: change => locked(() => {
+    update: change => locked(async () => {
       const state = read()
-      const result = change(state)
+      const result = await change(state)
       persist(state)
       return result
     }),

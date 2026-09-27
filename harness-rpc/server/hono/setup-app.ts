@@ -7,9 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { ApprovalDecisionSchema, WorkspacePolicyUpdateSchema } from '@5straps/protocol'
 import { Hono, type Context } from 'hono'
-import { createMemoryNonceStore } from '@5straps/protocol/envelope'
-import { createFileNonceStore } from '../../common/adapters/approval/file-nonce-store.js'
-import { approvalNoncesPath, type BuckleConfig } from '../../common/runtime/config.js'
+import type { BuckleConfig } from '../../common/runtime/config.js'
 import { openApprovalDecision } from '../../common/services/approvals/approval-envelope.js'
 import { isRestrictive, PolicyError } from '../../common/domain/policy.js'
 import { logger } from '../../common/runtime/log.js'
@@ -26,12 +24,10 @@ import { requireBearerToken } from './auth.js'
 export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRuntime; adminToken: string }): Hono {
   const { config, runtime, adminToken } = input
   const app = new Hono()
-  const seenDecisions = config.ringsApprovalKey ? createFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceStore()
-
   app.use('/*', async (context, next) => {
     if (!tokenMatches(context.req.header('authorization'), adminToken)) {
       const auditId = randomUUID()
-      runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
+      await runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
         at: new Date().toISOString(), sessionId: 'http-untrusted', tool: 'setup_auth_rejected',
         outcome: 'denied', durationMs: 0, effects: [], args: {},
       })
@@ -49,9 +45,9 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
       auditId, workspaceId: runtime.workspaceId, at, requestId: auditId, sessionId: 'workspace-admin',
       tool: `setup_${context.req.method.toLowerCase()}_${resource}`, durationMs: 0, effects: [], args: {},
     }
-    if (mutation) runtime.actions.record({ ...entry, event: 'attempt', outcome: 'started' })
+    if (mutation) await runtime.actions.record({ ...entry, event: 'attempt', outcome: 'started' })
     await next()
-    runtime.actions.record({ ...entry, event: 'result', outcome: context.res.ok ? 'ok' : 'error',
+    await runtime.actions.record({ ...entry, event: 'result', outcome: context.res.ok ? 'ok' : 'error',
       durationMs: Math.round(performance.now() - start), detail: `HTTP ${context.res.status}`,
     })
   })
@@ -92,10 +88,11 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
 
   app.get('/approvals', context => context.json({ approvals: runtime.approvals.pending() }))
   app.post('/approvals', async context => {
-    const opened = openApprovalDecision({ key: config.ringsApprovalKey, body: await context.req.json().catch(() => null), workspaceId: runtime.workspaceId, seen: seenDecisions })
+    const body: unknown = await context.req.json().catch(() => null)
+    const opened = await runtime.approvalNonces.withClaims(seen => openApprovalDecision({ key: config.ringsApprovalKey, body, workspaceId: runtime.workspaceId, seen }))
     if (!opened.ok) {
       const auditId = randomUUID()
-      runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
+      await runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
         at: new Date().toISOString(), sessionId: 'workspace-admin', tool: 'setup_approval_envelope_refused',
         outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: opened.reason,
       })
@@ -104,12 +101,12 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     }
     const parsed = ApprovalDecisionSchema.safeParse(opened.body)
     if (!parsed.success) return context.json({ error: 'Invalid approval decision' }, 400)
-    const result = runtime.approvals.resolve(parsed.data, 'admin')
+    const result = await runtime.approvals.resolve(parsed.data, 'admin')
     return result.ok ? context.json({ resolved: true }) : context.json({ error: result.reason }, 409)
   })
   app.get('/grants', context => context.json({ grants: runtime.grants.list() }))
-  app.delete('/grants/:grantId', context => {
-    if (!runtime.grants.revoke(context.req.param('grantId'))) return context.json({ error: 'Grant not found' }, 404)
+  app.delete('/grants/:grantId', async context => {
+    if (!await runtime.grants.revoke(context.req.param('grantId'))) return context.json({ error: 'Grant not found' }, 404)
     return context.body(null, 204)
   })
 

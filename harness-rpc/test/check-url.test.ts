@@ -107,8 +107,8 @@ describe('buckle check-url', () => {
 
   it('counts a persisted approval always, and a session approval only for the session named', async () => {
     const config = node()
-    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: 'localhost:3000', scope: 'always' })
-    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: 'localhost:5173', scope: 'session' })
+    await grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: 'localhost:3000', scope: 'always' })
+    await grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: 'localhost:5173', scope: 'session' })
 
     expect(await check(config, 'http://localhost:3000')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(persisted approval for localhost:3000)') })
     expect((await check(config, 'http://localhost:5173')).exitCode).toBe(3)
@@ -119,8 +119,8 @@ describe('buckle check-url', () => {
   it('counts an unspent once approval only for the session named', async () => {
     const config = node()
     const registry = createApprovalRegistry(grants(config), approvalsPath(config), config.cwd)
-    const [request] = registry.issue({ tool: 'web_fetch', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'network_egress', subject: 'localhost:3000', reason: 'local', offeredScopes: ['once'] }] })
-    registry.resolve({ token: request!.token, approved: true, scope: 'once' })
+    const [request] = await registry.issue({ tool: 'web_fetch', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'network_egress', subject: 'localhost:3000', reason: 'local', offeredScopes: ['once'] }] })
+    await registry.resolve({ token: request!.token, approved: true, scope: 'once' })
 
     expect((await check(config, 'localhost:3000')).exitCode).toBe(3)
     expect(await check(config, 'localhost:3000', '--session', 'chat-1')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('unspent once approval for web_fetch in session chat-1') })
@@ -152,7 +152,7 @@ describe('buckle check-url', () => {
     const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
     const policy = emptyWorkspacePolicy()
     policy.network.allow = ['api.example.com', 'other.org']
-    createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy })
+    await createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy })
 
     expect(await check(config, 'api.example.com', '--workspace', 'child')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(approved list entry api.example.com and node approved list entry *.example.com)') })
     expect((await check(config, 'other.org', '--workspace', 'child')).exitCode).toBe(1)
@@ -184,7 +184,7 @@ describe('buckle check-url', () => {
 
   it('names the pattern that decided when an approval was widened to one', async () => {
     const config = node()
-    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
+    await grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
 
     expect(await check(config, 'http://api.app.localhost:5173')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(persisted approval for pattern *.localhost, which covers api.app.localhost:5173)') })
     expect(await check(config, 'http://localhost:3000')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('pattern *.localhost') })
@@ -193,7 +193,7 @@ describe('buckle check-url', () => {
 
   it('denies what the approved list leaves off, whatever pattern grant is recorded', async () => {
     const config = node({ BUCKLE_NETWORK_ALLOW: 'example.com' })
-    grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
+    await grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
 
     expect(await check(config, 'http://app.localhost:3000')).toMatchObject({ exitCode: 1, stdout: expect.stringContaining('not on the workspace\'s approved list') })
   })
@@ -204,10 +204,10 @@ describe('buckle check-url', () => {
       for (const directory of ['default', 'child', 'state']) mkdirSync(join(root, directory))
       const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', ...environment })
       const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
-      createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy: emptyWorkspacePolicy() })
+      await createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy: emptyWorkspacePolicy() })
       const childState = join(realpathSync(join(root, 'state')), 'workspaces', 'child')
       mkdirSync(childState, { recursive: true })
-      createFileGrantStore({ filePath: join(childState, 'grants.json'), workspace: join(root, 'child') }).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
+      await createFileGrantStore({ filePath: join(childState, 'grants.json'), workspace: join(root, 'child') }).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
       return config
     }
 

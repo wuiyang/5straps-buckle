@@ -129,7 +129,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   let contents = renderEnv({ root, mount, name, port, authToken, adminToken, choices })
   if (explicitOut) writeEnvironmentFile(resolve(explicitOut), contents)
   else {
-    const registered = registerWorkspaceConfig({ root, home: options.home, write(entry) {
+    const registered = await registerWorkspaceConfig({ root, home: options.home, write(entry) {
       if (existsSync(entry.file) && !values.force) throw new Error('This workspace is already initialized; use --force only to replace its credentials')
       contents = renderEnv({ root: entry.root, mount, name, port, authToken, adminToken, choices, id: entry.id, state: entry.state })
       writeEnvironmentFile(entry.file, contents)

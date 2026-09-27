@@ -18,7 +18,7 @@ export function createFileActionLog(filePath: string): ActionLog {
   const pending = createPendingAudit({ filePath, processInstanceId: PROCESS_INSTANCE_ID, record: entry => log.record(entry) })
   const log: ActionLog = {
     recoverInterrupted: () => pending.recover(),
-    record(entry) {
+    async record(entry) {
       try {
         mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
         let offset = 0
@@ -39,7 +39,7 @@ export function createFileActionLog(filePath: string): ActionLog {
             try { fsyncSync(directory) } finally { closeSync(directory) }
           }
         } finally { closeSync(descriptor) }
-        pending.track(entry, offset)
+        await pending.track(entry, offset)
       } catch (error) {
         logger.error('Could not durably write the action log', { filePath })
         throw new Error('Audit storage unavailable; tool execution cannot continue', { cause: error })

@@ -26,7 +26,7 @@ const headers = (token: string) => ({ authorization: `Bearer ${token}`, 'content
 describe('owner approval authority', () => {
   it('refuses agent decisions and accepts only the setup credential', async () => {
     const { runtime, app } = await fixture()
-    const [approval] = runtime.approvals.issue({ tool: 'fs_read', sessionId: 'read-session', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/synthetic', reason: 'outside', offeredScopes: ['session'] }] })
+    const [approval] = await runtime.approvals.issue({ tool: 'fs_read', sessionId: 'read-session', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/synthetic', reason: 'outside', offeredScopes: ['session'] }] })
     const body = JSON.stringify({ token: approval!.token, approved: true, scope: 'session' })
     expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('agent-token'), body })).status).toBe(401)
     expect((await app.request('/v1/approvals', { method: 'POST', headers: headers('agent-token'), body })).status).toBe(404)
@@ -57,13 +57,13 @@ describe.skipIf(!hasExecutable('rg'))('recursive credential search', () => {
     expect(JSON.stringify(response)).toContain('public-marker')
     expect(JSON.stringify(response)).not.toContain('private-marker')
     expect(JSON.stringify(response)).toContain('excludedFiles')
-    runtime.grants.grant({ sessionId: 'search-session', rule: 'sensitive_path', subject: join(workspace, 'credentials.json'), scope: 'session' })
+    await runtime.grants.grant({ sessionId: 'search-session', rule: 'sensitive_path', subject: join(workspace, 'credentials.json'), scope: 'session' })
     expect(JSON.stringify(await invoke('fs_search_content', { path: '.', pattern: 'marker' }))).not.toContain('private-marker')
   })
 
   it('never searches runtime state even when it sits inside the search root', async () => {
     const { runtime, root } = await fixture()
-    runtime.grants.grant({ sessionId: 'search-session', rule: 'read_scope', subject: root, scope: 'session' })
+    await runtime.grants.grant({ sessionId: 'search-session', rule: 'read_scope', subject: root, scope: 'session' })
     const response = await runtime.invoke({ request: { requestId: 'state-search', tool: 'fs_search_content', args: { path: root, pattern: 'read_scope' }, approvalTokens: [] }, sessionId: 'search-session' })
     expect(response.outcome).toBe('ok')
     if (response.outcome === 'ok') expect(response.output).toMatchObject({ matches: [] })
@@ -73,7 +73,7 @@ describe.skipIf(!hasExecutable('rg'))('recursive credential search', () => {
 describe('owner filesystem restore', () => {
   it('journals a real tool mutation and refuses agent access to restore history', async () => {
     const { workspace, runtime, app } = await fixture()
-    runtime.grants.grant({ sessionId: 'writer', rule: 'write_scope', subject: workspace, scope: 'session' })
+    await runtime.grants.grant({ sessionId: 'writer', rule: 'write_scope', subject: workspace, scope: 'session' })
     const response = await runtime.invoke({ sessionId: 'writer', request: { requestId: 'write-change', tool: 'fs_write', args: { path: 'created.txt', content: 'synthetic content' }, approvalTokens: [], context: { stageId: 'message-edit' } } })
     expect(response.outcome).toBe('ok')
     const [checkpoint] = runtime.history.list()

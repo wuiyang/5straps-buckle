@@ -55,7 +55,7 @@ interface SettingsContext {
   home?: string
 }
 
-function dispatch(context: SettingsContext): CliResult {
+function dispatch(context: SettingsContext): CliResult | Promise<CliResult> {
   const [action, ...rest] = context.argv
   if (action === undefined || action === 'show') return rest.length ? usage() : show(context)
   if (action === 'set' && rest.length === 2) return write(context, rest[0]!, rest[1]!)
@@ -81,7 +81,7 @@ function show(context: SettingsContext): CliResult {
   return { exitCode: 0 }
 }
 
-function write(context: SettingsContext, name: string, raw: string | null): CliResult {
+async function write(context: SettingsContext, name: string, raw: string | null): Promise<CliResult> {
   const setting = findNodeSetting(name)
   if (!setting) return fail(`${name} is not a node setting buckle settings writes. Edit ${context.file} by hand for it.\nSettings: ${NODE_SETTINGS.map(item => item.alias).join(', ')}`)
   if (context.fileText === null) return fail(`${context.file} does not exist. Run buckle init first, or point BUCKLE_ENV_FILE at the node's environment file.`)
@@ -102,7 +102,7 @@ function write(context: SettingsContext, name: string, raw: string | null): CliR
       edit = updateEnvironmentFile(context.file, text => editEnvironmentVariable({ text, name: setting.key, value: next }))
       return edit.ok
     }
-    if (setting.key === 'BUCKLE_WORKSPACE_ROOT' && next !== null) moveWorkspaceConfig({ file: context.file, root: next, home: context.home, write: writeValue })
+    if (setting.key === 'BUCKLE_WORKSPACE_ROOT' && next !== null) await moveWorkspaceConfig({ file: context.file, root: next, home: context.home, write: writeValue })
     else writeValue()
   } catch (error) {
     return fail(`Could not write ${context.file}: ${error instanceof Error ? error.message : 'unknown error'}. Inspect the configuration before retrying.`)

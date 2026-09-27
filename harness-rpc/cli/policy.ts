@@ -101,7 +101,7 @@ export function repairStoredPolicy(input: { config: BuckleConfig; argv: string[]
   })
 }
 
-function repairStoredPolicyAction(input: { config: BuckleConfig; argv: string[]; failure: StoredPolicyError }): CliResult {
+async function repairStoredPolicyAction(input: { config: BuckleConfig; argv: string[]; failure: StoredPolicyError }): Promise<CliResult> {
   const { config, failure } = input
   const store = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd })
   const stored = store.read() ?? emptyWorkspacePolicy()
@@ -111,13 +111,13 @@ function repairStoredPolicyAction(input: { config: BuckleConfig; argv: string[];
       case 'remove': {
         const next = remove(stored, required(rest[0], action))
         compilePolicy(mergePolicies(config.policy, next))
-        store.write({ ...next, updatedAt: new Date().toISOString() })
+        await store.write({ ...next, updatedAt: new Date().toISOString() })
         process.stdout.write('Stored policy repaired; the node loads it again.\n')
         if (opensNetwork(stored, next, config.policy)) process.stdout.write(EMPTY_LIST_WARNING)
         return { exitCode: 0 }
       }
       case 'clear':
-        store.clear()
+        await store.clear()
         process.stdout.write('Stored policy cleared\n')
         return { exitCode: 0 }
       case 'export':

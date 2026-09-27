@@ -95,7 +95,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           const passed = input.args.map((argument, index) => targets.get(index) ?? (filePaths.has(argument) ? options.paths.resolve(argument) : realPath(argument, options.paths)))
           const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
           const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
-          const { session, previous } = sessions.update(state => ({ session: state.sessions[key] ??= `buckle-${randomUUID()}`, previous: state.allowedDomains[key] }))
+          const { session, previous } = await sessions.update(state => ({ session: state.sessions[key] ??= `buckle-${randomUUID()}`, previous: state.allowedDomains[key] }))
           args.push('--config', configFile, '--session', session, '--idle-timeout', '300000')
           if (flag !== null) args.push('--allowed-domains', flag)
           if ('loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
@@ -114,8 +114,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           if (result.exitCode !== 0) {
             throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
           }
-          if (input.command === 'close') sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key] })
-          else sessions.update(state => { state.allowedDomains[key] = flag })
+          if (input.command === 'close') await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key] })
+          else await sessions.update(state => { state.allowedDomains[key] = flag })
           const relaunched = input.command !== 'close' && previous !== undefined && previous !== flag
           if (relaunched) logger.warn('Browser relaunched because its allowed domains changed', { previous: previous ?? 'none', current: flag ?? 'none' })
           return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated, ...(relaunched ? { notice: RELAUNCH_NOTICE } : {}) }

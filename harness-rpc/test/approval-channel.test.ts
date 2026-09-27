@@ -174,7 +174,7 @@ describe('the terminal question after the grace period', () => {
 
   it('records an answer given after the grace period, resolving the pending approval', async () => {
     const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(tmpdir(), 'grace-grants.json'), workspace: '/workspace' }), join(tmpdir(), 'grace-approvals.json'))
-    const [issued] = approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session', 'always'] }] })
+    const [issued] = await approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session', 'always'] }] })
     const held = heldPrompt()
     const channel = createWaitingApprovalChannel({ approvals, timeoutMs: 200, prompt: held.prompt })
 
@@ -183,7 +183,7 @@ describe('the terminal question after the grace period', () => {
     held.answer([{ token: issued!.token, approved: true, scope: 'session' }])
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(approvals.pending()).toEqual([])
-    expect(approvals.resolve({ token: issued!.token, approved: true, scope: 'session' })).toEqual({ ok: true })
+    expect(await approvals.resolve({ token: issued!.token, approved: true, scope: 'session' })).toEqual({ ok: true })
   })
 
   it('closes once the request expires', async () => {

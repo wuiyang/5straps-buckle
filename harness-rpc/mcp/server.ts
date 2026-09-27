@@ -47,7 +47,7 @@ function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprova
       },
       async (args, context) => {
         const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
-        const approvalTokens = resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
+        const approvalTokens = await resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
 
         const response = await runtime.invoke({
           request: {
@@ -161,11 +161,11 @@ function askForApproval(approvals: ApprovalRequest[]) {
 }
 
 /** Reads elicitation answers keyed by approval token and turns each into a grant. */
-function resolveAnswers(input: {
+async function resolveAnswers(input: {
   runtime: BuckleRuntime
   responses: Record<string, unknown> | undefined
   authority: ApprovalAuthority
-}): string[] {
+}): Promise<string[]> {
   if (!input.responses) return []
 
   const tokens: string[] = []
@@ -173,7 +173,7 @@ function resolveAnswers(input: {
     const answer = acceptedContent<ApprovalAnswer>(input.responses, token)
     if (!answer) continue
 
-    const result = input.runtime.approvals.resolve({
+    const result = await input.runtime.approvals.resolve({
       token,
       approved: answer.action ? answer.action === 'allow_once' : answer.approve === true,
       scope: answer.action === 'deny_session' ? 'session' : answer.action === 'always_deny' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once',

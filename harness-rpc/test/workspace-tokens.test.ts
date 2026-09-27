@@ -83,19 +83,19 @@ describe('several agent tokens per workspace', () => {
 describe('buckle workspace, the owner-side registry command', () => {
   it('refuses to mint on a node with no admin credential', async () => {
     const bare = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ALLOW_SHELL: 'false' })
-    expect(workspaceRegistryCommand({ config: bare, runtime, argv: ['add', 'one', '--root', join(root, 'one')] }).exitCode).toBe(1)
+    expect((await workspaceRegistryCommand({ config: bare, runtime, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(1)
   })
 
-  it('adds a workspace, mints a second token and revokes it', () => {
-    expect(workspaceRegistryCommand({ config, runtime, argv: ['add', 'one', '--root', join(root, 'one')] }).exitCode).toBe(0)
-    expect(workspaceRegistryCommand({ config, runtime, argv: ['token', 'add', 'one', '--label', 'laptop'] }).exitCode).toBe(0)
-    expect(workspaceRegistryCommand({ config, runtime, argv: ['token', 'list', 'one'] }).exitCode).toBe(0)
-    expect(workspaceRegistryCommand({ config, runtime, argv: ['token', 'revoke', 'one', 'initial'] }).exitCode).toBe(0)
-    expect(workspaceRegistryCommand({ config, runtime, argv: ['token', 'revoke', 'one', 'initial'] }).exitCode).toBe(1)
+  it('adds a workspace, mints a second token and revokes it', async () => {
+    expect((await workspaceRegistryCommand({ config, runtime, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, runtime, argv: ['token', 'add', 'one', '--label', 'laptop'] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, runtime, argv: ['token', 'list', 'one'] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, runtime, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, runtime, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(1)
   })
 
-  it('refuses a workspace root that overlaps the node state directory', () => {
-    expect(workspaceRegistryCommand({ config, runtime, argv: ['add', 'one', '--root', join(root, 'state')] }).exitCode).toBe(1)
+  it('refuses a workspace root that overlaps the node state directory', async () => {
+    expect((await workspaceRegistryCommand({ config, runtime, argv: ['add', 'one', '--root', join(root, 'state')] })).exitCode).toBe(1)
   })
 })
 

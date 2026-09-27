@@ -19,7 +19,7 @@ export function createWorkbenchApp(runtime: BuckleRuntime): Hono {
   app.use('/:id/*', authorize)
   async function authorize(context: Context, next: () => Promise<void>) {
     if (!runtime.workbenches.authenticate(context.req.param('id') ?? '', context.req.header('authorization'))) {
-      runtime.workbenches.auditRejected()
+      await runtime.workbenches.auditRejected()
       return context.json({ error: 'Unauthorized' }, 401)
     }
     await next()

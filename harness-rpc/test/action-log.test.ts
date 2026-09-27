@@ -27,19 +27,19 @@ function entry(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
 }
 
 describe('the file action log', () => {
-  it('creates the directory it needs and appends one line per action', () => {
+  it('creates the directory it needs and appends one line per action', async () => {
     const path = logPath()
     const log = createFileActionLog(path)
-    log.record(entry({ requestId: 'r1' }))
-    log.record(entry({ requestId: 'r2' }))
+    await log.record(entry({ requestId: 'r1' }))
+    await log.record(entry({ requestId: 'r2' }))
 
     expect(readFileSync(path, 'utf8').trim().split('\n')).toHaveLength(2)
     expect(log.read(10).map(item => item.requestId)).toEqual(['r1', 'r2'])
   })
 
-  it('returns the most recent entries when asked for fewer than it holds', () => {
+  it('returns the most recent entries when asked for fewer than it holds', async () => {
     const log = createFileActionLog(logPath())
-    for (const requestId of ['r1', 'r2', 'r3']) log.record(entry({ requestId }))
+    for (const requestId of ['r1', 'r2', 'r3']) await log.record(entry({ requestId }))
     expect(log.read(2).map(item => item.requestId)).toEqual(['r2', 'r3'])
   })
 
@@ -47,20 +47,20 @@ describe('the file action log', () => {
     expect(createFileActionLog(logPath()).read(10)).toEqual([])
   })
 
-  it('keeps the readable entries when a line was torn by a killed process', () => {
+  it('keeps the readable entries when a line was torn by a killed process', async () => {
     const path = logPath()
     const log = createFileActionLog(path)
-    log.record(entry({ requestId: 'r1' }))
+    await log.record(entry({ requestId: 'r1' }))
     writeFileSync(path, `${readFileSync(path, 'utf8')}{"requestId":"r2","tru`)
 
     expect(log.read(10).map(item => item.requestId)).toEqual(['r1'])
-    log.record(entry({ requestId: 'r3' }))
+    await log.record(entry({ requestId: 'r3' }))
     expect(log.read(10).map(item => item.requestId)).toEqual(['r1', 'r3'])
   })
 
-  it('records a refusal as fully as a success, so a denial leaves evidence', () => {
+  it('records a refusal as fully as a success, so a denial leaves evidence', async () => {
     const log = createFileActionLog(logPath())
-    log.record(entry({
+    await log.record(entry({
       outcome: 'denied',
       tool: 'fs_read',
       effects: ['read /home/user/.ssh/id_rsa'],
@@ -141,9 +141,9 @@ describe('collectPrefixed', () => {
 })
 
 describe('durable audit pages', () => {
-  it('pages newest first without skipping records across cursors', () => {
+  it('pages newest first without skipping records across cursors', async () => {
     const log = createFileActionLog(logPath())
-    for (const requestId of ['r1', 'r2', 'r3', 'r4', 'r5']) log.record(entry({ requestId }))
+    for (const requestId of ['r1', 'r2', 'r3', 'r4', 'r5']) await log.record(entry({ requestId }))
     const first = log.page({ limit: 2 })
     const second = log.page({ limit: 2, before: Number(first.nextCursor) })
     const third = log.page({ limit: 2, before: Number(second.nextCursor) })
@@ -151,10 +151,10 @@ describe('durable audit pages', () => {
     expect(third.nextCursor).toBeNull()
   })
 
-  it('refuses recording when durable storage is unavailable', () => {
+  it('refuses recording when durable storage is unavailable', async () => {
     const file = logPath()
     writeFileSync(file, 'not a directory')
-    expect(() => createFileActionLog(join(file, 'actions.jsonl')).record(entry())).toThrow('Audit storage unavailable')
+    await expect(createFileActionLog(join(file, 'actions.jsonl')).record(entry())).rejects.toThrow('Audit storage unavailable')
   })
 })
 
@@ -173,7 +173,7 @@ describe('audit recovery after process interruption', () => {
   it('records an interrupted outcome once when the attempt owner has stopped', async () => {
     const path = logPath()
     const log = createFileActionLog(path)
-    log.record(entry({ auditId: 'stopped-call', event: 'attempt', outcome: 'started' }))
+    await log.record(entry({ auditId: 'stopped-call', event: 'attempt', outcome: 'started' }))
     orphan(path)
     expect(await createFileActionLog(path).recoverInterrupted()).toBe(1)
     expect(await log.recoverInterrupted()).toBe(0)
@@ -184,7 +184,7 @@ describe('audit recovery after process interruption', () => {
   it('does not mark attempts from a live process interrupted', async () => {
     const path = logPath()
     const log = createFileActionLog(path)
-    log.record(entry({ auditId: 'live-call', event: 'attempt', outcome: 'started' }))
+    await log.record(entry({ auditId: 'live-call', event: 'attempt', outcome: 'started' }))
     expect(await createFileActionLog(path).recoverInterrupted()).toBe(0)
     expect(log.read(1)[0]?.outcome).toBe('started')
   })
@@ -192,9 +192,9 @@ describe('audit recovery after process interruption', () => {
   it('reconciles a durable terminal record if interruption preceded pending-index cleanup', async () => {
     const path = logPath()
     const log = createFileActionLog(path)
-    log.record(entry({ auditId: 'completed-call', event: 'attempt', outcome: 'started' }))
+    await log.record(entry({ auditId: 'completed-call', event: 'attempt', outcome: 'started' }))
     const pending = orphan(path)
-    log.record(entry({ auditId: 'completed-call', event: 'result', outcome: 'ok' }))
+    await log.record(entry({ auditId: 'completed-call', event: 'result', outcome: 'ok' }))
     writeFileSync(`${path}.pending.json`, JSON.stringify(pending))
     expect(await log.recoverInterrupted()).toBe(0)
     expect(log.read(10).map(item => item.outcome)).toEqual(['started', 'ok'])

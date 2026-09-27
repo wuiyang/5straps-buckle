@@ -10,9 +10,9 @@ export function auditHttpRequest(input: { actions: ActionLog; workspaceId: strin
     const entry = { auditId, workspaceId: input.workspaceId, requestId: auditId, sessionId: 'http-transport',
       at: new Date().toISOString(), tool: `${input.face}_${context.req.method.toLowerCase()}`, effects: [], args: {}, durationMs: 0,
     }
-    input.actions.record({ ...entry, event: 'attempt', outcome: 'started' })
+    await input.actions.record({ ...entry, event: 'attempt', outcome: 'started' })
     await next()
-    input.actions.record({ ...entry, event: 'result', outcome: context.res.status === 401 || context.res.status === 403 ? 'denied' : context.res.ok ? 'ok' : 'error',
+    await input.actions.record({ ...entry, event: 'result', outcome: context.res.status === 401 || context.res.status === 403 ? 'denied' : context.res.ok ? 'ok' : 'error',
       durationMs: Math.round(performance.now() - start), detail: `HTTP ${context.res.status}; transport status only`,
     })
   }

@@ -45,34 +45,34 @@ export function workspaceEnvironmentFile(input: { cwd: string; explicit?: string
 }
 
 /** The map lock serializes initialization; only publish a mapping after its configuration exists. */
-export function registerWorkspaceConfig(input: { root: string; home?: string; write: (entry: WorkspaceConfigLocation) => void }): WorkspaceConfigLocation {
+export async function registerWorkspaceConfig(input: { root: string; home?: string; write: (entry: WorkspaceConfigLocation) => void | Promise<void> }): Promise<WorkspaceConfigLocation> {
   const root = realpathSync(input.root)
   const { directory, store } = workspaceMap(input.home)
   if (isInside(root, directory)) throw new Error('Workspace root must not contain the private workspace configuration directory')
-  return store.update(map => {
+  return store.update(async map => {
     const entry = location(directory, root, map.workspaces[root] ?? randomUUID())
     mkdirSync(entry.directory, { recursive: true, mode: 0o700 })
     chmodSync(directory, 0o700)
     chmodSync(entry.directory, 0o700)
-    input.write(entry)
+    await input.write(entry)
     map.workspaces[root] = entry.id
     return entry
   })
 }
 
 /** Retain the ID when an owner changes a managed workspace's root. */
-export function moveWorkspaceConfig(input: { file: string; root: string; home?: string; write: () => boolean }): boolean {
+export async function moveWorkspaceConfig(input: { file: string; root: string; home?: string; write: () => boolean | Promise<boolean> }): Promise<boolean> {
   const { directory, store } = workspaceMap(input.home)
   const file = resolve(input.file)
   const mapped = Object.entries(store.read().workspaces).find(([root, id]) => location(directory, root, id).file === file)
   if (!mapped) return input.write()
   const nextRoot = realpathSync(input.root)
   if (isInside(nextRoot, directory)) throw new Error('Workspace root must not contain the private workspace configuration directory')
-  return store.update(map => {
+  return store.update(async map => {
     const [oldRoot, id] = mapped
     if (map.workspaces[oldRoot] !== id) throw new Error('Workspace mapping changed; retry the settings command')
     if (map.workspaces[nextRoot] && map.workspaces[nextRoot] !== id) throw new Error('The new root already belongs to another registered workspace')
-    if (!input.write()) return false
+    if (!await input.write()) return false
     delete map.workspaces[oldRoot]
     map.workspaces[nextRoot] = id
     return true

@@ -32,7 +32,7 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
     await next()
     if (context.res.status < 400 || dispatched.has(context.req.raw)) return
     const auditId = randomUUID()
-    runtime.actions.record({
+    await runtime.actions.record({
       auditId, event: 'result', workspaceId: runtime.workspaceId, at: new Date().toISOString(),
       requestId: auditId, sessionId: 'rpc-untrusted', tool: 'rpc_invoke_rejected',
       outcome: [401, 403].includes(context.res.status) ? 'denied' : 'error', durationMs: 0,

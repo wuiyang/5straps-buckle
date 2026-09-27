@@ -19,7 +19,7 @@ export interface TerminalManagerOptions {
   directory: string
   spawn: PtySpawner
   save(record: StoredWorkbench): void
-  audit(record: StoredWorkbench, tool: string, actorId: string, args: Record<string, string | number>, event: 'attempt' | 'result', auditId?: string, outcome?: 'ok' | 'error' | 'started' | 'interrupted'): string
+  audit(record: StoredWorkbench, tool: string, actorId: string, args: Record<string, string | number>, event: 'attempt' | 'result', auditId?: string, outcome?: 'ok' | 'error' | 'started' | 'interrupted'): Promise<string>
   checkBudget(record: StoredWorkbench): void
   now?: () => number
 }
@@ -80,7 +80,8 @@ export function createWorkbenchTerminals(options: TerminalManagerOptions) {
     try {
       flush(record, terminal, state)
       options.save(record)
-      options.audit(record, 'terminal_lifetime', 'terminal-process', { terminalId: terminal.id, exitCode }, 'result', state.auditId, 'ok')
+      void options.audit(record, 'terminal_lifetime', 'terminal-process', { terminalId: terminal.id, exitCode }, 'result', state.auditId, 'ok')
+        .catch((error: unknown) => logger.error('Terminal exit audit failed', { terminalId: terminal.id, error }))
     } catch (error) {
       logger.error('Terminal exit persistence failed', { terminalId: terminal.id, message: error instanceof Error ? error.message : 'Unknown error' })
     } finally { running.delete(terminal.id) }
@@ -93,10 +94,10 @@ export function createWorkbenchTerminals(options: TerminalManagerOptions) {
       if (record.terminals.filter(item => ['running', 'stopping'].includes(item.status)).length >= 4) throw new WorkbenchError('At most four terminals can run in one workbench')
       const terminal: WorkbenchTerminal = { id: randomUUID(), status: 'running', createdAt: new Date(now()).toISOString(), exitedAt: null, exitCode: null,
         controllerId: actorId, lastControllerId: actorId, generation: 1, leaseExpiresAt: new Date(now() + LEASE_MS).toISOString(), cols: request.cols, rows: request.rows, lastSequence: 0 }
-      const auditId = options.audit(record, 'terminal_lifetime', actorId, { terminalId: terminal.id }, 'attempt')
+      const auditId = await options.audit(record, 'terminal_lifetime', actorId, { terminalId: terminal.id }, 'attempt')
       let process: PtyProcess
       try { process = await options.spawn(request) }
-      catch (error) { options.audit(record, 'terminal_lifetime', actorId, { terminalId: terminal.id }, 'result', auditId, 'error'); throw error }
+      catch (error) { await options.audit(record, 'terminal_lifetime', actorId, { terminalId: terminal.id }, 'result', auditId, 'error'); throw error }
       record.terminals.push(terminal); record.revision++; record.reviewId = null; record.status = 'open'
       const state: RunningTerminal = { process, output: [], sequence: 0, bytes: 0, lastActivity: now(), createdAt: now(), auditId }
       running.set(terminal.id, state)

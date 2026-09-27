@@ -1,6 +1,7 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { logger } from '../../runtime/log.js'
 import { z } from 'zod'
 import {
   WorkbenchApplySchema, WorkbenchControlSchema, WorkbenchInvokeSchema, WorkbenchProvisionSchema,
@@ -35,8 +36,8 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
   const now = options.now ?? Date.now
   const time = () => new Date(now()).toISOString()
   function save(record: StoredWorkbench): void { record.updatedAt = time(); storage.save(record) }
-  function audit(record: StoredWorkbench, tool: string, actorId: string, args: Record<string, string | number>, event: 'attempt' | 'result', auditId: string = randomUUID(), outcome: 'ok' | 'error' | 'started' | 'interrupted' = event === 'attempt' ? 'started' : 'ok'): string {
-    options.actions.record({ auditId, event, workspaceId: options.workspaceId, requestId: auditId, at: time(),
+  async function audit(record: StoredWorkbench, tool: string, actorId: string, args: Record<string, string | number>, event: 'attempt' | 'result', auditId: string = randomUUID(), outcome: 'ok' | 'error' | 'started' | 'interrupted' = event === 'attempt' ? 'started' : 'ok'): Promise<string> {
+    await options.actions.record({ auditId, event, workspaceId: options.workspaceId, requestId: auditId, at: time(),
       projectId: record.projectId, chatId: record.chatId, sessionId: record.chatId, stageId: record.id, actorId,
       tool: 'workbench_' + tool, outcome, durationMs: 0, effects: [], args })
     return auditId
@@ -52,7 +53,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
         terminal.status = 'interrupted'; terminal.controllerId = null; terminal.leaseExpiresAt = null; terminal.generation++; terminal.exitedAt = time()
         recovered = true
       }
-      if (recovered) { record.reviewId = null; record.revision++; save(record); audit(record, 'recover', 'buckle-recovery', {}, 'result', undefined, 'interrupted') }
+      if (recovered) { record.reviewId = null; record.revision++; save(record); void audit(record, 'recover', 'buckle-recovery', {}, 'result', undefined, 'interrupted').catch(reportAuditFailure) }
       records.set(record.id, record)
     }
   }
@@ -78,16 +79,16 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
   }
   async function operation<T>(id: string, tool: string, actorId: string, args: Record<string, string | number>, execute: (record: StoredWorkbench) => Promise<T> | T): Promise<T> {
     const record = get(id)
-    const auditId = audit(record, tool, actorId, args, 'attempt')
+    const auditId = await audit(record, tool, actorId, args, 'attempt')
     try {
       if (active.has(id)) throw new WorkbenchError('Another workbench operation is running')
       active.add(id)
       try {
         const result = await execute(record)
-        audit(record, tool, actorId, args, 'result', auditId)
+        await audit(record, tool, actorId, args, 'result', auditId)
         return result
       } finally { active.delete(id) }
-    } catch (error) { audit(record, tool, actorId, args, 'result', auditId, 'error'); throw error }
+    } catch (error) { await audit(record, tool, actorId, args, 'result', auditId, 'error'); throw error }
   }
   return {
     get: (id: string) => publicWorkbench(get(id)),
@@ -246,11 +247,16 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       for (const record of records.values()) await terminals.stopAll(record)
       storage.close()
     },
-    auditRejected() {
+    async auditRejected() {
       const id = randomUUID()
-      options.actions.record({ auditId: id, event: 'result', workspaceId: options.workspaceId, at: time(), requestId: id, sessionId: 'workbench-untrusted',
+      await options.actions.record({ auditId: id, event: 'result', workspaceId: options.workspaceId, at: time(), requestId: id, sessionId: 'workbench-untrusted',
         tool: 'workbench_auth_rejected', outcome: 'denied', durationMs: 0, effects: [], args: {} })
     },
   }
 }
 export type WorkbenchManager = ReturnType<typeof createWorkbenchManager>
+
+// A result record written after the work already happened cannot stop it; the failure is logged.
+function reportAuditFailure(error: unknown): void {
+  logger.error('Workbench audit record failed', { error })
+}

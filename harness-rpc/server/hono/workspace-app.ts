@@ -89,7 +89,7 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
       const { runtime } = await manager.resolve(id)
       const workbenchId = path.split('/')[3] ?? ''
       if (!runtime.workbenches.authenticate(workbenchId, context.req.header('authorization'))) {
-        runtime.workbenches.auditRejected()
+        await runtime.workbenches.auditRejected()
         return context.json({ error: 'Unauthorized' }, 401)
       }
       const app = new Hono().route('/v1/workbenches', createWorkbenchApp(runtime))
@@ -102,7 +102,7 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     if (!credential || !matchesTokenSource(context.req.header('authorization'), credential)) {
       if (path === '/v1/invoke' || path === '/mcp' || path.startsWith('/setup/')) {
         const auditId = randomUUID()
-        input.runtime.actions.record({ auditId, event: 'result', workspaceId: known ? id : 'unresolved',
+        await input.runtime.actions.record({ auditId, event: 'result', workspaceId: known ? id : 'unresolved',
           at: new Date().toISOString(), requestId: auditId, sessionId: 'http-untrusted', tool: path === '/mcp' ? 'workspace_mcp_auth_rejected' : path.startsWith('/setup/') ? 'workspace_setup_auth_rejected' : 'workspace_invoke_rejected',
           outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: 'HTTP 401',
         })
@@ -138,20 +138,20 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
 }
 
 async function auditAdminOperation<T>(runtime: BuckleRuntime, tool: string, workspaceId: string, operation: () => T | Promise<T>): Promise<T> {
-  const auditId = auditAdmin(runtime, tool, workspaceId)
+  const auditId = await auditAdmin(runtime, tool, workspaceId)
   let result: T
   try { result = await operation() }
   catch (error) {
-    auditAdmin(runtime, tool, workspaceId, auditId, 'error')
+    await auditAdmin(runtime, tool, workspaceId, auditId, 'error')
     throw error
   }
-  auditAdmin(runtime, tool, workspaceId, auditId)
+  await auditAdmin(runtime, tool, workspaceId, auditId)
   return result
 }
 
-function auditAdmin(runtime: BuckleRuntime, tool: string, workspaceId: string, auditId?: string, outcome: 'ok' | 'error' = 'ok'): string {
+async function auditAdmin(runtime: BuckleRuntime, tool: string, workspaceId: string, auditId?: string, outcome: 'ok' | 'error' = 'ok'): Promise<string> {
   const id = auditId ?? randomUUID()
-  runtime.actions.record({
+  await runtime.actions.record({
     auditId: id, event: auditId ? 'result' : 'attempt', workspaceId,
     at: new Date().toISOString(), requestId: id, sessionId: 'node-admin', tool,
     outcome: auditId ? outcome : 'started', durationMs: 0, effects: [], args: {},

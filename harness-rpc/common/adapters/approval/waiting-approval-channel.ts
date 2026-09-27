@@ -66,9 +66,9 @@ function keepAsking(input: {
   prompted: Promise<ApprovalDecision[] | null>
   controller: AbortController
 }): void {
-  void input.prompted.then(decisions => {
+  void input.prompted.then(async decisions => {
     for (const decision of decisions ?? []) {
-      const result = input.approvals.resolve(decision)
+      const result = await input.approvals.resolve(decision)
       if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
     }
   })

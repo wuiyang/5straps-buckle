@@ -17,22 +17,25 @@ export function createAuditedStdioTransport(input: {
   isKnownTool: (name: string) => boolean
 }): Transport {
   const pending = new Map<string | number, Pending>()
+  // Inbound messages are handled one at a time in arrival order, so each attempt is durable before its dispatch.
+  let inbound: Promise<void> = Promise.resolve()
   let closing = false
   let closed = false
   let failed = false
+  const stopped = () => closed || closing || failed
   const transport: Transport = {
-    start: async () => { if (closed || closing || failed) throw new Error('MCP stdio transport is closed'); await input.transport.start() },
+    start: async () => { if (stopped()) throw new Error('MCP stdio transport is closed'); await input.transport.start() },
     close: async () => { closing = true; await input.transport.close() },
     async send(message, options) {
-      if (closed || closing || failed) throw new Error('MCP stdio transport is closed')
+      if (stopped()) throw new Error('MCP stdio transport is closed')
       if (!('method' in message) && 'id' in message && (typeof message.id === 'string' || typeof message.id === 'number')) {
         const attempt = pending.get(message.id)
         if (attempt) {
+          pending.delete(message.id)
           try {
             const result = 'result' in message ? message.result : undefined
             const isError = 'error' in message || (isRecord(result) && result['isError'] === true)
-            finish(attempt, isError ? 'error' : 'ok', 'MCP response prepared; protocol status only')
-            pending.delete(message.id)
+            await finish(attempt, isError ? 'error' : 'ok', 'MCP response prepared; protocol status only')
           } catch {
             failClosed()
             throw new Error('MCP response withheld because audit persistence failed')
@@ -44,51 +47,51 @@ export function createAuditedStdioTransport(input: {
   }
 
   input.transport.onmessage = (message, extra) => {
-    if (closed || closing || failed) return
-    if (!('method' in message)) { transport.onmessage?.(message, extra); return }
-    // Notifications have no response to correlate. A tools/call without an ID is still an attempt.
-    if (!('id' in message)) {
-      if (message.method === 'tools/call') {
-        try { finish(begin(message), 'denied', 'Tool request missing an RPC identifier; not dispatched') }
-        catch { failClosed() }
-        return
-      }
-      transport.onmessage?.(message, extra)
-      return
-    }
-    try {
-      const attempt = begin(message)
-      if ((typeof message.id === 'string' && message.id.length > 200) || pending.has(message.id) || pending.size >= MAX_PENDING_REQUESTS) {
-        finish(attempt, 'denied', 'Invalid or duplicate RPC identifier, or pending request limit reached; not dispatched')
-        void transport.close().catch(() => failClosed())
-        return
-      }
-      pending.set(message.id, attempt)
-      transport.onmessage?.(message, extra)
-    } catch { failClosed() }
+    if (stopped()) return
+    inbound = inbound.then(() => receive(message, extra)).catch(() => failClosed())
   }
 
   input.transport.onerror = () => {
-    if (closed || closing || failed) return
-    try {
-      finish(begin(), 'error', 'MCP framing, parsing, or stream error; no request payload retained')
+    if (stopped()) return
+    inbound = inbound.then(async () => {
+      if (stopped()) return
+      await finish(await begin(), 'error', 'MCP framing, parsing, or stream error; no request payload retained')
       transport.onerror?.(new Error('MCP stdio transport error'))
-    } catch { failClosed() }
+    }).catch(() => failClosed())
   }
 
   input.transport.onclose = () => {
     if (closed) return
     closed = true
-    for (const attempt of pending.values()) {
-      try { finish(attempt, 'interrupted', 'MCP connection closed before a response; execution effects unknown') }
-      catch { reportAuditFailure() }
-    }
+    const interrupted = [...pending.values()]
     pending.clear()
-    transport.onclose?.()
+    void Promise.all(interrupted.map(attempt => finish(attempt, 'interrupted', 'MCP connection closed before a response; execution effects unknown').catch(reportAuditFailure)))
+      .then(() => transport.onclose?.())
   }
   return transport
 
-  function begin(message?: Extract<Message, { method: string }>): Pending {
+  async function receive(message: Message, extra: Parameters<NonNullable<Transport['onmessage']>>[1]): Promise<void> {
+    if (stopped()) return
+    if (!('method' in message)) { transport.onmessage?.(message, extra); return }
+    // Notifications have no response to correlate. A tools/call without an ID is still an attempt.
+    if (!('id' in message)) {
+      if (message.method === 'tools/call') await finish(await begin(message), 'denied', 'Tool request missing an RPC identifier; not dispatched')
+      else transport.onmessage?.(message, extra)
+      return
+    }
+    const attempt = await begin(message)
+    if ((typeof message.id === 'string' && message.id.length > 200) || pending.has(message.id) || pending.size >= MAX_PENDING_REQUESTS) {
+      await finish(attempt, 'denied', 'Invalid or duplicate RPC identifier, or pending request limit reached; not dispatched')
+      void transport.close().catch(() => failClosed())
+      return
+    }
+    // The connection may have closed while the attempt was being written.
+    if (stopped()) return finish(attempt, 'interrupted', 'MCP connection closed before dispatch; not dispatched')
+    pending.set(message.id, attempt)
+    transport.onmessage?.(message, extra)
+  }
+
+  async function begin(message?: Extract<Message, { method: string }>): Promise<Pending> {
     const auditId = randomUUID()
     const method = message?.method
     const params = message && 'params' in message ? message.params : undefined
@@ -99,12 +102,12 @@ export function createAuditedStdioTransport(input: {
       event: 'attempt', outcome: 'started', durationMs: 0, effects: [],
       args: { method: method && KNOWN_METHODS.has(method) ? method : 'unknown', ...(method === 'tools/call' ? { tool: typeof name === 'string' && input.isKnownTool(name) ? name : 'unknown' } : {}) },
     }
-    input.actions.record(entry)
+    await input.actions.record(entry)
     return { entry, started: performance.now() }
   }
 
-  function finish(attempt: Pending, outcome: ActionLogEntry['outcome'], detail: string): void {
-    input.actions.record({ ...attempt.entry, at: new Date().toISOString(), event: 'result', outcome, durationMs: Math.round(performance.now() - attempt.started), detail })
+  function finish(attempt: Pending, outcome: ActionLogEntry['outcome'], detail: string): Promise<void> {
+    return input.actions.record({ ...attempt.entry, at: new Date().toISOString(), event: 'result', outcome, durationMs: Math.round(performance.now() - attempt.started), detail })
   }
 
   function reportAuditFailure(): void {

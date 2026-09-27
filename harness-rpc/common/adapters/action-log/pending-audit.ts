@@ -23,15 +23,15 @@ const pendingSchema = z.object({
 export function createPendingAudit(input: {
   filePath: string
   processInstanceId: string
-  record: (entry: ActionLogEntry) => void
+  record: (entry: ActionLogEntry) => Promise<void>
   isAlive?: (pid: number) => boolean
 }) {
   const store = createJsonFileStore({ filePath: `${input.filePath}.pending.json`, schema: pendingSchema, fallback: { version: 1 as const, pending: {} } })
   return {
-    track(entry: ActionLogEntry, offset: number) {
+    async track(entry: ActionLogEntry, offset: number): Promise<void> {
       if (!entry.auditId || !entry.event) return
       const auditId = entry.auditId
-      store.update(state => {
+      await store.update(state => {
         if (entry.event === 'attempt') {
           state.pending[auditId] = { offset, processId: process.pid, processInstanceId: input.processInstanceId, entry: { ...entry, auditId } }
         } else { delete state.pending[auditId] }
@@ -54,10 +54,10 @@ export function createPendingAudit(input: {
           const alive = (input.isAlive ?? processIsAlive)(item.processId)
           if (sameProcess || alive && item.processId !== process.pid) continue
           if (await hasTerminalRecord(input.filePath, auditId, item.offset)) {
-            store.update(state => { delete state.pending[auditId] })
+            await store.update(state => { delete state.pending[auditId] })
             continue
           }
-          input.record({ ...item.entry, event: 'result', outcome: 'interrupted',
+          await input.record({ ...item.entry, event: 'result', outcome: 'interrupted',
             at: new Date().toISOString(), detail: 'Owner process stopped before recording an outcome; effects are unknown',
           })
           recovered += 1

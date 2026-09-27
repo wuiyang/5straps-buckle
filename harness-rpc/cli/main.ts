@@ -283,7 +283,7 @@ async function approve(input: CommandInput): Promise<CliResult> {
 
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
   // `BUCKLE-D18`: `--host` widens a network approval to a pattern, under the owner's authority alone.
-  const result = runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data }, 'admin', values.host === undefined ? {} : { widenTo: values.host })
+  const result = await runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data }, 'admin', values.host === undefined ? {} : { widenTo: values.host })
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceId}`)
   if (result.widened) {
     const { pattern, askedBy } = result.widened
@@ -294,11 +294,11 @@ async function approve(input: CommandInput): Promise<CliResult> {
   return { exitCode: 0 }
 }
 
-function grants(runtime: BuckleRuntime, argv: string[]): CliResult {
+async function grants(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
   const [action, id] = argv
   if (action === 'revoke') {
     if (!id) return fail('Usage: buckle grants revoke <id>')
-    if (!runtime.grants.revoke(id)) return fail(`Grant not found: ${id}`)
+    if (!await runtime.grants.revoke(id)) return fail(`Grant not found: ${id}`)
     process.stdout.write(`Revoked ${id}\n`)
     return { exitCode: 0 }
   }
@@ -312,14 +312,14 @@ async function plugin(runtime: BuckleRuntime, argv: string[]): Promise<CliResult
   const [action, id, specifier] = argv
   if (action === 'add') {
     if (!id || !specifier) return fail('Usage: buckle plugin add <id> <module-specifier>')
-    runtime.plugins.add({ id, specifier })
+    await runtime.plugins.add({ id, specifier })
     await runtime.reload()
     process.stdout.write(`Added plugin ${id}\n`)
     return { exitCode: 0 }
   }
   if (action === 'remove') {
     if (!id) return fail('Usage: buckle plugin remove <id>')
-    if (!runtime.plugins.remove(id)) return fail(`Plugin not found: ${id}`)
+    if (!await runtime.plugins.remove(id)) return fail(`Plugin not found: ${id}`)
     await runtime.reload()
     process.stdout.write(`Removed plugin ${id}\n`)
     return { exitCode: 0 }

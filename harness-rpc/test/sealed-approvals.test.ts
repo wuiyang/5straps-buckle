@@ -28,7 +28,7 @@ async function node(input: { key?: string; state?: string } = {}) {
   })
   const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
   const app = createHttpApp({ config, runtime, authToken: config.authToken })
-  const ask = () => runtime.approvals.issue({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })[0]!
+  const ask = async () => (await runtime.approvals.issue({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] }))[0]!
   const decide = (body: unknown) => app.request('/setup/approvals', { method: 'POST', headers: ADMIN, body: JSON.stringify(body) })
   const refusals = () => runtime.actions.read(200).filter(entry => entry.tool === 'setup_approval_envelope_refused')
   return { state, config, runtime, app, ask, decide, refusals }
@@ -41,14 +41,14 @@ function sealedDecision(key: ApprovalKey, token: string, now?: number) {
 describe('sealed approval decisions on the setup face', () => {
   it('accepts a plain decision while the node holds no key, and reports that a re-pair is required', async () => {
     const { app, ask, decide } = await node()
-    expect((await decide({ token: ask().token, approved: true, scope: 'once' })).status).toBe(200)
+    expect((await decide({ token: (await ask()).token, approved: true, scope: 'once' })).status).toBe(200)
     const status = await (await app.request('/setup/status', { headers: ADMIN })).json() as { approvalEnvelope: string }
     expect(status.approvalEnvelope).toBe('re-pair required')
   })
 
   it('refuses a plain decision once a key is paired, and audits the reason without the body', async () => {
     const { runtime, ask, decide, refusals } = await node({ key: mintApprovalKey() })
-    const token = ask().token
+    const token = (await ask()).token
     const response = await decide({ token, approved: true, scope: 'once' })
     expect(response.status).toBe(401)
     expect(await response.json()).toEqual({ error: 'Approval decision refused: plain_refused' })
@@ -62,7 +62,7 @@ describe('sealed approval decisions on the setup face', () => {
     const encoded = mintApprovalKey()
     const key = approvalKey(encoded)
     const first = await node({ key: encoded })
-    const token = first.ask().token
+    const token = (await first.ask()).token
     const envelope = sealedDecision(key, token)
 
     expect((await first.decide(envelope)).status).toBe(200)
@@ -99,7 +99,7 @@ describe('sealed approval decisions on the setup face', () => {
     const encoded = mintApprovalKey()
     const key = approvalKey(encoded)
     const { ask, decide, refusals, runtime } = await node({ key: encoded })
-    const token = ask().token
+    const token = (await ask()).token
 
     expect((await decide(sealedDecision(key, token, Date.now() - ENVELOPE_WINDOW_MS - 5_000))).status).toBe(401)
     const envelope = sealedDecision(key, token)
@@ -116,7 +116,7 @@ describe('sealed approval decisions on the setup face', () => {
 
   it('refuses an envelope while it holds no key, naming the key as unknown', async () => {
     const { ask, decide } = await node()
-    const response = await decide(sealedDecision(approvalKey(mintApprovalKey()), ask().token))
+    const response = await decide(sealedDecision(approvalKey(mintApprovalKey()), (await ask()).token))
     expect(await response.json()).toEqual({ error: 'Approval decision refused: unknown_key' })
   })
 

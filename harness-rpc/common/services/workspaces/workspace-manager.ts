@@ -61,17 +61,16 @@ export class WorkspaceError extends Error {
 // A registry the node cannot read is the owner's to repair: a 409 naming the file and fields, not a 500.
 function registryStore(filePath: string) {
   const store = createJsonFileStore({ filePath, schema: RegistrySchema, fallback: { version: 1 as const, workspaces: [] } })
-  const repairable = <T>(operation: () => T): T => {
-    try {
-      return operation()
-    } catch (error) {
-      if (error instanceof StateFileError) throw new WorkspaceError(error.message, 409)
-      throw error
-    }
-  }
+  const repairable = (error: unknown): unknown => error instanceof StateFileError ? new WorkspaceError(error.message, 409) : error
   return {
-    read: () => repairable(() => store.read()),
-    update: <R>(change: (state: z.infer<typeof RegistrySchema>) => R) => repairable(() => store.update(change)),
+    read() {
+      try {
+        return store.read()
+      } catch (error) {
+        throw repairable(error)
+      }
+    },
+    update: <R>(change: (state: z.infer<typeof RegistrySchema>) => R) => store.update(change).catch((error: unknown) => { throw repairable(error) }),
   }
 }
 
@@ -100,7 +99,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
   const manager = {
     eligibility,
     list(): WorkspaceDescriptor[] { return [defaultDescriptor(), ...store.read().workspaces.map(describe)] },
-    register(value: WorkspaceRegistration): WorkspaceDescriptor {
+    register(value: WorkspaceRegistration): Promise<WorkspaceDescriptor> {
       const root = canonicalDirectory(value.root)
       assertNoHostExposure(root, exposedRoots)
       compilePolicy(value.policy)
@@ -127,7 +126,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
      * through `/setup`, both of which the admin credential alone opens. The secret is returned
      * once and never again, so nothing but the caller ever holds it in the clear.
      */
-    addToken(id: string, options: { label?: string } = {}): WorkspaceAgentToken {
+    addToken(id: string, options: { label?: string } = {}): Promise<WorkspaceAgentToken> {
       const minted: WorkspaceAgentToken = { id: `t-${randomBytes(4).toString('hex')}`, token: randomBytes(24).toString('base64url'), label: options.label ?? '', createdAt: new Date().toISOString() }
       return store.update(state => {
         const workspace = requireStored(state, id)
@@ -136,7 +135,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
         return minted
       })
     },
-    revokeToken(id: string, tokenId: string): boolean {
+    revokeToken(id: string, tokenId: string): Promise<boolean> {
       return store.update(state => {
         const workspace = requireStored(state, id)
         const remaining = workspace.tokens.filter(entry => entry.id !== tokenId)

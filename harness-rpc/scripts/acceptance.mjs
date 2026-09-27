@@ -58,7 +58,7 @@ async function checkBrowser() {
     const runtime = await common.services.getWorkspaceRuntime()
     assert.deepEqual(runtime.registry().capabilities().map(tool => tool.name), ['browser_command'])
     const sessionId = 'browser-acceptance'
-    runtime.grants.grant({ sessionId, rule: 'network_egress', subject: `127.0.0.1:${port}`, scope: 'session' })
+    await runtime.grants.grant({ sessionId, rule: 'network_egress', subject: `127.0.0.1:${port}`, scope: 'session' })
     let sequence = 0
     const call = async (command, args = []) => {
       const result = await runtime.invoke({ sessionId, request: { requestId: `browser-acceptance-${++sequence}`, tool: 'browser_command', args: { command, args }, approvalTokens: [] } })

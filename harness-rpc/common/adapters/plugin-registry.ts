@@ -14,8 +14,8 @@ export type PluginEntry = z.infer<typeof entrySchema>
 
 export interface PluginRegistry {
   list(): PluginEntry[]
-  add(entry: { id: string; specifier: string }): PluginEntry
-  remove(id: string): boolean
+  add(entry: { id: string; specifier: string }): Promise<PluginEntry>
+  remove(id: string): Promise<boolean>
   load(): Promise<Pack[]>
 }
 
@@ -29,9 +29,9 @@ export function createPluginRegistry(input: { filePath: string; packOptions: Rec
   return {
     list: () => store.read().plugins,
 
-    add(entry) {
+    async add(entry) {
       const record: PluginEntry = { ...entry, enabled: true }
-      store.update(state => { state.plugins = [...state.plugins.filter(plugin => plugin.id !== entry.id), record] })
+      await store.update(state => { state.plugins = [...state.plugins.filter(plugin => plugin.id !== entry.id), record] })
       return record
     },
 

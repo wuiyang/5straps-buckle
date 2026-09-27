@@ -24,7 +24,7 @@ it('exempts only .env.schema outside credential directories', () => {
   for (const name of ['.env', '.env.local', '.env.example', '.env.schema.local']) expect(sensitivePathReason(`/workspace/${name}`)).not.toBeNull()
   expect(sensitivePathReason('/workspace/.ssh/.env.schema')).not.toBeNull()
 })
-it.each(['session', 'always'] as const)('records a %s denial, enforces scope and supports owner revocation', scope => {
+it.each(['session', 'always'] as const)('records a %s denial, enforces scope and supports owner revocation', async scope => {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
   const approvals = createApprovalRegistry(grants, join(root, 'approvals.json'))
   const engine = createPermissionEngine([createSensitivePathRule()])
@@ -34,21 +34,21 @@ it.each(['session', 'always'] as const)('records a %s denial, enforces scope and
   expect(outcome.kind).toBe('ask')
   if (outcome.kind !== 'ask') throw new Error('Expected approval')
   expect(outcome.asks[0]).toMatchObject({ reason: expect.stringContaining('WARNING'), offeredScopes: ['once'] })
-  const request = approvals.issue({ tool: 'fs_read', sessionId: 'one', asks: outcome.asks })[0]!
-  expect(approvals.resolve({ token: request.token, approved: false, scope }, 'agent').ok).toBe(false)
-  expect(approvals.resolve({ token: request.token, approved: false, scope }, 'admin').ok).toBe(true)
+  const request = (await approvals.issue({ tool: 'fs_read', sessionId: 'one', asks: outcome.asks }))[0]!
+  expect((await approvals.resolve({ token: request.token, approved: false, scope }, 'agent')).ok).toBe(false)
+  expect((await approvals.resolve({ token: request.token, approved: false, scope }, 'admin')).ok).toBe(true)
   expect(check('one').kind).toBe('deny')
   expect(check('two').kind).toBe(scope === 'always' ? 'deny' : 'ask')
   expect(grants.activeSubjects({ sessionId: 'one', rule: 'sensitive_path' })).toEqual([])
-  grants.revoke(grants.list()[0]!.id)
+  await grants.revoke(grants.list()[0]!.id)
   expect(check('one').kind).toBe('ask')
 })
-it('does not permit durable sensitive-file approvals or reuse standing allow grants', () => {
+it('does not permit durable sensitive-file approvals or reuse standing allow grants', async () => {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
   const approvals = createApprovalRegistry(grants, join(root, 'approvals.json'))
-  const request = approvals.issue({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }] })[0]!
-  expect(approvals.resolve({ token: request.token, approved: true, scope: 'always' }).ok).toBe(false)
-  grants.grant({ sessionId: 'one', rule: 'sensitive_path', subject: '/workspace/.env', scope: 'always' })
+  const request = (await approvals.issue({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }] }))[0]!
+  expect((await approvals.resolve({ token: request.token, approved: true, scope: 'always' })).ok).toBe(false)
+  await grants.grant({ sessionId: 'one', rule: 'sensitive_path', subject: '/workspace/.env', scope: 'always' })
   expect(grants.activeSubjects({ sessionId: 'one', rule: 'sensitive_path' })).toEqual([])
 })
 it('declares shell file effects, checks approval and overlays read-only without snapshotting credentials', async () => {
@@ -90,11 +90,11 @@ it('asks again after a once read and enforces a session denial through the invok
   const first = await read('.env.local')
   if (first.outcome !== 'approval_required') throw new Error('Expected approval')
   expect(first.approvals[0]).toMatchObject({ offeredScopes: ['once'], reason: expect.stringContaining('WARNING') })
-  expect(runtime.approvals.resolve({ token: first.approvals[0]!.token, approved: true, scope: 'once' }).ok).toBe(true)
+  expect((await runtime.approvals.resolve({ token: first.approvals[0]!.token, approved: true, scope: 'once' })).ok).toBe(true)
   expect((await read('.env.local')).outcome).toBe('ok')
   const second = await read('.env.local')
   if (second.outcome !== 'approval_required') throw new Error('Expected a new approval')
-  runtime.approvals.resolve({ token: second.approvals[0]!.token, approved: false, scope: 'session' })
+  await runtime.approvals.resolve({ token: second.approvals[0]!.token, approved: false, scope: 'session' })
   expect(await read('.env.local')).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
   expect((await read('.env.local', 'two')).outcome).toBe('approval_required')
 })

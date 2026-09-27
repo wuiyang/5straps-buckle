@@ -57,7 +57,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
     async invoke({ request, sessionId, signal }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
-      options.actions.record({
+      // A required audit write that fails stops the call here, before anything runs (data.md).
+      await options.actions.record({
         auditId, event: 'attempt', workspaceId: options.workspaceId ?? 'default',
         at: new Date().toISOString(), requestId: request.requestId.slice(0, 200), sessionId: sessionId.slice(0, 200),
         tool: request.tool.slice(0, 200), outcome: 'started', durationMs: 0, effects: [], args: redactAuditArguments(request.args),
@@ -109,7 +110,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         response,
         durationMs: Math.round(performance.now() - startedAt),
       })
-      options.actions.record({ ...entry, auditId, event: 'result', workspaceId: options.workspaceId ?? 'default',
+      await options.actions.record({ ...entry, auditId, event: 'result', workspaceId: options.workspaceId ?? 'default',
         ...auditContext(request),
 
       })
@@ -228,7 +229,7 @@ async function clearPermissions(input: {
       return options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: subjects }) })
     },
   })
-  const outcome = evaluate(request.approvalTokens)
+  const outcome = await evaluate(request.approvalTokens)
   if (outcome.kind === 'allow') return { response: null, asked: [], approvedBy: [...approvedBy, ...outcome.allowedBy], consumed }
   if (outcome.kind === 'deny') {
     return {
@@ -239,14 +240,14 @@ async function clearPermissions(input: {
     }
   }
 
-  const approvals = options.approvals.issue({ tool: request.tool, sessionId, asks: outcome.asks })
+  const approvals = await options.approvals.issue({ tool: request.tool, sessionId, asks: outcome.asks })
   const asked = approvals.map(approval => `${approval.rule}:${approval.subject}`)
   let decisions: ApprovalDecision[] | null
   try {
     decisions = await options.channel.request(approvals, input.signal)
     input.signal?.throwIfAborted()
   } catch (error) {
-    options.approvals.cancel(approvals.map(approval => approval.token))
+    await options.approvals.cancel(approvals.map(approval => approval.token))
     throw error
   }
   if (!decisions) {
@@ -254,14 +255,14 @@ async function clearPermissions(input: {
   }
 
   for (const decision of decisions) {
-    const result = options.approvals.resolve(decision)
+    const result = await options.approvals.resolve(decision)
     if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
   }
 
   const tokens = approvals.map(approval => approval.token)
   const wasDenied = options.approvals.wasDenied(tokens)
-  if (wasDenied) options.approvals.cancel(tokens)
-  const rechecked = wasDenied ? { kind: 'deny' as const } : evaluate([...request.approvalTokens, ...tokens])
+  if (wasDenied) await options.approvals.cancel(tokens)
+  const rechecked = wasDenied ? { kind: 'deny' as const } : await evaluate([...request.approvalTokens, ...tokens])
   const resolvedBy = [...new Set(approvedBy)]
   if (rechecked.kind === 'allow') {
     return { response: null, asked, approvedBy: [...new Set([...resolvedBy, ...rechecked.allowedBy])], consumed }

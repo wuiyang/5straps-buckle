@@ -39,7 +39,7 @@ function requestContext(clientRequestId: string | undefined): OperationContextIn
 }
 
 function disposeScope(scope: OperationScope): void {
-  scope.dispose().catch((error: unknown) => {
+  void scope.dispose().catch((error: unknown) => {
     logger.warn('Operation scope closed with errors', { correlationId: scope.context.correlationId, error })
   })
 }

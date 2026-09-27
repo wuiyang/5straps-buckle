@@ -20,15 +20,15 @@ export function createFilePolicyStore(input: { filePath: string; workspace: stri
   return {
     read: () => store.read().workspaces[input.workspace] ?? null,
 
-    write(policy, expectedRevision) {
-      store.update(state => {
+    async write(policy, expectedRevision) {
+      await store.update(state => {
         if (expectedRevision !== undefined && policyRevision(state.workspaces[input.workspace] ?? null) !== expectedRevision) throw new PolicyConflictError('Workspace policy changed; reload before saving')
         state.workspaces[input.workspace] = policy
       })
     },
 
-    clear(expectedRevision) {
-      store.update(state => {
+    async clear(expectedRevision) {
+      await store.update(state => {
         if (expectedRevision !== undefined && policyRevision(state.workspaces[input.workspace] ?? null) !== expectedRevision) throw new PolicyConflictError('Workspace policy changed; reload before saving')
         delete state.workspaces[input.workspace]
       })

@@ -135,7 +135,7 @@ function invokedPathIsThisFile(): boolean {
 
 if (isProcessEntry()) {
   exitQuietlyOnClosedPipe()
-  main(process.argv.slice(2)).then(
+  void main(process.argv.slice(2)).then(
     exitCode => { if (exitCode !== undefined) process.exitCode = exitCode },
     (error: unknown) => {
       logger.fatal('Buckle failed to start', { error })

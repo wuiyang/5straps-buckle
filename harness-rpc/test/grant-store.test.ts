@@ -17,57 +17,57 @@ function storePair() {
 }
 
 describe('a grant made while a server is already running', () => {
-  it('reaches the running server, which is the whole point of buckle approve', () => {
+  it('reaches the running server, which is the whole point of buckle approve', async () => {
     const { approver, server } = storePair()
     expect(server.activeSubjects({ sessionId: 'mcp', rule: 'read_scope' })).toEqual([])
 
-    approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'session' })
+    await approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'session' })
 
     expect(server.activeSubjects({ sessionId: 'mcp', rule: 'read_scope' })).toEqual(['/shots'])
   })
 
-  it('applies to the session it was granted for and no other', () => {
+  it('applies to the session it was granted for and no other', async () => {
     const { approver, server } = storePair()
-    approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'session' })
+    await approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'session' })
 
     expect(server.activeSubjects({ sessionId: 'other', rule: 'read_scope' })).toEqual([])
   })
 
-  it('applies to every session when granted always', () => {
+  it('applies to every session when granted always', async () => {
     const { approver, server } = storePair()
-    approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
+    await approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
 
     expect(server.activeSubjects({ sessionId: 'a-different-session', rule: 'read_scope' })).toEqual(['/shots'])
   })
 
-  it('does not leak across rules', () => {
+  it('does not leak across rules', async () => {
     const { approver, server } = storePair()
-    approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
+    await approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
 
     expect(server.activeSubjects({ sessionId: 'mcp', rule: 'write_scope' })).toEqual([])
   })
 
-  it('lets a revoke from one process take effect in the other', () => {
+  it('lets a revoke from one process take effect in the other', async () => {
     const { approver, server } = storePair()
-    const record = approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
+    const record = await approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
 
-    expect(server.revoke(record.id)).toBe(true)
+    expect(await server.revoke(record.id)).toBe(true)
     expect(approver.activeSubjects({ sessionId: 'mcp', rule: 'read_scope' })).toEqual([])
   })
 
-  it('keeps a standing grant separate from a session grant', () => {
+  it('keeps a standing grant separate from a session grant', async () => {
     const { approver, server } = storePair()
-    approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'session' })
-    server.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
+    await approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'session' })
+    await server.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
 
     expect(approver.list()).toHaveLength(2)
     expect(approver.list().map(grant => grant.scope).sort()).toEqual(['always', 'session'])
   })
 
-  it('keeps one process from clobbering a grant the other made', () => {
+  it('keeps one process from clobbering a grant the other made', async () => {
     const { approver, server } = storePair()
-    approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
-    server.grant({ sessionId: 'mcp', rule: 'write_scope', subject: '/out', scope: 'always' })
+    await approver.grant({ sessionId: 'mcp', rule: 'read_scope', subject: '/shots', scope: 'always' })
+    await server.grant({ sessionId: 'mcp', rule: 'write_scope', subject: '/out', scope: 'always' })
 
     expect(approver.list().map(grant => grant.subject).sort()).toEqual(['/out', '/shots'])
   })

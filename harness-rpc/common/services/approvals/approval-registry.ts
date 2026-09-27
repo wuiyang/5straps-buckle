@@ -40,20 +40,20 @@ export interface ResolveOptions {
 export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string } } | { ok: false; reason: string }
 
 export interface ApprovalRegistry {
-  issue(input: { tool: string; sessionId: string; asks: Ask[] }): ApprovalRequest[]
+  issue(input: { tool: string; sessionId: string; asks: Ask[] }): Promise<ApprovalRequest[]>
   /**
    * `BUCKLE-D14`: a decision that outlives the call is written under the admin credential
    * alone. An `agent` authority may answer `once`, which expires with the call it unblocks.
    * The default names the owner, because every caller but the agent-facing MCP face reaches
    * this from the owner's own process or from behind the admin credential.
    */
-  resolve(decision: ApprovalDecision, authority?: ApprovalAuthority, options?: ResolveOptions): Resolution
+  resolve(decision: ApprovalDecision, authority?: ApprovalAuthority, options?: ResolveOptions): Promise<Resolution>
   evaluate(input: {
     tokens: string[]; sessionId: string; tool: string
     check: (subjects: GrantSubject[]) => PermissionOutcome
-  }): PermissionOutcome
+  }): Promise<PermissionOutcome>
   wasDenied(tokens: string[]): boolean
-  cancel(tokens: string[]): void
+  cancel(tokens: string[]): Promise<void>
   pending(): ApprovalRequest[]
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
@@ -75,14 +75,15 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       })
     },
 
-    resolve(decision, authority = 'admin', options = {}) {
+    async resolve(decision, authority = 'admin', options = {}) {
       if (decision.scope !== 'once' && authority !== 'admin') {
         logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
         return { ok: false, reason: 'Only the admin credential writes an approval that outlives the call' }
       }
       const widening = options.widenTo === undefined ? null : checkWidening({ pattern: options.widenTo, decision, authority })
       if (widening && !widening.ok) return widening
-      return store.update((state): Resolution => {
+      // The grant is written while the approvals file is still locked, so no reader sees the decision without it.
+      return store.update(async (state): Promise<Resolution> => {
         prune(state)
         const widenedTo = widening?.pattern
         const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
@@ -106,10 +107,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         }
         if (decision.approved) {
           if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt })
-          else grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}) })
+          else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}) })
           logger.info('Approval granted', { rule, subject: widenedTo ?? subject, ...(widenedTo ? { askedBy: subject } : {}), scope: decision.scope, tool })
         }
-        if (!decision.approved && decision.scope !== 'once') grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true })
+        if (!decision.approved && decision.scope !== 'once') await grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true })
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
         state.resolved.push({ workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt })
         return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject } } : { ok: true }
@@ -139,8 +140,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 
     wasDenied: tokens => store.read().resolved.some(entry => entry.workspace === workspace && tokens.includes(entry.decision.token) && !entry.decision.approved),
 
-    cancel(tokens) {
-      store.update(state => {
+    async cancel(tokens) {
+      await store.update(state => {
         state.pending = state.pending.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.request.token))
         state.once = state.once.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.token))
       })

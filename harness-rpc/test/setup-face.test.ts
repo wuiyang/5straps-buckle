@@ -193,6 +193,21 @@ describe('workspace audit inspection', () => {
     const { existsSync } = await import('node:fs')
     expect(existsSync(join(workspace, 'new.txt'))).toBe(false)
   })
+
+  it('does not execute a cleared tool when the attempt write is still pending and then fails', async () => {
+    // Cleared to run: only the failed attempt record can stop the write.
+    await runtime.grants.grant({ sessionId: 'any', rule: 'write_scope', subject: workspace, scope: 'always' })
+    const before = runtime.actions.read(200).length
+    runtime.actions.record = async () => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      throw new Error('Audit storage unavailable')
+    }
+    const response = await app.request('/v1/invoke', { method: 'POST', headers: bearer(AGENT), body: JSON.stringify({ requestId: 'audit-failed-later', tool: 'fs_write', args: { path: 'late.txt', content: 'must not be written' } }) })
+    expect(response.status).toBe(500)
+    expect(runtime.actions.read(200)).toHaveLength(before)
+    const { existsSync } = await import('node:fs')
+    expect(existsSync(join(workspace, 'late.txt'))).toBe(false)
+  })
 })
 
 describe('audit coverage outside tool execution', () => {

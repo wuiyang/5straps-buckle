@@ -28,8 +28,8 @@ function registryOf(config: BuckleConfig): ApprovalRegistry {
   return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }), approvalsPath(config), config.cwd)
 }
 
-function issue(registry: ApprovalRegistry): string {
-  const [request] = registry.issue({
+async function issue(registry: ApprovalRegistry): Promise<string> {
+  const [request] = await registry.issue({
     tool: 'fs_write', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })
@@ -66,8 +66,8 @@ async function prompted(terminal: ReturnType<typeof keyboardTerminal>, times = 1
 }
 
 /** A private address web_fetch asks about, which offers the persisted scope too. */
-function issuePrivate(registry: ApprovalRegistry, subject: string): string {
-  const [request] = registry.issue({
+async function issuePrivate(registry: ApprovalRegistry, subject: string): Promise<string> {
+  const [request] = await registry.issue({
     tool: 'web_fetch', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'network_egress', subject, reason: `${subject} is private`, offeredScopes: ['once', 'session', 'always'] }],
   })
@@ -98,7 +98,7 @@ describe('buckle approvals --watch', () => {
 
   it('leaves a skipped request waiting, and does not ask about it again', async () => {
     const config = node()
-    const token = issue(registryOf(config))
+    const token = await issue(registryOf(config))
     const { terminal, done } = watch(registryOf(config))
     await prompted(terminal)
 
@@ -114,7 +114,7 @@ describe('buckle approvals --watch', () => {
 
   it('grants nothing on Enter or an unrecognised key, and keeps asking', async () => {
     const config = node()
-    const token = issue(registryOf(config))
+    const token = await issue(registryOf(config))
     const { terminal, done } = watch(registryOf(config))
     await prompted(terminal)
 
@@ -133,7 +133,7 @@ describe('buckle approvals --watch', () => {
 
   it('denies with d, through the same resolution as buckle approve --deny', async () => {
     const config = node()
-    const token = issue(registryOf(config))
+    const token = await issue(registryOf(config))
     const { terminal, done } = watch(registryOf(config))
     await prompted(terminal)
 
@@ -141,7 +141,7 @@ describe('buckle approvals --watch', () => {
     await vi.waitFor(() => expect(terminal.shown()).toContain(`Denied ${token}`))
 
     expect(registryOf(config).pending()).toEqual([])
-    expect(registryOf(config).resolve({ token, approved: true, scope: 'session' })).toMatchObject({ ok: false })
+    expect(await registryOf(config).resolve({ token, approved: true, scope: 'session' })).toMatchObject({ ok: false })
     terminal.type('\x03')
     await done
   })
@@ -165,11 +165,11 @@ describe('buckle approvals --watch', () => {
 
   it('drops a question another route answered', async () => {
     const config = node()
-    const token = issue(registryOf(config))
+    const token = await issue(registryOf(config))
     const { terminal, done } = watch(registryOf(config))
     await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
 
-    registryOf(config).resolve({ token, approved: true, scope: 'once' })
+    await registryOf(config).resolve({ token, approved: true, scope: 'once' })
 
     await vi.waitFor(() => expect(terminal.shown()).toContain(`${token} was answered elsewhere; dropped.`))
     terminal.type('\x03')
@@ -178,7 +178,7 @@ describe('buckle approvals --watch', () => {
 
   it('stops on the first Ctrl-C with a question open, answering nothing', async () => {
     const config = node()
-    const token = issue(registryOf(config))
+    const token = await issue(registryOf(config))
     const { terminal, done } = watch(registryOf(config))
     await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
 
@@ -218,9 +218,9 @@ describe('buckle approvals --watch, audit', () => {
   it('audits each answer on its own, as buckle approve does', async () => {
     const config = node()
     const registry = registryOf(config)
-    issuePrivate(registry, '10.0.0.1')
+    await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
-    const second = issuePrivate(registry, '10.0.0.2')
+    const second = await issuePrivate(registry, '10.0.0.2')
     const actions = createFileActionLog(actionsPath(config))
     const { terminal, done } = watch(registryOf(config), keyboardTerminal(), actions)
 
@@ -244,14 +244,14 @@ describe('buckle approvals --watch, keys meant for another question', () => {
   it('lets no key typed just after a drop answer the next request, which waits for a bare Enter', async () => {
     const config = node()
     const registry = registryOf(config)
-    const first = issuePrivate(registry, '10.0.0.1')
+    const first = await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
-    const second = issuePrivate(registry, '10.0.0.2')
+    const second = await issuePrivate(registry, '10.0.0.2')
     const { terminal, done } = watch(registryOf(config))
     await prompted(terminal)
     expect(terminal.shown()).toContain('subject: 10.0.0.1')
 
-    registry.resolve({ token: first, approved: false, scope: 'once' })
+    await registry.resolve({ token: first, approved: false, scope: 'once' })
     await vi.waitFor(() => expect(terminal.shown()).toContain(`${first} was answered elsewhere; dropped.`))
     // Reaction time: the owner was answering the first question when it went.
     await sleep(250)
@@ -275,13 +275,13 @@ describe('buckle approvals --watch, keys meant for another question', () => {
   it('grants nothing from a bare Enter and the rest of the answer typed in the same keystrokes after a drop', async () => {
     const config = node()
     const registry = registryOf(config)
-    const first = issuePrivate(registry, '10.0.0.1')
+    const first = await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
-    const second = issuePrivate(registry, '10.0.0.2')
+    const second = await issuePrivate(registry, '10.0.0.2')
     const { terminal, done } = watch(registryOf(config))
     await prompted(terminal)
 
-    registry.resolve({ token: first, approved: false, scope: 'once' })
+    await registry.resolve({ token: first, approved: false, scope: 'once' })
     await vi.waitFor(() => expect(terminal.shown()).toContain(`${first} was answered elsewhere; dropped.`))
     // The Enter passes the gate, but `always` lands before the next question takes keys.
     terminal.type('\ralways\r')
@@ -298,9 +298,9 @@ describe('buckle approvals --watch, keys meant for another question', () => {
   it('keeps no answer history, so Up then Enter on the next question grants nothing', async () => {
     const config = node()
     const registry = registryOf(config)
-    issuePrivate(registry, '10.0.0.1')
+    await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
-    const second = issuePrivate(registry, '10.0.0.2')
+    const second = await issuePrivate(registry, '10.0.0.2')
     const { terminal, done } = watch(registryOf(config))
     await prompted(terminal)
 
@@ -320,9 +320,9 @@ describe('buckle approvals --watch, keys meant for another question', () => {
   it('does not let a double press answer two requests', async () => {
     const config = node()
     const registry = registryOf(config)
-    issuePrivate(registry, '10.0.0.1')
+    await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
-    const second = issuePrivate(registry, '10.0.0.2')
+    const second = await issuePrivate(registry, '10.0.0.2')
     const { terminal, done } = watch(registryOf(config))
     await prompted(terminal)
 
@@ -350,7 +350,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
 
   it('throws away a line typed before the question took keys', async () => {
     const config = node()
-    const token = issuePrivate(registryOf(config), '10.0.0.1')
+    const token = await issuePrivate(registryOf(config), '10.0.0.1')
     const { terminal, done } = watch(registryOf(config))
     await vi.waitFor(() => expect(terminal.shown()).toContain('subject: 10.0.0.1'))
 
@@ -369,7 +369,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
 it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file warning choices and persists %s denial', async (key, scope) => {
   const config = node()
   const registry = registryOf(config)
-  registry.issue({ tool: 'fs_read', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
+  await registry.issue({ tool: 'fs_read', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
   const { terminal, done } = watch(registry)
   try {
     await prompted(terminal)

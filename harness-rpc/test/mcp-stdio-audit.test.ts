@@ -84,9 +84,9 @@ describe('stdio audit before MCP SDK validation', () => {
   })
 })
 
-function fakeFixture(record?: (entry: ActionLogEntry) => void) {
+function fakeFixture(record?: (entry: ActionLogEntry) => void | Promise<void>) {
   const entries: ActionLogEntry[] = []
-  const actions: ActionLog = { record: entry => { record?.(entry); entries.push(entry) }, recoverInterrupted: async () => 0, read: () => entries, page: () => ({ entries, nextCursor: null }) }
+  const actions: ActionLog = { record: async entry => { await record?.(entry); entries.push(entry) }, recoverInterrupted: async () => 0, read: () => entries, page: () => ({ entries, nextCursor: null }) }
   const wire: Transport = { start: vi.fn(async () => undefined), close: vi.fn(async () => { wire.onclose?.() }), send: vi.fn(async () => undefined) }
   const transport = createAuditedStdioTransport({ transport: wire, actions, workspaceId: 'default', isKnownTool: name => name === 'fs_read' })
   const forwarded = vi.fn()
@@ -95,19 +95,50 @@ function fakeFixture(record?: (entry: ActionLogEntry) => void) {
   return { wire, transport, forwarded, entries, request }
 }
 
+// Inbound handling is asynchronous now that audit writes are; a macrotask turn lets every queued step run.
+function settle(): Promise<void> {
+  return new Promise(resolve => setImmediate(resolve))
+}
+
+describe('stdio audit ordering', () => {
+  it('dispatches each request only after its attempt is durable, one at a time in arrival order', async () => {
+    const releases: Array<() => void> = []
+    const fixture = fakeFixture(entry => entry.event === 'attempt' ? new Promise<void>(resolve => { releases.push(resolve) }) : undefined)
+    fixture.wire.onmessage?.(fixture.request(1))
+    fixture.wire.onmessage?.(fixture.request(2))
+    await settle()
+    expect(fixture.forwarded).not.toHaveBeenCalled()
+    expect(releases).toHaveLength(1)
+
+    releases[0]!()
+    await settle()
+    expect(fixture.forwarded).toHaveBeenCalledTimes(1)
+    expect(fixture.forwarded.mock.calls[0]![0]).toMatchObject({ id: 1 })
+    expect(releases).toHaveLength(2)
+
+    releases[1]!()
+    await settle()
+    expect(fixture.forwarded).toHaveBeenCalledTimes(2)
+    expect(fixture.forwarded.mock.calls[1]![0]).toMatchObject({ id: 2 })
+  })
+})
+
 describe('stdio audit failure and correlation bounds', () => {
-  it('closes before dispatch if an attempt cannot be durably recorded', () => {
+  it('closes before dispatch if an attempt cannot be durably recorded', async () => {
     const fixture = fakeFixture(() => { throw new Error('fixture failure') })
     fixture.wire.onmessage?.(fixture.request(1))
+    await settle()
     expect(fixture.forwarded).not.toHaveBeenCalled()
     expect(fixture.wire.close).toHaveBeenCalledOnce()
     fixture.wire.onmessage?.(fixture.request(2))
+    await settle()
     expect(fixture.forwarded).not.toHaveBeenCalled()
   })
 
   it('withholds a response and closes if the terminal audit write fails', async () => {
     const fixture = fakeFixture(entry => { if (entry.event === 'result') throw new Error('fixture failure') })
     fixture.wire.onmessage?.(fixture.request(1))
+    await settle()
     await expect(fixture.transport.send({ jsonrpc: '2.0', id: 1, result: { content: [] } })).rejects.toThrow('audit persistence failed')
     expect(fixture.wire.send).not.toHaveBeenCalled()
     expect(fixture.wire.close).toHaveBeenCalledOnce()
@@ -117,6 +148,7 @@ describe('stdio audit failure and correlation bounds', () => {
     const fixture = fakeFixture()
     fixture.wire.onmessage?.(fixture.request(1))
     fixture.wire.onmessage?.(fixture.request(2))
+    await settle()
     await fixture.transport.send({ jsonrpc: '2.0', id: 2, error: { code: -32602, message: 'private-server-error-fixture' } })
     await fixture.transport.send({ jsonrpc: '2.0', id: 1, result: { content: [] } })
     expect(fixture.entries[0]?.auditId).toBe(fixture.entries[3]?.auditId)
@@ -124,19 +156,22 @@ describe('stdio audit failure and correlation bounds', () => {
     expect(JSON.stringify(fixture.entries)).not.toContain('private-server-error-fixture')
   })
 
-  it('rejects duplicate in-flight identifiers and marks the earlier request interrupted', () => {
+  it('rejects duplicate in-flight identifiers and marks the earlier request interrupted', async () => {
     const fixture = fakeFixture()
     fixture.wire.onmessage?.(fixture.request(1))
     fixture.wire.onmessage?.(fixture.request(1))
+    await settle()
     expect(fixture.forwarded).toHaveBeenCalledOnce()
     expect(fixture.entries.map(entry => entry.outcome)).toEqual(['started', 'started', 'denied', 'interrupted'])
   })
 
-  it('bounds pending requests and rejects tool notifications without an identifier', () => {
+  it('bounds pending requests and rejects tool notifications without an identifier', async () => {
     const fixture = fakeFixture()
     fixture.wire.onmessage?.({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'fs_read' } })
+    await settle()
     expect(fixture.forwarded).not.toHaveBeenCalled()
     for (let id = 0; id <= 256; id += 1) fixture.wire.onmessage?.(fixture.request(id))
+    await settle()
     expect(fixture.forwarded).toHaveBeenCalledTimes(256)
     expect(fixture.wire.close).toHaveBeenCalledOnce()
     expect(fixture.entries.filter(entry => entry.outcome === 'interrupted')).toHaveLength(256)

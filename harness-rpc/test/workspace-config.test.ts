@@ -42,12 +42,12 @@ it('initializes private settings and state without replacing project environment
   await runInit(['--root', root, '--yes', '--force'], prompt, { home })
   expect(findWorkspaceConfig({ cwd: root, home })!.id).toBe(entry.id)
 })
-it('selects the nearest registered ancestor and honors explicit files', () => {
-  const parent = register()
+it('selects the nearest registered ancestor and honors explicit files', async () => {
+  const parent = await register()
   const child = join(root, 'child'); mkdirSync(child)
   expect(workspaceEnvironmentFile({ cwd: child, home })).toBe(parent.file)
   expect(findWorkspaceConfig({ cwd: child, home, exact: true })).toBeNull()
-  const nested = register(child)
+  const nested = await register(child)
   expect(nested.id).not.toBe(parent.id)
   expect(workspaceEnvironmentFile({ cwd: child, home })).toBe(nested.file)
   expect(workspaceEnvironmentFile({ cwd: child, home, explicit: 'custom.env' })).toBe(join(child, 'custom.env'))
@@ -66,35 +66,35 @@ it('refuses buckle settings without an environment file, naming both ways to get
   expect(stderr).toContain('BUCKLE_ENV_FILE')
   expect(existsSync(join(root, '.env'))).toBe(false)
 })
-it('refuses missing or mismatched registered settings', () => {
-  const entry = register()
+it('refuses missing or mismatched registered settings', async () => {
+  const entry = await register()
   writeFileSync(entry.file, `BUCKLE_WORKSPACE_ROOT=${home}\n`)
   expect(() => workspaceEnvironmentFile({ cwd: root, home })).toThrow('disagree')
   rmSync(entry.file)
   expect(() => workspaceEnvironmentFile({ cwd: root, home })).toThrow('missing')
 })
-it('does not publish failed initialization', () => {
-  expect(() => registerWorkspaceConfig({ root, home, write: () => { throw new Error('fixture failure') } })).toThrow('fixture failure')
+it('does not publish failed initialization', async () => {
+  await expect(registerWorkspaceConfig({ root, home, write: () => { throw new Error('fixture failure') } })).rejects.toThrow('fixture failure')
   expect(findWorkspaceConfig({ cwd: root, home })).toBeNull()
 })
-it('moves roots with stable IDs and refuses collisions before writing', () => {
-  const entry = register()
+it('moves roots with stable IDs and refuses collisions before writing', async () => {
+  const entry = await register()
   const next = join(base, 'next'); mkdirSync(next)
-  expect(moveWorkspaceConfig({ file: entry.file, root: next, home, write: () => { writeFileSync(entry.file, `BUCKLE_WORKSPACE_ROOT=${next}\n`); return true } })).toBe(true)
+  expect(await moveWorkspaceConfig({ file: entry.file, root: next, home, write: () => { writeFileSync(entry.file, `BUCKLE_WORKSPACE_ROOT=${next}\n`); return true } })).toBe(true)
   expect(findWorkspaceConfig({ cwd: root, home })).toBeNull()
   expect(findWorkspaceConfig({ cwd: next, home })!.id).toBe(entry.id)
-  register(root)
+  await register(root)
   const write = vi.fn(() => true)
-  expect(() => moveWorkspaceConfig({ file: entry.file, root, home, write })).toThrow('another registered workspace')
+  await expect(moveWorkspaceConfig({ file: entry.file, root, home, write })).rejects.toThrow('another registered workspace')
   expect(write).not.toHaveBeenCalled()
 })
-it.skipIf(process.platform === 'win32')('canonicalizes aliases to the same workspace', () => {
-  const entry = register()
+it.skipIf(process.platform === 'win32')('canonicalizes aliases to the same workspace', async () => {
+  const entry = await register()
   const alias = join(base, 'alias'); symlinkSync(root, alias)
   expect(findWorkspaceConfig({ cwd: alias, home })!.id).toBe(entry.id)
 })
-it('refuses roots containing private configuration', () => {
-  expect(() => registerWorkspaceConfig({ root: home, home, write: () => {} })).toThrow('private workspace configuration')
+it('refuses roots containing private configuration', async () => {
+  await expect(registerWorkspaceConfig({ root: home, home, write: () => {} })).rejects.toThrow('private workspace configuration')
 })
 
 it('settings root updates registration and refuses unsetting it', async () => {

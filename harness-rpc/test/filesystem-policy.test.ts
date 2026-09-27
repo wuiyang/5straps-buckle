@@ -45,12 +45,12 @@ it('places readonly workspace masks after writable binds', () => {
   expect(wrapped.args.join(' ')).toContain('--bind /source /workspace --ro-bind /source/private /workspace/private')
 })
 
-it('atomically refuses stale policy revisions across separate store instances', () => {
+it('atomically refuses stale policy revisions across separate store instances', async () => {
   const filePath = join(root(), 'policies.json')
   const first = createFilePolicyStore({ filePath, workspace: '/workspace' })
   const second = createFilePolicyStore({ filePath, workspace: '/workspace' })
   const revision = policyRevision(null)
-  first.write(policy([{ path: '.', write: 'deny' }]), revision)
-  expect(() => second.write(policy([{ path: '.', write: 'allow' }]), revision)).toThrow(/changed/)
+  await first.write(policy([{ path: '.', write: 'deny' }]), revision)
+  await expect(second.write(policy([{ path: '.', write: 'allow' }]), revision)).rejects.toThrow(/changed/)
   expect(first.read()?.filesystem?.rules[0]?.write).toBe('deny')
 })

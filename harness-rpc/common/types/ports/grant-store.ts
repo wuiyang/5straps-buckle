@@ -12,9 +12,9 @@ export interface GrantStore {
     scope: GrantScope
     denied?: boolean
     pattern?: boolean
-  }): GrantRecord
+  }): Promise<GrantRecord>
   list(): GrantRecord[]
-  revoke(id: string): boolean
+  revoke(id: string): Promise<boolean>
   /** Drops 'once' grants that were consumed and any session grants for a finished session. */
-  endSession(sessionId: string): void
+  endSession(sessionId: string): Promise<void>
 }

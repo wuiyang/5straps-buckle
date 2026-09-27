@@ -22,7 +22,8 @@ import { createFilePolicyStore } from '../../adapters/policy-store/file-policy-s
 import { runProcess } from '../../adapters/process-runner.js'
 import { createWebhookReporter } from '../../adapters/report/webhook-reporter.js'
 import { resolveSandbox, type SandboxResolution } from '../../adapters/sandbox/create-sandbox.js'
-import { actionsPath, approvalsPath, grantsPath, pluginsPath, policyPath, type BuckleConfig } from '../../runtime/config.js'
+import { actionsPath, approvalNoncesPath, approvalsPath, grantsPath, pluginsPath, policyPath, type BuckleConfig } from '../../runtime/config.js'
+import { createMemoryNonceClaims, openFileNonceStore, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
 import { createPathView, type PathView } from '../../domain/path-view.js'
 import { createPermissionEngine, type PermissionEngine } from '../../domain/permission/engine.js'
@@ -82,6 +83,8 @@ export interface BuckleRuntime {
   policy: PolicyHandle
   grants: GrantStore
   approvals: ApprovalRegistry
+  /** Replay protection for sealed decisions from Rings: on disk once a key is paired. */
+  approvalNonces: NonceClaims
   history: ChangeHistory
   shellWorkspaces: ReturnType<typeof createShellWorkspaceRecovery>
   actions: ActionLog
@@ -117,6 +120,7 @@ export async function createRuntime(input: {
   const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs)
   const actions = createFileActionLog(actionsPath(config))
   await actions.recoverInterrupted()
+  const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
   const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
@@ -181,6 +185,7 @@ export async function createRuntime(input: {
     paths: () => paths,
     grants,
     approvals,
+    approvalNonces,
     actions,
     history,
     shellWorkspaces: createShellWorkspaceRecovery({ directory: join(config.stateDirectory, 'isolated-shell', workspaceStateKey(config.cwd)), sourceRoot: config.cwd, maxBytes: config.isolationMaxBytes, retentionDays: config.historyRetentionDays, history }),
@@ -197,13 +202,13 @@ export async function createRuntime(input: {
       async apply(policy, expectedRevision) {
         if (runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
         compileEffective(policy)
-        policyStore.write({ ...policy, updatedAt: new Date().toISOString() }, expectedRevision)
+        await policyStore.write({ ...policy, updatedAt: new Date().toISOString() }, expectedRevision)
         await runtime.reload()
         return compiled.policy
       },
       async clear(expectedRevision) {
         if (runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
-        policyStore.clear(expectedRevision)
+        await policyStore.clear(expectedRevision)
         await runtime.reload()
         return compiled.policy
       },

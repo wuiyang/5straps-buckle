@@ -32,12 +32,12 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
   })
   const runtime = await createRuntime({ config, channel: approvals => createApprovalDelivery({ config, approvals, workspaceId: 'default', prompt: false }) })
   const manager = createWorkspaceManager({ config, runtime })
-  manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: CHILD_AGENT_TOKEN, adminToken: CHILD_ADMIN_TOKEN, policy: emptyWorkspacePolicy() })
+  await manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: CHILD_AGENT_TOKEN, adminToken: CHILD_ADMIN_TOKEN, policy: emptyWorkspacePolicy() })
   return { config, runtime, manager }
 }
 
-function pendingIn(runtime: BuckleRuntime): string {
-  const [request] = runtime.approvals.issue({
+async function pendingIn(runtime: BuckleRuntime): Promise<string> {
+  const [request] = await runtime.approvals.issue({
     tool: 'fs_write', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })
@@ -84,7 +84,7 @@ describe('answering a child workspace request from the terminal', () => {
   it('resolves it when the workspace is named, and says which workspace it answered', async () => {
     const { config, manager } = await nodeWithChild()
     const child = await manager.resolve('child')
-    const token = pendingIn(child.runtime)
+    const token = await pendingIn(child.runtime)
 
     const approved = await capture({ argv: ['approve', token, '--scope', 'once', '--workspace', 'child'], config })
 
@@ -95,7 +95,7 @@ describe('answering a child workspace request from the terminal', () => {
 
   it('refuses the same token unnamed, because a token resolves in its own workspace alone', async () => {
     const { config, manager } = await nodeWithChild()
-    const token = pendingIn((await manager.resolve('child')).runtime)
+    const token = await pendingIn((await manager.resolve('child')).runtime)
 
     const approved = await capture({ argv: ['approve', token, '--scope', 'once'], config })
 
@@ -105,7 +105,7 @@ describe('answering a child workspace request from the terminal', () => {
 
   it('lists the child queue with the command that answers it there', async () => {
     const { config, manager } = await nodeWithChild()
-    const token = pendingIn((await manager.resolve('child')).runtime)
+    const token = await pendingIn((await manager.resolve('child')).runtime)
 
     const listed = await capture({ argv: ['approvals', '--workspace', 'child'], config })
 

@@ -34,7 +34,7 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
 
     activePatterns: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => grant.pattern && !grant.denied).map(grant => grant.subject),
 
-    grant({ sessionId, rule, subject, scope, pattern, denied }) {
+    async grant({ sessionId, rule, subject, scope, pattern, denied }) {
       const record: GrantRecord = {
         id: randomUUID(),
         workspace: input.workspace,
@@ -48,7 +48,7 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
         expiresAt: null,
       }
       if (scope === 'once') throw new Error('Once grants belong to the approval registry')
-      store.update(state => { state.grants = [...state.grants.filter(existing => !isSameSubject(existing, record)), record] })
+      await store.update(state => { state.grants = [...state.grants.filter(existing => !isSameSubject(existing, record)), record] })
       return record
     },
 
@@ -63,8 +63,8 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
       })
     },
 
-    endSession(sessionId) {
-      store.update(state => { state.grants = state.grants.filter(grant => grant.workspace !== input.workspace || grant.sessionId !== sessionId) })
+    async endSession(sessionId) {
+      await store.update(state => { state.grants = state.grants.filter(grant => grant.workspace !== input.workspace || grant.sessionId !== sessionId) })
     },
   }
 }
