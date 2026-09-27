@@ -45,7 +45,7 @@
   },
   "scripts": {
     "prepack": "pnpm run build",
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node scripts/copy-pack-assets.mjs",
+    "build": "node scripts/build.mjs",
     "dev": "tsx watch --env-file-if-exists=../.env main.ts serve",
     "start": "node dist/main.js",
     "test": "vitest run",
@@ -56,6 +56,7 @@
   },
   "dependencies": {
     "@5straps/protocol": "workspace:*",
+    "@5straps/runtime": "workspace:*",
     "@hono/node-server": "2.1.1",
     "@modelcontextprotocol/server": "^2.0.0",
     "hono": "4.13.5",

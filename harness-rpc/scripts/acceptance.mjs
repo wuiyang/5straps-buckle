@@ -10,7 +10,7 @@ import { loadConfig } from '../dist/common/runtime/config.js'
 import { createPathView } from '../dist/common/domain/path-view.js'
 import { logger } from '../dist/common/runtime/logger.js'
 import { createShellPack } from '../dist/common/services/packs/shell/index.js'
-import { createRuntime } from '../dist/common/services/workspaces/workspace-runtime.js'
+import { initializeCommon } from '../dist/common/runtime/initialize.js'
 import { createChangeHistory } from '../dist/common/services/history/journal.js'
 
 const checks = { browser: checkBrowser, sandbox: checkSandbox }
@@ -49,11 +49,13 @@ async function withFixture(check) {
 
 async function checkBrowser() {
   await withFixture(async ({ workspace, state, url, port }) => {
-    const runtime = await createRuntime({ config: loadConfig({
+    const common = initializeCommon({ role: 'cli', adapters: { approvalChannel: () => createDeferredApprovalChannel() }, config: loadConfig({
       BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'browser',
       BUCKLE_AGENT_BROWSER_COMMAND: process.env.BUCKLE_AGENT_BROWSER_COMMAND ?? 'agent-browser',
       BUCKLE_ALLOWED_HOSTS: '127.0.0.1', BUCKLE_DEFAULT_TIMEOUT_MS: '30000',
-    }), channel: () => createDeferredApprovalChannel() })
+    }) })
+    await common.start()
+    const runtime = await common.services.getWorkspaceRuntime()
     assert.deepEqual(runtime.registry().capabilities().map(tool => tool.name), ['browser_command'])
     const sessionId = 'browser-acceptance'
     runtime.grants.grant({ sessionId, rule: 'network_egress', subject: `127.0.0.1:${port}`, scope: 'session' })
@@ -77,6 +79,7 @@ async function checkBrowser() {
         logger.warn('Acceptance browser cleanup failed', { message: error instanceof Error ? error.message : String(error) })
         process.exitCode = 1
       }
+      await common.owner.close()
     }
   })
 }

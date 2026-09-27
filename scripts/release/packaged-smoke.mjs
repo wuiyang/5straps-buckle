@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -47,22 +47,31 @@ function run(command, args, options = {}) {
 function prepareInstallation() {
   for (const directory of [packageDirectory, installation, workspace, state]) mkdirSync(directory)
   writeFileSync(join(root, 'npmrc'), '')
-  for (const name of ['protocol', 'buckle']) {
+  for (const name of ['protocol', 'runtime', 'buckle']) {
     run('pnpm', ['--filter', `@5straps/${name}`, 'pack', '--pack-destination', packageDirectory], { cwd: repository })
   }
+  // A global `buckle` symlink points straight at the build, so the build itself must leave an executable bin.
+  assertExecutableBin(join(repository, 'harness-rpc', 'dist', 'main.js'))
   const tarball = name => {
     const matches = readdirSync(packageDirectory).filter(file => file.startsWith(`5straps-${name}-`) && file.endsWith('.tgz'))
     assert.equal(matches.length, 1, `Expected one ${name} package`)
     return `file:${join(packageDirectory, matches[0])}`
   }
   writeFileSync(join(installation, 'package.json'), JSON.stringify({ private: true, dependencies: {
-    '@5straps/protocol': tarball('protocol'), '@5straps/buckle': tarball('buckle'),
+    '@5straps/protocol': tarball('protocol'), '@5straps/runtime': tarball('runtime'), '@5straps/buckle': tarball('buckle'),
   } }))
   run('npm', ['install', '--ignore-scripts', '--omit=optional'])
   entry = join(installation, 'node_modules/@5straps/buckle/dist/main.js')
   assert(existsSync(entry), 'Installed CLI entry is missing')
+  assertExecutableBin(entry)
+  assert.match(run(join(installation, 'node_modules', '.bin', 'buckle'), ['--version'], { cwd: workspace, env: nodeEnvironment() }), /^\d+\.\d+\.\d+/)
   writeFileSync(join(workspace, 'demo.txt'), 'before')
   assert.match(cli(['tools']), /fs write/)
+}
+
+function assertExecutableBin(path) {
+  assert.equal(statSync(path).mode & 0o111, 0o111, `${path} is not executable`)
+  assert.equal(readFileSync(path, 'utf8').split('\n', 1)[0], '#!/usr/bin/env node', `${path} lacks the node shebang`)
 }
 
 function nodeEnvironment() {

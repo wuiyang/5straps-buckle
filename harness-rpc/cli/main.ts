@@ -9,7 +9,10 @@ import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { approveCommand } from '../common/domain/approval-instruction.js'
 import { WorkspaceError, createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
+import { withOperationScope } from '@5straps/runtime'
+import { logger } from '../common/runtime/logger.js'
 import { createCliApprovalChannel } from '../common/adapters/approval/cli-approval-channel.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand } from './policy.js'
@@ -40,24 +43,42 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   if (!command || command === 'help' || command === '--help' || command === '-h') return printUsage()
   if (command === '--version' || command === '-v') return printVersion()
 
-  let runtime: BuckleRuntime
+  // One command is one process owner: its common runtime closes when the command ends.
+  const common = initializeCommon({ config: input.config, role: 'cli', adapters: { approvalChannel: () => createCliApprovalChannel() } })
   try {
-    runtime = await createRuntime({ config: input.config, channel: () => createCliApprovalChannel() })
+    return await runCliCommand({ common, config: input.config, command, rest })
+  } finally {
+    await common.owner.close().catch((error: unknown) => {
+      logger.error('Buckle closed with errors', { message: error instanceof Error ? error.message : 'Unknown error' })
+    })
+  }
+}
+
+async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig; command: string; rest: string[] }): Promise<CliResult> {
+  const { common, command, rest } = input
+  try {
+    await common.start()
   } catch (error) {
     // check-url's exit 1 means denied, so a node it cannot read must not look like one.
     if (command === 'check-url') return checkUrlUnreadable(error)
     throw error
   }
+  const runtime = await common.services.getWorkspaceRuntime()
+  const scope = common.owner.registry.createScope({ context: { actor: 'local-owner' } })
+  return withOperationScope(scope, () => runAuditedCommand({ runtime, config: input.config, command, rest }))
+}
 
+async function runAuditedCommand(input: { runtime: BuckleRuntime; config: BuckleConfig; command: string; rest: string[] }): Promise<CliResult> {
+  const { runtime, command } = input
   try {
     if (['approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
       // A check that answers denied or asks has still succeeded; only bad input failed.
       const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0
       return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail,
-        operation: () => dispatchRuntimeCommand({ runtime, config: input.config, command, rest }),
+        operation: () => dispatchRuntimeCommand(input),
       })
     }
-    return await dispatchRuntimeCommand({ runtime, config: input.config, command, rest })
+    return await dispatchRuntimeCommand(input)
   } finally {
     // One command is one process, and the batch timer is unreferenced so it never holds the
     // process open: without this the entry a CLI call recorded reached Rings for no call at all.

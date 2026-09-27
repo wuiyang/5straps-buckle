@@ -1,0 +1,153 @@
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { CLOSE_STAGES } from '@5straps/runtime'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { buildBuckle, firstResponse, freePort, removeBuild, spawnBuckle, waitForStatus, type BuckleProcess, type LogLine } from './support/buckle-process.js'
+
+let outDir: string
+let entry: string
+const running: BuckleProcess[] = []
+
+beforeAll(() => {
+  outDir = buildBuckle()
+  entry = join(outDir, 'main.js')
+}, 120_000)
+
+afterAll(() => {
+  for (const node of running) node.child.kill('SIGKILL')
+  removeBuild(outDir)
+})
+
+interface Node { root: string; workspace: string; state: string; env: NodeJS.ProcessEnv; port: number }
+
+async function prepareNode(extra: NodeJS.ProcessEnv = {}): Promise<Node> {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-bootstrap-'))
+  const workspace = join(root, 'workspace')
+  const state = join(root, 'state')
+  mkdirSync(workspace)
+  mkdirSync(state, { mode: 0o700 })
+  const port = await freePort()
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH, HOME: root, TMPDIR: root,
+    BUCKLE_ENV_FILE: join(root, 'no-environment-file'), BUCKLE_HOST: '127.0.0.1', BUCKLE_PORT: String(port),
+    BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_AUTH_TOKEN: 'bootstrap-agent-token',
+    BUCKLE_ALLOW_SHELL: 'false', ...extra,
+  }
+  return { root, workspace, state, env, port }
+}
+
+// A plugin whose pack waits for a file: the test decides when startup ends, and counts how often it was built.
+function installGatePlugin(node: Node): { gate: string; builds: string } {
+  const gate = join(node.root, 'startup-gate')
+  const builds = join(node.root, 'pack-builds')
+  const plugin = join(node.root, 'gate-plugin.mjs')
+  writeFileSync(plugin, `import { appendFileSync, existsSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
+export async function createPack() {
+  appendFileSync(${JSON.stringify(builds)}, 'x')
+  while (!existsSync(${JSON.stringify(gate)})) await delay(20)
+  return { id: 'gate', version: '1.0.0', tools: [], skills: [], unavailableReason: null }
+}
+`)
+  writeFileSync(join(node.state, 'plugins.json'), JSON.stringify({ version: 1, plugins: [{ id: 'gate', specifier: pathToFileURL(plugin).href, enabled: true }] }))
+  return { gate, builds }
+}
+
+function serve(node: Node): BuckleProcess {
+  const started = spawnBuckle({ entry, args: ['serve'], env: node.env, cwd: node.workspace })
+  running.push(started)
+  return started
+}
+
+function closeSteps(lines: LogLine[]): Array<{ stage: string; name: string }> {
+  return lines.filter(line => line.message === 'close step').map(line => ({ stage: String(line.fields?.stage), name: String(line.fields?.name) }))
+}
+
+function stageOrder(steps: Array<{ stage: string }>): number[] {
+  return steps.map(step => CLOSE_STAGES.indexOf(step.stage as typeof CLOSE_STAGES[number]))
+}
+
+describe('the built bin', () => {
+  it('is executable, starts with the node shebang, and runs directly and through a symlink', () => {
+    expect(statSync(entry).mode & 0o111).toBe(0o111)
+    expect(readFileSync(entry, 'utf8').split('\n', 1)[0]).toBe('#!/usr/bin/env node')
+    const link = join(mkdtempSync(join(tmpdir(), 'buckle-link-')), 'buckle')
+    symlinkSync(entry, link)
+    for (const command of [entry, link]) {
+      expect(execFileSync(command, ['--version'], { encoding: 'utf8' }).trim()).toMatch(/^\d+\.\d+\.\d+/)
+    }
+  })
+})
+
+describe('buckle serve bootstrap (built dist)', () => {
+  it('listens before startup ends, answers 503 until ready, builds the workspace once, and closes stage by stage on SIGTERM', async () => {
+    const node = await prepareNode()
+    const { gate, builds } = installGatePlugin(node)
+    const buckle = serve(node)
+
+    const starting = await firstResponse(`http://127.0.0.1:${node.port}/health`)
+    expect(starting.status).toBe(503)
+    expect(await starting.json()).toEqual({ error: 'Buckle is not ready' })
+    closeSync(openSync(gate, 'w'))
+    const ready = await waitForStatus(`http://127.0.0.1:${node.port}/health`, 200)
+    expect(await ready.json()).toMatchObject({ status: 'ok' })
+    await buckle.waitForLine(line => line.message === '5straps Buckle listening')
+    expect(readFileSync(builds, 'utf8')).toBe('x')
+
+    buckle.child.kill('SIGTERM')
+    expect(await buckle.exited).toEqual({ code: 0, signal: null })
+    const steps = closeSteps(buckle.lines())
+    expect(steps).toEqual(expect.arrayContaining([
+      { stage: 'accept', name: 'http server' },
+      { stage: 'streams', name: 'http server connections' },
+      { stage: 'services', name: 'service registry' },
+      { stage: 'sinks', name: 'logger' },
+    ]))
+    const order = stageOrder(steps)
+    expect(order).toEqual([...order].sort((left, right) => left - right))
+    expect(buckle.lines().at(-1)?.message).toBe('5straps Buckle stopped')
+  }, 60_000)
+
+  it('stops with exit 0, without serving, when SIGTERM arrives during the startup window', async () => {
+    const node = await prepareNode()
+    const { gate } = installGatePlugin(node)
+    const buckle = serve(node)
+    expect((await firstResponse(`http://127.0.0.1:${node.port}/health`)).status).toBe(503)
+
+    buckle.child.kill('SIGTERM')
+    await buckle.waitForLine(line => line.message === 'Shutdown requested')
+    // Close waits for the workspace being built, so let that build finish.
+    closeSync(openSync(gate, 'w'))
+    expect(await buckle.exited).toEqual({ code: 0, signal: null })
+    const messages = buckle.lines().map(line => line.message)
+    expect(messages).not.toContain('Buckle failed to start')
+    expect(messages).not.toContain('5straps Buckle listening')
+  }, 60_000)
+
+  it('exits 1 with the reason when startup fails after listening', async () => {
+    const node = await prepareNode({ BUCKLE_PACKS: 'no-such-pack' })
+    const buckle = serve(node)
+
+    expect(await buckle.exited).toEqual({ code: 1, signal: null })
+    const failure = buckle.lines().find(line => line.message === 'Buckle failed to start')
+    expect(failure).toMatchObject({ level: 'fatal', error: { message: expect.stringContaining('Unknown BUCKLE_PACKS: no-such-pack') } })
+    expect(buckle.lines().some(line => line.message === '5straps Buckle listening')).toBe(false)
+    expect(existsSync(join(node.state, 'actions.jsonl'))).toBe(false)
+  }, 60_000)
+})
+
+describe('buckle mcp bootstrap (built dist)', () => {
+  it('closes stage by stage and exits 0 when the client closes stdin', async () => {
+    const node = await prepareNode()
+    const buckle = spawnBuckle({ entry, args: ['mcp'], env: node.env, cwd: node.workspace, stdin: 'pipe' })
+    running.push(buckle)
+    await buckle.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')
+
+    buckle.child.stdin!.end()
+    expect(await buckle.exited).toEqual({ code: 0, signal: null })
+    expect(closeSteps(buckle.lines())).toEqual(expect.arrayContaining([{ stage: 'accept', name: 'mcp stdio' }, { stage: 'services', name: 'service registry' }]))
+  }, 60_000)
+})
