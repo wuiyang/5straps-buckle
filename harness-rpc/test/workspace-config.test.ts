@@ -52,10 +52,19 @@ it('selects the nearest registered ancestor and honors explicit files', () => {
   expect(workspaceEnvironmentFile({ cwd: child, home })).toBe(nested.file)
   expect(workspaceEnvironmentFile({ cwd: child, home, explicit: 'custom.env' })).toBe(join(child, 'custom.env'))
 })
-it('keeps legacy discovery and custom initialization independent of registration', async () => {
-  expect(workspaceEnvironmentFile({ cwd: root, home })).toBe(join(root, '.env'))
+it('finds no environment file for an unregistered directory, even one holding a .env', async () => {
+  writeFileSync(join(root, '.env'), 'BUCKLE_SERVER_NAME=project file\n')
+  expect(workspaceEnvironmentFile({ cwd: root, home })).toBeNull()
   await runInit(['--root', root, '--yes', '--out', join(base, 'custom.env')], prompt, { home })
   expect(existsSync(join(home, '.5straps/workspaces/map.json'))).toBe(false)
+})
+it('refuses buckle settings without an environment file, naming both ways to get one', async () => {
+  let stderr = ''
+  vi.mocked(process.stderr.write).mockImplementation(chunk => { stderr += String(chunk); return true })
+  expect((await settingsCommand({ argv: ['set', 'shell', 'off'], environment: { BUCKLE_STATE_DIR: join(base, 'state') }, environmentFile: null, cwd: root, home })).exitCode).toBe(1)
+  expect(stderr).toContain('buckle init')
+  expect(stderr).toContain('BUCKLE_ENV_FILE')
+  expect(existsSync(join(root, '.env'))).toBe(false)
 })
 it('refuses missing or mismatched registered settings', () => {
   const entry = register()

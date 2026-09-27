@@ -12,16 +12,16 @@ import { logger } from '../logger.js'
 const PENDING_TTL_MS = 10 * 60_000
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string().optional() })
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string() })
 const onceSchema = z.object({
-  workspace: z.string().optional(), token: z.string(), subject: GrantSubjectSchema,
-  sessionId: z.string().optional(), tool: z.string().optional(), expiresAt: z.string().optional(),
+  workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
+  sessionId: z.string(), tool: z.string(), expiresAt: z.string(),
 })
 const fileSchema = z.object({
   version: z.literal(1),
   pending: z.array(pendingSchema),
   once: z.array(onceSchema),
-  resolved: z.array(z.object({ workspace: z.string().optional(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string() })).default([]),
+  resolved: z.array(z.object({ workspace: z.string(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string() })),
 })
 type State = z.infer<typeof fileSchema>
 type OnceEntry = z.infer<typeof onceSchema>
@@ -134,8 +134,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     },
 
     unspent: sessionId => store.read().once
-      .filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool && entry.expiresAt && Date.parse(entry.expiresAt) > Date.now())
-      .map(entry => ({ subject: entry.subject, tool: entry.tool! })),
+      .filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && Date.parse(entry.expiresAt) > Date.now())
+      .map(entry => ({ subject: entry.subject, tool: entry.tool })),
 
     wasDenied: tokens => store.read().resolved.some(entry => entry.workspace === workspace && tokens.includes(entry.decision.token) && !entry.decision.approved),
 
@@ -171,7 +171,7 @@ function unclaimedReliedOn(input: {
   if (wider.kind !== 'allow') return []
   const relied = new Set(wider.allowedBy)
   const firstPerSubject = new Map<string, OnceEntry>()
-  for (const entry of [...input.unclaimed].sort((a, b) => Date.parse(a.expiresAt!) - Date.parse(b.expiresAt!))) {
+  for (const entry of [...input.unclaimed].sort((a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt))) {
     const key = `${entry.subject.rule}:${entry.subject.subject}`
     if (relied.has(key) && !firstPerSubject.has(key)) firstPerSubject.set(key, entry)
   }
@@ -224,8 +224,7 @@ function patternRefusal(input: { rule: PermissionRuleId; subject: string; patter
 function prune(state: State): void {
   const now = Date.now()
   state.pending = state.pending.filter(entry => Date.parse(entry.request.expiresAt) > now)
-  // Legacy once records had no session/expiry binding; require a fresh owner decision.
-  state.once = state.once.filter(entry => entry.sessionId && entry.tool && entry.expiresAt && Date.parse(entry.expiresAt) > now)
+  state.once = state.once.filter(entry => Date.parse(entry.expiresAt) > now)
   state.resolved = state.resolved.filter(entry => Date.parse(entry.expiresAt) > now)
 }
 

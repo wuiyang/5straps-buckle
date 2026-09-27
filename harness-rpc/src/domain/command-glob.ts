@@ -14,7 +14,7 @@
  * whatever arguments follow.
  */
 
-/** Characters that only mean something in a regular expression, and so name a pattern needing migration. */
+/** Characters that only mean something in a regular expression; a glob never uses them. */
 const REGEX_ONLY_CHARACTERS = ['^', '$', '(', ')', '|', '\\', '+', '?', '[', ']']
 
 const MAX_ALTERNATIVES = 64
@@ -48,21 +48,11 @@ export function compileCommandGlob(source: string): CommandGlob {
   }
 }
 
-/** True for a pattern this module can compile, used to tell a glob from a regular expression. */
-export function isCommandGlob(source: string): boolean {
-  try {
-    compileCommandGlob(source)
-    return true
-  } catch {
-    return false
-  }
-}
-
 function rejectRegexSyntax(source: string): void {
   const found = REGEX_ONLY_CHARACTERS.filter(character => source.includes(character))
   if (found.length === 0) return
   throw new CommandGlobError(
-    `${found.join(' ')} ${found.length === 1 ? 'is' : 'are'} regular-expression syntax, and a command pattern is a shell-word glob like 'pnpm {build,test} *'. Run 'buckle policy migrate' to convert the stored patterns.`,
+    `${found.join(' ')} ${found.length === 1 ? 'is' : 'are'} regular-expression syntax, and a command pattern is a shell-word glob like 'pnpm {build,test} *'.`,
   )
 }
 

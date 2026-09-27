@@ -73,17 +73,10 @@ describe('several agent tokens per workspace', () => {
     }
   })
 
-  it('reads a registry written before the admin credential was named', async () => {
-    const legacy = { version: 1, workspaces: [{ id: 'one', name: 'Workspace one', root: join(root, 'one'), authToken: WORKSPACE_AGENT, setupToken: WORKSPACE_ADMIN, policy: emptyWorkspacePolicy(), enabled: true, retiredAt: null, updatedAt: null }] }
-    writeFileSync(join(root, 'state', 'workspaces.json'), JSON.stringify(legacy))
-    expect((await read(WORKSPACE_AGENT)).status).toBe(200)
-    expect((await app.request('/workspaces/one/setup/status', { headers: headers(WORKSPACE_ADMIN) })).status).toBe(200)
-  })
-
-  it('accepts the old setupToken field name on registration for one release', async () => {
+  it('refuses a registration that names the admin credential setupToken', async () => {
     const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', root: join(root, 'one'), authToken: WORKSPACE_AGENT, setupToken: WORKSPACE_ADMIN }) })
-    expect(response.status).toBe(201)
-    expect((await app.request('/workspaces/one/setup/status', { headers: headers(WORKSPACE_ADMIN) })).status).toBe(200)
+    expect(response.status).toBe(400)
+    expect((await app.request('/workspaces/one/setup/status', { headers: headers(WORKSPACE_ADMIN) })).status).toBe(401)
   })
 })
 

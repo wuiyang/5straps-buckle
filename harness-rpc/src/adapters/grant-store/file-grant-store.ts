@@ -3,7 +3,6 @@ import { z } from 'zod'
 import { GrantRecordSchema, type GrantRecord, type PermissionRuleId } from '@5straps/protocol'
 import type { GrantLookup } from '../../domain/permission/decision.js'
 import type { GrantStore } from '../../ports/grant-store.js'
-import { logger } from '../../logger.js'
 import { createJsonFileStore } from '../json-file-store.js'
 
 const fileSchema = z.object({ version: z.literal(1), grants: z.array(GrantRecordSchema) })
@@ -31,11 +30,7 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
   }
 
   return {
-    activeSubjects({ sessionId, rule }) {
-      const exact = active(sessionId, rule).filter(grant => !grant.pattern && !grant.denied && rule !== 'sensitive_path')
-      for (const grant of exact) warnIfStarred(grant)
-      return exact.map(grant => grant.subject)
-    },
+    activeSubjects: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => !grant.pattern && !grant.denied && rule !== 'sensitive_path').map(grant => grant.subject),
 
     activePatterns: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => grant.pattern && !grant.denied).map(grant => grant.subject),
 
@@ -77,19 +72,6 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
 function isSameSubject(left: GrantRecord, right: GrantRecord): boolean {
   return left.workspace === right.workspace && left.rule === right.rule && left.subject === right.subject && left.scope === right.scope
     && left.sessionId === right.sessionId && Boolean(left.pattern) === Boolean(right.pattern)
-}
-
-const warnedStarred = new Set<string>()
-
-/**
- * A network grant named with a `*` but not recorded through `buckle approve --host` came from an
- * agent asking for a URL whose host held a `*`, before such a URL was refused. It stays exact, so
- * it covers only its own string, which no URL can now reach; the owner is told once to revoke it.
- */
-function warnIfStarred(grant: GrantRecord): void {
-  if (grant.rule !== 'network_egress' || !grant.subject.includes('*') || warnedStarred.has(grant.id)) return
-  warnedStarred.add(grant.id)
-  logger.warn('Network grant names a * but is not a host pattern; it covers only its own string. Revoke it with buckle grants revoke', { id: grant.id, subject: grant.subject })
 }
 
 export function createGrantLookup(store: GrantStore, sessionId: string): GrantLookup {

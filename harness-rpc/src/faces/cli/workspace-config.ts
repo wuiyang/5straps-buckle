@@ -33,10 +33,11 @@ export function findWorkspaceConfig(input: { cwd: string; home?: string; exact?:
   }
 }
 
-export function workspaceEnvironmentFile(input: { cwd: string; explicit?: string; home?: string }): string {
+/** BUCKLE_ENV_FILE, else the nearest registered workspace's file; null when neither exists. */
+export function workspaceEnvironmentFile(input: { cwd: string; explicit?: string; home?: string }): string | null {
   if (input.explicit) return resolve(input.cwd, input.explicit)
   const registered = findWorkspaceConfig(input)
-  if (!registered) return join(input.cwd, '.env')
+  if (!registered) return null
   if (!existsSync(registered.file)) throw new Error('Registered workspace configuration is missing; repair it or run buckle init --force from the workspace root')
   const configured = parseEnv(readFileSync(registered.file, 'utf8')).BUCKLE_WORKSPACE_ROOT
   if (!configured || realpathSync(configured) !== registered.root) throw new Error('Workspace configuration and path map disagree; repair the mapping before starting Buckle')

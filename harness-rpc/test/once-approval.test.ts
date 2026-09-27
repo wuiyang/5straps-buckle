@@ -34,6 +34,16 @@ describe('BUCKLE-D14: only the admin credential writes a persisted approval', ()
   })
 })
 
+describe('once approvals are always bound', () => {
+  it('refuses an approvals file holding a once entry without its session, tool and expiry', () => {
+    const root = mkdtempSync('/tmp/buckle-once-'); roots.push(root)
+    const filePath = join(root, 'approvals.json')
+    writeFileSync(filePath, JSON.stringify({ version: 1, pending: [], resolved: [], once: [{ workspace: '/workspace', token: 'unbound', subject: { rule: 'write_scope', subject: '/outside' } }] }))
+    const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: '/workspace' }), filePath)
+    expect(() => approvals.pending()).toThrow('State file is unreadable or invalid')
+  })
+})
+
 describe('once approval consumption', () => {
   it('retains partial grants and consumes them exactly when every gate allows', () => {
     const approvals = registry()

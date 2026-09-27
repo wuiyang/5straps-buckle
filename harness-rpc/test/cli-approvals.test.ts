@@ -240,20 +240,6 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     expect(await captureAll({ argv: ['approve', token, '--scope', 'session'], config })).toMatchObject({ exitCode: 1, stderr: expect.stringContaining('already has a different decision') })
   })
 
-  it('loads grants and answered approvals written before patterns existed, exact hosts unchanged', () => {
-    const config = node()
-    const now = new Date().toISOString()
-    writeFileSync(grantsPath(config), JSON.stringify({ version: 1, grants: [
-      { id: 'old-1', workspace: config.cwd, rule: 'network_egress', subject: 'localhost:3000', scope: 'always', sessionId: null, createdAt: now, expiresAt: null },
-    ] }))
-    const later = new Date(Date.now() + 60_000).toISOString()
-    writeFileSync(approvalsPath(config), JSON.stringify({ version: 1, pending: [], once: [], resolved: [
-      { workspace: config.cwd, decision: { token: 'old-token', approved: true, scope: 'always' }, expiresAt: later },
-    ] }))
-
-    expect(networkSubjects(config)).toEqual(['localhost:3000'])
-    expect(registry(config).resolve({ token: 'old-token', approved: true, scope: 'always' })).toEqual({ ok: true })
-  })
 })
 
 describe('a * in a URL host never becomes a pattern grant (BUCKLE-D18)', () => {
@@ -274,7 +260,7 @@ describe('a * in a URL host never becomes a pattern grant (BUCKLE-D18)', () => {
     const now = new Date().toISOString()
     writeFileSync(grantsPath(config), JSON.stringify({ version: 1, grants: [
       ...grantStore(config).list(),
-      { id: 'legacy-star', workspace: config.cwd, rule: 'network_egress', subject: '*.localhost', scope: 'always', sessionId: null, createdAt: now, expiresAt: null },
+      { id: 'starred', workspace: config.cwd, rule: 'network_egress', subject: '*.localhost', scope: 'always', sessionId: null, createdAt: now, expiresAt: null },
     ] }))
 
     expect(grantStore(config).list().every(grant => grant.pattern === undefined)).toBe(true)

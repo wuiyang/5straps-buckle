@@ -31,17 +31,19 @@ Lists are comma separated. A change takes effect when buckle serve restarts.
  * included, is kept byte for byte and shown by name at most. Each run is audited in the node's
  * action log, a write with the key and value it set.
  */
-export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string; cwd: string; home?: string }): Promise<CliResult> {
-  const file = resolve(input.cwd, input.environmentFile)
-  const fileText = existsSync(file) ? readFileSync(file, 'utf8') : null
+export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string | null; cwd: string; home?: string }): Promise<CliResult> {
+  const file = input.environmentFile === null ? null : resolve(input.cwd, input.environmentFile)
+  const fileText = file !== null && existsSync(file) ? readFileSync(file, 'utf8') : null
   const merged = { ...buckleVariables(fileText), ...input.environment }
   return auditOperation({
     actions: createFileActionLog(actionsPath({ stateDirectory: stateDirectoryOf(merged) })),
     workspaceId: 'default', tool: 'cli_settings', sessionId: 'local-owner',
     isSuccessful: result => result.exitCode === 0, describe: result => result.detail,
-    operation: () => dispatch({ ...input, file, fileText, merged }),
+    operation: () => file === null ? fail(NO_ENVIRONMENT_FILE) : dispatch({ ...input, file, fileText, merged }),
   })
 }
+
+const NO_ENVIRONMENT_FILE = 'No Buckle environment file for this directory. Run `buckle init` here to create and register one, or set BUCKLE_ENV_FILE to the file to use.'
 
 interface SettingsContext {
   argv: string[]

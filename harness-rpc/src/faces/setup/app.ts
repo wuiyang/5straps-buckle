@@ -12,7 +12,6 @@ import { createFileNonceStore } from '../../adapters/approval/file-nonce-store.j
 import { approvalNoncesPath, type BuckleConfig } from '../../config.js'
 import { openApprovalDecision } from '../../services/approval-envelope.js'
 import { isRestrictive, PolicyError } from '../../domain/policy.js'
-import { redactAuditArguments } from '../../domain/redact.js'
 import { logger } from '../../logger.js'
 import type { BuckleRuntime } from '../../runtime.js'
 import { tokenMatches, requireBearerToken } from '../rpc/auth.js'
@@ -84,11 +83,7 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
     const parsed = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50), before: z.coerce.number().int().nonnegative().optional() }).safeParse(context.req.query())
     if (!parsed.success) return context.json({ error: 'Invalid audit page' }, 400)
     await runtime.actions.recoverInterrupted()
-    const page = runtime.actions.page(parsed.data)
-    return context.json({ ...page, entries: page.entries.map(entry => entry.event ? entry : {
-      at: entry.at, requestId: entry.requestId, sessionId: entry.sessionId, tool: entry.tool,
-      outcome: entry.outcome, durationMs: entry.durationMs, effects: ['legacy details withheld'], args: redactAuditArguments(entry.args),
-    }) })
+    return context.json(runtime.actions.page(parsed.data))
   })
   app.get('/history', context => context.json({ checkpoints: runtime.history.list() }))
   app.post('/history/:id/restore', async context => historyResponse(context, () => runtime.history.restore(context.req.param('id'))))

@@ -54,18 +54,18 @@ async function main(): Promise<void> {
 }
 
 /**
- * Discover registered workspace settings first, then fall back to legacy local configuration. Only BUCKLE_* names are taken, and a variable already in the environment wins, so
- * a project's own `.env` never leaks into the node and an operator override still applies.
+ * Only BUCKLE_* names are taken, and a variable already in the environment wins, so an operator
+ * override still applies.
  */
 function loadEnvironmentFile(): void {
   const path = environmentFilePath()
-  if (!existsSync(path)) return
+  if (!path || !existsSync(path)) return
   for (const [name, value] of Object.entries(parseEnv(readFileSync(path, 'utf8')))) {
     if (name.startsWith('BUCKLE_') && process.env[name] === undefined) process.env[name] = value
   }
 }
 
-function environmentFilePath(): string {
+function environmentFilePath(): string | null {
   return workspaceEnvironmentFile({ cwd: process.cwd(), explicit: process.env.BUCKLE_ENV_FILE })
 }
 

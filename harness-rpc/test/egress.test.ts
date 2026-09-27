@@ -186,9 +186,10 @@ describe('BUCKLE_ALLOWED_HOSTS at load', () => {
     expect(() => loadConfig(environment('https://db.internal'))).toThrow(/names no scheme/)
     expect(loadConfig(environment('my_db, my_db:5432, *.compose_net')).allowedHosts).toEqual(['my_db', 'my_db:5432', '*.compose_net'])
     expect(() => loadConfig(environment('db.internal.'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry/)
-    const v6 = loadConfig(environment('::1:3000, ::1')).allowedHosts
-    expect(v6).toEqual(['::1:3000', '[::1]:3000', '::1'])
-    expect(matchingHostEntry(v6.slice(0, 2), new URL('http://[::1]:3000/'))).toBe('[::1]:3000')
+    const v6 = loadConfig(environment('::1:3000, [::1]:3000')).allowedHosts
+    expect(v6).toEqual(['::1:3000', '[::1]:3000'])
+    expect(matchingHostEntry(v6.slice(0, 1), new URL('http://[::1]:3000/'))).toBeFalsy()
+    expect(matchingHostEntry(v6, new URL('http://[::1]:3000/'))).toBe('[::1]:3000')
     expect(() => loadConfig(environment('my_db:05432'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: Not a port/)
     expect(() => loadConfig(environment('*.0.0.1'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: A wildcard covers a domain, not an address/)
   })

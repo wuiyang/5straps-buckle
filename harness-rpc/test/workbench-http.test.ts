@@ -43,7 +43,7 @@ it('requires setup provisioning and a separate workbench grant for editor operat
 it('routes child workbench credentials independently of child agent credentials', async () => {
   const f = await fixture()
   const agent = 'fixture-child-agent-long-enough', setup = 'fixture-child-setup-long-enough'
-  expect((await f.request('/setup/workspaces', f.config.adminToken, { id: 'child', name: 'Child', root: f.child, authToken: agent, setupToken: setup })).status).toBe(201)
+  expect((await f.request('/setup/workspaces', f.config.adminToken, { id: 'child', name: 'Child', root: f.child, authToken: agent, adminToken: setup })).status).toBe(201)
   const grant = { id: randomUUID(), token: 'fixture-child-workbench-token-long', projectId: 'project', chatId: 'chat', allowShell: false }
   const path = '/workspaces/child/v1/workbenches/' + grant.id
   expect((await f.request('/workspaces/child/setup/workbenches', setup, grant)).status).toBe(200)

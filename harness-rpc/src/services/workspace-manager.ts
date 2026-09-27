@@ -19,7 +19,7 @@ const AgentTokenSchema = z.object({
 export type WorkspaceAgentToken = z.infer<typeof AgentTokenSchema>
 export interface WorkspaceTokenDescriptor { id: string; label: string; createdAt: string }
 
-export const WorkspaceRegistrationSchema = z.preprocess(renameLegacySetupToken, z.object({
+export const WorkspaceRegistrationSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).refine(value => value !== 'default', 'default is reserved'),
   name: z.string().trim().min(1).max(120),
   root: z.string().min(1).max(4096).refine(isAbsolute, 'Workspace root must be absolute'),
@@ -27,39 +27,19 @@ export const WorkspaceRegistrationSchema = z.preprocess(renameLegacySetupToken, 
   authToken: CredentialSchema,
   adminToken: CredentialSchema,
   policy: WorkspacePolicySchema.default(emptyWorkspacePolicy),
-}).strict())
+}).strict()
 export type WorkspaceRegistration = z.infer<typeof WorkspaceRegistrationSchema>
 export const WorkspacePatchSchema = z.object({ name: z.string().trim().min(1).max(120).optional(), enabled: z.boolean().optional(), expectedUpdatedAt: z.string().nullable().optional() }).strict()
 export const WorkspaceTokenInputSchema = z.object({ label: z.string().trim().max(120).default('') }).strict()
 
-const StoredWorkspaceSchema = z.preprocess(promoteLegacyCredentials, z.object({
+const StoredWorkspaceSchema = z.object({
   id: z.string(), name: z.string(), root: z.string(), adminToken: CredentialSchema,
   tokens: z.array(AgentTokenSchema).min(1),
   policy: WorkspacePolicySchema.default(emptyWorkspacePolicy),
   enabled: z.boolean(), retiredAt: z.string().nullable().default(null), updatedAt: z.string().nullable().default(null),
-}))
+})
 const RegistrySchema = z.object({ version: z.literal(1), workspaces: z.array(StoredWorkspaceSchema) })
 type StoredWorkspace = z.infer<typeof StoredWorkspaceSchema>
-
-/**
- * `BUCKLE-08` renamed the setup token to the admin credential. A caller still sending the old
- * name is read for one release, so an unupgraded Rings keeps registering workspaces.
- */
-function renameLegacySetupToken(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const { setupToken, ...rest } = value as Record<string, unknown>
-  if (setupToken === undefined) return value
-  return { ...rest, adminToken: rest.adminToken ?? setupToken }
-}
-
-/** A registry written before `BUCKLE-08`: one `authToken` per workspace, under the old names. */
-function promoteLegacyCredentials(value: unknown): unknown {
-  const renamed = renameLegacySetupToken(value)
-  if (!renamed || typeof renamed !== 'object' || Array.isArray(renamed)) return renamed
-  const { authToken, ...rest } = renamed as Record<string, unknown>
-  if (authToken === undefined) return renamed
-  return { ...rest, tokens: rest.tokens ?? [{ id: 'initial', token: authToken, label: 'Registered', createdAt: rest.updatedAt ?? new Date(0).toISOString() }] }
-}
 
 export interface WorkspaceDescriptor {
   id: string
@@ -162,7 +142,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       return store.read().workspaces.find(item => item.id === id)?.adminToken ?? null
     },
     async update(id: string, input: z.infer<typeof WorkspacePatchSchema> & { retired?: boolean }): Promise<WorkspaceDescriptor> {
-      if (id === 'default') throw new WorkspaceError('The legacy default workspace is controlled by the node process', 409)
+      if (id === 'default') throw new WorkspaceError('The default workspace is controlled by the node process', 409)
       const resolved = await manager.resolve(id, { setup: true })
       return store.update(state => {
         const workspace = state.workspaces.find(item => item.id === id)

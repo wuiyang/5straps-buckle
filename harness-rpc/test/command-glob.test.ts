@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CommandGlobError, compileCommandGlob, isCommandGlob } from '../src/domain/command-glob.js'
+import { CommandGlobError, compileCommandGlob } from '../src/domain/command-glob.js'
 
 function line(pattern: string, words: string[]): boolean {
   return compileCommandGlob(pattern).matchesLine(words)
@@ -91,11 +91,11 @@ describe('inside one word', () => {
 describe('what a pattern may not be', () => {
   it.each(['^pnpm', 'pnpm$', 'pnpm (build|test)', 'python3?', 'a\\b', 'ls [a-z]', 'a+'])('refuses the regular expression %s', pattern => {
     expect(() => compileCommandGlob(pattern)).toThrow(CommandGlobError)
-    expect(isCommandGlob(pattern)).toBe(false)
   })
 
-  it('names the migration command, because every stored regular expression has to move', () => {
-    expect(() => compileCommandGlob('^pnpm (build|test)\\b')).toThrow('buckle policy migrate')
+  it('says a command pattern is a glob, without pointing at a migration command', () => {
+    expect(() => compileCommandGlob('^pnpm (build|test)\\b')).toThrow('a command pattern is a shell-word glob')
+    expect(() => compileCommandGlob('^pnpm (build|test)\\b')).not.toThrow('migrate')
   })
 
   it.each(['', '   '])('refuses an empty pattern %s', pattern => {
@@ -112,9 +112,3 @@ describe('what a pattern may not be', () => {
   })
 })
 
-describe('isCommandGlob', () => {
-  it('is true for what compiles and false for what does not', () => {
-    expect(isCommandGlob('pnpm {build,test} *')).toBe(true)
-    expect(isCommandGlob('^pnpm (build|test)\\b')).toBe(false)
-  })
-})

@@ -72,7 +72,7 @@ export function createFileActionLog(filePath: string): ActionLog {
           if (!line) continue
           try {
             const value = entrySchema.parse(JSON.parse(line))
-            // Legacy JSONL records are checked at this boundary before retaining optional metadata.
+            // The schema checks the required fields; optional metadata passes through.
             entries.push(value as ActionLogEntry)
           } catch { logger.warn('Skipped an unreadable action log record', { filePath }) }
         }

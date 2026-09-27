@@ -69,14 +69,7 @@ export function judgeUrl(input: {
 }
 
 function matchingEntries(input: { url: URL; workspaceList: string[]; nodeList: string[] | null }): string {
-  // An entry skipped at load for failing the grammar covers nothing, so it is never the one named.
-  const covers = (pattern: string) => {
-    try {
-      return compileUrlPatterns([pattern]).matches(input.url)
-    } catch {
-      return false
-    }
-  }
+  const covers = (pattern: string) => compileUrlPatterns([pattern]).matches(input.url)
   const first = (list: string[]) => list.find(covers)
   const parts = [
     ...(input.workspaceList.length ? [`approved list entry ${first(input.workspaceList)}`] : []),

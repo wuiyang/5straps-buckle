@@ -1,6 +1,4 @@
 import { auditOperation } from '../../services/audit-operation.js'
-import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
-import { actionsPath } from '../../config.js'
 import { randomUUID } from 'node:crypto'
 import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
@@ -12,7 +10,7 @@ import { WorkspaceError, createWorkspaceManager } from '../../services/workspace
 import { createRuntime, type BuckleRuntime } from '../../runtime.js'
 import { createCliApprovalChannel } from '../../adapters/approval/cli-approval-channel.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
-import { policyCommand, policyMigrateCommand } from './policy.js'
+import { policyCommand } from './policy.js'
 import { watchApprovals } from './approvals-watch.js'
 import { CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
 import { workspaceRegistryCommand } from './workspace.js'
@@ -28,9 +26,6 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   const [command, ...rest] = input.argv
   if (!command || command === 'help' || command === '--help' || command === '-h') return printUsage()
   if (command === '--version' || command === '-v') return printVersion()
-  // Before the runtime, because a stored pattern the runtime refuses to compile is what sends
-  // the owner here in the first place.
-  if (command === 'policy' && rest[0] === 'migrate') return auditOperation({ actions: createFileActionLog(actionsPath(input.config)), workspaceId: 'default', tool: 'cli_policy_migrate', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => policyMigrateCommand({ config: input.config, argv: rest.slice(1) }) })
 
   let runtime: BuckleRuntime
   try {
@@ -106,7 +101,7 @@ function printUsage(): CliResult {
   buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune
   buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
-  buckle policy show | allow-command | deny-command | allow-url | mount | migrate | ...
+  buckle policy show | allow-command | deny-command | allow-url | mount | ...
   buckle policy deny-tool <tool> | allow-tool <tool>   Refuse a tool outright, or lift that
   buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
 
