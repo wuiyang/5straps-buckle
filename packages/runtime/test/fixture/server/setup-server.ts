@@ -45,7 +45,7 @@ function withScopeProbe(input: { runtime: FixtureRuntime; middleware: BuiltEntry
   return (request: IncomingMessage, response: ServerResponse) => {
     if (request.url !== SCOPE_PROBE_PATH) return input.middleware(request, response)
     const scope = input.runtime.owner.registry.createScope({ context: { correlationId: `main-probe-${Date.now()}` } })
-    input.runtime.logger.info('scope probe opened', { probeId: scope.context.correlationId })
+    input.runtime.logger.info('scope probe opened', { probeId: scope.context.correlationId, runtimeUrl: import.meta.resolve('@5straps/runtime') })
     response.once('close', () => { void scope.dispose() })
     return runInScope(scope, () => input.middleware(request, response))
   }

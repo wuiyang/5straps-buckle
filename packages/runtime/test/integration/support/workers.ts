@@ -13,7 +13,7 @@ export interface WorkerHandle {
 }
 
 export function startWorker(args: string[]): WorkerHandle {
-  const child = spawn(process.execPath, ['--import', 'tsx', worker, ...args], { cwd: packageRoot, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, ['--import', 'tsx', worker, ...args], { cwd: packageRoot, stdio: ['pipe', 'pipe', 'pipe'] })
   const messages: Record<string, unknown>[] = []
   const waiters: { predicate: (message: Record<string, unknown>) => boolean; resolve: (message: Record<string, unknown>) => void }[] = []
   let stderr = ''

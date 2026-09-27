@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
-import { bearer, createDataDir, createTokens, expectCleanDiagnostics, fixtureEnv, runFixtureCli, serveFixture, startFixture, type FixtureProcess, type ServingFixture } from './support/fixture-process.js'
+import { bearer, createDataDir, createTokens, expectCleanDiagnostics, fixtureEnv, runFixtureCli, serveFixture, startFixture, stopAll, type FixtureProcess, type ServingFixture } from './support/fixture-process.js'
 import { startHuman, type Human, type PromptRequest } from './support/human.js'
 import { createChildStdioTransport } from './support/mcp-stdio.js'
 import { expectNoLeakedResources, resourceSnapshot } from './support/resources.js'
@@ -14,7 +14,7 @@ let resourcesBefore: Record<string, number>
 
 beforeAll(() => { resourcesBefore = resourceSnapshot() })
 afterAll(async () => {
-  await Promise.all(processes.map(fixture => fixture.stop()))
+  await stopAll(processes)
   await Promise.all(humans.map(human => human.close()))
   for (const fixture of processes) expectCleanDiagnostics(fixture)
   await expectNoLeakedResources(resourcesBefore)
@@ -58,6 +58,17 @@ describe('F07 server-to-CLI hook', () => {
     expect(result.status).toBe(200)
     expect(result.body.outcome).toEqual({ status: 'answered', requestId: prompt.id, answer: { choice: 'approve' } })
     expect(result.body.correlationId).toBe(prompt.correlationId)
+  })
+})
+
+describe('F07b denied outcome over HTTP (coordination-12)', () => {
+  it('returns the typed denied outcome with the owner reason', async () => {
+    const person = await human()
+    const fixture = await serve({ terminal: person })
+    const pending = ask(fixture, { summary: 'delete everything' })
+    const prompt = await person.waitForPrompt()
+    person.deny(prompt.id, 'no')
+    expect((await pending).body.outcome).toEqual({ status: 'denied', requestId: prompt.id, reason: 'no' })
   })
 })
 
@@ -161,6 +172,7 @@ describe('F12 MCP-to-CLI injection', () => {
       await client.close()
       expect(await fixture.exited).toBe(0)
     }
+    expectOnlyJsonRpc(fixture)
   })
 })
 
@@ -201,8 +213,19 @@ describe('F14 finite wait', () => {
   })
 })
 
+describe('F14b finite wait answered in time (coordination-7)', () => {
+  it('clears the wait timer when the owner answers before it fires', async () => {
+    const person = await human()
+    const fixture = await serve({ terminal: person })
+    const pending = ask(fixture, { summary: 'answered long before the timeout', timeoutMs: 600_000 })
+    person.answer((await person.waitForPrompt()).id, 'approve')
+    expect((await pending).body.outcome).toMatchObject({ status: 'answered' })
+    expect((await stopAndReadResources(fixture)).filter(kind => kind === 'Timeout')).toEqual([])
+  })
+})
+
 describe('F15 indefinite wait', () => {
-  it('holds an indefinite request open without a timer until the owner answers', async () => {
+  it('holds an indefinite request open until the owner answers', async () => {
     const person = await human()
     const fixture = await serve({ terminal: person })
     const pending = ask(fixture, { summary: 'take your time' })
@@ -243,6 +266,7 @@ describe('F16 cancellation', () => {
       await client.close()
       expect(await fixture.exited).toBe(0)
     }
+    expectOnlyJsonRpc(fixture)
   })
 })
 
@@ -280,6 +304,7 @@ describe('F18 MCP stdio separation', () => {
     }
     expect(transport.stdoutLines.length).toBeGreaterThan(0)
     expect(transport.stdoutLines.filter(line => (JSON.parse(line) as { jsonrpc?: string }).jsonrpc !== '2.0')).toEqual([])
+    expectOnlyJsonRpc(fixture)
     expect(fixture.events.some(event => event.message === 'mcp stdio ready')).toBe(true)
   })
 })
@@ -292,6 +317,12 @@ async function startStdioMcp(input: { terminal?: Human }) {
   const client = new Client({ name: 'fixture-test', version: '0.0.0' })
   await client.connect(transport)
   return { client, fixture, transport }
+}
+
+// coordination-6: stdout carried JSON-RPC frames only, from spawn to exit, including while a terminal prompt was live.
+function expectOnlyJsonRpc(fixture: FixtureProcess): void {
+  expect(fixture.stdout.filter(line => line.jsonrpc !== '2.0')).toEqual([])
+  expect(fixture.malformed).toEqual([])
 }
 
 function toolOutcome(result: unknown): unknown {

@@ -1,4 +1,6 @@
 // Child process for the multi-process SQLite tests. Reports progress as JSON lines on stdout.
+import { once } from 'node:events'
+import { createInterface } from 'node:readline'
 import { setTimeout as delay } from 'node:timers/promises'
 import { acquireFileLock, createConnectionOwner, openDatabase } from '../../../src/sqlite/index.js'
 
@@ -22,12 +24,21 @@ async function allocateSequence(count: number, worker: string): Promise<void> {
   report({ done: count })
 }
 
-async function holdLock(holdMs: number): Promise<void> {
+// Holds for <ms>, or with 'stdin' until the parent writes a line.
+async function holdLock(release: string): Promise<void> {
   const lock = await acquireFileLock({ path: path!, wait: 'none' })
   report({ locked: true })
-  await delay(holdMs)
+  if (release === 'stdin') await releaseRequested()
+  else await delay(Number(release))
   await lock.release()
   report({ released: true })
+}
+
+async function releaseRequested(): Promise<void> {
+  const lines = createInterface({ input: process.stdin })
+  await once(lines, 'line')
+  lines.close()
+  process.stdin.destroy()
 }
 
 // Reports whether another owner holds the lock right now; used to prove the parent's lock survived.
@@ -42,6 +53,6 @@ async function tryLock(): Promise<void> {
 }
 
 if (mode === 'sequence') await allocateSequence(Number(rest[0]), rest[1] ?? String(process.pid))
-else if (mode === 'hold-lock') await holdLock(Number(rest[0]))
+else if (mode === 'hold-lock') await holdLock(rest[0] ?? '0')
 else if (mode === 'try-lock') await tryLock()
 else throw new Error(`unknown mode ${mode}`)

@@ -4,7 +4,8 @@ export interface FixtureConfig {
   dataDir: string
   agentToken: string
   adminToken: string
-  startupDelayMs: number
+  // Test-only: startup waits until this file exists, so a test decides when the startup window ends.
+  startupGate?: string
   startupFails: boolean
   closeStepTimeoutMs: number
 }
@@ -19,7 +20,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): FixtureConfig {
     dataDir,
     agentToken: token(env, 'FIXTURE_AGENT_TOKEN'),
     adminToken: token(env, 'FIXTURE_ADMIN_TOKEN'),
-    startupDelayMs: integer(env, 'FIXTURE_STARTUP_DELAY_MS', 0),
+    ...(env.FIXTURE_STARTUP_GATE ? { startupGate: env.FIXTURE_STARTUP_GATE } : {}),
     startupFails: env.FIXTURE_STARTUP_FAILS === 'true',
     closeStepTimeoutMs: integer(env, 'FIXTURE_CLOSE_STEP_TIMEOUT_MS', 2_000),
   }

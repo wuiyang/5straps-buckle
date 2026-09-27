@@ -4,12 +4,13 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSyn
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { dirname, join, relative } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { CLOSE_STAGES } from '../../src/index.js'
 import { acquireFileLock } from '../../src/sqlite/index.js'
-import { bearer, createDataDir, createTokens, expectCleanDiagnostics, fixtureEnv, runFixtureCli, serveFixture, startFixture, type FixtureProcess, type LogLine } from './support/fixture-process.js'
+import { bearer, createDataDir, createTokens, expectCleanDiagnostics, fixtureEnv, runFixtureCli, serveFixture, startFixture, startupGate, stopAll, type FixtureProcess, type LogLine } from './support/fixture-process.js'
 import { fixtureRoot, packageRoot } from './support/paths.js'
 import { startHuman, type Human } from './support/human.js'
 import { expectNoLeakedResources, resourceSnapshot } from './support/resources.js'
@@ -23,7 +24,7 @@ let resourcesBefore: Record<string, number>
 
 beforeAll(() => { resourcesBefore = resourceSnapshot() })
 afterAll(async () => {
-  await Promise.all(started.map(fixture => fixture.stop()))
+  await stopAll(started)
   await Promise.all(humans.map(human => human.close()))
   for (const fixture of started) expectCleanDiagnostics(fixture)
   await expectNoLeakedResources(resourcesBefore)
@@ -60,7 +61,8 @@ describe('F01 file routing through extended layers', () => {
       const missing = await fetch(fixture.url(path), { headers: bearer(tokens.agent) })
       expect(missing.status).toBe(404)
       expect(missing.headers.get('content-type')).toContain('application/json')
-      expect(await missing.json()).toEqual({ error: expect.any(String) })
+      // routing-bootstrap-15: the body never echoes the request URL, host or port.
+      expect(await missing.json()).toEqual({ error: 'Not Found' })
     }
     // Nitro file routes do not emit 405: a GET-only file answers other methods with 404.
     const wrongMethod = await fetch(fixture.url('/health'), { method: 'POST' })
@@ -143,10 +145,12 @@ describe('F04 plugin order', () => {
 
 describe('F05 main-owned bootstrap', () => {
   it('initialises once, binds the host and the cli:call listener before listening, and refuses the startup window with 503', async () => {
-    const fixture = await serve({ extra: { FIXTURE_STARTUP_DELAY_MS: '1500' } })
+    const gate = startupGate()
+    const fixture = await serve({ extra: gate.env })
     const early = await fetch(fixture.url('/v1/notes'), { headers: bearer(tokens.agent) })
     expect(early.status).toBe(503)
     expect(await early.json()).toEqual({ error: expect.any(String) })
+    gate.open()
     await fixture.waitFor('common ready')
     const statuses = await Promise.all(Array.from({ length: 20 }, () => fetch(fixture.url('/v1/notes'), { headers: bearer(tokens.agent) }).then(response => response.status)))
     expect(statuses).toEqual(Array(20).fill(200))
@@ -172,10 +176,13 @@ describe('F06 no import-time startup', () => {
 describe('Single @5straps/runtime copy shared by main.ts and the bundle', () => {
   it('a scope opened in main is visible inside a bundled route, and no runtime source is bundled', async () => {
     const fixture = await ready(await serve())
-    const probe = await (await fetch(fixture.url('/v1/scope-probe'))).json() as { correlationId: string | null }
+    const probe = await (await fetch(fixture.url('/v1/scope-probe'))).json() as { correlationId: string | null; runtimeUrl: string }
     const opened = await fixture.waitFor('scope probe opened')
     expect(probe.correlationId).toBe(opened.fields?.probeId)
     expect(probe.correlationId).toMatch(/^main-probe-/)
+    // routing-bootstrap-7: module identity, which the shared global ALS slots alone cannot prove.
+    expect(probe.runtimeUrl).toBe(opened.fields?.runtimeUrl)
+    expect(probe.runtimeUrl).toBe(pathToFileURL(join(build.root, 'node_modules/@5straps/runtime/dist/index.js')).href)
     const files = outputFiles(join(build.full.outDir, '.output'))
     expect(files.filter(path => readFileSync(path, 'utf8').includes('No operation scope is active'))).toEqual([])
     expect(readFileSync(join(build.full.outDir, '.output/server/_routes/v1/scope_probe.mjs'), 'utf8')).toMatch(/from "@5straps\/runtime"/)
@@ -189,7 +196,9 @@ describe('F19 HTTP context propagation', () => {
       const response = await fetch(fixture.url('/v1/whoami'), { headers: bearer(tokens.agent, { 'x-actor': `actor-${index}` }) })
       return { index, body: await response.json() as Record<string, unknown> }
     }))
-    const crossovers = results.filter(({ index, body }) => body.actor !== `actor-${index}` || body.alsActor !== `actor-${index}` || body.serviceActor !== `actor-${index}` || body.alsCorrelationId !== body.correlationId || body.serviceCorrelationId !== body.correlationId || body.sameScopedInstance !== true || body.freshTransients !== true)
+    // Sub-actors stay under the verified credential (routing-bootstrap-13).
+    const actorOf = (index: number) => `agent:actor-${index}`
+    const crossovers = results.filter(({ index, body }) => body.actor !== actorOf(index) || body.alsActor !== actorOf(index) || body.serviceActor !== actorOf(index) || body.alsCorrelationId !== body.correlationId || body.serviceCorrelationId !== body.correlationId || body.sameScopedInstance !== true || body.freshTransients !== true)
     expect(new Set(results.map(({ body }) => body.correlationId)).size).toBe(100)
     expect(crossovers).toEqual([])
   })
@@ -216,17 +225,21 @@ describe('F20 non-HTTP scopes and background work', () => {
 
 describe('F21 readiness', () => {
   it('answers liveness 200 and readiness 503 while starting, then 200 when ready', async () => {
-    const fixture = await serve({ extra: { FIXTURE_STARTUP_DELAY_MS: '1500' } })
+    const gate = startupGate()
+    const fixture = await serve({ extra: gate.env })
     expect((await fetch(fixture.url('/health'))).status).toBe(200)
     expect((await fetch(fixture.url('/health/ready'))).status).toBe(503)
+    gate.open()
     await fixture.waitFor('common ready')
     expect((await fetch(fixture.url('/health/ready'))).status).toBe(200)
   })
 
   it('never runs a business handler when startup fails, then exits 1', async () => {
-    const fixture = await serveFixture({ entry: build.full.entry, dataDir: createDataDir(), tokens, extra: { FIXTURE_STARTUP_DELAY_MS: '800', FIXTURE_STARTUP_FAILS: 'true' } })
+    const gate = startupGate()
+    const fixture = await serveFixture({ entry: build.full.entry, dataDir: createDataDir(), tokens, extra: { ...gate.env, FIXTURE_STARTUP_FAILS: 'true' } })
     const during = await fetch(fixture.url('/v1/notes'), { headers: bearer(tokens.agent) })
     expect(during.status).toBe(503)
+    gate.open()
     expect(await fixture.exited).toBe(1)
     expect(fixture.events.some(event => event.message === 'startup failed')).toBe(true)
     expect(fixture.events.filter(event => event.message === 'operation executed')).toEqual([])
@@ -328,24 +341,40 @@ describe('F39 persistence contract on a startup-resolved path', () => {
 
 describe('F54 explicit imports and fixture boundaries', () => {
   const IMPORT = /\bfrom\s+['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s+['"]([^'"]+)['"]/g
-  const importsOf = (directory: string) => readdirSync(join(fixtureRoot, directory), { recursive: true, encoding: 'utf8' })
-    .filter(path => path.endsWith('.ts'))
-    .flatMap(path => [...readFileSync(join(fixtureRoot, directory, path), 'utf8').matchAll(IMPORT)].map(match => ({ file: `${directory}/${path}`, specifier: match[1] ?? match[2] ?? match[3]! })))
   const FRAMEWORK = /^(nitro|h3|srvx|crossws)(\/|$)|^@5straps\/runtime\/nitro$/
 
-  it('keeps fixture/common free of Nitro, H3, MCP, CLI and server code', () => {
-    const offenders = importsOf('common').filter(({ specifier }) => FRAMEWORK.test(specifier) || specifier.startsWith('@modelcontextprotocol/') || /^\.\.\/(layers|server|mcp|cli)\//.test(specifier))
-    expect(offenders).toEqual([])
+  // Every module reachable through relative imports from a directory's files, and the packages they import.
+  function importGraph(directory: string): { files: string[]; packages: { file: string; specifier: string }[] } {
+    const pending = readdirSync(join(fixtureRoot, directory), { recursive: true, encoding: 'utf8' }).filter(path => path.endsWith('.ts')).map(path => join(fixtureRoot, directory, path))
+    const seen = new Set<string>()
+    const packages: { file: string; specifier: string }[] = []
+    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+      if (seen.has(file)) continue
+      seen.add(file)
+      for (const match of readFileSync(file, 'utf8').matchAll(IMPORT)) {
+        const specifier = match[1] ?? match[2] ?? match[3]!
+        if (specifier.startsWith('.')) pending.push(join(dirname(file), specifier).replace(/\.js$/, '.ts'))
+        else packages.push({ file: relative(fixtureRoot, file), specifier })
+      }
+    }
+    return { files: [...seen].map(file => relative(fixtureRoot, file)).sort(), packages }
+  }
+
+  it('fixture/common reaches no Nitro, H3, MCP, CLI or server code', () => {
+    const graph = importGraph('common')
+    expect(graph.packages.filter(({ specifier }) => FRAMEWORK.test(specifier) || specifier.startsWith('@modelcontextprotocol/'))).toEqual([])
+    expect(graph.files.filter(file => !file.startsWith('common/'))).toEqual([])
   })
 
-  it('keeps fixture/mcp free of Nitro, H3, CLI and server code', () => {
-    const offenders = importsOf('mcp').filter(({ specifier }) => FRAMEWORK.test(specifier) || /^\.\.\/(layers|server|cli)\//.test(specifier))
-    expect(offenders).toEqual([])
+  it('fixture/mcp reaches no Nitro, H3, CLI or server code', () => {
+    const graph = importGraph('mcp')
+    expect(graph.packages.filter(({ specifier }) => FRAMEWORK.test(specifier))).toEqual([])
+    expect(graph.files.filter(file => !/^(mcp|common)\//.test(file))).toEqual([])
   })
 
-  it('bundles only explicitly imported code: every layer file imports what it uses', () => {
-    // Nitro 3.0.260903-beta has no auto-import option; the fixture tsconfig compiles every file with explicit imports.
-    const layerFiles = importsOf('layers').map(({ file }) => file)
-    expect(new Set(layerFiles).size).toBeGreaterThan(10)
+  it('fixture/cli reaches no Nitro, H3, MCP or server code', () => {
+    const graph = importGraph('cli')
+    expect(graph.packages.filter(({ specifier }) => FRAMEWORK.test(specifier) || specifier.startsWith('@modelcontextprotocol/'))).toEqual([])
+    expect(graph.files.filter(file => !/^(cli|common)\//.test(file))).toEqual([])
   })
 })

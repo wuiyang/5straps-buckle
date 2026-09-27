@@ -21,9 +21,10 @@ export function requireCredential(kind: Credential): Guard {
   return async (event) => {
     const actor = (await useServices(event).getAccess()).verify(kind, bearerToken(event))
     if (!actor) throw HTTPError.status(401, 'Unauthorized')
-    // Fixture only: an authenticated agent may name a sub-actor to exercise context isolation (F19).
+    // Fixture only: an authenticated caller may name a sub-actor (F19), always under its own credential,
+    // so x-actor can never pose as another identity such as the owner CLI or admin.
     const named = event.req.headers.get('x-actor')
-    return { actor: named && ACTOR.test(named) ? named : actor }
+    return { actor: named && ACTOR.test(named) ? `${actor}:${named}` : actor }
   }
 }
 

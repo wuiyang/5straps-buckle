@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess, type StdioOptions } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -127,10 +127,22 @@ export async function runFixtureCli(input: { dataDir: string; tokens: FixtureTok
   return { code, output: fixture.stdout.at(-1) ?? {}, process: fixture }
 }
 
-// Pass condition for every fixture run: stdout carries only machine lines, stderr only JSON diagnostics.
+// Pass condition for every fixture run: stdout carries only machine lines, stderr only JSON diagnostics,
+// and nothing failed, including a close step.
 export function expectCleanDiagnostics(fixture: FixtureProcess): void {
   expect(fixture.malformed).toEqual([])
-  expect(fixture.events.filter(event => event.message === 'unhandled rejection' || event.level === 'fatal')).toEqual([])
+  expect(fixture.events.filter(event => event.message === 'unhandled rejection' || event.message === 'close failed' || event.level === 'fatal')).toEqual([])
+}
+
+// Every fixture a test file started must stop on its own with exit code 0.
+export async function stopAll(fixtures: readonly FixtureProcess[]): Promise<void> {
+  expect(await Promise.all(fixtures.map(fixture => fixture.stop()))).toEqual(fixtures.map(() => 0))
+}
+
+// Test-only startup gate: startup waits until the test creates this file (FIXTURE_STARTUP_GATE).
+export function startupGate(): { env: Record<string, string>; open: () => void } {
+  const path = join(mkdtempSync(join(tmpdir(), 'startup-gate-')), 'open')
+  return { env: { FIXTURE_STARTUP_GATE: path }, open: () => writeFileSync(path, '') }
 }
 
 export function bearer(token: string, extra: Record<string, string> = {}): Record<string, string> {

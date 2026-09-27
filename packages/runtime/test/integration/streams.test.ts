@@ -4,7 +4,7 @@ import { request as httpRequest } from 'node:http'
 import { createConnection, type Socket } from 'node:net'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
-import { bearer, createDataDir, createTokens, expectCleanDiagnostics, serveFixture, type ServingFixture } from './support/fixture-process.js'
+import { bearer, createDataDir, createTokens, expectCleanDiagnostics, serveFixture, startupGate, stopAll, type ServingFixture } from './support/fixture-process.js'
 import { expectNoLeakedResources, resourceSnapshot } from './support/resources.js'
 
 const build = inject('fixtureBuild')
@@ -14,7 +14,7 @@ let resourcesBefore: Record<string, number>
 
 beforeAll(() => { resourcesBefore = resourceSnapshot() })
 afterAll(async () => {
-  await Promise.all(started.map(fixture => fixture.stop()))
+  await stopAll(started)
   for (const fixture of started) expectCleanDiagnostics(fixture)
   await expectNoLeakedResources(resourcesBefore)
 })
@@ -149,8 +149,10 @@ describe('F26 WebSocket through handleUpgrade with first-frame authentication', 
   })
 
   it('refuses the upgrade while starting and never upgrades a route without WebSocket hooks', async () => {
-    const starting = await serve({ FIXTURE_STARTUP_DELAY_MS: '1500' })
+    const gate = startupGate()
+    const starting = await serve(gate.env)
     expect(await upgradeStatus(starting, '/v1/events')).toBe(503)
+    gate.open()
     const fixture = await ready()
     expect(await upgradeStatus(fixture, '/health')).toBe(200)
     expect(await upgradeStatus(fixture, '/does-not-exist')).toBe(404)

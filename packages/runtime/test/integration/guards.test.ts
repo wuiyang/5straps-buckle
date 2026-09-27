@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
-import { bearer, createDataDir, createTokens, expectCleanDiagnostics, serveFixture, type ServingFixture } from './support/fixture-process.js'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
+import { bearer, createDataDir, createTokens, expectCleanDiagnostics, serveFixture, stopAll, type ServingFixture } from './support/fixture-process.js'
 import { expectNoLeakedResources, resourceSnapshot } from './support/resources.js'
 
 const build = inject('fixtureBuild')
@@ -9,7 +10,7 @@ let resourcesBefore: Record<string, number>
 
 beforeAll(() => { resourcesBefore = resourceSnapshot() })
 afterAll(async () => {
-  await Promise.all(started.map(fixture => fixture.stop()))
+  await stopAll(started)
   for (const fixture of started) expectCleanDiagnostics(fixture)
   await expectNoLeakedResources(resourcesBefore)
 })
@@ -48,6 +49,18 @@ function operations(fixture: ServingFixture): number {
   return fixture.events.filter(event => event.message === 'operation executed').length
 }
 
+function capturedHookErrors(fixture: ServingFixture): number {
+  return fixture.events.filter(event => event.message === 'captured hook error' && event.fields?.tags === 'request').length
+}
+
+// guards-gate-8: the logger writes in FIFO order, so once a line logged after the probes has arrived, every
+// line the probes caused has too. Only then can a count of 'operation executed' prove that none ran.
+async function logBarrier(fixture: ServingFixture, expectedHookErrors: number): Promise<void> {
+  if (expectedHookErrors > 0) return vi.waitFor(() => expect(capturedHookErrors(fixture)).toBe(expectedHookErrors), { timeout: 5_000, interval: 20 })
+  expect((await send(fixture, { name: 'sentinel', path: '/v1/notes', headers: bearer(tokens.agent, { 'x-request-id': 'barrier' }) })).status).toBe(200)
+  await fixture.waitFor('request completed', event => event.fields?.clientRequestId === 'barrier')
+}
+
 describe('F24 Foundation gate: request-hook failures cannot bypass handler guards', () => {
   const scenarios = [
     { name: 'no hook failure', faults: undefined, refusedWith: 401 },
@@ -63,11 +76,12 @@ describe('F24 Foundation gate: request-hook failures cannot bypass handler guard
         const result = await send(fixture, probe)
         expect({ probe: probe.name, ...result }).toEqual({ probe: probe.name, status: scenario.refusedWith, body: { error: expect.any(String) } })
       }
-      expect(operations(fixture)).toBe(0)
       const health = await send(fixture, { name: 'liveness', path: '/health' })
       expect(health).toEqual({ status: 200, body: { status: 'ok' } })
-      const captured = fixture.events.filter(event => event.message === 'captured hook error' && event.fields?.tags === 'request')
-      expect(captured.length).toBe(scenario.faults ? refusedProbes().length + 1 : 0)
+      await logBarrier(fixture, scenario.faults ? refusedProbes().length + 1 : 0)
+      // Without faults the barrier itself is one authorised operation.
+      expect(operations(fixture)).toBe(scenario.faults ? 0 : 1)
+      expect(capturedHookErrors(fixture)).toBe(scenario.faults ? refusedProbes().length + 1 : 0)
     })
   }
 
@@ -82,6 +96,7 @@ describe('F24 Foundation gate: request-hook failures cannot bypass handler guard
     const fixture = await serve('hook-before-context')
     expect(await send(fixture, { name: 'agent', path: '/v1/notes', headers: bearer(tokens.agent) })).toEqual({ status: 503, body: { error: expect.any(String) } })
     expect(await send(fixture, { name: 'admin', path: '/setup/status', headers: bearer(tokens.admin) })).toEqual({ status: 503, body: { error: expect.any(String) } })
+    await logBarrier(fixture, 2)
     expect(operations(fixture)).toBe(0)
   })
 })
@@ -94,9 +109,36 @@ describe('F25 middleware scoping', () => {
     const text = await initialize.text()
     const message = JSON.parse(text.startsWith('{') ? text : text.split('\n').find(line => line.startsWith('data: '))!.slice(6)) as { result?: { serverInfo?: { name: string } } }
     expect(message.result?.serverInfo?.name).toBe('runtime-fixture')
-    expect(fixture.events.filter(event => event.message === 'admin request')).toEqual([])
 
     expect((await send(fixture, { name: 'admin', path: '/setup/status', headers: bearer(tokens.admin) })).status).toBe(200)
+    await fixture.waitFor('request completed', event => event.fields?.path === '/setup/status')
     expect(fixture.events.filter(event => event.message === 'admin request').map(event => event.fields?.path)).toEqual(['/setup/status'])
+  })
+
+  it('guards-gate-12 streams an MCP tool call through the request scope', async () => {
+    const fixture = await serve()
+    const contentTypes: string[] = []
+    const client = new Client({ name: 'probe', version: '0.0.0' })
+    await client.connect(new StreamableHTTPClientTransport(new URL(fixture.url('/mcp')), {
+      requestInit: { headers: bearer(tokens.agent) },
+      fetch: (url, init) => fetch(url, init).then((response) => { contentTypes.push(response.headers.get('content-type') ?? ''); return response }),
+    }))
+    try {
+      const listed = await client.callTool({ name: 'list_notes', arguments: {} })
+      expect(listed.content).toEqual([{ type: 'text', text: '[]' }])
+    } finally {
+      await client.close()
+    }
+    expect(contentTypes.some(type => type.startsWith('text/event-stream'))).toBe(true)
+    await fixture.waitFor('request completed', event => event.fields?.path === '/mcp' && event.fields?.outcome === 'streamed 200')
+  })
+})
+
+describe('sub-actors stay under the verified credential (guards-gate-9)', () => {
+  it('names an x-actor sub-actor under the agent credential, never as admin', async () => {
+    const fixture = await serve()
+    const response = await fetch(fixture.url('/v1/whoami'), { headers: bearer(tokens.agent, { 'x-actor': 'admin' }) })
+    expect(await response.json()).toMatchObject({ actor: 'agent:admin', alsActor: 'agent:admin' })
+    expect((await send(fixture, { name: 'admin', path: '/setup/status', headers: bearer(tokens.agent, { 'x-actor': 'admin' }) })).status).toBe(401)
   })
 })

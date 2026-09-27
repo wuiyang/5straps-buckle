@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createRuntimeOwner, defineScoped, defineSingleton, defineTransient, RuntimeError, RuntimeErrorCode, useScope, type CloseStage, type Closer, type Logger, type RuntimeOwner } from '@5straps/runtime'
@@ -46,7 +47,7 @@ export function initializeCommon(input: { config: FixtureConfig; logger: Logger;
 
 async function startCommon(input: { config: FixtureConfig; role: RuntimeRole; owner: RuntimeOwner; ports: Ports; onClose: FixtureRuntime['onClose']; logger: Logger }): Promise<void> {
   const { config, owner } = input
-  if (config.startupDelayMs > 0) await delay(config.startupDelayMs, undefined, { signal: owner.signal })
+  if (config.startupGate) await waitForFile(config.startupGate, owner.signal)
   if (config.startupFails) throw new Error('Startup failure requested by FIXTURE_STARTUP_FAILS')
   const db = await openDatabase({ path: join(config.dataDir, 'notes.sqlite') })
   const connection = createConnectionOwner(db, { owned: true, label: 'notes' })
@@ -59,6 +60,12 @@ async function startCommon(input: { config: FixtureConfig; role: RuntimeRole; ow
     input.logger.info('ownership lock held', { path: lock.path })
   }
   input.logger.info('common ready', { role: input.role })
+}
+
+const GATE_POLL_MS = 20
+
+async function waitForFile(path: string, signal: AbortSignal): Promise<void> {
+  while (!existsSync(path)) await delay(GATE_POLL_MS, undefined, { signal })
 }
 
 function defineFixtureServices(input: { config: FixtureConfig; logger: Logger; ports: Ports }) {

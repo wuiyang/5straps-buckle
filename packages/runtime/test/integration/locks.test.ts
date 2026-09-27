@@ -44,10 +44,13 @@ describe('cross-process SQLite coordination', () => {
   it('F35 waits for a deadline lock, and gives up at the deadline, with journal.ts parity defaults', async () => {
     expect([DEFAULT_LOCK_DEADLINE_MS, DEFAULT_LOCK_POLL_MS]).toEqual([300_000, 25])
     const path = lockPath()
-    const holder = startWorker(['hold-lock', path, '300'])
+    // sqlite-fixes-11: the holder releases when told to, not on a timer, so load cannot reorder the steps.
+    const holder = startWorker(['hold-lock', path, 'stdin'])
     await holder.next(message => message.locked === true)
     await expectLockBusy(acquireFileLock({ path, wait: { deadlineMs: 50 } }))
-    const lock = await acquireFileLock({ path, wait: { deadlineMs: 5_000, pollMs: DEFAULT_LOCK_POLL_MS } })
+    const waiting = acquireFileLock({ path, wait: { deadlineMs: 5_000, pollMs: DEFAULT_LOCK_POLL_MS } })
+    holder.child.stdin!.end('release\n')
+    const lock = await waiting
     expect(lock.held).toBe(true)
     await lock.release()
     await holder.exited
