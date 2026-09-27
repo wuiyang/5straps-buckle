@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 import { startWorker } from './support/workers.js'
 import { createCliConsumerSlot, createCliRequester, createLogger, createServiceRegistry, defineSingleton, isRuntimeError, RuntimeErrorCode, type LogEvent } from '../../src/index.js'
-import { createConnectionOwner, DEFAULT_BUSY_TIMEOUT_MS, DEFAULT_SECTION_WAIT_TIMEOUT_MS, isSqliteBusy, openDatabase, rawConnection, readPragma, SqliteErrorCode, type SqliteDatabase } from '../../src/sqlite/index.js'
+import { assertOwnerOnlyDirectory, createConnectionOwner, DEFAULT_BUSY_TIMEOUT_MS, DEFAULT_SECTION_WAIT_TIMEOUT_MS, isSqliteBusy, openDatabase, rawConnection, readPragma, SqliteErrorCode, type SqliteDatabase } from '../../src/sqlite/index.js'
 
 function databasePath(name = 'app.sqlite'): string {
   return join(mkdtempSync(join(tmpdir(), 'sqlite-')), 'state', name)
@@ -466,6 +466,18 @@ describe('directory permission policy (ruling 7)', () => {
     await existing.dispose()
     const created = await openDatabase({ path: databasePath('credentials.sqlite'), requireOwnerOnlyDirectory: true })
     await created.dispose()
+  })
+
+  it('assertOwnerOnlyDirectory refuses a directory with any group or other bit, names the repair, and accepts 0700 or a missing one', () => {
+    for (const mode of [0o750, 0o705, 0o755, 0o710]) {
+      const directory = existingDirectory(mode)
+      let refused: unknown
+      try { assertOwnerOnlyDirectory(directory) } catch (error) { refused = error }
+      expect(isRuntimeError(refused, NOT_OWNER_ONLY)).toBe(true)
+      expect((refused as Error).message).toContain(`chmod 700 ${directory}`)
+    }
+    expect(() => assertOwnerOnlyDirectory(existingDirectory(0o700))).not.toThrow()
+    expect(() => assertOwnerOnlyDirectory(join(existingDirectory(0o700), 'not-yet-created'))).not.toThrow()
   })
 
   it('warns by default about a group-readable existing directory and still opens the database', async () => {

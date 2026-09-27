@@ -110,10 +110,27 @@ function restrictCreatedDirectories({ directory, firstCreated, logger }: { direc
 
 // Warns by default; a directory that holds credentials must be owner-only, so the caller can ask for a refusal.
 function checkDirectoryAccess({ directory, logger, requireOwnerOnlyDirectory }: Omit<PrepareFileInput, 'path'> & { directory: string }): void {
-  const mode = statSync(directory).mode & 0o777
-  if ((mode & 0o077) === 0) return
-  if (requireOwnerOnlyDirectory) throw new RuntimeError(SqliteErrorCode.directoryNotOwnerOnly, `SQLite directory ${directory} is accessible to other users (mode ${mode.toString(8)}); it holds credentials and must be 0700`)
-  logger?.warn('SQLite directory is accessible to other users; its mode was left unchanged', { directory, mode: mode.toString(8) })
+  if (requireOwnerOnlyDirectory) return assertOwnerOnlyDirectory(directory)
+  const mode = looseMode(directory)
+  if (mode !== undefined) logger?.warn('SQLite directory is accessible to other users; its mode was left unchanged', { directory, mode: mode.toString(8) })
+}
+
+/**
+ * Refuses a directory other users can reach, for one that holds credentials (ruling 7). A missing
+ * directory passes: whoever creates it makes it 0700.
+ */
+export function assertOwnerOnlyDirectory(directory: string): void {
+  const mode = looseMode(directory)
+  if (mode === undefined) return
+  throw new RuntimeError(SqliteErrorCode.directoryNotOwnerOnly, `Directory ${directory} is accessible to other users (mode ${mode.toString(8)}); it holds credentials and must be owner-only: chmod 700 ${directory}`)
+}
+
+// The mode when group or other users have any access; undefined when owner-only or missing.
+function looseMode(directory: string): number | undefined {
+  const stat = statSync(directory, { throwIfNoEntry: false })
+  if (!stat) return undefined
+  const mode = stat.mode & 0o777
+  return (mode & 0o077) === 0 ? undefined : mode
 }
 
 // A file another user owns, or a filesystem without modes, refuses chmod with EPERM: warn and keep going.
