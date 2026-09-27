@@ -1,15 +1,13 @@
 import { RuntimeError } from '../errors.js'
+import { MAX_TIMER_MS } from '../internal/timeouts.js'
 import { InteractionErrorCode } from './codes.js'
 import type { CliRequest } from './types.js'
-
-// Node timers overflow above this and fire at once.
-const MAX_TIMEOUT_MS = 2 ** 31 - 1
 
 export function invalidWaitError(request: CliRequest): RuntimeError | undefined {
   if (request.wait.mode === 'indefinite') return undefined
   const { timeoutMs } = request.wait
-  if (Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= MAX_TIMEOUT_MS) return undefined
-  return new RuntimeError(InteractionErrorCode.invalidWait, `CLI request ${request.id} needs a finite wait between 1 and ${MAX_TIMEOUT_MS} ms, or 'indefinite'; got ${timeoutMs}`)
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= MAX_TIMER_MS) return undefined
+  return new RuntimeError(InteractionErrorCode.invalidWait, `CLI request ${request.id} needs a finite wait between 1 and ${MAX_TIMER_MS} ms, or 'indefinite'; got ${timeoutMs}`)
 }
 
 // A re-sent request may join the original wait only when it asks the same person the same thing.

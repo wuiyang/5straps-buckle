@@ -1,12 +1,12 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  activeTransactionLabel, createLogger, createOperationScope, createRuntimeOwner, createServiceRegistry, defineScoped, defineSingleton, DisposalError,
-  isRuntimeError, runInScope, runInTransactionMarker, RuntimeError, RuntimeErrorCode, useScopeSafe, type LogEvent,
+  activeTransactionLabel, createLogger, createOperationScope, createRuntimeOwner, createServiceRegistry, defineScoped, defineSingleton, defineTransient, DisposalError,
+  isRuntimeError, runInScope, runInTransactionMarker, RuntimeError, RuntimeErrorCode, useScope, useScopeSafe, type LogEvent,
 } from '../../src/index.js'
 
 describe('runtime-held values never capture the caller scope (review H3)', () => {
-  it('a singleton factory sees no scope and no transaction, and cannot resolve scoped services', async () => {
+  it('a singleton factory sees no scope, and cannot resolve scoped services', async () => {
     const request = defineScoped({ name: 'Request', create: ({ scope }) => ({ user: scope!.context.actor }) })
     const seen: unknown[] = []
     const singleton = defineSingleton({ name: 'Probe', create: async () => {
@@ -15,7 +15,7 @@ describe('runtime-held values never capture the caller scope (review H3)', () =>
     } })
     const registry = createServiceRegistry({ services: [request, singleton] })
     const alice = registry.createScope({ context: { actor: 'alice' } })
-    const value = await runInScope(alice, () => runInTransactionMarker('tx-alice', () => registry.useSingleton(singleton)))
+    const value = await runInScope(alice, () => registry.useSingleton(singleton))
     expect(seen).toEqual([undefined, undefined])
     expect(value).toBe(RuntimeErrorCode.missingScope)
     await registry.dispose()
@@ -109,5 +109,157 @@ describe('close step bounds and the original error (review L4)', () => {
     expect(error).toBeInstanceOf(DisposalError)
     expect((error as DisposalError).message).toContain('database missing')
     expect((error as DisposalError).errors[0]).toEqual(new Error('database missing'))
+  })
+})
+
+describe('scoped construction runs in its owning scope (registry-scope-fixes-1)', () => {
+  it('a scoped or transient factory sees the scope it belongs to, not the caller scope', async () => {
+    const events: LogEvent[] = []
+    const logs = createLogger({ component: 'svc', sinks: [{ name: 'memory', write: (event) => { events.push(event) } }] })
+    const session = defineScoped({ name: 'Session', create: ({ scope }) => {
+      logs.logger.info('session created')
+      return { boundActor: useScope().context.actor, ownerActor: scope!.context.actor }
+    } })
+    const probe = defineTransient({ name: 'Probe', create: () => ({ actor: useScope().context.actor }) })
+    const registry = createServiceRegistry({ services: [session, probe] })
+    const alice = registry.createScope({ context: { actor: 'alice', correlationId: 'alice-req' } })
+    const bob = registry.createScope({ context: { actor: 'bob', correlationId: 'bob-req' } })
+    expect(await runInScope(alice, () => registry.useScoped(session, bob))).toEqual({ boundActor: 'bob', ownerActor: 'bob' })
+    expect(await runInScope(alice, () => registry.createTransient(probe, bob))).toEqual({ actor: 'bob' })
+    const carol = registry.createScope({ context: { actor: 'carol' } })
+    expect(await registry.useScoped(session, carol)).toEqual({ boundActor: 'carol', ownerActor: 'carol' })
+    await logs.flush()
+    expect(events.map(event => event.correlationId)).toEqual(['bob-req', carol.context.correlationId])
+    await registry.dispose()
+  })
+})
+
+describe('scope disposal order and bounds (registry-scope-fixes-2, -3)', () => {
+  it('bounds the wait for a hung scoped factory and still disposes singletons', async () => {
+    const disposed: string[] = []
+    const hung = defineScoped({ name: 'Hung', create: () => new Promise<never>(() => {}) })
+    const config = defineSingleton({ name: 'Config', create: () => 'config', dispose: () => { disposed.push('config') } })
+    const registry = createServiceRegistry({ services: [hung, config] })
+    await registry.useSingleton(config)
+    const scope = registry.createScope({ context: {}, drainTimeoutMs: 20 })
+    void registry.useScoped(hung, scope).catch(() => undefined)
+    const error = await Promise.race([scope.dispose().then(() => 'resolved', (failure: unknown) => failure), delay(5_000).then(() => 'still pending')])
+    expect(error).toBeInstanceOf(DisposalError)
+    expect((error as DisposalError).errors.map(item => (item as RuntimeError).code)).toEqual([RuntimeErrorCode.drainTimeout])
+    expect(((error as DisposalError).errors[0] as Error).message).toContain('Hung')
+    expect(await Promise.race([registry.dispose().then(() => 'disposed'), delay(5_000).then(() => 'still pending')])).toBe('disposed')
+    expect(disposed).toEqual(['config'])
+  })
+
+  it('disposes a late construction while its dependencies are still open, in reverse dependency order', async () => {
+    const order: string[] = []
+    const gate = Promise.withResolvers<void>()
+    const b = defineScoped({ name: 'B', create: () => ({ open: true }), dispose: (value) => { value.open = false; order.push('dispose B') } })
+    const a = defineScoped({ name: 'A', dependencies: [b], create: async ({ get }) => {
+      const dependency = await get(b)
+      await gate.promise
+      order.push(`A finished; B open ${dependency.open}`)
+      return { dependency }
+    }, dispose: () => { order.push('dispose A') } })
+    const registry = createServiceRegistry({ services: [a, b] })
+    const scope = registry.createScope({ context: {} })
+    const getting = registry.useScoped(a, scope).catch((error: unknown) => error)
+    await delay(1)
+    const closing = scope.dispose()
+    setTimeout(() => gate.resolve(), 20)
+    await closing
+    expect(order).toEqual(['A finished; B open true', 'dispose A', 'dispose B'])
+    expect(isRuntimeError(await getting, RuntimeErrorCode.disposedScope)).toBe(true)
+  })
+})
+
+describe('late constructions (registry-scope-fixes-7, -8)', () => {
+  it('refuses a late value without a dispose function and reports a failing late dispose', async () => {
+    const gate = Promise.withResolvers<void>()
+    const plain = defineScoped({ name: 'Plain', create: async () => { await gate.promise; return 'plain' } })
+    const failing = defineScoped({ name: 'Failing', create: async () => { await gate.promise; return 'failing' }, dispose: () => { throw new Error('late dispose failed') } })
+    const registry = createServiceRegistry({ services: [plain, failing] })
+    const scope = registry.createScope({ context: {} })
+    const gettingPlain = registry.useScoped(plain, scope).catch((error: unknown) => error)
+    const gettingFailing = registry.useScoped(failing, scope).catch((error: unknown) => error)
+    const closing = scope.dispose().then(() => undefined, (error: unknown) => error)
+    setTimeout(() => gate.resolve(), 20)
+    expect(isRuntimeError(await gettingPlain, RuntimeErrorCode.disposedScope)).toBe(true)
+    const refused = await gettingFailing
+    expect(isRuntimeError(refused, RuntimeErrorCode.disposedScope)).toBe(true)
+    expect((refused as Error).cause).toEqual(new Error('late dispose failed'))
+    const closed = await closing
+    expect(closed).toBeInstanceOf(DisposalError)
+    expect((closed as DisposalError).errors).toEqual([new Error('late dispose failed')])
+  })
+})
+
+describe('runtime close fits scope drains inside the services step (registry-scope-fixes-4)', () => {
+  it('drains active scopes concurrently within a default bound below the close step bound', async () => {
+    const order: string[] = []
+    const store = defineSingleton({ name: 'Store', create: () => 'store', dispose: () => { order.push('singleton disposed') } })
+    const owner = createRuntimeOwner({ services: [store], closeStepTimeoutMs: 400 })
+    await owner.start(async (runtime) => {
+      await runtime.registry.useSingleton(store)
+      runtime.onClose('databases', 'database', () => { order.push('database closed') })
+    })
+    for (const actor of ['first', 'second']) owner.registry.createScope({ context: { actor } }).registerBackgroundWork(new Promise(() => {}))
+    const error = await owner.close().then(() => undefined, (failure: unknown) => failure)
+    expect(order).toEqual(['singleton disposed', 'database closed'])
+    const codes = (error as DisposalError).errors.flatMap(item => (item instanceof AggregateError ? item.errors : [item])).map(item => (item as RuntimeError).code)
+    expect(codes).toEqual([RuntimeErrorCode.drainTimeout, RuntimeErrorCode.drainTimeout])
+  })
+
+  it('refuses a drain bound that does not fit inside the close step bound', () => {
+    expect(() => createRuntimeOwner({ services: [], closeStepTimeoutMs: 100, drainTimeoutMs: 100 })).toThrow(TypeError)
+  })
+
+  it('stops before singleton disposal once the services step is abandoned', async () => {
+    const order: string[] = []
+    const store = defineSingleton({ name: 'Store', create: () => 'store', dispose: () => { order.push('singleton disposed') } })
+    const owner = createRuntimeOwner({ services: [store], closeStepTimeoutMs: 100 })
+    await owner.start(async (runtime) => {
+      await runtime.registry.useSingleton(store)
+      runtime.onClose('databases', 'database', () => { order.push('database closed') })
+    })
+    owner.registry.createScope({ context: {}, drainTimeoutMs: 300 }).registerBackgroundWork(new Promise(() => {}))
+    await owner.close().catch(() => undefined)
+    await delay(400)
+    expect(order).toEqual(['database closed'])
+  })
+})
+
+describe('singletons are never first built inside a transaction (registry-scope-fixes-5)', () => {
+  it('refuses the first construction inside a transaction and serves an already built singleton', async () => {
+    let runs = 0
+    const audit = defineSingleton({ name: 'Audit', create: () => ({ runs: ++runs }) })
+    const registry = createServiceRegistry({ services: [audit] })
+    const refused = await runInTransactionMarker('notes:tx', () => registry.useSingleton(audit)).catch((error: unknown) => error)
+    expect(isRuntimeError(refused, RuntimeErrorCode.singletonInsideTransaction)).toBe(true)
+    expect(runs).toBe(0)
+    const built = await registry.useSingleton(audit)
+    expect(await runInTransactionMarker('notes:tx', () => registry.useSingleton(audit))).toBe(built)
+  })
+})
+
+describe('background work drains with a live scope (registry-scope-fixes-6)', () => {
+  it('keeps the signal live and cached scoped services usable while draining, then aborts at the drain bound', async () => {
+    const operation = defineScoped({ name: 'Operation', create: () => ({ id: 'op' }) })
+    const registry = createServiceRegistry({ services: [operation] })
+    const scope = registry.createScope({ context: {}, drainTimeoutMs: 100 })
+    const cached = await registry.useScoped(operation, scope)
+    const seen: unknown[] = []
+    scope.registerBackgroundWork((async () => {
+      await delay(5)
+      seen.push(scope.signal.aborted, (await runInScope(scope, () => registry.useScoped(operation))) === cached)
+    })())
+    let hungSignal: AbortSignal | undefined
+    const second = registry.createScope({ context: {}, drainTimeoutMs: 30 })
+    second.registerBackgroundWork(new Promise((resolve) => { hungSignal = second.signal; second.signal.addEventListener('abort', resolve) }))
+    await scope.dispose()
+    expect(seen).toEqual([false, true])
+    const drained = await second.dispose().then(() => 'clean', (error: unknown) => error)
+    expect(hungSignal?.aborted).toBe(true)
+    expect(drained).toBeInstanceOf(DisposalError)
   })
 })

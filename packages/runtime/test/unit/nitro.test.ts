@@ -107,7 +107,7 @@ describe('Nitro host bridge and context plugin', () => {
     // Loose bound: well under the 10 s default drain the response used to wait for.
     const response = await Promise.race([nitroApp.fetch(new Request('http://local/hung')), delay(5_000).then(() => undefined)])
     expect(response?.status).toBe(200)
-    expect(requestScope?.state).toBe('disposing')
+    expect(requestScope?.state).toBe('draining')
   })
 
   it('L8 keeps a client x-request-id as a separate field, never as the correlation id', async () => {

@@ -1,4 +1,6 @@
 import { DisposalError, RuntimeError, RuntimeErrorCode, toError } from '../errors.js'
+import { assertTimerMs } from '../internal/timeouts.js'
+import { DEFAULT_DRAIN_TIMEOUT_MS } from '../scope/operation-scope.js'
 import { createServiceRegistry, type AnyServiceDefinition, type ServiceRegistry } from '../services/registry.js'
 
 // Close runs stage by stage in this order (nitro/runtime.md, Lifecycle).
@@ -23,13 +25,15 @@ export interface RuntimeOwnerOptions {
   name?: string
   services: readonly AnyServiceDefinition[]
   closeStepTimeoutMs?: number
+  // Default drain bound for the owner's operation scopes; below closeStepTimeoutMs so the services step can finish.
+  drainTimeoutMs?: number
 }
 
 const DEFAULT_CLOSE_STEP_TIMEOUT_MS = 10_000
 
 export function createRuntimeOwner(options: RuntimeOwnerOptions): RuntimeOwner {
-  const registry = createServiceRegistry({ services: options.services, name: options.name })
-  const closeStepTimeoutMs = options.closeStepTimeoutMs ?? DEFAULT_CLOSE_STEP_TIMEOUT_MS
+  const { closeStepTimeoutMs, drainTimeoutMs } = closeBounds(options)
+  const registry = createServiceRegistry({ services: options.services, name: options.name, drainTimeoutMs })
   const controller = new AbortController()
   const closers = new Map<CloseStage, { name: string; closer: Closer }[]>(CLOSE_STAGES.map(stage => [stage, []]))
   const readiness = Promise.withResolvers<void>()
@@ -39,7 +43,7 @@ export function createRuntimeOwner(options: RuntimeOwnerOptions): RuntimeOwner {
   let failure: unknown
   let closing: Promise<void> | undefined
 
-  closers.get('services')!.push({ name: 'service registry', closer: () => registry.dispose() })
+  closers.get('services')!.push({ name: 'service registry', closer: signal => registry.dispose({ signal }) })
 
   async function start(initialize: (owner: RuntimeOwner) => void | Promise<void>): Promise<void> {
     if (state !== 'created') throw new RuntimeError(RuntimeErrorCode.notReady, `Runtime cannot start from state ${state}`)
@@ -100,6 +104,16 @@ export function createRuntimeOwner(options: RuntimeOwnerOptions): RuntimeOwner {
     close,
   }
   return owner
+}
+
+// Scopes drain concurrently inside the services step, so each drain must end before that step's bound.
+function closeBounds(options: RuntimeOwnerOptions): { closeStepTimeoutMs: number; drainTimeoutMs: number } {
+  const closeStepTimeoutMs = options.closeStepTimeoutMs ?? DEFAULT_CLOSE_STEP_TIMEOUT_MS
+  assertTimerMs('closeStepTimeoutMs', closeStepTimeoutMs)
+  const drainTimeoutMs = options.drainTimeoutMs ?? Math.max(1, Math.min(DEFAULT_DRAIN_TIMEOUT_MS, Math.floor(closeStepTimeoutMs / 2)))
+  assertTimerMs('drainTimeoutMs', drainTimeoutMs)
+  if (drainTimeoutMs >= closeStepTimeoutMs) throw new TypeError(`drainTimeoutMs (${drainTimeoutMs}) must be below closeStepTimeoutMs (${closeStepTimeoutMs}) so scope drains fit in the services close step`)
+  return { closeStepTimeoutMs, drainTimeoutMs }
 }
 
 // Each close step is bounded so one stuck resource cannot stop later stages from running.

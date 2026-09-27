@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { DisposalError, RuntimeError, RuntimeErrorCode } from '../errors.js'
-import { runDetached } from '../internal/async-slots.js'
-import { createOperationScope, useScope, type CreateScopeOptions, type OperationScope } from '../scope/als.js'
+import { runDetached, scopeStorage } from '../internal/async-slots.js'
+import { assertTimerMs, settleWithin } from '../internal/timeouts.js'
+import { useScope, type CreateScopeOptions, type OperationScope } from '../scope/als.js'
+import { DEFAULT_DRAIN_TIMEOUT_MS, isScopeUsable, openOperationScope } from '../scope/operation-scope.js'
+import { activeTransactionLabel } from '../transaction/guard.js'
 
 export type Lifetime = 'singleton' | 'scoped' | 'transient'
 
@@ -44,25 +47,39 @@ export interface ServiceRegistry {
   useScoped<T>(definition: ScopedDefinition<T>, scope?: OperationScope): Promise<T>
   createTransient<T>(definition: TransientDefinition<T>, scope?: OperationScope): Promise<T>
   createScope(options: Omit<CreateScopeOptions, 'owner'>): OperationScope
-  dispose(): Promise<void>
+  // The signal is the close step's: once it aborts (the step timed out), singleton disposal is skipped.
+  dispose(options?: { signal?: AbortSignal }): Promise<void>
+}
+
+export interface ServiceRegistryOptions {
+  services: readonly AnyServiceDefinition[]
+  name?: string
+  // Default drain bound for scopes this registry creates (DEFAULT_DRAIN_TIMEOUT_MS when omitted).
+  drainTimeoutMs?: number
 }
 
 interface Created { definition: AnyServiceDefinition; value: unknown }
 interface ScopeCache {
   inFlight: Map<AnyServiceDefinition, Promise<unknown>>
-  // Every scoped or transient construction still running; scope disposal waits for them.
-  constructing: Set<Promise<unknown>>
+  // Every scoped or transient construction still running, by service name; scope disposal waits for them.
+  constructing: Map<Promise<unknown>, string>
+  // Dispose failures of values that finished after their scope stopped serving; reported by the scope.
+  lateDisposeErrors: unknown[]
 }
 type Owner = { kind: 'runtime' } | { kind: 'scope'; scope: OperationScope }
 
-export function createServiceRegistry(options: { services: readonly AnyServiceDefinition[]; name?: string }): ServiceRegistry {
+export function createServiceRegistry(options: ServiceRegistryOptions): ServiceRegistry {
   const registered = new Set(options.services)
   validateServiceGraph(registered)
+  const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS
+  assertTimerMs('drainTimeoutMs', drainTimeoutMs)
   const owner = Symbol(options.name ?? `runtime-${randomUUID()}`)
   const singletons = new Map<AnyServiceDefinition, Promise<unknown>>()
   const runtimeCreated: Created[] = []
   const scopeCaches = new WeakMap<OperationScope, ScopeCache>()
   const activeScopes = new Set<OperationScope>()
+  // Aborted when the runtime closes; cancels every scope, draining ones included.
+  const closing = new AbortController()
   let disposal: Promise<void> | undefined
 
   function assertUsable(definition: AnyServiceDefinition): void {
@@ -72,16 +89,16 @@ export function createServiceRegistry(options: { services: readonly AnyServiceDe
 
   function cacheFor(scope: OperationScope): ScopeCache {
     if (scope.owner !== owner) throw new RuntimeError(RuntimeErrorCode.foreignScope, `Operation scope ${scope.context.correlationId} belongs to another runtime`)
-    if (scope.state !== 'active') throw new RuntimeError(RuntimeErrorCode.disposedScope, `Operation scope ${scope.context.correlationId} is ${scope.state}`)
+    if (!isScopeUsable(scope)) throw new RuntimeError(RuntimeErrorCode.disposedScope, `Operation scope ${scope.context.correlationId} is ${scope.state}`)
     const cache = scopeCaches.get(scope)
     if (!cache) throw new RuntimeError(RuntimeErrorCode.foreignScope, `Operation scope ${scope.context.correlationId} was not created by this runtime`)
     return cache
   }
 
+  // Scoped and transient factories run inside their owning scope, whatever scope the caller is in.
   function construct<T>(definition: ServiceDefinition<T>, holder: Owner): Promise<T> {
-    const scope = holder.kind === 'scope' ? holder.scope : undefined
     const context: ResolveContext = {
-      scope,
+      scope: holder.kind === 'scope' ? holder.scope : undefined,
       get(dependency) {
         if (!definition.dependencies.includes(dependency)) {
           return Promise.reject(new RuntimeError(RuntimeErrorCode.undeclaredDependency, `${definition.name} resolved ${dependency.name} without declaring it as a dependency`))
@@ -89,34 +106,53 @@ export function createServiceRegistry(options: { services: readonly AnyServiceDe
         return resolve(dependency, holder)
       },
     }
-    const creating = Promise.resolve().then(() => definition.create(context)).then(async (value) => {
-      if (definition.dispose) await track(holder, { definition, value })
+    const start = () => Promise.resolve().then(() => definition.create(context)).then(async (value) => {
+      await adopt(holder, { definition, value })
       return value
     })
-    if (holder.kind === 'scope') trackConstruction(holder.scope, creating)
+    if (holder.kind === 'runtime') return start()
+    const creating = scopeStorage.run(holder.scope, start)
+    trackConstruction({ scope: holder.scope, creating, name: definition.name })
     return creating
   }
 
-  function trackConstruction(scope: OperationScope, creating: Promise<unknown>): void {
+  function trackConstruction({ scope, creating, name }: { scope: OperationScope; creating: Promise<unknown>; name: string }): void {
     const constructing = scopeCaches.get(scope)?.constructing
     if (!constructing) return
-    constructing.add(creating)
+    constructing.set(creating, name)
     const done = () => { constructing.delete(creating) }
     creating.then(done, done)
   }
 
-  async function track(holder: Owner, created: Created): Promise<void> {
+  async function adopt(holder: Owner, created: Created): Promise<void> {
     if (holder.kind === 'runtime') {
-      runtimeCreated.push(created)
+      if (created.definition.dispose) runtimeCreated.push(created)
       return
     }
-    if (holder.scope.state === 'active') {
-      holder.scope.onDispose(() => created.definition.dispose?.(created.value))
+    if (isScopeUsable(holder.scope)) {
+      if (created.definition.dispose) holder.scope.onDispose(() => created.definition.dispose?.(created.value))
       return
     }
-    // Finished after its scope began closing: dispose now and refuse to hand it out.
-    await created.definition.dispose?.(created.value)
-    throw new RuntimeError(RuntimeErrorCode.disposedScope, `${created.definition.name} finished after operation scope ${holder.scope.context.correlationId} closed`)
+    await disposeLate(holder.scope, created)
+  }
+
+  // Finished after its scope stopped serving: dispose now (dependencies are still open) and refuse to hand it out.
+  async function disposeLate(scope: OperationScope, created: Created): Promise<never> {
+    let failure: unknown
+    try {
+      await created.definition.dispose?.(created.value)
+    } catch (error) {
+      failure = error
+      scopeCaches.get(scope)?.lateDisposeErrors.push(error)
+    }
+    throw new RuntimeError(RuntimeErrorCode.disposedScope, `${created.definition.name} finished after operation scope ${scope.context.correlationId} closed`, failure === undefined ? undefined : { cause: failure })
+  }
+
+  // Runs after the scope's background drain and before its cleanups, within the same deadline.
+  async function settleConstructions({ scope, cache, deadline }: { scope: OperationScope; cache: ScopeCache; deadline: number }): Promise<unknown[]> {
+    const settled = await settleWithin([...cache.constructing.keys()], deadline - performance.now())
+    const errors: unknown[] = settled ? [] : [new RuntimeError(RuntimeErrorCode.drainTimeout, `Operation scope ${scope.context.correlationId} left ${[...new Set(cache.constructing.values())].join(', ')} under construction past its drain bound`)]
+    return [...errors, ...cache.lateDisposeErrors.splice(0)]
   }
 
   function resolve<T>(definition: ServiceDefinition<T>, holder: Owner): Promise<T> {
@@ -131,6 +167,9 @@ export function createServiceRegistry(options: { services: readonly AnyServiceDe
   function resolveSingleton<T>(definition: ServiceDefinition<T>): Promise<T> {
     const existing = singletons.get(definition)
     if (existing) return existing as Promise<T>
+    // Its setup would join the caller's transaction and vanish on rollback while the registry kept it cached.
+    const transaction = activeTransactionLabel()
+    if (transaction !== undefined) return Promise.reject(new RuntimeError(RuntimeErrorCode.singletonInsideTransaction, `Singleton ${definition.name} cannot be first created inside transaction ${transaction}; resolve it before the transaction or at startup`))
     const creating = runDetached(() => construct(definition, { kind: 'runtime' }))
     singletons.set(definition, creating)
     // A failed factory is retried by the next getter rather than cached.
@@ -148,12 +187,16 @@ export function createServiceRegistry(options: { services: readonly AnyServiceDe
     return creating
   }
 
-  async function disposeRuntime(): Promise<void> {
-    const errors: unknown[] = []
-    for (const scope of [...activeScopes].reverse()) {
-      try { await scope.dispose() } catch (error) { errors.push(error) }
-    }
+  // Scopes drain concurrently, each within its own bound; singletons go last, unless the close step was abandoned.
+  async function disposeRuntime(signal: AbortSignal | undefined): Promise<void> {
+    closing.abort(new RuntimeError(RuntimeErrorCode.disposedRuntime, 'Runtime closing'))
+    const scopes = await Promise.allSettled([...activeScopes].map(scope => scope.dispose()))
+    const errors: unknown[] = scopes.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
     await Promise.allSettled([...singletons.values()])
+    if (signal?.aborted) {
+      const skipped = runtimeCreated.splice(0).map(created => created.definition.name)
+      errors.push(new RuntimeError(RuntimeErrorCode.closeStepTimeout, `Singleton disposal skipped because its close step was abandoned: ${skipped.join(', ') || 'none'}`))
+    }
     for (const created of runtimeCreated.splice(0).reverse()) {
       try { await created.definition.dispose?.(created.value) } catch (error) { errors.push(error) }
     }
@@ -180,19 +223,19 @@ export function createServiceRegistry(options: { services: readonly AnyServiceDe
     },
     createScope(scopeOptions) {
       if (disposal) throw new RuntimeError(RuntimeErrorCode.disposedRuntime, 'Cannot open an operation scope: the runtime is disposed')
-      const scope = createOperationScope({ ...scopeOptions, owner })
-      const cache: ScopeCache = { inFlight: new Map(), constructing: new Set() }
+      const cache: ScopeCache = { inFlight: new Map(), constructing: new Map(), lateDisposeErrors: [] }
+      const scope: OperationScope = openOperationScope({ drainTimeoutMs, ...scopeOptions, owner }, {
+        closeSignal: closing.signal,
+        beforeCleanups: deadline => settleConstructions({ scope, cache, deadline }),
+      })
       scopeCaches.set(scope, cache)
       activeScopes.add(scope)
-      // Registered first, so it runs last: constructions that finish during disposal dispose themselves first.
-      scope.onDispose(async () => {
-        await Promise.allSettled([...cache.constructing])
-        activeScopes.delete(scope)
-      })
+      // Registered first, so it runs last: the scope counts as active for runtime close until every cleanup ran.
+      scope.onDispose(() => { activeScopes.delete(scope) })
       return scope
     },
-    dispose() {
-      disposal ??= disposeRuntime()
+    dispose(disposeOptions = {}) {
+      disposal ??= disposeRuntime(disposeOptions.signal)
       return disposal
     },
   }

@@ -36,6 +36,7 @@ export const RuntimeErrorCode = Object.freeze({
   asyncTransactionBody: 'AsyncTransactionBodyError',
   drainTimeout: 'DrainTimeoutError',
   closeStepTimeout: 'CloseStepTimeoutError',
+  singletonInsideTransaction: 'SingletonInsideTransactionError',
 } as const)
 
 export class DisposalError extends AggregateError {
