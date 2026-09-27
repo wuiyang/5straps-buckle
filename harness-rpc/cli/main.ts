@@ -255,7 +255,7 @@ async function approvals(input: CommandInput): Promise<CliResult> {
   if (values.watch && values.json) return fail('--watch asks in the terminal, so it takes no --json')
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
   if (values.watch) return watch(runtime, input.runtime)
-  const pending = runtime.approvals.pending()
+  const pending = runtime.approvalService.pending()
   if (values.json) return print(pending.map(request => ({ ...request, workspaceId: runtime.workspaceId, approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }) })))
   if (pending.length === 0) {
     process.stdout.write(`Nothing is waiting for a decision in workspace ${runtime.workspaceId}.\n`)
@@ -284,7 +284,7 @@ async function watch(runtime: BuckleRuntime, node: BuckleRuntime): Promise<CliRe
   const interrupt = () => interrupted.abort()
   process.once('SIGINT', interrupt)
   try {
-    return await watchApprovals({ approvals: runtime.approvals, actions: node.actions, workspaceId: runtime.workspaceId, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
+    return await watchApprovals({ approvals: runtime.approvalService, actions: node.actions, workspaceId: runtime.workspaceId, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
   } finally {
     process.off('SIGINT', interrupt)
   }
@@ -304,7 +304,7 @@ async function approve(input: CommandInput): Promise<CliResult> {
 
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
   // `BUCKLE-D18`: `--host` widens a network approval to a pattern, under the owner's authority alone.
-  const result = await runtime.approvals.resolve({ token, approved: values.deny !== true, scope: scope.data }, 'admin', values.host === undefined ? {} : { widenTo: values.host })
+  const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data }, authority: 'admin', ...(values.host === undefined ? {} : { widenTo: values.host }) })
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceId}`)
   if (result.widened) {
     const { pattern, askedBy } = result.widened

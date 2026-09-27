@@ -23,7 +23,7 @@ import { runProcess } from '../../adapters/process-runner.js'
 import { createWebhookReporter } from '../../adapters/report/webhook-reporter.js'
 import { resolveSandbox, type SandboxResolution } from '../../adapters/sandbox/create-sandbox.js'
 import { actionsPath, approvalNoncesPath, approvalsPath, grantsPath, pluginsPath, policyPath, type BuckleConfig } from '../../runtime/config.js'
-import { createMemoryNonceClaims, openFileNonceStore, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
+import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
 import { createPathView, type PathView } from '../../domain/path-view.js'
 import { createPermissionEngine, type PermissionEngine } from '../../domain/permission/engine.js'
@@ -87,8 +87,6 @@ export interface BuckleRuntime {
   approvals: ApprovalRegistry
   /** The single answerer: every ask waits here and every verdict is recorded here. */
   approvalService: ApprovalService
-  /** Replay protection for sealed decisions from Rings: on disk once a key is paired. */
-  approvalNonces: NonceClaims
   history: ChangeHistory
   shellWorkspaces: ReturnType<typeof createShellWorkspaceRecovery>
   actions: ActionLog
@@ -138,18 +136,20 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, { lockDeadlineMs })
   const actions = createFileActionLog(actionsPath(config))
   await actions.recoverInterrupted()
+  // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
-  const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd, lockDeadlineMs })
-  const reporter = input.reporter ?? (config.reportUrl && config.reportToken
-    ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
-    : nullReporter)
   const workspaceId = input.workspaceId ?? 'default'
   const approvalService = createApprovalService({
     registry: approvals, workspaceId, graceMs: config.approvalTimeoutMs,
     interaction: input.interaction ?? (async () => undefined),
     // Every notification names its workspace, whose `buckle approve --workspace` answers it.
     announce: config.approvalWebhook ? createWebhookNotifier({ url: config.approvalWebhook, serverId: config.serverId, workspaceId, token: config.reportToken, approvalKey: config.ringsApprovalKey }) : undefined,
+    decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
   })
+  const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd, lockDeadlineMs })
+  const reporter = input.reporter ?? (config.reportUrl && config.reportToken
+    ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
+    : nullReporter)
   const plugins = createPluginRegistry({
     filePath: pluginsPath(config),
     packOptions: { cwd: config.cwd, sandboxMode: sandbox.sandbox.mode },
@@ -211,7 +211,6 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     grants,
     approvals,
     approvalService,
-    approvalNonces,
     actions,
     history,
     shellWorkspaces: createShellWorkspaceRecovery({ directory: join(config.stateDirectory, 'isolated-shell', workspaceStateKey(config.cwd)), sourceRoot: config.cwd, maxBytes: config.isolationMaxBytes, retentionDays: config.historyRetentionDays, history }),

@@ -10,6 +10,7 @@ import { actionsPath, approvalsPath, grantsPath, loadConfig, type BuckleConfig }
 import { watchApprovals } from '../cli/approvals-watch.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createApprovalService, type ApprovalService } from '../common/services/approvals/approval-service.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { fixedInteraction } from './support/interaction.js'
 
@@ -26,6 +27,11 @@ function node(): BuckleConfig {
 /** A second registry over the node's state files, which is what a second terminal holds. */
 function registryOf(config: BuckleConfig): ApprovalRegistry {
   return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }), approvalsPath(config), config.cwd)
+}
+
+/** The approval service a `buckle approvals --watch` process answers through, over the same state files. */
+function serviceOf(config: BuckleConfig) {
+  return createApprovalService({ registry: registryOf(config), workspaceId: 'default', graceMs: config.approvalTimeoutMs, interaction: async () => undefined })
 }
 
 async function issue(registry: ApprovalRegistry): Promise<string> {
@@ -52,7 +58,7 @@ function keyboardTerminal() {
 /** An action log of its own, for a watch whose audit the test does not read. */
 const scratchLog = () => createFileActionLog(join(mkdtempSync(join(tmpdir(), 'buckle-watch-log-')), 'actions.jsonl'))
 
-function watch(approvals: Pick<ApprovalRegistry, 'pending' | 'resolve'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
+function watch(approvals: Pick<ApprovalService, 'pending' | 'answer'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
   const done = watchApprovals({ approvals, actions, workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
   return { terminal, done }
 }
@@ -83,7 +89,7 @@ describe('buckle approvals --watch', () => {
     const runtime = await createRuntime({ config, interaction: fixedInteraction() })
     const call = runtime.invoke({ request: { requestId: 'write', tool: 'fs_write', args: { path: join(outside, 'note.md'), content: 'hello' }, approvalTokens: [] }, sessionId: 'chat-1' })
 
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await vi.waitFor(() => expect(terminal.shown()).toContain('fs_write needs approval'))
     await prompted(terminal)
     expect(terminal.shown()).toContain('o) once  s) session  always) always  d) deny  n) skip')
@@ -99,7 +105,7 @@ describe('buckle approvals --watch', () => {
   it('leaves a skipped request waiting, and does not ask about it again', async () => {
     const config = node()
     const token = await issue(registryOf(config))
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await prompted(terminal)
 
     terminal.type('n\r')
@@ -115,7 +121,7 @@ describe('buckle approvals --watch', () => {
   it('grants nothing on Enter or an unrecognised key, and keeps asking', async () => {
     const config = node()
     const token = await issue(registryOf(config))
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await prompted(terminal)
 
     // `a` is not a key for this request, which offers once and session alone.
@@ -134,7 +140,7 @@ describe('buckle approvals --watch', () => {
   it('denies with d, through the same resolution as buckle approve --deny', async () => {
     const config = node()
     const token = await issue(registryOf(config))
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await prompted(terminal)
 
     terminal.type('d\r')
@@ -151,14 +157,14 @@ describe('buckle approvals --watch', () => {
       token: 'expiring', rule: 'read_scope', subject: '/shots', reason: 'outside the sandbox', tool: 'fs_read',
       offeredScopes: ['once'], expiresAt: new Date(Date.now() + 300).toISOString(),
     }
-    const resolve = vi.fn()
-    const { terminal, done } = watch({ pending: () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now()), resolve })
+    const answer = vi.fn()
+    const { terminal, done } = watch({ pending: () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now()), answer })
 
     await vi.waitFor(() => expect(terminal.shown()).toContain('expiring expired; dropped.'))
     terminal.type('o\r')
     await new Promise(resolve => setTimeout(resolve, 100))
 
-    expect(resolve).not.toHaveBeenCalled()
+    expect(answer).not.toHaveBeenCalled()
     terminal.type('\x03')
     expect(await done).toEqual({ exitCode: 0 })
   })
@@ -166,7 +172,7 @@ describe('buckle approvals --watch', () => {
   it('drops a question another route answered', async () => {
     const config = node()
     const token = await issue(registryOf(config))
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
 
     await registryOf(config).resolve({ token, approved: true, scope: 'once' })
@@ -179,7 +185,7 @@ describe('buckle approvals --watch', () => {
   it('stops on the first Ctrl-C with a question open, answering nothing', async () => {
     const config = node()
     const token = await issue(registryOf(config))
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
 
     terminal.type('\x03')
@@ -194,7 +200,7 @@ describe('buckle approvals --watch', () => {
   it('stops on an interrupt signal while nothing is waiting', async () => {
     const terminal = keyboardTerminal()
     const interrupted = new AbortController()
-    const done = watchApprovals({ approvals: registryOf(node()), actions: scratchLog(), workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL, signal: interrupted.signal })
+    const done = watchApprovals({ approvals: serviceOf(node()), actions: scratchLog(), workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL, signal: interrupted.signal })
 
     interrupted.abort()
 
@@ -205,7 +211,7 @@ describe('buckle approvals --watch', () => {
   it('exits non-zero with a clear error when the node\'s approvals cannot be read', async () => {
     const config = node()
     writeFileSync(approvalsPath(config), '{ not json')
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
 
     expect(await done).toEqual({ exitCode: 1 })
     expect(terminal.refused()).toContain('Cannot read the approvals waiting in workspace default')
@@ -222,7 +228,7 @@ describe('buckle approvals --watch, audit', () => {
     await sleep(5)
     const second = await issuePrivate(registry, '10.0.0.2')
     const actions = createFileActionLog(actionsPath(config))
-    const { terminal, done } = watch(registryOf(config), keyboardTerminal(), actions)
+    const { terminal, done } = watch(serviceOf(config), keyboardTerminal(), actions)
 
     await prompted(terminal)
     terminal.type('always\r')
@@ -247,7 +253,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
     const first = await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
     const second = await issuePrivate(registry, '10.0.0.2')
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await prompted(terminal)
     expect(terminal.shown()).toContain('subject: 10.0.0.1')
 
@@ -278,7 +284,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
     const first = await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
     const second = await issuePrivate(registry, '10.0.0.2')
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await prompted(terminal)
 
     await registry.resolve({ token: first, approved: false, scope: 'once' })
@@ -301,7 +307,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
     await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
     const second = await issuePrivate(registry, '10.0.0.2')
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await prompted(terminal)
 
     terminal.type('always\r')
@@ -323,7 +329,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
     await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
     const second = await issuePrivate(registry, '10.0.0.2')
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await prompted(terminal)
 
     // `a` alone is not the persisted scope, so twice in a row grants nothing at all.
@@ -351,7 +357,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
   it('throws away a line typed before the question took keys', async () => {
     const config = node()
     const token = await issuePrivate(registryOf(config), '10.0.0.1')
-    const { terminal, done } = watch(registryOf(config))
+    const { terminal, done } = watch(serviceOf(config))
     await vi.waitFor(() => expect(terminal.shown()).toContain('subject: 10.0.0.1'))
 
     terminal.type('o')
@@ -370,7 +376,7 @@ it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file w
   const config = node()
   const registry = registryOf(config)
   await registry.issue({ tool: 'fs_read', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
-  const { terminal, done } = watch(registry)
+  const { terminal, done } = watch(serviceOf(config))
   try {
     await prompted(terminal)
     expect(terminal.shown()).toContain('WARNING')

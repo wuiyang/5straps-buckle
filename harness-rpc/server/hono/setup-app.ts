@@ -5,10 +5,9 @@ import { sensitivePathReason } from '../../common/domain/permission/rules/sensit
 import { PolicyConflictError } from '../../common/domain/policy.js'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { ApprovalDecisionSchema, WorkspacePolicyUpdateSchema } from '@5straps/protocol'
+import { WorkspacePolicyUpdateSchema } from '@5straps/protocol'
 import { Hono, type Context } from 'hono'
 import type { BuckleConfig } from '../../common/runtime/config.js'
-import { openApprovalDecision } from '../../common/services/approvals/approval-envelope.js'
 import { isRestrictive, PolicyError } from '../../common/domain/policy.js'
 import { logger } from '../../common/runtime/log.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
@@ -86,23 +85,21 @@ export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRun
   app.post('/history/:id/restore', async context => historyResponse(context, () => runtime.history.restore(context.req.param('id'))))
   app.post('/history/:id/recover', async context => historyResponse(context, () => runtime.history.recover(context.req.param('id'))))
 
-  app.get('/approvals', context => context.json({ approvals: runtime.approvals.pending() }))
+  app.get('/approvals', context => context.json({ approvals: runtime.approvalService.pending() }))
   app.post('/approvals', async context => {
-    const body: unknown = await context.req.json().catch(() => null)
-    const opened = await runtime.approvalNonces.withClaims(seen => openApprovalDecision({ key: config.ringsApprovalKey, body, workspaceId: runtime.workspaceId, seen }))
-    if (!opened.ok) {
+    const decided = await runtime.approvalService.decideSealed({ body: await context.req.json().catch(() => null) })
+    if (decided.status === 'refused') {
       const auditId = randomUUID()
       await runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
         at: new Date().toISOString(), sessionId: 'workspace-admin', tool: 'setup_approval_envelope_refused',
-        outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: opened.reason,
+        outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: decided.reason,
       })
-      logger.warn('Refused an approval decision envelope', { reason: opened.reason, workspaceId: runtime.workspaceId })
-      return context.json({ error: `Approval decision refused: ${opened.reason}` }, 401)
+      logger.warn('Refused an approval decision envelope', { reason: decided.reason, workspaceId: runtime.workspaceId })
+      return context.json({ error: `Approval decision refused: ${decided.reason}` }, 401)
     }
-    const parsed = ApprovalDecisionSchema.safeParse(opened.body)
-    if (!parsed.success) return context.json({ error: 'Invalid approval decision' }, 400)
-    const result = await runtime.approvals.resolve(parsed.data, 'admin')
-    return result.ok ? context.json({ resolved: true }) : context.json({ error: result.reason }, 409)
+    if (decided.status === 'invalid') return context.json({ error: 'Invalid approval decision' }, 400)
+    if (decided.status === 'rejected') return context.json({ error: decided.reason }, 409)
+    return context.json({ resolved: true })
   })
   app.get('/grants', context => context.json({ grants: runtime.grants.list() }))
   app.delete('/grants/:grantId', async context => {

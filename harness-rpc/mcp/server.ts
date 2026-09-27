@@ -188,11 +188,12 @@ async function resolveAnswers(input: {
     const answer = acceptedContent<ApprovalAnswer>(input.responses, token)
     if (!answer) continue
 
-    const result = await input.runtime.approvals.resolve({
+    // Ruling 3 of 2026-09-25: an answer from the owner's own stdio host counts as a person's.
+    const result = await input.runtime.approvalService.answer({ decision: {
       token,
       approved: answer.action ? answer.action === 'allow_once' : answer.approve === true,
       scope: answer.action === 'deny_session' ? 'session' : answer.action === 'always_deny' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once',
-    }, input.authority)
+    }, authority: input.authority })
     if (result.ok) tokens.push(token)
     else logger.warn('Elicited approval was rejected', { reason: result.reason })
   }

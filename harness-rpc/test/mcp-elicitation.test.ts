@@ -1,7 +1,7 @@
 import { CLIENT_CAPABILITIES_META_KEY } from '@modelcontextprotocol/server'
 import type { McpServer, ServerContext } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ApprovalRequest, InvokeResponse } from '@5straps/protocol'
 import { createToolRegistry } from '../common/domain/tool-registry.js'
 import { createMcpServer } from '../mcp/server.js'
@@ -19,7 +19,7 @@ const approval: ApprovalRequest = {
 
 const gatedResponse: InvokeResponse = { requestId: 'request-1', outcome: 'approval_required', approvals: [approval] }
 
-function gatedServer(): McpServer {
+function gatedServer(answer: BuckleRuntime['approvalService']['answer'] = async () => ({ ok: true })): McpServer {
   const registry = createToolRegistry([{
     capability: {
       name: 'gated_tool',
@@ -38,6 +38,7 @@ function gatedServer(): McpServer {
     skills: () => [],
     onToolsChanged: () => undefined,
     invoke: async () => gatedResponse,
+    approvalService: { answer },
   } as unknown as BuckleRuntime
 
   return createMcpServer({ runtime, serverName: 'buckle-test', version: '0.0.0', trustedApprovalResponses: true })
@@ -89,5 +90,16 @@ describe('MCP elicitation detection', () => {
       envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: { url: {} } } },
     }))
     expect(result).toMatchObject({ isError: true })
+  })
+})
+
+describe('elicited answers', () => {
+  it('are recorded through the approval service, with the owner\'s authority (ruling 3 of 2026-09-25)', async () => {
+    const answer = vi.fn(async () => ({ ok: true as const }))
+    const server = gatedServer(answer)
+    await gatedCall(server, { ...stubContext({ envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } } }),
+      mcpReq: { id: 2, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { approve: true, scope: 'session' } } } },
+    } as unknown as ServerContext)
+    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope: 'session' }, authority: 'admin' })
   })
 })

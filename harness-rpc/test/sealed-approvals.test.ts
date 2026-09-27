@@ -10,6 +10,7 @@ import { loadConfig } from '../common/runtime/config.js'
 import { settingsCommand } from '../cli/settings.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { fixedInteraction } from './support/interaction.js'
 
 const ADMIN = { authorization: 'Bearer admin-token-fixture', 'content-type': 'application/json' }
 
@@ -25,7 +26,8 @@ async function node(input: { key?: string; state?: string } = {}) {
     BUCKLE_ALLOW_SHELL: 'false',
     ...(input.key ? { BUCKLE_RINGS_APPROVAL_KEY: input.key } : {}),
   })
-  const runtime = await createRuntime({ config })
+  // Held for the grace period, as a call over HTTP is, so a decision posted meanwhile can free it.
+  const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   const app = createHttpApp({ config, runtime, authToken: config.authToken })
   const ask = async () => (await runtime.approvals.issue({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] }))[0]!
   const decide = (body: unknown) => app.request('/setup/approvals', { method: 'POST', headers: ADMIN, body: JSON.stringify(body) })
@@ -182,5 +184,22 @@ describe('buckle settings show', () => {
     } finally { out.mockRestore() }
     expect(printed).toContain('BUCKLE_RINGS_APPROVAL_KEY (set, hidden)')
     expect(printed).not.toContain(encoded)
+  })
+})
+
+describe('a decision posted to the setup face', () => {
+  it('is answered through the approval service, as the owner, and frees the call waiting on it', async () => {
+    const { runtime, decide } = await node()
+    const answer = vi.spyOn(runtime.approvalService, 'answer')
+    const outside = mkdtempSync(join(tmpdir(), 'buckle-sealed-outside-'))
+    const waiting = runtime.invoke({ sessionId: 's1', request: { requestId: 'held', tool: 'fs_write', args: { path: join(outside, 'note.md'), content: 'freed' }, approvalTokens: [] } })
+    await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
+    const token = runtime.approvals.pending()[0]!.token
+
+    expect((await decide({ token, approved: true, scope: 'once' })).status).toBe(200)
+
+    expect(answer).toHaveBeenCalledWith({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
+    expect(await waiting).toMatchObject({ outcome: 'ok' })
+    expect(readFileSync(join(outside, 'note.md'), 'utf8')).toBe('freed')
   })
 })

@@ -26,7 +26,7 @@ export async function serveMcpStdio(input: { config: BuckleConfig; common: Buckl
  * Each tool call is its own operation (nitro/runtime.md, Asynchronous context), with main's
  * requester bound to it. A gated call is held for the grace period, as over HTTP.
  */
-function stdioCallScope(input: { common: BuckleCommon; requestCli: RequestCli }): ToolCallScope {
+export function stdioCallScope(input: { common: BuckleCommon; requestCli: RequestCli }): ToolCallScope {
   return (run, context) => {
     const scope = input.common.owner.registry.createScope({ context: { actor: 'mcp-stdio', sessionId: context.sessionId } })
     return withOperationScope(scope, async () => {

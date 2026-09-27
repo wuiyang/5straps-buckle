@@ -1,4 +1,6 @@
 import { mkdirSync, mkdtempSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHookRequestCli, InteractionErrorCode, type RequestCli } from '@5straps/runtime'
@@ -15,6 +17,9 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 import { initializeCommon } from '../common/runtime/initialize.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import { operationScopes, type ScopeEnv } from '../server/hono/operation-scope.js'
+import { createMcpServer } from '../mcp/server.js'
+import { stdioCallScope } from '../mcp/stdio.js'
+import type { ServerContext } from '@modelcontextprotocol/server'
 import { Hono } from 'hono'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
@@ -272,5 +277,57 @@ describe('the interaction each HTTP request binds', () => {
     expect(await mcp.text()).toContain('This call needs approval')
     expect(asked).toEqual(['fs_write', 'fs_write'])
     await common.owner.close()
+  })
+
+  it('gives each stdio MCP tool call an operation of its own, with main\'s requester injected', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-stdio-interaction-'))
+    mkdirSync(join(root, 'workspace'))
+    mkdirSync(join(root, 'state'), { mode: 0o700 })
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '200' })
+    const common = initializeCommon({ config, role: 'mcp' })
+    await common.start()
+    const questions: Array<{ actor?: string; sessionId?: string }> = []
+    const requestCli: RequestCli = async request => { questions.push({ actor: request.actor, sessionId: request.sessionId }); return { status: 'unavailable', requestId: request.id, reason: 'no_consumer' } }
+    const server = createMcpServer({ runtime: await common.services.getWorkspaceRuntime(), serverName: 'stdio-test', version: '0', trustedApprovalResponses: true, callScope: stdioCallScope({ common, requestCli }) })
+    const tools = (server as unknown as { _registeredTools: Record<string, { handler(args: unknown, context: ServerContext): Promise<{ isError?: boolean }> }> })._registeredTools
+
+    const result = await tools.fs_write!.handler({ path: 'a.md', content: 'x' }, { sessionId: 'stdio-session', mcpReq: { signal: new AbortController().signal } } as unknown as ServerContext)
+
+    expect(result.isError).toBe(true)
+    expect(questions).toEqual([{ actor: 'mcp-stdio', sessionId: 'stdio-session' }])
+    await common.owner.close()
+  })
+})
+
+describe('announcing an ask to the approval webhook', () => {
+  it('announces each new ask from every entry point once, including calls that do not wait', async () => {
+    const received: Array<{ approvals: Array<{ subject: string }> }> = []
+    const webhook = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+      request.on('end', () => { received.push(JSON.parse(body)); response.writeHead(202).end() })
+    })
+    await new Promise<void>(resolve => webhook.listen(0, '127.0.0.1', resolve))
+    try {
+      const root = mkdtempSync(join(tmpdir(), 'buckle-announce-'))
+      for (const directory of ['one', 'two']) mkdirSync(join(root, directory))
+      const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: `${root}-state`, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs',
+        BUCKLE_APPROVAL_WEBHOOK: `http://127.0.0.1:${(webhook.address() as AddressInfo).port}/approvals` })
+      // No interaction bound: a CLI command without a terminal, which reports back at once.
+      const runtime = await createRuntime({ config })
+      const write = (requestId: string, path: string, extra = {}) => runtime.invoke({ sessionId: 'chat-1', request: { requestId, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [] }, ...extra })
+
+      expect(await write('cli-call', 'one/a.md')).toMatchObject({ outcome: 'approval_required' })
+      // An MCP host that elicits asks with the hint none, and is announced all the same.
+      expect(await write('elicited-call', 'two/b.md', { approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'approval_required' })
+      // A re-send joining the first ask is not announced again.
+      expect(await write('cli-call', 'one/a.md')).toMatchObject({ outcome: 'approval_required' })
+
+      expect(received.map(body => body.approvals.map(approval => approval.subject))).toEqual([[join(root, 'one')], [join(root, 'two')]])
+      expect(received[0]).toMatchObject({ serverId: config.serverId, workspaceId: 'default', approvals: [{ tool: 'fs_write', approveCommand: expect.stringContaining('buckle approve ') }] })
+      await runtime.history.close()
+    } finally {
+      await new Promise(resolve => webhook.close(resolve))
+    }
   })
 })

@@ -7,7 +7,7 @@ import { remainingMs } from '../common/domain/approval-deadline.js'
 import { approveCommand } from '../common/domain/approval-instruction.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
-import type { ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import type { ApprovalService } from '../common/services/approvals/approval-service.js'
 
 /**
  * The node has no push channel for approvals: a request is a row in the state directory's
@@ -27,7 +27,7 @@ const SCOPE_KEYS: Array<{ key: string; scope: GrantScope; label: string }> = [
 ]
 
 export interface ApprovalWatchOptions {
-  approvals: Pick<ApprovalRegistry, 'pending' | 'resolve'>
+  approvals: Pick<ApprovalService, 'pending' | 'answer'>
   /** Each answer is audited on its own, as the `buckle approve` it stands in for. */
   actions: ActionLog
   workspaceId: string
@@ -179,12 +179,13 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
 }
 
 /**
- * The same call `buckle approve` makes: the owner's own process, so the owner's authority. It is
- * audited the same way too, one entry per answer, so a session that grants several leaves several.
+ * The same call `buckle approve` makes, through the approval service: the owner's own process, so
+ * the owner's authority. It is audited the same way too, one entry per answer, so a session that
+ * grants several leaves several.
  */
 async function record(context: ApprovalWatchOptions, decision: ApprovalDecision): Promise<void> {
   const result = await auditOperation({ actions: context.actions, workspaceId: context.workspaceId, tool: 'cli_approve', sessionId: 'local-owner',
-    isSuccessful: outcome => outcome.ok, operation: () => context.approvals.resolve(decision, 'admin') })
+    isSuccessful: outcome => outcome.ok, operation: () => context.approvals.answer({ decision, authority: 'admin' }) })
   if (!result.ok) {
     context.output.write(`  Not recorded: ${result.reason}.\n`)
     return

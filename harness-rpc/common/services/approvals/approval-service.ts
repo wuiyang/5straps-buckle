@@ -1,9 +1,12 @@
 import { useScopeSafe, type CliOutcome, type CliRequest, type CliWait } from '@5straps/runtime'
-import { APPROVAL_NO_DEADLINE, type ApprovalDecision, type ApprovalRequest } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest } from '@5straps/protocol'
+import type { ApprovalKey } from '@5straps/protocol/envelope'
+import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
 import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand } from '../../domain/approval-instruction.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import { logger } from '../../runtime/log.js'
+import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
 import type { ApprovalAuthority, ApprovalRegistry, Resolution } from './approval-registry.js'
 import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
 
@@ -42,11 +45,29 @@ export interface ApprovalAnswer {
   widenTo?: string
 }
 
+/** What a decision from Rings came to; the setup face answers 401, 400, 409 or 200 from it. */
+export type SealedDecisionResult =
+  | { status: 'refused'; reason: DecisionRefusal }
+  | { status: 'invalid' }
+  | { status: 'rejected'; reason: string }
+  | { status: 'answered' }
+
 export interface ApprovalService {
   /** Issues the asks (or joins the ones the same call already made), then waits as the caller's entry point holds it. */
   request(input: ApprovalAskInput): Promise<ApprovalWaitResult>
-  /** The only path that records a verdict: checks it against the ask, then wakes whoever waits on it. */
+  /**
+   * The only path that records a verdict: checks it against the ask, then wakes whoever waits on it.
+   * Every route answers here: the terminal, `buckle approve`, `buckle approvals --watch`, MCP
+   * elicitation and the setup face.
+   */
   answer(input: ApprovalAnswer): Promise<Resolution>
+  /**
+   * `RINGS-D20`: opens a decision envelope under the nonce store's lock (the claim stays a synchronous
+   * view of the locked state), then answers with the admin authority the setup face was opened with.
+   */
+  decideSealed(input: { body: unknown }): Promise<SealedDecisionResult>
+  /** The requests still waiting in this workspace's queue. */
+  pending(): ApprovalRequest[]
   /** Settles every open wait as still pending and ends its questions; the asks stay in the durable queue. */
   close(): void
 }
@@ -58,8 +79,12 @@ export interface ApprovalServiceOptions {
   graceMs: number | null
   /** The current operation's interaction; an unbound operation asks nobody. */
   interaction: InteractionSource
-  /** Told once an ask is issued, so a person can be reached away from the machine. */
+  /** Told once an ask is issued, from every entry point, so a person can be reached away from the machine. */
   announce?: (requests: ApprovalRequest[]) => Promise<void>
+  /** The key Rings minted at pairing; without one a plain decision is accepted and an envelope refused. */
+  decisionKey?: ApprovalKey
+  /** Replay protection for opened envelopes; in memory when no key is paired. */
+  nonces?: NonceClaims
   pollMs?: number
 }
 
@@ -101,6 +126,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const open = new Map<string, OpenAsk>()
   const closing = new AbortController()
   const pollMs = options.pollMs ?? POLL_INTERVAL_MS
+  const nonces = options.nonces ?? createMemoryNonceClaims()
   let unreadable = false
 
   const service: ApprovalService = {
@@ -110,7 +136,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const scope = useScopeSafe()
       const actor = scope?.context.actor
       const { requests: approvals, joined } = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, ...(actor === undefined ? {} : { actor }) })
-      if (!joined && announces(interaction, input.wait)) await announce(options.announce, approvals)
+      if (!joined) await announce(options.announce, approvals)
       const holdMs = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
       if (holdMs === 0 || closing.signal.aborted) {
         await cancelIfLeft({ approvals, signal: input.signal })
@@ -129,6 +155,17 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (result.ok) wake(input.decision.token)
       return result
     },
+
+    async decideSealed(input) {
+      const opened = await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
+      if (!opened.ok) return { status: 'refused', reason: opened.reason }
+      const parsed = ApprovalDecisionSchema.safeParse(opened.body)
+      if (!parsed.success) return { status: 'invalid' }
+      const result = await service.answer({ decision: parsed.data, authority: 'admin' })
+      return result.ok ? { status: 'answered' } : { status: 'rejected', reason: result.reason }
+    },
+
+    pending: () => options.registry.pending(),
 
     close() {
       closing.abort()
@@ -293,11 +330,6 @@ export function holdFor(input: { hold: ApprovalHold; graceMs: number | null; hin
   if (!input.hint) return own
   if (input.hint.mode === 'none') return 0
   return own === null ? input.hint.ms : Math.min(own, input.hint.ms)
-}
-
-/** The webhook announces what a grace hold waits on; a question the caller answers itself is not announced. */
-function announces(interaction: Interaction, hint: ApprovalWait | undefined): boolean {
-  return interaction.hold === 'grace' && hint?.mode !== 'none'
 }
 
 async function announce(notify: ApprovalServiceOptions['announce'], requests: ApprovalRequest[]): Promise<void> {
