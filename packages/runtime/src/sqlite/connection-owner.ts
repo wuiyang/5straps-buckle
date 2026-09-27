@@ -12,11 +12,15 @@ export const SqliteErrorCode = Object.freeze({
   ownerClosed: 'ConnectionOwnerClosedError',
   nestedTransaction: 'NestedTransactionError',
   foreignTransaction: 'ForeignTransactionError',
+  connectionOwned: 'ConnectionAlreadyOwnedError',
+  rawHandleRefused: 'RawHandleRefusedError',
 } as const)
 
 export interface ConnectionOwner {
-  // The shared DB0 object, unguarded: a statement here while another flow's transaction is open joins that transaction.
+  /** @deprecated Unguarded: a statement here while another flow's transaction is open joins that transaction. Same object as unguardedDb; prefer run(), transaction() or guardedDb. */
   readonly db: SqliteDatabase
+  // The shared DB0 object without the guard; only for code that already runs inside run() or transaction().
+  readonly unguardedDb: SqliteDatabase
   // Same connection; refuses statements while another flow's transaction is open and queues them otherwise.
   readonly guardedDb: SqliteDatabase
   run<T>(operation: (db: SqliteDatabase) => Promise<T>): Promise<T>
@@ -27,12 +31,16 @@ export interface ConnectionOwner {
 
 const TRANSACTION_BEGIN_POLL_MS = 10
 
-// Which exclusive section (run or transaction) the current async flow is inside, so its own statements skip the queue.
-const currentSection = globalSlot('sqlite-section', () => new AsyncLocalStorage<string>())
+// Guard state belongs to the connection: one owner per DB0 object (Nitro's useDatabase() returns a cached one),
+// shared across loaded copies of this package.
+const ownedConnections = globalSlot('sqlite-connection-owners', () => new WeakSet<SqliteDatabase>())
 
 // SQLite transactions belong to the connection, not to an async flow: every access queues behind an open transaction.
 export function createConnectionOwner(db: SqliteDatabase, options: { owned: boolean; label?: string }): ConnectionOwner {
   const label = options.label ?? 'sqlite'
+  if (ownedConnections.has(db)) throw new RuntimeError(SqliteErrorCode.connectionOwned, `Connection ${label} already has a connection owner; share that owner instead of creating another`)
+  // Per owner, so entering another owner's section never hides this one's (a.transaction > b.run > a.run).
+  const currentSection = new AsyncLocalStorage<string>()
   let tail: Promise<unknown> = Promise.resolve()
   let activeSection: string | undefined
   let transactionOpen = false
@@ -95,11 +103,17 @@ export function createConnectionOwner(db: SqliteDatabase, options: { owned: bool
   }
 
   function close(): Promise<void> {
-    closing ??= tail.then(() => (options.owned ? db.dispose() : undefined))
+    closing ??= tail.then(() => (options.owned ? db.dispose() : undefined)).finally(() => {
+      ownedConnections.delete(db)
+      ownedConnections.delete(guardedDb)
+    })
     return closing
   }
 
-  return { db, guardedDb: createGuardedView({ db, guard, close }), run, transaction, nativeTransaction, close }
+  const guardedDb = createGuardedView({ db, guard, close, label })
+  ownedConnections.add(db)
+  ownedConnections.add(guardedDb)
+  return { db, unguardedDb: db, guardedDb, run, transaction, nativeTransaction, close }
 }
 
 // Waits for other writers asynchronously, up to the connection's busy_timeout.
@@ -134,13 +148,14 @@ function rollbackKeepingError(connection: DatabaseSync): void {
 type Guard = <T>(operation: () => Promise<T>) => Promise<T>
 
 // Closing the view closes the owner, which disposes the database only when it owns it.
-function createGuardedView({ db, guard, close }: { db: SqliteDatabase; guard: Guard; close: () => Promise<void> }): SqliteDatabase {
+// getInstance is refused: the raw node:sqlite handle would bypass the guard.
+function createGuardedView({ db, guard, close, label }: { db: SqliteDatabase; guard: Guard; close: () => Promise<void>; label: string }): SqliteDatabase {
   return {
     get connector() { return db.connector },
     get dialect() { return db.dialect },
     get capabilities() { return db.capabilities },
     get disposed() { return db.disposed },
-    getInstance: () => db.getInstance(),
+    getInstance: () => Promise.reject(new RuntimeError(SqliteErrorCode.rawHandleRefused, `The guarded view of ${label} does not expose its raw connection; use the connection owner's run() or transaction()`)),
     exec: sql => guard(() => db.exec(sql)),
     prepare: sql => guardStatement(db.prepare(sql), guard),
     sql: <T>(strings: TemplateStringsArray, ...values: Primitive[]) => guard(() => db.sql<T>(strings, ...values)),

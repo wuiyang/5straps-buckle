@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
+import { startWorker } from './support/workers.js'
 import { createCliConsumerSlot, createCliRequester, createLogger, isRuntimeError, RuntimeErrorCode, type LogEvent } from '../../src/index.js'
 import { createConnectionOwner, isSqliteBusy, openDatabase, rawConnection, readPragma, SqliteErrorCode, type SqliteDatabase } from '../../src/sqlite/index.js'
 
@@ -181,7 +182,7 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
     })
     const rawA = aborted('A1')
     await delay(1)
-    await owner.db.sql`INSERT INTO notes (text) VALUES (${'raw B'})`
+    await owner.unguardedDb.sql`INSERT INTO notes (text) VALUES (${'raw B'})`
     await expect(rawA).rejects.toThrow('A1 rolls back')
     expect(await owner.run(noteTexts)).toEqual([])
 
@@ -213,7 +214,7 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
     clearInterval(ticker)
     // A blocking BEGIN would allow no tick at all; any tick proves the loop kept running.
     expect(ticks).toBeGreaterThan(0)
-    expect(await readPragma(owner.db, 'busy_timeout')).toBe(2_000)
+    expect(await readPragma(owner.unguardedDb, 'busy_timeout')).toBe(2_000)
     expect(await owner.run(noteTexts)).toEqual(['after wait'])
     await Promise.all([owner.close(), other.dispose()])
   })
@@ -255,5 +256,50 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
     })
     await expect(failure).rejects.toThrow('original failure')
     await owner.close()
+  })
+})
+
+describe('connection ownership across owners and processes (sqlite-fixes-2, -3, -4)', () => {
+  const HUNG = 'hung'
+  const settleWithin = <T>(work: Promise<T>) => Promise.race([work, delay(2_000).then(() => HUNG)])
+
+  it('sqlite-fixes-2 lets a flow call back into its own owner from inside another owner section', async () => {
+    const a = createConnectionOwner(await notesDatabase(), { owned: true, label: 'a' })
+    const b = createConnectionOwner(await notesDatabase(), { owned: true, label: 'b' })
+    const insert = (owner: typeof a, text: string) => owner.run(db => db.sql`INSERT INTO notes (text) VALUES (${text})`)
+    expect(await settleWithin(a.transaction(async () => b.run(async () => { await insert(a, 'tx > run > run'); return 'done' })))).toBe('done')
+    expect(await settleWithin(a.run(async () => b.transaction(async () => { await insert(a, 'run > tx > run'); return 'done' })))).toBe('done')
+    expect(await settleWithin(a.transaction(async () => b.run(async () => { await a.guardedDb.sql`INSERT INTO notes (text) VALUES (${'guarded inside own tx'})`; return 'done' })))).toBe('done')
+    expect(await a.run(noteTexts)).toEqual(['tx > run > run', 'run > tx > run', 'guarded inside own tx'])
+    await Promise.all([a.close(), b.close()])
+  })
+
+  it('sqlite-fixes-3 keeps one owner per connection and never hands out the raw handle through the guarded view', async () => {
+    const db = await notesDatabase()
+    const owner = createConnectionOwner(db, { owned: false })
+    expect(() => createConnectionOwner(db, { owned: false })).toThrow(expect.objectContaining({ code: SqliteErrorCode.connectionOwned }))
+    expect(() => createConnectionOwner(owner.guardedDb, { owned: false })).toThrow(expect.objectContaining({ code: SqliteErrorCode.connectionOwned }))
+    const refused = await rawConnection(owner.guardedDb).catch((error: unknown) => error)
+    expect(isRuntimeError(refused, SqliteErrorCode.rawHandleRefused)).toBe(true)
+    await owner.close()
+    const next = createConnectionOwner(db, { owned: true })
+    expect(await next.run(noteTexts)).toEqual([])
+    await next.close()
+  })
+
+  it('sqlite-fixes-4 keeps an existing database journal mode and opens it while another process holds a write lock', async () => {
+    const path = databasePath()
+    const legacy = await openDatabase({ path, pragmas: { journal_mode: 'DELETE' } })
+    await legacy.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT NOT NULL)')
+    await legacy.dispose()
+    const holder = startWorker(['hold-lock', path, '1500'])
+    await holder.next(message => message.locked === true)
+    const reopened = await openDatabase({ path })
+    expect(await readPragma(reopened, 'journal_mode')).toBe('delete')
+    await reopened.dispose()
+    await holder.exited
+    const fresh = await openDatabase({ path: databasePath() })
+    expect(await readPragma(fresh, 'journal_mode')).toBe('wal')
+    await fresh.dispose()
   })
 })

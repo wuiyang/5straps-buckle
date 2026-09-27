@@ -17,22 +17,29 @@ export interface OpenDatabaseOptions {
 }
 
 export const DEFAULT_BUSY_TIMEOUT_MS = 5_000
-const DEFAULT_PRAGMAS = Object.freeze({ busy_timeout: DEFAULT_BUSY_TIMEOUT_MS, foreign_keys: true, journal_mode: 'WAL' })
+const DEFAULT_PRAGMAS = Object.freeze({ busy_timeout: DEFAULT_BUSY_TIMEOUT_MS, foreign_keys: true })
+// Only a new database is switched to WAL; an existing file keeps its journal mode unless the caller sets one.
+const NEW_DATABASE_PRAGMAS = Object.freeze({ journal_mode: 'WAL' })
 const PRAGMA_NAME = /^[a-z_]+$/
 const PRAGMA_WORD = /^[A-Za-z_]+$/
 
+export interface SqlitePragmaDefaults {
+  defaults: Readonly<Record<string, PragmaValue>>
+  newDatabase?: Readonly<Record<string, PragmaValue>>
+}
+
 // DB0 node-sqlite with an explicit absolute path: no `.data/` fallback, directory 0700, file 0600.
 export function openDatabase(options: OpenDatabaseOptions): Promise<SqliteDatabase> {
-  return openSqlite(options, DEFAULT_PRAGMAS)
+  return openSqlite(options, { defaults: DEFAULT_PRAGMAS, newDatabase: NEW_DATABASE_PRAGMAS })
 }
 
 // Shared by openDatabase and the lock connections, which keep the file's own journal mode.
-export async function openSqlite(options: OpenDatabaseOptions, defaults: Readonly<Record<string, PragmaValue>>): Promise<SqliteDatabase> {
+export async function openSqlite(options: OpenDatabaseOptions, pragmas: SqlitePragmaDefaults): Promise<SqliteDatabase> {
   const path = requireExplicitPath(options.path)
-  prepareDatabaseFile(path, options.logger)
+  const isNew = prepareDatabaseFile(path, options.logger)
   const db = createDatabase(nodeSqliteConnector({ path }))
   try {
-    applyPragmas(await rawConnection(db), { ...defaults, ...options.pragmas })
+    applyPragmas({ connection: await rawConnection(db), pragmas: { ...pragmas.defaults, ...(isNew ? pragmas.newDatabase : {}), ...options.pragmas }, logger: options.logger })
   } catch (error) {
     await db.dispose()
     throw error
@@ -58,10 +65,12 @@ function requireExplicitPath(path: string): string {
   return path
 }
 
-function prepareDatabaseFile(path: string, logger: Logger | undefined): void {
+// Returns whether the database is new: this call created the file, or it is still empty.
+function prepareDatabaseFile(path: string, logger: Logger | undefined): boolean {
   prepareDirectory(dirname(path), logger)
-  createFileIfAbsent(path)
+  const isNew = createFileIfAbsent(path)
   chmodSync(path, 0o600)
+  return isNew
 }
 
 // Only directories this call created get 0700; an existing (possibly shared or mounted) one is left alone.
@@ -81,23 +90,29 @@ function warnIfShared(directory: string, logger: Logger | undefined): void {
 
 // Never open an existing database through fs: POSIX close() drops every fcntl lock this process
 // holds on the inode, including SQLite's, so a second open would free another connection's lock.
-function createFileIfAbsent(path: string): void {
+function createFileIfAbsent(path: string): boolean {
   const existing = lstatSync(path, { throwIfNoEntry: false })
   if (existing) {
     if (!existing.isFile()) throw new TypeError(`SQLite path must be a regular file; got ${JSON.stringify(path)}`)
-    return
+    return existing.size === 0
   }
   try {
     closeSync(openSync(path, 'wx', 0o600))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
   }
+  return true
 }
 
-function applyPragmas(connection: DatabaseSync, pragmas: Readonly<Record<string, PragmaValue>>): void {
-  for (const [name, value] of Object.entries(pragmas)) {
+// journal_mode answers with the mode it ended up in; WAL needs shared memory, so a filesystem may refuse it.
+function applyPragmas(input: { connection: DatabaseSync; pragmas: Readonly<Record<string, PragmaValue>>; logger: Logger | undefined }): void {
+  for (const [name, value] of Object.entries(input.pragmas)) {
     if (!PRAGMA_NAME.test(name)) throw new TypeError(`Invalid pragma name ${name}`)
-    connection.exec(`PRAGMA ${name}=${formatPragmaValue(name, value)}`)
+    const row = input.connection.prepare(`PRAGMA ${name}=${formatPragmaValue(name, value)}`).get()
+    const applied = row ? Object.values(row)[0] : undefined
+    if (name === 'journal_mode' && String(applied).toLowerCase() !== String(value).toLowerCase()) {
+      input.logger?.warn('SQLite journal mode was not applied', { requested: String(value), applied: String(applied) })
+    }
   }
 }
 
