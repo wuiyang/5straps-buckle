@@ -22,6 +22,26 @@ export interface RefusedEntry {
 
 export class PolicyError extends Error {}
 export class PolicyConflictError extends PolicyError {}
+
+/** The stored policy stops the node from loading; the message names the file, what it refuses and the repair. */
+export class StoredPolicyError extends PolicyError {
+  constructor(input: { file: string; reason: string; stored: WorkspacePolicy; environment: WorkspacePolicy }) {
+    super(storedPolicyMessage(input))
+  }
+}
+
+function storedPolicyMessage(input: { file: string; reason: string; stored: WorkspacePolicy; environment: WorkspacePolicy }): string {
+  const refused = refusedNetworkEntries(input.stored.network.allow).map(item => item.entry)
+  const repair = refused.length
+    ? refused.map(entry => `\`buckle policy remove ${entry}\``).join(', then ')
+    : '`buckle policy remove <pattern>` for the refused pattern'
+  const emptiesList = refused.length > 0 && refused.length === input.stored.network.allow.length && input.environment.network.allow.length === 0
+  return [
+    `Stored policy in ${input.file} cannot load: ${input.reason}.`,
+    `Repair it with ${repair}, or drop it with \`buckle policy clear\`; until it loads only \`buckle policy show|export|remove|clear\` run.`,
+    ...(emptiesList ? ['Those entries are the whole approved list, and an empty approved list is no list: the default network rules then reach public hosts. Add an entry with `buckle policy allow-url <host>` once it loads.'] : []),
+  ].join(' ')
+}
 export function policyRevision(policy: WorkspacePolicy | null): string {
   return createHash('sha256').update(JSON.stringify(policy)).digest('hex')
 }

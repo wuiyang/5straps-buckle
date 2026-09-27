@@ -12,6 +12,7 @@ import type { BuckleRuntime } from '../../common/services/workspaces/workspace-r
 import { createWorkspaceManager, WorkspaceError, WorkspaceRegistrationSchema, WorkspacePatchSchema, WorkspaceTokenInputSchema } from '../../common/services/workspaces/workspace-manager.js'
 import { matchesTokenSource } from '../../common/services/access/tokens.js'
 import { requireBearerToken } from './auth.js'
+import { allowPostOnly } from './mcp-allow.js'
 import { createRpcApp } from './rpc-app.js'
 import { createSetupApp } from './setup-app.js'
 import { logger } from '../../common/runtime/logger.js'
@@ -118,7 +119,7 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
       face.use('/mcp', auditHttpRequest({ actions: runtime.actions, workspaceId: runtime.workspaceId, face: 'http_mcp' }))
       face.use('/mcp', bodyLimit({ maxSize: config.maxRequestBytes }))
       face.use('/mcp', requireBearerToken(agentTokens))
-      face.all('/mcp', context => mcpHandler.fetch(context.req.raw))
+      face.all('/mcp', async context => allowPostOnly(await mcpHandler.fetch(context.req.raw)))
       runtime.onToolsChanged(() => mcpHandler.notify.toolsChanged())
       if (config.adminToken) face.route('/setup', createSetupApp({ config, runtime, adminToken: config.adminToken }))
       faces.set(id, face)

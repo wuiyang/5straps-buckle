@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
 import { loadConfig, policyPath, type BuckleConfig } from '../common/runtime/config.js'
+import { readFileSync } from 'node:fs'
 import { runCli } from '../cli/main.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -62,5 +63,80 @@ describe('the approved list in the stored policy', () => {
     expect(removed.exitCode).toBe(0)
     expect(removed.stdout).toContain('The approved list is now empty, which is no list')
     expect(store(config).read()?.network.allow).toEqual([])
+  })
+
+  it('names the stored policy file, the refused entry and the fix when that entry stops the node', async () => {
+    const config = withStoredList(['example.com', '*.127.0.0.1'])
+    const failure = await run(config, 'tools').catch((error: unknown) => error as Error)
+
+    expect(failure).toBeInstanceOf(Error)
+    const message = (failure as Error).message
+    expect(message).toContain(policyPath(config))
+    expect(message).toContain('A wildcard covers a domain, not an address: *.127.0.0.1')
+    expect(message).toContain('buckle policy remove *.127.0.0.1')
+    expect(message).not.toContain('empty')
+  })
+
+  it('warns in that message when the refused entries are the whole approved list', async () => {
+    const config = withStoredList(['*.127.0.0.1'])
+    const failure = await run(config, 'tools').catch((error: unknown) => error as Error)
+
+    expect((failure as Error).message).toContain('an empty approved list is no list')
+  })
+
+  it('lets policy remove repair a stored entry the node cannot load, and the node loads again', async () => {
+    const config = withStoredList(['example.com', '*.127.0.0.1'])
+
+    const removed = await run(config, 'policy', 'remove', '*.127.0.0.1')
+
+    expect(removed.exitCode).toBe(0)
+    expect(store(config).read()?.network.allow).toEqual(['example.com'])
+    expect((await run(config, 'tools')).exitCode).toBe(0)
+  })
+
+  it('warns when that repair leaves the approved list empty', async () => {
+    const config = withStoredList(['*.127.0.0.1'])
+
+    const removed = await run(config, 'policy', 'remove', '*.127.0.0.1')
+
+    expect(removed.exitCode).toBe(0)
+    expect(removed.stdout).toContain('The approved list is now empty, which is no list')
+  })
+
+  it('refuses a repair that still leaves the stored policy unloadable', async () => {
+    const config = withStoredList(['*.127.0.0.1', '*.0.0.1'])
+
+    const removed = await run(config, 'policy', 'remove', '*.127.0.0.1')
+
+    expect(removed.exitCode).toBe(1)
+    expect(removed.stderr).toContain('*.0.0.1')
+    expect(store(config).read()?.network.allow).toEqual(['*.127.0.0.1', '*.0.0.1'])
+  })
+
+  it('lets policy clear, show and export run on a stored policy the node cannot load', async () => {
+    const config = withStoredList(['example.com', '*.127.0.0.1'])
+
+    const shown = await run(config, 'policy', 'show')
+    expect(shown.exitCode).toBe(1)
+    expect(shown.stderr).toContain('buckle policy remove *.127.0.0.1')
+    expect(JSON.parse(shown.stdout).network.allow).toEqual(['example.com', '*.127.0.0.1'])
+    const exported = await run(config, 'policy', 'export')
+    expect(exported.exitCode).toBe(0)
+    expect(JSON.parse(exported.stdout).network.allow).toEqual(['example.com', '*.127.0.0.1'])
+
+    const cleared = await run(config, 'policy', 'clear')
+    expect(cleared.exitCode).toBe(0)
+    expect(store(config).read()).toBeNull()
+    expect(readFileSync(policyPath(config), 'utf8')).not.toContain('127.0.0.1')
+  })
+
+  it('refuses other policy edits until the stored policy loads', async () => {
+    const config = withStoredList(['*.127.0.0.1'])
+
+    const added = await run(config, 'policy', 'allow-url', 'example.com')
+
+    expect(added.exitCode).toBe(1)
+    expect(added.stderr).toContain('buckle policy remove *.127.0.0.1')
+    expect(store(config).read()?.network.allow).toEqual(['*.127.0.0.1'])
   })
 })

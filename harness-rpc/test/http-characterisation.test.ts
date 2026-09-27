@@ -136,13 +136,41 @@ describe('404 and method mismatch', () => {
     expect(await shape(await buckle.request('/mcp', { method: 'OPTIONS' }))).toEqual(unauthorized)
   })
 
-  it('lets the stateless MCP SDK answer a JSON-RPC 405, without an Allow header, for every method but POST', async () => {
+  it('lets the stateless MCP SDK answer a JSON-RPC 405, with Allow: POST (RFC 9110), for every method but POST', async () => {
     const buckle = await node()
     for (const method of ['GET', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
       const response = await buckle.request('/mcp', { method, headers: { ...MCP_HEADERS, ...bearer(NODE_AGENT) }, ...(['PUT', 'PATCH'].includes(method) ? { body: INITIALIZE } : {}) })
-      expect(response.headers.get('allow')).toBeNull()
+      expect(response.headers.get('allow')).toBe('POST')
       expect(await shape(response)).toEqual({ status: 405, contentType: 'application/json', body: { jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null } })
     }
+  })
+})
+
+describe('the /workspaces/:id twins', () => {
+  const rows = [
+    { name: 'oversized POST /v1/invoke', path: '/workspaces/one/v1/invoke', method: 'POST', token: ONE_AGENT, bytes: MAX_REQUEST_BYTES + 1, expected: { status: 413, contentType: 'application/json', body: { error: 'Request body is too large' } } },
+    { name: 'oversized POST /setup/workbenches', path: '/workspaces/one/setup/workbenches', method: 'POST', token: ONE_ADMIN, bytes: SETUP_BODY_LIMIT + 1, expected: { status: 422, contentType: 'application/json', body: { error: 'Workbench operation failed; inspect Buckle logs' } } },
+    { name: 'GET /v1/nope', path: '/workspaces/one/v1/nope', method: 'GET', token: ONE_AGENT, expected: { status: 404, contentType: 'text/plain', body: '404 Not Found' } },
+    { name: 'GET /nope', path: '/workspaces/one/nope', method: 'GET', token: ONE_AGENT, expected: { status: 404, contentType: 'text/plain', body: '404 Not Found' } },
+    { name: 'GET /setup/x', path: '/workspaces/one/setup/x', method: 'GET', token: ONE_ADMIN, expected: { status: 404, contentType: 'text/plain', body: '404 Not Found' } },
+    { name: 'POST /v1/manifest', path: '/workspaces/one/v1/manifest', method: 'POST', token: ONE_AGENT, expected: { status: 404, contentType: 'text/plain', body: '404 Not Found' } },
+  ]
+  for (const row of rows) {
+    it(`${row.name} answers as its node-level route does today`, async () => {
+      const buckle = await node()
+      await buckle.registerOne()
+      const body = row.bytes === undefined ? undefined : oversized('content-length', row.bytes)
+      const response = await buckle.request(row.path, { method: row.method, ...(body ?? {}), headers: { ...MCP_HEADERS, ...bearer(row.token), ...(body?.headers ?? {}) } })
+      expect(await shape(response)).toEqual(row.expected)
+    })
+  }
+
+  it('lets the MCP SDK answer a JSON-RPC 405 with Allow: POST for GET', async () => {
+    const buckle = await node()
+    await buckle.registerOne()
+    const response = await buckle.request('/workspaces/one/mcp', { headers: { ...MCP_HEADERS, ...bearer(ONE_AGENT) } })
+    expect(response.headers.get('allow')).toBe('POST')
+    expect(await shape(response)).toEqual({ status: 405, contentType: 'application/json', body: { jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null } })
   })
 })
 

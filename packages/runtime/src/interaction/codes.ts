@@ -3,6 +3,7 @@ export const InteractionErrorCode = Object.freeze({
   consumerFailed: 'CliConsumerFailedError',
   noCompletion: 'CliNoCompletionError',
   listenerFailed: 'CliListenerFailedError',
+  listenerUnavailable: 'CliListenerUnavailableError',
   requestConflict: 'CliRequestConflictError',
   invalidWait: 'CliInvalidWaitError',
 } as const)

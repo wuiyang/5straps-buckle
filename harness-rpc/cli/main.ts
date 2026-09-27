@@ -15,7 +15,8 @@ import { withOperationScope } from '@5straps/runtime'
 import { logger } from '../common/runtime/logger.js'
 import { createCliApprovalChannel } from '../common/adapters/approval/cli-approval-channel.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
-import { policyCommand } from './policy.js'
+import { policyCommand, repairStoredPolicy } from './policy.js'
+import { StoredPolicyError } from '../common/domain/policy.js'
 import { watchApprovals } from './approvals-watch.js'
 import { CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
 import { workspaceRegistryCommand } from './workspace.js'
@@ -61,6 +62,7 @@ async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig
   } catch (error) {
     // check-url's exit 1 means denied, so a node it cannot read must not look like one.
     if (command === 'check-url') return checkUrlUnreadable(error)
+    if (command === 'policy' && error instanceof StoredPolicyError) return repairStoredPolicy({ config: input.config, argv: rest, failure: error })
     throw error
   }
   const runtime = await common.services.getWorkspaceRuntime()

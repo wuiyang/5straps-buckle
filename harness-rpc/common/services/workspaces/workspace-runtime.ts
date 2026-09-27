@@ -33,7 +33,7 @@ import { createProcessProbeRule } from '../../domain/permission/rules/process-pr
 import { createReadScopeRule } from '../../domain/permission/rules/read-scope-rule.js'
 import { createSensitivePathRule } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from '../../domain/permission/rules/write-scope-rule.js'
-import { compilePolicy, mergePolicies, policyRevision, PolicyConflictError, type CompiledPolicy } from '../../domain/policy.js'
+import { compilePolicy, mergePolicies, policyRevision, PolicyConflictError, PolicyError, StoredPolicyError, type CompiledPolicy } from '../../domain/policy.js'
 import { loadSkills } from '../../domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from '../../domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from '../../domain/tool-registry.js'
@@ -130,7 +130,7 @@ export async function createRuntime(input: {
   const localSkills = [loadRootSkill(), ...await loadSkills(config.skillDirectories)]
   const listeners: Array<() => void> = []
 
-  let compiled = compileEffective()
+  let compiled = compileStartupPolicy()
   let paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
   let permissions = buildPermissionEngine({ config, compiled, ceiling, paths })
   let packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history })
@@ -243,6 +243,17 @@ export async function createRuntime(input: {
     onToolsChanged: listener => void listeners.push(listener),
   }
 
+  // Blames the stored policy only when the environment's share loads on its own.
+  function compileStartupPolicy(): CompiledPolicy {
+    try {
+      return compileEffective()
+    } catch (error) {
+      const stored = policyStore.read()
+      if (!(error instanceof PolicyError) || !stored || !compilesAlone(config.policy)) throw error
+      throw new StoredPolicyError({ file: policyPath(config), reason: error.message, stored, environment: config.policy })
+    }
+  }
+
   function compileEffective(stored = policyStore.read()): CompiledPolicy {
     const policy = ceiling
       ? { ...(stored ?? config.policy), mount: config.policy.mount }
@@ -314,6 +325,15 @@ async function buildPacks(input: {
   }
   const filesystemRestricted = Boolean(input.compiled.policy.filesystem?.rules.length || input.ceiling?.policy.filesystem?.rules.length)
   return [...builtin, ...(filesystemRestricted ? [] : await input.plugins.load())]
+}
+
+function compilesAlone(policy: WorkspacePolicy): boolean {
+  try {
+    compilePolicy(policy)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** The approved list every call meets: the node's over a registered workspace, then the workspace's own. */

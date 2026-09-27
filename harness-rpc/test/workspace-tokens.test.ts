@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Hono } from 'hono'
 import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
@@ -107,3 +107,36 @@ describe('a tool never administers the Buckle that runs it', () => {
     expect(judge(args)).toMatchObject({ kind: 'deny' })
   })
 })
+
+describe('a registry in the pre-BUCKLE-08 shape', () => {
+  const LEGACY_AGENT = 'legacy-agent-credential-fixture-value'
+  const LEGACY_SETUP = 'legacy-setup-credential-fixture-value'
+
+  beforeEach(() => {
+    writeFileSync(join(root, 'state', 'workspaces.json'), JSON.stringify({ version: 1, workspaces: [{ id: 'consultation', name: 'Consultation', root: join(root, 'one'), authToken: LEGACY_AGENT, setupToken: LEGACY_SETUP, enabled: true }] }))
+  })
+
+  it('answers the registry routes with a 409 that names the file and the fields to repair, never the values', async () => {
+    const response = await app.request('/setup/workspaces', { headers: headers(NODE_ADMIN) })
+    expect(response.status).toBe(409)
+    const { error } = await response.json() as { error: string }
+    expect(error).toContain(join(root, 'state', 'workspaces.json'))
+    expect(error).toContain('workspaces.0.adminToken')
+    expect(error).toContain('workspaces.0.tokens')
+    expect(error).not.toContain(LEGACY_AGENT)
+    expect(error).not.toContain(LEGACY_SETUP)
+    expect((await app.request('/workspaces/consultation/v1/manifest', { headers: headers(LEGACY_AGENT) })).status).toBe(409)
+  })
+
+  it('reports the same repair from buckle workspace list', async () => {
+    let stderr = ''
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true })
+    try {
+      expect((await workspaceRegistryCommand({ config, runtime, argv: ['list'] })).exitCode).toBe(1)
+    } finally {
+      err.mockRestore()
+    }
+    expect(stderr).toContain('workspaces.0.adminToken')
+  })
+})
+

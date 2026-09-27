@@ -2,8 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { z } from 'zod'
+import { ZodError, type z } from 'zod'
 import { logger } from '../runtime/logger.js'
+
+/** A state file that exists but cannot be used; the message names the file and the invalid fields, never a value. */
+export class StateFileError extends Error {}
 
 export interface JsonFileStore<T> {
   read(): T
@@ -17,8 +20,9 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
       return input.schema.parse(JSON.parse(readFileSync(input.filePath, 'utf8')))
     } catch (error) {
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return structuredClone(input.fallback)
-      logger.error('State file cannot be read safely', { filePath: input.filePath })
-      throw new Error('State file is unreadable or invalid; owner repair is required', { cause: error })
+      const fields = invalidFields(error)
+      logger.error('State file cannot be read safely', { filePath: input.filePath, ...(fields ? { fields } : {}) })
+      throw new StateFileError(`State file is unreadable or invalid: ${input.filePath}${fields ? ` at ${fields}` : ''}; owner repair is required`, { cause: error })
     }
   }
 
@@ -63,4 +67,10 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
       return result
     }),
   }
+}
+
+// Field paths only: a value in a state file can be a credential.
+function invalidFields(error: unknown): string | undefined {
+  if (!(error instanceof ZodError)) return undefined
+  return [...new Set(error.issues.map(issue => issue.path.join('.') || '(root)'))].join(', ')
 }

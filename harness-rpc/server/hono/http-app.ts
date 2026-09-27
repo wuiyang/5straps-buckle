@@ -8,6 +8,7 @@ import type { BuckleRuntime } from '../../common/services/workspaces/workspace-r
 import { createMcpServer } from '../../mcp/server.js'
 import { createRpcApp } from './rpc-app.js'
 import { requireBearerToken } from './auth.js'
+import { allowPostOnly } from './mcp-allow.js'
 import { createWorkspaceApp } from './workspace-app.js'
 import { createSetupApp } from './setup-app.js'
 
@@ -35,7 +36,7 @@ export function createHttpApp(input: {
   app.use('/mcp', auditHttpRequest({ actions: runtime.actions, workspaceId: runtime.workspaceId, face: 'http_mcp' }))
   app.use('/mcp', bodyLimit({ maxSize: config.maxRequestBytes }))
   app.use('/mcp', requireBearerToken(authToken))
-  app.all('/mcp', context => mcpHandler.fetch(context.req.raw))
+  app.all('/mcp', async context => allowPostOnly(await mcpHandler.fetch(context.req.raw)))
   runtime.onToolsChanged(() => mcpHandler.notify.toolsChanged())
 
   if (config.adminToken) app.route('/setup', createSetupApp({ config, runtime, adminToken: config.adminToken }))

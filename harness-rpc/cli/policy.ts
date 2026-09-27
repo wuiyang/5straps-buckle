@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { destructivePatterns, emptyWorkspacePolicy, isWorkspaceToolAllowed, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
-import { PolicyError } from '../common/domain/policy.js'
+import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
+import { compilePolicy, mergePolicies, PolicyError, type StoredPolicyError } from '../common/domain/policy.js'
+import { actionsPath, policyPath, type BuckleConfig } from '../common/runtime/config.js'
+import { auditOperation } from '../common/services/audit/audit-operation.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 export interface CliResult {
@@ -62,9 +66,7 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
         const before = current()
         const next = remove(before, required(rest[0], action))
         const result = await save(runtime, next)
-        if (result.exitCode === 0 && opensNetwork(before, next, runtime.policy.base())) {
-          process.stdout.write('The approved list is now empty, which is no list: the default network rules reach public hosts. Add an entry with `buckle policy allow-url <host>` to restrict it again.\n')
-        }
+        if (result.exitCode === 0 && opensNetwork(before, next, runtime.policy.base())) process.stdout.write(EMPTY_LIST_WARNING)
         return result
       }
       case 'import':
@@ -87,6 +89,58 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
     throw error
   }
 }
+
+/**
+ * For a stored policy the node cannot load: `show`, `export`, `remove` and `clear` work on the
+ * store alone, so the owner can repair it with `buckle policy`. Every other action refuses.
+ */
+export function repairStoredPolicy(input: { config: BuckleConfig; argv: string[]; failure: StoredPolicyError }): Promise<CliResult> {
+  return auditOperation({
+    actions: createFileActionLog(actionsPath(input.config)), workspaceId: 'default', tool: 'cli_policy', sessionId: 'local-owner',
+    isSuccessful: result => result.exitCode === 0, operation: () => repairStoredPolicyAction(input),
+  })
+}
+
+function repairStoredPolicyAction(input: { config: BuckleConfig; argv: string[]; failure: StoredPolicyError }): CliResult {
+  const { config, failure } = input
+  const store = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd })
+  const stored = store.read() ?? emptyWorkspacePolicy()
+  const [action, ...rest] = input.argv
+  try {
+    switch (action) {
+      case 'remove': {
+        const next = remove(stored, required(rest[0], action))
+        compilePolicy(mergePolicies(config.policy, next))
+        store.write({ ...next, updatedAt: new Date().toISOString() })
+        process.stdout.write('Stored policy repaired; the node loads it again.\n')
+        if (opensNetwork(stored, next, config.policy)) process.stdout.write(EMPTY_LIST_WARNING)
+        return { exitCode: 0 }
+      }
+      case 'clear':
+        store.clear()
+        process.stdout.write('Stored policy cleared\n')
+        return { exitCode: 0 }
+      case 'export':
+        return print(stored)
+      case undefined:
+      case 'show':
+        process.stderr.write(`${failure.message}\n`)
+        print(stored)
+        return { exitCode: 1 }
+      default:
+        process.stderr.write(`${failure.message}\n`)
+        return { exitCode: 1 }
+    }
+  } catch (error) {
+    if (error instanceof PolicyError || error instanceof UsageError) {
+      process.stderr.write(`${error.message}\n`)
+      return { exitCode: 1 }
+    }
+    throw error
+  }
+}
+
+const EMPTY_LIST_WARNING = 'The approved list is now empty, which is no list: the default network rules reach public hosts. Add an entry with `buckle policy allow-url <host>` to restrict it again.\n'
 
 /**
  * A stored approved list and an absent one read the same when empty: no list, so the network rule

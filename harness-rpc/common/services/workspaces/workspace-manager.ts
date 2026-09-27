@@ -3,7 +3,7 @@ import { realpathSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { z } from 'zod'
 import { WorkspacePolicySchema, emptyWorkspacePolicy } from '@5straps/protocol'
-import { createJsonFileStore } from '../../adapters/json-file-store.js'
+import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import { createChildApprovalDelivery } from '../approvals/approval-delivery.js'
 import type { BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
@@ -58,10 +58,27 @@ export class WorkspaceError extends Error {
   constructor(message: string, readonly status: 400 | 404 | 409 = 400) { super(message) }
 }
 
+// A registry the node cannot read is the owner's to repair: a 409 naming the file and fields, not a 500.
+function registryStore(filePath: string) {
+  const store = createJsonFileStore({ filePath, schema: RegistrySchema, fallback: { version: 1 as const, workspaces: [] } })
+  const repairable = <T>(operation: () => T): T => {
+    try {
+      return operation()
+    } catch (error) {
+      if (error instanceof StateFileError) throw new WorkspaceError(error.message, 409)
+      throw error
+    }
+  }
+  return {
+    read: () => repairable(() => store.read()),
+    update: <R>(change: (state: z.infer<typeof RegistrySchema>) => R) => repairable(() => store.update(change)),
+  }
+}
+
 export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime }) {
   const defaultRoot = realpathSync(input.config.cwd)
   const stateRoot = realpathSync(input.config.stateDirectory)
-  const store = createJsonFileStore({ filePath: join(stateRoot, 'workspaces.json'), schema: RegistrySchema, fallback: { version: 1 as const, workspaces: [] } })
+  const store = registryStore(join(stateRoot, 'workspaces.json'))
   const exposedRoots = [...input.config.mountReadOnlyPaths, ...(input.config.sandboxMounts ?? []).map(mount => mount.source), dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return realpathSync(path) } catch { return path } })
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
   const defaultDescriptor = (): WorkspaceDescriptor => ({ id: 'default', name: input.config.serverName, root: defaultRoot, enabled: true, default: true, retiredAt: null, updatedAt: null })

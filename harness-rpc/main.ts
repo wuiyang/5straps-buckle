@@ -116,9 +116,20 @@ function exitQuietlyOnClosedPipe(): void {
   })
 }
 
-// Node realpaths the main module, so an npm bin symlink still matches; the mode-dispatch test imports this file.
+// import.meta.main is exact under node (symlinked or extensionless entries included); tsx leaves it
+// undefined, so fall back to comparing real paths. The mode-dispatch test imports this file.
 function isProcessEntry(): boolean {
-  return Boolean(process.argv[1]) && realpathSync(process.argv[1]!) === realpathSync(fileURLToPath(import.meta.url))
+  return import.meta.main ?? invokedPathIsThisFile()
+}
+
+function invokedPathIsThisFile(): boolean {
+  const invoked = process.argv[1]
+  if (!invoked) return false
+  try {
+    return realpathSync(invoked) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
 }
 
 if (isProcessEntry()) {

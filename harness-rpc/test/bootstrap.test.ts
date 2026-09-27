@@ -80,6 +80,37 @@ describe('the built bin', () => {
       expect(execFileSync(command, ['--version'], { encoding: 'utf8' }).trim()).toMatch(/^\d+\.\d+\.\d+/)
     }
   })
+
+  it('runs when node is given the entry without its extension', () => {
+    expect(execFileSync(process.execPath, [entry.replace(/\.js$/, ''), '--version'], { encoding: 'utf8' }).trim()).toMatch(/^\d+\.\d+\.\d+/)
+  })
+})
+
+describe('a .env in the current directory when no configuration file resolves', () => {
+  it('refuses serve, mcp and CLI commands, naming BUCKLE_ENV_FILE and buckle init, without reading its values', async () => {
+    const node = await prepareNode()
+    const { BUCKLE_ENV_FILE: _unset, ...env } = node.env
+    const elsewhere = join(node.root, 'elsewhere-state')
+    writeFileSync(join(node.workspace, '.env'), `# owner settings\nexport BUCKLE_STATE_DIR=${elsewhere}\nBUCKLE_AUTH_TOKEN=dotenv-secret-value\n`)
+    for (const args of [['serve'], ['mcp'], ['tools']]) {
+      const run = spawnBuckle({ entry, args, env, cwd: node.workspace })
+      running.push(run)
+      expect(await run.exited).toEqual({ code: 1, signal: null })
+      expect(run.stderr()).toContain('BUCKLE_ENV_FILE')
+      expect(run.stderr()).toContain('buckle init')
+      expect(run.stderr()).not.toContain('dotenv-secret-value')
+    }
+    expect(existsSync(elsewhere)).toBe(false)
+  }, 60_000)
+
+  it('runs as before when that .env names no BUCKLE_ variable', async () => {
+    const node = await prepareNode()
+    const { BUCKLE_ENV_FILE: _unset, ...env } = node.env
+    writeFileSync(join(node.workspace, '.env'), 'OTHER_TOOL=1\n# BUCKLE_STATE_DIR is only mentioned here\n')
+    const run = spawnBuckle({ entry, args: ['tools'], env, cwd: node.workspace })
+    running.push(run)
+    expect(await run.exited).toEqual({ code: 0, signal: null })
+  }, 60_000)
 })
 
 describe('buckle serve bootstrap (built dist)', () => {
