@@ -67,7 +67,7 @@ describe('F02 duplicate route registrations fail the project check', () => {
   const script = join(packageRoot, '../../scripts/check-duplicate-routes.mjs')
 
   it('passes the fixture and names both files when two layers claim GET /health', async () => {
-    await expect(run(process.execPath, [script, fixtureRoot])).resolves.toMatchObject({ stdout: expect.stringContaining('No duplicate Nitro routes') })
+    await expect(run(process.execPath, [script, build.fixtureRoot])).resolves.toMatchObject({ stdout: expect.stringContaining('No duplicate Nitro routes') })
 
     const project = mkdtempSync(join(tmpdir(), 'duplicate-routes-'))
     mkdirSync(join(project, 'node_modules'))
@@ -127,7 +127,7 @@ describe('F06 no import-time startup', () => {
     const env = fixtureEnv({ dataDir, tokens })
     const imported = await run(process.execPath, ['--input-type=module', '-e', 'const m = await import(process.argv[1]); if (!m.nitroApp || !m.middleware) process.exit(3)', build.full.entry], { env, timeout: 10_000 })
     expect(imported.stdout).toBe('')
-    const common = await run(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', 'await import(process.argv[1]); await import(process.argv[2])', join(fixtureRoot, 'common/runtime.ts'), join(fixtureRoot, 'mcp/server.ts')], { env, cwd: packageRoot, timeout: 10_000 })
+    const common = await run(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', 'await import(process.argv[1]); await import(process.argv[2])', join(build.fixtureRoot, 'common/runtime.ts'), join(build.fixtureRoot, 'mcp/server.ts')], { env, cwd: packageRoot, timeout: 10_000 })
     expect(common.stdout).toBe('')
     expect(readdirSync(dataDir)).toEqual([])
   })

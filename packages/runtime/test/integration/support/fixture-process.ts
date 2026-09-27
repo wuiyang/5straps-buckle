@@ -4,8 +4,8 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { expect } from 'vitest'
-import { fixtureMain, packageRoot } from './paths.js'
+import { expect, inject } from 'vitest'
+import { packageRoot } from './paths.js'
 
 export interface LogLine {
   level: string
@@ -57,8 +57,9 @@ export function fixtureEnv(input: { dataDir: string; tokens: FixtureTokens; entr
   }
 }
 
+// Runs main.ts from the fixture copy the global setup built; cwd stays packageRoot so tsx reads the package tsconfig.
 export function startFixture(input: { args: string[]; env: NodeJS.ProcessEnv; stdio?: StdioOptions }): FixtureProcess {
-  const child = spawn(process.execPath, ['--import', 'tsx', fixtureMain, ...input.args], { cwd: packageRoot, env: input.env, stdio: input.stdio ?? ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, ['--import', 'tsx', inject('fixtureBuild').main, ...input.args], { cwd: packageRoot, env: input.env, stdio: input.stdio ?? ['ignore', 'pipe', 'pipe'] })
   const stdout: Record<string, unknown>[] = []
   const events: LogLine[] = []
   const malformed: string[] = []
