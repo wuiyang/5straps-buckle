@@ -1,4 +1,5 @@
 import { mkdtempSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -113,6 +114,26 @@ async function childSeesBusy(path: string): Promise<boolean> {
   await probe.exited
   return message.busy === true
 }
+
+describe('releasing a lock another connection is reading (Buckle B9)', () => {
+  it('releases a first-use lock file while another connection holds a shared lock, instead of failing with SQLITE_BUSY', async () => {
+    const path = lockPath('fresh.lock.sqlite')
+    const lock = await acquireFileLock({ path, wait: 'none' })
+    // A contender polling BEGIN IMMEDIATE holds SHARED between its attempts; a reader stands in for it here.
+    const reader = new DatabaseSync(path, { timeout: 0 })
+    reader.exec('BEGIN')
+    reader.prepare('SELECT count(*) FROM sqlite_master').get()
+    try {
+      await lock.release()
+      expect(lock.held).toBe(false)
+    } finally {
+      reader.exec('COMMIT')
+      reader.close()
+    }
+    const again = await acquireFileLock({ path, wait: 'none' })
+    await again.release()
+  })
+})
 
 describe('same-process opens keep SQLite locks (review H1, L5 to L7)', () => {
   it('H1 a second acquire in the holder process leaves the OS lock in place and release() still works', async () => {

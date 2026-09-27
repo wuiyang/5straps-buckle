@@ -86,8 +86,10 @@ function heldLock({ db, connection, path }: { db: SqliteDatabase; connection: Da
     path,
     get held() { return releasing === undefined },
     release() {
+      // ROLLBACK, not COMMIT: the lock writes nothing, but the first BEGIN on a new file dirties page 1,
+      // and committing that needs an exclusive lock that a contender's momentary shared lock refuses.
       releasing ??= (async () => {
-        try { connection.exec('COMMIT') } finally { await db.dispose() }
+        try { connection.exec('ROLLBACK') } finally { await db.dispose() }
       })()
       return releasing
     },
