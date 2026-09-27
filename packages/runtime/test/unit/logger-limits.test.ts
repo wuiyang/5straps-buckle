@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { createLogger, createOperationScope, runInScope, type LogEvent, type LogSink } from '../../src/index.js'
+import { createLogger, createOperationScope, redactText, runInScope, type LogEvent, type LogSink } from '../../src/index.js'
 
 function memorySink(): LogSink & { events: LogEvent[] } {
   const events: LogEvent[] = []
@@ -13,6 +13,30 @@ async function logOnce(fields: Record<string, unknown>, options: { omitKeys?: st
   root.logger.info(options.message ?? 'event', fields)
   await root.flush()
   return sink.events[0]!
+}
+
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+// AWS example keys use the base64 letters, digits and '/' without '+'.
+const AWS_SECRET = BASE64.replace('+', '')
+
+function seededRandom(seed: number): () => number {
+  let state = seed
+  return () => {
+    state = (state + 0x6d2b79f5) | 0
+    let mixed = Math.imul(state ^ (state >>> 15), 1 | state)
+    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4_294_967_296
+  }
+}
+
+// Four shapes in turn: base64 or AWS alphabet, 40 random characters or '/' plus 39.
+function randomKeys(count: number): string[] {
+  const random = seededRandom(20_260_927)
+  const pick = (alphabet: string, length: number) => Array.from({ length }, () => alphabet[Math.floor(random() * alphabet.length)]).join('')
+  return Array.from({ length: count }, (_, index) => {
+    const alphabet = index % 2 === 0 ? BASE64 : AWS_SECRET
+    return index % 4 < 2 ? pick(alphabet, 40) : `/${pick(alphabet, 39)}`
+  })
 }
 
 describe('logger shapes and limits (review M4)', () => {
@@ -84,6 +108,33 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     const event = await logOnce({ note: `k=${aws}`, cmd: `aws configure set aws_secret_access_key ${aws}`, b64: `k=${base64}`, slash: leadingSlash, azure: `DefaultEndpointsProtocol=https;AccountKey=${accountKey};EndpointSuffix=core.windows.net` }, { message: `retrying with ${base64}` })
     const serialized = JSON.stringify(event)
     for (const secret of [aws, base64, leadingSlash, accountKey, 'K7MDENG', 'pe/Unols']) expect(serialized).not.toContain(secret)
+  })
+
+  it('redacts singular token keys whatever the prefix; a count needs a numeric value under a plural count word', async () => {
+    const singular = ['cacheToken', 'contextToken', 'inputToken', 'maxToken', 'cache_token', 'token']
+    const counts = { max_tokens: '4096', tokenLimit: 8_000, tokenBudget: 100, tokenUsage: 7, promptTokenTotal: 12 }
+    const event = await logOnce({ ...Object.fromEntries(singular.map(key => [key, 1_024])), ...counts, inputTokens: 'abc123', totalTokens: { input: 1 } }, { message: 'GET /v1/chat?max_tokens=4096&input_token=1234' })
+    expect(Object.fromEntries(singular.map(key => [key, event.fields![key]]))).toEqual(Object.fromEntries(singular.map(key => [key, '[redacted]'])))
+    expect(event.fields).toMatchObject({ ...counts, inputTokens: '[redacted]', totalTokens: '[redacted]' })
+    expect(event.message).toBe('GET /v1/chat?max_tokens=4096&input_token=[redacted]')
+  })
+
+  it('redacts 5000 random 40-character base64 and AWS-style keys, with and without a leading slash', () => {
+    const survivors = randomKeys(5_000).filter(key => redactText(`retrying with ${key}`).includes(key))
+    expect(survivors.length).toBe(0)
+  })
+
+  it('keeps short paths, stack frames, hashed chunk names, camel-case paths and git SHAs readable', () => {
+    const readable = [
+      '/usr/lib/node_modules/x',
+      '/tmp/a.txt',
+      '    at runRequestInScope (file:///home/user/projects/buckle/packages/runtime/src/nitro/guards.ts:125:29)',
+      'at connect (/srv/app/node_modules/@modelcontextprotocol/server/dist/src-STyD_Vvf.cjs:1:2)',
+      '/srv/app/.output/server/chunks/routes/api/v1/workspaces-Bx3dK9aZ.mjs',
+      'src/components/UserProfileCard2/settings/index.vue',
+      '6ec41b3a1f2e4d5c6b7a8f9e0d1c2b3a4f5e6d7c',
+    ]
+    expect(readable.map(redactText)).toEqual(readable)
   })
 
   it('keeps absolute and relative paths and stack frames readable', async () => {
