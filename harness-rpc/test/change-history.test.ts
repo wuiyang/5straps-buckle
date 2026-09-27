@@ -1,8 +1,11 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
 const roots: string[] = []
@@ -165,3 +168,40 @@ it('restores read-only directory modes after restoring their children', async ()
   expect(statSync(directory).mode & 0o777).toBe(0o500)
   chmodSync(directory, 0o700)
 })
+
+describe('the history database file', () => {
+  it('starts a new history.sqlite in WAL mode, with owner-only sidecars removed on a clean close', async () => {
+    const { options, history } = await fixture()
+    const file = join(options.directory, 'history.sqlite')
+    const header = Buffer.alloc(2)
+    const descriptor = openSync(file, 'r')
+    try { readSync(descriptor, header, 0, 2, 18) } finally { closeSync(descriptor) }
+    // Bytes 18 and 19 are the write and read format versions: 2 means WAL.
+    expect([...header]).toEqual([2, 2])
+    for (const sidecar of ['-wal', '-shm']) expect(statSync(`${file}${sidecar}`).mode & 0o777).toBe(0o600)
+    await history.close()
+    expect(existsSync(`${file}-wal`)).toBe(false)
+  })
+
+  it.runIf(process.platform === 'linux')('is closed again when a workspace runtime fails to start after opening it', async () => {
+    const root = mkdtempSync('/tmp/buckle-history-leak-'); roots.push(root)
+    mkdirSync(join(root, 'workspace'))
+    mkdirSync(join(root, 'state'), { mode: 0o700 })
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'no-such-pack', BUCKLE_ALLOW_SHELL: 'false' })
+    // A registered workspace retries its whole creation on every request.
+    for (let attempt = 0; attempt < 3; attempt += 1) await expect(createRuntime({ config, channel: () => createDeferredApprovalChannel() })).rejects.toThrow('Unknown BUCKLE_PACKS')
+    expect(openDescriptors(root)).toEqual([])
+  })
+})
+
+/** This process's open files under a directory, read from /proc. */
+function openDescriptors(directory: string): string[] {
+  return readdirSync('/proc/self/fd').flatMap(fd => {
+    try {
+      const path = readlinkSync(`/proc/self/fd/${fd}`)
+      return path.startsWith(`${directory}/`) ? [path] : []
+    } catch {
+      return []
+    }
+  })
+}

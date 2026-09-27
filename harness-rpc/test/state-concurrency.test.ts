@@ -70,4 +70,16 @@ describe('in-process state updates', () => {
     await expect(store.update(() => store.update(state => { state.count = 1 }))).rejects.toThrow('nested updates are not supported')
     expect(store.read()).toEqual({ count: 0 })
   })
+
+  it('allows an update that merely started inside another one and runs after it ended', async () => {
+    const filePath = join(directory(), 'follow-up.json')
+    const store = createJsonFileStore({ filePath, schema: z.object({ count: z.number() }), fallback: { count: 0 } })
+    const followUp = Promise.withResolvers<void>()
+    await store.update(state => {
+      state.count = 1
+      setTimeout(() => { store.update(later => { later.count += 1 }).then(followUp.resolve, followUp.reject) }, 50)
+    })
+    await followUp.promise
+    expect(store.read()).toEqual({ count: 2 })
+  })
 })

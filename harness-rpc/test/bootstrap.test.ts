@@ -103,6 +103,30 @@ describe('a .env in the current directory when no configuration file resolves', 
     expect(existsSync(elsewhere)).toBe(false)
   }, 60_000)
 
+  it('still answers --version and help, which need no configuration', async () => {
+    const node = await prepareNode()
+    const { BUCKLE_ENV_FILE: _unset, ...env } = node.env
+    writeFileSync(join(node.workspace, '.env'), 'BUCKLE_AUTH_TOKEN=dotenv-secret-value\n')
+    for (const args of [['--version'], ['help']]) {
+      const run = spawnBuckle({ entry, args, env, cwd: node.workspace })
+      running.push(run)
+      expect(await run.exited).toEqual({ code: 0, signal: null })
+      expect(run.stderr()).toBe('')
+    }
+  }, 60_000)
+
+  it('refuses a CLI command with one plain line, not a JSON log line with a stack', async () => {
+    const node = await prepareNode()
+    const { BUCKLE_ENV_FILE: _unset, ...env } = node.env
+    writeFileSync(join(node.workspace, '.env'), 'BUCKLE_AUTH_TOKEN=dotenv-secret-value\n')
+    const run = spawnBuckle({ entry, args: ['tools'], env, cwd: node.workspace })
+    running.push(run)
+    expect(await run.exited).toEqual({ code: 1, signal: null })
+    const lines = run.stderr().trimEnd().split('\n')
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/^\/.+\.env sets BUCKLE_ variables/)
+  }, 60_000)
+
   it('runs as before when that .env names no BUCKLE_ variable', async () => {
     const node = await prepareNode()
     const { BUCKLE_ENV_FILE: _unset, ...env } = node.env
@@ -146,6 +170,21 @@ describe('buckle serve bootstrap (built dist)', () => {
     expect(buckle.lines().at(-1)?.message).toBe('5straps Buckle stopped')
   }, 60_000)
 
+  it('closes stage by stage and exits 0 on SIGINT too', async () => {
+    const node = await prepareNode()
+    const buckle = serve(node)
+    await buckle.waitForLine(line => line.message === '5straps Buckle listening')
+
+    buckle.child.kill('SIGINT')
+    expect(await buckle.exited).toEqual({ code: 0, signal: null })
+    expect(buckle.lines()).toContainEqual(expect.objectContaining({ message: 'Shutdown requested', fields: expect.objectContaining({ signal: 'SIGINT' }) }))
+    const steps = closeSteps(buckle.lines())
+    expect(steps).toEqual(expect.arrayContaining([{ stage: 'accept', name: 'http server' }, { stage: 'databases', name: 'workspace history' }, { stage: 'sinks', name: 'logger' }]))
+    const order = stageOrder(steps)
+    expect(order).toEqual([...order].sort((left, right) => left - right))
+    expect(buckle.lines().at(-1)?.message).toBe('5straps Buckle stopped')
+  }, 60_000)
+
   it('stops with exit 0, without serving, when SIGTERM arrives during the startup window', async () => {
     const node = await prepareNode()
     const { gate } = installGatePlugin(node)
@@ -171,6 +210,21 @@ describe('buckle serve bootstrap (built dist)', () => {
     expect(failure).toMatchObject({ level: 'fatal', error: { message: expect.stringContaining('Unknown BUCKLE_PACKS: no-such-pack') } })
     expect(buckle.lines().some(line => line.message === '5straps Buckle listening')).toBe(false)
     expect(existsSync(join(node.state, 'actions.jsonl'))).toBe(false)
+  }, 60_000)
+})
+
+describe('an environment file other users can read (review M4, warn only)', () => {
+  it('runs, and warns once naming chmod 600 and the file, without printing a value', async () => {
+    const node = await prepareNode()
+    const file = join(node.root, 'loose.env')
+    writeFileSync(file, 'BUCKLE_SERVER_NAME=loose-value-fixture\n', { mode: 0o644 })
+    chmodSync(file, 0o644)
+    const run = spawnBuckle({ entry, args: ['tools'], env: { ...node.env, BUCKLE_ENV_FILE: file }, cwd: node.workspace })
+    running.push(run)
+    expect(await run.exited).toEqual({ code: 0, signal: null })
+    const warnings = run.lines().filter(line => line.level === 'warn' && line.message.includes(`chmod 600 ${file}`))
+    expect(warnings).toHaveLength(1)
+    expect(run.stderr()).not.toContain('loose-value-fixture')
   }, 60_000)
 })
 

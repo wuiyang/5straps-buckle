@@ -2,7 +2,7 @@
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { Logger, LoggerRoot } from '@5straps/runtime'
-import { runCli, runInitCommand, runSettingsCommand } from './cli/main.js'
+import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand } from './cli/main.js'
 import { loadConfig, type BuckleConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
@@ -32,16 +32,40 @@ export function selectMode(argv: readonly string[]): Mode {
 /** The exit code of a one-shot command; undefined once serve or mcp is running. */
 export async function main(argv: readonly string[]): Promise<number | undefined> {
   const mode = selectMode(argv)
+  if (!('argv' in mode)) {
+    await runService({ kind: mode.kind, ...configureProcess() })
+    return undefined
+  }
+  try {
+    return await runCommand(mode)
+  } catch (error) {
+    return refuseCommand(error)
+  }
+}
+
+async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<number> {
   // Before the file is loaded, so `settings show` can tell the file's values from the shell's.
   if (mode.kind === 'init') return (await runInitCommand(mode.argv)).exitCode
   if (mode.kind === 'settings') return (await runSettingsCommand(mode.argv)).exitCode
+  // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
+  const answered = answerWithoutConfiguration(mode.argv)
+  if (answered) return answered.exitCode
+  return (await runCli({ argv: mode.argv, config: configureProcess().config })).exitCode
+}
 
-  loadEnvironmentFile()
+function configureProcess(): { config: BuckleConfig; logging: LoggerRoot } {
+  const environment = loadEnvironmentFile()
   const logging = configureRootLogger(loggerConfigFrom(process.env))
-  const config = loadConfig()
-  if (mode.kind === 'cli') return (await runCli({ argv: mode.argv, config })).exitCode
-  await runService({ kind: mode.kind, config, logging })
-  return undefined
+  // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
+  if (environment.openToOthers && environment.file) logging.logger.warn(`The environment file ${environment.file} can be read by other users; run chmod 600 ${environment.file}`)
+  return { config: loadConfig(), logging }
+}
+
+// A one-shot command answers a person at a terminal: the reason on one line, the detail at debug level.
+function refuseCommand(error: unknown): number {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  logger.debug('Command refused', { error })
+  return 1
 }
 
 // One common runtime for the process; main owns its signals and closes it stage by stage.

@@ -3,7 +3,7 @@ import type { BuckleConfig } from '../common/runtime/config.js'
 
 const config = { serverId: 'mode-dispatch', stateDirectory: '/nonexistent/buckle-mode-dispatch-state' } as BuckleConfig
 const entry = vi.hoisted(() => ({
-  loadEnvironmentFile: vi.fn(),
+  loadEnvironmentFile: vi.fn(() => ({ file: null, openToOthers: false })),
   loadConfig: vi.fn(),
   runInitCommand: vi.fn(async () => ({ exitCode: 3 })),
   runSettingsCommand: vi.fn(async () => ({ exitCode: 4 })),
@@ -14,7 +14,7 @@ const entry = vi.hoisted(() => ({
 }))
 vi.mock('../common/runtime/environment.js', () => ({ loadEnvironmentFile: entry.loadEnvironmentFile }))
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
-vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runCli: entry.runCli }))
+vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runCli: entry.runCli, answerWithoutConfiguration: () => null }))
 vi.mock('../server/hono/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../mcp/stdio.js', () => ({ serveMcpStdio: entry.serveMcpStdio }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))

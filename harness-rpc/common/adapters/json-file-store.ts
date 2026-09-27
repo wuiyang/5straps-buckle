@@ -28,13 +28,23 @@ export interface JsonFileStore<T> {
 // One queue per state file in this process: local flows take turns here, and only other processes
 // contend for the file lock.
 const turns = new Map<string, Promise<unknown>>()
-// The files whose turn the current async flow holds: an update nested in one on the same file would wait for itself.
-const heldTurns = new AsyncLocalStorage<ReadonlySet<string>>()
+// The turns the current async flow was started under. A timer or promise created inside an update
+// inherits this too, so a turn counts as held only while its update is still running.
+interface Turn { readonly key: string; active: boolean }
+const heldTurns = new AsyncLocalStorage<readonly Turn[]>()
 
 function inTurn<R>(key: string, operation: () => Promise<R>): Promise<R> {
-  const held = heldTurns.getStore() ?? new Set<string>()
-  if (held.has(key)) return Promise.reject(new Error(`State file ${key} is already being updated by this operation; nested updates are not supported`))
-  const result = (turns.get(key) ?? Promise.resolve()).then(() => heldTurns.run(new Set([...held, key]), operation))
+  const held = heldTurns.getStore() ?? []
+  // An update nested in a running update of the same file would wait for itself.
+  if (held.some(turn => turn.key === key && turn.active)) return Promise.reject(new Error(`State file ${key} is already being updated by this operation; nested updates are not supported`))
+  const turn: Turn = { key, active: true }
+  const result = (turns.get(key) ?? Promise.resolve()).then(() => heldTurns.run([...held.filter(other => other.active), turn], async () => {
+    try {
+      return await operation()
+    } finally {
+      turn.active = false
+    }
+  }))
   const settled = result.then(() => undefined, () => undefined)
   turns.set(key, settled)
   void settled.then(() => { if (turns.get(key) === settled) turns.delete(key) })

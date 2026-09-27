@@ -23,8 +23,8 @@ interface PluginModule {
   createPack: (input: Record<string, unknown>) => Pack | Promise<Pack>
 }
 
-export function createPluginRegistry(input: { filePath: string; packOptions: Record<string, unknown> }): PluginRegistry {
-  const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, plugins: [] } })
+export function createPluginRegistry(input: { filePath: string; packOptions: Record<string, unknown>; lockDeadlineMs?: number }): PluginRegistry {
+  const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, plugins: [] }, lockDeadlineMs: input.lockDeadlineMs })
 
   return {
     list: () => store.read().plugins,

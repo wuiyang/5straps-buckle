@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { acquireFileLock } from '@5straps/runtime/sqlite'
+import { RuntimeError } from '@5straps/runtime'
+import { acquireFileLock, SqliteErrorCode } from '@5straps/runtime/sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { runCli } from '../cli/main.js'
@@ -156,15 +157,27 @@ describe('history execution lock', () => {
 })
 
 describe('a state file busy past the wait, at the faces', () => {
-  async function busyNode() {
+  // A short wait, so the busy answers are tested without the real five seconds.
+  async function busyNode(file = 'grants.json') {
     const root = directory()
     mkdirSync(join(root, 'workspace'))
     mkdirSync(join(root, 'state'), { mode: 0o700 })
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_ALLOW_SHELL: 'false' })
+    const config = { ...loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }), stateLockDeadlineMs: 300 }
     const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
     const grant = await runtime.grants.grant({ sessionId: 's', rule: 'read_scope', subject: '/shots', scope: 'always' })
-    await holder(join(root, 'state', 'grants.json.lock.sqlite'))
+    await holder(join(root, 'state', `${file}.lock.sqlite`))
     return { config, runtime, grant }
+  }
+
+  async function captureStderr(run: () => Promise<{ exitCode: number }>): Promise<{ exitCode: number; stderr: string }> {
+    let stderr = ''
+    const write = process.stderr.write.bind(process.stderr)
+    process.stderr.write = ((chunk: string | Uint8Array) => { stderr += String(chunk); return true }) as typeof process.stderr.write
+    try {
+      return { exitCode: (await run()).exitCode, stderr }
+    } finally {
+      process.stderr.write = write
+    }
   }
 
   it('answers 503 with the reason over HTTP', async () => {
@@ -174,19 +187,41 @@ describe('a state file busy past the wait, at the faces', () => {
     expect(response.status).toBe(503)
     expect(await response.json()).toEqual({ error: expect.stringContaining('is busy in another Buckle process') })
     await runtime.history.close()
-  }, 20_000)
+  })
 
   it('exits 1 with the reason from the CLI', async () => {
     const { config, runtime, grant } = await busyNode()
     await runtime.history.close()
-    let stderr = ''
-    const write = process.stderr.write.bind(process.stderr)
-    process.stderr.write = ((chunk: string | Uint8Array) => { stderr += String(chunk); return true }) as typeof process.stderr.write
-    try {
-      expect((await runCli({ argv: ['grants', 'revoke', grant.id], config })).exitCode).toBe(1)
-    } finally {
-      process.stderr.write = write
-    }
-    expect(stderr).toContain('is busy in another Buckle process')
-  }, 20_000)
+    const result = await captureStderr(() => runCli({ argv: ['grants', 'revoke', grant.id], config }))
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('is busy in another Buckle process')
+  })
+
+  it('answers a tool call with a retryable STATE_BUSY that names no path', async () => {
+    const { config, runtime } = await busyNode('approvals.json')
+    const response = await runtime.invoke({ sessionId: 's', request: { requestId: 'busy-read', tool: 'fs_list', args: { path: '.' }, approvalTokens: [] } })
+    expect(response).toMatchObject({ outcome: 'error', error: { code: 'STATE_BUSY', message: 'Buckle state is busy in another process; retry shortly', retryable: true } })
+    expect(JSON.stringify(response)).not.toContain(config.stateDirectory)
+    await runtime.history.close()
+  })
+
+  it('exits 1 from a CLI tool call with the STATE_BUSY reason', async () => {
+    const { config, runtime } = await busyNode('approvals.json')
+    await runtime.history.close()
+    const result = await captureStderr(() => runCli({ argv: ['call', 'fs_list', '--json', '{"path":"."}'], config }))
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('STATE_BUSY: Buckle state is busy in another process; retry shortly')
+  })
+
+  it('answers STATE_BUSY when the history connection stays busy past its section wait', async () => {
+    const root = directory()
+    mkdirSync(join(root, 'workspace'))
+    // A scratch root takes writes without asking, so the call reaches its history section.
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_SCRATCH_ROOTS: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    runtime.history.run = async () => { throw new RuntimeError(SqliteErrorCode.sectionWaitTimeout, 'Waited 5000 ms for connection history:default while another flow held it') }
+    const response = await runtime.invoke({ sessionId: 's', request: { requestId: 'section-wait', tool: 'fs_write', args: { path: 'note.txt', content: 'x' }, approvalTokens: [] } })
+    expect(response).toMatchObject({ outcome: 'error', error: { code: 'STATE_BUSY', retryable: true } })
+    await runtime.history.close()
+  })
 })

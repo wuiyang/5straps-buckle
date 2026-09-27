@@ -59,8 +59,8 @@ export interface ApprovalRegistry {
   unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
 }
 
-export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath, waitMs: number | null = 0): ApprovalRegistry {
-  const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [] } })
+export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath, waitMs: number | null = 0, options: { lockDeadlineMs?: number } = {}): ApprovalRegistry {
+  const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [] }, lockDeadlineMs: options.lockDeadlineMs })
 
   return {
     issue({ tool, sessionId, asks }) {
@@ -108,7 +108,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         if (decision.approved) {
           if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt })
           else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}) })
-          logger.info('Approval granted', { rule, subject: widenedTo ?? subject, ...(widenedTo ? { askedBy: subject } : {}), scope: decision.scope, tool })
+          // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
+          logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo ? { widened: true } : {}) })
         }
         if (!decision.approved && decision.scope !== 'once') await grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true })
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)

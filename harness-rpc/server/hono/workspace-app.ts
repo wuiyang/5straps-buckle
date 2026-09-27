@@ -9,7 +9,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { z } from 'zod'
 import type { BuckleConfig } from '../../common/runtime/config.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
-import { createWorkspaceManager, type WorkspaceManager, WorkspaceError, WorkspaceRegistrationSchema, WorkspacePatchSchema, WorkspaceTokenInputSchema } from '../../common/services/workspaces/workspace-manager.js'
+import { createWorkspaceManager, type WorkspaceManager, WorkspaceError, WorkspaceRegistrationSchema, WorkspacePatchSchema, WorkspaceRegistryError, WorkspaceTokenInputSchema } from '../../common/services/workspaces/workspace-manager.js'
 import { matchesTokenSource } from '../../common/services/access/tokens.js'
 import { requireBearerToken } from './auth.js'
 import { allowPostOnly } from './mcp-allow.js'
@@ -20,6 +20,7 @@ import { stateBusyResponse } from './state-busy.js'
 
 export function createWorkspaceApp(input: { config: BuckleConfig; runtime: BuckleRuntime; workspaces?: WorkspaceManager }): Hono {
   const manager = input.workspaces ?? createWorkspaceManager(input)
+  const nodeRuntime = input.runtime
   const app = new Hono()
   const faces = new Map<string, Hono>()
   const nodeAudit = auditHttpRequest({ actions: input.runtime.actions, workspaceId: 'default', face: 'http_workspace_registry' })
@@ -83,32 +84,45 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     })
   }
 
+  // Before authentication a caller learns nothing about the registry beyond that it needs repair.
+  const auditRejected = async (input: { id: string; known: boolean; path: string; status: 401 | 503 }) => {
+    if (input.path !== '/v1/invoke' && input.path !== '/mcp' && !input.path.startsWith('/setup/')) return
+    const auditId = randomUUID()
+    await nodeRuntime.actions.record({ auditId, event: 'result', workspaceId: input.known ? input.id : 'unresolved',
+      at: new Date().toISOString(), requestId: auditId, sessionId: 'http-untrusted', tool: input.path === '/mcp' ? 'workspace_mcp_auth_rejected' : input.path.startsWith('/setup/') ? 'workspace_setup_auth_rejected' : 'workspace_invoke_rejected',
+      outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: `HTTP ${input.status}`,
+    })
+  }
+  const registryNeedsRepair = async (input: { id: string; path: string }) => {
+    await auditRejected({ ...input, known: false, status: 503 })
+    return Response.json({ error: 'Workspace registry needs owner repair' }, { status: 503 })
+  }
+
   app.all('/workspaces/:id/*', async context => {
     const id = context.req.param('id')
     const path = context.req.path.slice(`/workspaces/${id}`.length)
-    if (path.startsWith('/v1/workbenches/')) {
-      const { runtime } = await manager.resolve(id)
-      const workbenchId = path.split('/')[3] ?? ''
-      if (!await runtime.workbenches.authenticate(workbenchId, context.req.header('authorization'))) {
-        await runtime.workbenches.auditRejected()
+    try {
+      if (path.startsWith('/v1/workbenches/')) {
+        const { runtime } = await manager.resolve(id)
+        const workbenchId = path.split('/')[3] ?? ''
+        if (!await runtime.workbenches.authenticate(workbenchId, context.req.header('authorization'))) {
+          await runtime.workbenches.auditRejected()
+          return context.json({ error: 'Unauthorized' }, 401)
+        }
+        const app = new Hono().route('/v1/workbenches', createWorkbenchApp(runtime))
+        const url = new URL(context.req.url)
+        url.pathname = path
+        return app.fetch(new Request(url, context.req.raw))
+      }
+      const known = manager.known(id)
+      const credential = path.startsWith('/setup/') ? manager.adminToken(id) : () => manager.agentTokens(id)
+      if (!credential || !matchesTokenSource(context.req.header('authorization'), credential)) {
+        await auditRejected({ id, known, path, status: 401 })
         return context.json({ error: 'Unauthorized' }, 401)
       }
-      const app = new Hono().route('/v1/workbenches', createWorkbenchApp(runtime))
-      const url = new URL(context.req.url)
-      url.pathname = path
-      return app.fetch(new Request(url, context.req.raw))
-    }
-    const known = manager.known(id)
-    const credential = path.startsWith('/setup/') ? manager.adminToken(id) : () => manager.agentTokens(id)
-    if (!credential || !matchesTokenSource(context.req.header('authorization'), credential)) {
-      if (path === '/v1/invoke' || path === '/mcp' || path.startsWith('/setup/')) {
-        const auditId = randomUUID()
-        await input.runtime.actions.record({ auditId, event: 'result', workspaceId: known ? id : 'unresolved',
-          at: new Date().toISOString(), requestId: auditId, sessionId: 'http-untrusted', tool: path === '/mcp' ? 'workspace_mcp_auth_rejected' : path.startsWith('/setup/') ? 'workspace_setup_auth_rejected' : 'workspace_invoke_rejected',
-          outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: 'HTTP 401',
-        })
-      }
-      return context.json({ error: 'Unauthorized' }, 401)
+    } catch (error) {
+      if (error instanceof WorkspaceRegistryError) return registryNeedsRepair({ id, path })
+      throw error
     }
     if (path.startsWith('/setup/workbenches') && context.req.method !== 'GET') await manager.resolve(id)
     const { config, runtime } = await manager.resolve(id, { setup: path.startsWith('/setup/') })

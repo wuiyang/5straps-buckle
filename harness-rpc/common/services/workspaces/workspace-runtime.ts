@@ -95,19 +95,32 @@ export interface BuckleRuntime {
   onToolsChanged(listener: () => void): void
 }
 
-export async function createRuntime(input: {
+interface RuntimeInput {
   config: BuckleConfig
   workspaceId?: string
   /** Built here because a channel that waits for a decision needs the registry holding it. */
   channel: (approvals: ApprovalRegistry) => ApprovalChannel
   /** Where refusals are announced. Defaults to the configured webhook, or to nothing. */
   reporter?: Reporter
-}): Promise<BuckleRuntime> {
+}
+
+export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime> {
   const { config } = input
   const ceiling = config.nodePolicy ? compilePolicy(config.nodePolicy) : null
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
   const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? 'default'}` })
+  try {
+    return await assembleRuntime({ ...input, ceiling, history })
+  } catch (error) {
+    // No close step owns the connection until the runtime exists (runtime.md: clean up after partial initialization).
+    await history.close()
+    throw error
+  }
+}
+
+async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy | null; history: ChangeHistory }): Promise<BuckleRuntime> {
+  const { config, ceiling, history } = input
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
 
@@ -116,12 +129,13 @@ export async function createRuntime(input: {
     acknowledgedUnsandboxed: config.acknowledgedUnsandboxed,
   })
 
-  const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
-  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs)
+  const lockDeadlineMs = config.stateLockDeadlineMs
+  const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd, lockDeadlineMs })
+  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, { lockDeadlineMs })
   const actions = createFileActionLog(actionsPath(config))
   await actions.recoverInterrupted()
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
-  const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd })
+  const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
     : nullReporter)
@@ -129,6 +143,7 @@ export async function createRuntime(input: {
   const plugins = createPluginRegistry({
     filePath: pluginsPath(config),
     packOptions: { cwd: config.cwd, sandboxMode: sandbox.sandbox.mode },
+    lockDeadlineMs,
   })
 
   const localSkills = [loadRootSkill(), ...await loadSkills(config.skillDirectories)]

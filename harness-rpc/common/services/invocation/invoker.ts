@@ -17,6 +17,7 @@ import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
 import { resolveEffects } from './resolve-effects.js'
+import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 
 export interface InvokerOptions {
@@ -352,6 +353,10 @@ function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; 
 function shapeError(error: unknown, tool: string): { code: string; message: string; retryable: boolean } {
   if (error instanceof ToolInputError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof ToolExecutionError) return { code: error.code, message: error.message, retryable: error.retryable }
+  if (isStateBusy(error)) {
+    logger.warn('Tool invocation found Buckle state busy', { tool, message: error.message })
+    return { code: 'STATE_BUSY', message: STATE_BUSY_MESSAGE, retryable: true }
+  }
   logger.error('Tool invocation failed', {
     tool,
     message: error instanceof Error ? error.message : 'Unknown error',

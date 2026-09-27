@@ -137,9 +137,9 @@ async function askOne(context: ApprovalWatchOptions & { readline: Interface; key
     if (pending.ok && !pending.requests.some(entry => entry.token === request.token)) dropped.abort()
   }, context.recheckMs)
   const remaining = remainingMs(request.expiresAt)
-  const signals = [context.stopped, dropped.signal]
-  if (remaining !== Infinity) signals.push(AbortSignal.timeout(Math.min(Math.max(remaining, 1), 2_147_483_647)))
-  const signal = AbortSignal.any(signals)
+  // Node timers run on the cached loop time, so this can fire a moment before the wall clock passes expiresAt.
+  const expiry = remaining === Infinity ? null : AbortSignal.timeout(Math.min(Math.max(remaining, 1), 2_147_483_647))
+  const signal = AbortSignal.any([context.stopped, dropped.signal, ...(expiry ? [expiry] : [])])
   try {
     // Keys already on their way were meant for the question before this one.
     await context.keys.quiet(QUIET_MS, signal)
@@ -151,7 +151,8 @@ async function askOne(context: ApprovalWatchOptions & { readline: Interface; key
         answer = (await context.readline.question(prompt, { signal })).trim().toLowerCase()
       } catch {
         if (context.stopped.aborted) return 'stopped'
-        output.write(`  ${request.token} ${remainingMs(request.expiresAt) === 0 ? 'expired' : 'was answered elsewhere'}; dropped.\n`)
+        const expired = expiry?.aborted === true || remainingMs(request.expiresAt) === 0
+        output.write(`  ${request.token} ${expired ? 'expired' : 'was answered elsewhere'}; dropped.\n`)
         return 'dropped'
       }
       if (answer === 'n') {

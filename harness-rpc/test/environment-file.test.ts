@@ -1,8 +1,17 @@
-import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import type { ChildProcess } from 'node:child_process'
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { editEnvironmentVariable, setEnvironmentVariable, updateEnvironmentFile, writeEnvironmentFile } from '../cli/environment-file.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { editEnvironmentVariable, environmentLockPath, setEnvironmentVariable, updateEnvironmentFile, writeEnvironmentFile } from '../cli/environment-file.js'
+import { loadEnvironmentFile } from '../common/runtime/environment.js'
+import { holdLockInProcess, killHolder } from './support/lock-holder.js'
+
+const holders: ChildProcess[] = []
+afterEach(async () => {
+  vi.unstubAllEnvs()
+  for (const holder of holders.splice(0)) if (holder.exitCode === null && holder.signalCode === null) await killHolder(holder)
+})
 
 describe('writing one variable back into an environment file', () => {
   it('fills in the commented placeholder buckle init left, keeping its position', () => {
@@ -80,5 +89,33 @@ describe.skipIf(process.platform === 'win32')('the environment file is owner-onl
     const path = worldReadable('BUCKLE_PORT=4320\nexport BUCKLE_RINGS_APPROVAL_KEY=hand-written\n')
     expect((await updateEnvironmentFile(path, text => editEnvironmentVariable({ text, name: 'BUCKLE_RINGS_APPROVAL_KEY', value: 'fixture' }), { home: dirname(path) })).ok).toBe(false)
     expect([readFileSync(path, 'utf8'), modeOf(path)]).toEqual(['BUCKLE_PORT=4320\nexport BUCKLE_RINGS_APPROVAL_KEY=hand-written\n', 0o600])
+  })
+})
+
+describe('the environment-file lock', () => {
+  it('gives up at its deadline while another process writes, naming the file and changing nothing', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-env-lock-'))
+    const path = join(directory, 'node.env')
+    writeEnvironmentFile(path, 'BUCKLE_PORT=4320\n')
+    holders.push(await holdLockInProcess(environmentLockPath({ target: realpathSync(path), home: directory })))
+    const started = performance.now()
+    await expect(updateEnvironmentFile(path, text => editEnvironmentVariable({ text, name: 'BUCKLE_PORT', value: '4321' }), { home: directory, lockDeadlineMs: 300 }))
+      .rejects.toThrow(`Another buckle command is writing ${realpathSync(path)}`)
+    expect(performance.now() - started).toBeGreaterThanOrEqual(290)
+    expect(readFileSync(path, 'utf8')).toBe('BUCKLE_PORT=4320\n')
+  })
+})
+
+describe('loading the environment file', () => {
+  it('reports a file other users can read, so main can name chmod 600, and an owner-only one as private', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-env-load-'))
+    const path = join(directory, 'node.env')
+    writeFileSync(path, 'BUCKLE_SERVER_NAME=loose-fixture\n', { mode: 0o644 })
+    chmodSync(path, 0o644)
+    vi.stubEnv('BUCKLE_ENV_FILE', path)
+    vi.stubEnv('BUCKLE_SERVER_NAME', undefined)
+    expect(loadEnvironmentFile()).toEqual({ file: path, openToOthers: true })
+    chmodSync(path, 0o600)
+    expect(loadEnvironmentFile()).toEqual({ file: path, openToOthers: false })
   })
 })

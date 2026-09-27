@@ -16,8 +16,8 @@ const fileSchema = z.object({ version: z.literal(1), grants: z.array(GrantRecord
  * granted in a terminal, and would ask again forever. The file is small and the read is cheap
  * next to the work a tool call does.
  */
-export function createFileGrantStore(input: { filePath: string; workspace: string }): GrantStore {
-  const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, grants: [] } })
+export function createFileGrantStore(input: { filePath: string; workspace: string; lockDeadlineMs?: number }): GrantStore {
+  const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, grants: [] }, lockDeadlineMs: input.lockDeadlineMs })
 
   const load = (): GrantRecord[] => store.read().grants
 

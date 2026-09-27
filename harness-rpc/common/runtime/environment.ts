@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { workspaceEnvironmentFile } from './workspace-config.js'
@@ -10,17 +10,27 @@ export function environmentFilePath(): string | null {
   return workspaceEnvironmentFile({ cwd: process.cwd(), explicit: process.env.BUCKLE_ENV_FILE })
 }
 
+export interface LoadedEnvironmentFile {
+  file: string | null
+  /** Group or other permission bits are set on a file that holds the node's credentials. */
+  openToOthers: boolean
+}
+
 /**
  * Only BUCKLE_* names are taken, and a variable already in the environment wins, so an operator
  * override still applies.
  */
-export function loadEnvironmentFile(): void {
+export function loadEnvironmentFile(): LoadedEnvironmentFile {
   const path = environmentFilePath()
-  if (!path) return refuseUnreadDotEnv(process.cwd())
-  if (!existsSync(path)) return
+  if (!path) {
+    refuseUnreadDotEnv(process.cwd())
+    return { file: null, openToOthers: false }
+  }
+  if (!existsSync(path)) return { file: null, openToOthers: false }
   for (const [name, value] of Object.entries(parseEnv(readFileSync(path, 'utf8')))) {
     if (name.startsWith('BUCKLE_') && process.env[name] === undefined) process.env[name] = value
   }
+  return { file: path, openToOthers: (statSync(path).mode & 0o077) !== 0 }
 }
 
 // Buckle no longer reads <cwd>/.env; starting on defaults beside one that configures it would

@@ -81,6 +81,8 @@ export interface BuckleConfig {
   skillDirectories: string[]
   stateDirectory: string
   nodeStateDirectory?: string
+  /** How long a state file update waits for another process's lock; the store's default when absent. Never read from the environment. */
+  stateLockDeadlineMs?: number
   maxRequestBytes: number
   defaultTimeoutMs: number
   maxTimeoutMs: number

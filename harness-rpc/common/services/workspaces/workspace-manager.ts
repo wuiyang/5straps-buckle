@@ -58,10 +58,13 @@ export class WorkspaceError extends Error {
   constructor(message: string, readonly status: 400 | 404 | 409 = 400) { super(message) }
 }
 
+/** workspaces.json will not parse. Its message names the file and fields, so only the owner's routes may show it. */
+export class WorkspaceRegistryError extends WorkspaceError {}
+
 // A registry the node cannot read is the owner's to repair: a 409 naming the file and fields, not a 500.
-function registryStore(filePath: string) {
-  const store = createJsonFileStore({ filePath, schema: RegistrySchema, fallback: { version: 1 as const, workspaces: [] } })
-  const repairable = (error: unknown): unknown => error instanceof StateFileError ? new WorkspaceError(error.message, 409) : error
+function registryStore(filePath: string, lockDeadlineMs?: number) {
+  const store = createJsonFileStore({ filePath, schema: RegistrySchema, fallback: { version: 1 as const, workspaces: [] }, lockDeadlineMs })
+  const repairable = (error: unknown): unknown => error instanceof StateFileError ? new WorkspaceRegistryError(error.message, 409) : error
   return {
     read() {
       try {
@@ -77,7 +80,7 @@ function registryStore(filePath: string) {
 export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime }) {
   const defaultRoot = realpathSync(input.config.cwd)
   const stateRoot = realpathSync(input.config.stateDirectory)
-  const store = registryStore(join(stateRoot, 'workspaces.json'))
+  const store = registryStore(join(stateRoot, 'workspaces.json'), input.config.stateLockDeadlineMs)
   const exposedRoots = [...input.config.mountReadOnlyPaths, ...(input.config.sandboxMounts ?? []).map(mount => mount.source), dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return realpathSync(path) } catch { return path } })
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
   const defaultDescriptor = (): WorkspaceDescriptor => ({ id: 'default', name: input.config.serverName, root: defaultRoot, enabled: true, default: true, retiredAt: null, updatedAt: null })

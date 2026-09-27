@@ -17,7 +17,7 @@ import { createCliApprovalChannel } from '../common/adapters/approval/cli-approv
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, repairStoredPolicy } from './policy.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
-import { StateBusyError } from '../common/adapters/json-file-store.js'
+import { isStateBusy } from '../common/services/state-busy.js'
 import { watchApprovals } from './approvals-watch.js'
 import { CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
 import { workspaceRegistryCommand } from './workspace.js'
@@ -40,17 +40,25 @@ export function runSettingsCommand(argv: string[]): Promise<CliResult> {
   return settingsCommand({ argv, environment: process.env, environmentFile: environmentFilePath(), cwd: process.cwd() })
 }
 
-export async function runCli(input: { argv: string[]; config: BuckleConfig }): Promise<CliResult> {
-  const [command, ...rest] = input.argv
+/** Help and the version, which need no configuration; null for every other command. */
+export function answerWithoutConfiguration(argv: string[]): CliResult | null {
+  const [command] = argv
   if (!command || command === 'help' || command === '--help' || command === '-h') return printUsage()
   if (command === '--version' || command === '-v') return printVersion()
+  return null
+}
+
+export async function runCli(input: { argv: string[]; config: BuckleConfig }): Promise<CliResult> {
+  const answered = answerWithoutConfiguration(input.argv)
+  if (answered) return answered
+  const [command = '', ...rest] = input.argv
 
   // One command is one process owner: its common runtime closes when the command ends.
   const common = initializeCommon({ config: input.config, role: 'cli', adapters: { approvalChannel: () => createCliApprovalChannel() } })
   try {
     return await runCliCommand({ common, config: input.config, command, rest })
   } catch (error) {
-    if (error instanceof StateBusyError) return fail(error.message)
+    if (isStateBusy(error)) return fail(error.message)
     throw error
   } finally {
     await common.owner.close().catch((error: unknown) => {

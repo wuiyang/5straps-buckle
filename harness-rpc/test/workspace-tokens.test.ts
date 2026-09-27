@@ -125,7 +125,23 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
     expect(error).toContain('workspaces.0.tokens')
     expect(error).not.toContain(LEGACY_AGENT)
     expect(error).not.toContain(LEGACY_SETUP)
-    expect((await app.request('/workspaces/consultation/v1/manifest', { headers: headers(LEGACY_AGENT) })).status).toBe(409)
+  })
+
+  it('tells a caller that has not authenticated only that the registry needs repair, and audits the rejection', async () => {
+    for (const [path, init, tool] of [
+      ['/workspaces/consultation/v1/manifest', { headers: headers(LEGACY_AGENT) }, null],
+      ['/workspaces/consultation/v1/invoke', { method: 'POST', headers: headers(LEGACY_AGENT), body: '{}' }, 'workspace_invoke_rejected'],
+      ['/workspaces/anything/setup/status', {}, 'workspace_setup_auth_rejected'],
+      ['/workspaces/anything/v1/workbenches/one', {}, null],
+    ] as const) {
+      const response = await app.request(path, init)
+      expect(response.status).toBe(503)
+      const body = await response.text()
+      expect(JSON.parse(body)).toEqual({ error: 'Workspace registry needs owner repair' })
+      expect(body).not.toContain(root)
+      expect(body).not.toContain('workspaces.0')
+      if (tool) expect(runtime.actions.read(1)[0]).toMatchObject({ tool, workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 503' })
+    }
   })
 
   it('reports the same repair from buckle workspace list', async () => {

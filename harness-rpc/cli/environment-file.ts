@@ -84,9 +84,9 @@ const LOCK_POLL_MS = 25
  * once both land. A symlinked file is followed and its target edited, the link kept. Nothing is
  * written when the edit refuses, but the file is made owner-only either way.
  */
-export function updateEnvironmentFile(path: string, edit: (text: string) => EnvironmentEdit, options: { home?: string } = {}): Promise<EnvironmentEdit> {
+export function updateEnvironmentFile(path: string, edit: (text: string) => EnvironmentEdit, options: { home?: string; lockDeadlineMs?: number } = {}): Promise<EnvironmentEdit> {
   const target = realpathSync(path)
-  return withEnvironmentLock({ target, home: options.home ?? homedir() }, () => {
+  return withEnvironmentLock({ target, home: options.home ?? homedir(), deadlineMs: options.lockDeadlineMs ?? LOCK_WAIT_MS }, () => {
     chmodSync(target, OWNER_ONLY)
     const text = readFileSync(target, 'utf8')
     const result = edit(text)
@@ -130,9 +130,9 @@ export function environmentLockPath(input: { target: string; home: string }): st
   return join(input.home, '.5straps', 'locks', `env-${createHash('sha256').update(input.target).digest('hex')}.lock.sqlite`)
 }
 
-async function withEnvironmentLock<T>(input: { target: string; home: string }, operation: () => T): Promise<T> {
+async function withEnvironmentLock<T>(input: { target: string; home: string; deadlineMs: number }, operation: () => T): Promise<T> {
   try {
-    return await withFileLock({ path: environmentLockPath(input), wait: { deadlineMs: LOCK_WAIT_MS, pollMs: LOCK_POLL_MS } }, async () => operation())
+    return await withFileLock({ path: environmentLockPath(input), wait: { deadlineMs: input.deadlineMs, pollMs: LOCK_POLL_MS } }, async () => operation())
   } catch (error) {
     if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new Error(`Another buckle command is writing ${input.target}; try again once it finishes`, { cause: error })
     throw error

@@ -54,6 +54,12 @@ describe('the Buckle root logger', () => {
     expect(() => loggerConfigFrom({ BUCKLE_LOG_LEVEL: 'loud' })).toThrow('BUCKLE_LOG_LEVEL must be one of trace, debug, info, warn, error, fatal')
   })
 
+  it('keeps credential keys redacted even when BUCKLE_LOG_ALLOW_KEYS names them', async () => {
+    configureRootLogger(loggerConfigFrom({ BUCKLE_LOG_ALLOW_KEYS: 'adminToken, authorization, reportToken, content' }))
+    const [line] = await captureStderr(() => logger.info('allowed keys', { adminToken: 'plain-admin-credential-value', authorization: 'plain-header-value', reportToken: 'plain-report-value', content: 'lifted file text' }))
+    expect(line).toMatchObject({ fields: { adminToken: '[redacted]', authorization: '[redacted]', reportToken: '[redacted]', content: 'lifted file text' } })
+  })
+
   it('drops events below the configured level', async () => {
     configureRootLogger(loggerConfigFrom({ BUCKLE_LOG_LEVEL: 'warn' }))
     const lines = await captureStderr(() => {
