@@ -6,15 +6,10 @@ import { RuntimeError, RuntimeErrorCode } from '../errors.js'
 import { globalSlot } from '../internal/async-slots.js'
 import { runInTransactionMarker } from '../transaction/guard.js'
 import { beginImmediateWithinDeadline, readBusyTimeout } from './begin.js'
+import { SqliteErrorCode } from './codes.js'
 import { rawConnection, type SqliteDatabase } from './database.js'
 
-export const SqliteErrorCode = Object.freeze({
-  ownerClosed: 'ConnectionOwnerClosedError',
-  nestedTransaction: 'NestedTransactionError',
-  foreignTransaction: 'ForeignTransactionError',
-  connectionOwned: 'ConnectionAlreadyOwnedError',
-  rawHandleRefused: 'RawHandleRefusedError',
-} as const)
+export { SqliteErrorCode } from './codes.js'
 
 export interface ConnectionOwner {
   /** @deprecated Unguarded: a statement here while another flow's transaction is open joins that transaction. Same object as unguardedDb; prefer run(), transaction() or guardedDb. */
@@ -110,7 +105,7 @@ export function createConnectionOwner(db: SqliteDatabase, options: { owned: bool
     return closing
   }
 
-  const guardedDb = createGuardedView({ db, guard, close, label })
+  const guardedDb = createGuardedView({ db, guard, label })
   ownedConnections.add(db)
   ownedConnections.add(guardedDb)
   return { db, unguardedDb: db, guardedDb, run, transaction, nativeTransaction, close }
@@ -147,9 +142,9 @@ function rollbackKeepingError(connection: DatabaseSync): void {
 
 type Guard = <T>(operation: () => Promise<T>) => Promise<T>
 
-// Closing the view closes the owner, which disposes the database only when it owns it.
-// getInstance is refused: the raw node:sqlite handle would bypass the guard.
-function createGuardedView({ db, guard, close, label }: { db: SqliteDatabase; guard: Guard; close: () => Promise<void>; label: string }): SqliteDatabase {
+// A shared handle: disposing it is a no-op (only the owner's close, in the databases stage, closes the
+// connection), and getInstance is refused because the raw node:sqlite handle would bypass the guard.
+function createGuardedView({ db, guard, label }: { db: SqliteDatabase; guard: Guard; label: string }): SqliteDatabase {
   return {
     get connector() { return db.connector },
     get dialect() { return db.dialect },
@@ -159,8 +154,8 @@ function createGuardedView({ db, guard, close, label }: { db: SqliteDatabase; gu
     exec: sql => guard(() => db.exec(sql)),
     prepare: sql => guardStatement(db.prepare(sql), guard),
     sql: <T>(strings: TemplateStringsArray, ...values: Primitive[]) => guard(() => db.sql<T>(strings, ...values)),
-    dispose: close,
-    [Symbol.asyncDispose]: close,
+    dispose: () => Promise.resolve(),
+    [Symbol.asyncDispose]: () => Promise.resolve(),
   }
 }
 

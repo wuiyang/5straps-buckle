@@ -17,7 +17,8 @@ export interface BeginImmediateOptions<T> {
 // instead of sleeping inside SQLite. Throws the last busy error once the deadline passes.
 // Only the begin is asynchronous: statements inside the transaction still block for up to busy_timeout.
 export async function beginImmediateWithinDeadline<T>(connection: DatabaseSync, options: BeginImmediateOptions<T>): Promise<T> {
-  const deadline = Date.now() + options.deadlineMs
+  // Monotonic, so a wall-clock step cannot stretch or cut the wait.
+  const deadline = performance.now() + options.deadlineMs
   const restoreBusyTimeoutMs = readBusyTimeout(connection)
   const aborted = (reason: unknown) => options.onAbort?.(reason) ?? toError(reason)
   while (true) {
@@ -25,7 +26,7 @@ export async function beginImmediateWithinDeadline<T>(connection: DatabaseSync, 
     try {
       tryBeginImmediate(connection, restoreBusyTimeoutMs)
     } catch (error) {
-      if (!isSqliteBusy(error) || Date.now() >= deadline) throw error
+      if (!isSqliteBusy(error) || performance.now() >= deadline) throw error
       await delay(options.pollMs, undefined, options.signal ? { signal: options.signal } : undefined).catch(() => {
         throw aborted(options.signal?.reason)
       })

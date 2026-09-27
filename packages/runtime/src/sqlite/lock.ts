@@ -30,6 +30,7 @@ export interface FileLock {
 
 // One independently owned DB0 connection per acquisition; the SQLite RESERVED lock is the file lock.
 // The OS drops it when the process dies, so a killed holder never leaves a stale lock.
+// A bare handle sets no transaction marker: never wait for a human while holding it; prefer withFileLock.
 export async function acquireFileLock(options: FileLockOptions): Promise<FileLock> {
   if (options.signal?.aborted) throw lockAborted(options.path, options.signal.reason)
   const db = await openSqlite({ path: options.path, logger: options.logger }, { defaults: LOCK_PRAGMAS })
@@ -43,7 +44,7 @@ export async function acquireFileLock(options: FileLockOptions): Promise<FileLoc
   return heldLock({ db, connection, path: options.path })
 }
 
-// The operation runs under the transaction marker: a lock is an open BEGIN IMMEDIATE, so no human waits inside it.
+// The operation runs under the transaction marker (a lock is an open BEGIN IMMEDIATE), so requestCli refuses to wait inside it.
 export async function withFileLock<T>(options: FileLockOptions, operation: () => Promise<T>): Promise<T> {
   const lock = await acquireFileLock(options)
   try {

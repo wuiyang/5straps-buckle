@@ -1,9 +1,11 @@
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, statSync } from 'node:fs'
-import { dirname, isAbsolute } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { createDatabase, type Database } from 'db0'
 import nodeSqliteConnector from 'db0/connectors/node-sqlite'
+import { RuntimeError } from '../errors.js'
 import type { Logger } from '../logger/types.js'
+import { SqliteErrorCode } from './codes.js'
 
 // Any DB0 database on the node-sqlite connector: one from openDatabase or Nitro's useDatabase().
 export type SqliteDatabase = Database
@@ -20,6 +22,7 @@ export const DEFAULT_BUSY_TIMEOUT_MS = 5_000
 const DEFAULT_PRAGMAS = Object.freeze({ busy_timeout: DEFAULT_BUSY_TIMEOUT_MS, foreign_keys: true })
 // Only a new database is switched to WAL; an existing file keeps its journal mode unless the caller sets one.
 const NEW_DATABASE_PRAGMAS = Object.freeze({ journal_mode: 'WAL' })
+const SIDECAR_SUFFIXES = ['-wal', '-shm', '-journal']
 const PRAGMA_NAME = /^[a-z_]+$/
 const PRAGMA_WORD = /^[A-Za-z_]+$/
 
@@ -60,9 +63,10 @@ export async function readPragma(db: SqliteDatabase, name: string): Promise<unkn
   return row ? Object.values(row)[0] : undefined
 }
 
+// Normalised, so '..' can never point the created-directory walk at an existing parent.
 function requireExplicitPath(path: string): string {
   if (!path || !isAbsolute(path)) throw new TypeError(`SQLite path must be absolute; got ${JSON.stringify(path)}`)
-  return path
+  return resolve(path)
 }
 
 // Returns whether the database is new: this call created the file, or it is still empty.
@@ -70,7 +74,15 @@ function prepareDatabaseFile(path: string, logger: Logger | undefined): boolean 
   prepareDirectory(dirname(path), logger)
   const isNew = createFileIfAbsent(path)
   chmodSync(path, 0o600)
+  restrictSidecars(path)
   return isNew
+}
+
+// SQLite gives a new -wal or -shm file the database's mode, but files made under an older, looser mode keep it.
+function restrictSidecars(path: string): void {
+  for (const sidecar of SIDECAR_SUFFIXES.map(suffix => `${path}${suffix}`)) {
+    if (lstatSync(sidecar, { throwIfNoEntry: false })?.isFile()) chmodSync(sidecar, 0o600)
+  }
 }
 
 // Only directories this call created get 0700; an existing (possibly shared or mounted) one is left alone.
@@ -93,7 +105,8 @@ function warnIfShared(directory: string, logger: Logger | undefined): void {
 function createFileIfAbsent(path: string): boolean {
   const existing = lstatSync(path, { throwIfNoEntry: false })
   if (existing) {
-    if (!existing.isFile()) throw new TypeError(`SQLite path must be a regular file; got ${JSON.stringify(path)}`)
+    // lstat: a symlink is refused rather than followed to a file this process did not choose.
+    if (!existing.isFile()) throw new RuntimeError(SqliteErrorCode.notRegularFile, `SQLite path must be a regular file, not a symlink or directory; got ${JSON.stringify(path)}`)
     return existing.size === 0
   }
   try {

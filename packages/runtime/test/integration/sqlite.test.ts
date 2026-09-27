@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync, symlinkSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -301,5 +302,47 @@ describe('connection ownership across owners and processes (sqlite-fixes-2, -3, 
     const fresh = await openDatabase({ path: databasePath() })
     expect(await readPragma(fresh, 'journal_mode')).toBe('wal')
     await fresh.dispose()
+  })
+})
+
+describe('file and handle hygiene (sqlite-fixes-6, -7, -9, -12)', () => {
+  it('sqlite-fixes-6 restricts existing WAL and shared-memory files as well as the database', async () => {
+    const path = databasePath()
+    mkdirSync(join(path, '..'), { recursive: true })
+    const legacy = new DatabaseSync(path)
+    legacy.exec('PRAGMA journal_mode=WAL; CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1)')
+    for (const file of [path, `${path}-wal`, `${path}-shm`]) chmodSync(file, 0o644)
+    const db = await openDatabase({ path })
+    expect([path, `${path}-wal`, `${path}-shm`].map(file => statSync(file).mode & 0o777)).toEqual([0o600, 0o600, 0o600])
+    await db.dispose()
+    legacy.close()
+  })
+
+  it('sqlite-fixes-7 never changes the mode of an existing parent reached through ..', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dirs-'))
+    chmodSync(root, 0o755)
+    // A raw string: path.join would normalise the '..' away.
+    const db = await openDatabase({ path: `${root}/absent/../db/app.sqlite` })
+    expect(statSync(root).mode & 0o777).toBe(0o755)
+    expect(statSync(join(root, 'db')).mode & 0o777).toBe(0o700)
+    await db.dispose()
+  })
+
+  it('sqlite-fixes-9 disposing the guarded view leaves the owner open', async () => {
+    const owner = createConnectionOwner(await notesDatabase(), { owned: true })
+    await owner.guardedDb.dispose()
+    await owner.run(db => db.sql`INSERT INTO notes (text) VALUES (${'still open'})`)
+    expect(await owner.run(noteTexts)).toEqual(['still open'])
+    await owner.close()
+  })
+
+  it('sqlite-fixes-12 refuses a path that is not a regular file with a typed error', async () => {
+    const target = databasePath()
+    const created = await openDatabase({ path: target })
+    await created.dispose()
+    const link = join(target, '..', 'link.sqlite')
+    symlinkSync(target, link)
+    const refused = await openDatabase({ path: link }).catch((error: unknown) => error)
+    expect(isRuntimeError(refused, SqliteErrorCode.notRegularFile)).toBe(true)
   })
 })
