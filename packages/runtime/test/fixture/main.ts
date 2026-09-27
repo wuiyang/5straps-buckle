@@ -57,7 +57,7 @@ async function serve(input: { config: FixtureConfig; logging: LoggerRoot }): Pro
 
 async function listenServer(runtime: FixtureRuntime): Promise<number> {
   const cli = await setupCli({ runtime, terminalPath: process.env.FIXTURE_TERMINAL_SOCKET, secondTerminalPath: process.env.FIXTURE_SECOND_TERMINAL_SOCKET })
-  const server = await setupServer({ runtime, requestCli: cli.requester.requestCli, entryPath: requiredEnv('FIXTURE_ENTRY'), listenerMode: listenerMode() })
+  const server = await setupServer({ runtime, requestCli: cli.requester.requestCli, entryPath: requiredEnv('FIXTURE_ENTRY'), listenerMode: listenerMode(), respondingObserver: process.env.FIXTURE_CLI_OBSERVER === 'respond' })
   const heartbeat = setInterval(() => runtime.logger.debug('heartbeat'), HEARTBEAT_MS)
   runtime.onClose('timers', 'heartbeat', () => clearInterval(heartbeat))
   return server.listen({ port: Number(process.env.FIXTURE_PORT ?? 0), host: '127.0.0.1' })

@@ -104,6 +104,21 @@ describe('F08 callback completion', () => {
   })
 })
 
+describe('B1 observers never answer (ruling 4, 2026-09-28)', () => {
+  it('ignores an observer that calls respond before the listener, keeps the terminal answer and logs once', async () => {
+    const person = await human()
+    const fixture = await serve({ terminal: person, extra: { FIXTURE_CLI_OBSERVER: 'respond' } })
+    const pending = ask(fixture, { summary: 'observed request' })
+    const prompt = await person.waitForPrompt()
+    person.answer(prompt.id, 'approve')
+    expect((await pending).body.outcome).toEqual({ status: 'answered', requestId: prompt.id, answer: { choice: 'approve' } })
+    await fixture.waitFor('cli:call observer response ignored')
+    expect(fixture.events.filter(event => event.message === 'cli:call observer response ignored')).toEqual([
+      expect.objectContaining({ level: 'warn', fields: expect.objectContaining({ requestId: prompt.id }) }),
+    ])
+  })
+})
+
 describe('F09 listener rejection propagates', () => {
   it('turns a failing cli:call listener into a typed 500 promptly', async () => {
     const fixture = await serve({ extra: { FIXTURE_CLI_LISTENER: 'reject' } })

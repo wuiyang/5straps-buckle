@@ -8,7 +8,8 @@ import type { RuntimeServices } from './host.js'
 
 declare module 'nitro/types' {
   interface NitroRuntimeHooks {
-    // The one interactive listener must be async and call respond exactly once; options.signal aborts when the caller settles.
+    // registerCliListener adds the one interactive listener: async, calls respond exactly once. Raw hooks.hook
+    // listeners are observers; their respond is ignored. options.signal aborts when the caller settles.
     'cli:call': (request: CliRequest, respond: (outcome: CliOutcome) => void, options?: CliCallOptions) => Promise<void>
   }
 }

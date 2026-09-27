@@ -276,7 +276,7 @@ describe('createRequestCli over Nitro hooks', () => {
     await expect(requestCli(request)).resolves.toMatchObject({ status: 'unavailable', reason: 'no_listener' })
   })
 
-  it('F09 propagates a listener rejection through callHook', async () => {
+  it('F09 propagates a listener rejection', async () => {
     const { nitroApp } = createTestNitroApp({ plugins: [], routes: () => {} })
     registerCliListener(nitroApp, async () => { throw new Error('cli crashed') })
     const error = await createRequestCli(nitroApp)({ id: 'r1', kind: 'approval', correlationId: 'c1', action: { summary: 'x' }, wait: { mode: 'indefinite' } }).catch((failure: unknown) => failure)
@@ -294,6 +294,49 @@ describe('createRequestCli over Nitro hooks', () => {
     controller.abort('client went away')
     await expect(waiting).resolves.toMatchObject({ status: 'cancelled' })
     expect(listenerSignal?.aborted).toBe(true)
+  })
+
+  it('B1 accepts only the registered listener\'s answer; an observer that responds is ignored and logged once', async () => {
+    const { nitroApp } = createTestNitroApp({ plugins: [], routes: () => {} })
+    const warnings: LogEvent[] = []
+    const hostLogger = createLogger({ component: 'http', sinks: [{ name: 'memory', write: (event) => { warnings.push(event) } }] })
+    bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: hostLogger.logger })
+    const observed: string[] = []
+    nitroApp.hooks.hook('cli:call', async (item, respond) => {
+      observed.push(item.id)
+      respond({ status: 'denied', requestId: item.id, reason: 'observer' })
+      respond({ status: 'denied', requestId: item.id, reason: 'observer again' })
+    })
+    const request = { id: 'r1', kind: 'approval', correlationId: 'c1', action: { summary: 'x' }, wait: { mode: 'indefinite' as const } }
+    await expect(createRequestCli(nitroApp)(request)).resolves.toMatchObject({ status: 'unavailable', reason: 'no_listener' })
+    registerCliListener(nitroApp, async (item, respond) => {
+      await delay(5)
+      respond({ status: 'answered', requestId: item.id, answer: { choice: 'approve' } })
+    })
+    await expect(createRequestCli(nitroApp)(request)).resolves.toEqual({ status: 'answered', requestId: 'r1', answer: { choice: 'approve' } })
+    await hostLogger.flush()
+    expect(observed).toEqual(['r1'])
+    expect(warnings.filter(event => event.message === 'cli:call observer response ignored')).toEqual([
+      expect.objectContaining({ level: 'warn', fields: expect.objectContaining({ requestId: 'r1' }) }),
+    ])
+  })
+
+  it('B1 keeps an observer failure out of the outcome and logs it', async () => {
+    const { nitroApp } = createTestNitroApp({ plugins: [], routes: () => {} })
+    const warnings: LogEvent[] = []
+    const hostLogger = createLogger({ component: 'http', sinks: [{ name: 'memory', write: (event) => { warnings.push(event) } }] })
+    bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: hostLogger.logger })
+    nitroApp.hooks.hook('cli:call', async () => { throw new Error('observer crashed') })
+    registerCliListener(nitroApp, async (item, respond) => {
+      await delay(5)
+      respond({ status: 'denied', requestId: item.id, reason: 'owner said no' })
+    })
+    await expect(createRequestCli(nitroApp)({ id: 'r2', kind: 'approval', correlationId: 'c2', action: { summary: 'x' }, wait: { mode: 'indefinite' } }))
+      .resolves.toEqual({ status: 'denied', requestId: 'r2', reason: 'owner said no' })
+    await hostLogger.flush()
+    expect(warnings.filter(event => event.message === 'cli:call observer failed')).toEqual([
+      expect.objectContaining({ level: 'warn', fields: expect.objectContaining({ requestId: 'r2' }) }),
+    ])
   })
 
   it('treats an app without hooks as having no listener', async () => {

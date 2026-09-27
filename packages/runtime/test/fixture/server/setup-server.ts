@@ -5,7 +5,7 @@ import { registerHttpServerClose, runInScope, type RequestCli } from '@5straps/r
 import { bindHost } from '@5straps/runtime/nitro'
 import type { FixtureRuntime } from '../common/runtime.js'
 import type { BuiltEntry } from './built-entry.js'
-import { wireCliListener, type CliListenerMode } from './cli-listener.js'
+import { wireCliListener, wireRespondingObserver, type CliListenerMode } from './cli-listener.js'
 import { pluginOrder } from './plugin-order.js'
 
 // Close steps are registered on the runtime owner: stop accepting at 'accept', connections drained at 'streams'.
@@ -16,12 +16,13 @@ export interface ServerAdapter {
 const SCOPE_PROBE_PATH = '/v1/scope-probe'
 
 // Inactive until listen(): imports the built app, binds the host and the one cli:call listener first (F05).
-export async function setupServer(input: { runtime: FixtureRuntime; requestCli: RequestCli; entryPath: string; listenerMode: CliListenerMode }): Promise<ServerAdapter> {
+export async function setupServer(input: { runtime: FixtureRuntime; requestCli: RequestCli; entryPath: string; listenerMode: CliListenerMode; respondingObserver: boolean }): Promise<ServerAdapter> {
   const { runtime } = input
   const entry = await import(pathToFileURL(input.entryPath).href) as BuiltEntry
   runtime.logger.info('nitro plugins registered', { order: [...pluginOrder(entry.nitroApp)] })
   bindHost(entry.nitroApp, { owner: runtime.owner, services: runtime.services, logger: runtime.logger })
   runtime.logger.info('host bound')
+  if (input.respondingObserver) wireRespondingObserver(entry.nitroApp)
   wireCliListener({ nitroApp: entry.nitroApp, requestCli: input.requestCli, mode: input.listenerMode })
   runtime.logger.info('cli listener registered', { mode: input.listenerMode })
   const server = createServer(withScopeProbe({ runtime, middleware: entry.middleware }))

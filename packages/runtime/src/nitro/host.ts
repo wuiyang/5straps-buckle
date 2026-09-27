@@ -15,6 +15,7 @@ export interface RuntimeHost {
 export const NitroErrorCode = Object.freeze({
   hostBound: 'RuntimeHostAlreadyBoundError',
   cliListenerRegistered: 'CliListenerAlreadyRegisteredError',
+  cliListenerMissing: 'CliListenerMissingError',
   hooksUnavailable: 'NitroHooksUnavailableError',
   identityOverwrite: 'GuardIdentityOverwriteError',
 } as const)

@@ -22,3 +22,12 @@ function listenerFor(input: { mode: Exclude<CliListenerMode, 'off'>; requestCli:
     if (input.mode === 'double') respond({ status: 'denied', requestId: request.id, reason: 'second respond must be ignored' })
   }
 }
+
+// Test-only (FIXTURE_CLI_OBSERVER=respond): a raw hook observer that tries to deny every request.
+// Registered before the listener so it would win if observers could answer.
+export function wireRespondingObserver(nitroApp: NitroApp): () => void {
+  if (!nitroApp.hooks) throw new TypeError('The fixture build has no runtime hooks')
+  return nitroApp.hooks.hook('cli:call', async (request, respond) => {
+    respond({ status: 'denied', requestId: request.id, reason: 'observers must not answer' })
+  })
+}
