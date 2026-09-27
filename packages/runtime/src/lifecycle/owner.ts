@@ -1,4 +1,4 @@
-import { DisposalError, RuntimeError, RuntimeErrorCode, toError } from '../errors.js'
+import { DisposalError, isDisposalError, RuntimeError, RuntimeErrorCode, toError } from '../errors.js'
 import { assertTimerMs } from '../internal/timeouts.js'
 import type { Logger } from '../logger/types.js'
 import { DEFAULT_DRAIN_TIMEOUT_MS } from '../scope/operation-scope.js'
@@ -94,7 +94,8 @@ export function createRuntimeOwner(options: RuntimeOwnerOptions): RuntimeOwner {
       }
     }
     state = failedStartup ? 'failed' : 'closed'
-    if (errors.length > 0) throw new DisposalError(errors, 'Runtime closed with errors', reason)
+    // Only a startup failure leads the report; an ordinary close reason (SIGTERM) is not a failure.
+    if (errors.length > 0) throw new DisposalError(errors, 'Runtime closed with errors', failure)
   }
 
   const owner: RuntimeOwner = {
@@ -142,7 +143,7 @@ async function runCloseStep(step: { name: string; closer: Closer; timeoutMs: num
 }
 
 function flattenDisposal(error: unknown): unknown[] {
-  return error instanceof DisposalError ? error.errors : [toError(error)]
+  return isDisposalError(error) ? error.errors : [toError(error)]
 }
 
 function readinessMessage(state: RuntimeState): string {

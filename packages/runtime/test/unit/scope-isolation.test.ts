@@ -263,3 +263,25 @@ describe('background work drains with a live scope (registry-scope-fixes-6)', ()
     expect(drained).toBeInstanceOf(DisposalError)
   })
 })
+
+describe('disposal errors and close reasons (registry-scope-fixes-10, -13)', () => {
+  it('-10 recognises a DisposalError by code, and flattens one thrown by another loaded copy', async () => {
+    expect(isRuntimeError(new DisposalError([], 'x'), RuntimeErrorCode.disposal)).toBe(true)
+    vi.resetModules()
+    const other = await import('../../src/index.js')
+    const owner = createRuntimeOwner({ services: [] })
+    await owner.start((runtime) => {
+      runtime.onClose('databases', 'foreign copy', () => { throw new other.DisposalError([new Error('first'), new Error('second')], 'nested') })
+    })
+    const error = await owner.close().catch((failure: unknown) => failure)
+    expect((error as DisposalError).errors).toEqual([new Error('first'), new Error('second')])
+  })
+
+  it('-13 keeps an ordinary close reason out of the reported failures', async () => {
+    const owner = createRuntimeOwner({ services: [] })
+    await owner.start((runtime) => { runtime.onClose('databases', 'database', () => { throw new Error('close failed') }) })
+    const error = await owner.close({ reason: new Error('SIGTERM') }).catch((failure: unknown) => failure)
+    expect((error as DisposalError).errors).toEqual([new Error('close failed')])
+    expect((error as DisposalError).message).not.toContain('SIGTERM')
+  })
+})

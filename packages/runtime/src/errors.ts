@@ -41,6 +41,7 @@ export const RuntimeErrorCode = Object.freeze({
 
 export class DisposalError extends AggregateError {
   readonly code = RuntimeErrorCode.disposal
+  readonly [RUNTIME_ERROR_BRAND] = true
 
   // The original failure leads: first in errors, named in the message, and the cause.
   constructor(errors: unknown[], message: string, original?: unknown) {
@@ -51,4 +52,9 @@ export class DisposalError extends AggregateError {
 
 export function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value))
+}
+
+// Structural, so a DisposalError from another loaded copy of this package is recognised too.
+export function isDisposalError(error: unknown): error is DisposalError {
+  return error instanceof AggregateError && isRuntimeError(error, RuntimeErrorCode.disposal)
 }
