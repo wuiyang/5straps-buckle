@@ -1,9 +1,11 @@
+import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { actionsPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { environmentFilePath } from '../common/runtime/environment.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { randomUUID } from 'node:crypto'
 import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
-import type { BuckleConfig } from '../common/runtime/config.js'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { approveCommand } from '../common/domain/approval-instruction.js'
 import { WorkspaceError, createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -14,12 +16,23 @@ import { policyCommand } from './policy.js'
 import { watchApprovals } from './approvals-watch.js'
 import { CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
 import { workspaceRegistryCommand } from './workspace.js'
+import { runInit } from './init.js'
+import { settingsCommand } from './settings.js'
 import { BUCKLE_VERSION } from '../common/runtime/version.js'
 
 export interface CliResult {
   exitCode: number
   /** For the command's audit entry: what a widened approval covers. */
   detail?: string
+}
+
+/** Needs no node config beyond where the audit log lives: init is what writes the configuration. */
+export function runInitCommand(argv: string[]): Promise<CliResult> {
+  return auditOperation({ actions: createFileActionLog(actionsPath(loadConfig())), workspaceId: 'default', tool: 'cli_init', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => runInit(argv) })
+}
+
+export function runSettingsCommand(argv: string[]): Promise<CliResult> {
+  return settingsCommand({ argv, environment: process.env, environmentFile: environmentFilePath(), cwd: process.cwd() })
 }
 
 export async function runCli(input: { argv: string[]; config: BuckleConfig }): Promise<CliResult> {
