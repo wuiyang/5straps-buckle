@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 import { startWorker } from './support/workers.js'
-import { createCliConsumerSlot, createCliRequester, createLogger, isRuntimeError, RuntimeErrorCode, type LogEvent } from '../../src/index.js'
-import { createConnectionOwner, isSqliteBusy, openDatabase, rawConnection, readPragma, SqliteErrorCode, type SqliteDatabase } from '../../src/sqlite/index.js'
+import { createCliConsumerSlot, createCliRequester, createLogger, createServiceRegistry, defineSingleton, isRuntimeError, RuntimeErrorCode, type LogEvent } from '../../src/index.js'
+import { createConnectionOwner, DEFAULT_BUSY_TIMEOUT_MS, DEFAULT_SECTION_WAIT_TIMEOUT_MS, isSqliteBusy, openDatabase, rawConnection, readPragma, SqliteErrorCode, type SqliteDatabase } from '../../src/sqlite/index.js'
 
 function databasePath(name = 'app.sqlite'): string {
   return join(mkdtempSync(join(tmpdir(), 'sqlite-')), 'state', name)
@@ -180,7 +180,7 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
     await plain.dispose()
   })
 
-  it('M10 the raw handle loses a write to a foreign rollback; the guarded view refuses it with a typed error', async () => {
+  it('M10 the raw handle loses a write to a foreign rollback; the guarded view waits for it and keeps its write (ruling 6)', async () => {
     const injected = await notesDatabase()
     const owner = createConnectionOwner(injected, { owned: true })
     const aborted = (label: string) => owner.transaction(async (tx) => {
@@ -194,17 +194,17 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
     await expect(rawA).rejects.toThrow('A1 rolls back')
     expect(await owner.run(noteTexts)).toEqual([])
 
+    // Both calls arrive after A's BEGIN succeeded; they queue behind A and survive its rollback.
     const guardedA = aborted('A2')
     await delay(1)
-    const refused = await owner.guardedDb.sql`INSERT INTO notes (text) VALUES (${'guarded B'})`.catch((error: unknown) => error)
-    expect(isRuntimeError(refused, SqliteErrorCode.foreignTransaction)).toBe(true)
-    const refusedPrepared = await owner.guardedDb.prepare('INSERT INTO notes (text) VALUES (?)').run('prepared B').catch((error: unknown) => error)
-    expect(isRuntimeError(refusedPrepared, SqliteErrorCode.foreignTransaction)).toBe(true)
+    const guarded = owner.guardedDb.sql`INSERT INTO notes (text) VALUES (${'guarded B'})`
+    const prepared = owner.guardedDb.prepare('INSERT INTO notes (text) VALUES (?)').run('prepared B')
     await expect(guardedA).rejects.toThrow('A2 rolls back')
+    await Promise.all([guarded, prepared])
 
     await owner.transaction(async () => { await owner.guardedDb.sql`INSERT INTO notes (text) VALUES (${'inside own'})` })
     await owner.guardedDb.sql`INSERT INTO notes (text) VALUES (${'after'})`
-    expect(await noteTexts(owner.guardedDb)).toEqual(['inside own', 'after'])
+    expect(await noteTexts(owner.guardedDb)).toEqual(['guarded B', 'prepared B', 'inside own', 'after'])
     await owner.close()
   })
 
@@ -351,5 +351,92 @@ describe('file and handle hygiene (sqlite-fixes-6, -7, -9, -12)', () => {
     symlinkSync(target, link)
     const refused = await openDatabase({ path: link }).catch((error: unknown) => error)
     expect(isRuntimeError(refused, SqliteErrorCode.notRegularFile)).toBe(true)
+  })
+})
+
+describe('bounded owner waits (rulings 1 and 6)', () => {
+  const HUNG = 'hung'
+  const settleWithin = <T>(work: Promise<T>) => Promise.race([work, delay(3_000).then(() => HUNG)])
+  // A literal, so the check cannot pass vacuously while the code is missing.
+  const isWaitTimeout = (error: unknown) => isRuntimeError(error, 'SectionWaitTimeoutError')
+  const outcome = (work: Promise<unknown>) => work.then(value => ({ value }), (error: unknown) => ({ error }))
+
+  it('defaults the section wait to the busy deadline and refuses an invalid bound', async () => {
+    expect(DEFAULT_SECTION_WAIT_TIMEOUT_MS).toBe(DEFAULT_BUSY_TIMEOUT_MS)
+    expect(SqliteErrorCode).toMatchObject({ sectionWaitTimeout: 'SectionWaitTimeoutError' })
+    const db = await notesDatabase()
+    for (const sectionWaitTimeoutMs of [0, -1, 1.5, Number.NaN]) expect(() => createConnectionOwner(db, { owned: false, sectionWaitTimeoutMs })).toThrow(TypeError)
+    await db.dispose()
+  })
+
+  it('fails one of two flows taking two owners in opposite order with a typed timeout instead of hanging', async () => {
+    const a = createConnectionOwner(await notesDatabase(), { owned: true, label: 'a', sectionWaitTimeoutMs: 200 })
+    const b = createConnectionOwner(await notesDatabase(), { owned: true, label: 'b', sectionWaitTimeoutMs: 200 })
+    const f1 = outcome(a.run(async () => { await delay(20); return b.run(async () => 'f1') }))
+    const f2 = outcome(b.run(async () => { await delay(20); return a.run(async () => 'f2') }))
+    const settled = await settleWithin(Promise.all([f1, f2]))
+    expect(settled).not.toBe(HUNG)
+    const results = settled as { value?: unknown; error?: unknown }[]
+    expect(results.filter(result => 'error' in result).every(result => isWaitTimeout(result.error))).toBe(true)
+    expect(results.some(result => 'error' in result)).toBe(true)
+    expect(await settleWithin(Promise.all([a.run(async () => 'a serves'), b.run(async () => 'b serves')]))).toEqual(['a serves', 'b serves'])
+    await Promise.all([a.close(), b.close()])
+  })
+
+  it('fails a flow that awaits, inside the owner section, a singleton whose factory needs that owner', async () => {
+    const owner = createConnectionOwner(await notesDatabase(), { owned: true, label: 'a', sectionWaitTimeoutMs: 200 })
+    const slow = defineSingleton({ name: 'Slow', create: async () => {
+      await delay(50)
+      await owner.run(db => db.sql`INSERT INTO notes (text) VALUES (${'factory'})`)
+      return 'slow ready'
+    } })
+    const registry = createServiceRegistry({ services: [slow] })
+    const started = outcome(registry.useSingleton(slow))
+    const inside = outcome(owner.transaction(async (tx) => {
+      await tx.sql`INSERT INTO notes (text) VALUES (${'inside'})`
+      return registry.useSingleton(slow)
+    }))
+    const settled = await settleWithin(Promise.all([started, inside]))
+    expect(settled).not.toBe(HUNG)
+    const [first, second] = settled as { error?: unknown }[]
+    expect(isWaitTimeout(first!.error)).toBe(true)
+    expect(isWaitTimeout(second!.error)).toBe(true)
+    // The failed factory is not cached: built outside the section it succeeds, and the rolled-back row is gone.
+    expect(await settleWithin(registry.useSingleton(slow))).toBe('slow ready')
+    expect(await owner.run(noteTexts)).toEqual(['factory'])
+    await registry.dispose()
+    await owner.close()
+  })
+
+  it('makes guardedDb wait with the same bound during another flow transaction, then fail typed', async () => {
+    const owner = createConnectionOwner(await notesDatabase(), { owned: true, label: 'a', sectionWaitTimeoutMs: 100 })
+    const release = Promise.withResolvers<void>()
+    const long = owner.transaction(async (tx) => {
+      await tx.sql`INSERT INTO notes (text) VALUES (${'A'})`
+      await release.promise
+    })
+    await delay(5)
+    const late = await settleWithin(owner.guardedDb.sql`INSERT INTO notes (text) VALUES (${'late'})`.catch((error: unknown) => error))
+    expect(isWaitTimeout(late)).toBe(true)
+    const latePrepared = await settleWithin(owner.guardedDb.prepare('SELECT text FROM notes').all().catch((error: unknown) => error))
+    expect(isWaitTimeout(latePrepared)).toBe(true)
+    release.resolve()
+    await long
+    expect(await owner.run(noteTexts)).toEqual(['A'])
+    await owner.close()
+  })
+
+  it('never lets the waiters behind a timed-out one into the section while the holder still runs', async () => {
+    const owner = createConnectionOwner(await notesDatabase(), { owned: true, label: 'a', sectionWaitTimeoutMs: 200 })
+    const order: string[] = []
+    const holder = owner.run(async () => { order.push('holder start'); await delay(400); order.push('holder end') })
+    const timedOut = outcome(owner.run(async () => { order.push('timed-out waiter') }))
+    // The first waiter gives up at 200 ms; these two arrive at 300 ms and fit their own bound.
+    await delay(300)
+    const queued = [owner.run(async () => { order.push('next') }), owner.run(async () => { order.push('last') })]
+    await Promise.all([holder, ...queued])
+    expect(isWaitTimeout((await timedOut as { error?: unknown }).error)).toBe(true)
+    expect(order).toEqual(['holder start', 'holder end', 'next', 'last'])
+    await owner.close()
   })
 })

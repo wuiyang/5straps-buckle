@@ -1,7 +1,7 @@
 export const SqliteErrorCode = Object.freeze({
   ownerClosed: 'ConnectionOwnerClosedError',
   nestedTransaction: 'NestedTransactionError',
-  foreignTransaction: 'ForeignTransactionError',
+  sectionWaitTimeout: 'SectionWaitTimeoutError',
   connectionOwned: 'ConnectionAlreadyOwnedError',
   rawHandleRefused: 'RawHandleRefusedError',
   notRegularFile: 'NotRegularFileError',

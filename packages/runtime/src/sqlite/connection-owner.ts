@@ -4,13 +4,14 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { Primitive, Statement } from 'db0'
 import { RuntimeError, RuntimeErrorCode } from '../errors.js'
 import { globalSlot } from '../internal/async-slots.js'
+import { assertTimerMs } from '../internal/timeouts.js'
 import { runInTransactionMarker } from '../transaction/guard.js'
 import { beginImmediateWithinDeadline, readBusyTimeout } from './begin.js'
 import { SqliteErrorCode } from './codes.js'
-import { rawConnection, type SqliteDatabase } from './database.js'
+import { DEFAULT_BUSY_TIMEOUT_MS, rawConnection, type SqliteDatabase } from './database.js'
 
 export interface ConnectionOwner {
-  // Same connection; refuses statements while another flow's transaction is open and queues them otherwise.
+  // Same connection; each statement queues like run(), behind any other flow's section.
   readonly guardedDb: SqliteDatabase
   run<T>(operation: (db: SqliteDatabase) => Promise<T>): Promise<T>
   transaction<T>(body: (tx: SqliteDatabase) => Promise<T>): Promise<T>
@@ -18,6 +19,15 @@ export interface ConnectionOwner {
   close(): Promise<void>
 }
 
+export interface ConnectionOwnerOptions {
+  owned: boolean
+  label?: string
+  // Bound on waiting for another flow's section (DEFAULT_SECTION_WAIT_TIMEOUT_MS when omitted).
+  sectionWaitTimeoutMs?: number
+}
+
+// In line with the connection's default busy deadline for BEGIN.
+export const DEFAULT_SECTION_WAIT_TIMEOUT_MS = DEFAULT_BUSY_TIMEOUT_MS
 const TRANSACTION_BEGIN_POLL_MS = 10
 
 // Guard state belongs to the connection: one owner per DB0 object (Nitro's useDatabase() returns a cached one),
@@ -25,8 +35,10 @@ const TRANSACTION_BEGIN_POLL_MS = 10
 const ownedConnections = globalSlot('sqlite-connection-owners', () => new WeakSet<SqliteDatabase>())
 
 // SQLite transactions belong to the connection, not to an async flow: every access queues behind an open transaction.
-export function createConnectionOwner(db: SqliteDatabase, options: { owned: boolean; label?: string }): ConnectionOwner {
+export function createConnectionOwner(db: SqliteDatabase, options: ConnectionOwnerOptions): ConnectionOwner {
   const label = options.label ?? 'sqlite'
+  const sectionWaitTimeoutMs = options.sectionWaitTimeoutMs ?? DEFAULT_SECTION_WAIT_TIMEOUT_MS
+  assertTimerMs('sectionWaitTimeoutMs', sectionWaitTimeoutMs)
   if (ownedConnections.has(db)) throw new RuntimeError(SqliteErrorCode.connectionOwned, `Connection ${label} already has a connection owner; share that owner instead of creating another`)
   // Per owner, so entering another owner's section never hides this one's (a.transaction > b.run > a.run).
   const currentSection = new AsyncLocalStorage<string>()
@@ -35,15 +47,31 @@ export function createConnectionOwner(db: SqliteDatabase, options: { owned: bool
   let transactionOpen = false
   let closing: Promise<void> | undefined
 
+  // A bounded wait turns a cycle (two owners taken in opposite order, a singleton whose factory needs a
+  // section its awaiter holds) into a typed failure instead of a hang.
   function exclusive<T>(operation: () => Promise<T>): Promise<T> {
     if (closing) return Promise.reject(new RuntimeError(SqliteErrorCode.ownerClosed, `Connection ${label} is closed`))
     const id = randomUUID()
-    const result = tail.then(() => {
+    const previous = tail
+    const result = waitForTurn(previous).then(() => {
       activeSection = id
       return currentSection.run(id, operation)
-    }).finally(() => { activeSection = undefined })
-    tail = result.catch(() => undefined)
+    }).finally(() => { if (activeSection === id) activeSection = undefined })
+    // A waiter that timed out never held the section, so the next one still waits for the previous holder.
+    tail = previous.then(() => result).catch(() => undefined)
     return result
+  }
+
+  function waitForTurn(previous: Promise<unknown>): Promise<unknown> {
+    let timer: NodeJS.Timeout | undefined
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(sectionWaitTimeoutError(label, sectionWaitTimeoutMs)), sectionWaitTimeoutMs)
+    })
+    return Promise.race([previous, timedOut]).finally(() => clearTimeout(timer))
+  }
+
+  function enter<T>(operation: () => Promise<T>): Promise<T> {
+    return insideOwnSection() ? operation() : exclusive(operation)
   }
 
   function insideOwnSection(): boolean {
@@ -51,8 +79,7 @@ export function createConnectionOwner(db: SqliteDatabase, options: { owned: bool
   }
 
   function run<T>(operation: (db: SqliteDatabase) => Promise<T>): Promise<T> {
-    if (insideOwnSection()) return operation(db)
-    return exclusive(() => operation(db))
+    return enter(() => operation(db))
   }
 
   function transaction<T>(body: (tx: SqliteDatabase) => Promise<T>): Promise<T> {
@@ -82,13 +109,7 @@ export function createConnectionOwner(db: SqliteDatabase, options: { owned: bool
       const connection = await rawConnection(db)
       return beginWithinBusyTimeout(connection, () => finishNativeTransaction(connection, body, label))
     }
-    return insideOwnSection() ? operation() : exclusive(operation)
-  }
-
-  function guard<T>(operation: () => Promise<T>): Promise<T> {
-    if (insideOwnSection()) return operation()
-    if (transactionOpen) return Promise.reject(new RuntimeError(SqliteErrorCode.foreignTransaction, `Another flow's transaction is open on ${label}; use the connection owner to queue behind it`))
-    return exclusive(operation)
+    return enter(operation)
   }
 
   function close(): Promise<void> {
@@ -99,7 +120,7 @@ export function createConnectionOwner(db: SqliteDatabase, options: { owned: bool
     return closing
   }
 
-  const guardedDb = createGuardedView({ db, guard, label })
+  const guardedDb = createGuardedView({ db, guard: enter, label })
   ownedConnections.add(db)
   ownedConnections.add(guardedDb)
   return { guardedDb, run, transaction, nativeTransaction, close }
@@ -161,6 +182,10 @@ function guardStatement(statement: Statement, guard: Guard): Statement {
     run: (...params) => guard(() => statement.run(...params)),
     get: (...params) => guard(() => statement.get(...params)),
   }
+}
+
+function sectionWaitTimeoutError(label: string, timeoutMs: number): RuntimeError {
+  return new RuntimeError(SqliteErrorCode.sectionWaitTimeout, `Waited ${timeoutMs} ms for connection ${label} while another flow held it; take owners in one fixed order and resolve singletons at startup`)
 }
 
 function nestedTransactionError(label: string): RuntimeError {
