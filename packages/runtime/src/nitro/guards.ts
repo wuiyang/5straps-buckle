@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { defineHandler, HTTPError, type EventHandlerRequest, type EventHandlerWithFetch, type H3Event } from 'h3'
 import { isRuntimeError, RuntimeError, RuntimeErrorCode } from '../errors.js'
 import type { RuntimeOwner } from '../lifecycle/owner.js'
-import { runInScope, type OperationContextInput, type OperationScope } from '../scope/als.js'
+import { runInScope, runInScopeContext, type OperationContextInput, type OperationScope } from '../scope/als.js'
+import { isScopeUsable } from '../scope/operation-scope.js'
 import { NitroErrorCode } from './host.js'
 
 export type GuardResult = Omit<OperationContextInput, 'correlationId' | 'attributes' | 'clientRequestId'>
@@ -13,6 +14,8 @@ export interface GuardedHandlerDefinition<T> {
   handler: (event: H3Event, scope: OperationScope) => T | Promise<T>
   // Disposes the scope when a streamed body goes unread this long (default DEFAULT_BODY_IDLE_TIMEOUT_MS).
   bodyIdleTimeoutMs?: number
+  // Overrides the runtime's drain bound for this route's background work.
+  drainTimeoutMs?: number
 }
 
 const REQUEST_ID = /^[\w.:-]{1,128}$/
@@ -37,7 +40,7 @@ export function defineGuardedHandler<T>(definition: GuardedHandlerDefinition<T>)
     const runtime = event.context.runtime as RuntimeOwner
     const clientRequestId = suppliedRequestId(event)
     const context = { ...identity, correlationId: randomUUID(), ...(clientRequestId ? { clientRequestId } : {}) }
-    const scope = runtime.registry.createScope({ context, signal: event.req.signal })
+    const scope = runtime.registry.createScope({ context, signal: event.req.signal, ...(definition.drainTimeoutMs === undefined ? {} : { drainTimeoutMs: definition.drainTimeoutMs }) })
     event.context.scope = scope
     return runRequestInScope({ event, scope, handler: definition.handler, bodyIdleTimeoutMs: definition.bodyIdleTimeoutMs })
   })
@@ -67,9 +70,11 @@ export async function runRequestInScope<T>(input: { event: H3Event; scope: Opera
   const idleTimeoutMs = input.bodyIdleTimeoutMs ?? DEFAULT_BODY_IDLE_TIMEOUT_MS
   const startedAt = performance.now()
   const clientRequestId = scope.context.clientRequestId
+  const logger = event.context.logger
+  // Logged in the scope's context, so the line carries the server correlation id next to the caller's request id.
   const finish = (outcome: string) => {
-    event.context.logger?.info('request completed', { method: event.req.method, path: event.url.pathname, outcome, durationMs: Math.round(performance.now() - startedAt), ...(clientRequestId ? { clientRequestId } : {}) })
-    return scope.dispose().catch((error: unknown) => event.context.logger?.error('request scope failed to close', { error }))
+    runInScopeContext(scope, () => logger?.info('request completed', { method: event.req.method, path: event.url.pathname, outcome, durationMs: Math.round(performance.now() - startedAt), ...(clientRequestId ? { clientRequestId } : {}) }))
+    return scope.dispose().catch((error: unknown) => runInScopeContext(scope, () => logger?.error('request scope failed to close', { error })))
   }
   // Respond first: disposal (bounded by the scope's drainTimeoutMs) runs after the response, so hung background work cannot hold it.
   let result: T
@@ -80,17 +85,19 @@ export async function runRequestInScope<T>(input: { event: H3Event; scope: Opera
     throw error
   }
   if (result instanceof Response && result.body) {
-    const body = ownStream({ source: result.body, idleTimeoutMs, onDone: () => { void finish(`streamed ${result.status}`) } })
+    const body = ownStream({ source: result.body, scope, idleTimeoutMs, onDone: () => { void finish(`streamed ${result.status}`) } })
     return new Response(body, { status: result.status, statusText: result.statusText, headers: result.headers })
   }
   // The wrapper is a ReadableStream of the same chunks, so it stands in for the handler's T.
-  if (result instanceof ReadableStream) return ownStream({ source: result, idleTimeoutMs, onDone: () => { void finish('streamed') } }) as T
+  if (result instanceof ReadableStream) return ownStream({ source: result, scope, idleTimeoutMs, onDone: () => { void finish('streamed') } }) as T
   void finish(result instanceof Response ? `ok ${result.status}` : 'ok')
   return result
 }
 
-// The scope ends when the body ends, errors, is cancelled, or sits unread for idleTimeoutMs.
-function ownStream<C>(input: { source: ReadableStream<C>; idleTimeoutMs: number; onDone: () => void }): ReadableStream<C> {
+// The scope ends when the body ends, errors, is cancelled, or sits unread for idleTimeoutMs. highWaterMark 0
+// pulls only for a waiting reader, so the idle timer runs exactly while nobody reads; the source is read
+// inside the scope, so pull-driven sources (async generators) see the request context.
+function ownStream<C>(input: { source: ReadableStream<C>; scope: OperationScope; idleTimeoutMs: number; onDone: () => void }): ReadableStream<C> {
   const reader = input.source.getReader()
   let done = false
   let idleTimer: NodeJS.Timeout | undefined
@@ -99,7 +106,7 @@ function ownStream<C>(input: { source: ReadableStream<C>; idleTimeoutMs: number;
     if (!done) { done = true; input.onDone() }
   }
   let stream: ReadableStreamDefaultController<C> | undefined
-  const waitForReader = () => {
+  const armIdleTimer = () => {
     idleTimer = setTimeout(() => {
       const reason = new Error(`Response body unread for ${input.idleTimeoutMs} ms`)
       stream?.error(reason)
@@ -107,21 +114,22 @@ function ownStream<C>(input: { source: ReadableStream<C>; idleTimeoutMs: number;
       complete()
     }, input.idleTimeoutMs).unref()
   }
+  const readSource = () => (isScopeUsable(input.scope) ? runInScope(input.scope, () => reader.read()) : reader.read())
   return new ReadableStream<C>({
     start(controller) {
       stream = controller
-      waitForReader()
+      armIdleTimer()
     },
     async pull(controller) {
       clearTimeout(idleTimer)
       try {
-        const chunk = await reader.read()
+        const chunk = await readSource()
         if (chunk.done) {
           controller.close()
           complete()
         } else {
           controller.enqueue(chunk.value)
-          if (!done) waitForReader()
+          if (!done) armIdleTimer()
         }
       } catch (error) {
         controller.error(error)
@@ -132,5 +140,5 @@ function ownStream<C>(input: { source: ReadableStream<C>; idleTimeoutMs: number;
       complete()
       await reader.cancel(reason)
     },
-  })
+  }, { highWaterMark: 0 })
 }

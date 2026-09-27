@@ -193,6 +193,71 @@ describe('Nitro host bridge and context plugin', () => {
   })
 })
 
+describe('streamed body ownership and completion lines (guards-gate-5, -6, -7)', () => {
+  it('guards-gate-5 disposes the scope and cancels the source when an idle body is never read', async () => {
+    const scopes: { state: string }[] = []
+    let cancelled = false
+    const idle = defineGuardedHandler({ guards: [], bodyIdleTimeoutMs: 30, handler: (_, scope) => {
+      scopes.push(scope)
+      return new Response(new ReadableStream({ start() {}, cancel() { cancelled = true } }))
+    } })
+    const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: app => app.get('/idle', idle) })
+    bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
+    await nitroApp.fetch(new Request('http://local/idle'))
+    await vi.waitFor(() => expect({ state: scopes[0]!.state, cancelled }).toEqual({ state: 'disposed', cancelled: true }), { timeout: 1_000, interval: 10 })
+  })
+
+  it('guards-gate-6 reads a pull-driven body inside the request scope', async () => {
+    const correlation: string[] = []
+    const stream = defineGuardedHandler({ guards: [], handler: (event, scope) => {
+      correlation.push(scope.context.correlationId)
+      async function* chunks() {
+        for (let index = 0; index < 3; index += 1) {
+          await delay(2)
+          const service = await event.context.runtime!.registry.useScoped(operation)
+          yield new TextEncoder().encode(`${useScope().context.correlationId}|${service.correlationId}\n`)
+        }
+      }
+      const iterator = chunks()
+      // What ReadableStream.from(generator) does: each read drives the generator.
+      return new Response(new ReadableStream<Uint8Array>({ async pull(controller) {
+        const next = await iterator.next()
+        if (next.done) controller.close()
+        else controller.enqueue(next.value)
+      } }))
+    } })
+    const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: app => app.get('/pull', stream) })
+    bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
+    const response = await nitroApp.fetch(new Request('http://local/pull'))
+    const reader = response.body!.getReader()
+    let text = ''
+    for (let part = await reader.read(); !part.done; part = await reader.read()) {
+      text += new TextDecoder().decode(part.value)
+      await delay(5)
+    }
+    const expected = `${correlation[0]}|${correlation[0]}`
+    expect(text.trim().split('\n')).toEqual([expected, expected, expected])
+  })
+
+  it('guards-gate-7 logs the completion line inside the scope with the correlation id and the client request id', async () => {
+    const seen: string[] = []
+    const ok = defineGuardedHandler({ guards: [], handler: (_, scope) => { seen.push(scope.context.correlationId); return { ok: true } } })
+    const failing = defineGuardedHandler({ guards: [], handler: (_, scope) => { seen.push(scope.context.correlationId); throw HTTPError.status(409, 'Conflict') } })
+    const streamed = defineGuardedHandler({ guards: [], handler: (_, scope) => { seen.push(scope.context.correlationId); return new Response('chunk') } })
+    const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: (app) => { app.get('/ok', ok); app.get('/fail', failing); app.get('/streamed', streamed) } })
+    bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
+    for (const path of ['/ok', '/fail', '/streamed']) await (await nitroApp.fetch(new Request(`http://local${path}`, { headers: { 'x-request-id': `client-${path.slice(1)}` } }))).text()
+    await delay(1)
+    await logger.flush()
+    const completed = ['/ok', '/fail', '/streamed'].map(path => events.findLast(event => event.message === 'request completed' && event.fields?.path === path))
+    expect(completed.map(event => [event?.correlationId, event?.fields?.clientRequestId, event?.fields?.outcome])).toEqual([
+      [seen[0], 'client-ok', 'ok'],
+      [seen[1], 'client-fail', 'error 409'],
+      [seen[2], 'client-streamed', 'streamed 200'],
+    ])
+  })
+})
+
 async function runGuardsForTest(guards: Guard[]): Promise<unknown> {
   const event = { req: new Request('http://local/', { headers: { authorization: 'Bearer agent' } }), context: {} } as unknown as H3Event
   return runGuards(event, guards)

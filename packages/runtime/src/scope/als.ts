@@ -51,6 +51,11 @@ export function runInScope<T>(scope: OperationScope, fn: () => T): T {
   return storage.run(scope, fn)
 }
 
+// The scope as ALS context whatever its state, for diagnostics after the operation ended (log lines keep its correlation id).
+export function runInScopeContext<T>(scope: OperationScope, fn: () => T): T {
+  return storage.run(scope, fn)
+}
+
 export function useScope(): OperationScope {
   const scope = storage.getStore()
   if (!scope) throw new RuntimeError(RuntimeErrorCode.missingScope, 'No operation scope is active; enter one with runInScope or withOperationScope')
