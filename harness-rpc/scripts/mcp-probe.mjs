@@ -11,7 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
  * none must get the relay text. The gate is a read of /etc/hostname, which sits outside the
  * workspace, so read_scope always asks for it.
  */
-const server = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'index.js')
+const server = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'main.js')
 const GATED_PATH = '/etc/hostname'
 
 const runs = [

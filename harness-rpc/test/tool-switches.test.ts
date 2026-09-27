@@ -2,10 +2,10 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { loadConfig, type BuckleConfig } from '../src/config.js'
-import { runCli } from '../src/faces/cli/main.js'
-import { createRuntime } from '../src/runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { runCli } from '../cli/main.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 function node(): BuckleConfig {
   const root = mkdtempSync(join(tmpdir(), 'buckle-tool-switch-'))

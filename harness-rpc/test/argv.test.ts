@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvSignature, hasFlag, parseArgv } from '../src/domain/argv.js'
+import { argvSignature, hasFlag, parseArgv } from '../common/domain/argv.js'
 
 describe('parseArgv', () => {
   it('expands clustered short flags', () => {

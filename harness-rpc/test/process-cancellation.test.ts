@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runProcess } from '../src/adapters/process-runner.js'
+import { runProcess } from '../common/adapters/process-runner.js'
 
 describe('process cancellation', () => {
   it('refuses to spawn an already cancelled request', async () => {

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
-import type { ResolvedEffect } from '../src/domain/effect.js'
-import { createPermissionEngine } from '../src/domain/permission/engine.js'
-import { createCommandPolicyRule } from '../src/domain/permission/rules/command-policy-rule.js'
-import { createDestructiveCommandRule } from '../src/domain/permission/rules/destructive-command-rule.js'
-import { compilePolicy } from '../src/domain/policy.js'
+import type { ResolvedEffect } from '../common/domain/effect.js'
+import { createPermissionEngine } from '../common/domain/permission/engine.js'
+import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
+import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
+import { compilePolicy } from '../common/domain/policy.js'
 
 function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[]; destructive?: string[] } = {}) {
   const policy = emptyWorkspacePolicy()

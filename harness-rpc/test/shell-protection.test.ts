@@ -1,12 +1,12 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createBubblewrapSandbox } from '../src/adapters/sandbox/bubblewrap-sandbox.js'
-import { createPathView } from '../src/domain/path-view.js'
-import { createShellPack } from '../src/packs/shell/index.js'
-import { createEnvironmentPack } from '../src/packs/environment/index.js'
-import { collectShellHiddenPaths } from '../src/services/shell-filesystem.js'
-import type { ProcessRunner } from '../src/ports/process-runner.js'
+import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { createShellPack } from '../common/services/packs/shell/index.js'
+import { createEnvironmentPack } from '../common/services/packs/environment/index.js'
+import { collectShellHiddenPaths } from '../common/services/shell/shell-filesystem.js'
+import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

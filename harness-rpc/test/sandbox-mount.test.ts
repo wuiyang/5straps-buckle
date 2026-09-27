@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { createBubblewrapSandbox } from '../src/adapters/sandbox/bubblewrap-sandbox.js'
-import { createNoneSandbox } from '../src/adapters/sandbox/none-sandbox.js'
-import { createSeatbeltSandbox } from '../src/adapters/sandbox/seatbelt-sandbox.js'
-import { createPathView } from '../src/domain/path-view.js'
-import { createBuiltinPacks } from '../src/packs/index.js'
-import type { SandboxCommand } from '../src/ports/sandbox.js'
+import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
+import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
+import { createSeatbeltSandbox } from '../common/adapters/sandbox/seatbelt-sandbox.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { createBuiltinPacks } from '../common/services/packs/index.js'
+import type { SandboxCommand } from '../common/types/ports/sandbox.js'
 
 const STATE = '/home/me/.5straps/buckle'
 

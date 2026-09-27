@@ -2,9 +2,9 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
-import { createFileActionLog } from '../src/adapters/action-log/file-action-log.js'
-import { loadConfig, actionsPath } from '../src/config.js'
-import { runCli } from '../src/faces/cli/main.js'
+import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { loadConfig, actionsPath } from '../common/runtime/config.js'
+import { runCli } from '../cli/main.js'
 
 it('records local policy changes without copying command arguments into the audit', async () => {
   const root = mkdtempSync(join(tmpdir(), 'buckle-cli-audit-'))

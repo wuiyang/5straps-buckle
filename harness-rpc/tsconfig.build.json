@@ -4,9 +4,9 @@
     "allowImportingTsExtensions": false,
     "noEmit": false,
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "sourceMap": true
   },
-  "include": ["src/**/*.ts"],
+  "include": ["main.ts", "common/**/*.ts", "cli/**/*.ts", "mcp/**/*.ts", "server/**/*.ts"],
   "exclude": ["test/**/*.ts"]
 }

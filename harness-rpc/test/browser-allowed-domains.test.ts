@@ -4,11 +4,11 @@ import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { loadConfig } from '../src/config.js'
-import { logger } from '../src/logger.js'
-import { browserAllowedDomains, type ApprovedList } from '../src/packs/browser/allowed-domains.js'
-import { createRuntime, type BuckleRuntime } from '../src/runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { logger } from '../common/runtime/logger.js'
+import { browserAllowedDomains, type ApprovedList } from '../common/services/packs/browser/allowed-domains.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 const node = (...entries: string[]): ApprovedList => ({ name: 'node', entries })
 const workspace = (...entries: string[]): ApprovedList => ({ name: 'workspace', entries })

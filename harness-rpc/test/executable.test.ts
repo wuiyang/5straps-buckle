@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { executableCandidates, findExecutable, isPathReference } from '../src/domain/executable.js'
+import { executableCandidates, findExecutable, isPathReference } from '../common/domain/executable.js'
 
 const root = mkdtempSync(join(tmpdir(), 'buckle-exec-'))
 

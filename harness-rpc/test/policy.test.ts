@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
-import { compilePolicy, isRestrictive, mergePolicies, PolicyError } from '../src/domain/policy.js'
+import { compilePolicy, isRestrictive, mergePolicies, PolicyError } from '../common/domain/policy.js'
 
 function policy(overrides: Partial<{ allow: string[]; deny: string[]; network: string[]; mount: string | null; updatedAt: string | null }>): WorkspacePolicy {
   const base = emptyWorkspacePolicy()

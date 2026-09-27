@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { settingsCommand } from '../src/faces/cli/settings.js'
-import { runInit } from '../src/faces/cli/init.js'
-import { findWorkspaceConfig, moveWorkspaceConfig, registerWorkspaceConfig, workspaceEnvironmentFile } from '../src/faces/cli/workspace-config.js'
+import { settingsCommand } from '../cli/settings.js'
+import { runInit } from '../cli/init.js'
+import { findWorkspaceConfig, moveWorkspaceConfig, registerWorkspaceConfig, workspaceEnvironmentFile } from '../common/runtime/workspace-config.js'
 
 let base: string
 let home: string

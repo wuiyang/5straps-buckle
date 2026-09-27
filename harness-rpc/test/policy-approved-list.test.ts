@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { createFilePolicyStore } from '../src/adapters/policy-store/file-policy-store.js'
-import { loadConfig, policyPath, type BuckleConfig } from '../src/config.js'
-import { runCli } from '../src/faces/cli/main.js'
-import { createRuntime } from '../src/runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
+import { loadConfig, policyPath, type BuckleConfig } from '../common/runtime/config.js'
+import { runCli } from '../cli/main.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 /** A node whose stored approved list holds these entries, written straight to the store. */
 function withStoredList(allow: string[]): BuckleConfig {

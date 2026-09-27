@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { editEnvironmentVariable, setEnvironmentVariable, updateEnvironmentFile, writeEnvironmentFile } from '../src/faces/cli/environment-file.js'
+import { editEnvironmentVariable, setEnvironmentVariable, updateEnvironmentFile, writeEnvironmentFile } from '../cli/environment-file.js'
 
 describe('writing one variable back into an environment file', () => {
   it('fills in the commented placeholder buckle init left, keeping its position', () => {

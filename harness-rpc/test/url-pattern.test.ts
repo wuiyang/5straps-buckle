@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { ResolvedEffect } from '../src/domain/effect.js'
-import { createPermissionEngine } from '../src/domain/permission/engine.js'
-import { createNetworkEgressRule } from '../src/domain/permission/rules/network-egress-rule.js'
-import { coveringGrant } from '../src/domain/permission/rules/network-egress-rule.js'
-import { compileHostPattern, compileUrlPatterns, intersectUrlMatchers, matchingHostEntry, UrlPatternError } from '../src/domain/url-pattern.js'
+import type { ResolvedEffect } from '../common/domain/effect.js'
+import { createPermissionEngine } from '../common/domain/permission/engine.js'
+import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
+import { coveringGrant } from '../common/domain/permission/rules/network-egress-rule.js'
+import { compileHostPattern, compileUrlPatterns, intersectUrlMatchers, matchingHostEntry, UrlPatternError } from '../common/domain/url-pattern.js'
 
 function matches(patterns: string[], url: string): boolean {
   return compileUrlPatterns(patterns).matches(new URL(url))

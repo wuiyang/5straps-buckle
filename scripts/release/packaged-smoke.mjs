@@ -59,7 +59,7 @@ function prepareInstallation() {
     '@5straps/protocol': tarball('protocol'), '@5straps/buckle': tarball('buckle'),
   } }))
   run('npm', ['install', '--ignore-scripts', '--omit=optional'])
-  entry = join(installation, 'node_modules/@5straps/buckle/dist/index.js')
+  entry = join(installation, 'node_modules/@5straps/buckle/dist/main.js')
   assert(existsSync(entry), 'Installed CLI entry is missing')
   writeFileSync(join(workspace, 'demo.txt'), 'before')
   assert.match(cli(['tools']), /fs write/)

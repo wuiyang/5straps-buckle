@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createPathView, OUTSIDE_PATH } from '../src/domain/path-view.js'
+import { createPathView, OUTSIDE_PATH } from '../common/domain/path-view.js'
 
 const ROOT = '/work/project'
 const SCRATCH = '/tmp/scratch'

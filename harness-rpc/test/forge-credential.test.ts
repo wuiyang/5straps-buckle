@@ -1,8 +1,8 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createGitHubForgeClient } from '../src/adapters/forge/github.js'
-import { loadConfig } from '../src/config.js'
+import { createGitHubForgeClient } from '../common/adapters/forge/github.js'
+import { loadConfig } from '../common/runtime/config.js'
 
 const TOKEN = 'ghp-credential-test-value'
 const REPOSITORY = { owner: '5straps', name: 'demo' }

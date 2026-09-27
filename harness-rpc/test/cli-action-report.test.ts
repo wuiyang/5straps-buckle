@@ -2,8 +2,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadConfig, type BuckleConfig } from '../src/config.js'
-import { runCli } from '../src/faces/cli/main.js'
+import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { runCli } from '../cli/main.js'
 
 afterEach(() => { vi.unstubAllGlobals() })
 

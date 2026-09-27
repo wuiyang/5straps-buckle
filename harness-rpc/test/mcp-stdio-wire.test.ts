@@ -1,6 +1,6 @@
 import { PassThrough, Writable } from 'node:stream'
 import { afterEach, expect, it, vi } from 'vitest'
-import { createStdioWire } from '../src/faces/mcp/stdio-wire.js'
+import { createStdioWire } from '../mcp/stdio-wire.js'
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })

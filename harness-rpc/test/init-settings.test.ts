@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { runInit, type InitPrompt } from '../src/faces/cli/init.js'
+import { runInit, type InitPrompt } from '../cli/init.js'
 
 let workspace: string
 let out: string

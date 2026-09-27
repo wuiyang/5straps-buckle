@@ -3,17 +3,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mintApprovalKey } from '@5straps/protocol/envelope'
 import { describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { loadConfig } from '../src/config.js'
-import { createHttpApp } from '../src/faces/http-app.js'
-import { createMcpServer } from '../src/faces/mcp/server.js'
-import { createRuntime } from '../src/runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { createHttpApp } from '../server/hono/http-app.js'
+import { createMcpServer } from '../mcp/server.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 /**
  * `BUCKLE-D19`: node settings are the owner's CLI writing the environment file. No HTTP route
- * (the RPC face in `faces/rpc/app.ts`, the setup face in `faces/setup/app.ts`, the workspace and
- * workbench faces in `faces/workspace-app.ts` and `faces/workbench-app.ts`, mounted together by
- * `faces/http-app.ts`) and no MCP tool may read or change them.
+ * (the RPC face in `server/hono/rpc-app.ts`, the setup face in `server/hono/setup-app.ts`, the
+ * workspace and workbench faces in `server/hono/workspace-app.ts` and `server/hono/workbench-app.ts`,
+ * mounted together by `server/hono/http-app.ts`) and no MCP tool may read or change them.
  */
 const SETTINGS_WORDS = /settings|environment|env\b|\.env|config/i
 
@@ -61,9 +61,8 @@ describe('no face exposes node settings', () => {
   })
 
   it('keeps the settings writer out of everything but the CLI and its entry point', () => {
-    const source = join(import.meta.dirname, '../src')
-    const cli = join(source, 'faces/cli')
-    const sources = walk(source).filter(path => !path.startsWith(cli) && path !== join(source, 'index.ts'))
+    const packageRoot = join(import.meta.dirname, '..')
+    const sources = ['common', 'mcp', 'server'].flatMap(folder => walk(join(packageRoot, folder)))
 
     expect(sources.length).toBeGreaterThan(20)
     for (const path of sources) expect(readFileSync(path, 'utf8'), path).not.toMatch(/cli\/(settings|node-settings|environment-file)\.js/)

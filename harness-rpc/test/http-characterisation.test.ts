@@ -3,11 +3,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { approvalsPath, loadConfig } from '../src/config.js'
-import { createHttpApp } from '../src/faces/http-app.js'
-import type { ActionLogEntry } from '../src/ports/action-log.js'
-import { createRuntime, type BuckleRuntime } from '../src/runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { approvalsPath, loadConfig } from '../common/runtime/config.js'
+import { createHttpApp } from '../server/hono/http-app.js'
+import type { ActionLogEntry } from '../common/types/ports/action-log.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 // Pins today's Hono edge responses before the Nitro move (Buckle phase plan, B2). The commits that
 // move a route flip the matching expectation on purpose and list the flip in their message.

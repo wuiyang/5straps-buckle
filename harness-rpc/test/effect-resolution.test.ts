@@ -2,15 +2,15 @@ import { mkdtemp, mkdir, symlink, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createPathView } from '../src/domain/path-view.js'
-import { isInside } from '../src/domain/paths.js'
-import { resolveEffects } from '../src/services/resolve-effects.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { isInside } from '../common/domain/paths.js'
+import { resolveEffects } from '../common/services/invocation/resolve-effects.js'
 
-import { createPermissionEngine } from '../src/domain/permission/engine.js'
-import { createNetworkEgressRule } from '../src/domain/permission/rules/network-egress-rule.js'
-import { createReadScopeRule } from '../src/domain/permission/rules/read-scope-rule.js'
-import { createWriteScopeRule } from '../src/domain/permission/rules/write-scope-rule.js'
-import { browserEffects } from '../src/packs/browser/effects.js'
+import { createPermissionEngine } from '../common/domain/permission/engine.js'
+import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
+import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
+import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
+import { browserEffects } from '../common/services/packs/browser/effects.js'
 describe('isInside', () => {
   it('accepts the directory itself and its descendants', () => {
     expect(isInside('/work', '/work')).toBe(true)

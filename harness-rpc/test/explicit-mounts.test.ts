@@ -2,12 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { parseSandboxMounts, validateSandboxMounts, type SandboxMount } from '../src/domain/sandbox-mounts.js'
-import { createBubblewrapSandbox } from '../src/adapters/sandbox/bubblewrap-sandbox.js'
-import { createNoneSandbox } from '../src/adapters/sandbox/none-sandbox.js'
-import { createShellPack } from '../src/packs/shell/index.js'
-import { createPathView } from '../src/domain/path-view.js'
-import type { ProcessRunner } from '../src/ports/process-runner.js'
+import { parseSandboxMounts, validateSandboxMounts, type SandboxMount } from '../common/domain/sandbox-mounts.js'
+import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
+import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
+import { createShellPack } from '../common/services/packs/shell/index.js'
+import { createPathView } from '../common/domain/path-view.js'
+import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 
 let root: string
 let workspace: string

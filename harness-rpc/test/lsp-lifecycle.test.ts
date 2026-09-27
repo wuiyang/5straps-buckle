@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream'
 import { expect, it, vi } from 'vitest'
-import { createLspConnection } from '../src/packs/dev/lsp-client.js'
+import { createLspConnection } from '../common/services/packs/dev/lsp-client.js'
 
 function fixture() {
   const input = new PassThrough()

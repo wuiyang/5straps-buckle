@@ -1,12 +1,12 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createChangeHistory } from '../src/services/history/journal.js'
-import { createShellWorkspaceRecovery, runIsolatedShell } from '../src/services/isolated-shell.js'
-import { createShellPack } from '../src/packs/shell/index.js'
-import { createPathView } from '../src/domain/path-view.js'
-import { createBubblewrapSandbox } from '../src/adapters/sandbox/bubblewrap-sandbox.js'
-import type { ProcessRequest } from '../src/ports/process-runner.js'
+import { createChangeHistory } from '../common/services/history/journal.js'
+import { createShellWorkspaceRecovery, runIsolatedShell } from '../common/services/shell/isolated-shell.js'
+import { createShellPack } from '../common/services/packs/shell/index.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
+import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

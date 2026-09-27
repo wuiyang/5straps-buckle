@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { ApprovalRequest } from '@5straps/protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createWebhookNotifier } from '../src/adapters/approval/webhook-notifier.js'
+import { createWebhookNotifier } from '../common/adapters/approval/webhook-notifier.js'
 
 let server: Server
 let url: string

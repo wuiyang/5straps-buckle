@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { loadConfig } from '../src/config.js'
-import { createRuntime, type BuckleRuntime } from '../src/runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 let server: Server
 let port: number

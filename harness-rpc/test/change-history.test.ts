@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createChangeHistory } from '../src/services/history/journal.js'
+import { createChangeHistory } from '../common/services/history/journal.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
 const roots: string[] = []
@@ -127,7 +127,7 @@ describe('Git-independent file history', () => {
   it('recovers an OS-interrupted mutation before allowing more changes', async () => {
     const { root, workspace, history, details, options } = fixture()
     const script = join(root, 'crash.mts')
-    writeFileSync(script, `import { createChangeHistory } from ${JSON.stringify(new URL('../src/services/history/journal.ts', import.meta.url).pathname)}; import { writeFileSync } from 'node:fs'; const history = createChangeHistory(${JSON.stringify(options)}); await history.run(${JSON.stringify(details)}, async () => { writeFileSync(${JSON.stringify(join(workspace, 'partial'))}, 'partial'); process.exit(9) });`)
+    writeFileSync(script, `import { createChangeHistory } from ${JSON.stringify(new URL('../common/services/history/journal.ts', import.meta.url).pathname)}; import { writeFileSync } from 'node:fs'; const history = createChangeHistory(${JSON.stringify(options)}); await history.run(${JSON.stringify(details)}, async () => { writeFileSync(${JSON.stringify(join(workspace, 'partial'))}, 'partial'); process.exit(9) });`)
     expect(() => execFileSync(process.execPath, ['--import', 'tsx', script], { stdio: 'pipe' })).toThrow()
     expect(history.list()[0]!.status).toBe('pending')
     await expect(history.run(details, async () => undefined)).rejects.toThrow('owner recovery')

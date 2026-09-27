@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mintApprovalKey } from '@5straps/protocol/envelope'
-import { runInit } from '../src/faces/cli/init.js'
+import { runInit } from '../cli/init.js'
 
 let root: string
 let workspace: string

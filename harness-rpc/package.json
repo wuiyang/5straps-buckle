@@ -25,11 +25,15 @@
   },
   "type": "module",
   "bin": {
-    "buckle": "./dist/index.js"
+    "buckle": "./dist/main.js"
   },
   "files": [
     "dist",
-    "src",
+    "main.ts",
+    "common",
+    "cli",
+    "mcp",
+    "server",
     "skills",
     "LICENSE"
   ],
@@ -41,12 +45,12 @@
   },
   "scripts": {
     "prepack": "pnpm run build",
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-pack-assets.mjs",
-    "dev": "tsx watch --env-file-if-exists=../.env src/index.ts serve",
-    "start": "node dist/index.js",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node scripts/copy-pack-assets.mjs",
+    "dev": "tsx watch --env-file-if-exists=../.env main.ts serve",
+    "start": "node dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
-    "buckle": "tsx src/index.ts",
+    "buckle": "tsx main.ts",
     "acceptance": "pnpm run build && node scripts/acceptance.mjs",
     "mcp-probe": "node scripts/mcp-probe.mjs"
   },

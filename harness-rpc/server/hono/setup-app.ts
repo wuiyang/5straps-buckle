@@ -1,0 +1,175 @@
+import { createWorkbenchSetupApp } from './workbench-app.js'
+import { browseDirectories, DirectoryQuerySchema } from '../../common/services/setup/directory-browser.js'
+import { resolveFilesystemAccess, resolveFilesystemPermission } from '../../common/domain/filesystem-policy.js'
+import { sensitivePathReason } from '../../common/domain/permission/rules/sensitive-path-rule.js'
+import { PolicyConflictError } from '../../common/domain/policy.js'
+import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
+import { ApprovalDecisionSchema, WorkspacePolicyUpdateSchema } from '@5straps/protocol'
+import { Hono, type Context } from 'hono'
+import { createMemoryNonceStore } from '@5straps/protocol/envelope'
+import { createFileNonceStore } from '../../common/adapters/approval/file-nonce-store.js'
+import { approvalNoncesPath, type BuckleConfig } from '../../common/runtime/config.js'
+import { openApprovalDecision } from '../../common/services/approvals/approval-envelope.js'
+import { isRestrictive, PolicyError } from '../../common/domain/policy.js'
+import { logger } from '../../common/runtime/logger.js'
+import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
+import { tokenMatches } from '../../common/services/access/tokens.js'
+import { requireBearerToken } from './auth.js'
+
+/**
+ * The owner's face. It reads and replaces the workspace policy, decides approvals and reports
+ * how the node is set up, behind the admin credential alone: the agent's token opens nothing
+ * here, and nothing here runs a tool. Rings drives it to push configuration; `buckle policy`
+ * does the same locally.
+ */
+export function createSetupApp(input: { config: BuckleConfig; runtime: BuckleRuntime; adminToken: string }): Hono {
+  const { config, runtime, adminToken } = input
+  const app = new Hono()
+  const seenDecisions = config.ringsApprovalKey ? createFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceStore()
+
+  app.use('/*', async (context, next) => {
+    if (!tokenMatches(context.req.header('authorization'), adminToken)) {
+      const auditId = randomUUID()
+      runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
+        at: new Date().toISOString(), sessionId: 'http-untrusted', tool: 'setup_auth_rejected',
+        outcome: 'denied', durationMs: 0, effects: [], args: {},
+      })
+    }
+    await next()
+  })
+  app.use('/*', requireBearerToken(adminToken))
+  app.use('/*', async (context, next) => {
+    const auditId = randomUUID()
+    const at = new Date().toISOString()
+    const start = performance.now()
+    const mutation = !['GET', 'HEAD'].includes(context.req.method)
+    const resource = context.req.path.split('/').find(part => ['policy', 'history', 'history-stages', 'approvals', 'grants', 'audit', 'status', 'files', 'workbenches'].includes(part)) ?? 'unknown'
+    const entry = {
+      auditId, workspaceId: runtime.workspaceId, at, requestId: auditId, sessionId: 'workspace-admin',
+      tool: `setup_${context.req.method.toLowerCase()}_${resource}`, durationMs: 0, effects: [], args: {},
+    }
+    if (mutation) runtime.actions.record({ ...entry, event: 'attempt', outcome: 'started' })
+    await next()
+    runtime.actions.record({ ...entry, event: 'result', outcome: context.res.ok ? 'ok' : 'error',
+      durationMs: Math.round(performance.now() - start), detail: `HTTP ${context.res.status}`,
+    })
+  })
+
+  app.route('/workbenches', createWorkbenchSetupApp(runtime))
+  app.get('/files', async context => {
+    const parsed = DirectoryQuerySchema.safeParse({ ...context.req.query(), path: context.req.query('path') ?? '.' })
+    if (!parsed.success) return context.json({ error: 'Invalid directory request' }, 400)
+    const page = await browseDirectories({ ...parsed.data, workspaceRoot: runtime.paths().root, includeFiles: true })
+    const policy = runtime.policy.effective()
+    const ceiling = config.nodePolicy ?? null
+    return context.json({ ...page, entries: page.entries.map(entry => {
+      const protectedFile = Boolean(sensitivePathReason(entry.path))
+      const access = resolveFilesystemAccess({ path: entry.path, policy, ceiling })
+      const baseline = resolveFilesystemAccess({ path: entry.path, policy: ceiling ?? config.policy })
+      return { ...entry, baseRead: protectedFile && baseline.read !== 'deny' ? 'ask' : baseline.read, baseWrite: protectedFile && baseline.write !== 'deny' ? 'ask' : baseline.write,
+        read: protectedFile && access.read !== 'deny' ? 'ask' : access.read, write: protectedFile && access.write !== 'deny' ? 'ask' : access.write,
+        readLocked: protectedFile || ['deny', 'ask'].includes(resolveFilesystemPermission({ path: entry.path, operation: 'read', policy: ceiling ?? config.policy })),
+        writeLocked: protectedFile || ['deny', 'ask'].includes(resolveFilesystemPermission({ path: entry.path, operation: 'write', policy: ceiling ?? config.policy })),
+      }
+    }) })
+  })
+
+  app.post('/history-stages/restore', async context => {
+    const parsed = z.object({ stageId: z.string().min(1), sessionId: z.string().min(1) }).safeParse(await context.req.json().catch(() => null))
+    if (!parsed.success) return context.json({ error: 'stageId and sessionId are required' }, 400)
+    return historyResponse(context, () => runtime.history.restoreStage(parsed.data.stageId, parsed.data.sessionId))
+  })
+  app.get('/audit', async context => {
+    const parsed = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50), before: z.coerce.number().int().nonnegative().optional() }).safeParse(context.req.query())
+    if (!parsed.success) return context.json({ error: 'Invalid audit page' }, 400)
+    await runtime.actions.recoverInterrupted()
+    return context.json(runtime.actions.page(parsed.data))
+  })
+  app.get('/history', context => context.json({ checkpoints: runtime.history.list() }))
+  app.post('/history/:id/restore', async context => historyResponse(context, () => runtime.history.restore(context.req.param('id'))))
+  app.post('/history/:id/recover', async context => historyResponse(context, () => runtime.history.recover(context.req.param('id'))))
+
+  app.get('/approvals', context => context.json({ approvals: runtime.approvals.pending() }))
+  app.post('/approvals', async context => {
+    const opened = openApprovalDecision({ key: config.ringsApprovalKey, body: await context.req.json().catch(() => null), workspaceId: runtime.workspaceId, seen: seenDecisions })
+    if (!opened.ok) {
+      const auditId = randomUUID()
+      runtime.actions.record({ auditId, event: 'result', workspaceId: runtime.workspaceId, requestId: auditId,
+        at: new Date().toISOString(), sessionId: 'workspace-admin', tool: 'setup_approval_envelope_refused',
+        outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: opened.reason,
+      })
+      logger.warn('Refused an approval decision envelope', { reason: opened.reason, workspaceId: runtime.workspaceId })
+      return context.json({ error: `Approval decision refused: ${opened.reason}` }, 401)
+    }
+    const parsed = ApprovalDecisionSchema.safeParse(opened.body)
+    if (!parsed.success) return context.json({ error: 'Invalid approval decision' }, 400)
+    const result = runtime.approvals.resolve(parsed.data, 'admin')
+    return result.ok ? context.json({ resolved: true }) : context.json({ error: result.reason }, 409)
+  })
+  app.get('/grants', context => context.json({ grants: runtime.grants.list() }))
+  app.delete('/grants/:grantId', context => {
+    if (!runtime.grants.revoke(context.req.param('grantId'))) return context.json({ error: 'Grant not found' }, 404)
+    return context.body(null, 204)
+  })
+
+  app.get('/status', context => {
+    const manifest = runtime.manifest()
+    const effective = runtime.policy.effective()
+    return context.json({
+      serverId: config.serverId,
+      /** Which of the node's workspaces this face serves, and the identity its reports carry. */
+      workspaceId: runtime.workspaceId,
+      name: config.serverName,
+      version: manifest.version,
+      workspace: { root: config.cwd, mount: effective.mount, displayRoot: runtime.paths().displayRoot },
+      sandbox: manifest.sandbox,
+      packs: manifest.packs,
+      policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },
+      reporting: runtime.reporter.configured,
+      approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',
+      activeWork: runtime.hasActiveWork(),
+    })
+  })
+
+  app.get('/tools', context => context.json(runtime.toolCatalog()))
+
+  app.get('/policy', context => context.json({
+    effective: runtime.policy.effective(),
+    revision: runtime.policy.revision(),
+    stored: runtime.policy.stored(),
+    base: runtime.policy.base(),
+    ceiling: config.nodePolicy ?? null,
+  }))
+
+  app.put('/policy', async context => {
+    const parsed = WorkspacePolicyUpdateSchema.safeParse(await context.req.json().catch(() => null))
+    if (!parsed.success) return context.json({ error: 'Invalid workspace policy', issues: parsed.error.issues }, 400)
+    try {
+      const { expectedRevision, ...policy } = parsed.data
+      const effective = await runtime.policy.apply(policy, expectedRevision)
+      logger.info('Workspace policy replaced through the setup face', { workspace: config.cwd })
+      return context.json({ effective, revision: runtime.policy.revision(), stored: runtime.policy.stored(), base: runtime.policy.base(), ceiling: config.nodePolicy ?? null })
+    } catch (error) {
+      if (error instanceof PolicyConflictError) return context.json({ error: error.message }, 409)
+      if (error instanceof PolicyError) return context.json({ error: error.message }, 400)
+      throw error
+    }
+  })
+
+  app.delete('/policy', async context => {
+    const effective = await runtime.policy.clear()
+    return context.json({ effective, revision: runtime.policy.revision(), stored: null, base: runtime.policy.base(), ceiling: config.nodePolicy ?? null })
+  })
+
+  return app
+}
+
+async function historyResponse(context: Context, operation: () => Promise<unknown>) {
+  try { return context.json(await operation()) }
+  catch (error) {
+    const conflict = error instanceof Error && error.message.startsWith('Restore conflict:')
+    logger.warn('Owner history operation failed', { message: error instanceof Error ? error.message : 'Unknown error' })
+    return context.json({ error: conflict ? error.message : 'History operation failed; inspect local owner logs' }, conflict ? 409 : 422)
+  }
+}

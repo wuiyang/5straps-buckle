@@ -5,12 +5,12 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv, promisify } from 'node:util'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createFileActionLog } from '../src/adapters/action-log/file-action-log.js'
-import { runProcess } from '../src/adapters/process-runner.js'
-import { createPathView } from '../src/domain/path-view.js'
-import { editEnvironmentVariable } from '../src/faces/cli/environment-file.js'
-import { settingsCommand } from '../src/faces/cli/settings.js'
-import { BUILTIN_PACKS, createBuiltinPacks, unmetPackPrerequisite } from '../src/packs/index.js'
+import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { runProcess } from '../common/adapters/process-runner.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { editEnvironmentVariable } from '../cli/environment-file.js'
+import { settingsCommand } from '../cli/settings.js'
+import { BUILTIN_PACKS, createBuiltinPacks, unmetPackPrerequisite } from '../common/services/packs/index.js'
 
 const SECRET = 'fixture-secret-value-never-printed-7f3a'
 
@@ -227,7 +227,7 @@ describe('an environment file this command will not edit line by line', () => {
 })
 
 describe('buckle settings against other writers and links', () => {
-  const entry = fileURLToPath(new URL('../src/index.ts', import.meta.url))
+  const entry = fileURLToPath(new URL('../main.ts', import.meta.url))
 
   function settingsProcess(...argv: string[]) {
     return promisify(execFile)(process.execPath, ['--import', import.meta.resolve('tsx'), entry, 'settings', ...argv], {

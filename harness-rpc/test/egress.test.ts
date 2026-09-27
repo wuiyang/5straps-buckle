@@ -4,9 +4,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadConfig } from '../src/config.js'
-import { matchingHostEntry } from '../src/domain/url-pattern.js'
-import { guardedFetch } from '../src/packs/web/egress.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { matchingHostEntry } from '../common/domain/url-pattern.js'
+import { guardedFetch } from '../common/services/packs/web/egress.js'
 
 /** Redirects to whatever the `to` query parameter says, so a hop chain can be exercised. */
 function startRedirectServer(): Promise<{ server: Server; port: number }> {

@@ -3,9 +3,9 @@ import type { McpServer, ServerContext } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { describe, expect, it } from 'vitest'
 import type { ApprovalRequest, InvokeResponse } from '@5straps/protocol'
-import { createToolRegistry } from '../src/domain/tool-registry.js'
-import { createMcpServer } from '../src/faces/mcp/server.js'
-import type { BuckleRuntime } from '../src/runtime.js'
+import { createToolRegistry } from '../common/domain/tool-registry.js'
+import { createMcpServer } from '../mcp/server.js'
+import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 const approval: ApprovalRequest = {
   token: 'token-1',

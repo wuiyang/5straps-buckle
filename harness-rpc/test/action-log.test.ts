@@ -2,11 +2,11 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { createFileActionLog } from '../src/adapters/action-log/file-action-log.js'
-import { summarizeEffect } from '../src/domain/effect.js'
-import { collectPrefixed } from '../src/domain/environment.js'
-import { redactArguments } from '../src/domain/redact.js'
-import type { ActionLogEntry } from '../src/ports/action-log.js'
+import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { summarizeEffect } from '../common/domain/effect.js'
+import { collectPrefixed } from '../common/domain/environment.js'
+import { redactArguments } from '../common/domain/redact.js'
+import type { ActionLogEntry } from '../common/types/ports/action-log.js'
 
 function logPath(): string {
   return join(mkdtempSync(join(tmpdir(), 'buckle-log-')), 'actions.jsonl')

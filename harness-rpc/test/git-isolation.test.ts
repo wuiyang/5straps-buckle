@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { JsonValue } from '@5straps/protocol'
-import { runProcess } from '../src/adapters/process-runner.js'
-import { buildChildEnvironment } from '../src/domain/environment.js'
-import { hasExecutable } from '../src/domain/executable.js'
-import { createPathView } from '../src/domain/path-view.js'
-import { createGitPack } from '../src/packs/git/index.js'
-import { filterProgramOverrides, ISOLATION_ENVIRONMENT } from '../src/packs/git-isolation.js'
+import { runProcess } from '../common/adapters/process-runner.js'
+import { buildChildEnvironment } from '../common/domain/environment.js'
+import { hasExecutable } from '../common/domain/executable.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { createGitPack } from '../common/services/packs/git/index.js'
+import { filterProgramOverrides, ISOLATION_ENVIRONMENT } from '../common/services/packs/git-isolation.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

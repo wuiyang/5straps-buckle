@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { createJsonFileStore } from '../src/adapters/json-file-store.js'
-import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
+import { createJsonFileStore } from '../common/adapters/json-file-store.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
 const roots: string[] = []
@@ -18,7 +18,7 @@ describe('cross-process state updates', () => {
     const filePath = join(root, 'state.json')
     const script = join(root, 'increment.mts')
     writeFileSync(script, `
-      import { createJsonFileStore } from ${JSON.stringify(new URL('../src/adapters/json-file-store.ts', import.meta.url).href)};
+      import { createJsonFileStore } from ${JSON.stringify(new URL('../common/adapters/json-file-store.ts', import.meta.url).href)};
       import { z } from ${JSON.stringify(import.meta.resolve('zod'))};
       const store = createJsonFileStore({filePath: process.argv[2], schema:z.object({count:z.number()}), fallback:{count:0}});
       for(let i=0;i<20;i++) store.update(state => { const count=state.count; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,2); state.count=count+1; });

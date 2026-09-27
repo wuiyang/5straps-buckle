@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ApprovalDecisionSchema } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
-import { createFileActionLog } from '../src/adapters/action-log/file-action-log.js'
-import { createFileGrantStore, createGrantLookup } from '../src/adapters/grant-store/file-grant-store.js'
-import { actionsPath, approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../src/config.js'
-import { createNetworkEgressRule } from '../src/domain/permission/rules/network-egress-rule.js'
-import { runCli } from '../src/faces/cli/main.js'
-import { createApprovalRegistry } from '../src/services/approval-registry.js'
+import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { createFileGrantStore, createGrantLookup } from '../common/adapters/grant-store/file-grant-store.js'
+import { actionsPath, approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
+import { runCli } from '../cli/main.js'
+import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 
 function node(): BuckleConfig {
   return loadConfig({

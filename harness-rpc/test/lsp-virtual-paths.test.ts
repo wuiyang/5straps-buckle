@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { createPathView, OUTSIDE_PATH } from '../src/domain/path-view.js'
-import { toVirtualUris } from '../src/packs/dev/virtual-paths.js'
+import { createPathView, OUTSIDE_PATH } from '../common/domain/path-view.js'
+import { toVirtualUris } from '../common/services/packs/dev/virtual-paths.js'
 
 const ROOT = '/work/project'
 const mounted = createPathView({ root: ROOT, mount: '/workspace' })

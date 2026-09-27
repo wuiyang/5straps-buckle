@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ActionReport, DeniedRunReport } from '@5straps/protocol'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { loadConfig } from '../src/config.js'
-import type { Reporter } from '../src/ports/reporter.js'
-import { createRuntime, type BuckleRuntime } from '../src/runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../common/runtime/config.js'
+import type { Reporter } from '../common/types/ports/reporter.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 let runtime: BuckleRuntime
 let reports: DeniedRunReport[]

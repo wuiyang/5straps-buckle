@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { ActionLogEntry } from '../src/ports/action-log.js'
-import type { PtyProcess, PtySpawnRequest } from '../src/ports/pty-process.js'
-import { createChangeHistory } from '../src/services/history/journal.js'
-import { createWorkbenchManager, type WorkbenchManager } from '../src/services/workbench/manager.js'
-import { workbenchHash } from '../src/services/workbench/storage.js'
+import type { ActionLogEntry } from '../common/types/ports/action-log.js'
+import type { PtyProcess, PtySpawnRequest } from '../common/types/ports/pty-process.js'
+import { createChangeHistory } from '../common/services/history/journal.js'
+import { createWorkbenchManager, type WorkbenchManager } from '../common/services/workbench/manager.js'
+import { workbenchHash } from '../common/services/workbench/storage.js'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })

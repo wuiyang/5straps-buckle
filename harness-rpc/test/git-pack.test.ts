@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { JsonValue } from '@5straps/protocol'
-import { createPathView } from '../src/domain/path-view.js'
-import { createGitPack } from '../src/packs/git/index.js'
-import type { ProcessRunner } from '../src/ports/process-runner.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { createGitPack } from '../common/services/packs/git/index.js'
+import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 
 function gitPack(root: string, runProcess: ProcessRunner = vi.fn()) {
   const stateDirectory = mkdtempSync(join(tmpdir(), 'git-pack-state-'))

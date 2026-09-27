@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { reservedRangeOf } from '../src/domain/ip.js'
+import { reservedRangeOf } from '../common/domain/ip.js'
 
 describe('reservedRangeOf', () => {
   it('flags the cloud metadata address', () => {

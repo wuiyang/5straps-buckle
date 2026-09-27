@@ -4,13 +4,13 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
-import { createCliApprovalChannel } from '../src/adapters/approval/cli-approval-channel.js'
-import { createWaitingApprovalChannel } from '../src/adapters/approval/waiting-approval-channel.js'
-import { createSerialQueue } from '../src/domain/serial-queue.js'
-import type { ApprovalChannel } from '../src/ports/approval-channel.js'
+import { createCliApprovalChannel } from '../common/adapters/approval/cli-approval-channel.js'
+import { createWaitingApprovalChannel } from '../common/adapters/approval/waiting-approval-channel.js'
+import { createSerialQueue } from '../common/domain/serial-queue.js'
+import type { ApprovalChannel } from '../common/types/ports/approval-channel.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
-import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
-import { createApprovalRegistry, type ApprovalRegistry } from '../src/services/approval-registry.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 
 function request(token: string, expiresInMs = 60_000): ApprovalRequest {
   return {
@@ -392,7 +392,7 @@ describe('Ctrl-C at a terminal question', () => {
     const pty = await import('node-pty')
     const script = join(mkdtempSync(join(tmpdir(), 'buckle-ctrl-c-')), 'serve-like.mts')
     writeFileSync(script, `
-      import { createCliApprovalChannel } from ${JSON.stringify(new URL('../src/adapters/approval/cli-approval-channel.ts', import.meta.url).href)};
+      import { createCliApprovalChannel } from ${JSON.stringify(new URL('../common/adapters/approval/cli-approval-channel.ts', import.meta.url).href)};
       const channel = createCliApprovalChannel();
       const request = (token) => ({ token, rule: 'read_scope', subject: '/outside', reason: 'outside the sandbox', tool: 'fs_read', offeredScopes: ['once'], expiresAt: new Date(Date.now() + 600_000).toISOString() });
       // Like buckle serve, something else keeps the process alive while the questions are open.

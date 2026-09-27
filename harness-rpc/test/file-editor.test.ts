@@ -2,9 +2,9 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { createPathView } from '../src/domain/path-view.js'
-import { readFileEntry, writeFileEntry } from '../src/packs/fs/operations.js'
-import { readInput, writeInput } from '../src/packs/fs/schemas.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { readFileEntry, writeFileEntry } from '../common/services/packs/fs/operations.js'
+import { readInput, writeInput } from '../common/services/packs/fs/schemas.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -33,9 +33,9 @@ it('supports saving an empty file using its read revision', async () => {
 it('omits credential and denied symlink names from directory listing and file search', async () => {
   const { root } = await fixture('visible')
   const { symlink } = await import('node:fs/promises')
-  const { createRuntime } = await import('../src/runtime.js')
-  const { loadConfig } = await import('../src/config.js')
-  const { createDeferredApprovalChannel } = await import('../src/adapters/approval/deferred-approval-channel.js')
+  const { createRuntime } = await import('../common/services/workspaces/workspace-runtime.js')
+  const { loadConfig } = await import('../common/runtime/config.js')
+  const { createDeferredApprovalChannel } = await import('../common/adapters/approval/deferred-approval-channel.js')
   const state = await mkdtemp(join(tmpdir(), 'buckle-editor-state-'))
   roots.push(state)
   await writeFile(join(root, '.env'), 'PRIVATE_FIXTURE=value')

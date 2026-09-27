@@ -1,7 +1,7 @@
 import type { ActionReport } from '@5straps/protocol'
 import { ACTION_REPORT_BATCH_MAX } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createWebhookReporter } from '../src/adapters/report/webhook-reporter.js'
+import { createWebhookReporter } from '../common/adapters/report/webhook-reporter.js'
 
 afterEach(() => { vi.unstubAllGlobals() })
 

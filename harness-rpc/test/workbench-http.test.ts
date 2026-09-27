@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { loadConfig } from '../src/config.js'
-import { createHttpApp } from '../src/faces/http-app.js'
-import { createRuntime } from '../src/runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { createHttpApp } from '../server/hono/http-app.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })

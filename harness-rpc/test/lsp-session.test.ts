@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 const transport = vi.hoisted(() => ({ spawn: vi.fn(), connect: vi.fn() }))
-vi.mock('../src/packs/dev/lsp-client.js', () => ({ spawnLspServer: transport.spawn, connectLspSocket: transport.connect }))
-import { createSessionPool } from '../src/packs/dev/session.js'
+vi.mock('../common/services/packs/dev/lsp-client.js', () => ({ spawnLspServer: transport.spawn, connectLspSocket: transport.connect }))
+import { createSessionPool } from '../common/services/packs/dev/session.js'
 
 function connection() { return { request: vi.fn().mockResolvedValue({}), notify: vi.fn(), close: vi.fn(), diagnosticsFor: vi.fn() } }
 beforeEach(() => vi.resetAllMocks())

@@ -1,12 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { createBrowserPack } from '../src/packs/browser/index.js'
-import { createPathView } from '../src/domain/path-view.js'
-import { loadConfig } from '../src/config.js'
-import { createRuntime } from '../src/runtime.js'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import type { ProcessRequest } from '../src/ports/process-runner.js'
+import { createBrowserPack } from '../common/services/packs/browser/index.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
 const roots: string[] = []
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

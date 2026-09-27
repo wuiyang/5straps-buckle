@@ -2,12 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
-import { createApprovalRegistry } from '../src/services/approval-registry.js'
-import type { PermissionOutcome } from '../src/domain/permission/engine.js'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { loadConfig } from '../src/config.js'
-import { createRuntime } from '../src/runtime.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import type { PermissionOutcome } from '../common/domain/permission/engine.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 const roots: string[] = []
 afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

@@ -3,10 +3,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it } from 'vitest'
 import { emptyWorkspacePolicy, WorkspacePolicySchema } from '@5straps/protocol'
-import { createFilePolicyStore } from '../src/adapters/policy-store/file-policy-store.js'
-import { createBubblewrapSandbox } from '../src/adapters/sandbox/bubblewrap-sandbox.js'
-import { createFilesystemPolicyRule, projectFilesystemSandbox, resolveFilesystemPermission } from '../src/domain/filesystem-policy.js'
-import { policyRevision } from '../src/domain/policy.js'
+import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
+import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
+import { createFilesystemPolicyRule, projectFilesystemSandbox, resolveFilesystemPermission } from '../common/domain/filesystem-policy.js'
+import { policyRevision } from '../common/domain/policy.js'
 
 const roots: string[] = []
 function root() { const path = mkdtempSync(join(tmpdir(), 'buckle-path-policy-')); roots.push(path); return path }

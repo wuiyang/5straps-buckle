@@ -1,11 +1,11 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../src/adapters/approval/deferred-approval-channel.js'
-import { loadConfig } from '../src/config.js'
-import { hasExecutable } from '../src/domain/executable.js'
-import { createHttpApp } from '../src/faces/http-app.js'
-import { createRuntime } from '../src/runtime.js'
+import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { hasExecutable } from '../common/domain/executable.js'
+import { createHttpApp } from '../server/hono/http-app.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

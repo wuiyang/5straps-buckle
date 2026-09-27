@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CommandGlobError, compileCommandGlob } from '../src/domain/command-glob.js'
+import { CommandGlobError, compileCommandGlob } from '../common/domain/command-glob.js'
 
 function line(pattern: string, words: string[]): boolean {
   return compileCommandGlob(pattern).matchesLine(words)

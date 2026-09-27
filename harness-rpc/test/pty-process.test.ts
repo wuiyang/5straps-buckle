@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
-import { spawnPtyProcess } from '../src/adapters/pty-process.js'
+import { spawnPtyProcess } from '../common/adapters/pty-process.js'
 
 /** `node-pty` is an optional native dependency: an installation without it serves a 503 instead. */
 const nativeTerminal = await import('node-pty').then(() => true, () => false)

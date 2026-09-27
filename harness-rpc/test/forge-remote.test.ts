@@ -2,8 +2,8 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { forgeGitHost } from '../src/domain/forge.js'
-import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf } from '../src/packs/forge/remote.js'
+import { forgeGitHost } from '../common/domain/forge.js'
+import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf } from '../common/services/packs/forge/remote.js'
 
 const roots: string[] = []
 afterAll(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

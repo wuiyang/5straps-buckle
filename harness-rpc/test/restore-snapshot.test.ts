@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { applySnapshot } from '../src/services/history/snapshot.js'
+import { applySnapshot } from '../common/services/history/snapshot.js'
 
 vi.mock('node:crypto', async importOriginal => ({
   ...await importOriginal<typeof import('node:crypto')>(),

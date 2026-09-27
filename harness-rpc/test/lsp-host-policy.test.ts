@@ -1,8 +1,8 @@
 import { expect, it, vi } from 'vitest'
-import { createDevPack } from '../src/packs/dev/index.js'
-import { createPathView } from '../src/domain/path-view.js'
-import { availableTools } from '../src/domain/pack.js'
-import { loadConfig } from '../src/config.js'
+import { createDevPack } from '../common/services/packs/dev/index.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { availableTools } from '../common/domain/pack.js'
+import { loadConfig } from '../common/runtime/config.js'
 
 const options = { cwd: '/workspace', paths: createPathView({ root: '/workspace', mount: null }), runProcess: vi.fn() }
 

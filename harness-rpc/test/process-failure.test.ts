@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { describeProcessFailure } from '../src/packs/process-failure.js'
-import type { ProcessResult } from '../src/ports/process-runner.js'
+import { describeProcessFailure } from '../common/services/packs/process-failure.js'
+import type { ProcessResult } from '../common/types/ports/process-runner.js'
 
 function result(overrides: Partial<ProcessResult>): ProcessResult {
   return { exitCode: 1, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false, ...overrides }

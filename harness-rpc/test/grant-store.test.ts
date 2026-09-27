@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { createFileGrantStore } from '../src/adapters/grant-store/file-grant-store.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 
 const WORKSPACE = '/work/project'
 
