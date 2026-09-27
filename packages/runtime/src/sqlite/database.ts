@@ -88,9 +88,16 @@ function prepareDatabaseFile(input: PrepareFileInput): boolean {
 }
 
 // SQLite gives a new -wal or -shm file the database's mode, but files made under an older, looser mode keep it.
+// A lock's -journal belongs to whichever process holds it and goes at its ROLLBACK, possibly between the look
+// and the chmod: a sidecar that is gone needs no restricting.
 function restrictSidecars(path: string, logger: Logger | undefined): void {
   for (const sidecar of SIDECAR_SUFFIXES.map(suffix => `${path}${suffix}`)) {
-    if (lstatSync(sidecar, { throwIfNoEntry: false })?.isFile()) restrictMode({ path: sidecar, mode: 0o600, logger })
+    if (!lstatSync(sidecar, { throwIfNoEntry: false })?.isFile()) continue
+    try {
+      restrictMode({ path: sidecar, mode: 0o600, logger })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
   }
 }
 

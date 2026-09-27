@@ -1,9 +1,9 @@
-import { mkdtempSync, statSync } from 'node:fs'
+import { mkdtempSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { createLogger, type LogEvent } from '../../src/index.js'
-import { openDatabase, readPragma } from '../../src/sqlite/index.js'
+import { acquireFileLock, openDatabase, readPragma } from '../../src/sqlite/index.js'
 
 // chmod fails with EPERM on a file another user owns or on a filesystem without modes; not reproducible unprivileged.
 const refusals = vi.hoisted(() => new Map<string, string>())
@@ -52,5 +52,16 @@ describe('chmod failures while opening a database (ruling 7)', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'eio-')), 'app.sqlite')
     refusals.set(path, 'EIO')
     await expect(openDatabase({ path })).rejects.toMatchObject({ code: 'EIO' })
+  })
+})
+
+describe('a sidecar another process removes while this one opens the file', () => {
+  it('opens a lock whose -journal vanished between the look and the chmod (ENOENT)', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'vanished-')), 'state.json.lock.sqlite')
+    // The holder's -journal is seen, then its ROLLBACK deletes it before the chmod.
+    writeFileSync(`${path}-journal`, '')
+    refusals.set(`${path}-journal`, 'ENOENT')
+    const lock = await acquireFileLock({ path, wait: 'none' })
+    await lock.release()
   })
 })
