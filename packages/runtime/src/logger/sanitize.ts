@@ -10,6 +10,8 @@ export interface SanitizeOptions {
 }
 
 const REDACTED = '[redacted]'
+// Longest string scanned; the rest is dropped with a truncation marker. Shared by the logger and redactText.
+export const DEFAULT_MAX_STRING_BYTES = 8_192
 // Credential words, matched inside each key word so plurals and run-together names (accesstoken, PGPASSWORD) count.
 const CREDENTIAL_WORDS = ['authorization', 'secret', 'passw(?:or)?d', 'passphrase', 'cookie', 'credential', 'signature', 'apikey', 'privatekey']
 const SECRET_WORD = new RegExp(['token', ...CREDENTIAL_WORDS].join('|'))
@@ -28,8 +30,11 @@ const CONTENT_KEY = /^(content|contents|file[-_]?contents?|body|payload|argument
 const CONTENT_LAST_WORDS = new Set(['body', 'content', 'contents', 'payload', 'input', 'inputs', 'text', 'texts', 'prompt', 'prompts', 'messages'])
 // Flat [name, value, name, value] header lists (IncomingMessage.rawHeaders) under a key ending in header(s).
 const HEADER_LIST_WORD = /^headers?$/
-// Bearer/Basic headers, JWTs, sk-/ghp-style keys and hex runs of 32+ characters inside free text.
-const SECRET_VALUE = /\b(?:Bearer|Basic)\s+[\w.~+/=-]+|\beyJ[\w-]+\.[\w-]+\.[\w-]+|\b(?:sk|pk|rk|ghp|gho|ghs|xox[abp])[-_][\w-]{10,}|\b[a-fA-F0-9]{32,}\b/g
+// Bearer/Basic headers, sk-/ghp-style keys and hex runs of 32+ characters inside free text.
+const SECRET_VALUE = /\b(?:Bearer|Basic)\s+[\w.~+/=-]+|\b(?:sk|pk|rk|ghp|gho|ghs|xox[abp])[-_][\w-]{10,}|\b[a-fA-F0-9]{32,}\b/g
+// A JWT (eyJ header, then two '.'-separated segments). The header run is consumed atomically (lookahead plus
+// backreference), so a long run without the dots is scanned once, not again from every 'eyJ' inside it.
+const JWT_CANDIDATE = /\beyJ(?=([\w-]*))\1(\.[\w-]+\.[\w-]+)?/g
 // Long base64-like runs. The slash is included so it cannot split an AWS or base64 secret; redactOpaqueRun keeps paths readable.
 const OPAQUE_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/g
 const OPAQUE_MIN_LENGTH = 40
@@ -42,12 +47,14 @@ const HASH_SUFFIX = /[-_][\w-]{1,12}$/
 const GIT_SHA = /^[a-f0-9]{40}$/
 const SHA_CONTEXT_CHARS = 32
 const CREDENTIAL_NEARBY = /token|secret|passw(?:or)?d|passphrase|credential|cookie|signature|bearer|api[-_ ]?key|private[-_ ]?key|\b(?:pat|key|auth)\b|=\s*$/i
-// A URL with any scheme, or a request target starting with '/', up to whitespace or a quote.
-const URL_LIKE = /(?:\b[a-z][a-z0-9+.-]*:\/\/|(?<=^|[\s("'=<>])\/)[^\s"'<>]*/gi
+// A URL with any scheme, or a request target starting with '/', up to whitespace or a quote. The scheme is capped
+// at 64 characters: '.', '+' and '-' give a word boundary inside a run, and an uncapped scheme rescanned the rest
+// of the run from each one.
+const URL_LIKE = /(?:\b[a-z][a-z0-9+.-]{0,63}:\/\/|(?<=^|[\s("'=<>])\/)[^\s"'<>]*/gi
 const USERINFO_PASSWORD = /^([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#@]+)@/i
 // name=value in a query or fragment; the value stops at the next separator.
 const URL_PARAM = /([?&#;])([^=&#;?]+)=([^&#;]*)/g
-const TRAILING_PUNCTUATION = /[).,;:!?]+$/
+const TRAILING_PUNCTUATION = new Set([')', '.', ',', ';', ':', '!', '?'])
 // Credential parameters whose names are not credential words: Google API keys, SAS signatures, OAuth codes.
 const SECRET_QUERY_NAMES = new Set(['key', 'sig', 'code'])
 
@@ -81,8 +88,22 @@ function isTokenCount({ words, value }: { words: string[]; value: unknown }): bo
   return numeric && COUNT_KEY_END.test(words.at(-1) ?? '')
 }
 
+// Capped at DEFAULT_MAX_STRING_BYTES like a logged string, so no caller can make it scan an unbounded input.
 export function redactText(text: string): string {
+  return redactWithin(text, DEFAULT_MAX_STRING_BYTES)
+}
+
+function redactWithin(text: string, maxBytes: number): string {
+  const totalBytes = Buffer.byteLength(text)
+  if (totalBytes <= maxBytes) return redactSecrets(text)
+  const head = redactSecrets(sliceBytes(text, maxBytes + REDACTION_SLACK_BYTES))
+  return `${sliceBytes(head, maxBytes)}...[truncated ${totalBytes - maxBytes} bytes]`
+}
+
+// Every pattern is linear in the input: no pattern can backtrack over the rest of the text from each start.
+function redactSecrets(text: string): string {
   return redactUrls(text)
+    .replace(JWT_CANDIDATE, (match: string, header: string, rest: string | undefined) => (header && rest ? REDACTED : match))
     .replace(SECRET_VALUE, (match: string, offset: number, whole: string) => (isGitSha({ match, before: whole.slice(Math.max(0, offset - SHA_CONTEXT_CHARS), offset) }) ? match : REDACTED))
     .replace(OPAQUE_RUN, redactOpaqueRun)
 }
@@ -116,10 +137,17 @@ function isOpaque(text: string): boolean {
 // Only the secret value is rewritten, so the rest stays exactly as written.
 function redactUrls(text: string): string {
   return text.replace(URL_LIKE, url => url.replace(USERINFO_PASSWORD, `$1${REDACTED}@`).replace(URL_PARAM, (pair, separator: string, name: string, value: string) => {
-    const trailing = TRAILING_PUNCTUATION.exec(value)?.[0] ?? ''
+    const trailing = trailingPunctuation(value)
     if (!isSecretKey(name, value.slice(0, value.length - trailing.length)) && !SECRET_QUERY_NAMES.has(name.toLowerCase())) return pair
     return `${separator}${name}=${REDACTED}${trailing}`
   }))
+}
+
+// A backward scan: an anchored regex such as /[).]+$/ retries from every position of a long punctuation run.
+function trailingPunctuation(value: string): string {
+  let end = value.length
+  while (end > 0 && TRAILING_PUNCTUATION.has(value[end - 1]!)) end -= 1
+  return value.slice(end)
 }
 
 export function truncateText(text: string, maxBytes: number): string {
@@ -132,10 +160,7 @@ function sliceBytes(text: string, maxBytes: number): string {
 }
 
 export function sanitizeString(text: string, options: SanitizeOptions): string {
-  const totalBytes = Buffer.byteLength(text)
-  if (totalBytes <= options.maxStringBytes) return redactText(text)
-  const head = redactText(sliceBytes(text, options.maxStringBytes + REDACTION_SLACK_BYTES))
-  return `${sliceBytes(head, options.maxStringBytes)}...[truncated ${totalBytes - options.maxStringBytes} bytes]`
+  return redactWithin(text, options.maxStringBytes)
 }
 
 export function sanitizeFields(fields: Record<string, unknown>, options: SanitizeOptions): Record<string, unknown> {

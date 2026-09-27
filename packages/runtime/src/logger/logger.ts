@@ -1,6 +1,6 @@
 import { runDetached, sinkStorage } from '../internal/async-slots.js'
 import { useScopeSafe } from '../scope/als.js'
-import { normalizeError, sanitizeFields, sanitizeString, truncateText, type SanitizeOptions } from './sanitize.js'
+import { DEFAULT_MAX_STRING_BYTES, normalizeError, sanitizeFields, sanitizeString, truncateText, type SanitizeOptions } from './sanitize.js'
 import { levelRank, LOG_LEVELS, type LogEvent, type LogFields, type Logger, type LogLevel, type LogSink, type NormalizedError } from './types.js'
 
 // The serializable part of LoggerOptions, so a runtime config (environment or JSON) can carry it; checked at createLogger.
@@ -36,7 +36,6 @@ export interface LoggerRoot {
 }
 
 const DEFAULT_QUEUE_LIMIT = 1_000
-const DEFAULT_MAX_STRING_BYTES = 8_192
 const DEFAULT_MAX_OBJECT_KEYS = 100
 const DEFAULT_MAX_EVENT_BYTES = 65_536
 

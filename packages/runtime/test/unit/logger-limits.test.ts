@@ -333,3 +333,41 @@ describe('content keys and logger config (ruling 8)', () => {
     for (const value of malformed) expect(() => createLogger({ component: 'test', sinks: [], ...(value as LoggerConfig) })).toThrow(TypeError)
   })
 })
+
+describe('bounded redaction scans (URL pattern super-linear)', () => {
+  const LENGTH = 100_000
+  const fill = (unit: string, tail = '') => unit.repeat(Math.ceil(LENGTH / unit.length)).slice(0, LENGTH - tail.length) + tail
+  // Each shape made one pattern backtrack over the rest of the input from every start position.
+  const adversarial: Record<string, string> = {
+    'letters and hyphens (URL scheme)': fill('a-', 'Q'),
+    'scheme characters without ://': fill('ab+', '!'),
+    'dotted words (URL scheme)': fill('eyJa.'),
+    'eyJ runs without dots (JWT)': fill('eyJ-'),
+    'trailing punctuation in a URL parameter': `https://x.example/?token=${fill(').', 'x')}`,
+  }
+
+  function elapsedMs(work: () => unknown): number {
+    const start = performance.now()
+    work()
+    return performance.now() - start
+  }
+
+  it('redactText scans at most 8 KB and marks the rest as truncated', () => {
+    const redacted = redactText(`${'x'.repeat(8_000)} Bearer abcdefghijklmnop ${'y'.repeat(LENGTH)}`)
+    expect(redacted).not.toContain('abcdefghijklmnop')
+    expect(redacted).toMatch(/\.\.\.\[truncated \d+ bytes\]$/)
+    expect(Buffer.byteLength(redacted)).toBeLessThan(8_300)
+  })
+
+  it.each(Object.entries(adversarial))('redactText finishes a 100k-character %s string under 100 ms', (_, text) => {
+    expect(elapsedMs(() => redactText(text))).toBeLessThan(100)
+  })
+
+  it.each(Object.entries(adversarial))('a logger allowed 200 KB strings builds a 100k-character %s event under 100 ms', async (_, text) => {
+    const sink = memorySink()
+    const root = createLogger({ component: 'test', sinks: [sink], maxStringBytes: 200_000, maxEventBytes: 400_000 })
+    expect(elapsedMs(() => root.logger.info('adversarial', { note: text }))).toBeLessThan(100)
+    await root.flush()
+    expect(sink.events).toHaveLength(1)
+  })
+})
