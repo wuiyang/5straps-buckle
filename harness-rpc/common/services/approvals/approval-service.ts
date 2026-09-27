@@ -1,0 +1,348 @@
+import { useScopeSafe, type CliOutcome, type CliRequest, type CliWait } from '@5straps/runtime'
+import { APPROVAL_NO_DEADLINE, type ApprovalDecision, type ApprovalRequest } from '@5straps/protocol'
+import { remainingMs } from '../../domain/approval-deadline.js'
+import { approveCommand } from '../../domain/approval-instruction.js'
+import type { PermissionDecision } from '../../domain/permission/decision.js'
+import { logger } from '../../runtime/log.js'
+import type { ApprovalAuthority, ApprovalRegistry, Resolution } from './approval-registry.js'
+import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
+
+type Ask = Extract<PermissionDecision, { kind: 'ask' }>
+
+/** How quickly an answer written by another process (buckle approve, a second node process) is noticed. */
+const POLL_INTERVAL_MS = 400
+const MAX_TIMER_MS = 2_147_483_647
+
+/** A caller's hint on how long to wait. It can only shorten Buckle's own wait, never lengthen it. */
+export type ApprovalWait = { mode: 'none' } | { mode: 'finite'; ms: number }
+
+/** What a terminal answer may choose. Its token is always the one its question asked about. */
+export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny' | 'deny_session' | 'deny_always'
+
+export interface ApprovalAskInput {
+  sessionId: string
+  requestId: string
+  tool: string
+  asks: Ask[]
+  /** The caller leaving inside the wait cancels the asks; after it, the asks stay answerable. */
+  signal?: AbortSignal
+  wait?: ApprovalWait
+}
+
+/** Settled: every token was answered or left the queue, or one was denied, so the caller checks again. */
+export interface ApprovalWaitResult {
+  settled: boolean
+  approvals: ApprovalRequest[]
+}
+
+export interface ApprovalAnswer {
+  decision: ApprovalDecision
+  authority: ApprovalAuthority
+  /** `BUCKLE-D18`: a host pattern, which only `buckle approve --host` passes. */
+  widenTo?: string
+}
+
+export interface ApprovalService {
+  /** Issues the asks (or joins the ones the same call already made), then waits as the caller's entry point holds it. */
+  request(input: ApprovalAskInput): Promise<ApprovalWaitResult>
+  /** The only path that records a verdict: checks it against the ask, then wakes whoever waits on it. */
+  answer(input: ApprovalAnswer): Promise<Resolution>
+  /** Settles every open wait as still pending and ends its questions; the asks stay in the durable queue. */
+  close(): void
+}
+
+export interface ApprovalServiceOptions {
+  registry: ApprovalRegistry
+  workspaceId: string
+  /** `BUCKLE_APPROVAL_TIMEOUT_MS`: null holds a call until its request expires, 0 not at all. */
+  graceMs: number | null
+  /** The current operation's interaction; an unbound operation asks nobody. */
+  interaction: InteractionSource
+  /** Told once an ask is issued, so a person can be reached away from the machine. */
+  announce?: (requests: ApprovalRequest[]) => Promise<void>
+  pollMs?: number
+}
+
+/** One ask, shared by every in-process call that joined it, so its questions are asked once. */
+interface OpenAsk {
+  readonly approvals: ApprovalRequest[]
+  readonly tokens: string[]
+  participants: number
+  /** Ends the questions and the watch. */
+  readonly stop: AbortController
+  /** Resolves once every token left the pending set, or one was denied. */
+  readonly settled: PromiseWithResolvers<void>
+  /** The terminal questions; settles when they end. */
+  prompting: Promise<void> | undefined
+  promptEnded: boolean
+  /** The question on screen for each token, withdrawn once its token is answered elsewhere. */
+  readonly questions: Map<string, AbortController>
+}
+
+type Ending = 'settled' | 'elapsed' | 'prompt_ended' | 'aborted' | 'closed'
+
+interface QuestionContext {
+  correlationId: string
+  actor?: string
+  sessionId: string
+}
+
+/**
+ * The single answerer (ruling 4 of 2026-09-28; nitro/coordination.md, Completion and queue).
+ *
+ * An ask is issued to the durable queue before anyone is asked, so every entry point has a token and
+ * a missing listener is never an approval. The call then races the terminal questions, an answer
+ * from another route (in this process at once, from another process within the poll interval), its
+ * entry point's hold and the caller's signal. A caller that leaves inside the wait cancels the asks.
+ * When a `grace` hold ends first, the call reports back and the terminal keeps asking until the
+ * request expires or another route answers.
+ */
+export function createApprovalService(options: ApprovalServiceOptions): ApprovalService {
+  const open = new Map<string, OpenAsk>()
+  const closing = new AbortController()
+  const pollMs = options.pollMs ?? POLL_INTERVAL_MS
+  let unreadable = false
+
+  const service: ApprovalService = {
+    async request(input) {
+      input.signal?.throwIfAborted()
+      const interaction = (await options.interaction()) ?? NO_INTERACTION
+      const scope = useScopeSafe()
+      const actor = scope?.context.actor
+      const { requests: approvals, joined } = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, ...(actor === undefined ? {} : { actor }) })
+      if (!joined && announces(interaction, input.wait)) await announce(options.announce, approvals)
+      const holdMs = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
+      if (holdMs === 0 || closing.signal.aborted) {
+        await cancelIfLeft({ approvals, signal: input.signal })
+        return { settled: false, approvals }
+      }
+
+      const ask = openAsk(approvals)
+      ask.participants += 1
+      ask.prompting ??= startQuestions({ ask, interaction, context: { correlationId: scope?.context.correlationId ?? input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId } })
+      const ending = await waitFor({ ask, hold: interaction.hold, holdMs, signal: input.signal })
+      return finish({ ask, ending, hold: interaction.hold, signal: input.signal })
+    },
+
+    async answer(input) {
+      const result = await options.registry.resolve(input.decision, input.authority, input.widenTo === undefined ? {} : { widenTo: input.widenTo })
+      if (result.ok) wake(input.decision.token)
+      return result
+    },
+
+    close() {
+      closing.abort()
+      for (const ask of [...open.values()]) ask.stop.abort()
+    },
+  }
+
+  function openAsk(approvals: ApprovalRequest[]): OpenAsk {
+    const tokens = approvals.map(approval => approval.token)
+    const key = tokens.join(' ')
+    const existing = open.get(key)
+    if (existing) return existing
+    const ask: OpenAsk = { approvals, tokens, participants: 0, stop: new AbortController(), settled: Promise.withResolvers<void>(), prompting: undefined, promptEnded: false, questions: new Map() }
+    open.set(key, ask)
+    const watch = setInterval(() => check(ask), pollMs)
+    ask.stop.signal.addEventListener('abort', () => {
+      clearInterval(watch)
+      if (open.get(key) === ask) open.delete(key)
+    }, { once: true })
+    return ask
+  }
+
+  /** Reads the queue: withdraws a question whose token left it, and settles the ask once every token did. */
+  function check(ask: OpenAsk): void {
+    const state = readQueue(ask.tokens)
+    if (!state) return
+    for (const [token, question] of ask.questions) if (!state.pending.has(token)) question.abort()
+    if (state.denied || ask.tokens.every(token => !state.pending.has(token))) ask.settled.resolve()
+  }
+
+  function readQueue(tokens: string[]): { pending: Set<string>; denied: boolean } | null {
+    try {
+      const state = { pending: new Set(options.registry.pending().map(request => request.token)), denied: options.registry.wasDenied(tokens) }
+      unreadable = false
+      return state
+    } catch (error) {
+      // Retried at the next poll, and the hold still ends the call; said once until a read succeeds.
+      if (!unreadable) logger.warn('Could not read the approval queue', { error })
+      unreadable = true
+      return null
+    }
+  }
+
+  function isSettled(tokens: string[]): boolean {
+    const state = readQueue(tokens)
+    return state !== null && (state.denied || tokens.every(token => !state.pending.has(token)))
+  }
+
+  function wake(token: string): void {
+    for (const ask of [...open.values()]) if (ask.tokens.includes(token)) check(ask)
+  }
+
+  function startQuestions(input: { ask: OpenAsk; interaction: Interaction; context: QuestionContext }): Promise<void> {
+    return askInTurn(input)
+      .catch((error: unknown) => { logger.warn('A terminal approval question failed; the request stays waiting', { error }) })
+      .finally(() => { input.ask.promptEnded = true })
+  }
+
+  /** One question per token, in order. A denial ends them, since the call is refused either way. */
+  async function askInTurn(input: { ask: OpenAsk; interaction: Interaction; context: QuestionContext }): Promise<void> {
+    const { ask } = input
+    for (const approval of ask.approvals) {
+      if (ask.stop.signal.aborted) return
+      if (!readQueue([approval.token])?.pending.has(approval.token)) continue
+      const question = new AbortController()
+      ask.questions.set(approval.token, question)
+      let outcome: CliOutcome
+      try {
+        outcome = await input.interaction.requestCli(questionFor({ approval, workspaceId: options.workspaceId, context: input.context }), { signal: AbortSignal.any([ask.stop.signal, question.signal]) })
+      } finally {
+        ask.questions.delete(approval.token)
+      }
+      if (outcome.status === 'answered' || outcome.status === 'denied') {
+        // The owner's own terminal: the owner's authority, as `buckle approve` has.
+        const decision = decisionFor(approval, outcome)
+        const result = await service.answer({ decision, authority: 'admin' })
+        if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
+        if (!decision.approved) return
+        continue
+      }
+      // Its token was answered elsewhere while on screen; the next one is still worth asking.
+      if (outcome.status === 'cancelled' && question.signal.aborted && !ask.stop.signal.aborted) continue
+      return
+    }
+  }
+
+  function waitFor(input: { ask: OpenAsk; hold: ApprovalHold; holdMs: number | null; signal?: AbortSignal }): Promise<Ending> {
+    const { promise, resolve } = Promise.withResolvers<Ending>()
+    const cleanups: Array<() => void> = []
+    let finished = false
+    const done = (ending: Ending) => {
+      if (finished) return
+      finished = true
+      for (const cleanup of cleanups) cleanup()
+      resolve(ending)
+    }
+    void input.ask.settled.promise.then(() => done('settled'))
+    if (input.hold === 'prompt') void input.ask.prompting?.then(() => done('prompt_ended'))
+    if (input.holdMs !== null) {
+      const timer = setTimeout(() => done('elapsed'), Math.min(input.holdMs, MAX_TIMER_MS))
+      cleanups.push(() => clearTimeout(timer))
+    }
+    const endings = [[input.signal, 'aborted'], [closing.signal, 'closed']] as const
+    for (const [signal, ending] of endings) {
+      if (!signal) continue
+      const listener = () => done(ending)
+      signal.addEventListener('abort', listener, { once: true })
+      cleanups.push(() => signal.removeEventListener('abort', listener))
+    }
+    for (const [signal, ending] of endings) if (signal?.aborted) done(ending)
+    // An answer may have landed between the ask and the first poll.
+    if (!finished) check(input.ask)
+    return promise
+  }
+
+  async function finish(input: { ask: OpenAsk; ending: Ending; hold: ApprovalHold; signal?: AbortSignal }): Promise<ApprovalWaitResult> {
+    const { ask, ending } = input
+    const approvals = ask.approvals
+    ask.participants -= 1
+    const last = ask.participants === 0
+    if (ending === 'aborted') {
+      if (last) {
+        ask.stop.abort()
+        await options.registry.cancel(ask.tokens)
+      }
+      input.signal?.throwIfAborted()
+    }
+    const settled = ending === 'settled' || (ending !== 'closed' && isSettled(ask.tokens))
+    if (last) release({ ask, keepAsking: !settled && ending === 'elapsed' && input.hold === 'grace' })
+    return { settled, approvals }
+  }
+
+  /**
+   * The last caller has left. A `grace` hold that ran out leaves its terminal question open until the
+   * request expires or another route answers (both leave the pending set); otherwise all ends now.
+   */
+  function release(input: { ask: OpenAsk; keepAsking: boolean }): void {
+    const { ask } = input
+    if (!input.keepAsking || ask.promptEnded || !ask.prompting) {
+      ask.stop.abort()
+      return
+    }
+    void Promise.race([ask.settled.promise, ask.prompting]).then(() => {
+      if (ask.participants === 0) ask.stop.abort()
+    })
+  }
+
+  /** Cancels the asks when the caller already left, as leaving inside the wait does. */
+  async function cancelIfLeft(input: { approvals: ApprovalRequest[]; signal?: AbortSignal }): Promise<void> {
+    if (!input.signal?.aborted) return
+    const tokens = input.approvals.map(approval => approval.token)
+    if (![...open.values()].some(ask => ask.tokens.join(' ') === tokens.join(' '))) await options.registry.cancel(tokens)
+    input.signal.throwIfAborted()
+  }
+
+  return service
+}
+
+/** The entry point's own hold, shortened by the caller's hint and never lengthened by it. */
+export function holdFor(input: { hold: ApprovalHold; graceMs: number | null; hint?: ApprovalWait }): number | null {
+  const own = input.hold === 'grace' ? input.graceMs : null
+  if (!input.hint) return own
+  if (input.hint.mode === 'none') return 0
+  return own === null ? input.hint.ms : Math.min(own, input.hint.ms)
+}
+
+/** The webhook announces what a grace hold waits on; a question the caller answers itself is not announced. */
+function announces(interaction: Interaction, hint: ApprovalWait | undefined): boolean {
+  return interaction.hold === 'grace' && hint?.mode !== 'none'
+}
+
+async function announce(notify: ApprovalServiceOptions['announce'], requests: ApprovalRequest[]): Promise<void> {
+  if (!notify) return
+  try {
+    await notify(requests)
+  } catch (error) {
+    // Failing to reach someone must not also fail the call they would have approved.
+    logger.warn('Could not announce a pending approval', { message: error instanceof Error ? error.message : 'Unknown error' })
+  }
+}
+
+/** The question the terminal shows: what the call wants and the command that answers it elsewhere. */
+export function questionFor(input: { approval: ApprovalRequest; workspaceId: string; context: QuestionContext }): CliRequest {
+  const { approval, workspaceId, context } = input
+  return {
+    id: `approval:${workspaceId}:${approval.token}`,
+    kind: APPROVAL_REQUEST_KIND,
+    correlationId: context.correlationId,
+    ...(context.actor === undefined ? {} : { actor: context.actor }),
+    sessionId: context.sessionId,
+    target: workspaceId,
+    action: {
+      summary: `${approval.tool} needs approval`,
+      details: {
+        tool: approval.tool, rule: approval.rule, subject: approval.subject, reason: approval.reason,
+        scopes: approval.offeredScopes.join(','), expiresAt: approval.expiresAt, workspace: workspaceId,
+        approve: approveCommand({ request: approval, workspaceId }),
+      },
+    },
+    wait: questionWait(approval.expiresAt),
+  }
+}
+
+/** A question lasts as long as its request: a terminal someone sits at, not the call's grace period. */
+function questionWait(expiresAt: string): CliWait {
+  if (expiresAt === APPROVAL_NO_DEADLINE) return { mode: 'indefinite' }
+  return { mode: 'finite', timeoutMs: Math.min(Math.max(remainingMs(expiresAt), 1), MAX_TIMER_MS) }
+}
+
+/** The verdict for the asked token alone; anything but a known approving choice denies once. */
+function decisionFor(approval: ApprovalRequest, outcome: Extract<CliOutcome, { status: 'answered' | 'denied' }>): ApprovalDecision {
+  const choice = outcome.status === 'answered' ? outcome.answer.choice : 'deny'
+  if (choice === 'once' || choice === 'session' || choice === 'always') return { token: approval.token, approved: true, scope: choice }
+  if (choice === 'deny_session') return { token: approval.token, approved: false, scope: 'session' }
+  if (choice === 'deny_always') return { token: approval.token, approved: false, scope: 'always' }
+  return { token: approval.token, approved: false, scope: 'once' }
+}

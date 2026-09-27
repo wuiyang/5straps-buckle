@@ -3,7 +3,6 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createDeferredApprovalChannel } from '../dist/common/adapters/approval/deferred-approval-channel.js'
 import { runProcess } from '../dist/common/adapters/process-runner.js'
 import { resolveSandbox } from '../dist/common/adapters/sandbox/create-sandbox.js'
 import { loadConfig } from '../dist/common/runtime/config.js'
@@ -49,7 +48,7 @@ async function withFixture(check) {
 
 async function checkBrowser() {
   await withFixture(async ({ workspace, state, url, port }) => {
-    const common = initializeCommon({ role: 'cli', adapters: { approvalChannel: () => createDeferredApprovalChannel() }, config: loadConfig({
+    const common = initializeCommon({ role: 'cli', config: loadConfig({
       BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'browser',
       BUCKLE_AGENT_BROWSER_COMMAND: process.env.BUCKLE_AGENT_BROWSER_COMMAND ?? 'agent-browser',
       BUCKLE_ALLOWED_HOSTS: '127.0.0.1', BUCKLE_DEFAULT_TIMEOUT_MS: '30000',

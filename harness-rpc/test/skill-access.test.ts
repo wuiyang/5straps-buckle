@@ -2,7 +2,6 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -14,7 +13,7 @@ it('returns only the requested skill body through the execution credential', asy
   const root = mkdtempSync(join(tmpdir(), 'buckle-skills-'))
   // Buckle's state lives outside the workspace, which is the only layout loadConfig accepts.
   const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-skills-state-')), BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: SETUP, BUCKLE_ALLOW_SHELL: 'false' })
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   const app = createHttpApp({ config, runtime, authToken: AGENT })
   const skill = runtime.skills()[0]!
   const path = `/v1/skills/${encodeURIComponent(skill.id)}`

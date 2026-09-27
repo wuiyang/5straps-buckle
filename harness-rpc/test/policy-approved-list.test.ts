@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
 import { loadConfig, policyPath, type BuckleConfig } from '../common/runtime/config.js'
 import { readFileSync } from 'node:fs'
@@ -43,7 +42,7 @@ async function run(config: BuckleConfig, ...argv: string[]): Promise<{ exitCode:
 describe('the approved list in the stored policy', () => {
   it('refuses to load a stored entry the host grammar refuses', async () => {
     const config = await withStoredList(['example.com', '*.127.0.0.1'])
-    await expect(createRuntime({ config, channel: () => createDeferredApprovalChannel() })).rejects.toThrow('A wildcard covers a domain, not an address')
+    await expect(createRuntime({ config })).rejects.toThrow('A wildcard covers a domain, not an address')
   })
 
   it('refuses a new entry the host grammar refuses and keeps the stored list', async () => {

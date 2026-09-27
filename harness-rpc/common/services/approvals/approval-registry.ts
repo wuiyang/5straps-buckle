@@ -4,7 +4,6 @@ import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, ApprovalRequestSchema, Gr
 import { createJsonFileStore } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
-import type { ApprovalAuthority } from '../../types/ports/approval-channel.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
 import { logger } from '../../runtime/log.js'
@@ -12,7 +11,8 @@ import { logger } from '../../runtime/log.js'
 const PENDING_TTL_MS = 10 * 60_000
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string() })
+// requestId and actor let a re-sent call join the ask it already made (ruling 5 of 2026-09-28).
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), requestId: z.string().optional(), actor: z.string().optional() })
 const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
   sessionId: z.string(), tool: z.string(), expiresAt: z.string(),
@@ -25,6 +25,25 @@ const fileSchema = z.object({
 })
 type State = z.infer<typeof fileSchema>
 type OnceEntry = z.infer<typeof onceSchema>
+
+/**
+ * Whose answer a decision carries. `BUCKLE-D14` keeps a persisted approval on the admin
+ * credential alone: a face reachable with an agent's token resolves as `agent`, and the
+ * registry then admits `once` and nothing durable.
+ */
+export type ApprovalAuthority = 'admin' | 'agent'
+
+/** A call re-sent under the same requestId asked for something else: HTTP 409. */
+export class ApprovalConflictError extends Error {}
+
+export interface AskInput {
+  tool: string
+  sessionId: string
+  asks: Ask[]
+  /** The caller's requestId and actor: the same pair with the same asks joins the waiting ask. */
+  requestId?: string
+  actor?: string
+}
 
 /**
  * `widenTo` records a network approval for a host pattern instead of the host that asked, per
@@ -40,7 +59,9 @@ export interface ResolveOptions {
 export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string } } | { ok: false; reason: string }
 
 export interface ApprovalRegistry {
-  issue(input: { tool: string; sessionId: string; asks: Ask[] }): Promise<ApprovalRequest[]>
+  /** Issues the asks, or returns the ones a call with the same requestId, session and actor is already waiting on. */
+  ask(input: AskInput): Promise<{ requests: ApprovalRequest[]; joined: boolean }>
+  issue(input: AskInput): Promise<ApprovalRequest[]>
   /**
    * `BUCKLE-D14`: a decision that outlives the call is written under the admin credential
    * alone. An `agent` authority may answer `once`, which expires with the call it unblocks.
@@ -62,18 +83,25 @@ export interface ApprovalRegistry {
 export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath, waitMs: number | null = 0, options: { lockDeadlineMs?: number } = {}): ApprovalRegistry {
   const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [] }, lockDeadlineMs: options.lockDeadlineMs })
 
-  return {
-    issue({ tool, sessionId, asks }) {
+  const registry: ApprovalRegistry = {
+    ask({ tool, sessionId, asks, requestId, actor }) {
       return store.update(state => {
         prune(state)
+        const waiting = requestId === undefined ? [] : state.pending.filter(entry => entry.workspace === workspace && entry.requestId === requestId && entry.sessionId === sessionId && entry.actor === actor)
+        if (waiting.length > 0) {
+          if (!sameAsks(waiting.map(entry => entry.request), { tool, asks })) throw new ApprovalConflictError(`Request ${requestId} is already waiting for approval of different asks`)
+          return { requests: waiting.map(entry => entry.request), joined: true }
+        }
         const requests = asks.map(item => ({
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: item.reason,
           tool, offeredScopes: item.offeredScopes, expiresAt: waitMs === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + waitMs).toISOString(),
         }))
-        state.pending.push(...requests.map(request => ({ request, sessionId, workspace })))
-        return requests
+        state.pending.push(...requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }) })))
+        return { requests, joined: false }
       })
     },
+
+    issue: async input => (await registry.ask(input)).requests,
 
     async resolve(decision, authority = 'admin', options = {}) {
       if (decision.scope !== 'once' && authority !== 'admin') {
@@ -150,6 +178,15 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 
     pending: () => store.read().pending.filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now()).map(entry => entry.request),
   }
+  return registry
+}
+
+/** The same asks: tool, rule, subject and offered scopes, in any order. */
+function sameAsks(waiting: ApprovalRequest[], asked: { tool: string; asks: Ask[] }): boolean {
+  const key = (item: { rule: string; subject: string; offeredScopes: readonly string[] }) => JSON.stringify([item.rule, item.subject, [...item.offeredScopes].sort()])
+  const left = waiting.map(request => request.tool === asked.tool ? key(request) : '').sort()
+  const right = asked.asks.map(key).sort()
+  return left.length === right.length && left.every((value, index) => value !== '' && value === right[index])
 }
 
 /**

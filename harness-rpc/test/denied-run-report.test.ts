@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ActionReport, DeniedRunReport } from '@5straps/protocol'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import type { Reporter } from '../common/types/ports/reporter.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -31,7 +30,7 @@ beforeEach(async () => {
     BUCKLE_WORKSPACE_ROOT: workspace,
     BUCKLE_ALLOW_SHELL: 'false',
   })
-  runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel(), reporter })
+  runtime = await createRuntime({ config, reporter })
 })
 
 async function invoke(tool: string, args: Record<string, unknown>) {

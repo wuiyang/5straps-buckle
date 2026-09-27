@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Hono } from 'hono'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -24,7 +23,7 @@ beforeAll(async () => {
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-auth-')),
     BUCKLE_ALLOW_SHELL: 'false',
   })
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   app = createHttpApp({ config, runtime, authToken: TOKEN })
 })
 

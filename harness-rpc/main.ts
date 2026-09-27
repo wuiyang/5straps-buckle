@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import type { Logger, LoggerRoot } from '@5straps/runtime'
+import { createHookRequestCli, type CliHookDispatch, type Logger, type LoggerRoot, type RequestCli } from '@5straps/runtime'
 import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand } from './cli/main.js'
+import { setupCli } from './cli/setup.js'
+import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { loadConfig, type BuckleConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
-import { createApprovalDelivery } from './common/services/approvals/approval-delivery.js'
 import { serveMcpStdio } from './mcp/stdio.js'
 import { serveHttp } from './server/hono/serve.js'
 
@@ -72,13 +73,14 @@ function refuseCommand(error: unknown): number {
 async function runService(input: { kind: ServiceKind; config: BuckleConfig; logging: LoggerRoot }): Promise<void> {
   const { logging } = input
   trapUnhandledRejections(logging.logger)
-  const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger, adapters: {
-    approvalChannel: approvals => createApprovalDelivery({ config: input.config, approvals, workspaceId: 'default', prompt: promptsInTerminal(input.kind) }),
-  } })
+  const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger })
   common.owner.onClose('sinks', 'logger', () => logging.flush())
+  // Main owns the process's one requester (nitro/coordination.md); its questions settle with the other waiters.
+  const cli = setupCli({ terminal: terminalFor(input.kind) })
+  common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   const shutdown = closeOnSignals({ common, logging })
   try {
-    await startService({ ...input, common, logger: logging.logger, shutdown })
+    await startService({ ...input, common, logger: logging.logger, shutdown, requestCli: cli.requestCli })
   } catch (error) {
     // A stop requested during startup is a normal stop, not a failed start.
     if (shutdown.requested()) return
@@ -88,16 +90,25 @@ async function runService(input: { kind: ServiceKind; config: BuckleConfig; logg
   }
 }
 
-function startService(input: { kind: ServiceKind; config: BuckleConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown }): Promise<void> {
-  if (input.kind === 'serve') return serveHttp(input)
+function startService(input: { kind: ServiceKind; config: BuckleConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli }): Promise<void> {
+  if (input.kind === 'serve') return serveHttp({ ...input, requestCli: createHookRequestCli({ dispatch: cliCallListener(input.requestCli), hasListener: () => true }) })
   // The client closing stdin ends the session. 'end' needs a reader, so attaching first misses nothing.
   process.stdin.once('end', () => { void input.shutdown.close() })
+  // MCP is handed the requester directly, without the HTTP hook.
   return serveMcpStdio(input)
 }
 
+/**
+ * The one cli:call listener: HTTP asks through the hook, main forwards to the requester and answers
+ * through respond. Only the requester's outcome settles a question (ruling 4 of 2026-09-28).
+ */
+function cliCallListener(requestCli: RequestCli): CliHookDispatch {
+  return async (request, respond, options) => { respond(await requestCli(request, { signal: options?.signal })) }
+}
+
 // A terminal running `buckle serve` can answer directly; under mcp, stdin carries the protocol.
-function promptsInTerminal(kind: ServiceKind): boolean {
-  return kind === 'serve' && Boolean(process.stdin.isTTY)
+function terminalFor(kind: ServiceKind): TerminalOptions | null {
+  return kind === 'serve' && process.stdin.isTTY ? { input: process.stdin, output: process.stderr } : null
 }
 
 function closeOnSignals(input: { common: BuckleCommon; logging: LoggerRoot }): Shutdown {

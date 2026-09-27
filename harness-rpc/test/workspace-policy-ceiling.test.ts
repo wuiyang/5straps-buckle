@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import type { ToolEffect } from '../common/domain/effect.js'
 import { createWebPack } from '../common/services/packs/web/index.js'
@@ -29,7 +28,7 @@ async function workspace(node: WorkspacePolicy, child: WorkspacePolicy = policy(
   for (const directory of ['default', 'child']) mkdirSync(join(root, directory))
   const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
   config.policy = node
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   const manager = createWorkspaceManager({ config, runtime })
   await manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-setup-token-fixture-only', policy: child })
   return (await manager.resolve('child')).runtime

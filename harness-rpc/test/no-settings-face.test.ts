@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mintApprovalKey } from '@5straps/protocol/envelope'
 import { describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import { createMcpServer } from '../mcp/server.js'
@@ -25,7 +24,7 @@ async function node() {
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-no-settings-ws-')),
     BUCKLE_ALLOW_SHELL: 'false',
   })
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   return { config, runtime }
 }
 
@@ -87,7 +86,7 @@ describe('no face exposes node settings', () => {
       ...values, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'false',
       BUCKLE_AUTH_TOKEN: 'agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'admin-token-fixture', BUCKLE_STATE_DIR: join(base, 'state'),
     })
-    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    const runtime = await createRuntime({ config })
     const app = createHttpApp({ config, runtime, authToken: config.authToken })
     // Effects a route reports: what the node is called, the root and paths the agent addresses, and
     // the policy base. `/setup/policy` returning BUCKLE_NETWORK_ALLOW entries awaits the maintainer's
@@ -126,7 +125,7 @@ describe('the manifest an agent token reads', () => {
       BUCKLE_ALLOW_SHELL: 'false',
       BUCKLE_AGENT_BROWSER_COMMAND: '/opt/private-fixture/bin/agent-browser',
     })
-    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    const runtime = await createRuntime({ config })
     const app = createHttpApp({ config, runtime, authToken: config.authToken })
 
     const response = await app.request('/v1/manifest', { headers: { authorization: 'Bearer agent-token-fixture' } })

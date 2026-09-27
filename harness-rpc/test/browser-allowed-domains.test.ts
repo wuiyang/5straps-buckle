@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { browserAllowedDomains, type ApprovedList } from '../common/services/packs/browser/allowed-domains.js'
@@ -93,7 +92,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     writeFileSync(binary, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nprocess.stdout.write('{"success":true}')\n`)
     chmodSync(binary, 0o755)
     const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary })
-    const runtime = await createRuntime({ config: ceiling ? { ...config, nodePolicy: policy(ceiling) } : config, channel: () => createDeferredApprovalChannel() })
+    const runtime = await createRuntime({ config: ceiling ? { ...config, nodePolicy: policy(ceiling) } : config })
     if (network.length) await runtime.policy.apply(policy(network))
     const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
     return { runtime, calls }

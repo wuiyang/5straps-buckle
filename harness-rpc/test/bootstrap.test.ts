@@ -157,6 +157,9 @@ describe('buckle serve bootstrap (built dist)', () => {
     const steps = closeSteps(buckle.lines())
     expect(steps).toEqual(expect.arrayContaining([
       { stage: 'accept', name: 'http server' },
+      { stage: 'waiters', name: 'terminal questions' },
+      { stage: 'waiters', name: 'approval waits' },
+      { stage: 'waiters', name: 'registered workspace approval waits' },
       { stage: 'streams', name: 'http server connections' },
       { stage: 'locks', name: 'workbench ownership' },
       { stage: 'locks', name: 'registered workspace workbenches' },
@@ -183,6 +186,27 @@ describe('buckle serve bootstrap (built dist)', () => {
     const order = stageOrder(steps)
     expect(order).toEqual([...order].sort((left, right) => left - right))
     expect(buckle.lines().at(-1)?.message).toBe('5straps Buckle stopped')
+  }, 60_000)
+
+  it('settles a call waiting for approval as approval_required on SIGTERM, keeps its ask pending, and exits 0', async () => {
+    const node = await prepareNode({ BUCKLE_APPROVAL_TIMEOUT_MS: 'forever', BUCKLE_PACKS: 'fs' })
+    const buckle = serve(node)
+    await buckle.waitForLine(line => line.message === '5straps Buckle listening')
+    const pendingTokens = () => existsSync(join(node.state, 'approvals.json'))
+      ? (JSON.parse(readFileSync(join(node.state, 'approvals.json'), 'utf8')) as { pending: Array<{ request: { token: string } }> }).pending.map(entry => entry.request.token)
+      : []
+    const waiting = fetch(`http://127.0.0.1:${node.port}/v1/invoke`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-agent-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: 'held-write', tool: 'fs_write', args: { path: 'held.md', content: 'must not land' } }) })
+    await expect.poll(pendingTokens, { timeout: 20_000 }).toHaveLength(1)
+    const [token] = pendingTokens()
+
+    buckle.child.kill('SIGTERM')
+
+    expect(await (await waiting).json()).toMatchObject({ outcome: 'approval_required', approvals: [{ token }] })
+    expect(await buckle.exited).toEqual({ code: 0, signal: null })
+    expect(pendingTokens()).toEqual([token])
+    expect(closeSteps(buckle.lines())).toContainEqual({ stage: 'waiters', name: 'approval waits' })
+    expect(existsSync(join(node.workspace, 'held.md'))).toBe(false)
   }, 60_000)
 
   it('stops with exit 0, without serving, when SIGTERM arrives during the startup window', async () => {

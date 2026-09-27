@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { serveStdio, type ServeStdioOptions } from '@modelcontextprotocol/server/stdio'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createStdioWire } from '../mcp/stdio-wire.js'
 import { createAuditedStdioTransport } from '../mcp/audited-stdio-transport.js'
@@ -24,7 +23,7 @@ async function sdkFixture() {
   const state = mkdtempSync(join(tmpdir(), 'buckle-mcp-audit-state-'))
   cleanup.push(() => rmSync(state, { recursive: true, force: true }))
   const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false' })
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   const invoke = vi.spyOn(runtime, 'invoke')
   const stdin = new PassThrough()
   const stdout = new PassThrough()

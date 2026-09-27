@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -5,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import type { PermissionOutcome } from '../common/domain/permission/engine.js'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -126,10 +126,10 @@ describe('a once approval answered after the grace period', () => {
         BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-once-ws-')),
         BUCKLE_ALLOW_SHELL: 'false',
       }),
-      channel: () => createDeferredApprovalChannel(),
     })
+    // A fresh requestId per call, as the MCP face sends: the same one would join the ask already waiting.
     const read = (path: string, sessionId = 'mcp', tool = 'fs_read') => runtime.invoke({
-      request: { requestId: 'late', tool, args: { path }, approvalTokens: [] }, sessionId,
+      request: { requestId: randomUUID(), tool, args: { path }, approvalTokens: [] }, sessionId,
     })
     return { runtime, read, file: join(outside, 'notes.txt'), otherFile: join(other, 'notes.txt') }
   }

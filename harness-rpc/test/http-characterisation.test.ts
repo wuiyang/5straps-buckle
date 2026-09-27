@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { approvalsPath, loadConfig } from '../common/runtime/config.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import type { ActionLogEntry } from '../common/types/ports/action-log.js'
@@ -32,7 +31,7 @@ async function node(options: { admin?: boolean } = {}) {
     BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT,
     ...(options.admin === false ? {} : { BUCKLE_ADMIN_TOKEN: NODE_ADMIN }), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_MAX_REQUEST_BYTES: String(MAX_REQUEST_BYTES),
   })
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   const app = createHttpApp({ config, runtime, authToken: NODE_AGENT })
   cleanups.push(() => runtime.workbenches.close())
   const request = (path: string, init: RequestInit = {}) => app.request(path, init)

@@ -1,10 +1,9 @@
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
 import { describeApprovalRequest } from '../common/domain/approval-instruction.js'
 import { logger } from '../common/runtime/log.js'
-import type { ApprovalAuthority } from '../common/types/ports/approval-channel.js'
+import type { ApprovalAuthority } from '../common/services/approvals/approval-registry.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 interface ApprovalAnswer extends Record<string, unknown> {
@@ -13,25 +12,39 @@ interface ApprovalAnswer extends Record<string, unknown> {
   scope?: GrantScope
 }
 
+/** Runs one tool call in an operation of its own; over HTTP the request's operation is already open. */
+export type ToolCallScope = <T>(run: () => Promise<T>, context: { sessionId: string }) => Promise<T>
+
+export interface McpServerOptions {
+  runtime: BuckleRuntime
+  serverName: string
+  version: string
+  trustedApprovalResponses?: boolean
+  callScope?: ToolCallScope
+}
+
 /**
  * Wraps the tool registry as an MCP server. Approvals ride MCP's own elicitation round-trip:
  * a gated call returns `inputRequired`, and the retried request carries the answers.
  */
-export function createMcpServer(input: { runtime: BuckleRuntime; serverName: string; version: string; trustedApprovalResponses?: boolean }): McpServer {
+export function createMcpServer(input: McpServerOptions): McpServer {
   const server = new McpServer({ name: input.serverName, version: input.version })
-  let registrations = registerTools(server, input.runtime, input.trustedApprovalResponses === true, input.serverName)
+  let registrations = registerTools(server, input)
   registerSkills(server, input.runtime)
 
   input.runtime.onToolsChanged(() => {
     for (const registration of registrations) registration.remove()
-    registrations = registerTools(server, input.runtime, input.trustedApprovalResponses === true, input.serverName)
+    registrations = registerTools(server, input)
     logger.info('MCP tool list refreshed')
   })
 
   return server
 }
 
-function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprovalResponses: boolean, serverName: string): Array<ReturnType<McpServer['registerTool']>> {
+function registerTools(server: McpServer, options: McpServerOptions): Array<ReturnType<McpServer['registerTool']>> {
+  const { runtime, serverName } = options
+  const trustedApprovalResponses = options.trustedApprovalResponses === true
+  const inScope = options.callScope ?? (run => run())
   const readers = capabilityReaders(server)
   const registrations: Array<ReturnType<McpServer['registerTool']>> = []
 
@@ -45,9 +58,11 @@ function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprova
         inputSchema: tool.inputSchema,
         annotations: { readOnlyHint: tool.capability.risk === 'read' },
       },
-      async (args, context) => {
+      async (args, context) => inScope(async () => {
         const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
         const approvalTokens = await resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
+        // The host asks its user itself, so the call reports back at once instead of waiting.
+        const elicits = trustedApprovalResponses && supportsElicitation(readers, context)
 
         const response = await runtime.invoke({
           request: {
@@ -59,16 +74,16 @@ function registerTools(server: McpServer, runtime: BuckleRuntime, trustedApprova
           },
           sessionId: mcpSessionId(context),
           signal: context.mcpReq.signal,
-          channel: trustedApprovalResponses && supportsElicitation(readers, context) ? createDeferredApprovalChannel() : undefined,
+          ...(elicits ? { approvalWait: { mode: 'none' as const } } : {}),
         })
 
         if (response.outcome === 'approval_required') {
-          return trustedApprovalResponses && supportsElicitation(readers, context)
+          return elicits
             ? askForApproval(response.approvals)
             : relayApproval({ approvals: response.approvals, workspaceId: runtime.workspaceId, nodeName: serverName })
         }
         return toCallToolResult(response)
-      },
+      }, { sessionId: mcpSessionId(context) }),
     ))
   }
   return registrations

@@ -1,7 +1,7 @@
 import { createRuntimeOwner, type Logger, type RuntimeOwner } from '@5straps/runtime'
 import { assertOwnerOnlyDirectory } from '@5straps/runtime/sqlite'
 import type { BuckleConfig } from './config.js'
-import { createServiceAccessors, defineBuckleServices, serviceList, type BuckleServices, type CommonAdapters } from './services.js'
+import { createServiceAccessors, currentInteraction, defineBuckleServices, serviceList, type BuckleServices } from './services.js'
 
 export type RuntimeRole = 'server' | 'mcp' | 'cli'
 
@@ -16,7 +16,6 @@ export interface BuckleCommon {
 export interface InitializeCommonInput {
   config: BuckleConfig
   role: RuntimeRole
-  adapters: CommonAdapters
   /** Receives the owner's close-step lines; a CLI command leaves it out and prints no diagnostics. */
   logger?: Logger
 }
@@ -24,7 +23,7 @@ export interface InitializeCommonInput {
 // One common runtime per process owner (nitro/runtime.md, Lifetimes); nothing runs until start().
 export function initializeCommon(input: InitializeCommonInput): BuckleCommon {
   // The owner needs the definitions; their factories run after it exists and register close steps on it.
-  const definitions = defineBuckleServices({ config: input.config, adapters: input.adapters, onClose: (stage, name, closer) => owner.onClose(stage, name, closer) })
+  const definitions = defineBuckleServices({ config: input.config, interaction: currentInteraction(() => owner), onClose: (stage, name, closer) => owner.onClose(stage, name, closer) })
   const owner = createRuntimeOwner({ name: `buckle-${input.role}`, services: serviceList(definitions), logger: input.logger })
   const services = createServiceAccessors({ owner, definitions })
   return {

@@ -7,20 +7,26 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
 import { loadConfig, parseApprovalTimeout } from '../common/runtime/config.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { createWaitingApprovalChannel } from '../common/adapters/approval/waiting-approval-channel.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalDelivery } from '../common/services/approvals/approval-delivery.js'
+import { createApprovalService } from '../common/services/approvals/approval-service.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { fixedInteraction } from './support/interaction.js'
+import type { ApprovalAskInput } from '../common/services/approvals/approval-service.js'
+
+type Ask = ApprovalAskInput['asks'][number]
 import { describeExpiry, remainingMs } from '../common/domain/approval-deadline.js'
 
 const roots: string[] = []
 function directory() { const root = mkdtempSync(join(tmpdir(), 'approval-wait-')); roots.push(root); return root }
 afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+// A node entry point with nobody at its terminal: the call is held for the configured grace period.
 async function fixture(timeoutMs: number | null) {
   const root = directory()
   const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, timeoutMs)
-  const requests = await approvals.issue({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }] })
-  return { approvals, requests, channel: createWaitingApprovalChannel({ approvals, timeoutMs }) }
+  const service = createApprovalService({ registry: approvals, workspaceId: 'default', graceMs: timeoutMs, interaction: fixedInteraction() })
+  const ask: Ask = { kind: 'ask', rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }
+  const request = (asks: Ask[] = [ask]) => service.request({ sessionId: 'test', requestId: `request-${asks.length}`, tool: 'fs_write', asks })
+  return { approvals, service, request }
 }
 it.each(['-1', '60000ms', 'Infinity', '2147483648', '1.5'])('rejects invalid wait %s', value => {
   expect(() => parseApprovalTimeout(value, 15_000)).toThrow()
@@ -32,31 +38,33 @@ it('accepts a minute, forever and immediate fallback', () => {
 })
 it('holds for one minute, then leaves the question answerable', async () => {
   vi.useFakeTimers()
-  const { channel, requests, approvals } = await fixture(60_000)
+  const { request, approvals } = await fixture(60_000)
   let settled = false
-  const waiting = channel.request(requests).then(result => { settled = true; return result })
+  const waiting = request().then(result => { settled = true; return result })
   await vi.advanceTimersByTimeAsync(59_999)
   expect(settled).toBe(false)
   await vi.advanceTimersByTimeAsync(1)
-  expect(await waiting).toBeNull()
+  expect(await waiting).toMatchObject({ settled: false })
   expect(approvals.pending()).toHaveLength(1)
 })
 it.each([true, false])('waits beyond ten minutes until an owner answers approved=%s', async approved => {
   vi.useFakeTimers()
-  const { channel, requests, approvals } = await fixture(null)
+  const { request, approvals } = await fixture(null)
   let settled = false
-  const waiting = channel.request(requests).then(result => { settled = true; return result })
+  const waiting = request().then(result => { settled = true; return result })
   await vi.advanceTimersByTimeAsync(11 * 60_000)
   expect(settled).toBe(false)
   expect(approvals.pending()[0]?.expiresAt).toBe(APPROVAL_NO_DEADLINE)
-  expect((await approvals.resolve({ token: requests[0]!.token, approved, scope: 'once' })).ok).toBe(true)
+  // Another route (buckle approve, /setup/approvals in another process) answers the durable queue.
+  expect((await approvals.resolve({ token: approvals.pending()[0]!.token, approved, scope: 'once' })).ok).toBe(true)
   await vi.advanceTimersByTimeAsync(400)
-  expect(await waiting).toEqual([])
+  expect(await waiting).toMatchObject({ settled: true })
   expect(vi.getTimerCount()).toBe(0)
 })
 it('does not give an answered once grant an indefinite lifetime', async () => {
   vi.useFakeTimers()
-  const { requests, approvals } = await fixture(null)
+  const { approvals } = await fixture(null)
+  const requests = await approvals.issue({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/synthetic', reason: 'test write', offeredScopes: ['once'] }] })
   await approvals.resolve({ token: requests[0]!.token, approved: true, scope: 'once' })
   expect(approvals.unspent('test')).toHaveLength(1)
   vi.advanceTimersByTime(10 * 60_000 + 1)
@@ -70,7 +78,7 @@ it('cancels a waiting invocation, removes its pending approval and never writes'
   const root = directory()
   mkdirSync(join(root, 'workspace'))
   const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: 'forever' })
-  const runtime = await createRuntime({ config, channel: approvals => createApprovalDelivery({ config, approvals, workspaceId: 'default', prompt: false }) })
+  const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   const controller = new AbortController()
   const result = runtime.invoke({ sessionId: 'cancel-test', signal: controller.signal, request: { requestId: 'cancel-write', tool: 'fs_write', args: { path: 'probe.txt', content: 'must not land' }, approvalTokens: [] } })
   await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
@@ -109,7 +117,7 @@ async function mcpFixture(nativePrompt = false) {
   const root = directory()
   mkdirSync(join(root, 'workspace'))
   const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: 'forever' })
-  const runtime = await createRuntime({ config, channel: approvals => createApprovalDelivery({ config, approvals, workspaceId: 'default', prompt: false }) })
+  const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   const server = createMcpServer({ runtime, serverName: 'wait-test', version: '1', trustedApprovalResponses: nativePrompt })
   // The SDK does not expose handlers publicly; exercise its registered callback with a request context.
   const registered = (server as unknown as { _registeredTools: Record<string, { handler(args: unknown, context: ServerContext): Promise<{ isError?: boolean }> }> })._registeredTools
@@ -120,10 +128,14 @@ async function mcpFixture(nativePrompt = false) {
 
 it('ends a forever wait when one of several gates is denied', async () => {
   vi.useFakeTimers()
-  const { approvals, requests, channel } = await fixture(null)
-  requests.push(...await approvals.issue({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/synthetic', reason: 'second gate', offeredScopes: ['once'] }] }))
-  const waiting = channel.request(requests)
-  await approvals.resolve({ token: requests[0]!.token, approved: false, scope: 'once' })
+  const { approvals, request } = await fixture(null)
+  const waiting = request([
+    { kind: 'ask', rule: 'write_scope', subject: '/synthetic-directory', reason: 'first gate', offeredScopes: ['once'] },
+    { kind: 'ask', rule: 'sensitive_path', subject: '/synthetic', reason: 'second gate', offeredScopes: ['once'] },
+  ])
+  await vi.advanceTimersByTimeAsync(10)
+  await approvals.resolve({ token: approvals.pending()[0]!.token, approved: false, scope: 'once' })
   await vi.advanceTimersByTimeAsync(400)
-  expect(await waiting).toEqual([])
+  expect(await waiting).toMatchObject({ settled: true })
+  expect(approvals.pending()).toHaveLength(1)
 })

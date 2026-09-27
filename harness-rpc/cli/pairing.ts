@@ -1,6 +1,5 @@
 import { parseEnv } from 'node:util'
 import { APPROVAL_KEY_PATTERN } from '@5straps/protocol/envelope'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -44,7 +43,7 @@ export interface PairingResult {
 export async function redeemPairingCode(input: PairingRequest): Promise<PairingResult> {
   const environment = { ...process.env, ...parseEnv(input.environmentText) }
   const config = loadConfig(environment)
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
 
   const response = await fetch(new URL('/api/v1/harness-servers/pairing/redeem', input.ringsUrl), {
     method: 'POST',

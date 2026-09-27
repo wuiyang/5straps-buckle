@@ -5,7 +5,6 @@ import { createServer as createSocketServer, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { createGitHubForgeClient } from '../common/adapters/forge/github.js'
 import { runProcess } from '../common/adapters/process-runner.js'
 import { loadConfig } from '../common/runtime/config.js'
@@ -567,7 +566,7 @@ describe('the credential', () => {
       BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl,
       BUCKLE_NETWORK_ALLOW: new URL(apiUrl).host,
     })
-    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    const runtime = await createRuntime({ config })
     const response = await runtime.invoke({
       request: { requestId: 'leak-check', tool: 'pr_open', args: { head: 'side', base: 'main', title: 't', body: '' }, approvalTokens: [] },
       sessionId: 'forge-session',
@@ -610,7 +609,7 @@ describe('the credential', () => {
       BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl,
       BUCKLE_NETWORK_ALLOW: 'example.com',
     })
-    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    const runtime = await createRuntime({ config })
     const response = await runtime.invoke({
       request: { requestId: 'egress-check', tool: 'pr_read', args: { number: 7 }, approvalTokens: [] },
       sessionId: 'forge-session',
@@ -627,7 +626,7 @@ describe('the credential', () => {
     const workspace = join(root, 'workspace')
     mkdirSync(workspace)
     const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_AUTH_TOKEN: 'agent-token' })
-    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    const runtime = await createRuntime({ config })
     const descriptor = runtime.manifest().packs.find(candidate => candidate.id === 'forge')
     expect(descriptor?.unavailableReason).toContain('BUCKLE_FORGE_GITHUB_TOKEN')
     expect(runtime.manifest().tools.map(tool => tool.name)).not.toContain('pr_open')

@@ -14,7 +14,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
-import { PROTOCOL_VERSION, isWorkspaceToolAllowed, type HarnessManifest, type InvokeRequest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
+import { PROTOCOL_VERSION, isWorkspaceToolAllowed, type HarnessManifest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { createPluginRegistry, type PluginRegistry } from '../../adapters/plugin-registry.js'
 import { createFileGrantStore } from '../../adapters/grant-store/file-grant-store.js'
@@ -44,11 +44,13 @@ import { workspaceStateKey } from '../../domain/workspace-key.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
 import { loadRootSkill } from '../packs/pack-skill.js'
 import type { ActionLog } from '../../types/ports/action-log.js'
-import type { ApprovalChannel } from '../../types/ports/approval-channel.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
-import { createInvoker } from '../invocation/invoker.js'
+import { createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
+import type { InteractionSource } from '../approvals/interaction.js'
+import { createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
+import { createInvoker, type InvokeInput } from '../invocation/invoker.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 
 /**
@@ -83,6 +85,8 @@ export interface BuckleRuntime {
   policy: PolicyHandle
   grants: GrantStore
   approvals: ApprovalRegistry
+  /** The single answerer: every ask waits here and every verdict is recorded here. */
+  approvalService: ApprovalService
   /** Replay protection for sealed decisions from Rings: on disk once a key is paired. */
   approvalNonces: NonceClaims
   history: ChangeHistory
@@ -90,7 +94,7 @@ export interface BuckleRuntime {
   actions: ActionLog
   plugins: PluginRegistry
   reporter: Reporter
-  invoke(input: { request: InvokeRequest; sessionId: string; signal?: AbortSignal; channel?: ApprovalChannel }): Promise<InvokeResponse>
+  invoke(input: InvokeInput): Promise<InvokeResponse>
   reload(): Promise<void>
   onToolsChanged(listener: () => void): void
 }
@@ -98,8 +102,8 @@ export interface BuckleRuntime {
 interface RuntimeInput {
   config: BuckleConfig
   workspaceId?: string
-  /** Built here because a channel that waits for a decision needs the registry holding it. */
-  channel: (approvals: ApprovalRegistry) => ApprovalChannel
+  /** The current operation's interaction; without one no question is asked and a gated call reports back at once. */
+  interaction?: InteractionSource
   /** Where refusals are announced. Defaults to the configured webhook, or to nothing. */
   reporter?: Reporter
 }
@@ -139,7 +143,13 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
     : nullReporter)
-  const defaultChannel = input.channel(approvals)
+  const workspaceId = input.workspaceId ?? 'default'
+  const approvalService = createApprovalService({
+    registry: approvals, workspaceId, graceMs: config.approvalTimeoutMs,
+    interaction: input.interaction ?? (async () => undefined),
+    // Every notification names its workspace, whose `buckle approve --workspace` answers it.
+    announce: config.approvalWebhook ? createWebhookNotifier({ url: config.approvalWebhook, serverId: config.serverId, workspaceId, token: config.reportToken, approvalKey: config.ringsApprovalKey }) : undefined,
+  })
   const plugins = createPluginRegistry({
     filePath: pluginsPath(config),
     packOptions: { cwd: config.cwd, sandboxMode: sandbox.sandbox.mode },
@@ -158,7 +168,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   let activeInvocations = 0
   const workbenches = createWorkbenchManager({
     directory: join(config.stateDirectory, 'workbenches', workspaceStateKey(config.cwd)),
-    sourceRoot: config.cwd, workspaceId: input.workspaceId ?? 'default', maxBytes: config.isolationMaxBytes,
+    sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
     protectedRoots: protectedStateRoots(config), actions, history,
     hasRipgrep: hasExecutable('rg'), spawnPty: spawnPtyProcess,
     policyHash: () => workbenchHash(JSON.stringify([compiled.policy, ceiling?.policy ?? null])),
@@ -187,7 +197,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   })
 
   const runtime: BuckleRuntime = {
-    workspaceId: input.workspaceId ?? 'default',
+    workspaceId,
     workbenches,
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: registry.capabilities().filter(tool => toolDenial(tool.name) === null) }),
@@ -200,6 +210,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     paths: () => paths,
     grants,
     approvals,
+    approvalService,
     approvalNonces,
     actions,
     history,
@@ -229,12 +240,13 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
       },
     },
 
-    async invoke({ request, sessionId, channel, signal }) {
+    async invoke(call) {
       activeInvocations++
       try { return await createInvoker({
       registry,
       permissions,
       approvals,
+      approvalService,
       grants,
       actions,
       history,
@@ -242,12 +254,11 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
       reporter,
       paths,
       serverId: config.serverId,
-      workspaceId: input.workspaceId ?? 'default',
-      channel: channel ?? defaultChannel,
+      workspaceId,
       defaultTimeoutMs: config.defaultTimeoutMs,
       maxTimeoutMs: config.maxTimeoutMs,
       toolDenial,
-    }).invoke({ request, sessionId, signal }) } finally { activeInvocations-- }
+    }).invoke(call) } finally { activeInvocations-- }
     },
 
     async reload() {

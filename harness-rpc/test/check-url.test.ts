@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { approvalsPath, grantsPath, loadConfig, policyPath, type BuckleConfig } from '../common/runtime/config.js'
 import { checkUrlCommand } from '../cli/check-url.js'
@@ -149,7 +148,7 @@ describe('buckle check-url', () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-check-url-child-'))
     for (const directory of ['default', 'child']) mkdirSync(join(root, directory))
     const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_NETWORK_ALLOW: '*.example.com' })
-    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    const runtime = await createRuntime({ config })
     const policy = emptyWorkspacePolicy()
     policy.network.allow = ['api.example.com', 'other.org']
     await createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy })
@@ -205,7 +204,7 @@ describe('buckle check-url', () => {
       // Owner-only, as the node requires of a directory holding workspace credentials.
       mkdirSync(join(root, 'state'), { mode: 0o700 })
       const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', ...environment })
-      const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+      const runtime = await createRuntime({ config })
       await createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy: emptyWorkspacePolicy() })
       const childState = join(realpathSync(join(root, 'state')), 'workspaces', 'child')
       mkdirSync(childState, { recursive: true })

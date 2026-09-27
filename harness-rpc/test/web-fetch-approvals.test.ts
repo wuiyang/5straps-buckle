@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -37,7 +36,7 @@ async function runtimeWith(environment: Record<string, string> = {}): Promise<Bu
     BUCKLE_ALLOW_SHELL: 'false',
     ...environment,
   })
-  return createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  return createRuntime({ config })
 }
 
 function fetchLocal(runtime: BuckleRuntime, path = '/', approvalTokens: string[] = []): Promise<InvokeResponse> {

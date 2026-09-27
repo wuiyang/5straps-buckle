@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -16,7 +15,7 @@ async function fixture() {
   writeFileSync(join(source, 'note.txt'), 'default fixture')
   writeFileSync(join(child, 'note.txt'), 'child fixture')
   const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: source, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'fixture-agent', BUCKLE_ADMIN_TOKEN: 'fixture-setup', BUCKLE_ALLOW_SHELL: 'false' })
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   const app = createHttpApp({ config, runtime, authToken: config.authToken })
   cleanups.push(async () => { await runtime.workbenches.close(); rmSync(root, { recursive: true, force: true }) })
   const request = (path: string, token: string, body?: unknown, method = body === undefined ? 'GET' : 'POST') => app.request(path, { method, headers: { authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })

@@ -6,12 +6,12 @@ import type { ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { createWaitingApprovalChannel } from '../common/adapters/approval/waiting-approval-channel.js'
 import { actionsPath, approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { watchApprovals } from '../cli/approvals-watch.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
+import { fixedInteraction } from './support/interaction.js'
 
 const POLL = { first: 20, idle: 50 }
 
@@ -80,7 +80,7 @@ describe('buckle approvals --watch', () => {
   it('answers a waiting approval, and the gated tool call proceeds', async () => {
     const config = node()
     const outside = mkdtempSync(join(tmpdir(), 'buckle-watch-outside-'))
-    const runtime = await createRuntime({ config, channel: approvals => createWaitingApprovalChannel({ approvals, timeoutMs: 10_000 }) })
+    const runtime = await createRuntime({ config, interaction: fixedInteraction() })
     const call = runtime.invoke({ request: { requestId: 'write', tool: 'fs_write', args: { path: join(outside, 'note.md'), content: 'hello' }, approvalTokens: [] }, sessionId: 'chat-1' })
 
     const { terminal, done } = watch(registryOf(config))

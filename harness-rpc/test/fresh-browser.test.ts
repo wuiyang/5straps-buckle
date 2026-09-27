@@ -5,7 +5,6 @@ import { createBrowserPack } from '../common/services/packs/browser/index.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
 const roots: string[] = []
@@ -52,7 +51,7 @@ it.each(['connect', 'state', 'auth', 'profiles', 'batch'])('refuses %s in fresh 
 it('exposes only browser tools when the owner selects the browser pack', async () => {
   const { root } = fixture(); const workspace = join(root, 'workspace'); mkdirSync(workspace)
   const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_AGENT_BROWSER_COMMAND: process.execPath })
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   expect(runtime.registry().capabilities().map(tool => tool.name)).toEqual(['browser_command'])
   expect(runtime.registry().has('fs_read')).toBe(false)
   expect(runtime.registry().has('shell_exec')).toBe(false)

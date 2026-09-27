@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { Hono } from 'hono'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -23,7 +22,7 @@ beforeEach(async () => {
   const { mkdirSync } = await import('node:fs')
   for (const folder of ['default', 'one', 'two', 'state']) mkdirSync(join(root, folder))
   config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_SETUP, BUCKLE_ALLOW_SHELL: 'false' })
-  app = createHttpApp({ config, runtime: await createRuntime({ config, channel: () => createDeferredApprovalChannel() }), authToken: NODE_AGENT })
+  app = createHttpApp({ config, runtime: await createRuntime({ config }), authToken: NODE_AGENT })
   writeFileSync(join(root, 'one', 'hello.txt'), 'workspace one')
   writeFileSync(join(root, 'two', 'hello.txt'), 'workspace two')
 })
@@ -83,7 +82,7 @@ describe('multiple workspaces on one Buckle', () => {
 
   it('persists registration and supports disabling and enabling without deleting files', async () => {
     await register('one')
-    app = createHttpApp({ config, runtime: await createRuntime({ config, channel: () => createDeferredApprovalChannel() }), authToken: NODE_AGENT })
+    app = createHttpApp({ config, runtime: await createRuntime({ config }), authToken: NODE_AGENT })
     expect((await invoke('one', agent('one'))).status).toBe(200)
     const patch = (enabled: boolean) => app.request('/setup/workspaces/one', { method: 'PATCH', headers: headers(NODE_SETUP), body: JSON.stringify({ enabled }) })
     expect((await patch(false)).status).toBe(200)
@@ -104,7 +103,7 @@ describe('multiple workspaces on one Buckle', () => {
 
 it('rejects workspaces exposed by inherited host read-only mounts', async () => {
   config.mountReadOnlyPaths = [root]
-  app = createHttpApp({ config, runtime: await createRuntime({ config, channel: () => createDeferredApprovalChannel() }), authToken: NODE_AGENT })
+  app = createHttpApp({ config, runtime: await createRuntime({ config }), authToken: NODE_AGENT })
   const response = await register('one')
   expect(response.status).toBe(409)
   expect(await response.text()).toContain('read-only mount')
@@ -160,7 +159,7 @@ it('checks policy revisions and applies read-denied paths to filesystem tools', 
 
 it('keeps explicit credential mounts out of managed workspaces', async () => {
   config.sandboxMounts = [{ source: join(root, 'two', 'hello.txt'), target: '/srv/auth/config.json', readOnly: true }]
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   app = createHttpApp({ config, runtime, authToken: NODE_AGENT })
   expect((await register('two')).status).toBe(409)
   expect((await register('one')).status).toBe(201)

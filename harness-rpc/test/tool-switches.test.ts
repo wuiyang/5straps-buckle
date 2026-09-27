@@ -2,7 +2,6 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { runCli } from '../cli/main.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -29,7 +28,7 @@ async function cli(config: BuckleConfig, argv: string[]) {
 
 /** A fresh runtime per call, as a restarted node or the next CLI process would read the policy file. */
 async function invoke(config: BuckleConfig, tool: string, args: Record<string, unknown>) {
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   const response = await runtime.invoke({ request: { requestId: `r-${tool}`, tool, args: args as Record<string, never>, approvalTokens: [] }, sessionId: 'tool-switch' })
   return { response, pending: runtime.approvals.pending(), listed: runtime.manifest().tools.map(capability => capability.name) }
 }
@@ -53,7 +52,7 @@ describe('buckle policy deny-tool and allow-tool', () => {
     expect((await invoke(config, 'fs_read', { path: join(outside, 'secret.txt') })).response.outcome).toBe('approval_required')
 
     await cli(config, ['policy', 'deny-tool', 'fs_read'])
-    const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+    const runtime = await createRuntime({ config })
     const waiting = runtime.approvals.pending().length
     const response = await runtime.invoke({ request: { requestId: 'r-denied', tool: 'fs_read', args: { path: join(outside, 'secret.txt') }, approvalTokens: [] }, sessionId: 'tool-switch' })
 

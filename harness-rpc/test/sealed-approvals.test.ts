@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import { approvalKey, mintApprovalKey, open, seal, createMemoryNonceStore, SEALED_REPORT_PATHS, ENVELOPE_WINDOW_MS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalRequest } from '@5straps/protocol'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { createWebhookNotifier } from '../common/adapters/approval/webhook-notifier.js'
 import { createWebhookReporter } from '../common/adapters/report/webhook-reporter.js'
 import { loadConfig } from '../common/runtime/config.js'
@@ -26,7 +25,7 @@ async function node(input: { key?: string; state?: string } = {}) {
     BUCKLE_ALLOW_SHELL: 'false',
     ...(input.key ? { BUCKLE_RINGS_APPROVAL_KEY: input.key } : {}),
   })
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   const app = createHttpApp({ config, runtime, authToken: config.authToken })
   const ask = async () => (await runtime.approvals.issue({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] }))[0]!
   const decide = (body: unknown) => app.request('/setup/approvals', { method: 'POST', headers: ADMIN, body: JSON.stringify(body) })

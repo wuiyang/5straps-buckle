@@ -1,7 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { hasExecutable } from '../common/domain/executable.js'
 import { createHttpApp } from '../server/hono/http-app.js'
@@ -16,7 +15,7 @@ async function fixture() {
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
   const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_ADMIN_TOKEN: 'owner-token' })
-  const runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  const runtime = await createRuntime({ config })
   const app = createHttpApp({ config, runtime, authToken: config.authToken })
   return { root, workspace, config, runtime, app }
 }

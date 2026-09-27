@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Hono } from 'hono'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import { workspaceRegistryCommand } from '../cli/workspace.js'
@@ -27,7 +26,7 @@ beforeEach(async () => {
   for (const folder of ['default', 'one', 'state']) mkdirSync(join(root, folder))
   writeFileSync(join(root, 'one', 'hello.txt'), 'workspace one')
   config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_ALLOW_SHELL: 'false' })
-  runtime = await createRuntime({ config, channel: () => createDeferredApprovalChannel() })
+  runtime = await createRuntime({ config })
   app = createHttpApp({ config, runtime, authToken: NODE_AGENT })
 })
 

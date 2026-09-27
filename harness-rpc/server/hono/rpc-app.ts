@@ -68,6 +68,8 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
     const sessionId = parsed.data.context?.sessionId ?? ANONYMOUS_SESSION_ID
     dispatched.add(context.req.raw)
     const response = await runtime.invoke({ request: parsed.data, sessionId, signal: context.req.raw.signal })
+    // A re-sent call that asks for something other than what its requestId already waits on.
+    if (response.outcome === 'error' && response.error.code === 'APPROVAL_CONFLICT') return context.json(response, 409)
     return context.json(response, response.outcome === 'error' ? 422 : 200)
   })
 

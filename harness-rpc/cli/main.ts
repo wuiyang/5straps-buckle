@@ -13,7 +13,7 @@ import type { BuckleRuntime } from '../common/services/workspaces/workspace-runt
 import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
 import { withOperationScope } from '@5straps/runtime'
 import { logger } from '../common/runtime/log.js'
-import { createCliApprovalChannel } from '../common/adapters/approval/cli-approval-channel.js'
+import { setupCli, type CliSetup } from './setup.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, repairStoredPolicy } from './policy.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
@@ -54,9 +54,12 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   const [command = '', ...rest] = input.argv
 
   // One command is one process owner: its common runtime closes when the command ends.
-  const common = initializeCommon({ config: input.config, role: 'cli', adapters: { approvalChannel: () => createCliApprovalChannel() } })
+  const common = initializeCommon({ config: input.config, role: 'cli' })
+  // A terminal answers a gated call in place; without one the call reports back at once (exit 3).
+  const cli = setupCli({ terminal: process.stdin.isTTY ? { input: process.stdin, output: process.stderr } : null })
+  common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   try {
-    return await runCliCommand({ common, config: input.config, command, rest })
+    return await runCliCommand({ common, cli, config: input.config, command, rest })
   } catch (error) {
     if (isStateBusy(error)) return fail(error.message)
     throw error
@@ -67,7 +70,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   }
 }
 
-async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig; command: string; rest: string[] }): Promise<CliResult> {
+async function runCliCommand(input: { common: BuckleCommon; cli: CliSetup; config: BuckleConfig; command: string; rest: string[] }): Promise<CliResult> {
   const { common, command, rest } = input
   try {
     await common.start()
@@ -80,7 +83,10 @@ async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig
   const runtime = await common.services.getWorkspaceRuntime()
   const workspaces = await common.services.getWorkspaces()
   const scope = common.owner.registry.createScope({ context: { actor: 'local-owner' } })
-  return withOperationScope(scope, () => runAuditedCommand({ runtime, workspaces, config: input.config, command, rest }))
+  return withOperationScope(scope, async () => {
+    (await common.services.getInteraction(scope)).bind({ requestCli: input.cli.requestCli, hold: 'prompt' })
+    return runAuditedCommand({ runtime, workspaces, config: input.config, command, rest })
+  })
 }
 
 async function runAuditedCommand(input: CommandContext): Promise<CliResult> {

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { ChangeHistory } from '../history/journal.js'
-import type { ApprovalDecision, DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
+import type { DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine } from '../../domain/permission/engine.js'
@@ -12,20 +12,21 @@ import { redactAuditArguments } from '../../domain/redact.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
 import { ToolExecutionError, ToolInputError, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
-import type { ApprovalChannel } from '../../types/ports/approval-channel.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
 import { resolveEffects } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
-import { subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
+import { ApprovalConflictError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
+import type { ApprovalService, ApprovalWait } from '../approvals/approval-service.js'
 
 export interface InvokerOptions {
   registry: ToolRegistry
   permissions: PermissionEngine
   approvals: ApprovalRegistry
+  /** Issues asks and waits for their answers; the one place a verdict is recorded. */
+  approvalService: ApprovalService
   grants: GrantStore
-  channel: ApprovalChannel
   history?: ChangeHistory
   historyRoots?: string[]
   actions: ActionLog
@@ -38,8 +39,16 @@ export interface InvokerOptions {
   toolDenial?(tool: string): string | null
 }
 
+export interface InvokeInput {
+  request: InvokeRequest
+  sessionId: string
+  signal?: AbortSignal
+  /** How long the caller will wait for an approval; it can only shorten the entry point's own hold. */
+  approvalWait?: ApprovalWait
+}
+
 export interface Invoker {
-  invoke(input: { request: InvokeRequest; sessionId: string; signal?: AbortSignal }): Promise<InvokeResponse>
+  invoke(input: InvokeInput): Promise<InvokeResponse>
 }
 
 /** What the permission step decided, carried through so the action log can report the reason. */
@@ -55,7 +64,7 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   return {
-    async invoke({ request, sessionId, signal }) {
+    async invoke({ request, sessionId, signal, approvalWait }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
@@ -81,7 +90,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
-          gate = await clearPermissions({ options, request, sessionId, effects, signal })
+          gate = await clearPermissions({ options, request, sessionId, effects, signal, approvalWait })
           signal?.throwIfAborted()
           if (gate.response) return gate.response
 
@@ -217,6 +226,7 @@ async function clearPermissions(input: {
   sessionId: string
   effects: ResolvedEffect[]
   signal?: AbortSignal
+  approvalWait?: ApprovalWait
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects } = input
   const approvedBy: string[] = []
@@ -241,23 +251,12 @@ async function clearPermissions(input: {
     }
   }
 
-  const approvals = await options.approvals.issue({ tool: request.tool, sessionId, asks: outcome.asks })
+  // Every answer, from any route, is recorded by the service; this call only learns whether all came in.
+  const waited = await options.approvalService.request({ sessionId, requestId: request.requestId, tool: request.tool, asks: outcome.asks, signal: input.signal, wait: input.approvalWait })
+  const { approvals } = waited
   const asked = approvals.map(approval => `${approval.rule}:${approval.subject}`)
-  let decisions: ApprovalDecision[] | null
-  try {
-    decisions = await options.channel.request(approvals, input.signal)
-    input.signal?.throwIfAborted()
-  } catch (error) {
-    await options.approvals.cancel(approvals.map(approval => approval.token))
-    throw error
-  }
-  if (!decisions) {
+  if (!waited.settled) {
     return { response: { requestId: request.requestId, outcome: 'approval_required', approvals }, asked, approvedBy }
-  }
-
-  for (const decision of decisions) {
-    const result = await options.approvals.resolve(decision)
-    if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
   }
 
   const tokens = approvals.map(approval => approval.token)
@@ -353,6 +352,7 @@ function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; 
 function shapeError(error: unknown, tool: string): { code: string; message: string; retryable: boolean } {
   if (error instanceof ToolInputError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof ToolExecutionError) return { code: error.code, message: error.message, retryable: error.retryable }
+  if (error instanceof ApprovalConflictError) return { code: 'APPROVAL_CONFLICT', message: error.message, retryable: false }
   if (isStateBusy(error)) {
     logger.warn('Tool invocation found Buckle state busy', { tool, message: error.message })
     return { code: 'STATE_BUSY', message: STATE_BUSY_MESSAGE, retryable: true }

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -6,9 +6,8 @@ import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { runCli } from '../cli/main.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createApprovalDelivery, createChildApprovalDelivery } from '../common/services/approvals/approval-delivery.js'
 import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import type { ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { fixedInteraction } from './support/interaction.js'
 
 const NODE_REPORT_TOKEN = 'node-report-token-fixture-only'
 const CHILD_AGENT_TOKEN = 'child-agent-token-fixture-only'
@@ -30,8 +29,8 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
     BUCKLE_REPORT_TOKEN: NODE_REPORT_TOKEN,
     ...environment,
   })
-  const runtime = await createRuntime({ config, channel: approvals => createApprovalDelivery({ config, approvals, workspaceId: 'default', prompt: false }) })
-  const manager = createWorkspaceManager({ config, runtime })
+  const runtime = await createRuntime({ config, interaction: fixedInteraction() })
+  const manager = createWorkspaceManager({ config, runtime, interaction: fixedInteraction() })
   await manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: CHILD_AGENT_TOKEN, adminToken: CHILD_ADMIN_TOKEN, policy: emptyWorkspacePolicy() })
   return { config, runtime, manager }
 }
@@ -68,16 +67,19 @@ describe('what a child workspace runtime inherits from the node', () => {
     expect(child.runtime.workspaceId).toBe('child')
   }, 30_000)
 
-  it('holds child calls for owner CLI decisions with or without a webhook', () => {
-    const withWebhook = { approvalWebhook: 'http://127.0.0.1:9/approvals', approvalTimeoutMs: 15_000 } as BuckleConfig
-    const withoutWebhook = { approvalTimeoutMs: 15_000 } as BuckleConfig
-    const approvals = {} as ApprovalRegistry
+  it.each([['with', {}], ['without', { BUCKLE_APPROVAL_WEBHOOK: '' }]])('holds a child call for the owner\'s CLI decision %s a webhook', async (_label, environment) => {
+    const { config, manager } = await nodeWithChild(environment)
+    const child = await manager.resolve('child')
+    const call = child.runtime.invoke({ request: { requestId: 'child-write', tool: 'fs_write', args: { path: '/workspace/note.md', content: 'held' }, approvalTokens: [] }, sessionId: 'chat-1' })
+    await vi.waitFor(() => expect(child.runtime.approvals.pending()).toHaveLength(1))
+    const token = child.runtime.approvals.pending()[0]!.token
 
-    expect(createChildApprovalDelivery({ config: withWebhook, approvals, workspaceId: 'child' }).id).toBe('waiting')
-    expect(createChildApprovalDelivery({ config: withoutWebhook, approvals, workspaceId: 'child' }).id).toBe('waiting')
-    // The node's own faces hold the call either way: a `buckle approve` elsewhere can still land.
-    expect(createApprovalDelivery({ config: withoutWebhook, approvals, workspaceId: 'default', prompt: false }).id).toBe('waiting')
-  })
+    // The owner answers from another process's view of the same state, as `buckle approve` does.
+    expect((await capture({ argv: ['approve', token, '--scope', 'once', '--workspace', 'child'], config })).exitCode).toBe(0)
+
+    expect(await call).toMatchObject({ outcome: 'ok' })
+    expect(existsSync(join(child.config.cwd, 'note.md'))).toBe(true)
+  }, 30_000)
 })
 
 describe('answering a child workspace request from the terminal', () => {

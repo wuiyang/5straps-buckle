@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { z } from 'zod'
 import { WorkspacePolicySchema, emptyWorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
-import { createChildApprovalDelivery } from '../approvals/approval-delivery.js'
+import type { InteractionSource } from '../approvals/interaction.js'
 import type { BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
@@ -77,7 +77,7 @@ function registryStore(filePath: string, lockDeadlineMs?: number) {
   }
 }
 
-export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime }) {
+export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime; interaction?: InteractionSource }) {
   const defaultRoot = realpathSync(input.config.cwd)
   const stateRoot = realpathSync(input.config.stateDirectory)
   const store = registryStore(join(stateRoot, 'workspaces.json'), input.config.stateLockDeadlineMs)
@@ -213,7 +213,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           policy: { ...workspace.policy, mount: '/workspace' },
           nodePolicy: structuredClone(input.config.policy),
         }
-        pending = createRuntime({ config, workspaceId: id, channel: approvals => createChildApprovalDelivery({ config, approvals, workspaceId: id }) }).then(runtime => ({ config, runtime }))
+        pending = createRuntime({ config, workspaceId: id, ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
         runtimes.set(id, pending)
         void pending.catch(() => { runtimes.delete(id) })
       }

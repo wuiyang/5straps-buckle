@@ -3,6 +3,7 @@ import { runInScope, type OperationContextInput, type OperationScope } from '@5s
 import type { MiddlewareHandler } from 'hono'
 import type { BuckleCommon } from '../../common/runtime/initialize.js'
 import type { BuckleServices } from '../../common/runtime/services.js'
+import type { Interaction } from '../../common/services/approvals/interaction.js'
 import { logger } from '../../common/runtime/log.js'
 
 export type ScopeEnv = { Bindings: HttpBindings | undefined; Variables: { services: BuckleServices; scope: OperationScope } }
@@ -15,8 +16,8 @@ export function notReadyResponse(): Response {
 }
 
 // Temporary until the Nitro layers replace the Hono faces: each request runs in its own operation
-// scope, with the service accessors on the Hono context.
-export function operationScopes(common: BuckleCommon): MiddlewareHandler<ScopeEnv> {
+// scope, with the service accessors on the Hono context and the HTTP interaction bound to it.
+export function operationScopes(common: BuckleCommon, interaction?: Interaction): MiddlewareHandler<ScopeEnv> {
   return async (context, next) => {
     // Failed or closing readiness means no business operations (nitro/runtime.md, Lifetimes).
     if (common.owner.state !== 'ready') return context.json({ error: NOT_READY }, 503)
@@ -27,6 +28,7 @@ export function operationScopes(common: BuckleCommon): MiddlewareHandler<ScopeEn
     // A streamed response outlives next(); the node response closing is the operation's end.
     if (outgoing) outgoing.once('close', () => disposeScope(scope))
     try {
+      if (interaction) (await common.services.getInteraction(scope)).bind(interaction)
       await runInScope(scope, next)
     } finally {
       if (!outgoing) disposeScope(scope)

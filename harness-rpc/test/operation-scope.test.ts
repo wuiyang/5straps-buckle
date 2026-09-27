@@ -3,17 +3,23 @@ import { Hono } from 'hono'
 import { describe, expect, it } from 'vitest'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import type { BuckleServices } from '../common/runtime/services.js'
+import { InteractionService, NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { operationScopes, type ScopeEnv } from '../server/hono/operation-scope.js'
 
+const httpInteraction: Interaction = { requestCli: NO_INTERACTION.requestCli, hold: 'grace' }
+
 function probeApp() {
-  const owner = createRuntimeOwner({ services: [] })
-  const services: BuckleServices = { getWorkspaceRuntime: () => Promise.reject(new Error('not needed here')), getWorkspaces: () => Promise.reject(new Error('not needed here')) }
+  const owner = createRuntimeOwner({ services: [InteractionService] })
+  const services: BuckleServices = {
+    getWorkspaceRuntime: () => Promise.reject(new Error('not needed here')), getWorkspaces: () => Promise.reject(new Error('not needed here')),
+    getInteraction: scope => owner.registry.useScoped(InteractionService, scope),
+  }
   const common: BuckleCommon = { role: 'server', owner, services, start: () => owner.start(() => {}) }
-  const seen: Array<{ scope: OperationScope; ambient: OperationScope; services: BuckleServices }> = []
+  const seen: Array<{ scope: OperationScope; ambient: OperationScope; services: BuckleServices; interaction: Interaction | undefined }> = []
   const app = new Hono<ScopeEnv>()
-  app.use('*', operationScopes(common))
-  app.get('/probe', (context) => {
-    seen.push({ scope: context.get('scope'), ambient: useScope(), services: context.get('services') })
+  app.use('*', operationScopes(common, httpInteraction))
+  app.get('/probe', async (context) => {
+    seen.push({ scope: context.get('scope'), ambient: useScope(), services: context.get('services'), interaction: (await services.getInteraction()).current() })
     return context.json({ ok: true })
   })
   return { app, common, services, seen }
@@ -46,6 +52,9 @@ describe('the temporary Hono operation-scope middleware', () => {
     expect(second!.scope.context.clientRequestId).toBeUndefined()
     expect(second!.scope.context.correlationId).not.toBe(first!.scope.context.correlationId)
     expect(first!.scope.owner).toBe(common.owner.registry.owner)
+    // Each request's scope carries the HTTP interaction, which the approval service reads.
+    expect(first!.interaction).toBe(httpInteraction)
+    expect(second!.interaction).toBe(httpInteraction)
     await expect.poll(() => [first!.scope.state, second!.scope.state]).toEqual(['disposed', 'disposed'])
     await common.owner.close()
   })

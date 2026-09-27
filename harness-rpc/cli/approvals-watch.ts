@@ -1,8 +1,8 @@
 import { createInterface, type Interface } from 'node:readline/promises'
 import type { Readable, Writable } from 'node:stream'
 import type { ApprovalDecision, ApprovalRequest, GrantScope } from '@5straps/protocol'
-import { describeQuestion } from '../common/adapters/approval/cli-approval-channel.js'
-import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from '../common/adapters/approval/terminal-keys.js'
+import { describeQuestion } from './terminal-consumer.js'
+import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from './terminal-keys.js'
 import { remainingMs } from '../common/domain/approval-deadline.js'
 import { approveCommand } from '../common/domain/approval-instruction.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
@@ -129,7 +129,7 @@ async function askOne(context: ApprovalWatchOptions & { readline: Interface; key
   const { request, output } = context
   const offered = SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope))
   const prompt = `  ${[...offered.map(entry => `${entry.key}) ${request.rule === 'sensitive_path' && entry.scope === 'once' ? 'allow once' : entry.label}`), 'd) deny', ...(request.rule === 'sensitive_path' ? ['ds) deny this session', 'da) always deny'] : []), 'n) skip'].join('  ')} > `
-  output.write(`${describeQuestion(request)}  token: ${request.token}\n`)
+  output.write(`${describeQuestion({ ...request, workspaceId: context.workspaceId })}  token: ${request.token}\n`)
 
   const dropped = new AbortController()
   const watcher = setInterval(() => {

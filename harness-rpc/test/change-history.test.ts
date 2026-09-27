@@ -3,7 +3,6 @@ import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, rea
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
-import { createDeferredApprovalChannel } from '../common/adapters/approval/deferred-approval-channel.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
@@ -189,7 +188,7 @@ describe('the history database file', () => {
     mkdirSync(join(root, 'state'), { mode: 0o700 })
     const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'no-such-pack', BUCKLE_ALLOW_SHELL: 'false' })
     // A registered workspace retries its whole creation on every request.
-    for (let attempt = 0; attempt < 3; attempt += 1) await expect(createRuntime({ config, channel: () => createDeferredApprovalChannel() })).rejects.toThrow('Unknown BUCKLE_PACKS')
+    for (let attempt = 0; attempt < 3; attempt += 1) await expect(createRuntime({ config })).rejects.toThrow('Unknown BUCKLE_PACKS')
     expect(openDescriptors(root)).toEqual([])
   })
 })
