@@ -31,8 +31,10 @@ const OPAQUE_MIN_LENGTH = 40
 // '+' or '=' padding only appear in encoded values, never in path segments.
 const BASE64_MARK = /\+|=$/
 const LOWER_TO_UPPER = /[a-z][A-Z]/g
-// A 40-character hex run is a git SHA-1, kept unless its key is secret-named.
-const GIT_SHA = /^[a-f0-9]{40}$/i
+// A lowercase 40-character hex run reads as a git SHA-1, unless a credential word or an assignment sits just before it.
+const GIT_SHA = /^[a-f0-9]{40}$/
+const SHA_CONTEXT_CHARS = 32
+const CREDENTIAL_NEARBY = /token|secret|passw(?:or)?d|passphrase|credential|cookie|signature|bearer|api[-_ ]?key|private[-_ ]?key|\b(?:pat|key|auth)\b|=\s*$/i
 const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>]+/g
 
 const HAS_DIGIT = /\d/
@@ -59,8 +61,12 @@ function isTokenCount({ word, previous, next }: { word: string; previous?: strin
 
 export function redactText(text: string): string {
   return redactUrls(text)
-    .replace(SECRET_VALUE, match => (GIT_SHA.test(match) ? match : REDACTED))
+    .replace(SECRET_VALUE, (match: string, offset: number, whole: string) => (isGitSha({ match, before: whole.slice(Math.max(0, offset - SHA_CONTEXT_CHARS), offset) }) ? match : REDACTED))
     .replace(OPAQUE_RUN, redactOpaqueRun)
+}
+
+function isGitSha({ match, before }: { match: string; before: string }): boolean {
+  return GIT_SHA.test(match) && !CREDENTIAL_NEARBY.test(before)
 }
 
 // Absolute paths start with '/', and relative ones read as words; an encoded value mixes camel humps and digits throughout.
@@ -93,6 +99,11 @@ function redactUrls(text: string): string {
     }
     return changed ? url.toString() : match
   })
+}
+
+export function truncateText(text: string, maxBytes: number): string {
+  const totalBytes = Buffer.byteLength(text)
+  return totalBytes <= maxBytes ? text : `${sliceBytes(text, maxBytes)}...[truncated ${totalBytes - maxBytes} bytes]`
 }
 
 function sliceBytes(text: string, maxBytes: number): string {

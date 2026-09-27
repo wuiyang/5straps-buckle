@@ -94,6 +94,33 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
   })
 })
 
+describe('event size and hex runs (logger-fixes-4, logger-fixes-5)', () => {
+  function bigError(index: number, depth = 0): Error {
+    const error = new Error(`failure ${index} ${'m'.repeat(9_000)}`, depth < 2 ? { cause: bigError(index, depth + 1) } : undefined)
+    error.stack = `${error.message}\n${'    at frame (/srv/app/file.js:1:1)\n'.repeat(400)}`
+    return error
+  }
+
+  it('caps the whole event, error included, at maxEventBytes', async () => {
+    const aggregate = new AggregateError(Array.from({ length: 50 }, (_, index) => bigError(index)), 'batch failed')
+    const nested = new AggregateError(Array.from({ length: 50 }, () => new AggregateError(Array.from({ length: 50 }, (_, index) => bigError(index)), 'inner')), 'outer')
+    for (const error of [aggregate, nested]) {
+      const event = await logOnce({ error, requestId: 'r-1' })
+      expect(Buffer.byteLength(JSON.stringify(event))).toBeLessThanOrEqual(65_536 + 1_024)
+      expect(event.error).toMatchObject({ name: 'AggregateError' })
+      expect(event.fields).toMatchObject({ requestId: 'r-1' })
+    }
+  })
+
+  it('redacts a 40-hex credential in free text while git SHAs stay readable', async () => {
+    const hex = 'a94a8fe5ccb19ba61c4c0873d391e987982fbbd3'
+    const event = await logOnce({ note: `retrying with client secret ${hex}`, pat: `pat ${hex}`, url: `https://api.example.com/cb?client=x&s=${hex}`, upper: hex.toUpperCase(), commit: hex, log: `HEAD is now at ${hex}` }, { message: `token ${hex} rejected` })
+    expect(event.message).toBe('token [redacted] rejected')
+    expect(event.fields).toMatchObject({ note: 'retrying with client secret [redacted]', pat: 'pat [redacted]', upper: '[redacted]', commit: hex, log: `HEAD is now at ${hex}` })
+    expect(String(event.fields!.url)).not.toContain(hex)
+  })
+})
+
 describe('sink recursion across awaits (review M6)', () => {
   it('sends a log line from inside an async sink to the fallback only', async () => {
     const fallback: string[] = []

@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { globalSlot } from '../internal/async-slots.js'
 import { useScopeSafe } from '../scope/als.js'
-import { normalizeError, sanitizeFields, sanitizeString, type SanitizeOptions } from './sanitize.js'
-import { levelRank, LOG_LEVELS, type LogEvent, type LogFields, type Logger, type LogLevel, type LogSink } from './types.js'
+import { normalizeError, sanitizeFields, sanitizeString, truncateText, type SanitizeOptions } from './sanitize.js'
+import { levelRank, LOG_LEVELS, type LogEvent, type LogFields, type Logger, type LogLevel, type LogSink, type NormalizedError } from './types.js'
 
 export interface LoggerOptions {
   component: string
@@ -11,7 +11,7 @@ export interface LoggerOptions {
   queueLimit?: number
   maxStringBytes?: number
   maxObjectKeys?: number
-  // Serialized size above which an event's fields are replaced by a truncation note.
+  // Serialized size of a whole event; an oversized event loses error detail first, then large fields.
   maxEventBytes?: number
   /** Keys exempt from secret and content redaction; opt-in per deployment. */
   allowKeys?: readonly string[]
@@ -36,6 +36,15 @@ const DEFAULT_QUEUE_LIMIT = 1_000
 const DEFAULT_MAX_STRING_BYTES = 8_192
 const DEFAULT_MAX_OBJECT_KEYS = 100
 const DEFAULT_MAX_EVENT_BYTES = 65_536
+
+interface ErrorTrim { maxErrors: number; maxStackBytes: number; maxMessageBytes: number; maxCauseDepth: number }
+// Tried in order until an oversized event fits: fewer aggregated errors, shorter stacks, then a bare error.
+const ERROR_TRIMS: readonly ErrorTrim[] = [
+  { maxErrors: 10, maxStackBytes: 4_096, maxMessageBytes: DEFAULT_MAX_STRING_BYTES, maxCauseDepth: 3 },
+  { maxErrors: 3, maxStackBytes: 1_024, maxMessageBytes: 1_024, maxCauseDepth: 1 },
+  { maxErrors: 0, maxStackBytes: 0, maxMessageBytes: 1_024, maxCauseDepth: 0 },
+]
+const SMALL_FIELD_BYTES = 256
 // Set while any sink runs, across its awaits, so a sink that logs cannot feed itself.
 const insideSink = globalSlot('logger-sink', () => new AsyncLocalStorage<true>())
 
@@ -89,7 +98,7 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
     const { error, ...rest } = { ...input.bindings, ...input.fields }
     const fields = sanitizeFields(rest, sanitize)
     const correlationId = useScopeSafe()?.context.correlationId
-    return {
+    return fitEvent({
       timestamp: new Date().toISOString(),
       level: input.level,
       component: input.component,
@@ -97,12 +106,27 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
       ...(correlationId ? { correlationId } : {}),
       ...(Object.keys(fields).length > 0 ? { fields: capFields(fields) } : {}),
       ...(error !== undefined ? { error: markRepeated(error) } : {}),
-    }
+    })
   }
 
   function capFields(fields: Record<string, unknown>): Record<string, unknown> {
     const bytes = Buffer.byteLength(JSON.stringify(fields))
     return bytes <= maxEventBytes ? fields : { '[truncated]': `fields exceeded ${maxEventBytes} bytes (${bytes} bytes)` }
+  }
+
+  // The byte cap covers the whole event: error detail goes first, then fields larger than a short value.
+  function fitEvent(event: LogEvent): LogEvent {
+    if (eventBytes(event) <= maxEventBytes) return event
+    const { error } = event
+    for (const trim of ERROR_TRIMS) {
+      if (!error) break
+      const trimmed = { ...event, error: trimError(error, trim) }
+      if (eventBytes(trimmed) <= maxEventBytes) return trimmed
+    }
+    const bare = error ? { ...event, error: trimError(error, ERROR_TRIMS.at(-1)!) } : event
+    const note = { '[truncated]': `event exceeded ${maxEventBytes} bytes` }
+    const withSmallFields = { ...bare, fields: { ...smallFields(bare.fields), ...note } }
+    return eventBytes(withSmallFields) <= maxEventBytes ? withSmallFields : { ...bare, fields: note }
   }
 
   function markRepeated(error: unknown) {
@@ -164,6 +188,27 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
       await Promise.all(options.sinks.map(sink => callSink(sink, 'close')))
     },
   }
+}
+
+function trimError(error: NormalizedError, trim: ErrorTrim, depth = 0): NormalizedError {
+  const { stack, cause, errors, ...rest } = error
+  const kept = errors?.slice(0, trim.maxErrors).map(item => trimError(item, trim, depth + 1)) ?? []
+  const omitted = (errors?.length ?? 0) - kept.length
+  return {
+    ...rest,
+    message: truncateText(error.message, trim.maxMessageBytes),
+    ...(stack && trim.maxStackBytes > 0 ? { stack: truncateText(stack, trim.maxStackBytes) } : {}),
+    ...(cause && depth < trim.maxCauseDepth ? { cause: trimError(cause, trim, depth + 1) } : {}),
+    ...(errors ? { errors: omitted > 0 ? [...kept, { name: 'Omitted', message: `[${omitted} more errors]` }] : kept } : {}),
+  }
+}
+
+function smallFields(fields: Record<string, unknown> | undefined): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(fields ?? {}).filter(([, value]) => Buffer.byteLength(JSON.stringify(value) ?? '') <= SMALL_FIELD_BYTES))
+}
+
+function eventBytes(event: LogEvent): number {
+  return Buffer.byteLength(JSON.stringify(event))
 }
 
 // Last resort when a sink fails: one synchronous stderr line, never routed back through a sink.
