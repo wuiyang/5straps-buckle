@@ -9,13 +9,7 @@ import { beginImmediateWithinDeadline, readBusyTimeout } from './begin.js'
 import { SqliteErrorCode } from './codes.js'
 import { rawConnection, type SqliteDatabase } from './database.js'
 
-export { SqliteErrorCode } from './codes.js'
-
 export interface ConnectionOwner {
-  /** @deprecated Unguarded: a statement here while another flow's transaction is open joins that transaction. Same object as unguardedDb; prefer run(), transaction() or guardedDb. */
-  readonly db: SqliteDatabase
-  // The shared DB0 object without the guard; only for code that already runs inside run() or transaction().
-  readonly unguardedDb: SqliteDatabase
   // Same connection; refuses statements while another flow's transaction is open and queues them otherwise.
   readonly guardedDb: SqliteDatabase
   run<T>(operation: (db: SqliteDatabase) => Promise<T>): Promise<T>
@@ -108,7 +102,7 @@ export function createConnectionOwner(db: SqliteDatabase, options: { owned: bool
   const guardedDb = createGuardedView({ db, guard, label })
   ownedConnections.add(db)
   ownedConnections.add(guardedDb)
-  return { db, unguardedDb: db, guardedDb, run, transaction, nativeTransaction, close }
+  return { guardedDb, run, transaction, nativeTransaction, close }
 }
 
 // Waits for other writers asynchronously, up to the connection's busy_timeout.

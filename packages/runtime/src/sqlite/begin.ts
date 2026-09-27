@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { toError } from '../errors.js'
 import { isSqliteBusy } from './busy.js'
 
-export interface BeginImmediateOptions<T> {
+interface BeginImmediateOptions<T> {
   deadlineMs: number
   pollMs: number
   signal?: AbortSignal

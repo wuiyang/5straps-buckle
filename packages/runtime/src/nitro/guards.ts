@@ -65,7 +65,7 @@ function suppliedRequestId(event: H3Event): string | undefined {
 }
 
 // The scope lives until the response body finishes or is cancelled, not merely until the handler returns.
-export async function runRequestInScope<T>(input: { event: H3Event; scope: OperationScope; handler: (event: H3Event, scope: OperationScope) => T | Promise<T>; bodyIdleTimeoutMs?: number }): Promise<T | Response> {
+async function runRequestInScope<T>(input: { event: H3Event; scope: OperationScope; handler: (event: H3Event, scope: OperationScope) => T | Promise<T>; bodyIdleTimeoutMs?: number }): Promise<T | Response> {
   const { event, scope } = input
   const idleTimeoutMs = input.bodyIdleTimeoutMs ?? DEFAULT_BODY_IDLE_TIMEOUT_MS
   const startedAt = performance.now()

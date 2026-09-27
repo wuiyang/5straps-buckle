@@ -246,7 +246,7 @@ function guarded<T>(resolve: () => Promise<T>): Promise<T> {
 }
 
 // Rejects cycles and singletons that would capture scope-bound services, before anything runs.
-export function validateServiceGraph(registered: ReadonlySet<AnyServiceDefinition>): void {
+function validateServiceGraph(registered: ReadonlySet<AnyServiceDefinition>): void {
   const scopeBound = new Map<AnyServiceDefinition, boolean>()
   const visiting: AnyServiceDefinition[] = []
 

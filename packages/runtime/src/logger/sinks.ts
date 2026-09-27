@@ -26,7 +26,7 @@ export function createHumanSink(options: { stream?: Writable } = {}): LogSink {
   }
 }
 
-export function renderHuman(event: LogEvent): string {
+function renderHuman(event: LogEvent): string {
   const time = event.timestamp.slice(11, 19)
   const fields = Object.entries(event.fields ?? {}).map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
   const error = event.error ? [`error=${event.error.name}: ${event.error.message}`] : []

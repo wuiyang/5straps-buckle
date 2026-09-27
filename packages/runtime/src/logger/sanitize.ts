@@ -59,7 +59,7 @@ function keyWords(key: string): string[] {
   return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
 }
 
-export function isSecretKey(key: string, value: unknown): boolean {
+function isSecretKey(key: string, value: unknown): boolean {
   const words = keyWords(key)
   const secretWord = isTokenCount({ words, value }) ? CREDENTIAL_WORD : SECRET_WORD
   return words.some((word, index) => isSecretWord({ word, next: words[index + 1], secretWord }))

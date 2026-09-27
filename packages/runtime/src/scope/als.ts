@@ -39,31 +39,28 @@ export interface CreateScopeOptions {
   drainTimeoutMs?: number
 }
 
-export { DEFAULT_DRAIN_TIMEOUT_MS } from './operation-scope.js'
-const storage = scopeStorage
-
 export function createOperationScope(options: CreateScopeOptions): OperationScope {
   return openOperationScope(options)
 }
 
 export function runInScope<T>(scope: OperationScope, fn: () => T): T {
   if (!isScopeUsable(scope)) throw new RuntimeError(RuntimeErrorCode.disposedScope, `Cannot enter operation scope ${scope.context.correlationId}: it is ${scope.state}`)
-  return storage.run(scope, fn)
+  return scopeStorage.run(scope, fn)
 }
 
 // The scope as ALS context whatever its state, for diagnostics after the operation ended (log lines keep its correlation id).
 export function runInScopeContext<T>(scope: OperationScope, fn: () => T): T {
-  return storage.run(scope, fn)
+  return scopeStorage.run(scope, fn)
 }
 
 export function useScope(): OperationScope {
-  const scope = storage.getStore()
+  const scope = scopeStorage.getStore()
   if (!scope) throw new RuntimeError(RuntimeErrorCode.missingScope, 'No operation scope is active; enter one with runInScope or withOperationScope')
   return scope
 }
 
 export function useScopeSafe(): OperationScope | undefined {
-  return storage.getStore()
+  return scopeStorage.getStore()
 }
 
 export function registerBackgroundWork(work: Promise<unknown>, scope: OperationScope = useScope()): void {

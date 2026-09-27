@@ -26,7 +26,7 @@ const SIDECAR_SUFFIXES = ['-wal', '-shm', '-journal']
 const PRAGMA_NAME = /^[a-z_]+$/
 const PRAGMA_WORD = /^[A-Za-z_]+$/
 
-export interface SqlitePragmaDefaults {
+interface SqlitePragmaDefaults {
   defaults: Readonly<Record<string, PragmaValue>>
   newDatabase?: Readonly<Record<string, PragmaValue>>
 }

@@ -127,6 +127,12 @@ describe('connection owner transactions', () => {
     await owner.close()
   })
 
+  it('exposes only queued or guarded access to the connection (ruling 2)', async () => {
+    const owner = createConnectionOwner(await notesDatabase(), { owned: true })
+    expect(Object.keys(owner).sort()).toEqual(['close', 'guardedDb', 'nativeTransaction', 'run', 'transaction'])
+    await owner.close()
+  })
+
   it('F40 disposes an owned database on close and leaves an injected one open', async () => {
     const owned = await notesDatabase()
     const ownedOwner = createConnectionOwner(owned, { owned: true })
@@ -175,7 +181,8 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
   })
 
   it('M10 the raw handle loses a write to a foreign rollback; the guarded view refuses it with a typed error', async () => {
-    const owner = createConnectionOwner(await notesDatabase(), { owned: true })
+    const injected = await notesDatabase()
+    const owner = createConnectionOwner(injected, { owned: true })
     const aborted = (label: string) => owner.transaction(async (tx) => {
       await tx.sql`INSERT INTO notes (text) VALUES (${label})`
       await delay(10)
@@ -183,7 +190,7 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
     })
     const rawA = aborted('A1')
     await delay(1)
-    await owner.unguardedDb.sql`INSERT INTO notes (text) VALUES (${'raw B'})`
+    await injected.sql`INSERT INTO notes (text) VALUES (${'raw B'})`
     await expect(rawA).rejects.toThrow('A1 rolls back')
     expect(await owner.run(noteTexts)).toEqual([])
 
@@ -215,7 +222,7 @@ describe('review fixes: directories, journal mode, guarded view, non-blocking be
     clearInterval(ticker)
     // A blocking BEGIN would allow no tick at all; any tick proves the loop kept running.
     expect(ticks).toBeGreaterThan(0)
-    expect(await readPragma(owner.unguardedDb, 'busy_timeout')).toBe(2_000)
+    expect(await owner.run(db => readPragma(db, 'busy_timeout'))).toBe(2_000)
     expect(await owner.run(noteTexts)).toEqual(['after wait'])
     await Promise.all([owner.close(), other.dispose()])
   })

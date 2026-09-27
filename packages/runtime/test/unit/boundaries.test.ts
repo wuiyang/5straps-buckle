@@ -29,3 +29,11 @@ describe('F54 package entry boundaries (runtime part)', () => {
     expect(offenders).toEqual([])
   })
 })
+
+describe('greenfield public surface (ruling 2)', () => {
+  it('exports no internal steps or helpers from the public entries', async () => {
+    const internal = ['renderHuman', 'validateServiceGraph', 'cancelledOutcome', 'runRequestInScope']
+    const entries = [await import('../../src/index.js'), await import('../../src/sqlite/index.js'), await import('../../src/nitro/index.js')]
+    expect(entries.flatMap(entry => Object.keys(entry)).filter(name => internal.includes(name))).toEqual([])
+  })
+})

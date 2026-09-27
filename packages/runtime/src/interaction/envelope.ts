@@ -1,7 +1,7 @@
 import { RuntimeError } from '../errors.js'
 import { MAX_TIMER_MS } from '../internal/timeouts.js'
 import { InteractionErrorCode } from './codes.js'
-import type { CliRequest } from './types.js'
+import type { CliOutcome, CliRequest } from './types.js'
 
 export function invalidWaitError(request: CliRequest): RuntimeError | undefined {
   if (request.wait.mode === 'indefinite') return undefined
@@ -29,4 +29,8 @@ function sameDetails(a: CliRequest['action']['details'], b: CliRequest['action']
 
 function sameWait(a: CliRequest['wait'], b: CliRequest['wait']): boolean {
   return a.mode === 'indefinite' ? b.mode === 'indefinite' : b.mode === 'finite' && a.timeoutMs === b.timeoutMs
+}
+
+export function cancelledOutcome(request: CliRequest, reason: unknown): CliOutcome {
+  return { status: 'cancelled', requestId: request.id, reason: reason instanceof Error ? reason.message : String(reason ?? 'cancelled') }
 }

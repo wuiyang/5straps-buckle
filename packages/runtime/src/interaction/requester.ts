@@ -3,10 +3,8 @@ import { runInScope, useScopeSafe, type OperationScope } from '../scope/als.js'
 import { isScopeUsable } from '../scope/operation-scope.js'
 import { assertNoActiveTransaction } from '../transaction/guard.js'
 import { InteractionErrorCode } from './codes.js'
-import { invalidWaitError, sameEnvelope } from './envelope.js'
+import { cancelledOutcome, invalidWaitError, sameEnvelope } from './envelope.js'
 import type { CliConsumer, CliConsumerResult, CliOutcome, CliRequest, PendingInteraction, RequestCli, UnavailableReason } from './types.js'
-
-export { InteractionErrorCode } from './codes.js'
 
 export interface CliConsumerSlot {
   attach(consumer: CliConsumer): () => void
@@ -212,8 +210,4 @@ function isAnswered(result: unknown): result is Extract<CliConsumerResult, { sta
 function isDenied(result: unknown): result is Extract<CliConsumerResult, { status: 'denied' }> {
   const candidate = result as { status?: unknown; reason?: unknown } | null
   return candidate?.status === 'denied' && (candidate.reason === undefined || typeof candidate.reason === 'string')
-}
-
-export function cancelledOutcome(request: CliRequest, reason: unknown): CliOutcome {
-  return { status: 'cancelled', requestId: request.id, reason: reason instanceof Error ? reason.message : String(reason ?? 'cancelled') }
 }

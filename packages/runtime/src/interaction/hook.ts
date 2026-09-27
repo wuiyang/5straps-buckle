@@ -1,8 +1,7 @@
 import { RuntimeError } from '../errors.js'
 import { assertNoActiveTransaction } from '../transaction/guard.js'
 import { InteractionErrorCode } from './codes.js'
-import { invalidWaitError } from './envelope.js'
-import { cancelledOutcome } from './requester.js'
+import { cancelledOutcome, invalidWaitError } from './envelope.js'
 import type { CliOutcome, CliRequest, PendingInteraction, RequestCli, UnavailableReason } from './types.js'
 
 export type CliRespond = (outcome: CliOutcome) => void

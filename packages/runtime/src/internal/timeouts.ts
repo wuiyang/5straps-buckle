@@ -1,12 +1,8 @@
 // Node timers overflow above this and fire at once.
 export const MAX_TIMER_MS = 2 ** 31 - 1
 
-export function isTimerMs(value: number): boolean {
-  return Number.isInteger(value) && value > 0 && value <= MAX_TIMER_MS
-}
-
 export function assertTimerMs(name: string, value: number): void {
-  if (!isTimerMs(value)) throw new TypeError(`${name} must be an integer between 1 and ${MAX_TIMER_MS} ms; got ${value}`)
+  if (!Number.isInteger(value) || value <= 0 || value > MAX_TIMER_MS) throw new TypeError(`${name} must be an integer between 1 and ${MAX_TIMER_MS} ms; got ${value}`)
 }
 
 // True when every promise settled before the deadline; the timer never outlives the wait.
