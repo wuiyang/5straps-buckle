@@ -94,14 +94,15 @@ describe('F08 callback completion', () => {
 })
 
 describe('F09 listener rejection propagates', () => {
-  it('turns a failing cli:call listener into a typed 500 within 100 ms', async () => {
+  it('turns a failing cli:call listener into a typed 500 promptly', async () => {
     const fixture = await serve({ extra: { FIXTURE_CLI_LISTENER: 'reject' } })
     await ask(fixture, { summary: 'warm the route' })
     const startedAt = performance.now()
     const result = await ask(fixture, { summary: 'listener throws' })
     const elapsed = performance.now() - startedAt
     expect(result).toEqual({ status: 500, body: { error: 'CLI interaction failed: CliListenerFailedError' } })
-    expect(elapsed).toBeLessThan(100)
+    // The request waits indefinitely otherwise; the loose bound survives release:check load and ARM64 CI (review L14).
+    expect(elapsed).toBeLessThan(1_000)
     expect(fixture.events.some(event => event.message === 'request failed')).toBe(false)
   })
 })

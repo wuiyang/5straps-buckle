@@ -1,7 +1,11 @@
 {
   "extends": "../../../../tsconfig.base.json",
   "compilerOptions": {
-    "noUnusedLocals": false
+    "noUnusedLocals": false,
+    "paths": {
+      "@5straps/runtime": ["../../src/index.ts"],
+      "@5straps/runtime/nitro": ["../../src/nitro/index.ts"]
+    }
   },
   "include": ["./augmentation.ts"]
 }

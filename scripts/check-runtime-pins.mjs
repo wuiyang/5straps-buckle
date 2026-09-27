@@ -48,15 +48,27 @@ function checkLockfile(lock) {
   if (!importer) return [`pnpm-lock.yaml has no ${RUNTIME_IMPORTER} importer; run pnpm install`]
   const problems = []
   for (const [name, pin] of Object.entries(RUNTIME_PINS)) {
-    const version = /^\s+version: (\S+)/m.exec(importer.split(new RegExp(`^ {6}'?${name}'?:$`, 'm'))[1] ?? '')?.[1]
-    if (version?.split('(')[0] !== pin) problems.push(`lockfile resolves ${name} to ${version ?? 'nothing'}, expected ${pin}`)
+    const version = importerVersion(importer, name)
+    if (version !== pin) problems.push(`lockfile resolves ${name} to ${version ?? 'nothing'}, expected ${pin}`)
   }
   const nitro = lockSection(lock, 'snapshots:', `  nitro@${RUNTIME_PINS.nitro}:`)
   for (const name of ['h3', 'db0']) {
-    const version = new RegExp(`^ {6}${name}: (\\S+)`, 'm').exec(nitro ?? '')?.[1]
-    if (version?.split('(')[0] !== RUNTIME_PINS[name]) problems.push(`nitro resolves ${name} to ${version ?? 'nothing'}, expected the shared ${RUNTIME_PINS[name]} instance`)
+    const version = nitroDependency(nitro, name)
+    if (version !== RUNTIME_PINS[name]) problems.push(`nitro resolves ${name} to ${version ?? 'nothing'}, expected the shared ${RUNTIME_PINS[name]} instance`)
   }
+  // The real-hook tests import hookable directly; they only prove Nitro's behaviour on Nitro's own copy.
+  const testHookable = importerVersion(importer, 'hookable')
+  const nitroHookable = nitroDependency(nitro, 'hookable')
+  if (!testHookable || testHookable !== nitroHookable) problems.push(`runtime tests use hookable ${testHookable ?? 'nothing'} but nitro resolves ${nitroHookable ?? 'nothing'}; declare the same version`)
   return problems
+}
+
+function importerVersion(importer, name) {
+  return /^\s+version: (\S+)/m.exec(importer.split(new RegExp(`^ {6}'?${name}'?:$`, 'm'))[1] ?? '')?.[1]?.split('(')[0]
+}
+
+function nitroDependency(nitro, name) {
+  return new RegExp(`^ {6}${name}: (\\S+)`, 'm').exec(nitro ?? '')?.[1]?.split('(')[0]
 }
 
 function lockSection(lock, topLevel, heading) {

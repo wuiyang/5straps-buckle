@@ -1,10 +1,11 @@
-// F55: compiled in its own program so the augmentation must arrive through the /nitro entry import.
+// F55: compiled in its own program so the augmentation must arrive through the /nitro entry import,
+// addressed by the package specifier a backend uses.
 import type { H3Event } from 'h3'
 import type { NitroApp } from 'nitro/types'
-import type { CliRequest } from '../../src/index.js'
-import { registerCliListener } from '../../src/nitro/index.js'
+import type { CliRequest } from '@5straps/runtime'
+import { registerCliListener } from '@5straps/runtime/nitro'
 
-declare module '../../src/nitro/index.js' {
+declare module '@5straps/runtime/nitro' {
   interface RuntimeServices {
     getNotes(): string[]
   }

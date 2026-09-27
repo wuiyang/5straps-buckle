@@ -62,7 +62,8 @@ describe('bounded scope drain (review M8)', () => {
     scope.onDispose(() => { cleaned.push('cleanup') })
     const started = performance.now()
     const error = await scope.dispose().catch((failure: unknown) => failure)
-    expect(performance.now() - started).toBeLessThan(1_000)
+    // Loose bound: well under the 10 s default drain it replaces.
+    expect(performance.now() - started).toBeLessThan(5_000)
     expect(cleaned).toEqual(['cleanup'])
     expect(error).toBeInstanceOf(DisposalError)
     expect(isRuntimeError((error as DisposalError).errors[0], RuntimeErrorCode.drainTimeout)).toBe(true)

@@ -135,7 +135,8 @@ describe('F26 WebSocket through handleUpgrade with first-frame authentication', 
     const timedOut = await silent.closed
     expect(timedOut.code).toBe(4408)
     expect(timedOut.at - openedAt).toBeGreaterThanOrEqual(1_900)
-    expect(timedOut.at - openedAt).toBeLessThan(3_000)
+    // Code 4408 already proves the idle expiry; the upper bound only rules out a hang (loose for loaded CI, review L14).
+    expect(timedOut.at - openedAt).toBeLessThan(10_000)
 
     const wrong = connect(fixture)
     await wrong.opened

@@ -28,13 +28,15 @@ describe('cross-process SQLite coordination', () => {
     await db.dispose()
   }, 60_000)
 
-  it('F34 fails a try-lock held by another process with LockBusyError in under 50 ms', async () => {
+  // Bounds are loose on purpose (review L14): release:check load and ARM64 CI stretch wall time, not behaviour.
+  it('F34 fails a try-lock held by another process with LockBusyError without waiting', async () => {
     const path = lockPath()
     const holder = startWorker(['hold-lock', path, '5000'])
     await holder.next(message => message.locked === true)
     const started = performance.now()
     await expectLockBusy(acquireFileLock({ path, wait: 'none' }))
-    expect(performance.now() - started).toBeLessThan(50)
+    // No polling: far below the 300 s default deadline and any poll interval (under 50 ms on a quiet machine).
+    expect(performance.now() - started).toBeLessThan(1_000)
     holder.child.kill('SIGKILL')
     await holder.exited
   }, 20_000)
@@ -71,10 +73,11 @@ describe('cross-process SQLite coordination', () => {
     await holder.next(message => message.locked === true)
     await expectLockBusy(acquireFileLock({ path, wait: 'none' }))
     holder.child.kill('SIGKILL')
-    const killedAt = performance.now()
     await holder.exited
-    const lock = await acquireFileLock({ path, wait: { deadlineMs: 1_000 } })
-    expect(performance.now() - killedAt).toBeLessThan(1_000)
+    // Timed from the holder's exit, not from kill(): the OS frees the lock with the process.
+    const exitedAt = performance.now()
+    const lock = await acquireFileLock({ path, wait: { deadlineMs: 5_000 } })
+    expect(performance.now() - exitedAt).toBeLessThan(1_000)
     await lock.release()
   }, 20_000)
 

@@ -61,7 +61,8 @@ describe('hook completion (createHookRequestCli)', () => {
     const requestCli = createHookRequestCli({ hasListener: () => true, dispatch: async () => { throw new Error('terminal crashed') } })
     const started = Date.now()
     const error = await requestCli(request('a')).catch((failure: unknown) => failure)
-    expect(Date.now() - started).toBeLessThan(100)
+    // Well before the request's own 1 s timeout could settle it instead (loose bound, review L14).
+    expect(Date.now() - started).toBeLessThan(500)
     expect(isRuntimeError(error, InteractionErrorCode.listenerFailed)).toBe(true)
     expect((error as Error).cause).toEqual(new Error('terminal crashed'))
   })

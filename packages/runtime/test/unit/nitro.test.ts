@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { H3, HTTPError, type H3Event } from 'h3'
 import { HookableCore } from 'hookable'
 import type { NitroApp, NitroAppPlugin, NitroRuntimeHooks } from 'nitro/types'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createLogger, createRuntimeOwner, defineScoped, useScope, type LogEvent, type RuntimeOwner } from '../../src/index.js'
 import { bindHost, createRequestCli, defineContextPlugin, defineGuardedHandler, NitroErrorCode, registerCliListener, requireReady, runGuards, useHost, type Guard } from '../../src/nitro/index.js'
 
@@ -104,7 +104,8 @@ describe('Nitro host bridge and context plugin', () => {
     } })
     const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: app => app.get('/hung', hung) })
     bindHost(nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
-    const response = await Promise.race([nitroApp.fetch(new Request('http://local/hung')), delay(1_000).then(() => undefined)])
+    // Loose bound: well under the 10 s default drain the response used to wait for.
+    const response = await Promise.race([nitroApp.fetch(new Request('http://local/hung')), delay(5_000).then(() => undefined)])
     expect(response?.status).toBe(200)
     expect(requestScope?.state).toBe('disposing')
   })
@@ -152,8 +153,7 @@ describe('Nitro host bridge and context plugin', () => {
 
     await nitroApp.fetch(new Request('http://local/idle'))
     expect(scopes[1]!.state).toBe('active')
-    await delay(100)
-    expect(scopes[1]!.state).toBe('disposed')
+    await vi.waitFor(() => expect(scopes[1]!.state).toBe('disposed'), { timeout: 5_000, interval: 10 })
   })
 
   it('exposes requireReady as a plain guard for middleware use', async () => {

@@ -17,11 +17,11 @@ function runCheck(root: string): { status: number; output: string } {
   }
 }
 
-function copyRepositoryPinInputs(edit: (manifest: Record<string, Record<string, string>>) => void): string {
+function copyRepositoryPinInputs(edit: (manifest: Record<string, Record<string, string>>) => void, editLock: (lock: string) => string = lock => lock): string {
   const root = mkdtempSync(join(tmpdir(), 'pins-'))
   mkdirSync(join(root, 'packages/runtime'), { recursive: true })
   cpSync(join(repository, 'package.json'), join(root, 'package.json'))
-  cpSync(join(repository, 'pnpm-lock.yaml'), join(root, 'pnpm-lock.yaml'))
+  writeFileSync(join(root, 'pnpm-lock.yaml'), editLock(readFileSync(join(repository, 'pnpm-lock.yaml'), 'utf8')))
   const manifest = JSON.parse(readFileSync(join(repository, 'packages/runtime/package.json'), 'utf8'))
   edit(manifest)
   writeFileSync(join(root, 'packages/runtime/package.json'), JSON.stringify(manifest))
@@ -45,6 +45,13 @@ describe('F57 runtime pin guard', () => {
   it('rejects a non-optional h3 peer', () => {
     const root = copyRepositoryPinInputs(manifest => { manifest.peerDependenciesMeta = {} })
     expect(runCheck(root).output).toContain('h3 peer must be optional')
+  })
+
+  it('L13 rejects a test hookable that differs from the one nitro resolves', () => {
+    const root = copyRepositoryPinInputs(() => {}, lock => lock.replace(/(\n {2}packages\/runtime:\n[\s\S]*?\n {6}hookable:\n {8}specifier: )6\.1\.1(\n {8}version: )6\.1\.1/, '$16.1.0$26.1.0'))
+    const result = runCheck(root)
+    expect(result.status).toBe(1)
+    expect(result.output).toContain('runtime tests use hookable 6.1.0 but nitro resolves 6.1.1')
   })
 
   it('rejects better-sqlite3 because the runtime uses node:sqlite', () => {
