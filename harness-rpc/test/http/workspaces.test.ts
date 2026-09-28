@@ -1,31 +1,39 @@
-import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it } from 'vitest'
-import type { Hono } from 'hono'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
-import { createHttpApp } from '../server/hono/http-app.js'
-import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type { BuckleConfig } from '../../common/runtime/config.js'
+import { createWorkspaceManager } from '../../common/services/workspaces/workspace-manager.js'
+import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const NODE_AGENT = 'node-agent'
 const NODE_SETUP = 'node-setup'
 const agent = (id: string) => `workspace-agent-${id}-fixture-only`
 const setup = (id: string) => `workspace-setup-${id}-fixture-only`
 const headers = (token: string) => ({ authorization: `Bearer ${token}`, 'content-type': 'application/json' })
-let app: Hono
-let config: BuckleConfig
+let app: BuckleHttp
 let root: string
+const nodes: BuckleHttp[] = []
+
+/** A node on this test's directories; configure sets what no environment variable carries. */
+async function node(configure?: (config: BuckleConfig) => void): Promise<BuckleHttp> {
+  const started = await createBuckleHttp({
+    environment: { BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_SETUP, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '0' },
+    ...(configure ? { configure } : {}),
+  })
+  nodes.push(started)
+  return started
+}
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'buckle-multi-'))
-  const { mkdirSync } = await import('node:fs')
-  for (const folder of ['default', 'one', 'two', 'state']) mkdirSync(join(root, folder))
-  config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_SETUP, BUCKLE_ALLOW_SHELL: 'false' })
-  app = createHttpApp({ config, runtime: await createRuntime({ config }), authToken: NODE_AGENT })
+  for (const folder of ['default', 'one', 'two']) mkdirSync(join(root, folder))
+  mkdirSync(join(root, 'state'), { mode: 0o700 })
+  app = await node()
   writeFileSync(join(root, 'one', 'hello.txt'), 'workspace one')
   writeFileSync(join(root, 'two', 'hello.txt'), 'workspace two')
 })
+afterEach(async () => { for (const started of nodes.splice(0)) await started.close() })
 
 function register(id: string, token = NODE_SETUP, overrides: Record<string, unknown> = {}) {
   return app.request('/setup/workspaces', { method: 'POST', headers: headers(token), body: JSON.stringify({ id, name: `Workspace ${id}`, root: join(root, id), authToken: agent(id), adminToken: setup(id), ...overrides }) })
@@ -82,7 +90,7 @@ describe('multiple workspaces on one Buckle', () => {
 
   it('persists registration and supports disabling and enabling without deleting files', async () => {
     await register('one')
-    app = createHttpApp({ config, runtime: await createRuntime({ config }), authToken: NODE_AGENT })
+    app = await node()
     expect((await invoke('one', agent('one'))).status).toBe(200)
     const patch = (enabled: boolean) => app.request('/setup/workspaces/one', { method: 'PATCH', headers: headers(NODE_SETUP), body: JSON.stringify({ enabled }) })
     expect((await patch(false)).status).toBe(200)
@@ -102,17 +110,18 @@ describe('multiple workspaces on one Buckle', () => {
 })
 
 it('rejects workspaces exposed by inherited host read-only mounts', async () => {
-  config.mountReadOnlyPaths = [root]
-  app = createHttpApp({ config, runtime: await createRuntime({ config }), authToken: NODE_AGENT })
+  app = await node(config => { config.mountReadOnlyPaths = [root] })
   const response = await register('one')
   expect(response.status).toBe(409)
   expect(await response.text()).toContain('read-only mount')
 })
 
 it('inherits the node callbacks, so a registered workspace is not absent from the audit trail', async () => {
-  config.reportUrl = 'https://reports.example.test/events'
-  config.reportToken = 'node-report-fixture'
-  config.approvalWebhook = 'https://reports.example.test/approvals'
+  app = await node((config) => {
+    config.reportUrl = 'https://reports.example.test/events'
+    config.reportToken = 'node-report-fixture'
+    config.approvalWebhook = 'https://reports.example.test/approvals'
+  })
   await register('one')
   const response = await app.request('/workspaces/one/setup/status', { headers: headers(setup('one')) })
   expect(response.status).toBe(200)
@@ -158,12 +167,11 @@ it('checks policy revisions and applies read-denied paths to filesystem tools', 
 })
 
 it('keeps explicit credential mounts out of managed workspaces', async () => {
-  config.sandboxMounts = [{ source: join(root, 'two', 'hello.txt'), target: '/srv/auth/config.json', readOnly: true }]
-  const runtime = await createRuntime({ config })
-  app = createHttpApp({ config, runtime, authToken: NODE_AGENT })
+  app = await node((config) => { config.sandboxMounts = [{ source: join(root, 'two', 'hello.txt'), target: '/srv/auth/config.json', readOnly: true }] })
   expect((await register('two')).status).toBe(409)
   expect((await register('one')).status).toBe(201)
-  const manager = createWorkspaceManager({ config, runtime })
+  const manager = createWorkspaceManager({ config: app.config, runtime: app.runtime })
   const child = await manager.resolve('one')
   expect(child.config.sandboxMounts).toEqual([])
+  await child.runtime.history.close()
 })

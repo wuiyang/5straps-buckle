@@ -1,4 +1,3 @@
-import { createWorkbenchApp } from './workbench-app.js'
 import { bodyLimit } from 'hono/body-limit'
 import { auditHttpRequest } from './audit.js'
 import { createMcpHandler } from '@modelcontextprotocol/server'
@@ -9,7 +8,6 @@ import type { BuckleConfig } from '../../common/runtime/config.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import type { WorkspaceManager } from '../../common/services/workspaces/workspace-manager.js'
 import { createMcpServer } from '../../mcp/server.js'
-import { createRpcApp } from './rpc-app.js'
 import { requireBearerToken } from './auth.js'
 import { allowPostOnly } from './mcp-allow.js'
 import { createWorkspaceApp } from './workspace-app.js'
@@ -17,9 +15,9 @@ import { createSetupApp } from './setup-app.js'
 import { stateBusyResponse } from './state-busy.js'
 
 /**
- * The whole HTTP surface: native RPC under /v1 and MCP under /mcp, both behind the same bearer
- * gate, and the owner's /setup behind a different one when an admin credential is configured. Only
- * /health is open, and it reports nothing a caller could act on.
+ * What the Hono faces still serve until their layers move (B16, B17): MCP under /mcp behind the agent
+ * token, the owner's /setup behind a different one when an admin credential is configured, and the
+ * /workspaces/[id]/ twins of both. The native RPC and workbench routes are the common layer's.
  */
 export function createHttpApp(input: {
   config: BuckleConfig
@@ -31,8 +29,6 @@ export function createHttpApp(input: {
   const { config, runtime, authToken } = input
   const app = new Hono()
   app.route('/', createWorkspaceApp({ config, runtime, ...(input.workspaces ? { workspaces: input.workspaces } : {}) }))
-  app.route('/v1/workbenches', createWorkbenchApp(runtime))
-  app.route('/', createRpcApp({ config, runtime, authToken }))
 
   const mcpHandler = createMcpHandler(() => createMcpServer({
     runtime,

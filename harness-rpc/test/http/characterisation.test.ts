@@ -10,7 +10,8 @@ import { createBuckleHttp } from '../support/buckle-http.js'
 
 // Pins the edge responses through the Nitro move (Buckle phase plan, B2), on the served surface:
 // the harness answers through serve's dispatcher. The commits that move a route flip the matching
-// expectation on purpose and list the flip in their message. B13: /health is Nitro's.
+// expectation on purpose and list the flip in their message. B13: /health is Nitro's. B15: /v1/**,
+// /workspaces/[id]/(health|v1/**) and every path outside the MCP and setup faces are Nitro's.
 
 const NODE_AGENT = 'node-agent-characterisation-only'
 const NODE_ADMIN = 'node-admin-characterisation-only'
@@ -40,7 +41,12 @@ async function node(options: { admin?: boolean } = {}) {
     const response = await request('/setup/workspaces', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', root: join(root, 'one'), authToken: ONE_AGENT, adminToken: ONE_ADMIN }) })
     expect(response.status).toBe(201)
   }
-  return { root, config, runtime, request, registerOne }
+  async function provisionWorkbench(): Promise<{ id: string; token: string }> {
+    const grant = { id: randomUUID(), token: 'workbench-grant-characterisation-only-32', projectId: 'project', chatId: 'chat', allowShell: false }
+    expect((await request('/setup/workbenches', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify(grant) })).status).toBe(200)
+    return grant
+  }
+  return { root, config, runtime, request, registerOne, provisionWorkbench }
 }
 
 function json(token?: string): Record<string, string> {
@@ -78,11 +84,13 @@ function audited(runtime: BuckleRuntime): ActionLogEntry[] {
 }
 
 describe('413 on every face (content-length and chunked)', () => {
+  const tooLarge = { status: 413, contentType: 'application/json', body: { error: 'Request body is too large' } }
   const faces = [
-    { face: '/v1/invoke', token: NODE_AGENT, limit: MAX_REQUEST_BYTES, expected: { status: 413, contentType: 'application/json', body: { error: 'Request body is too large' } } },
+    { face: '/v1/invoke', token: NODE_AGENT, limit: MAX_REQUEST_BYTES, expected: tooLarge },
     { face: '/mcp', token: NODE_AGENT, limit: MAX_REQUEST_BYTES, expected: { status: 413, contentType: 'text/plain', body: 'Payload Too Large' } },
     { face: '/workspaces/one/mcp', token: ONE_AGENT, limit: MAX_REQUEST_BYTES, expected: { status: 500, contentType: 'application/json', body: { error: 'Internal Buckle error' } } },
-    { face: `/v1/workbenches/${randomUUID()}/invoke`, token: 'any-workbench-token', limit: WORKBENCH_BODY_LIMIT, expected: { status: 422, contentType: 'application/json', body: { error: 'Workbench operation failed; inspect Buckle logs' } } },
+    // B15 flip: 422 became the JSON 413, and the grant is checked before the body (it was after).
+    { face: '/v1/workbenches/:grant/invoke', token: ':grant', limit: WORKBENCH_BODY_LIMIT, expected: tooLarge },
     { face: '/setup/workspaces', token: NODE_ADMIN, limit: SETUP_BODY_LIMIT, expected: { status: 500, contentType: 'application/json', body: { error: 'Workspace request failed; inspect local owner logs' } } },
     { face: '/setup/workbenches', token: NODE_ADMIN, limit: SETUP_BODY_LIMIT, expected: { status: 422, contentType: 'application/json', body: { error: 'Workbench operation failed; inspect Buckle logs' } } },
   ]
@@ -91,8 +99,9 @@ describe('413 on every face (content-length and chunked)', () => {
       it(`${face} with ${kind}`, async () => {
         const buckle = await node()
         if (face.startsWith('/workspaces/one/')) await buckle.registerOne()
+        const grant = face.includes(':grant') ? await buckle.provisionWorkbench() : undefined
         const body = oversized(kind, limit + 1)
-        const response = await buckle.request(face, { method: 'POST', ...body, headers: { ...MCP_HEADERS, ...bearer(token), ...body.headers } })
+        const response = await buckle.request(face.replace(':grant', grant?.id ?? ''), { method: 'POST', ...body, headers: { ...MCP_HEADERS, ...bearer(token.replace(':grant', grant?.token ?? '')), ...body.headers } })
         expect(await shape(response)).toEqual(expected)
       })
     }
@@ -116,17 +125,22 @@ describe('unhandled setup-face errors', () => {
 })
 
 describe('404 and method mismatch', () => {
-  it('answers Hono\'s text 404 for an unknown path', async () => {
+  const notFound = { status: 404, contentType: 'application/json', body: { error: 'Not Found' } }
+
+  // B15 flip: Hono's text 404 became Nitro's JSON 404.
+  it('answers the JSON 404 for an unknown path', async () => {
     const buckle = await node()
-    expect(await shape(await buckle.request('/nope'))).toEqual({ status: 404, contentType: 'text/plain', body: '404 Not Found' })
-    expect(await shape(await buckle.request('/v1/nope', { headers: bearer(NODE_AGENT) }))).toEqual({ status: 404, contentType: 'text/plain', body: '404 Not Found' })
+    expect(await shape(await buckle.request('/nope'))).toEqual(notFound)
+    expect(await shape(await buckle.request('/v1/nope', { headers: bearer(NODE_AGENT) }))).toEqual(notFound)
   })
 
-  it('answers the text 404 for a wrong method on an existing Hono path, and JSON on a Nitro one', async () => {
+  // B13 flip for /health, B15 for /v1/manifest: a wrong method falls through to the catch-all, so the
+  // credential is still checked first (the compiled router falls back from a method-specific route).
+  it('answers the JSON 404 for a wrong method on an existing path, after the credential', async () => {
     const buckle = await node()
-    expect(await shape(await buckle.request('/v1/manifest', { method: 'POST', headers: bearer(NODE_AGENT) }))).toEqual({ status: 404, contentType: 'text/plain', body: '404 Not Found' })
-    // B13 flip: /health is a Nitro file route, whose error handler answers JSON.
-    expect(await shape(await buckle.request('/health', { method: 'POST' }))).toEqual({ status: 404, contentType: 'application/json', body: { error: 'Not Found' } })
+    expect(await shape(await buckle.request('/v1/manifest', { method: 'POST', headers: bearer(NODE_AGENT) }))).toEqual(notFound)
+    expect((await buckle.request('/v1/manifest', { method: 'POST' })).status).toBe(401)
+    expect(await shape(await buckle.request('/health', { method: 'POST' }))).toEqual(notFound)
   })
 
   it('checks the bearer token before anything else, OPTIONS included', async () => {
@@ -151,10 +165,11 @@ describe('the /workspaces/:id twins', () => {
   const rows = [
     { name: 'oversized POST /v1/invoke', path: '/workspaces/one/v1/invoke', method: 'POST', token: ONE_AGENT, bytes: MAX_REQUEST_BYTES + 1, expected: { status: 413, contentType: 'application/json', body: { error: 'Request body is too large' } } },
     { name: 'oversized POST /setup/workbenches', path: '/workspaces/one/setup/workbenches', method: 'POST', token: ONE_ADMIN, bytes: SETUP_BODY_LIMIT + 1, expected: { status: 422, contentType: 'application/json', body: { error: 'Workbench operation failed; inspect Buckle logs' } } },
-    { name: 'GET /v1/nope', path: '/workspaces/one/v1/nope', method: 'GET', token: ONE_AGENT, expected: { status: 404, contentType: 'text/plain', body: '404 Not Found' } },
-    { name: 'GET /nope', path: '/workspaces/one/nope', method: 'GET', token: ONE_AGENT, expected: { status: 404, contentType: 'text/plain', body: '404 Not Found' } },
+    // B15 flips: the text 404s became Nitro's JSON 404.
+    { name: 'GET /v1/nope', path: '/workspaces/one/v1/nope', method: 'GET', token: ONE_AGENT, expected: { status: 404, contentType: 'application/json', body: { error: 'Not Found' } } },
+    { name: 'GET /nope', path: '/workspaces/one/nope', method: 'GET', token: ONE_AGENT, expected: { status: 404, contentType: 'application/json', body: { error: 'Not Found' } } },
     { name: 'GET /setup/x', path: '/workspaces/one/setup/x', method: 'GET', token: ONE_ADMIN, expected: { status: 404, contentType: 'text/plain', body: '404 Not Found' } },
-    { name: 'POST /v1/manifest', path: '/workspaces/one/v1/manifest', method: 'POST', token: ONE_AGENT, expected: { status: 404, contentType: 'text/plain', body: '404 Not Found' } },
+    { name: 'POST /v1/manifest', path: '/workspaces/one/v1/manifest', method: 'POST', token: ONE_AGENT, expected: { status: 404, contentType: 'application/json', body: { error: 'Not Found' } } },
   ]
   for (const row of rows) {
     it(`${row.name} answers as its node-level route does today`, async () => {

@@ -6,12 +6,19 @@ import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { withFileLock } from '@5straps/runtime/sqlite'
 import { ZodError, type z } from 'zod'
 import { logger } from '../runtime/log.js'
+import type { ServiceFailure } from '../types/service-failure.js'
+
+/** Temporary contention on Buckle's state: HTTP answers 503 so the caller retries. */
+export const STATE_BUSY = 'STATE_BUSY'
 
 /** A state file that exists but cannot be used; the message names the file and the invalid fields, never a value. */
 export class StateFileError extends Error {}
 
 /** Another process held the state file's lock past the wait; HTTP answers 503, the CLI exits 1. */
-export class StateBusyError extends Error {}
+export class StateBusyError extends Error implements ServiceFailure {
+  readonly code = STATE_BUSY
+  readonly status = 503
+}
 
 // Same bound as the busy timeout it replaces, now polled so the event loop keeps running.
 const LOCK_DEADLINE_MS = 5_000

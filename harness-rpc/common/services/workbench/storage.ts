@@ -5,8 +5,10 @@ import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { acquireFileLock, type FileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { WorkbenchIdSchema, WorkbenchRecordSchema, type WorkbenchRecord } from '@5straps/protocol'
+import type { ServiceFailure } from '../../types/service-failure.js'
 
-export class WorkbenchError extends Error {
+export class WorkbenchError extends Error implements ServiceFailure {
+  readonly code = 'WORKBENCH_REFUSED'
   constructor(message: string, readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 422 | 503 = 409) { super(message) }
 }
 export const StoredWorkbenchSchema = WorkbenchRecordSchema.extend({ tokenHash: z.string(), policyHash: z.string() })

@@ -1,34 +1,35 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Hono } from 'hono'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
-import { createHttpApp } from '../server/hono/http-app.js'
-import { workspaceRegistryCommand } from '../cli/workspace.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
-import { compilePolicy } from '../common/domain/policy.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { loadConfig, type BuckleConfig } from '../../common/runtime/config.js'
+import { workspaceRegistryCommand } from '../../cli/workspace.js'
+import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
+import { createCommandPolicyRule } from '../../common/domain/permission/rules/command-policy-rule.js'
+import { compilePolicy } from '../../common/domain/policy.js'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
+import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const NODE_AGENT = 'node-agent-token-fixture'
 const NODE_ADMIN = 'node-admin-credential-fixture'
 const WORKSPACE_AGENT = 'workspace-agent-token-fixture-only'
 const WORKSPACE_ADMIN = 'workspace-admin-credential-fixture-only'
 const headers = (token: string) => ({ authorization: `Bearer ${token}`, 'content-type': 'application/json' })
-let app: Hono
+let app: BuckleHttp
 let config: BuckleConfig
 let runtime: BuckleRuntime
 let root: string
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'buckle-tokens-'))
-  for (const folder of ['default', 'one', 'state']) mkdirSync(join(root, folder))
+  for (const folder of ['default', 'one']) mkdirSync(join(root, folder))
+  mkdirSync(join(root, 'state'), { mode: 0o700 })
   writeFileSync(join(root, 'one', 'hello.txt'), 'workspace one')
-  config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_ALLOW_SHELL: 'false' })
-  runtime = await createRuntime({ config })
-  app = createHttpApp({ config, runtime, authToken: NODE_AGENT })
+  app = await createBuckleHttp({ environment: { BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '0' } })
+  config = app.config
+  runtime = app.runtime
 })
+afterEach(() => app.close())
 
 function register(body: Record<string, unknown> = {}) {
   return app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', root: join(root, 'one'), authToken: WORKSPACE_AGENT, adminToken: WORKSPACE_ADMIN, ...body }) })

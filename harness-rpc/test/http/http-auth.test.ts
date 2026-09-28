@@ -1,11 +1,6 @@
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import type { Hono } from 'hono'
-import { beforeAll, describe, expect, it } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
-import { createHttpApp } from '../server/hono/http-app.js'
-import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
+import { nodeEnvironment } from '../support/node-environment.js'
 
 const TOKEN = 'correct-horse-battery-staple'
 const INITIALIZE = JSON.stringify({
@@ -15,20 +10,15 @@ const INITIALIZE = JSON.stringify({
   params: { protocolVersion: '2026-07-28', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
 })
 
-let app: Hono
+let buckle: BuckleHttp
 
 beforeAll(async () => {
-  const config = loadConfig({
-    BUCKLE_AUTH_TOKEN: TOKEN,
-    BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-auth-')),
-    BUCKLE_ALLOW_SHELL: 'false',
-  })
-  const runtime = await createRuntime({ config })
-  app = createHttpApp({ config, runtime, authToken: TOKEN })
+  buckle = await createBuckleHttp({ environment: nodeEnvironment('buckle-auth-', { BUCKLE_AUTH_TOKEN: TOKEN }).environment })
 })
+afterAll(() => buckle.close())
 
 async function mcpRequest(headers: Record<string, string>): Promise<Response> {
-  return await app.request('/mcp', {
+  return await buckle.request('/mcp', {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
     body: INITIALIZE,
@@ -59,11 +49,17 @@ describe('the MCP face over HTTP', () => {
 
 describe('the native RPC face', () => {
   it('refuses an unauthenticated manifest read', async () => {
-    expect((await app.request('/v1/manifest')).status).toBe(401)
+    expect((await buckle.request('/v1/manifest')).status).toBe(401)
+  })
+
+  it('refuses a wrong token, a prefix of the real one and a non-bearer scheme', async () => {
+    for (const authorization of [`Bearer ${TOKEN}-wrong`, `Bearer ${TOKEN.slice(0, -1)}`, `Basic ${TOKEN}`, 'Bearer ']) {
+      expect((await buckle.request('/v1/manifest', { headers: { authorization } })).status).toBe(401)
+    }
   })
 
   it('serves the manifest to a caller holding the token', async () => {
-    const response = await app.request('/v1/manifest', { headers: { authorization: `Bearer ${TOKEN}` } })
+    const response = await buckle.request('/v1/manifest', { headers: { authorization: `Bearer ${TOKEN}` } })
     expect(response.status).toBe(200)
   })
 })

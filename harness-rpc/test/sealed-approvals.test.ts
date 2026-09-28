@@ -123,8 +123,9 @@ describe('sealed approval decisions on the setup face', () => {
 
   it('keeps the key out of the manifest and the status, which reports the envelope enabled', async () => {
     const encoded = mintApprovalKey()
-    const { app } = await node({ key: encoded })
-    const manifest = await (await app.request('/v1/manifest', { headers: { authorization: 'Bearer agent-token-fixture' } })).text()
+    const { app, runtime } = await node({ key: encoded })
+    // The manifest route serves runtime.manifest() (layers/common, B15); this file moves onto the harness in B17.
+    const manifest = JSON.stringify(runtime.manifest())
     const status = await (await app.request('/setup/status', { headers: ADMIN })).text()
     expect(manifest).not.toContain(encoded)
     expect(status).not.toContain(encoded)

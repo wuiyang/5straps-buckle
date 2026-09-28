@@ -41,19 +41,32 @@ describe('the canonical path', () => {
 })
 
 describe('which router answers', () => {
-  const rows: Array<{ path: string; router: 'nitro' | 'hono'; status: number }> = [
-    { path: '/health', router: 'nitro', status: 200 },
-    { path: '/health/', router: 'nitro', status: 200 },
-    { path: '/%68ealth', router: 'nitro', status: 200 },
-    { path: '/health/%72eady', router: 'nitro', status: 200 },
-    { path: '/health?probe=1', router: 'nitro', status: 200 },
-    { path: '/health/ready?probe=%2F', router: 'nitro', status: 200 },
+  // B15: Hono keeps only the MCP and setup faces, at node level and under /workspaces/[id]/.
+  const rows: Array<{ path: string; router: 'nitro' | 'hono'; status: number; json: boolean }> = [
+    { path: '/health', router: 'nitro', status: 200, json: true },
+    { path: '/health/', router: 'nitro', status: 200, json: true },
+    { path: '/%68ealth', router: 'nitro', status: 200, json: true },
+    { path: '/health/%72eady', router: 'nitro', status: 200, json: true },
+    { path: '/health?probe=1', router: 'nitro', status: 200, json: true },
+    { path: '/health/ready?probe=%2F', router: 'nitro', status: 200, json: true },
     // Nitro owns the canonical path; its own router does not collapse slashes, so it answers 404.
-    { path: '//health', router: 'nitro', status: 404 },
-    { path: '/health/../setup', router: 'hono', status: 404 },
-    { path: '/health/%2e%2e/setup', router: 'hono', status: 404 },
-    { path: '/HEALTH', router: 'hono', status: 404 },
-    { path: '/health%2Fready', router: 'hono', status: 404 },
+    { path: '//health', router: 'nitro', status: 404, json: true },
+    { path: '/HEALTH', router: 'nitro', status: 404, json: true },
+    { path: '/health%2Fready', router: 'nitro', status: 404, json: true },
+    { path: '/nope', router: 'nitro', status: 404, json: true },
+    { path: '/v1/manifest', router: 'nitro', status: 401, json: true },
+    { path: '/v1/%6danifest', router: 'nitro', status: 401, json: true },
+    { path: '/v1//manifest', router: 'nitro', status: 401, json: true },
+    { path: '/workspaces/one/%761/invoke', router: 'nitro', status: 401, json: true },
+    { path: '/workspaces/one/nope', router: 'nitro', status: 401, json: true },
+    { path: '/mcp', router: 'hono', status: 401, json: true },
+    { path: '/%6dcp', router: 'hono', status: 401, json: true },
+    { path: '/workspaces/one/mcp', router: 'hono', status: 401, json: true },
+    { path: '/workspaces/one/%6dcp/', router: 'hono', status: 401, json: true },
+    { path: '/workspaces/one/setup/status', router: 'hono', status: 401, json: true },
+    { path: '/health/../setup', router: 'hono', status: 404, json: false },
+    { path: '/health/%2e%2e/setup', router: 'hono', status: 404, json: false },
+    { path: '/%73etup/status', router: 'hono', status: 404, json: false },
   ]
   for (const row of rows) {
     it(`${row.path} goes to ${row.router}`, async () => {
@@ -63,8 +76,8 @@ describe('which router answers', () => {
       const response = await buckle.request(`http://127.0.0.1${row.path}`)
       expect(nitro).toHaveBeenCalledTimes(row.router === 'nitro' ? 1 : 0)
       expect(response.status).toBe(row.status)
-      // Each router's own shape: Nitro answers JSON everywhere, Hono's default 404 is text.
-      expect(response.headers.get('content-type')).toMatch(row.router === 'nitro' ? /^application\/json/ : /^text\/plain/)
+      // Nitro answers JSON everywhere; Hono's default 404 is text.
+      expect(response.headers.get('content-type')).toMatch(row.json ? /^application\/json/ : /^text\/plain/)
     })
   }
 })

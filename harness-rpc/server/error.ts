@@ -11,13 +11,14 @@ export default defineErrorHandler((error, event) => {
   if (!handled) logFailure({ context: getEventContext<H3EventContext>(event), path: new URL(event.req.url).pathname, error })
   const headers = new Headers(handled ? error.headers : undefined)
   headers.set('content-type', 'application/json; charset=utf-8')
-  return new Response(JSON.stringify({ error: publicMessage({ handled, status, error }) }), { status, headers })
+  return new Response(JSON.stringify({ error: publicMessage({ handled, status, error: error as { message: string; statusText?: string } }) }), { status, headers })
 })
 
-// H3's own 404 message echoes the full request URL, host and port included.
-function publicMessage(input: { handled: boolean; status: number; error: { message: string } }): string {
+// The router's own 404 message echoes the full request URL, host and port included, and it is the one
+// 404 without a status text: Buckle's routes raise theirs with one (layers/common/server/utils/errors.ts).
+function publicMessage(input: { handled: boolean; status: number; error: { message: string; statusText?: string } }): string {
   if (!input.handled) return UNHANDLED
-  return input.status === 404 ? 'Not Found' : input.error.message
+  return input.status === 404 && !input.error.statusText ? 'Not Found' : input.error.message
 }
 
 // Inside the request scope when there is one, so the line carries the server correlation id.

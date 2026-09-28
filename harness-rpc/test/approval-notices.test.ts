@@ -4,19 +4,16 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApprovalNotice, ApprovalWait } from '@5straps/protocol'
-import { Hono } from 'hono'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCli } from '../cli/main.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
-import { initializeCommon } from '../common/runtime/initialize.js'
 import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createHttpApp } from '../server/hono/http-app.js'
-import { operationScopes, type ScopeEnv } from '../server/hono/operation-scope.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
 afterEach(() => { vi.useRealTimers() })
@@ -51,19 +48,7 @@ describe('the approval wait hint in InvokeContext', () => {
     await runtime.history.close()
   })
 
-  it('arrives over HTTP in the invoke request\'s context', async () => {
-    const config = node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
-    const common = initializeCommon({ config, role: 'server' })
-    await common.start()
-    const app = new Hono<ScopeEnv>()
-    app.use('*', operationScopes(common, 'grace'))
-    app.route('/', createHttpApp({ config, runtime: await common.services.getWorkspaceRuntime(), authToken: config.authToken, workspaces: await common.services.getWorkspaces() }))
-    const started = performance.now()
-    const response = await app.request('/v1/invoke', { method: 'POST', headers: { authorization: `Bearer ${config.authToken}`, 'content-type': 'application/json' }, body: JSON.stringify(write('one/a.md', { mode: 'none' })) })
-    expect(await response.json()).toMatchObject({ outcome: 'approval_required' })
-    expect(performance.now() - started).toBeLessThan(1_000)
-    await common.owner.close()
-  })
+  // Over HTTP: test/http/approval-http.test.ts, on the harness.
 })
 
 /** A stand-in for the approval webhook, keeping every notice it receives. */

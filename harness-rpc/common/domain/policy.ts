@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { destructivePatterns, emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { compileCommandGlob, CommandGlobError, type CommandGlob } from './command-glob.js'
 import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-pattern.js'
+import type { ServiceFailure } from '../types/service-failure.js'
 
 /**
  * The policy in the form the rules consume. Compiled once per load, so a bad pattern fails
@@ -20,8 +21,16 @@ export interface RefusedEntry {
   reason: string
 }
 
-export class PolicyError extends Error {}
-export class PolicyConflictError extends PolicyError {}
+/** A policy the node refuses: HTTP 400. */
+export class PolicyError extends Error implements ServiceFailure {
+  readonly code: string = 'POLICY_INVALID'
+  readonly status: number = 400
+}
+/** A policy written against a revision that has since changed: HTTP 409. */
+export class PolicyConflictError extends PolicyError {
+  override readonly code = 'POLICY_CONFLICT'
+  override readonly status = 409
+}
 
 /** The stored policy stops the node from loading; the message names the file, what it refuses and the repair. */
 export class StoredPolicyError extends PolicyError {

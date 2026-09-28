@@ -3,14 +3,27 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
-import { createConnectionOwner, openDatabase, rawConnection, withFileLock } from '@5straps/runtime/sqlite'
+import { createConnectionOwner, openDatabase, rawConnection, SqliteErrorCode, withFileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
+import { STATE_BUSY } from '../../adapters/json-file-store.js'
+import type { ServiceFailure } from '../../types/service-failure.js'
 import { applySnapshot, assertSnapshotMatches, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
 
 const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), roots: z.array(z.string()), excluded: z.array(z.string()).optional(), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional() })
 type Checkpoint = z.infer<typeof checkpointSchema>
 export interface HistoryInput { sessionId: string; stageId: string; tool: string; roots: string[]; excluded?: string[] }
 export type CheckpointSummary = ReturnType<typeof summary>
+
+// A section that waited past its bound for another flow: busy, and the runtime's message names the
+// history directory, so the caller is told the plain reason instead.
+async function busyAsHistory<T>(work: Promise<T>): Promise<T> {
+  try {
+    return await work
+  } catch (error) {
+    if (isRuntimeError(error, SqliteErrorCode.sectionWaitTimeout)) throw new HistoryBusyError('This workspace\'s history is busy with another operation; retry shortly', { cause: error })
+    throw error
+  }
+}
 
 // The synchronous handle behind the owner's connection; the runtime owns the driver.
 type DatabaseSync = Awaited<ReturnType<typeof rawConnection>>
@@ -20,8 +33,11 @@ const SCHEMA = 'CREATE TABLE IF NOT EXISTS objects (hash TEXT PRIMARY KEY, conte
 const EXECUTION_LOCK_DEADLINE_MS = 300_000
 const EXECUTION_LOCK_POLL_MS = 25
 
-/** Another execution held the workspace's history lock past the deadline. */
-export class HistoryBusyError extends Error {}
+/** Another execution held the workspace's history lock, or another flow its database, past the wait. */
+export class HistoryBusyError extends Error implements ServiceFailure {
+  readonly code = STATE_BUSY
+  readonly status = 503
+}
 
 export interface ChangeHistoryOptions {
   directory: string
@@ -47,7 +63,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   await section(connection => connection.exec(SCHEMA))
 
   function section<T>(body: (connection: DatabaseSync) => T): Promise<T> {
-    return owner.run(async raw => body(await rawConnection(raw)))
+    return busyAsHistory(owner.run(async raw => body(await rawConnection(raw))))
   }
 
   function records(connection: DatabaseSync): Checkpoint[] {
@@ -59,10 +75,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (pages * pageSize > input.maxBytes) throw new Error('History disk budget reached; increase the limit or prune expired history before more changes')
   }
   function save(record: Checkpoint): Promise<void> {
-    return owner.nativeTransaction(connection => {
+    return busyAsHistory(owner.nativeTransaction(connection => {
       connection.prepare('INSERT OR REPLACE INTO checkpoints(id,data) VALUES(?,?)').run(record.id, JSON.stringify(record))
       checkBudget(connection)
-    })
+    }))
   }
   function capture(connection: DatabaseSync, roots: string[], extraExcluded: string[] = []): Snapshot {
     return snapshot({ roots, excluded: [...excluded, ...extraExcluded], maxBytes: input.maxBytes, save(hash, content) {

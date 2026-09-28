@@ -5,11 +5,14 @@ import type { BuckleCommon } from '../../common/runtime/initialize.js'
 import { notReadyResponse, operationScopes, type ScopeEnv } from './operation-scope.js'
 
 /**
- * Temporary, B13 to B17 (Buckle phase plan, section F): the paths the Nitro layers already serve.
- * Every other path stays on the Hono faces until its layer moves, so each route has exactly one
- * implementation at every commit. B18 deletes this file with Hono.
+ * Temporary, B13 to B17 (Buckle phase plan, section F): the faces still on Hono until their layer
+ * moves, MCP (B16) and the owner's setup face (B17), at node level and under /workspaces/[id]/. Every
+ * other path is the Nitro layers', so each route has exactly one implementation at every commit.
+ * B18 deletes this file with Hono.
  */
-const NITRO_PATHS: ReadonlySet<string> = new Set(['/health', '/health/ready'])
+function honoFace(face: readonly string[]): boolean {
+  return (face.length === 1 && face[0] === 'mcp') || face[0] === 'setup'
+}
 
 // Escapes of characters a path segment may carry as they are: h3 decodes exactly these before it
 // routes (h3 2.0.1-rc.32, NEEDLESS_ESCAPE in dist/response.mjs), while %2F, %25, %3F and %5C stay encoded.
@@ -29,7 +32,10 @@ export function canonicalPath(pathname: string): string {
 }
 
 export function nitroOwns(pathname: string): boolean {
-  return NITRO_PATHS.has(canonicalPath(pathname))
+  const segments = canonicalPath(pathname).split('/').slice(1)
+  // /workspaces/[id]/<face> is the same face for one workspace.
+  const face = segments[0] === 'workspaces' && segments.length > 2 ? segments.slice(2) : segments
+  return !honoFace(face)
 }
 
 export interface Dispatcher {

@@ -1,35 +1,39 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Hono } from 'hono'
-import { beforeEach, describe, expect, it } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
-import { createHttpApp } from '../server/hono/http-app.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { loadConfig } from '../../common/runtime/config.js'
+import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
+import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const AGENT = 'agent-token'
 const SETUP = 'setup-token'
 
-let app: Hono
+let app: BuckleHttp
 let runtime: BuckleRuntime
 let workspace: string
 let stateDirectory: string
+const nodes: BuckleHttp[] = []
+
+// A gated call over HTTP answers approval_required at once (grace period 0).
+function environment(extra: Record<string, string> = {}): Record<string, string> {
+  return { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_STATE_DIR: stateDirectory, BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '0', ...extra }
+}
+
+async function node(extra: Record<string, string> = {}): Promise<BuckleHttp> {
+  const started = await createBuckleHttp({ environment: environment(extra) })
+  nodes.push(started)
+  return started
+}
 
 beforeEach(async () => {
   workspace = mkdtempSync(join(tmpdir(), 'buckle-setup-ws-'))
   stateDirectory = mkdtempSync(join(tmpdir(), 'buckle-setup-state-'))
   writeFileSync(join(workspace, 'hello.txt'), 'hello\n')
-  const config = loadConfig({
-    BUCKLE_AUTH_TOKEN: AGENT,
-    BUCKLE_ADMIN_TOKEN: SETUP,
-    BUCKLE_STATE_DIR: stateDirectory,
-    BUCKLE_WORKSPACE_ROOT: workspace,
-    BUCKLE_ALLOW_SHELL: 'false',
-    BUCKLE_COMMAND_DENY: 'wget *',
-  })
-  runtime = await createRuntime({ config })
-  app = createHttpApp({ config, runtime, authToken: AGENT })
+  app = await node({ BUCKLE_ADMIN_TOKEN: SETUP, BUCKLE_COMMAND_DENY: 'wget *' })
+  runtime = app.runtime
 })
+afterEach(async () => { for (const started of nodes.splice(0)) await started.close() })
 
 function bearer(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
@@ -57,8 +61,7 @@ describe('who may open the setup face', () => {
   })
 
   it('is absent altogether when no setup token is configured', async () => {
-    const config = loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_STATE_DIR: stateDirectory, BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_ALLOW_SHELL: 'false' })
-    const bare = createHttpApp({ config, runtime, authToken: AGENT })
+    const bare = await node()
     expect((await bare.request('/setup/policy', { headers: bearer(SETUP) })).status).toBe(404)
   })
 

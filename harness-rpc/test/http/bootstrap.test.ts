@@ -146,9 +146,10 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     const live = await fetch(url('/health'))
     expect(live.status).toBe(200)
     expect(await live.json()).toMatchObject({ status: 'ok', serverId: expect.any(String) })
+    // B15 flip: /v1 is Nitro's, which answers with the readiness message.
     const early = await fetch(url('/v1/manifest'), { headers: { authorization: 'Bearer bootstrap-agent-token' } })
     expect(early.status).toBe(503)
-    expect(await early.json()).toEqual({ error: 'Buckle is not ready' })
+    expect(await early.json()).toEqual({ error: 'Runtime is still starting' })
     closeSync(openSync(gate, 'w'))
     const ready = await waitForStatus(url('/health/ready'), 200)
     expect(await ready.json()).toEqual({ status: 'ready' })

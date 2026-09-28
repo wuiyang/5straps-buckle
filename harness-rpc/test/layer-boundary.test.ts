@@ -74,6 +74,17 @@ describe('the layer boundary', () => {
     expect(readers.map(file => relative(PACKAGE_ROOT, file))).toEqual([])
   })
 
+  it('keeps no module-level mutable state in a layer: per-workspace handlers and caches live in services (plan section B)', () => {
+    // A declaration at column 0 that can change after load: let or var, or a collection held in a const.
+    const MUTABLE = /^(?:export\s+)?(?:let|var)\s|^(?:export\s+)?const\s+\w+\s*(?::[^=]+)?=\s*(?:new\s+(?:Map|Set|WeakMap|WeakSet)\b|\[)/m
+    const layers = sourceFiles('layers')
+    expect(layers.length).toBeGreaterThan(30)
+    expect(layers.filter(file => MUTABLE.test(readFileSync(file, 'utf8'))).map(file => relative(PACKAGE_ROOT, file))).toEqual([])
+    expect(MUTABLE.test('const handlers = new Map<string, unknown>()')).toBe(true)
+    expect(MUTABLE.test('let cached: string | undefined')).toBe(true)
+    expect(MUTABLE.test('const LIMIT = 1_024')).toBe(false)
+  })
+
   it('has no scanned middleware: guards and audit run inside each handler (layers.md, Security boundaries)', () => {
     const layers = readdirSync(join(PACKAGE_ROOT, 'layers'))
     expect(layers.sort()).toEqual(['admin', 'common', 'mcp'])

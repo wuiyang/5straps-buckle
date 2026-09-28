@@ -15,12 +15,9 @@ import { createApprovalService, holdFor, questionFor, type ApprovalAskInput } fr
 import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { initializeCommon } from '../common/runtime/initialize.js'
-import { createHttpApp } from '../server/hono/http-app.js'
-import { operationScopes, type ScopeEnv } from '../server/hono/operation-scope.js'
 import { createMcpServer } from '../mcp/server.js'
 import { stdioCallScope } from '../mcp/stdio.js'
 import type { ServerContext } from '@modelcontextprotocol/server'
-import { Hono } from 'hono'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
 function queue(root = mkdtempSync(join(tmpdir(), 'buckle-approval-service-'))) {
@@ -139,27 +136,6 @@ describe('the approval service, the single answerer', () => {
     expect((await service.request(call({ sessionId: 'chat-9' }))).approvals[0]!.token).not.toBe(first.approvals[0]!.token)
   })
 
-  it('answers a conflicting re-send over HTTP with 409, and a same re-send with the same tokens', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'buckle-approval-join-'))
-    // A write asks for its directory, so the conflicting call writes in another one.
-    mkdirSync(join(root, 'sub'))
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(`${root}-state`), BUCKLE_AUTH_TOKEN: 'join-agent-token-fixture', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
-    const runtime = await createRuntime({ config })
-    const app = createHttpApp({ config, runtime, authToken: config.authToken })
-    const invoke = (path: string) => app.request('/v1/invoke', { method: 'POST', headers: { authorization: `Bearer ${config.authToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ requestId: 'rings-invocation-1', tool: 'fs_write', args: { path, content: 'x' }, context: { sessionId: 'chat-1' } }) })
-
-    const first = await (await invoke('a.md')).json() as { outcome: string; approvals: Array<{ token: string }> }
-    const again = await (await invoke('a.md')).json() as { approvals: Array<{ token: string }> }
-    const conflict = await invoke('sub/b.md')
-
-    expect(first.outcome).toBe('approval_required')
-    expect(again.approvals.map(request => request.token)).toEqual(first.approvals.map(request => request.token))
-    expect(conflict.status).toBe(409)
-    expect(await conflict.json()).toMatchObject({ outcome: 'error', error: { code: 'APPROVAL_CONFLICT', retryable: false } })
-    await runtime.history.close()
-  })
-
   it('wakes the waiter at once for an answer given in this process', async () => {
     const { registry } = queue()
     // A poll this slow proves the wake-up does not come from polling.
@@ -252,33 +228,7 @@ describe('an interaction bound to nothing', () => {
 })
 
 describe('the interaction each HTTP request binds', () => {
-  it('reaches the approval service from /v1/invoke and from an MCP tool call alike', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'buckle-http-interaction-'))
-    mkdirSync(join(root, 'workspace'))
-    mkdirSync(join(root, 'state'), { mode: 0o700 })
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'interaction-agent-token', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '300' })
-    const common = initializeCommon({ config, role: 'server' })
-    await common.start()
-    const asked: string[] = []
-    const requestCli: RequestCli = async request => { asked.push(String(request.action.details?.tool)); return { status: 'unavailable', requestId: request.id, reason: 'no_consumer' } }
-    // As serve mounts it: the process's requester, and one operation scope per request with the HTTP hold bound.
-    common.bindRequester(requestCli)
-    const app = new Hono<ScopeEnv>()
-    app.use('*', operationScopes(common, 'grace'))
-    app.route('/', createHttpApp({ config, runtime: await common.services.getWorkspaceRuntime(), authToken: config.authToken, workspaces: await common.services.getWorkspaces() }))
-    const headers = { authorization: `Bearer ${config.authToken}`, 'content-type': 'application/json' }
-
-    const invoked = await app.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'bound-1', tool: 'fs_write', args: { path: 'a.md', content: 'x' } }) })
-    expect(await invoked.json()).toMatchObject({ outcome: 'approval_required' })
-
-    const mcp = await app.request('/mcp', { method: 'POST', headers: { ...headers, accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/call', 'mcp-name': 'fs_write' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'fs_write', arguments: { path: 'b.md', content: 'y' }, _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': {} } } }) })
-    expect(await mcp.text()).toContain('This call needs approval')
-    // Both were asked about, which an operation with no hold bound never is.
-    expect(asked).toEqual(['fs_write', 'fs_write'])
-    await common.owner.close()
-  })
-
+  // /v1/invoke and HTTP MCP: test/http/approval-http.test.ts, on the harness.
   it('gives each stdio MCP tool call an operation of its own, with main\'s requester injected', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-stdio-interaction-'))
     mkdirSync(join(root, 'workspace'))

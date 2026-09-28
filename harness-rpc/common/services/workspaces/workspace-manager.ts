@@ -8,6 +8,13 @@ import type { InteractionSource } from '../approvals/interaction.js'
 import type { BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
+import { tokenMatches } from '../access/tokens.js'
+import type { ServiceFailure } from '../../types/service-failure.js'
+
+/** The code a transport tells an unreadable registry by, before it has authenticated anyone. */
+export const WORKSPACE_REGISTRY_UNREADABLE = 'WORKSPACE_REGISTRY_UNREADABLE'
+/** The id the node's own agent token (BUCKLE_AUTH_TOKEN) goes by, beside a workspace's minted ones. */
+export const NODE_AGENT_TOKEN_ID = 'node'
 
 const CredentialSchema = z.string().min(24).max(512)
 const AgentTokenSchema = z.object({
@@ -54,12 +61,15 @@ export interface ManagedWorkspace {
   config: BuckleConfig
   runtime: BuckleRuntime
 }
-export class WorkspaceError extends Error {
+export class WorkspaceError extends Error implements ServiceFailure {
+  readonly code: string = 'WORKSPACE_REFUSED'
   constructor(message: string, readonly status: 400 | 404 | 409 = 400) { super(message) }
 }
 
 /** workspaces.json will not parse. Its message names the file and fields, so only the owner's routes may show it. */
-export class WorkspaceRegistryError extends WorkspaceError {}
+export class WorkspaceRegistryError extends WorkspaceError {
+  override readonly code = WORKSPACE_REGISTRY_UNREADABLE
+}
 
 // A registry the node cannot read is the owner's to repair: a 409 naming the file and fields, not a 500.
 function registryStore(filePath: string, lockDeadlineMs?: number) {
@@ -150,6 +160,16 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
     },
     listTokens(id: string): WorkspaceTokenDescriptor[] {
       return requireStored(store.read(), id).tokens.map(entry => ({ id: entry.id, label: entry.label, createdAt: entry.createdAt }))
+    },
+    /**
+     * Which of the workspace's agent tokens the authorization header presents, by its id, or null.
+     * Read on every request, so a token revoked a moment ago is refused at once; an empty credential
+     * never matches. Throws WorkspaceRegistryError when the registry cannot be read.
+     */
+    authenticateAgent(id: string, authorization: string | undefined): string | null {
+      if (id === 'default') return input.config.authToken && tokenMatches(authorization, input.config.authToken) ? NODE_AGENT_TOKEN_ID : null
+      const workspace = store.read().workspaces.find(item => item.id === id)
+      return workspace?.tokens.find(entry => tokenMatches(authorization, entry.token))?.id ?? null
     },
     /** Read on every request, so a token revoked a moment ago is refused by the mounted face. */
     agentTokens(id: string): string[] {
