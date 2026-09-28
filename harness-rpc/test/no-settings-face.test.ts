@@ -65,9 +65,10 @@ describe('no face exposes node settings', () => {
     const runtime = join(PACKAGE_ROOT, 'common/runtime')
 
     expect(sources.length).toBeGreaterThan(20)
-    for (const path of sources) expect(readFileSync(path, 'utf8'), path).not.toMatch(/cli\/(settings|node-settings|environment-file)\.js/)
+    // Any specifier naming them, static or dynamic, with or without an extension (review L6 of B13-B14).
+    for (const path of sources) expect(readFileSync(path, 'utf8'), path).not.toMatch(/cli\/(?:settings|node-settings|environment-file)(?:\.[jt]s)?['"]/)
     // The reader and the map writer sit in common/runtime for main and the CLI; no face or service may reach them.
-    for (const path of sources.filter(path => !path.startsWith(runtime))) expect(readFileSync(path, 'utf8'), path).not.toMatch(/runtime\/(?:environment|workspace-config)\.js/)
+    for (const path of sources.filter(path => !path.startsWith(runtime))) expect(readFileSync(path, 'utf8'), path).not.toMatch(/runtime\/(?:environment|workspace-config)(?:\.[jt]s)?['"]/)
   })
 
   it('echoes a setting\'s value only where a route reports its effect, on every GET route and with either credential', async () => {

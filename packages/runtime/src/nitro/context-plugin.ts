@@ -4,7 +4,8 @@ import { useHost } from './host.js'
 import { createRequestCli } from './request-cli.js'
 
 // Sets request context only. It authorizes nothing: guards in the handler must still run.
-// The host is read per request because plugins run before main.ts binds it.
+// The host is read per request because plugins run before main.ts binds it. A host that brings its
+// requester keeps it the only one; otherwise the plugin's own dispatches to the same listener.
 export function defineContextPlugin(): NitroAppPlugin {
   return (nitroApp) => {
     const requestCli = createRequestCli(nitroApp)
@@ -15,7 +16,7 @@ export function defineContextPlugin(): NitroAppPlugin {
       context.runtime = host.owner
       context.services = host.services
       context.logger = host.logger
-      context.requestCli = requestCli
+      context.requestCli = host.requestCli ?? requestCli
     })
   }
 }

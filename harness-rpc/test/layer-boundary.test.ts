@@ -10,11 +10,19 @@ import { PACKAGE_ROOT, sourceFiles } from './support/sources.js'
 const BUNDLED_PACKAGES = /^(?:h3|nitro|srvx)(?:\/|$)|^@5straps\/(?:runtime|protocol)(?:\/|$)|^zod$/
 const FRAMEWORK = /^(?:nitro|h3|srvx|crossws|hono|@hono\/)/
 const IMPORT = /\b(import|export)\s+(type\s+)?(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/g
+// A dynamic import pulls a value in just as a static one does, and the bundler would inline its target (review L6 of B13-B14).
+const DYNAMIC_IMPORT = /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g
 
 interface Import { file: string; specifier: string; typeOnly: boolean }
 
+function importsIn(text: string, file: string): Import[] {
+  const statics = [...text.matchAll(IMPORT)].map(match => ({ file, specifier: match[3]!, typeOnly: match[2] !== undefined }))
+  const dynamics = [...text.matchAll(DYNAMIC_IMPORT)].map(match => ({ file, specifier: match[1]!, typeOnly: false }))
+  return [...statics, ...dynamics]
+}
+
 function importsOf(file: string): Import[] {
-  return [...readFileSync(file, 'utf8').matchAll(IMPORT)].map(match => ({ file: relative(PACKAGE_ROOT, file), specifier: match[3]!, typeOnly: match[2] !== undefined }))
+  return importsIn(readFileSync(file, 'utf8'), relative(PACKAGE_ROOT, file))
 }
 
 function target(item: Import): string {
@@ -27,6 +35,14 @@ function bundledSources(): string[] {
 }
 
 describe('the layer boundary', () => {
+  it('reads dynamic imports as value imports', () => {
+    const found = importsIn("const common = await import('../../../../common/runtime/services.js')\nimport type { X } from './x.js'", 'layers/common/server/routes/probe.ts')
+    expect(found).toEqual(expect.arrayContaining([
+      { file: 'layers/common/server/routes/probe.ts', specifier: '../../../../common/runtime/services.js', typeOnly: false },
+      { file: 'layers/common/server/routes/probe.ts', specifier: './x.js', typeOnly: true },
+    ]))
+  })
+
   it('bundles only h3, nitro, srvx, @5straps/runtime, @5straps/protocol and zod into .output', () => {
     const packages = bundledSources().flatMap(importsOf).filter(item => !item.specifier.startsWith('.'))
     expect(packages.length).toBeGreaterThan(0)
@@ -51,6 +67,11 @@ describe('the layer boundary', () => {
       expect(imports.filter(item => FRAMEWORK.test(item.specifier)), folder).toEqual([])
       expect(imports.filter(item => item.specifier.startsWith('.') && !reaches.test(target(item))), folder).toEqual([])
     }
+  })
+
+  it('asks nobody from a route: questions go through the approval service, never event.context.requestCli (review L7 of B13-B14)', () => {
+    const readers = bundledSources().filter(file => /\brequestCli\b/.test(readFileSync(file, 'utf8')))
+    expect(readers.map(file => relative(PACKAGE_ROOT, file))).toEqual([])
   })
 
   it('has no scanned middleware: guards and audit run inside each handler (layers.md, Security boundaries)', () => {

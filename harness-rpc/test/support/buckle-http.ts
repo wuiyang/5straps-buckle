@@ -1,3 +1,4 @@
+import type { RequestCli } from '@5straps/runtime'
 import { inject } from 'vitest'
 import type { NitroApp } from 'nitro/types'
 import { setupCli } from '../../cli/setup.js'
@@ -18,6 +19,8 @@ export interface BuckleHttp {
   readonly runtime: BuckleRuntime
   readonly services: BuckleServices
   readonly nitroApp: NitroApp
+  /** The process's one requester, which the common runtime and the app's host both carry. */
+  readonly requestCli: RequestCli
   /** A path is taken relative to the node; a Request or full URL keeps its own origin, as fetch would send it. */
   request(input: string | Request, init?: RequestInit): Promise<Response>
   close(): Promise<void>
@@ -62,7 +65,7 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   const runtime = await common.services.getWorkspaceRuntime()
   dispatcher.mount(createHttpApp({ config, runtime, authToken: requireAuthToken(config), workspaces: await common.services.getWorkspaces() }))
   return {
-    config, common, runtime, services: common.services, nitroApp: server.nitroApp,
+    config, common, runtime, services: common.services, nitroApp: server.nitroApp, requestCli: server.requestCli,
     request: async (request, init) => dispatcher.fetch(request instanceof Request ? new Request(request, init) : new Request(new URL(request, 'http://127.0.0.1'), init)),
     close,
   }

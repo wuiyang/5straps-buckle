@@ -55,6 +55,21 @@ describe('Nitro host bridge and context plugin', () => {
     expect(useHost(nitroApp)).toBeUndefined()
   })
 
+  it('hands routes the host\'s own requester when the host brings one, and its own otherwise', async () => {
+    const seen: unknown[] = []
+    const probe = defineGuardedHandler({ guards: [], handler: (event) => { seen.push(event.context.requestCli); return {} } })
+    const hosted = createTestNitroApp({ plugins: [defineContextPlugin()], routes: app => app.get('/probe', probe) })
+    const requestCli = createRequestCli(hosted.nitroApp, { onUnavailable: async () => undefined })
+    bindHost(hosted.nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger, requestCli })
+    await hosted.nitroApp.fetch(new Request('http://local/probe'))
+    const plain = createTestNitroApp({ plugins: [defineContextPlugin()], routes: app => app.get('/probe', probe) })
+    bindHost(plain.nitroApp, { owner: await readyRuntime(), services: {}, logger: logger.logger })
+    await plain.nitroApp.fetch(new Request('http://local/probe'))
+    expect(seen[0]).toBe(requestCli)
+    expect(seen[1]).toEqual(expect.any(Function))
+    expect(seen[1]).not.toBe(requestCli)
+  })
+
   it('runs a guarded handler in its own scope with the guard identity and the request id', async () => {
     const counter = { calls: 0 }
     const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: app => app.get('/v1/notes', notesRoute(counter)) })

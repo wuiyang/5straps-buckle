@@ -22,9 +22,10 @@ const ANONYMOUS_SESSION_ID = 'rpc'
 
 /**
  * A re-sent call that asks for something other than what its requestId already waits on is a
- * conflict; a session with too many asks waiting is told to slow down. Other refusals are 422.
+ * conflict; a session with too many asks waiting is told to slow down; a session id past its cap is
+ * a bad request. Other refusals are 422.
  */
-const ERROR_STATUS: Readonly<Record<string, ContentfulStatusCode>> = { APPROVAL_CONFLICT: 409, APPROVAL_LIMIT: 429 }
+const ERROR_STATUS: Readonly<Record<string, ContentfulStatusCode>> = { APPROVAL_CONFLICT: 409, APPROVAL_LIMIT: 429, SESSION_ID_TOO_LONG: 400 }
 
 export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies): Hono {
   const app = new Hono()

@@ -6,7 +6,8 @@ import type { InvokeRequest, InvokeResponse } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { approvalsPath, loadConfig } from '../common/runtime/config.js'
-import { createApprovalRegistry, MAX_PENDING_PER_SESSION } from '../common/services/approvals/approval-registry.js'
+import { createApprovalRegistry, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
+import { MAX_SESSION_ID } from '../common/services/invocation/invoker.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
@@ -124,6 +125,35 @@ describe('what the registry keeps about an ask', () => {
     expect(results(runtime, 'one-too-many')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'APPROVAL_LIMIT' })])
     // Another session is not held back by this one.
     expect(await runtime.invoke({ sessionId: 'calm', request: single('calm-1'), approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'approval_required' })
+    await runtime.history.close()
+  })
+
+  it(`refuses the workspace more than ${MAX_PENDING_PER_WORKSPACE} waiting asks, whatever session asks (review L2 of B13-B14)`, async () => {
+    const { runtime } = await node()
+    for (let session = 0; session * MAX_PENDING_PER_SESSION < MAX_PENDING_PER_WORKSPACE; session += 1) {
+      await runtime.approvals.ask({ tool: 'fs_write', sessionId: `fresh-${session}`, asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(session * MAX_PENDING_PER_SESSION + index)) })
+    }
+
+    const refused = await runtime.invoke({ sessionId: 'never-seen', request: single('workspace-full'), approvalWait: { mode: 'none' } })
+
+    expect(refused).toMatchObject({ outcome: 'error', error: { code: 'APPROVAL_LIMIT', retryable: true, message: expect.stringContaining(`limit ${MAX_PENDING_PER_WORKSPACE}`) } })
+    expect(results(runtime, 'workspace-full')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'APPROVAL_LIMIT' })])
+    expect(runtime.approvals.pending()).toHaveLength(MAX_PENDING_PER_WORKSPACE)
+    await runtime.history.close()
+  })
+
+  it(`refuses a session id longer than ${MAX_SESSION_ID} characters before asking anything, and audits the refusal (review L2 of B13-B14)`, async () => {
+    const { runtime } = await node()
+    const sessionId = `/secret/path/${'s'.repeat(MAX_SESSION_ID)}`
+
+    const refused = await runtime.invoke({ sessionId, request: single('long-session'), approvalWait: { mode: 'none' } })
+
+    expect(refused).toMatchObject({ outcome: 'error', error: { code: 'SESSION_ID_TOO_LONG', retryable: false } })
+    if (refused.outcome === 'error') expect(refused.error.message).not.toContain('/secret/path')
+    expect(runtime.approvals.pending()).toEqual([])
+    expect(results(runtime, 'long-session')).toEqual([expect.objectContaining({ outcome: 'error', sessionId: sessionId.slice(0, MAX_SESSION_ID) })])
+    // At the cap exactly, the call goes on to ask.
+    expect(await runtime.invoke({ sessionId: 's'.repeat(MAX_SESSION_ID), request: single('at-cap'), approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'approval_required' })
     await runtime.history.close()
   })
 })

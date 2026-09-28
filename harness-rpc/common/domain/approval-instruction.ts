@@ -5,18 +5,23 @@ import { describeExpiry } from './approval-deadline.js'
 const DEFAULT_WORKSPACE = 'default'
 
 /**
- * C0 and C1 controls, DEL, the Unicode line separators and the bidirectional overrides: characters a
- * terminal acts on instead of showing, so an agent-chosen subject could move the cursor or reorder
- * the line a person reads before approving.
+ * Controls (C0, DEL, C1), format characters (bidirectional marks and overrides, zero-width
+ * characters, the soft hyphen, tag characters) and the Unicode line and paragraph separators:
+ * characters a terminal acts on or hides instead of showing, so an agent-chosen subject could move
+ * the cursor, reorder the line a person reads before approving, or pass for a different name.
  */
-const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
 
 /**
  * What an agent chose (tool name, subject, reason) as a person sees it: every character above shown
- * as its `\u001b` escape. Every rendering of an ask for a person goes through this.
+ * as its escape, `\u001b` in the Basic Multilingual Plane and `\u{e0041}` above it. Every rendering
+ * of agent-controlled text for a person goes through this.
  */
 export function printable(text: string): string {
-  return text.replace(UNPRINTABLE, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  return text.replace(UNPRINTABLE, character => {
+    const code = character.codePointAt(0)!
+    return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, '0')}`
+  })
 }
 
 /** What a relay suggests: a session grant where one is offered, so a retry is not gated again. */

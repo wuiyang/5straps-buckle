@@ -14,6 +14,8 @@ const PENDING_TTL_MS = 10 * 60_000
  * otherwise grow the queue, and every update rewrites approvals.json whole (review L9).
  */
 export const MAX_PENDING_PER_SESSION = 50
+/** Asks the whole workspace may keep waiting at once, so fresh session ids cannot evade the per-session cap (review L2 of B13-B14). */
+export const MAX_PENDING_PER_WORKSPACE = 500
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 // requestId and actor let a re-sent call join the ask it already made (ruling 5 of 2026-09-28); an
@@ -44,10 +46,24 @@ type OnceEntry = z.infer<typeof onceSchema>
  */
 export type ApprovalAuthority = 'admin' | 'agent'
 
+// Refused before anything is written; the invoker records the refusal in the call's audit entries.
+function assertRoomFor(input: { state: State; workspace: string; sessionId: string; asked: number }): void {
+  const waiting = input.state.pending.filter(entry => entry.workspace === input.workspace)
+  const session = waiting.filter(entry => entry.sessionId === input.sessionId).length
+  if (session + input.asked > MAX_PENDING_PER_SESSION) {
+    logger.warn('Approval refused: the session has too many asks waiting', { waiting: session, asked: input.asked, limit: MAX_PENDING_PER_SESSION })
+    throw new ApprovalLimitError(`This session already has ${session} approvals waiting; answer some or let them expire before asking for more (limit ${MAX_PENDING_PER_SESSION})`)
+  }
+  if (waiting.length + input.asked > MAX_PENDING_PER_WORKSPACE) {
+    logger.warn('Approval refused: the workspace has too many asks waiting', { waiting: waiting.length, asked: input.asked, limit: MAX_PENDING_PER_WORKSPACE })
+    throw new ApprovalLimitError(`This workspace already has ${waiting.length} approvals waiting; answer some or let them expire before asking for more (limit ${MAX_PENDING_PER_WORKSPACE})`)
+  }
+}
+
 /** A call re-sent under the same requestId asked for something else: HTTP 409. */
 export class ApprovalConflictError extends Error {}
 
-/** The session already has `MAX_PENDING_PER_SESSION` asks waiting: retryable once some are answered or expire. */
+/** The session or the workspace already has its cap of asks waiting: retryable once some are answered or expire. */
 export class ApprovalLimitError extends Error {}
 
 export interface AskInput {
@@ -134,11 +150,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       return update(state => {
         const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks } })
         if (joined) return joined
-        const waiting = state.pending.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId).length
-        if (waiting + asks.length > MAX_PENDING_PER_SESSION) {
-          logger.warn('Approval refused: the session has too many asks waiting', { waiting, asked: asks.length, limit: MAX_PENDING_PER_SESSION })
-          throw new ApprovalLimitError(`This session already has ${waiting} approvals waiting; answer some or let them expire before asking for more (limit ${MAX_PENDING_PER_SESSION})`)
-        }
+        assertRoomFor({ state, workspace, sessionId, asked: asks.length })
         const requests = asks.map(item => ({
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: item.reason,
           tool, offeredScopes: item.offeredScopes, expiresAt: waitMs === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + waitMs).toISOString(),

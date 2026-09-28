@@ -188,12 +188,13 @@ function printLog(runtime: BuckleRuntime, argv: string[]): CliResult {
     return { exitCode: 0 }
   }
 
+  // The tool name, effects, subjects and detail all carry what an agent sent (review L1 of B13-B14, `buckle log`).
   for (const entry of entries) {
-    process.stdout.write(`${entry.at}  ${entry.outcome.padEnd(17)} ${entry.tool.padEnd(18)} ${entry.durationMs}ms\n`)
-    for (const effect of entry.effects) process.stdout.write(`    ${effect}\n`)
-    for (const ask of entry.asked ?? []) process.stdout.write(`    asked: ${ask}\n`)
-    for (const grant of entry.approvedBy ?? []) process.stdout.write(`    allowed by: ${grant}\n`)
-    if (entry.detail) process.stdout.write(`    ${entry.detail}\n`)
+    process.stdout.write(`${entry.at}  ${entry.outcome.padEnd(17)} ${printable(entry.tool).padEnd(18)} ${entry.durationMs}ms\n`)
+    for (const effect of entry.effects) process.stdout.write(`    ${printable(effect)}\n`)
+    for (const ask of entry.asked ?? []) process.stdout.write(`    asked: ${printable(ask)}\n`)
+    for (const grant of entry.approvedBy ?? []) process.stdout.write(`    allowed by: ${printable(grant)}\n`)
+    if (entry.detail) process.stdout.write(`    ${printable(entry.detail)}\n`)
   }
   return { exitCode: 0 }
 }
@@ -309,7 +310,7 @@ async function approve(input: CommandInput): Promise<CliResult> {
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceId}`)
   if (result.widened) {
     const { pattern, askedBy } = result.widened
-    process.stdout.write(`Approved ${token} (${scope.data}) for ${pattern}, asked by ${askedBy}, in workspace ${runtime.workspaceId}\n`)
+    process.stdout.write(`Approved ${token} (${scope.data}) for ${pattern}, asked by ${printable(askedBy)}, in workspace ${runtime.workspaceId}\n`)
     return { exitCode: 0, detail: `network_egress ${scope.data} approval widened to ${pattern}, asked by ${askedBy}` }
   }
   process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceId}\n`)

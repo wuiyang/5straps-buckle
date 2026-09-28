@@ -68,6 +68,22 @@ describe('buckle approvals, the queue a person answers from', () => {
     expect(listed.stdout).toContain('write_scope: /outside/x\\u001b[2K\\u000dls')
   })
 
+  it('shows buckle log, the action history, with the agent-chosen tool name, effects and detail escaped (review L1 of B13-B14)', async () => {
+    const config = node()
+    const tool = 'fs_read\u001b[2K\u202etxt.exe'
+    await createFileActionLog(actionsPath(config)).record({ auditId: 'a1', event: 'result', workspaceId: 'default', at: new Date().toISOString(), requestId: 'r1', sessionId: 's1',
+      tool, outcome: 'error', durationMs: 1, effects: ['read_path /work/notes\u200b.md'], args: {}, asked: ['read_scope:/x\u2066y'], detail: 'Unknown tool: fs_read\u001b[2K' })
+
+    const shown = await capture({ argv: ['log'], config })
+
+    expect(shown.exitCode).toBe(0)
+    expect(shown.stdout).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b\u202e\u2066]/)
+    expect(shown.stdout).toContain('fs_read\\u001b[2K\\u202etxt.exe')
+    expect(shown.stdout).toContain('read_path /work/notes\\u200b.md')
+    expect(shown.stdout).toContain('asked: read_scope:/x\\u2066y')
+    expect(shown.stdout).toContain('Unknown tool: fs_read\\u001b[2K')
+  })
+
   it('says so plainly when nothing is waiting', async () => {
     const listed = await capture({ argv: ['approvals'], config: node() })
 

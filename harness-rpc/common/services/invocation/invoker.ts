@@ -22,6 +22,11 @@ import { shorterWait, type ApprovalService } from '../approvals/approval-service
 
 /** The audit log's bound on caller-chosen ids; the stored join key is held to it too (review L4). */
 const MAX_LOGGED_ID = 200
+/**
+ * The longest session id a caller may choose. It is stored with every ask and grant it makes, so an
+ * unbounded one would let a caller grow approvals.json by its request size per ask (review L2 of B13-B14).
+ */
+export const MAX_SESSION_ID = 200
 
 export interface InvokerOptions {
   registry: ToolRegistry
@@ -84,6 +89,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const response = await (async (): Promise<InvokeResponse> => {
         try {
           signal?.throwIfAborted()
+          if (sessionId.length > MAX_SESSION_ID) return sessionIdTooLong(request)
           const reason = options.toolDenial?.(request.tool)
           if (reason) {
             const response = denied(request, reason)
@@ -359,6 +365,11 @@ function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; 
   if (outcome.kind === 'deny') return { kind: 'refused', reason: outcome.denial.reason }
   if (outcome.kind === 'ask') return { kind: 'refused', reason: outcome.asks.map(item => item.reason).join('; ') }
   return outcome.allowedBy.some(key => key.startsWith('network_egress:')) ? { kind: 'granted' } : { kind: 'allowed' }
+}
+
+// Names the limit and nothing the caller sent.
+function sessionIdTooLong(request: InvokeRequest): InvokeResponse {
+  return { requestId: request.requestId, outcome: 'error', error: { code: 'SESSION_ID_TOO_LONG', message: `The session id is longer than ${MAX_SESSION_ID} characters; send a shorter one`, retryable: false } }
 }
 
 function shapeError(error: unknown, tool: string): { code: string; message: string; retryable: boolean } {

@@ -396,6 +396,13 @@ describe('what an agent chose, on the owner\'s terminal (review M3)', () => {
     expect(printable('/workspace/plain name.md')).toBe('/workspace/plain name.md')
   })
 
+  it('escapes format characters too: bidi marks, zero-width characters, the soft hyphen and tags (review L1 of B13-B14)', () => {
+    expect(printable('notes\u200b.md')).toBe('notes\\u200b.md')
+    expect(printable('a\u200eb\u200fc\u061cd\u2060e\ufefff\u00adg')).toBe('a\\u200eb\\u200fc\\u061cd\\u2060e\\ufefff\\u00adg')
+    expect(printable('x\u{e0041}\u{e007f}y')).toBe('x\\u{e0041}\\u{e007f}y')
+    expect(printable('caf\u00e9 \u{1f600}')).toBe('caf\u00e9 \u{1f600}')
+  })
+
   it('shows a terminal question, and the lines sent to an MCP client, with the subject escaped', () => {
     const request = { ...approval('t1'), subject: spoofed, reason: 'outside\u001b]0;title\u0007' }
     const question = describeQuestion({ ...request, workspaceId: 'default' })

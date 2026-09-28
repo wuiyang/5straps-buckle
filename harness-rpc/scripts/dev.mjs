@@ -3,13 +3,21 @@
 // build keeps the running node and prints the errors. `nitro dev` is not used: it runs the app in a
 // worker outside main's bootstrap, so the host, the cli:call listener and close would not be the ones
 // serve runs.
+//
+// Accepted for dev: tsc rewrites dist in place while the old node still runs, so a lazy import in that
+// node can load new code, and files from deleted sources stay in dist until a full build. The Nitro
+// output is staged and swapped only once the old node has exited. The machine's global `buckle` runs
+// from this dist and .output too, so a dev cycle changes what it runs.
 import { spawn } from 'node:child_process'
 import { cpSync, existsSync, renameSync, rmSync, watch } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const PACKAGE_ROOT = resolve(import.meta.dirname, '..')
-const WATCHED = ['main.ts', 'nitro.config.ts', 'common', 'cli', 'mcp', 'layers', 'server', 'skills']
+// Directories are watched recursively. The two root files are found by name in a watch on the package
+// root, because an editor's atomic save replaces the file and a watch on the file itself goes quiet.
+const WATCHED_DIRECTORIES = ['common', 'cli', 'mcp', 'layers', 'server', 'skills']
+const WATCHED_FILES = new Set(['main.ts', 'nitro.config.ts'])
 const DEBOUNCE_MS = 300
 // Past this, a node that has not finished closing is killed: longer than a clean close, which settles
 // open approval waits and drains connections.
@@ -19,55 +27,59 @@ const STAGED_OUTPUT = join(PACKAGE_ROOT, 'node_modules', '.cache', 'buckle-dev',
 const OUTPUT = join(PACKAGE_ROOT, '.output')
 
 let child = null
-let building = false
+// One cycle at a time, from the build through stopping the old node to starting the new one, so a
+// later build never clears or rewrites the staged output while it is being swapped in (review L5 of B13-B14).
+let busy = false
 let pending = false
 let stopping = false
 let timer
 
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void stop(0) })
-say(`building; watching ${WATCHED.join(', ')}`)
-if (await build()) start()
-else say('the first build failed; fix it and save to try again')
-for (const path of WATCHED) watch(join(PACKAGE_ROOT, path), { recursive: true }, onChange)
+say(`building; watching ${[...WATCHED_FILES, ...WATCHED_DIRECTORIES].join(', ')}`)
+await cycle({ first: true })
+for (const path of WATCHED_DIRECTORIES) watch(join(PACKAGE_ROOT, path), { recursive: true }, onChange)
+watch(PACKAGE_ROOT, (event, name) => { if (WATCHED_FILES.has(name)) onChange(event, name) })
 
 function onChange(_event, name) {
   if (stopping || name?.includes('node_modules')) return
   clearTimeout(timer)
-  timer = setTimeout(() => { void rebuild() }, DEBOUNCE_MS)
+  timer = setTimeout(() => { void cycle({ first: false }) }, DEBOUNCE_MS)
 }
 
-/** One build at a time; a change saved during a build starts another once it ends. */
-async function rebuild() {
-  if (building) {
+/** Build, then stop the old node and start the new one; a change saved meanwhile runs one more cycle after. */
+async function cycle({ first }) {
+  if (busy) {
     pending = true
     return
   }
-  const started = performance.now()
-  say('change seen; rebuilding')
-  if (!await build()) {
-    say(child ? 'build failed; the running node stays up' : 'build failed')
-    return drainPending()
+  busy = true
+  try {
+    await buildAndRestart(first)
+  } finally {
+    busy = false
   }
-  await stopChild()
-  start()
-  say(`rebuilt and restarted in ${Math.round(performance.now() - started)} ms (until the new node starts; it answers /health/ready once ready)`)
-  return drainPending()
+  if (pending && !stopping) {
+    pending = false
+    return cycle({ first: false })
+  }
 }
 
-function drainPending() {
-  if (!pending || stopping) return
-  pending = false
-  return rebuild()
+async function buildAndRestart(first) {
+  const started = performance.now()
+  if (!first) say('change seen; rebuilding')
+  if (!await build()) {
+    say(first ? 'the first build failed; fix it and save to try again' : child ? 'build failed; the running node stays up' : 'build failed')
+    return
+  }
+  await stopChild()
+  if (stopping) return
+  start()
+  if (!first) say(`rebuilt and restarted in ${Math.round(performance.now() - started)} ms (until the new node starts; it answers /health/ready once ready)`)
 }
 
 async function build() {
-  building = true
-  try {
-    rmSync(STAGED_OUTPUT, { recursive: true, force: true })
-    return await run(['scripts/build.mjs', '--incremental']) && await run(['scripts/build-server.mjs', '--out-dir', STAGED_OUTPUT])
-  } finally {
-    building = false
-  }
+  rmSync(STAGED_OUTPUT, { recursive: true, force: true })
+  return await run(['scripts/build.mjs', '--incremental']) && await run(['scripts/build-server.mjs', '--out-dir', STAGED_OUTPUT])
 }
 
 function run(args) {

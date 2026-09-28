@@ -11,8 +11,25 @@ import { notReadyResponse, operationScopes, type ScopeEnv } from './operation-sc
  */
 const NITRO_PATHS: ReadonlySet<string> = new Set(['/health', '/health/ready'])
 
+// Escapes of characters a path segment may carry as they are: h3 decodes exactly these before it
+// routes (h3 2.0.1-rc.32, NEEDLESS_ESCAPE in dist/response.mjs), while %2F, %25, %3F and %5C stay encoded.
+const NEEDLESS_ESCAPE = /%(?:2[146-9A-E]|3[0-9ABD]|4[0-9A-F]|5[0-9ABDF]|6[1-9A-F]|7[0-9ACE])/gi
+
+/**
+ * The path ownership is decided on (review M1 of B13-B14): needless escapes decoded as h3 decodes
+ * them, duplicate slashes collapsed and a trailing slash dropped; case is kept, as both routers keep
+ * it. Dot segments are already resolved by the URL parser. An alias such as `/%68ealth` or
+ * `/health/` therefore goes where `/health` goes, so no spelling reaches the other router's copy of a
+ * route that has moved.
+ */
+export function canonicalPath(pathname: string): string {
+  const decoded = pathname.replace(NEEDLESS_ESCAPE, escape => String.fromCharCode(Number.parseInt(escape.slice(1), 16)))
+  const collapsed = decoded.replace(/\/{2,}/g, '/')
+  return collapsed.length > 1 && collapsed.endsWith('/') ? collapsed.slice(0, -1) : collapsed
+}
+
 export function nitroOwns(pathname: string): boolean {
-  return NITRO_PATHS.has(pathname)
+  return NITRO_PATHS.has(canonicalPath(pathname))
 }
 
 export interface Dispatcher {

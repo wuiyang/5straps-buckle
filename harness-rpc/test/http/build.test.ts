@@ -1,10 +1,10 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as runtime from '@5straps/runtime'
-import { NitroErrorCode, registerCliListener } from '@5straps/runtime/nitro'
+import { NitroErrorCode, registerCliListener, useHost } from '@5straps/runtime/nitro'
 import { afterEach, describe, expect, inject, it, vi } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
@@ -34,7 +34,7 @@ function files(directory: string): string[] {
 const BUNDLED_ELSEWHERE = [
   'This process already has its requester bound',
   'Approval was declined',
-  'Workspace registry needs owner repair',
+  'Workspace is disabled or retired',
   'A cli:call listener is already registered',
   'No operation scope is active',
 ]
@@ -45,6 +45,12 @@ describe('the built server (.output)', () => {
       expect(statSync(join(output, 'server', 'index.mjs')).isFile()).toBe(true)
       expect(files(output).filter(path => path.endsWith('.node'))).toEqual([])
     }
+  })
+
+  it('checks for markers that do exist: each is in the built common code or the runtime it imports (review L3 of B13-B14)', () => {
+    const runtimeDist = dirname(createRequire(build.entries.full).resolve('@5straps/runtime'))
+    const elsewhere = [...files(join(build.root, 'dist', 'common')), ...files(runtimeDist)].filter(path => path.endsWith('.js')).map(path => readFileSync(path, 'utf8'))
+    expect(BUNDLED_ELSEWHERE.filter(marker => !elsewhere.some(text => text.includes(marker)))).toEqual([])
   })
 
   it('bundles neither common nor the runtime: route chunks import @5straps/runtime bare', () => {
@@ -70,10 +76,26 @@ describe('the built server (.output)', () => {
     second()()
   })
 
-  it('reports ready once started, and not ready again once closed', async () => {
+  it('gives the app\'s host the process requester, with the pending-approval fallback (review L7 of B13-B14)', async () => {
+    const buckle = await node()
+    expect(useHost(buckle.nitroApp)?.requestCli).toBe(buckle.requestCli)
+    const question = { id: 'approval:default:t1', kind: 'approval', correlationId: 'c1', target: 'default', action: { summary: 'probe', details: { approve: 'buckle approve t1' } }, wait: { mode: 'finite', timeoutMs: 1_000 } } as const
+    await buckle.close()
+    // With the listener gone, the host's requester reports the ask as pending, never a bare unavailable.
+    expect(await buckle.requestCli(question)).toMatchObject({ status: 'unavailable', pending: { id: 'approval:default:t1', instructions: 'buckle approve t1' } })
+  })
+
+  it('reports ready once started, shutting down while it closes, and not ready again once closed', async () => {
     const buckle = await node()
     expect((await buckle.request('/health/ready')).status).toBe(200)
-    await buckle.close()
+    const held = Promise.withResolvers<void>()
+    buckle.common.owner.onClose('waiters', 'held by the test', () => held.promise)
+    const closing = buckle.close()
+    const shuttingDown = await buckle.request('/health/ready')
+    expect(shuttingDown.status).toBe(503)
+    expect(await shuttingDown.json()).toEqual({ error: 'Runtime is shutting down' })
+    held.resolve()
+    await closing
     const closed = await buckle.nitroApp.fetch(new Request('http://127.0.0.1/health/ready'))
     expect(closed.status).toBe(503)
     expect(await closed.json()).toEqual({ error: 'Runtime is not attached to this request' })

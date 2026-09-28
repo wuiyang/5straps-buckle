@@ -31,13 +31,16 @@ export function builtEntryPath(): string {
 
 /**
  * Imports the built app and binds it before anything is accepted (nitro/coordination.md, Ownership):
- * the host (owner, services, logger) the context plugin reads per request, then the one cli:call
- * listener, which forwards each question to main's requester and answers through respond.
+ * the host (owner, services, logger and the app's one requester) the context plugin reads per
+ * request, then the one cli:call listener, which forwards each question to main's requester and
+ * answers through respond. The host carries the requester, so event.context.requestCli is this one,
+ * with the pending-approval fallback, never a second one without it (review L7 of B13-B14).
  */
 export async function setupServer(input: { common: BuckleCommon; logger: Logger; requestCli: RequestCli; entryPath: string }): Promise<BuckleServer> {
   const { common } = input
   const entry = await import(pathToFileURL(input.entryPath).href) as BuiltEntry
-  const unbind = bindHost(entry.nitroApp, { owner: common.owner, services: common.services, logger: input.logger })
+  const requestCli = createRequestCli(entry.nitroApp, { onUnavailable: approvalPending, logger: input.logger })
+  const unbind = bindHost(entry.nitroApp, { owner: common.owner, services: common.services, logger: input.logger, requestCli })
   const removeListener = registerCliListener(entry.nitroApp, async (request, respond, options) => {
     respond(await input.requestCli(request, { signal: options?.signal }))
   })
@@ -45,7 +48,7 @@ export async function setupServer(input: { common: BuckleCommon; logger: Logger;
   return {
     nitroApp: entry.nitroApp,
     middleware: entry.middleware,
-    requestCli: createRequestCli(entry.nitroApp, { onUnavailable: approvalPending, logger: input.logger }),
+    requestCli,
     release: () => {
       removeListener()
       unbind()

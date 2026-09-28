@@ -1,5 +1,6 @@
 import type { NitroApp } from 'nitro/types'
 import { RuntimeError } from '../errors.js'
+import type { RequestCli } from '../interaction/types.js'
 import type { RuntimeOwner } from '../lifecycle/owner.js'
 import type { Logger } from '../logger/types.js'
 
@@ -10,6 +11,9 @@ export interface RuntimeHost {
   owner: RuntimeOwner
   services: RuntimeServices
   logger: Logger
+  // The process's one requester (createRequestCli on this app, with its unavailable fallback). When set,
+  // the context plugin hands routes this one instead of building its own, so no route can ask without it.
+  requestCli?: RequestCli
 }
 
 export const NitroErrorCode = Object.freeze({
