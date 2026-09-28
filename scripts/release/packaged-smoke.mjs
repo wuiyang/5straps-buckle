@@ -257,7 +257,11 @@ async function checkSetupWithoutAdminToken() {
   await checkCleanStop()
 }
 
-/** `buckle mcp` over stdio: initialize and tools/list answer on stdout, which carries protocol lines only, and closing stdin ends it with exit 0. */
+/**
+ * `buckle mcp` over stdio: initialize and tools/list answer on stdout, which carries protocol lines
+ * only, and closing stdin ends it with exit 0. Whatever fails on the way, the child is killed, so a
+ * failing smoke never hangs (review L6 of B20-B22).
+ */
 async function checkMcpStdio() {
   const child = spawn(process.execPath, [entry, 'mcp'], { cwd: workspace, env: nodeEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] })
   let stdout = ''
@@ -265,26 +269,39 @@ async function checkMcpStdio() {
   child.stdout.on('data', chunk => { stdout += chunk })
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000) })
   const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))
-  const protocolVersion = '2026-07-28'
-  const meta = { 'io.modelcontextprotocol/protocolVersion': protocolVersion, 'io.modelcontextprotocol/clientCapabilities': {} }
-  child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion, capabilities: {}, clientInfo: { name: 'package-smoke', version: '0' } } })}\n`)
-  child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } })}\n`)
-  // Complete lines only: the last piece may still be arriving.
-  const lines = () => stdout.split('\n').slice(0, -1).filter(Boolean).map(line => JSON.parse(line))
-  const deadline = Date.now() + 20_000
-  while (lines().filter(message => message.id === 1 || message.id === 2).length < 2) {
-    if (Date.now() > deadline || child.exitCode !== null) throw new Error(`buckle mcp did not answer initialize and tools/list: ${stderr}`)
-    await delay(50)
+  try {
+    const protocolVersion = '2026-07-28'
+    const meta = { 'io.modelcontextprotocol/protocolVersion': protocolVersion, 'io.modelcontextprotocol/clientCapabilities': {} }
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion, capabilities: {}, clientInfo: { name: 'package-smoke', version: '0' } } })}\n`)
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } })}\n`)
+    // Complete lines only: the last piece may still be arriving.
+    const lines = () => stdout.split('\n').slice(0, -1).filter(Boolean).map(protocolLine)
+    const deadline = Date.now() + 20_000
+    while (lines().filter(message => message.id === 1 || message.id === 2).length < 2) {
+      if (Date.now() > deadline || child.exitCode !== null) throw new Error(`buckle mcp did not answer initialize and tools/list: ${stderr}`)
+      await delay(50)
+    }
+    const [initialized, listed] = [1, 2].map(id => lines().find(message => message.id === id))
+    assert(initialized.result?.serverInfo?.name, `initialize answered without server info: ${JSON.stringify(initialized)}`)
+    assert(listed.result?.tools?.some(tool => tool.name === 'fs_write'), 'tools/list does not list fs_write')
+    assert(lines().every(message => message.jsonrpc === '2.0'), 'stdout carried something other than MCP messages')
+    child.stdin.end()
+    const result = await Promise.race([closed, delay(30_000).then(() => null)])
+    if (!result) throw new Error('buckle mcp did not exit within 30 s of its client closing stdin')
+    assert.deepEqual(result, { code: 0, signal: null }, `buckle mcp did not exit 0: ${stderr}`)
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL')
+      await closed
+    }
   }
-  const [initialized, listed] = [1, 2].map(id => lines().find(message => message.id === id))
-  assert(initialized.result?.serverInfo?.name, `initialize answered without server info: ${JSON.stringify(initialized)}`)
-  assert(listed.result?.tools?.some(tool => tool.name === 'fs_write'), 'tools/list does not list fs_write')
-  assert(lines().every(message => message.jsonrpc === '2.0'), 'stdout carried something other than MCP messages')
-  child.stdin.end()
-  const result = await Promise.race([closed, delay(30_000).then(() => null)])
-  if (!result) {
-    child.kill('SIGKILL')
-    throw new Error('buckle mcp did not exit within 30 s of its client closing stdin')
+}
+
+/** One stdout line of `buckle mcp`, which must be a JSON-RPC message; anything else fails the smoke with the line. */
+function protocolLine(line) {
+  try {
+    return JSON.parse(line)
+  } catch {
+    throw new Error(`buckle mcp wrote a line on stdout that is not JSON: ${line.slice(0, 200)}`)
   }
-  assert.deepEqual(result, { code: 0, signal: null }, `buckle mcp did not exit 0: ${stderr}`)
 }

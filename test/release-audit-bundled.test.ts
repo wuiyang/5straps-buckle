@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { bundledAdvisories, readBundled } from '../scripts/release/audit-bundled.mjs'
+import { bundledAdvisories, checkedAudit, readBundled } from '../scripts/release/audit-bundled.mjs'
 
 // B21 (plan section G): an advisory for a package the Buckle build bundled into .output fails the
 // release audit, which `pnpm audit --prod` cannot see. Fixtures only: no network.
@@ -34,7 +34,7 @@ describe('the bundled-package audit', () => {
 
   it('ignores an advisory for another version of a bundled package, and one for a package that is not bundled', () => {
     expect(bundledAdvisories({ audit: audit([{ id: 2, module_name: 'srvx', versions: ['1.0.4'] }, { id: 3, module_name: 'left-pad', versions: ['1.3.0'] }]), bundled: BUNDLED })).toEqual([])
-    expect(bundledAdvisories({ audit: { advisories: {} }, bundled: BUNDLED })).toEqual([])
+    expect(bundledAdvisories({ audit: { advisories: {}, metadata: {} }, bundled: BUNDLED })).toEqual([])
   })
 
   it('reads the build\'s lists, and refuses a missing or malformed one', () => {
@@ -64,5 +64,29 @@ describe('the bundled-package audit', () => {
     expect(affected.output).toContain('nitro@3.0.260903-beta is bundled into .output and has advisory 4 (critical)')
     const clean = run('clean.json')
     expect(clean).toEqual({ code: 0, output: expect.stringContaining('Bundled packages audited: 3') })
+  })
+
+  it('fails when the audit itself failed: an error answer, an answer without advisories and metadata, or a non-zero exit naming no advisory (review M7 of B20-B22)', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'audit-bundled-'))
+    writeFileSync(join(directory, 'bundled.json'), JSON.stringify(BUNDLED))
+    // What pnpm answers when the registry is down or refuses the request.
+    writeFileSync(join(directory, 'error.json'), JSON.stringify({ error: { code: 'ERR_PNPM_AUDIT_BAD_RESPONSE', message: 'The audit endpoint responded with 503' } }))
+    writeFileSync(join(directory, 'empty.json'), '{}')
+    writeFileSync(join(directory, 'clean.json'), JSON.stringify(audit([])))
+    const run = (auditFile: string, exitCode = '0') => {
+      try {
+        return { code: 0, output: execFileSync(process.execPath, [SCRIPT, '--bundled', join(directory, 'bundled.json'), '--audit', join(directory, auditFile), '--audit-exit-code', exitCode], { encoding: 'utf8', stdio: 'pipe' }) }
+      } catch (error) {
+        const failed = error as { status: number; stderr: string }
+        return { code: failed.status, output: failed.stderr }
+      }
+    }
+    expect(run('error.json')).toEqual({ code: 1, output: expect.stringContaining('pnpm audit failed') })
+    expect(run('empty.json')).toEqual({ code: 1, output: expect.stringContaining('without its advisories and metadata') })
+    expect(run('clean.json', '1')).toEqual({ code: 1, output: expect.stringContaining('exited 1 without naming an advisory') })
+    expect(run('clean.json')).toEqual({ code: 0, output: expect.stringContaining('no advisory') })
+    expect(() => checkedAudit({ output: 'not json' })).toThrow('did not answer JSON')
+    expect(() => checkedAudit({ output: '[]' })).toThrow('other than an object')
+    expect(checkedAudit({ output: JSON.stringify(audit([{ id: 6, module_name: 'nitro', versions: ['3.0.260903-beta'] }])), exitCode: 1 }).advisories).toHaveProperty('6')
   })
 })

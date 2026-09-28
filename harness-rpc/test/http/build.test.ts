@@ -152,11 +152,12 @@ describe('the built server (.output)', () => {
     expect(topLevelEntries('\n\ta,\n\tf((x) => { g("],"); }, [1, 2]),\n\t`${"]"}`\n')).toBe(3)
   })
 
-  it('records every package it bundled from node_modules, and none of the externals, in bundled-packages.json (B21)', () => {
+  it('records every package it bundled from node_modules or that generated code into it, and none of the externals, in bundled-packages.json (B21)', () => {
     for (const output of Object.values(build.outputs)) {
       const bundled = JSON.parse(readFileSync(join(output, 'bundled-packages.json'), 'utf8')) as string[]
       expect(bundled).toEqual([...bundled].sort())
-      expect(bundled).toEqual(expect.arrayContaining([expect.stringMatching(/^nitro@\d/), expect.stringMatching(/^srvx@\d/)]))
+      // rou3 compiled the router into the entry at build time: listed though no module of it is bundled.
+      expect(bundled).toEqual(expect.arrayContaining([expect.stringMatching(/^nitro@\d/), expect.stringMatching(/^srvx@\d/), expect.stringMatching(/^rou3@\d/)]))
       expect(bundled.filter(item => /^(?:@5straps\/|@modelcontextprotocol\/|zod@|h3@)/.test(item))).toEqual([])
       expect(bundled.every(item => /^(?:@[^/@]+\/)?[^/@]+@\d[^@]*$/.test(item))).toBe(true)
     }

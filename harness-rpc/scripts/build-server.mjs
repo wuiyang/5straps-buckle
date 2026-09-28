@@ -2,8 +2,10 @@
 // --no-admin leaves the admin layer out, so that build serves no /setup route.
 // The build cache goes under node_modules/.cache (or --build-dir), never into the source tree.
 // It also writes .output/bundled-packages.json: package@version for every module the bundle took from
-// node_modules, which `pnpm audit --prod` cannot see (plan section G; scripts/release/audit-bundled.mjs).
+// node_modules, and for each package that generated code into it at build time, which `pnpm audit
+// --prod` cannot see (plan section G; scripts/release/audit-bundled.mjs).
 import { readFileSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { build, copyPublicAssets, createNitro, prepare } from 'nitro/builder'
@@ -25,6 +27,12 @@ const nitro = await createNitro({
   buildDir: resolve(values['build-dir'] ?? join(rootDir, 'node_modules', '.cache', 'nitro')),
   output: { dir: outDir },
 })
+/**
+ * Packages whose code lands in the bundle without being bundled as a module, resolved as nitro
+ * resolves them: rou3 compiles the route table into the entry's findRoute (review, unverified item of
+ * B20-B22). Listed so the bundled audit covers the code they wrote.
+ */
+const BUILD_TIME_GENERATORS = ['rou3']
 const bundled = new Set()
 nitro.hooks.hook('rollup:before', (_nitro, config) => { config.plugins.push(recordBundledPackages(bundled)) })
 try {
@@ -34,6 +42,7 @@ try {
 } finally {
   await nitro.close()
 }
+for (const generator of BUILD_TIME_GENERATORS) bundled.add(packageOf(createRequire(import.meta.resolve('nitro/builder')).resolve(generator)))
 writeFileSync(join(outDir, 'bundled-packages.json'), `${JSON.stringify([...bundled].sort(), null, 2)}\n`)
 
 /** Collects the package of every bundled module that came from node_modules. */
