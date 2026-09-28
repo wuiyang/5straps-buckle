@@ -12,6 +12,12 @@ export interface BuckleServices {
   getWorkspaces(): Promise<WorkspaceManager>
   /** Scoped: how this operation reaches a person. Its transport binds it once, as the operation opens. */
   getInteraction(scope?: OperationScope): Promise<InteractionPort>
+  /** What /health reports, from configuration alone: known before startup, so liveness answers while the node starts. */
+  nodeIdentity(): NodeIdentity
+}
+
+export interface NodeIdentity {
+  readonly serverId: string
 }
 
 export interface BuckleServiceDefinitions {
@@ -53,12 +59,14 @@ export function serviceList(definitions: BuckleServiceDefinitions): AnyServiceDe
   return Object.values(definitions)
 }
 
-export function createServiceAccessors(input: { owner: RuntimeOwner; definitions: BuckleServiceDefinitions }): BuckleServices {
+export function createServiceAccessors(input: { owner: RuntimeOwner; definitions: BuckleServiceDefinitions; config: BuckleConfig }): BuckleServices {
   const { registry } = input.owner
+  const identity: NodeIdentity = Object.freeze({ serverId: input.config.serverId })
   return {
     getWorkspaceRuntime: () => registry.useSingleton(input.definitions.workspaceRuntime),
     getWorkspaces: () => registry.useSingleton(input.definitions.workspaces),
     getInteraction: scope => registry.useScoped(input.definitions.interaction, scope),
+    nodeIdentity: () => identity,
   }
 }
 

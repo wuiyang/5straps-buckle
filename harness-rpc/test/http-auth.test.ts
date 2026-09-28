@@ -66,8 +66,4 @@ describe('the native RPC face', () => {
     const response = await app.request('/v1/manifest', { headers: { authorization: `Bearer ${TOKEN}` } })
     expect(response.status).toBe(200)
   })
-
-  it('leaves health open, since it reports nothing actionable', async () => {
-    expect((await app.request('/health')).status).toBe(200)
-  })
 })

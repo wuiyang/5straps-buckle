@@ -29,12 +29,6 @@ const ERROR_STATUS: Readonly<Record<string, ContentfulStatusCode>> = { APPROVAL_
 export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies): Hono {
   const app = new Hono()
 
-  app.get('/health', context => context.json({
-    status: 'ok',
-    serverId: config.serverId,
-    protocolVersion: runtime.manifest().protocolVersion,
-  }))
-
   const dispatched = new WeakSet<Request>()
   app.use('/v1/invoke', async (context, next) => {
     await next()

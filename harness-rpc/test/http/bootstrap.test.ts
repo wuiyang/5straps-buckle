@@ -1,24 +1,19 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { CLOSE_STAGES } from '@5straps/runtime'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { buildBuckle, firstResponse, freePort, removeBuild, spawnBuckle, waitForStatus, type BuckleProcess, type LogLine } from './support/buckle-process.js'
+import { afterAll, describe, expect, inject, it } from 'vitest'
+import { firstResponse, freePort, spawnBuckle, waitForStatus, type BuckleProcess, type LogLine } from '../support/buckle-process.js'
 
-let outDir: string
-let entry: string
+// The package as installed: dist/main.js, and .output beside it, found from the package root.
+const entry = inject('buckleBuild').main
 const running: BuckleProcess[] = []
-
-beforeAll(() => {
-  outDir = buildBuckle()
-  entry = join(outDir, 'main.js')
-}, 120_000)
 
 afterAll(() => {
   for (const node of running) node.child.kill('SIGKILL')
-  removeBuild(outDir)
 })
 
 interface Node { root: string; workspace: string; state: string; env: NodeJS.ProcessEnv; port: number }
@@ -137,18 +132,26 @@ describe('a .env in the current directory when no configuration file resolves', 
   }, 60_000)
 })
 
-describe('buckle serve bootstrap (built dist)', () => {
+describe('buckle serve bootstrap (built dist and .output)', () => {
   it('listens before startup ends, answers 503 until ready, builds the workspace once, and closes stage by stage on SIGTERM', async () => {
     const node = await prepareNode()
     const { gate, builds } = installGatePlugin(node)
     const buckle = serve(node)
+    const url = (path: string) => `http://127.0.0.1:${node.port}${path}`
 
-    const starting = await firstResponse(`http://127.0.0.1:${node.port}/health`)
+    const starting = await firstResponse(url('/health/ready'))
     expect(starting.status).toBe(503)
-    expect(await starting.json()).toEqual({ error: 'Buckle is not ready' })
+    expect(await starting.json()).toEqual({ error: 'Runtime is still starting' })
+    // Liveness answers during startup; everything else waits for readiness.
+    const live = await fetch(url('/health'))
+    expect(live.status).toBe(200)
+    expect(await live.json()).toMatchObject({ status: 'ok', serverId: expect.any(String) })
+    const early = await fetch(url('/v1/manifest'), { headers: { authorization: 'Bearer bootstrap-agent-token' } })
+    expect(early.status).toBe(503)
+    expect(await early.json()).toEqual({ error: 'Buckle is not ready' })
     closeSync(openSync(gate, 'w'))
-    const ready = await waitForStatus(`http://127.0.0.1:${node.port}/health`, 200)
-    expect(await ready.json()).toMatchObject({ status: 'ok' })
+    const ready = await waitForStatus(url('/health/ready'), 200)
+    expect(await ready.json()).toEqual({ status: 'ready' })
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
     expect(readFileSync(builds, 'utf8')).toBe('x')
 
@@ -213,7 +216,7 @@ describe('buckle serve bootstrap (built dist)', () => {
     const node = await prepareNode()
     const { gate } = installGatePlugin(node)
     const buckle = serve(node)
-    expect((await firstResponse(`http://127.0.0.1:${node.port}/health`)).status).toBe(503)
+    expect((await firstResponse(`http://127.0.0.1:${node.port}/health/ready`)).status).toBe(503)
 
     buckle.child.kill('SIGTERM')
     await buckle.waitForLine(line => line.message === 'Shutdown requested')
@@ -223,6 +226,35 @@ describe('buckle serve bootstrap (built dist)', () => {
     const messages = buckle.lines().map(line => line.message)
     expect(messages).not.toContain('Buckle failed to start')
     expect(messages).not.toContain('5straps Buckle listening')
+  }, 60_000)
+
+  it('exits 1, before listening, when the package has no built server', async () => {
+    const node = await prepareNode()
+    // The package as built, less .output: dist and the files it reads from the package root.
+    const bare = mkdtempSync(join(tmpdir(), 'buckle-no-output-'))
+    for (const part of ['dist', 'skills', 'package.json']) cpSync(join(inject('buckleBuild').root, part), join(bare, part), { recursive: true })
+    symlinkSync(join(inject('buckleBuild').root, 'node_modules'), join(bare, 'node_modules'), 'dir')
+    const buckle = spawnBuckle({ entry: join(bare, 'dist', 'main.js'), args: ['serve'], env: node.env, cwd: node.workspace })
+    running.push(buckle)
+
+    expect(await buckle.exited).toEqual({ code: 1, signal: null })
+    expect(buckle.lines().find(line => line.message === 'Buckle failed to start')).toMatchObject({ level: 'fatal', error: { message: expect.stringContaining(join(bare, '.output', 'server', 'index.mjs')) } })
+  }, 60_000)
+
+  it('answers an upgrade request as a plain request: Buckle serves no WebSocket', async () => {
+    const node = await prepareNode()
+    const buckle = serve(node)
+    await buckle.waitForLine(line => line.message === '5straps Buckle listening')
+    for (const path of ['/health', '/mcp']) {
+      const socket = connect(node.port, '127.0.0.1')
+      let reply = ''
+      socket.on('data', (chunk: Buffer) => { reply += chunk.toString('utf8') })
+      socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`)
+      await expect.poll(() => reply.split('\r\n')[0]).toMatch(/^HTTP\/1\.1 \d{3}/)
+      socket.destroy()
+      expect(reply.split('\r\n')[0]).toBe(path === '/health' ? 'HTTP/1.1 200 OK' : 'HTTP/1.1 401 Unauthorized')
+    }
+    expect((await fetch(`http://127.0.0.1:${node.port}/health/ready`)).status).toBe(200)
   }, 60_000)
 
   it('exits 1 with the reason when startup fails after listening', async () => {

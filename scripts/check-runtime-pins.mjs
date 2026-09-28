@@ -1,4 +1,4 @@
-// Fails when @5straps/runtime drifts from its reviewed Nitro, H3 and DB0 pins (Foundation gate F57).
+// Fails when @5straps/runtime or Buckle drifts from the reviewed Nitro, H3 and DB0 pins (Foundation gate F57).
 import { readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,15 +8,22 @@ export const RUNTIME_PINS = Object.freeze({ nitro: '3.0.260903-beta', h3: '2.0.1
 const PEER_ONLY = ['nitro', 'h3']
 const FORBIDDEN = ['better-sqlite3']
 const RUNTIME_IMPORTER = 'packages/runtime'
+// Buckle builds with nitro and srvx (development only) and serves through h3 at run time, one copy
+// shared with @5straps/runtime/nitro (Buckle phase plan, section B).
+const BUCKLE_IMPORTER = 'harness-rpc'
+const BUCKLE_BUILD_ONLY = ['nitro', 'srvx']
 
 export function checkRuntimePins({ root }) {
   const manifest = JSON.parse(readFileSync(join(root, RUNTIME_IMPORTER, 'package.json'), 'utf8'))
+  const buckle = JSON.parse(readFileSync(join(root, BUCKLE_IMPORTER, 'package.json'), 'utf8'))
   const rootManifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   const lock = readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8')
   return [
     ...checkManifest(manifest),
+    ...checkBuckleManifest({ buckle, runtime: manifest }),
     ...checkOverrides(rootManifest),
     ...checkLockfile(lock),
+    ...checkBuckleLockfile(lock),
   ]
 }
 
@@ -33,6 +40,17 @@ function checkManifest(manifest) {
   }
   for (const section of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
     for (const name of FORBIDDEN) if (manifest[section]?.[name]) problems.push(`${name} is not allowed in ${section}; the runtime uses node:sqlite`)
+  }
+  return problems
+}
+
+function checkBuckleManifest({ buckle, runtime }) {
+  const problems = []
+  if (buckle.dependencies?.h3 !== RUNTIME_PINS.h3) problems.push(`${BUCKLE_IMPORTER}: h3 must be a production dependency pinned exactly to ${RUNTIME_PINS.h3}, found ${buckle.dependencies?.h3 ?? 'nothing'}`)
+  const buildPins = { nitro: RUNTIME_PINS.nitro, srvx: runtime.devDependencies?.srvx }
+  for (const name of BUCKLE_BUILD_ONLY) {
+    if (buckle.devDependencies?.[name] !== buildPins[name]) problems.push(`${BUCKLE_IMPORTER}: ${name} must be a devDependency pinned exactly to ${buildPins[name]}, found ${buckle.devDependencies?.[name] ?? 'nothing'}`)
+    if (buckle.dependencies?.[name]) problems.push(`${BUCKLE_IMPORTER}: ${name} builds .output and must not be a production dependency`)
   }
   return problems
 }
@@ -64,8 +82,26 @@ function checkLockfile(lock) {
   return problems
 }
 
+function checkBuckleLockfile(lock) {
+  const importer = lockSection(lock, 'importers:', `  ${BUCKLE_IMPORTER}:`)
+  if (!importer) return [`pnpm-lock.yaml has no ${BUCKLE_IMPORTER} importer; run pnpm install`]
+  const problems = []
+  for (const name of ['nitro', 'h3']) {
+    const version = importerVersion(importer, name)
+    if (version !== RUNTIME_PINS[name]) problems.push(`lockfile resolves ${BUCKLE_IMPORTER} ${name} to ${version ?? 'nothing'}, expected ${RUNTIME_PINS[name]}`)
+  }
+  // One h3 instance: the peer context Buckle resolves must be the one nitro and the runtime share.
+  const runtimeH3 = fullImporterVersion(lockSection(lock, 'importers:', `  ${RUNTIME_IMPORTER}:`), 'h3')
+  if (fullImporterVersion(importer, 'h3') !== runtimeH3) problems.push(`${BUCKLE_IMPORTER} resolves h3 as ${fullImporterVersion(importer, 'h3') ?? 'nothing'}, not the runtime's ${runtimeH3 ?? 'nothing'}; one copy is required`)
+  return problems
+}
+
 function importerVersion(importer, name) {
-  return /^\s+version: (\S+)/m.exec(importer.split(new RegExp(`^ {6}'?${name}'?:$`, 'm'))[1] ?? '')?.[1]?.split('(')[0]
+  return fullImporterVersion(importer, name)?.split('(')[0]
+}
+
+function fullImporterVersion(importer, name) {
+  return /^\s+version: (\S+)/m.exec((importer ?? '').split(new RegExp(`^ {6}'?${name}'?:$`, 'm'))[1] ?? '')?.[1]
 }
 
 function nitroDependency(nitro, name) {

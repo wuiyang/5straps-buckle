@@ -8,5 +8,5 @@
     "sourceMap": true
   },
   "include": ["main.ts", "common/**/*.ts", "cli/**/*.ts", "mcp/**/*.ts", "server/**/*.ts"],
-  "exclude": ["test/**/*.ts"]
+  "exclude": ["test/**/*.ts", "server/entry.ts", "server/error.ts"]
 }

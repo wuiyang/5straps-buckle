@@ -130,6 +130,8 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     if (!face) {
       const agentTokens = () => manager.agentTokens(id)
       face = createRpcApp({ config, runtime, authToken: agentTokens })
+      // The node's own /health is a Nitro route now; this twin moves with the common layer (B15).
+      face.get('/health', context => context.json({ status: 'ok', serverId: config.serverId, protocolVersion: runtime.manifest().protocolVersion }))
       const mcpHandler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, version: runtime.manifest().version }))
       face.use('/mcp', auditHttpRequest({ actions: runtime.actions, workspaceId: runtime.workspaceId, face: 'http_mcp' }))
       face.use('/mcp', bodyLimit({ maxSize: config.maxRequestBytes }))

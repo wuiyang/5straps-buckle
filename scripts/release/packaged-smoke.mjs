@@ -19,8 +19,13 @@ const agentToken = randomBytes(32).toString('hex')
 const adminToken = randomBytes(32).toString('hex')
 const environment = { PATH: process.env.PATH, HOME: root, TMPDIR: root, SystemRoot: process.env.SystemRoot,
   npm_config_userconfig: join(root, 'npmrc'), npm_config_audit: 'false', npm_config_fund: 'false' }
+// Strings only Buckle's common code or @5straps/runtime holds: in .output they would mean a bundled second copy.
+const BUNDLED_ELSEWHERE = ['This process already has its requester bound', 'Approval was declined', 'A cli:call listener is already registered', 'No operation scope is active']
+
 let service
 let serviceOutput = ''
+// The whole log of the current start, for counting lines the truncated tail may have lost.
+let serviceLog = ''
 let entry
 let port
 let sequence = 0
@@ -31,7 +36,7 @@ try {
   await startService()
   await checkApprovalAndAudit()
   await checkBackupAndRestore()
-  process.stdout.write('Packaged Buckle passed: install, CLI, HTTP authorization, approval/retry, audit, backup/restart and conflict-checked restore.\n')
+  process.stdout.write('Packaged Buckle passed: install, built server, CLI, HTTP authorization, approval/retry, audit, backup/restart and conflict-checked restore.\n')
 } catch (error) {
   process.stderr.write(`Packaged Buckle smoke failed: ${error instanceof Error ? error.message : String(error)}\n`)
   process.exitCode = 1
@@ -66,9 +71,33 @@ function prepareInstallation() {
   entry = join(installation, 'node_modules/@5straps/buckle/dist/main.js')
   assert(existsSync(entry), 'Installed CLI entry is missing')
   assertExecutableBin(entry)
+  assertBuiltServer(join(installation, 'node_modules/@5straps/buckle/.output'))
+  // One @5straps/runtime in the installation, shared by main and the built app.
+  assert.deepEqual(findPackages(join(installation, 'node_modules'), '@5straps/runtime'), [join(installation, 'node_modules/@5straps/runtime')], 'Expected one @5straps/runtime')
   assert.match(run(join(installation, 'node_modules', '.bin', 'buckle'), ['--version'], { cwd: workspace, env: nodeEnvironment() }), /^\d+\.\d+\.\d+/)
   writeFileSync(join(workspace, 'demo.txt'), 'before')
   assert.match(cli(['tools']), /fs write/)
+}
+
+/** The Nitro build ships in the package (files: .output), without native addons or a second runtime copy. */
+function assertBuiltServer(output) {
+  assert(existsSync(join(output, 'server', 'index.mjs')), 'The installed package has no .output/server/index.mjs')
+  const built = walk(output)
+  assert.deepEqual(built.filter(path => path.endsWith('.node')), [], 'Native addons found in .output')
+  for (const path of built.filter(file => file.endsWith('.mjs'))) {
+    const text = readFileSync(path, 'utf8')
+    assert.deepEqual(BUNDLED_ELSEWHERE.filter(marker => text.includes(marker)), [], `${path} bundles common or runtime code`)
+  }
+  assert.match(readFileSync(join(output, 'server', '_routes', 'health', 'ready.mjs'), 'utf8'), /from "@5straps\/runtime\/nitro"/, 'Route chunks must import @5straps/runtime bare')
+}
+
+function walk(directory) {
+  return readdirSync(directory, { recursive: true, encoding: 'utf8' }).map(path => join(directory, path)).filter(path => statSync(path).isFile())
+}
+
+/** Every installed copy of a package under node_modules, nested ones included. */
+function findPackages(modules, name) {
+  return walk(modules).filter(path => path.endsWith(`/node_modules/${name}/package.json`)).map(path => dirname(path))
 }
 
 function assertExecutableBin(path) {
@@ -98,21 +127,31 @@ async function freePort() {
 
 async function startService() {
   serviceOutput = ''
+  serviceLog = ''
   service = spawn(process.execPath, [entry, 'serve'], { cwd: workspace, env: nodeEnvironment(), stdio: ['ignore', 'pipe', 'pipe'] })
   let startupError
   service.on('error', error => { startupError = error })
-  for (const stream of [service.stdout, service.stderr]) stream.on('data', chunk => { serviceOutput = (serviceOutput + chunk).slice(-4000) })
+  for (const stream of [service.stdout, service.stderr]) stream.on('data', chunk => { serviceLog += chunk; serviceOutput = (serviceOutput + chunk).slice(-4000) })
   const deadline = Date.now() + 15_000
   while (Date.now() < deadline) {
     if (startupError) throw startupError
     if (service.exitCode !== null) throw new Error(`Buckle exited during startup: ${serviceOutput}`)
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(500) })
-      if (response.ok) return
-    } catch { /* The process has not bound its socket yet. */ }
+      // Liveness answers during startup; readiness waits for the common runtime.
+      const response = await fetch(`http://127.0.0.1:${port}/health/ready`, { signal: AbortSignal.timeout(500) })
+      if (response.ok) return assertOneCliListener()
+    } catch (error) {
+      if (error instanceof assert.AssertionError) throw error
+      // Otherwise the process has not bound its socket yet.
+    }
     await delay(50)
   }
   throw new Error(`Buckle startup timed out: ${serviceOutput}`)
+}
+
+function assertOneCliListener() {
+  const registered = serviceLog.split('\n').filter(line => line.includes('"cli:call listener registered"'))
+  assert.equal(registered.length, 1, `Expected exactly one cli:call listener, saw ${registered.length}`)
 }
 
 async function stopService() {

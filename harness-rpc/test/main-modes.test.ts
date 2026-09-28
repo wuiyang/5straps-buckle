@@ -9,6 +9,7 @@ const entry = vi.hoisted(() => ({
   runSettingsCommand: vi.fn(async () => ({ exitCode: 4 })),
   runCli: vi.fn(async () => ({ exitCode: 5 })),
   serveHttp: vi.fn(async () => {}),
+  setupServer: vi.fn(async () => ({ requestCli: vi.fn() })),
   serveMcpStdio: vi.fn(async () => {}),
   initializeCommon: vi.fn(() => ({ owner: { onClose: vi.fn(), close: vi.fn(async () => {}) }, bindRequester: vi.fn() })),
 }))
@@ -16,6 +17,7 @@ vi.mock('../common/runtime/environment.js', () => ({ loadEnvironmentFile: entry.
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
 vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runCli: entry.runCli, answerWithoutConfiguration: () => null }))
 vi.mock('../server/hono/serve.js', () => ({ serveHttp: entry.serveHttp }))
+vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, builtEntryPath: () => '/built/.output/server/index.mjs' }))
 vi.mock('../mcp/stdio.js', () => ({ serveMcpStdio: entry.serveMcpStdio }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))
 
@@ -62,7 +64,12 @@ describe('main', () => {
     expect(await main(['serve'])).toBeUndefined()
     expect(entry.initializeCommon).toHaveBeenCalledTimes(1)
     expect(entry.initializeCommon).toHaveBeenCalledWith(expect.objectContaining({ config, role: 'server' }))
-    expect(entry.serveHttp).toHaveBeenCalledWith(expect.objectContaining({ config, common: entry.initializeCommon.mock.results[0]!.value }))
+    const common = entry.initializeCommon.mock.results[0]!.value
+    // The built app is bound before anything is served, and HTTP asks through its cli:call dispatcher.
+    expect(entry.setupServer).toHaveBeenCalledWith(expect.objectContaining({ common, entryPath: '/built/.output/server/index.mjs' }))
+    const server = await entry.setupServer.mock.results[0]!.value
+    expect(common.bindRequester).toHaveBeenCalledWith(server.requestCli)
+    expect(entry.serveHttp).toHaveBeenCalledWith(expect.objectContaining({ config, common, server }))
     expect(entry.loadEnvironmentFile.mock.invocationCallOrder[0]).toBeLessThan(entry.loadConfig.mock.invocationCallOrder[0]!)
     expect(entry.serveMcpStdio).not.toHaveBeenCalled()
     expect(entry.runCli).not.toHaveBeenCalled()
@@ -76,6 +83,7 @@ describe('main', () => {
     expect(entry.serveMcpStdio).toHaveBeenCalledWith(expect.objectContaining({ config, common: entry.initializeCommon.mock.results[0]!.value }))
     expect(entry.initializeCommon.mock.results[0]!.value.bindRequester).toHaveBeenCalledTimes(1)
     expect(entry.serveHttp).not.toHaveBeenCalled()
+    expect(entry.setupServer).not.toHaveBeenCalled()
   })
 
   it('hands every other argument list to the CLI with the loaded config', async () => {

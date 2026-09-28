@@ -33,7 +33,7 @@ export function initializeCommon(input: InitializeCommonInput): BuckleCommon {
   const interaction = currentInteraction({ owner: () => owner, requester: () => requester })
   const definitions = defineBuckleServices({ config: input.config, interaction, onClose: (stage, name, closer) => owner.onClose(stage, name, closer) })
   const owner = createRuntimeOwner({ name: `buckle-${input.role}`, services: serviceList(definitions), logger: input.logger })
-  const services = createServiceAccessors({ owner, definitions })
+  const services = createServiceAccessors({ owner, definitions, config: input.config })
   return {
     role: input.role,
     owner,

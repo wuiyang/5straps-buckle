@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { createHookRequestCli, type CliHookDispatch, type Logger, type LoggerRoot, type RequestCli } from '@5straps/runtime'
+import type { Logger, LoggerRoot, RequestCli } from '@5straps/runtime'
 import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand } from './cli/main.js'
 import { setupCli } from './cli/setup.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
@@ -11,6 +11,7 @@ import { initializeCommon, type BuckleCommon } from './common/runtime/initialize
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
 import { serveMcpStdio } from './mcp/stdio.js'
 import { serveHttp } from './server/hono/serve.js'
+import { builtEntryPath, setupServer } from './server/setup-server.js'
 
 export type Mode =
   | { kind: 'init' | 'settings' | 'cli'; argv: string[] }
@@ -78,11 +79,9 @@ async function runService(input: { kind: ServiceKind; config: BuckleConfig; logg
   // Main owns the process's one requester (nitro/coordination.md); its questions settle with the other waiters.
   const cli = setupCli({ terminal: terminalFor(input.kind) })
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
-  // HTTP asks through the cli:call hook, which main answers; MCP stdio is handed the requester itself.
-  common.bindRequester(input.kind === 'serve' ? createHookRequestCli({ dispatch: cliCallListener(cli.requestCli), hasListener: () => true }) : cli.requestCli)
   const shutdown = closeOnSignals({ common, logging })
   try {
-    await startService({ ...input, common, logger: logging.logger, shutdown })
+    await startService({ ...input, common, logger: logging.logger, shutdown, requestCli: cli.requestCli })
   } catch (error) {
     // A stop requested during startup is a normal stop, not a failed start.
     if (shutdown.requested()) return
@@ -92,19 +91,19 @@ async function runService(input: { kind: ServiceKind; config: BuckleConfig; logg
   }
 }
 
-function startService(input: { kind: ServiceKind; config: BuckleConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown }): Promise<void> {
-  if (input.kind === 'serve') return serveHttp(input)
+async function startService(input: { kind: ServiceKind; config: BuckleConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli }): Promise<void> {
+  if (input.kind === 'serve') {
+    // The built app, with the host and the one cli:call listener bound before anything is accepted.
+    const server = await setupServer({ ...input, entryPath: builtEntryPath() })
+    // HTTP asks through the app's cli:call hook, which main's listener answers (ruling 4 of 2026-09-28).
+    input.common.bindRequester(server.requestCli)
+    return serveHttp({ ...input, server })
+  }
+  // MCP stdio is handed the requester itself; stdin carries the protocol.
+  input.common.bindRequester(input.requestCli)
   // The client closing stdin ends the session. 'end' needs a reader, so attaching first misses nothing.
   process.stdin.once('end', () => { void input.shutdown.close() })
   return serveMcpStdio(input)
-}
-
-/**
- * The one cli:call listener: HTTP asks through the hook, main forwards to the requester and answers
- * through respond. Only the requester's outcome settles a question (ruling 4 of 2026-09-28).
- */
-function cliCallListener(requestCli: RequestCli): CliHookDispatch {
-  return async (request, respond, options) => { respond(await requestCli(request, { signal: options?.signal })) }
 }
 
 // A terminal running `buckle serve` can answer directly; under mcp, stdin carries the protocol.

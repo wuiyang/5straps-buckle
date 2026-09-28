@@ -3,13 +3,14 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { approvalsPath, loadConfig } from '../common/runtime/config.js'
-import { createHttpApp } from '../server/hono/http-app.js'
-import type { ActionLogEntry } from '../common/types/ports/action-log.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { approvalsPath } from '../../common/runtime/config.js'
+import type { ActionLogEntry } from '../../common/types/ports/action-log.js'
+import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
+import { createBuckleHttp } from '../support/buckle-http.js'
 
-// Pins today's Hono edge responses before the Nitro move (Buckle phase plan, B2). The commits that
-// move a route flip the matching expectation on purpose and list the flip in their message.
+// Pins the edge responses through the Nitro move (Buckle phase plan, B2), on the served surface:
+// the harness answers through serve's dispatcher. The commits that move a route flip the matching
+// expectation on purpose and list the flip in their message. B13: /health is Nitro's.
 
 const NODE_AGENT = 'node-agent-characterisation-only'
 const NODE_ADMIN = 'node-admin-characterisation-only'
@@ -26,15 +27,15 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(
 
 async function node(options: { admin?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-edges-'))
-  for (const folder of ['default', 'one', 'state']) mkdirSync(join(root, folder))
-  const config = loadConfig({
+  for (const folder of ['default', 'one']) mkdirSync(join(root, folder))
+  mkdirSync(join(root, 'state'), { mode: 0o700 })
+  const buckle = await createBuckleHttp({ environment: {
     BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT,
     ...(options.admin === false ? {} : { BUCKLE_ADMIN_TOKEN: NODE_ADMIN }), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_MAX_REQUEST_BYTES: String(MAX_REQUEST_BYTES),
-  })
-  const runtime = await createRuntime({ config })
-  const app = createHttpApp({ config, runtime, authToken: NODE_AGENT })
-  cleanups.push(() => runtime.workbenches.close())
-  const request = (path: string, init: RequestInit = {}) => app.request(path, init)
+  } })
+  const { config, runtime } = buckle
+  cleanups.push(() => buckle.close())
+  const request = (path: string, init: RequestInit = {}) => buckle.request(path, init)
   async function registerOne(): Promise<void> {
     const response = await request('/setup/workspaces', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', root: join(root, 'one'), authToken: ONE_AGENT, adminToken: ONE_ADMIN }) })
     expect(response.status).toBe(201)
@@ -121,10 +122,11 @@ describe('404 and method mismatch', () => {
     expect(await shape(await buckle.request('/v1/nope', { headers: bearer(NODE_AGENT) }))).toEqual({ status: 404, contentType: 'text/plain', body: '404 Not Found' })
   })
 
-  it('answers the text 404 for a wrong method on an existing path', async () => {
+  it('answers the text 404 for a wrong method on an existing Hono path, and JSON on a Nitro one', async () => {
     const buckle = await node()
     expect(await shape(await buckle.request('/v1/manifest', { method: 'POST', headers: bearer(NODE_AGENT) }))).toEqual({ status: 404, contentType: 'text/plain', body: '404 Not Found' })
-    expect(await shape(await buckle.request('/health', { method: 'POST' }))).toEqual({ status: 404, contentType: 'text/plain', body: '404 Not Found' })
+    // B13 flip: /health is a Nitro file route, whose error handler answers JSON.
+    expect(await shape(await buckle.request('/health', { method: 'POST' }))).toEqual({ status: 404, contentType: 'application/json', body: { error: 'Not Found' } })
   })
 
   it('checks the bearer token before anything else, OPTIONS included', async () => {

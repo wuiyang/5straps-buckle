@@ -3,5 +3,5 @@
   "compilerOptions": {
     "rootDir": "."
   },
-  "include": ["main.ts", "common/**/*.ts", "cli/**/*.ts", "mcp/**/*.ts", "server/**/*.ts", "test/**/*.ts"]
+  "include": ["main.ts", "nitro.config.ts", "common/**/*.ts", "cli/**/*.ts", "mcp/**/*.ts", "server/**/*.ts", "layers/**/*.ts", "test/**/*.ts"]
 }

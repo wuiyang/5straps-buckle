@@ -11,6 +11,7 @@ function probeApp() {
   const services: BuckleServices = {
     getWorkspaceRuntime: () => Promise.reject(new Error('not needed here')), getWorkspaces: () => Promise.reject(new Error('not needed here')),
     getInteraction: scope => owner.registry.useScoped(InteractionService, scope),
+    nodeIdentity: () => ({ serverId: 'probe' }),
   }
   const common: BuckleCommon = { role: 'server', owner, services, bindRequester: () => undefined, start: () => owner.start(() => {}) }
   const seen: Array<{ scope: OperationScope; ambient: OperationScope; services: BuckleServices; hold: ApprovalHold | undefined }> = []

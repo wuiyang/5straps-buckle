@@ -1,13 +1,6 @@
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
-import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { fileURLToPath } from 'node:url'
-
-const PACKAGE = fileURLToPath(new URL('../..', import.meta.url))
-// Under node_modules, so the built files resolve the installed dependencies like the package does.
-const BUILDS = join(PACKAGE, 'node_modules', '.cache', 'buckle-test')
 
 export interface LogLine {
   level: string
@@ -24,18 +17,6 @@ export interface BuckleProcess {
   /** Structured stderr lines; other text (a stack trace) is skipped. */
   lines(): LogLine[]
   waitForLine(predicate: (line: LogLine) => boolean, timeoutMs?: number): Promise<LogLine>
-}
-
-/** Builds the package with its own build script into a fresh directory; returns that directory. */
-export function buildBuckle(): string {
-  mkdirSync(BUILDS, { recursive: true })
-  const outDir = mkdtempSync(join(BUILDS, 'dist-'))
-  execFileSync(process.execPath, ['scripts/build.mjs', '--out-dir', outDir], { cwd: PACKAGE, stdio: 'pipe' })
-  return outDir
-}
-
-export function removeBuild(outDir: string): void {
-  rmSync(outDir, { recursive: true, force: true })
 }
 
 export function spawnBuckle(input: { entry: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string; stdin?: 'pipe' | 'ignore' }): BuckleProcess {

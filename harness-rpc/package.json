@@ -29,6 +29,7 @@
   },
   "files": [
     "dist",
+    ".output",
     "main.ts",
     "common",
     "cli",
@@ -45,7 +46,7 @@
   },
   "scripts": {
     "prepack": "pnpm run build",
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs && node scripts/build-server.mjs",
     "dev": "tsx watch --env-file-if-exists=../.env main.ts serve",
     "start": "node dist/main.js",
     "test": "vitest run",
@@ -59,6 +60,7 @@
     "@5straps/runtime": "workspace:*",
     "@hono/node-server": "2.1.1",
     "@modelcontextprotocol/server": "^2.0.0",
+    "h3": "2.0.1-rc.32",
     "hono": "4.13.5",
     "zod": "4.4.3"
   },
@@ -68,6 +70,8 @@
   "devDependencies": {
     "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "24.10.1",
+    "nitro": "3.0.260903-beta",
+    "srvx": "1.0.5",
     "tsx": "4.23.12",
     "typescript": "5.9.3",
     "vitest": "4.1.11"
