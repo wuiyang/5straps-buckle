@@ -4,31 +4,35 @@ import { join } from 'node:path'
 import { approvalKey, mintApprovalKey, open, seal, createMemoryNonceStore, SEALED_REPORT_PATHS, ENVELOPE_WINDOW_MS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalRequest } from '@5straps/protocol'
-import { createWebhookNotifier } from '../common/adapters/approval/webhook-notifier.js'
-import { createWebhookReporter } from '../common/adapters/report/webhook-reporter.js'
-import { loadConfig } from '../common/runtime/config.js'
-import { settingsCommand } from '../cli/settings.js'
-import { createHttpApp } from '../server/hono/http-app.js'
-import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { fixedInteraction } from './support/interaction.js'
+import { createWebhookNotifier } from '../../common/adapters/approval/webhook-notifier.js'
+import { createWebhookReporter } from '../../common/adapters/report/webhook-reporter.js'
+import { loadConfig } from '../../common/runtime/config.js'
+import { settingsCommand } from '../../cli/settings.js'
+import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const ADMIN = { authorization: 'Bearer admin-token-fixture', 'content-type': 'application/json' }
+const nodes: BuckleHttp[] = []
 
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+afterEach(async () => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+  for (const started of nodes.splice(0)) await started.close()
+})
 
-async function node(input: { key?: string; state?: string } = {}) {
+async function node(input: { key?: string; state?: string; graceMs?: number } = {}) {
   const state = input.state ?? mkdtempSync(join(tmpdir(), 'buckle-sealed-state-'))
-  const config = loadConfig({
+  const app = await createBuckleHttp({ environment: {
     BUCKLE_AUTH_TOKEN: 'agent-token-fixture',
     BUCKLE_ADMIN_TOKEN: 'admin-token-fixture',
     BUCKLE_STATE_DIR: state,
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-sealed-ws-')),
     BUCKLE_ALLOW_SHELL: 'false',
+    // A call over HTTP is held this long, so a decision posted meanwhile can free it.
+    BUCKLE_APPROVAL_TIMEOUT_MS: String(input.graceMs ?? 0),
     ...(input.key ? { BUCKLE_RINGS_APPROVAL_KEY: input.key } : {}),
-  })
-  // Held for the grace period, as a call over HTTP is, so a decision posted meanwhile can free it.
-  const runtime = await createRuntime({ config, interaction: fixedInteraction() })
-  const app = createHttpApp({ config, runtime, authToken: config.authToken })
+  } })
+  nodes.push(app)
+  const { config, runtime } = app
   const ask = async () => ((await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })).requests)[0]!
   const decide = (body: unknown) => app.request('/setup/approvals', { method: 'POST', headers: ADMIN, body: JSON.stringify(body) })
   const refusals = () => runtime.actions.read(200).filter(entry => entry.tool === 'setup_approval_envelope_refused')
@@ -123,9 +127,8 @@ describe('sealed approval decisions on the setup face', () => {
 
   it('keeps the key out of the manifest and the status, which reports the envelope enabled', async () => {
     const encoded = mintApprovalKey()
-    const { app, runtime } = await node({ key: encoded })
-    // The manifest route serves runtime.manifest() (layers/common, B15); this file moves onto the harness in B17.
-    const manifest = JSON.stringify(runtime.manifest())
+    const { app } = await node({ key: encoded })
+    const manifest = await (await app.request('/v1/manifest', { headers: { authorization: 'Bearer agent-token-fixture' } })).text()
     const status = await (await app.request('/setup/status', { headers: ADMIN })).text()
     expect(manifest).not.toContain(encoded)
     expect(status).not.toContain(encoded)
@@ -190,10 +193,11 @@ describe('buckle settings show', () => {
 
 describe('a decision posted to the setup face', () => {
   it('is answered through the approval service, as the owner, and frees the call waiting on it', async () => {
-    const { runtime, decide } = await node()
+    const { app, runtime, decide } = await node({ graceMs: 60_000 })
     const answer = vi.spyOn(runtime.approvalService, 'answer')
     const outside = mkdtempSync(join(tmpdir(), 'buckle-sealed-outside-'))
-    const waiting = runtime.invoke({ sessionId: 's1', request: { requestId: 'held', tool: 'fs_write', args: { path: join(outside, 'note.md'), content: 'freed' }, approvalTokens: [] } })
+    const waiting = app.request('/v1/invoke', { method: 'POST', headers: { authorization: 'Bearer agent-token-fixture', 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: 'held', tool: 'fs_write', args: { path: join(outside, 'note.md'), content: 'freed' }, approvalTokens: [], context: { sessionId: 's1' } }) }).then(response => response.json())
     await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
     const token = runtime.approvals.pending()[0]!.token
 

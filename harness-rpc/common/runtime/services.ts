@@ -1,5 +1,6 @@
 import { defineSingleton, useScopeSafe, type AnyServiceDefinition, type CloseStage, type Closer, type OperationScope, type RequestCli, type RuntimeOwner, type ScopedDefinition, type SingletonDefinition } from '@5straps/runtime'
 import { InteractionService, NO_INTERACTION, type InteractionPort, type InteractionSource } from '../services/approvals/interaction.js'
+import { createSetupViews, type SetupViews } from '../services/setup/setup-views.js'
 import { createWorkspaceManager, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
 import { createRuntime, type BuckleRuntime } from '../services/workspaces/workspace-runtime.js'
 import type { BuckleConfig } from './config.js'
@@ -14,6 +15,8 @@ export interface BuckleServices {
   getInteraction(scope?: OperationScope): Promise<InteractionPort>
   /** What /health reports, from configuration alone: known before startup, so liveness answers while the node starts. */
   nodeIdentity(): NodeIdentity
+  /** What the owner's setup face reads and parses; stateless. */
+  getSetupViews(): SetupViews
 }
 
 export interface NodeIdentity {
@@ -62,11 +65,13 @@ export function serviceList(definitions: BuckleServiceDefinitions): AnyServiceDe
 export function createServiceAccessors(input: { owner: RuntimeOwner; definitions: BuckleServiceDefinitions; config: BuckleConfig }): BuckleServices {
   const { registry } = input.owner
   const identity: NodeIdentity = Object.freeze({ serverId: input.config.serverId })
+  const setupViews = createSetupViews()
   return {
     getWorkspaceRuntime: () => registry.useSingleton(input.definitions.workspaceRuntime),
     getWorkspaces: () => registry.useSingleton(input.definitions.workspaces),
     getInteraction: scope => registry.useScoped(input.definitions.interaction, scope),
     nodeIdentity: () => identity,
+    getSetupViews: () => setupViews,
   }
 }
 

@@ -171,10 +171,17 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       const workspace = store.read().workspaces.find(item => item.id === id)
       return workspace?.tokens.find(entry => tokenMatches(authorization, entry.token))?.id ?? null
     },
-    /** Read on every request, so a token revoked a moment ago is refused by the mounted face. */
-    agentTokens(id: string): string[] {
-      if (id === 'default') return [input.config.authToken].filter(Boolean)
-      return store.read().workspaces.find(item => item.id === id)?.tokens.map(entry => entry.token) ?? []
+    /**
+     * Whether the authorization header presents the workspace's admin credential, compared in constant
+     * time. Throws WorkspaceRegistryError when the registry cannot be read.
+     */
+    authenticateAdmin(id: string, authorization: string | undefined): boolean {
+      const credential = manager.adminToken(id)
+      return credential !== null && tokenMatches(authorization, credential)
+    },
+    /** The node's own workspace has an admin credential only when BUCKLE_ADMIN_TOKEN is set; a registered one always has one. */
+    hasAdminCredential(id: string): boolean {
+      return manager.adminToken(id) !== null
     },
     adminToken(id: string): string | null {
       if (id === 'default') return input.config.adminToken || null

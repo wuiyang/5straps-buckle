@@ -9,8 +9,7 @@ import { PACKAGE_ROOT, sourceFiles } from '../support/sources.js'
 
 /**
  * `BUCKLE-D19`: node settings are the owner's CLI writing the environment file. No HTTP route (the
- * file routes of layers/common, layers/mcp and layers/admin, and until B18 whatever the Hono faces in
- * `server/hono/` still mount) and no MCP tool may read or change them.
+ * file routes of layers/common, layers/mcp and layers/admin) and no MCP tool may read or change them.
  */
 const SETTINGS_WORDS = /settings|environment|env\b|\.env|config/i
 

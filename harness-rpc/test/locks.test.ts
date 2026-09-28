@@ -15,7 +15,6 @@ import { HistoryBusyError, openChangeHistory, type ChangeHistory } from '../comm
 import { createShellWorkspaceRecovery } from '../common/services/shell/isolated-shell.js'
 import { createWorkbenchStorage } from '../common/services/workbench/storage.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createHttpApp } from '../server/hono/http-app.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 
 const holders: ChildProcess[] = []
@@ -179,14 +178,7 @@ describe('a state file busy past the wait, at the faces', () => {
     }
   }
 
-  it('answers 503 with the reason over HTTP', async () => {
-    const { config, runtime, grant } = await busyNode()
-    const app = createHttpApp({ config, runtime, authToken: config.authToken })
-    const response = await app.request(`/setup/grants/${grant.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${config.adminToken}` } })
-    expect(response.status).toBe(503)
-    expect(await response.json()).toEqual({ error: expect.stringContaining('is busy in another Buckle process') })
-    await runtime.history.close()
-  })
+  // Over HTTP: test/http/locks-http.test.ts, on the harness.
 
   it('exits 1 with the reason from the CLI', async () => {
     const { config, runtime, grant } = await busyNode()

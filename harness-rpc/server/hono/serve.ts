@@ -1,23 +1,22 @@
 import type { AddressInfo } from 'node:net'
-import { getRequestListener, type HttpBindings } from '@hono/node-server'
+import { getRequestListener } from '@hono/node-server'
 import type { Logger } from '@5straps/runtime'
 import { requireAuthToken, type BuckleConfig } from '../../common/runtime/config.js'
 import type { BuckleCommon } from '../../common/runtime/initialize.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { createHttpServer, type BuckleServer } from '../setup-server.js'
 import { createDispatcher } from './dispatch.js'
-import { createHttpApp } from './http-app.js'
 
 // Listening before readiness is deliberate: the startup window answers 503, never a refused connection.
 export async function serveHttp(input: { config: BuckleConfig; common: BuckleCommon; logger: Logger; server: BuckleServer }): Promise<void> {
   const { config, common } = input
-  const authToken = requireAuthToken(config)
-  const dispatcher = createDispatcher({ common, nitroApp: input.server.nitroApp })
-  const http = createHttpServer({ common, listener: getRequestListener((request, env) => dispatcher.fetch(request, env as HttpBindings)) })
+  // Refuses to serve without an agent credential before anything listens.
+  requireAuthToken(config)
+  const dispatcher = createDispatcher({ nitroApp: input.server.nitroApp })
+  const http = createHttpServer({ common, listener: getRequestListener(request => dispatcher.fetch(request)) })
   const address = await http.listen({ host: config.host, port: config.port })
   await common.start()
   const runtime = await common.services.getWorkspaceRuntime()
-  dispatcher.mount(createHttpApp({ config, runtime, authToken, workspaces: await common.services.getWorkspaces() }))
   logListening({ logger: input.logger, config, runtime, address })
 }
 

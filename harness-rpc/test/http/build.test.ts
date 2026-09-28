@@ -111,11 +111,27 @@ describe('the built server (.output)', () => {
     expect((await config('true')).extends).toEqual(['./layers/common', './layers/mcp', './layers/admin'])
   })
 
-  it('serves no /setup route from the build without the admin layer, even with an admin credential', async () => {
-    const buckle = await node({ headless: true, environment: environment({ BUCKLE_ADMIN_TOKEN: 'build-admin-token' }) })
-    const setup = await buckle.nitroApp.fetch(new Request('http://127.0.0.1/setup/status', { headers: { authorization: 'Bearer build-admin-token' } }))
-    expect(setup.status).toBe(404)
-    expect(await setup.json()).toEqual({ error: 'Not Found' })
-    expect((await buckle.request('/health')).status).toBe(200)
+  it('serves no /setup route from the build without the admin layer, even with an admin credential, and the full build does', async () => {
+    const admin = { authorization: 'Bearer build-admin-token' }
+    const headless = await node({ headless: true, environment: environment({ BUCKLE_ADMIN_TOKEN: 'build-admin-token' }) })
+    for (const path of ['/setup/status', '/setup/workspaces', '/setup/x', '/workspaces/default/setup/status']) {
+      const setup = await headless.request(path, { headers: admin })
+      expect(setup.status, path).toBe(path.startsWith('/workspaces/') ? 401 : 404)
+    }
+    expect((await headless.request('/health')).status).toBe(200)
+    await headless.close()
+
+    // The positive control (review L3 of B13-B14): the same credential opens the full build's face.
+    const full = await node({ environment: environment({ BUCKLE_ADMIN_TOKEN: 'build-admin-token' }) })
+    expect((await full.request('/setup/status', { headers: admin })).status).toBe(200)
+    expect((await full.request('/workspaces/default/setup/status', { headers: admin })).status).toBe(200)
+  })
+
+  it('bundles no admin route into the build without the admin layer', () => {
+    const routesOf = (output: string) => files(join(output, 'server', '_routes')).map(path => relative(join(output, 'server', '_routes'), path))
+    expect(routesOf(build.outputs.full).filter(path => path.startsWith('setup/'))).not.toEqual([])
+    expect(routesOf(build.outputs.headless).filter(path => path.includes('setup'))).toEqual([])
+    expect(readFileSync(join(build.outputs.headless, 'server', 'index.mjs'), 'utf8')).not.toContain('"/setup')
+    expect(readFileSync(join(build.outputs.full, 'server', 'index.mjs'), 'utf8')).toContain('"/setup/status"')
   })
 })

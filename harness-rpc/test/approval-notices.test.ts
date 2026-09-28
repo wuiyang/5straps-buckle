@@ -1,11 +1,8 @@
 import { mkdirSync, mkdtempSync } from 'node:fs'
-import { createServer } from 'node:http'
-import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApprovalNotice, ApprovalWait } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { runCli } from '../cli/main.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
@@ -13,8 +10,8 @@ import { createApprovalRegistry } from '../common/services/approvals/approval-re
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createHttpApp } from '../server/hono/http-app.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
+import { captureWebhook } from './support/webhook.js'
 
 afterEach(() => { vi.useRealTimers() })
 
@@ -51,54 +48,7 @@ describe('the approval wait hint in InvokeContext', () => {
   // Over HTTP: test/http/approval-http.test.ts, on the harness.
 })
 
-/** A stand-in for the approval webhook, keeping every notice it receives. */
-async function captureWebhook() {
-  const notices: ApprovalNotice[] = []
-  const bodies: unknown[] = []
-  const server = createServer((request, response) => {
-    let body = ''
-    request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
-    request.on('end', () => {
-      const parsed = JSON.parse(body) as { notices?: ApprovalNotice[] }
-      bodies.push(parsed)
-      notices.push(...parsed.notices ?? [])
-      response.writeHead(202).end()
-    })
-  })
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/approvals`, notices, bodies, close: () => new Promise(resolve => server.close(resolve)) }
-}
-
-describe('lifecycle notices on the approval webhook', () => {
-  it('tell answered and denied, with the recorded scope, whichever route answered', async () => {
-    const webhook = await captureWebhook()
-    try {
-      const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url })
-      const runtime = await createRuntime({ config })
-      const app = createHttpApp({ config, runtime, authToken: config.authToken })
-      const [first, second] = await Promise.all(['one/a.md', 'two/b.md'].map(async path => {
-        const response = await runtime.invoke({ sessionId: 's', request: write(path, { mode: 'none' }) })
-        if (response.outcome !== 'approval_required') throw new Error(`expected an approval, got ${response.outcome}`)
-        return response.approvals[0]!.token
-      }))
-
-      // `buckle approve` is another process's view of the same state; the setup face is this one's.
-      expect((await runCli({ argv: ['approve', first!, '--scope', 'session'], config })).exitCode).toBe(0)
-      expect((await app.request('/setup/approvals', { method: 'POST', headers: { authorization: `Bearer ${config.adminToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ token: second, approved: false, scope: 'once' }) })).status).toBe(200)
-      await runtime.approvalService.close()
-
-      expect(webhook.notices).toEqual(expect.arrayContaining([
-        expect.objectContaining({ token: first, event: 'skipped', reason: 'caller_declined_wait' }),
-        expect.objectContaining({ token: first, event: 'answered', scope: 'session' }),
-        expect.objectContaining({ token: second, event: 'denied', scope: 'once' }),
-      ]))
-      expect(webhook.bodies[0]).toMatchObject({ serverId: config.serverId, workspaceId: 'default' })
-      await runtime.history.close()
-    } finally {
-      await webhook.close()
-    }
-  })
-})
+// Lifecycle notices whichever route answered, the setup face among them: test/http/approval-http.test.ts.
 
 describe('the siblings of a denied ask', () => {
   it('are withdrawn through the service, so the webhook hears they were cancelled (review L1)', async () => {

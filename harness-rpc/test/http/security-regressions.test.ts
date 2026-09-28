@@ -1,23 +1,25 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
-import { hasExecutable } from '../common/domain/executable.js'
-import { createHttpApp } from '../server/hono/http-app.js'
-import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { hasExecutable } from '../../common/domain/executable.js'
+import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+const nodes: BuckleHttp[] = []
+afterEach(async () => {
+  for (const node of nodes.splice(0)) await node.close()
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
 
 async function fixture() {
   const root = mkdtempSync('/tmp/buckle-security-')
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_ADMIN_TOKEN: 'owner-token' })
-  const runtime = await createRuntime({ config })
-  const app = createHttpApp({ config, runtime, authToken: config.authToken })
-  return { root, workspace, config, runtime, app }
+  mkdirSync(join(root, 'state'), { mode: 0o700 })
+  const app = await createBuckleHttp({ environment: { BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_ADMIN_TOKEN: 'owner-token' } })
+  nodes.push(app)
+  return { root, workspace, config: app.config, runtime: app.runtime, app }
 }
 
 const headers = (token: string) => ({ authorization: `Bearer ${token}`, 'content-type': 'application/json' })
@@ -29,6 +31,10 @@ describe('owner approval authority', () => {
     const body = JSON.stringify({ token: approval!.token, approved: true, scope: 'session' })
     expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('agent-token'), body })).status).toBe(401)
     expect((await app.request('/v1/approvals', { method: 'POST', headers: headers('agent-token'), body })).status).toBe(404)
+    // A workbench-shaped or agent credential never passes any admin guard: inspection, setup or approval.
+    for (const [method, path] of [['GET', '/setup/approvals'], ['PUT', '/setup/policy'], ['POST', '/setup/approvals'], ['GET', '/workspaces/default/setup/status']] as const) {
+      expect((await app.request(path, { method, headers: headers('agent-token'), ...(method === 'GET' ? {} : { body }) })).status).toBe(401)
+    }
     expect(runtime.grants.activeSubjects({ sessionId: 'read-session', rule: 'read_scope' })).toEqual([])
     expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('owner-token'), body })).status).toBe(200)
     expect(runtime.grants.activeSubjects({ sessionId: 'read-session', rule: 'read_scope' })).toEqual(['/synthetic'])

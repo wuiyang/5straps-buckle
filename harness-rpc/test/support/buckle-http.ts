@@ -1,16 +1,15 @@
-import { getRequestListener, type HttpBindings } from '@hono/node-server'
+import { getRequestListener } from '@hono/node-server'
 import type { RequestCli } from '@5straps/runtime'
 import { inject } from 'vitest'
 import type { NitroApp } from 'nitro/types'
 import { setupCli } from '../../cli/setup.js'
 import type { TerminalOptions } from '../../cli/terminal-consumer.js'
-import { loadConfig, requireAuthToken, type BuckleConfig } from '../../common/runtime/config.js'
+import { loadConfig, type BuckleConfig } from '../../common/runtime/config.js'
 import { initializeCommon, type BuckleCommon } from '../../common/runtime/initialize.js'
 import { logger } from '../../common/runtime/log.js'
 import type { BuckleServices } from '../../common/runtime/services.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { createDispatcher } from '../../server/hono/dispatch.js'
-import { createHttpApp } from '../../server/hono/http-app.js'
 import { createHttpServer, setupServer } from '../../server/setup-server.js'
 import { layerRoutes, type ServedRoute } from './routes.js'
 
@@ -27,7 +26,7 @@ export interface BuckleHttp {
   request(input: string | Request, init?: RequestInit): Promise<Response>
   /** The same node behind the production node:http listener on a free port, for wire-level tests; closes with the node. */
   listen(): Promise<string>
-  /** Every route the node serves: the built layers' file routes and, until B18, what the Hono faces mount. */
+  /** Every route the node serves: the built layers' file routes. */
   routes(): ServedRoute[]
   close(): Promise<void>
 }
@@ -63,7 +62,7 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   const server = await setupServer({ common, logger, requestCli: cli.requestCli, entryPath })
   common.bindRequester(server.requestCli)
-  const dispatcher = createDispatcher({ common, nitroApp: server.nitroApp })
+  const dispatcher = createDispatcher({ nitroApp: server.nitroApp })
   let closing: Promise<void> | undefined
   const close = () => (closing ??= common.owner.close().finally(() => {
     server.release()
@@ -72,18 +71,16 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   holders.set(entryPath, close)
   await common.start()
   const runtime = await common.services.getWorkspaceRuntime()
-  const hono = createHttpApp({ config, runtime, authToken: requireAuthToken(config), workspaces: await common.services.getWorkspaces() })
-  dispatcher.mount(hono)
   return {
     config, common, runtime, services: common.services, nitroApp: server.nitroApp, requestCli: server.requestCli,
     request: async (request, init) => dispatcher.fetch(request instanceof Request ? new Request(request, init) : new Request(new URL(request, 'http://127.0.0.1'), init)),
     // As serve listens (server/hono/serve.ts): the node adapter's Request, its lazy body and socket-bound signal.
     listen: async () => {
-      const http = createHttpServer({ common, listener: getRequestListener((request, env) => dispatcher.fetch(request, env as HttpBindings)) })
+      const http = createHttpServer({ common, listener: getRequestListener(request => dispatcher.fetch(request)) })
       const address = await http.listen({ host: '127.0.0.1', port: 0 })
       return `http://127.0.0.1:${address.port}`
     },
-    routes: () => [...layerRoutes(input.headless ? ['common', 'mcp'] : ['common', 'mcp', 'admin']), ...hono.routes.map(route => ({ method: route.method, path: route.path }))],
+    routes: () => layerRoutes(input.headless ? ['common', 'mcp'] : ['common', 'mcp', 'admin']),
     close,
   }
 }
