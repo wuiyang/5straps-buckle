@@ -138,6 +138,16 @@ describe('buckle settings set', () => {
     expect(JSON.stringify(entries)).not.toContain(SECRET)
   })
 
+  it('switches the experimental admin HTTP layer, off by default, and audits the change (owner decision D8)', async () => {
+    expect((await settings(['show'])).out).toMatch(/experimental-admin-http +BUCKLE_EXPERIMENTAL_ADMIN_HTTP +false +default/)
+    expect((await settings(['set', 'experimental-admin-http', 'on'])).exitCode).toBe(0)
+    expect(parseEnv(readFileSync(file, 'utf8')).BUCKLE_EXPERIMENTAL_ADMIN_HTTP).toBe('true')
+    expect((await settings(['show'])).out).toMatch(/experimental-admin-http +BUCKLE_EXPERIMENTAL_ADMIN_HTTP +true +environment file/)
+    expect((await settings(['unset', 'experimental-admin-http'])).exitCode).toBe(0)
+    const entries = createFileActionLog(join(state, 'actions.jsonl')).read(10).filter(entry => entry.tool === 'cli_settings' && entry.event === 'result')
+    expect(entries.map(entry => entry.detail)).toEqual([undefined, 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true', undefined, 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP unset'])
+  })
+
   it('writes directories as absolute paths, resolved from where it runs', async () => {
     await settings(['set', 'root', 'workspace'])
 

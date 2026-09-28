@@ -16,7 +16,7 @@ const nodes: BuckleHttp[] = []
 afterEach(async () => { for (const node of nodes.splice(0)) await node.close() })
 
 async function node(extra: Record<string, string> = {}): Promise<BuckleHttp & { root: string; workspace: string }> {
-  const { root, workspace, environment } = nodeEnvironment('buckle-mcp-http-', { BUCKLE_AUTH_TOKEN: TOKEN, BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs', ...extra })
+  const { root, workspace, environment } = nodeEnvironment('buckle-mcp-http-', { BUCKLE_AUTH_TOKEN: TOKEN, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs', ...extra })
   const started = await createBuckleHttp({ environment })
   nodes.push(started)
   return Object.assign(started, { root, workspace })

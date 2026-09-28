@@ -38,8 +38,9 @@ try {
   await checkBackupAndRestore()
   await checkCleanStop()
   await checkSetupWithoutAdminToken()
+  await checkSetupWithFlagOff()
   await checkMcpStdio()
-  process.stdout.write('Packaged Buckle passed: install, built server, CLI, HTTP authorization, approval/retry, audit, backup/restart, conflict-checked restore, SIGTERM clean close, no /setup without an admin token, and MCP over stdio.\n')
+  process.stdout.write('Packaged Buckle passed: install, built server, CLI, HTTP authorization, approval/retry, audit, backup/restart, conflict-checked restore, SIGTERM clean close, no /setup without an admin token, no /setup with the experimental admin flag off, and MCP over stdio.\n')
 } catch (error) {
   process.stderr.write(`Packaged Buckle smoke failed: ${error instanceof Error ? error.message : String(error)}\n`)
   process.exitCode = 1
@@ -112,11 +113,12 @@ function assertExecutableBin(path) {
   assert.equal(readFileSync(path, 'utf8').split('\n', 1)[0], '#!/usr/bin/env node', `${path} lacks the node shebang`)
 }
 
-function nodeEnvironment({ admin = true } = {}) {
+/** The admin HTTP layer is experimental (owner decision D8): switched on here wherever the smoke drives /setup. */
+function nodeEnvironment({ admin = true, adminHttp = admin } = {}) {
   return { ...environment, BUCKLE_ENV_FILE: join(root, 'no-environment-file'), BUCKLE_HOST: '127.0.0.1',
     BUCKLE_PORT: String(port ?? 4320), BUCKLE_SERVER_ID: 'package-smoke', BUCKLE_WORKSPACE_ROOT: workspace,
     BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false',
-    BUCKLE_AUTH_TOKEN: agentToken, ...(admin ? { BUCKLE_ADMIN_TOKEN: adminToken } : {}), BUCKLE_APPROVAL_TIMEOUT_MS: '1' }
+    BUCKLE_AUTH_TOKEN: agentToken, ...(admin ? { BUCKLE_ADMIN_TOKEN: adminToken } : {}), ...(adminHttp ? { BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true' } : {}), BUCKLE_APPROVAL_TIMEOUT_MS: '1' }
 }
 
 function cli(args) {
@@ -252,6 +254,24 @@ async function checkSetupWithoutAdminToken() {
     const response = await fetch(`http://127.0.0.1:${port}/setup/status`, { headers: token ? { authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(10_000) })
     await response.body?.cancel()
     assert.equal(response.status, 404, 'A node without an admin token must serve no /setup')
+  }
+  assert.equal((await fetch(`http://127.0.0.1:${port}/v1/manifest`, { headers: { authorization: `Bearer ${agentToken}` }, signal: AbortSignal.timeout(10_000) })).status, 200)
+  await checkCleanStop()
+}
+
+/**
+ * Owner decision D8: with an admin token set but BUCKLE_EXPERIMENTAL_ADMIN_HTTP unset, as a user's
+ * install starts, /setup answers 404 to every caller, the admin credential included, as an unmatched
+ * path does.
+ */
+async function checkSetupWithFlagOff() {
+  await startService({ admin: true, adminHttp: false })
+  const unmatched = await fetch(`http://127.0.0.1:${port}/not-a-route`, { signal: AbortSignal.timeout(10_000) })
+  const expected = await unmatched.text()
+  for (const [path, token] of [['/setup/status', adminToken], ['/setup/policy', adminToken], ['/workspaces/default/setup/status', adminToken], ['/setup/status', agentToken], ['/setup/status', undefined]]) {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(10_000) })
+    assert.equal(response.status, 404, `${path} must answer 404 while the experimental admin flag is off`)
+    assert.equal(await response.text(), expected, `${path} must answer as an unmatched path does`)
   }
   assert.equal((await fetch(`http://127.0.0.1:${port}/v1/manifest`, { headers: { authorization: `Bearer ${agentToken}` }, signal: AbortSignal.timeout(10_000) })).status, 200)
   await checkCleanStop()

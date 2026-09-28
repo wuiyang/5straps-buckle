@@ -74,7 +74,7 @@ describe('lifecycle notices on the approval webhook', () => {
   it('tell answered and denied, with the recorded scope, whichever route answered', async () => {
     const webhook = await captureWebhook()
     try {
-      const buckle = await node({ BUCKLE_ADMIN_TOKEN: 'approval-http-admin-token', BUCKLE_APPROVAL_WEBHOOK: webhook.url })
+      const buckle = await node({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'approval-http-admin-token', BUCKLE_APPROVAL_WEBHOOK: webhook.url })
       mkdirSync(join(buckle.workspace, 'one'))
       mkdirSync(join(buckle.workspace, 'two'))
       const [first, second] = await Promise.all(['one/a.md', 'two/b.md'].map(async (path) => {
@@ -104,7 +104,7 @@ describe('the setup face withdraws one call\'s asks (owner decision D6, review M
   it('by requestId and session, or by a token of its group, telling each cancelled, ending a waiting caller, and never touching another call', async () => {
     const webhook = await captureWebhook()
     try {
-      const buckle = await node({ BUCKLE_ADMIN_TOKEN: 'approval-http-admin-token', BUCKLE_APPROVAL_WEBHOOK: webhook.url, BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+      const buckle = await node({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'approval-http-admin-token', BUCKLE_APPROVAL_WEBHOOK: webhook.url, BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
       for (const directory of ['one', 'two', 'three']) mkdirSync(join(buckle.workspace, directory))
       const admin = { authorization: 'Bearer approval-http-admin-token', 'content-type': 'application/json' }
       const withdraw = (body: unknown, path = '/setup/approvals/withdraw') => buckle.request(path, { method: 'POST', headers: admin, body: JSON.stringify(body) })

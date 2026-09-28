@@ -8,7 +8,7 @@ const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
 
 it('returns only the requested skill body through the execution credential', async () => {
   // Buckle's state lives outside the workspace, which is the only layout loadConfig accepts.
-  const buckle = await createBuckleHttp({ environment: nodeEnvironment('buckle-skills-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: SETUP }).environment })
+  const buckle = await createBuckleHttp({ environment: nodeEnvironment('buckle-skills-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: SETUP }).environment })
   try {
     const skill = buckle.runtime.skills()[0]!
     const path = `/v1/skills/${encodeURIComponent(skill.id)}`

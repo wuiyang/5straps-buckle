@@ -149,7 +149,8 @@ Next:
 
 The agent token runs tools. The admin credential reads and pushes the policy at /setup, mints
 and revokes workspace tokens, and nothing else. Keep them apart; Buckle refuses to start if
-they are the same value.
+they are the same value. /setup is experimental and off until you switch it on:
+buckle settings set experimental-admin-http on
 `)
 
   if (!values.pair) return { exitCode: 0 }
@@ -262,7 +263,8 @@ BUCKLE_PORT=${input.port}
 # What agents call tools with. Rings stores this one.
 BUCKLE_AUTH_TOKEN=${input.authToken}
 # What configures the node through /setup, mints workspace tokens and writes a persisted
-# approval. Rings stores this one too, apart from the first.
+# approval. Rings stores this one too, apart from the first. /setup is experimental and served
+# only with BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true (buckle settings set experimental-admin-http on).
 BUCKLE_ADMIN_TOKEN=${input.adminToken}
 
 BUCKLE_WORKSPACE_ROOT=${input.root}

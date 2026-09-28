@@ -15,7 +15,7 @@ afterEach(async () => {
 
 describe('a state file busy past the wait, over HTTP', () => {
   it('answers the owner\'s route 503 with the reason, which names the state file', async () => {
-    const { state, environment } = nodeEnvironment('buckle-locks-http-', { BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_PACKS: 'fs' })
+    const { state, environment } = nodeEnvironment('buckle-locks-http-', { BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_PACKS: 'fs' })
     // A short wait, so the busy answer is tested without the real five seconds.
     const buckle = await createBuckleHttp({ environment, configure: (config) => { config.stateLockDeadlineMs = 300 } })
     nodes.push(buckle)
@@ -50,7 +50,7 @@ describe('busy audit state while the invoke attempt is recorded (review L3 of B1
 
 describe('a refusal while the audit state is busy (review L7 of B20-B22)', () => {
   it('answers a wrong credential 401 on the owner\'s face, /v1/invoke and /mcp, never 500, though its entry cannot be written', async () => {
-    const { state, environment } = nodeEnvironment('buckle-locks-refusal-', { BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_PACKS: 'fs' })
+    const { state, environment } = nodeEnvironment('buckle-locks-refusal-', { BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_PACKS: 'fs' })
     const buckle = await createBuckleHttp({ environment, configure: (config) => { config.stateLockDeadlineMs = 300 } })
     nodes.push(buckle)
     holders.push(await holdLockInProcess(join(state, 'actions.jsonl.pending.json.lock.sqlite')))

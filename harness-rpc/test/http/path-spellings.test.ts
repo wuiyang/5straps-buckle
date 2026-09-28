@@ -37,7 +37,7 @@ const rows: Array<{ path: string; status: number }> = [
 let buckle: BuckleHttp
 let url: string
 beforeAll(async () => {
-  buckle = await createBuckleHttp({ environment: nodeEnvironment('buckle-http-spellings-', { BUCKLE_AUTH_TOKEN: 'spellings-agent-token', BUCKLE_ADMIN_TOKEN: 'spellings-admin-token', BUCKLE_PACKS: 'fs' }).environment })
+  buckle = await createBuckleHttp({ environment: nodeEnvironment('buckle-http-spellings-', { BUCKLE_AUTH_TOKEN: 'spellings-agent-token', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'spellings-admin-token', BUCKLE_PACKS: 'fs' }).environment })
   url = await buckle.listen()
 })
 afterAll(async () => { await buckle?.close() })

@@ -19,6 +19,7 @@ export async function serveHttp(input: { config: BuckleConfig; common: BuckleCom
   await common.start()
   const runtime = await common.services.getWorkspaceRuntime()
   logListening({ logger: input.logger, config, runtime, address })
+  if (config.experimentalAdminHttp) input.logger.warn('The admin HTTP face is on, as an experiment (BUCKLE_EXPERIMENTAL_ADMIN_HTTP): /setup answers the admin credential and signed requests of enrolled keys', { adminCredential: config.adminToken ? 'set' : 'unset' })
 }
 
 function logListening(input: { logger: Logger; config: BuckleConfig; runtime: BuckleRuntime; address: AddressInfo }): void {
@@ -33,7 +34,7 @@ function logListening(input: { logger: Logger; config: BuckleConfig; runtime: Bu
     skills: manifest.skills.length,
     approvalGraceMs: config.approvalTimeoutMs,
     approvalWebhook: config.approvalWebhook ? 'configured' : 'none',
-    setupFace: config.adminToken ? 'configured' : 'none',
+    setupFace: config.experimentalAdminHttp && config.adminToken ? 'experimental' : 'none',
     deniedRunReports: runtime.reporter.configured ? 'configured' : 'none',
     mount: runtime.paths().mount ?? 'none',
   })

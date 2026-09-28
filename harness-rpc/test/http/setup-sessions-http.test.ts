@@ -19,7 +19,7 @@ const stranger = generateSigningKey()
 const policy = JSON.stringify({ version: 1, commands: { allow: [], deny: ['rm *'] }, network: { allow: [] }, mount: null, updatedAt: null })
 
 async function node(): Promise<BuckleHttp> {
-  const { environment } = nodeEnvironment('buckle-setup-sessions-', { BUCKLE_AUTH_TOKEN: 'setup-sessions-agent-token', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
+  const { environment } = nodeEnvironment('buckle-setup-sessions-', { BUCKLE_AUTH_TOKEN: 'setup-sessions-agent-token', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
   const started = await createBuckleHttp({ environment })
   nodes.push(started)
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)

@@ -227,7 +227,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
 
   it('cancels a running shell on SIGTERM: the call answers BUCKLE_SHUTTING_DOWN with 503, the process is gone, and Buckle exits 0 with no close step running out its bound (B19)', async () => {
     const marker = `${31 + Math.random()}`.slice(0, 12)
-    const node = await prepareNode({ BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell', BUCKLE_ADMIN_TOKEN: 'bootstrap-admin-token', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const node = await prepareNode({ BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'bootstrap-admin-token', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
     const buckle = serve(node)
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
     const running = () => execFileSync('ps', ['-eo', 'args'], { encoding: 'utf8' }).split('\n').some(line => line.trim() === `sleep ${marker}`)

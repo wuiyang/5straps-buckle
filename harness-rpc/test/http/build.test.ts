@@ -114,7 +114,7 @@ describe('the built server (.output)', () => {
 
   it('serves no /setup route from the build without the admin layer, even with an admin credential, and the full build does', async () => {
     const admin = { authorization: 'Bearer build-admin-token' }
-    const headless = await node({ headless: true, environment: environment({ BUCKLE_ADMIN_TOKEN: 'build-admin-token' }) })
+    const headless = await node({ headless: true, environment: environment({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'build-admin-token' }) })
     for (const path of ['/setup/status', '/setup/workspaces', '/setup/x', '/workspaces/default/setup/status']) {
       const setup = await headless.request(path, { headers: admin })
       expect(setup.status, path).toBe(path.startsWith('/workspaces/') ? 401 : 404)
@@ -123,7 +123,7 @@ describe('the built server (.output)', () => {
     await headless.close()
 
     // The positive control (review L3 of B13-B14): the same credential opens the full build's face.
-    const full = await node({ environment: environment({ BUCKLE_ADMIN_TOKEN: 'build-admin-token' }) })
+    const full = await node({ environment: environment({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'build-admin-token' }) })
     expect((await full.request('/setup/status', { headers: admin })).status).toBe(200)
     expect((await full.request('/workspaces/default/setup/status', { headers: admin })).status).toBe(200)
   })

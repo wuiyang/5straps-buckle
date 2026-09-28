@@ -42,12 +42,16 @@ export function registryTransportTool(event: H3Event): string {
 }
 
 /**
- * The guard for one kind of admin access to the addressed workspace, or to the one `target` names. A
- * node without BUCKLE_ADMIN_TOKEN has no owner's face: 404, as when the face was not mounted. The
- * actor is admin:<workspace> for the admin credential and key:<fingerprint> for a signed request.
+ * The guard for one kind of admin access to the addressed workspace, or to the one `target` names.
+ * The whole layer is experimental (owner decision D8): until BUCKLE_EXPERIMENTAL_ADMIN_HTTP is on,
+ * every route of it answers the router's 404 before anything is read or audited, admin credential or
+ * not. A node without BUCKLE_ADMIN_TOKEN has no owner's face either: 404, as when the face was not
+ * mounted. The actor is admin:<workspace> for the admin credential and key:<fingerprint> for a signed
+ * request.
  */
 export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target: (event: H3Event) => string = targetId): Guard {
   return async (event) => {
+    if (!useServices(event).adminHttp()) throw notFound()
     const workspaceId = target(event)
     const workspaces = await useServices(event).getWorkspaces()
     if (workspaceId === NODE_WORKSPACE && !workspaces.hasAdminCredential(NODE_WORKSPACE)) throw notFound()

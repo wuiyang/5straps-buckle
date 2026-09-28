@@ -28,6 +28,12 @@ export interface BuckleConfig {
    * there. Empty leaves the setup face unmounted.
    */
   adminToken: string
+  /**
+   * Owner decision D8 of 2026-09-29: the admin HTTP layer (/setup and its /workspaces/<id>/ twins) is
+   * experimental and served only when BUCKLE_EXPERIMENTAL_ADMIN_HTTP is true. Off, every route of it
+   * answers the router's 404, admin credential or not. The local CLI never needs it.
+   */
+  experimentalAdminHttp: boolean
   cwd: string
   /** Directories writable without asking. Empty by default, so the first write anywhere asks. */
   scratchRoots: string[]
@@ -125,6 +131,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     allowHostGit: environment.BUCKLE_ALLOW_HOST_GIT === 'true',
     allowHostLsp: environment.BUCKLE_ALLOW_HOST_LSP === 'true',
     enableShell: environment.BUCKLE_ALLOW_SHELL !== 'false',
+    experimentalAdminHttp: environment.BUCKLE_EXPERIMENTAL_ADMIN_HTTP === 'true',
     shellNetwork: environment.BUCKLE_SHELL_NETWORK === 'true',
     isolateShell: environment.BUCKLE_SHELL_ISOLATION !== 'false',
     isolationMaxBytes: parsePositiveInteger(environment.BUCKLE_ISOLATION_MAX_BYTES, 268_435_456),

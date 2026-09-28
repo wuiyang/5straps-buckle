@@ -25,7 +25,7 @@ async function served(environment: Record<string, string>, prepare?: (state: str
 }
 
 function node(): Promise<BuckleHttp> {
-  return served({ BUCKLE_AUTH_TOKEN: 'agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'admin-token-fixture', BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-no-settings-ws-')) })
+  return served({ BUCKLE_AUTH_TOKEN: 'agent-token-fixture', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'admin-token-fixture', BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-no-settings-ws-')) })
 }
 
 describe('no face exposes node settings', () => {
@@ -86,7 +86,7 @@ describe('no face exposes node settings', () => {
     // their effect is the withheld pack's reason, which names the variable.
     const app = await served({
       ...values, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'false',
-      BUCKLE_AUTH_TOKEN: 'agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'admin-token-fixture',
+      BUCKLE_AUTH_TOKEN: 'agent-token-fixture', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'admin-token-fixture',
     })
     // Effects a route reports: what the node is called, the root and paths the agent addresses, and
     // the policy base. `/setup/policy` returning BUCKLE_NETWORK_ALLOW entries awaits the maintainer's
@@ -117,7 +117,7 @@ describe('the manifest an agent token reads', () => {
   it('reports withheld packs in fixed text, naming the setting behind a built-in one and never a configured path or a plugin error', async () => {
     const app = await served({
       BUCKLE_AUTH_TOKEN: 'agent-token-fixture',
-      BUCKLE_ADMIN_TOKEN: 'admin-token-fixture',
+      BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'admin-token-fixture',
       BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-manifest-ws-')),
       BUCKLE_AGENT_BROWSER_COMMAND: '/opt/private-fixture/bin/agent-browser',
     }, state => writeFileSync(join(state, 'plugins.json'), JSON.stringify({ version: 1, plugins: [{ id: 'broken', specifier: '/opt/private-fixture/plugins/broken.mjs', enabled: true }] })))

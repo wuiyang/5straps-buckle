@@ -17,7 +17,7 @@ function headers(token: string): Record<string, string> {
 }
 
 async function brokenAudit(): Promise<{ buckle: BuckleHttp; state: string; workspace: string; repair: () => void }> {
-  const { state, workspace, environment } = nodeEnvironment('buckle-audit-failure-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
+  const { state, workspace, environment } = nodeEnvironment('buckle-audit-failure-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
   const buckle = await createBuckleHttp({ environment })
   nodes.push(buckle)
   writeFileSync(join(workspace, 'note.md'), 'audited read')
@@ -64,7 +64,7 @@ describe('an audit log that will not take writes', () => {
   })
 
   it('keeps health per log: one workspace\'s broken log keeps the node unready however well the others write (review M2 of B18-B19)', async () => {
-    const { state, root, environment } = nodeEnvironment('buckle-audit-two-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
+    const { state, root, environment } = nodeEnvironment('buckle-audit-two-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
     const buckle = await createBuckleHttp({ environment })
     nodes.push(buckle)
     mkdirSync(join(root, 'child'))
@@ -95,7 +95,7 @@ describe('an audit log that will not take writes', () => {
   })
 
   it('stops counting a retired workspace\'s broken log toward readiness (review L5 of B20-B22)', async () => {
-    const { state, root, environment } = nodeEnvironment('buckle-audit-retired-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
+    const { state, root, environment } = nodeEnvironment('buckle-audit-retired-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
     const buckle = await createBuckleHttp({ environment })
     nodes.push(buckle)
     mkdirSync(join(root, 'child'))

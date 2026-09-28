@@ -25,7 +25,7 @@ beforeEach(async () => {
   for (const folder of ['default', 'one']) mkdirSync(join(root, folder))
   mkdirSync(join(root, 'state'), { mode: 0o700 })
   writeFileSync(join(root, 'one', 'hello.txt'), 'workspace one')
-  app = await createBuckleHttp({ environment: { BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1' } })
+  app = await createBuckleHttp({ environment: { BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1' } })
   config = app.config
   runtime = app.runtime
 })

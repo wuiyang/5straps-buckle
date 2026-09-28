@@ -12,7 +12,7 @@ async function fixture() {
   mkdirSync(source); mkdirSync(child); mkdirSync(join(root, 'state'), { mode: 0o700 })
   writeFileSync(join(source, 'note.txt'), 'default fixture')
   writeFileSync(join(child, 'note.txt'), 'child fixture')
-  const buckle = await createBuckleHttp({ environment: { BUCKLE_WORKSPACE_ROOT: source, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'fixture-agent', BUCKLE_ADMIN_TOKEN: 'fixture-setup', BUCKLE_ALLOW_SHELL: 'false' } })
+  const buckle = await createBuckleHttp({ environment: { BUCKLE_WORKSPACE_ROOT: source, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'fixture-agent', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'fixture-setup', BUCKLE_ALLOW_SHELL: 'false' } })
   cleanups.push(async () => { await buckle.close(); rmSync(root, { recursive: true, force: true }) })
   const request = (path: string, token: string, body?: unknown, method = body === undefined ? 'GET' : 'POST') => buckle.request(path, { method, headers: { authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
   return { root, source, child, config: buckle.config, runtime: buckle.runtime, buckle, request }

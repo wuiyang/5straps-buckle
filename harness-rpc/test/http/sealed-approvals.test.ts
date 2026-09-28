@@ -23,7 +23,7 @@ async function node(input: { key?: string; state?: string; graceMs?: number } = 
   const state = input.state ?? mkdtempSync(join(tmpdir(), 'buckle-sealed-state-'))
   const app = await createBuckleHttp({ environment: {
     BUCKLE_AUTH_TOKEN: 'agent-token-fixture',
-    BUCKLE_ADMIN_TOKEN: 'admin-token-fixture',
+    BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'admin-token-fixture',
     BUCKLE_STATE_DIR: state,
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-sealed-ws-')),
     BUCKLE_ALLOW_SHELL: 'false',

@@ -30,7 +30,7 @@ beforeEach(async () => {
   workspace = mkdtempSync(join(tmpdir(), 'buckle-setup-ws-'))
   stateDirectory = mkdtempSync(join(tmpdir(), 'buckle-setup-state-'))
   writeFileSync(join(workspace, 'hello.txt'), 'hello\n')
-  app = await node({ BUCKLE_ADMIN_TOKEN: SETUP, BUCKLE_COMMAND_DENY: 'wget *' })
+  app = await node({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: SETUP, BUCKLE_COMMAND_DENY: 'wget *' })
   runtime = app.runtime
 })
 afterEach(async () => { for (const started of nodes.splice(0)) await started.close() })
@@ -66,12 +66,12 @@ describe('who may open the setup face', () => {
   })
 
   it('refuses to be the same credential as the agent token', () => {
-    expect(() => loadConfig({ BUCKLE_AUTH_TOKEN: 'same', BUCKLE_ADMIN_TOKEN: 'same' })).toThrow(/must differ/)
+    expect(() => loadConfig({ BUCKLE_AUTH_TOKEN: 'same', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'same' })).toThrow(/must differ/)
   })
 
   it('uses only the current admin credential setting', () => {
     expect(loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_SETUP_TOKEN: SETUP }).adminToken).toBe('')
-    expect(loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: SETUP }).adminToken).toBe(SETUP)
+    expect(loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: SETUP }).adminToken).toBe(SETUP)
   })
 })
 

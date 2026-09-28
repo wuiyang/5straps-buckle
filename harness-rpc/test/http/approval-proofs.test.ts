@@ -22,7 +22,7 @@ afterEach(async () => { vi.restoreAllMocks(); for (const node of nodes.splice(0)
 const owner = generateSigningKey()
 
 async function node(): Promise<BuckleHttp & { root: string }> {
-  const { root, environment } = nodeEnvironment('buckle-approval-proofs-', { BUCKLE_AUTH_TOKEN: 'approval-proofs-agent-token', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+  const { root, environment } = nodeEnvironment('buckle-approval-proofs-', { BUCKLE_AUTH_TOKEN: 'approval-proofs-agent-token', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
   const started = await createBuckleHttp({ environment })
   nodes.push(started)
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)

@@ -18,7 +18,7 @@ const nodes: BuckleHttp[] = []
 afterEach(async () => { for (const node of nodes.splice(0)) await node.close() })
 
 async function node(): Promise<BuckleHttp & { root: string; state: string }> {
-  const { root, state, environment } = nodeEnvironment('buckle-pre-auth-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_ADMIN })
+  const { root, state, environment } = nodeEnvironment('buckle-pre-auth-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: NODE_ADMIN })
   const started = await createBuckleHttp({ environment })
   nodes.push(started)
   return Object.assign(started, { root, state })

@@ -34,7 +34,7 @@ async function node(options: { admin?: boolean } = {}) {
   mkdirSync(join(root, 'state'), { mode: 0o700 })
   const buckle = await createBuckleHttp({ environment: {
     BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT,
-    ...(options.admin === false ? {} : { BUCKLE_ADMIN_TOKEN: NODE_ADMIN }), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_MAX_REQUEST_BYTES: String(MAX_REQUEST_BYTES),
+    ...(options.admin === false ? {} : { BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: NODE_ADMIN }), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_MAX_REQUEST_BYTES: String(MAX_REQUEST_BYTES),
   } })
   const { config, runtime } = buckle
   cleanups.push(() => buckle.close())

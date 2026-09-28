@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
@@ -38,7 +39,7 @@ let probes: Probe[]
 let offTable: Probe[]
 
 beforeAll(async () => {
-  const { root, environment } = nodeEnvironment('buckle-sweep-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_PACKS: 'fs' })
+  const { root, environment } = nodeEnvironment('buckle-sweep-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_PACKS: 'fs' })
   buckle = await createBuckleHttp({ environment })
   mkdirSync(join(root, 'child'))
   const registered = await buckle.request('/setup/workspaces', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify({ id: 'child', name: 'child', root: join(root, 'child'), authToken: CHILD_AGENT, adminToken: CHILD_ADMIN }) })
@@ -188,3 +189,38 @@ describe('the guard sweep over every route, method and credential', () => {
     expect(probes.filter(probe => isSetup(probe.path) && probe.status === 401).length).toBeGreaterThan(1_000)
   })
 })
+
+describe('the admin layer with its experimental flag off (owner decision D8)', () => {
+  it('answers every admin route 404, as the router answers an unmatched path, to every method and credential, admin included, and audits nothing', async () => {
+    const { root, environment } = nodeEnvironment('buckle-sweep-off-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_PACKS: 'fs' })
+    // A second copy of the build, so the swept node above keeps its app.
+    const off = await createBuckleHttp({ environment, instance: 2 })
+    try {
+      mkdirSync(join(root, 'child'))
+      await (await off.services.getWorkspaces()).register({ id: 'child', name: 'child', root: join(root, 'child'), authToken: CHILD_AGENT, adminToken: CHILD_ADMIN, policy: emptyWorkspacePolicy() })
+      const unmatched = await off.request('/sweep-off-table', { headers: bearer(NODE_ADMIN) })
+      const expected = { status: 404, type: unmatched.headers.get('content-type'), body: await unmatched.text() }
+      expect(expected.status).toBe(404)
+      const before = off.runtime.actions.read(1)[0]?.auditId
+      const paths = [...concretePaths().keys()].filter(isSetup)
+      expect(paths.length).toBeGreaterThan(50)
+      const answered: string[] = []
+      for (const path of paths) {
+        for (const method of METHODS) {
+          for (const [credential, token] of Object.entries(CREDENTIALS)) {
+            const response = await off.request(path, { method, headers: { 'content-type': 'application/json', ...bearer(token) } })
+            const got = { status: response.status, type: response.headers.get('content-type'), body: method === 'HEAD' ? expected.body : await response.text() }
+            if (JSON.stringify(got) !== JSON.stringify(expected)) answered.push(`${method} ${path} as ${credential}: ${got.status}`)
+          }
+        }
+      }
+      expect(answered).toEqual([])
+      expect(off.runtime.actions.read(1)[0]?.auditId).toBe(before)
+      // The agent's face still serves.
+      expect((await off.request('/v1/manifest', { headers: bearer(NODE_AGENT) })).status).toBe(200)
+    } finally {
+      await off.close()
+    }
+  }, 120_000)
+})
+

@@ -19,7 +19,7 @@ function headers(token: string): Record<string, string> {
 }
 
 async function workspaceOne(): Promise<{ buckle: BuckleHttp; root: string; minted: string }> {
-  const { root, environment } = nodeEnvironment('buckle-dedupe-http-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
+  const { root, environment } = nodeEnvironment('buckle-dedupe-http-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
   const buckle = await createBuckleHttp({ environment })
   nodes.push(buckle)
   mkdirSync(join(root, 'one'))
