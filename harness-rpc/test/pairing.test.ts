@@ -196,6 +196,21 @@ describe('buckle init --pair', () => {
     expect(result.printed).toContain(`Start it with: BUCKLE_ENV_FILE=${out} buckle serve`)
   })
 
+  it('pairs a node whose file is buckle.env in its state directory: written there owner-only, and named in the messages', async () => {
+    ringsMinting('rings-minted-report-token-fixture')
+    let printed = ''
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
+    try {
+      expect((await runInit(['--root', workspace, '--name', 'Paired', '--port', '4399', '--yes', '--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'], undefined, { home: root })).exitCode).toBe(0)
+    } finally { stdout.mockRestore() }
+
+    const file = join(root, 'state', 'buckle.env')
+    expect(parseEnv(readFileSync(file, 'utf8')).BUCKLE_REPORT_TOKEN).toBe('rings-minted-report-token-fixture')
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect(printed).toContain(`written to ${file}`)
+    expect(printed).toContain(`Start it with: BUCKLE_STATE_DIR=${join(root, 'state')} buckle serve`)
+  })
+
   it('stays paired when Rings mints nothing, leaving the report settings to the operator', async () => {
     const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
 

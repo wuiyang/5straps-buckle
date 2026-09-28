@@ -47,7 +47,7 @@ beforeEach(() => {
   chmodSync(file, 0o640)
 })
 
-async function settings(argv: string[], environment: NodeJS.ProcessEnv = {}, environmentFile: string | null = file) {
+async function settings(argv: string[], environment: NodeJS.ProcessEnv = {}, environmentFile: string = file) {
   let out = ''
   let err = ''
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { out += String(chunk); return true })
@@ -65,17 +65,18 @@ function withLine(from: string, to: string): string {
 }
 
 describe('buckle settings show', () => {
-  it('shows the process environment and the defaults without an environment file, and only a write needs one', async () => {
-    const shown = await settings(['show'], { BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false' }, null)
+  it('shows the process environment and the defaults before the environment file is written, and only a write needs it', async () => {
+    const absent = join(state, 'buckle.env')
+    const shown = await settings(['show'], { BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false' }, absent)
 
     expect(shown.exitCode).toBe(0)
-    expect(shown.out).toContain('from the process environment (no environment file for this directory; buckle init creates one)')
+    expect(shown.out).toContain(`from the process environment and the defaults (${absent} is not written yet; buckle init writes it)`)
     expect(shown.out).toMatch(/shell\s+BUCKLE_ALLOW_SHELL\s+false\s+process environment\n/)
     expect(shown.out).toMatch(/name\s+BUCKLE_SERVER_NAME\s+.+default\n/)
-    expect((await settings([], { BUCKLE_STATE_DIR: state }, null)).exitCode).toBe(0)
-    const refused = await settings(['set', 'shell', 'off'], { BUCKLE_STATE_DIR: state }, null)
+    expect((await settings([], { BUCKLE_STATE_DIR: state }, absent)).exitCode).toBe(0)
+    const refused = await settings(['set', 'shell', 'off'], { BUCKLE_STATE_DIR: state }, absent)
     expect(refused.exitCode).toBe(1)
-    expect(refused.printed).toContain('No Buckle environment file for this directory')
+    expect(refused.printed).toContain(`${absent} does not exist. Run buckle init first, or point BUCKLE_ENV_FILE at the node's environment file.`)
   })
 
   it('prints each allow-listed setting with its value and source, and every other key by name alone', async () => {

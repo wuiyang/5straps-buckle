@@ -1,9 +1,9 @@
-import { isManagedWorkspaceConfig, moveWorkspaceConfig } from '../common/runtime/workspace-config.js'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseEnv } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { actionsPath, stateDirectoryOf } from '../common/runtime/config.js'
+import { defaultEnvironmentFile } from '../common/runtime/environment.js'
 import { isInside } from '../common/domain/paths.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from './environment-file.js'
@@ -26,15 +26,15 @@ Lists are comma separated. A change takes effect when buckle serve restarts.
 
 /**
  * `BUCKLE-D19`: node settings are the owner's CLI writing the environment file, never a face. The
- * file is the one `buckle serve` reads: `BUCKLE_ENV_FILE`, or the file `buckle init` registered for
- * this directory. Only the allow-listed keys in `NODE_SETTINGS` are printed or written; every other
- * line, credentials included, is kept byte for byte and shown by name at most. Without a file,
- * `show` still reports the process environment and the defaults; only a write needs one. Each run
+ * file is the one `buckle serve` reads: `BUCKLE_ENV_FILE`, or buckle.env in the state directory.
+ * Only the allow-listed keys in `NODE_SETTINGS` are printed or written; every other line,
+ * credentials included, is kept byte for byte and shown by name at most. Before the file exists,
+ * `show` still reports the process environment and the defaults; only a write needs it. Each run
  * is audited in the node's action log, a write with the key and value it set.
  */
-export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string | null; cwd: string; home?: string }): Promise<CliResult> {
-  const file = input.environmentFile === null ? null : resolve(input.cwd, input.environmentFile)
-  const fileText = file !== null && existsSync(file) ? readFileSync(file, 'utf8') : null
+export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string; cwd: string; home?: string }): Promise<CliResult> {
+  const file = resolve(input.cwd, input.environmentFile)
+  const fileText = existsSync(file) ? readFileSync(file, 'utf8') : null
   const merged = { ...buckleVariables(fileText), ...input.environment }
   return auditOperation({
     actions: createFileActionLog(actionsPath({ stateDirectory: stateDirectoryOf(merged) })),
@@ -44,13 +44,11 @@ export async function settingsCommand(input: { argv: string[]; environment: Node
   })
 }
 
-const NO_ENVIRONMENT_FILE = 'No Buckle environment file for this directory. Run `buckle init` here to create and register one, or set BUCKLE_ENV_FILE to the file to use.'
-
 interface SettingsContext {
   argv: string[]
   environment: NodeJS.ProcessEnv
-  /** Null when no environment file applies here: nothing to write to, the process environment still shows. */
-  file: string | null
+  /** The file buckle serve reads; its text is null until buckle init writes it. */
+  file: string
   fileText: string | null
   merged: NodeJS.ProcessEnv
   cwd: string
@@ -60,14 +58,9 @@ interface SettingsContext {
 function dispatch(context: SettingsContext): CliResult | Promise<CliResult> {
   const [action, ...rest] = context.argv
   if (action === undefined || action === 'show') return rest.length ? usage() : show(context)
-  if (action === 'set' && rest.length === 2) return writeTo(context, rest[0]!, rest[1]!)
-  if (action === 'unset' && rest.length === 1) return writeTo(context, rest[0]!, null)
+  if (action === 'set' && rest.length === 2) return write(context, rest[0]!, rest[1]!)
+  if (action === 'unset' && rest.length === 1) return write(context, rest[0]!, null)
   return usage()
-}
-
-function writeTo(context: SettingsContext, name: string, raw: string | null): CliResult | Promise<CliResult> {
-  const { file } = context
-  return file === null ? fail(NO_ENVIRONMENT_FILE) : write({ ...context, file }, name, raw)
 }
 
 function show(context: SettingsContext): CliResult {
@@ -89,11 +82,10 @@ function show(context: SettingsContext): CliResult {
 }
 
 function describeSource(context: SettingsContext): string {
-  if (context.file === null) return 'the process environment (no environment file for this directory; buckle init creates one)'
-  return context.fileText === null ? `${context.file} (not written yet)` : context.file
+  return context.fileText === null ? `the process environment and the defaults (${context.file} is not written yet; buckle init writes it)` : context.file
 }
 
-async function write(context: SettingsContext & { file: string }, name: string, raw: string | null): Promise<CliResult> {
+async function write(context: SettingsContext, name: string, raw: string | null): Promise<CliResult> {
   const setting = findNodeSetting(name)
   if (!setting) return fail(`${name} is not a node setting buckle settings writes. Edit ${context.file} by hand for it.\nSettings: ${NODE_SETTINGS.map(item => item.alias).join(', ')}`)
   if (context.fileText === null) return fail(`${context.file} does not exist. Run buckle init first, or point BUCKLE_ENV_FILE at the node's environment file.`)
@@ -105,17 +97,14 @@ async function write(context: SettingsContext & { file: string }, name: string, 
     process.stdout.write(`${setting.key} is not set in ${context.file}; nothing to remove.\n`)
     return { exitCode: 0 }
   }
-  if (setting.key === 'BUCKLE_WORKSPACE_ROOT' && next === null && isManagedWorkspaceConfig(context.file, context.home)) {
-    return fail('A registered workspace must have a root; set a new root instead of unsetting it')
+  // The state directory's own file names its workspace: unset, the node would serve whatever
+  // directory it happens to start in.
+  if (setting.key === 'BUCKLE_WORKSPACE_ROOT' && next === null && context.file === defaultEnvironmentFile(context.environment)) {
+    return fail('The node\'s environment file must name its workspace root; set a new root instead of unsetting it')
   }
-  let edit: EnvironmentEdit = { ok: false, reason: 'Settings update did not run' }
+  let edit: EnvironmentEdit
   try {
-    const writeValue = async () => {
-      edit = await updateEnvironmentFile(context.file, text => editEnvironmentVariable({ text, name: setting.key, value: next }), { ...(context.home ? { home: context.home } : {}) })
-      return edit.ok
-    }
-    if (setting.key === 'BUCKLE_WORKSPACE_ROOT' && next !== null) await moveWorkspaceConfig({ file: context.file, root: next, home: context.home, write: writeValue })
-    else await writeValue()
+    edit = await updateEnvironmentFile(context.file, text => editEnvironmentVariable({ text, name: setting.key, value: next }), { ...(context.home ? { home: context.home } : {}) })
   } catch (error) {
     return fail(`Could not write ${context.file}: ${error instanceof Error ? error.message : 'unknown error'}. Inspect the configuration before retrying.`)
   }
