@@ -25,10 +25,10 @@ async function pendingRequest(config: BuckleConfig): Promise<string> {
     approvalsPath(config),
     config.cwd,
   )
-  const [request] = await registry.issue({
+  const [request] = (await registry.ask({
     tool: 'fs_write', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
-  })
+  })).requests
   return request!.token
 }
 
@@ -55,6 +55,17 @@ describe('buckle approvals, the queue a person answers from', () => {
     expect(listed.stdout).toContain('scopes: once | session')
     expect(listed.stdout).toContain('expires in')
     expect(listed.stdout).toContain(`buckle approve ${token} --scope session`)
+  })
+
+  it('lists a subject with control characters escaped, so it cannot rewrite the terminal (review M3)', async () => {
+    const config = node()
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }), approvalsPath(config), config.cwd)
+    await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/x\u001b[2K\rls', reason: 'outside\u0007', offeredScopes: ['once'] }] })
+
+    const listed = await capture({ argv: ['approvals'], config })
+
+    expect(listed.stdout).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
+    expect(listed.stdout).toContain('write_scope: /outside/x\\u001b[2K\\u000dls')
   })
 
   it('says so plainly when nothing is waiting', async () => {
@@ -89,10 +100,10 @@ function registry(config: BuckleConfig) {
 
 /** A private host a web_fetch asked about, waiting on the node. */
 async function networkRequest(config: BuckleConfig, subject = 'app.localhost:3000'): Promise<string> {
-  const [request] = await registry(config).issue({
+  const [request] = (await registry(config).ask({
     tool: 'web_fetch', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'network_egress', subject, reason: 'resolves to this machine', offeredScopes: ['once', 'session', 'always'] }],
-  })
+  })).requests
   return request!.token
 }
 

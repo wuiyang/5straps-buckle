@@ -1,5 +1,5 @@
-import { defineSingleton, useScopeSafe, type AnyServiceDefinition, type CloseStage, type Closer, type OperationScope, type RuntimeOwner, type ScopedDefinition, type SingletonDefinition } from '@5straps/runtime'
-import { InteractionService, type InteractionPort, type InteractionSource } from '../services/approvals/interaction.js'
+import { defineSingleton, useScopeSafe, type AnyServiceDefinition, type CloseStage, type Closer, type OperationScope, type RequestCli, type RuntimeOwner, type ScopedDefinition, type SingletonDefinition } from '@5straps/runtime'
+import { InteractionService, NO_INTERACTION, type InteractionPort, type InteractionSource } from '../services/approvals/interaction.js'
 import { createWorkspaceManager, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
 import { createRuntime, type BuckleRuntime } from '../services/workspaces/workspace-runtime.js'
 import type { BuckleConfig } from './config.js'
@@ -63,14 +63,16 @@ export function createServiceAccessors(input: { owner: RuntimeOwner; definitions
 }
 
 /**
- * The ALS getter the approval service reads: the interaction bound to the operation the call runs in.
- * A call outside any of this owner's live operations has none, so nobody is asked.
+ * The ALS getter the approval service reads: the hold bound to the operation the call runs in, with
+ * the process's requester. A call outside any of this owner's live operations has none, so nobody is
+ * asked; a process with no requester bound asks nobody either.
  */
-export function currentInteraction(owner: () => RuntimeOwner, definition: ScopedDefinition<InteractionPort> = InteractionService): InteractionSource {
+export function currentInteraction(input: { owner: () => RuntimeOwner; requester: () => RequestCli | undefined }): InteractionSource {
   return async () => {
     const scope = useScopeSafe()
-    const { registry } = owner()
+    const { registry } = input.owner()
     if (!scope || scope.owner !== registry.owner || (scope.state !== 'active' && scope.state !== 'draining')) return undefined
-    return (await registry.useScoped(definition, scope)).current()
+    const hold = (await registry.useScoped(InteractionService, scope)).current()
+    return hold === undefined ? undefined : { requestCli: input.requester() ?? NO_INTERACTION.requestCli, hold }
   }
 }

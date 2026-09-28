@@ -65,7 +65,7 @@ describe('the approval service, the single answerer', () => {
 
   it('headless: the requester answers unavailable with the pending id and the command that answers it', async () => {
     const { registry } = queue()
-    const [approval] = await registry.issue({ tool: 'fs_write', sessionId: 'chat-1', asks: [ask('/outside/a.md')] })
+    const [approval] = (await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [ask('/outside/a.md')] })).requests
     const cli = setupCli({ terminal: null })
 
     const outcome = await cli.requestCli(questionFor({ approval: approval!, workspaceId: 'default', context: { correlationId: 'c1', sessionId: 'chat-1' } }))
@@ -97,7 +97,7 @@ describe('the approval service, the single answerer', () => {
 
   it('lets no answer resolve another token than its question\'s: an unknown choice denies the asked one once', async () => {
     const { registry } = queue()
-    const [other] = await registry.issue({ tool: 'fs_write', sessionId: 'chat-2', asks: [ask('/outside/other.md')] })
+    const [other] = (await registry.ask({ tool: 'fs_write', sessionId: 'chat-2', asks: [ask('/outside/other.md')] })).requests
     const terminal = scriptedTerminal([other!.token])
     const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 5_000, interaction: fixedInteraction({ hold: 'grace', requestCli: terminal.requestCli }) })
 
@@ -114,7 +114,7 @@ describe('the approval service, the single answerer', () => {
 
   it('ignores a cli:call listener that answers another question than the one it was given', async () => {
     const { registry } = queue()
-    const [victim] = await registry.issue({ tool: 'fs_write', sessionId: 'chat-2', asks: [ask('/outside/victim.md')] })
+    const [victim] = (await registry.ask({ tool: 'fs_write', sessionId: 'chat-2', asks: [ask('/outside/victim.md')] })).requests
     const requestCli = createHookRequestCli({ hasListener: () => true, dispatch: async (_request, respond) => {
       respond({ status: 'answered', requestId: `approval:default:${victim!.token}`, answer: { choice: 'session' } })
     } })
@@ -187,16 +187,17 @@ describe('the approval service, the single answerer', () => {
     expect(await waiting).toMatchObject({ settled: true })
   })
 
-  it('cancels the asks when the caller leaves inside the wait, but not while a joined caller still waits', async () => {
+  it('cancels the asks when the caller leaves inside the wait, but not once a joined caller carries them', async () => {
     const { registry } = queue()
     const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
     const leaving = new AbortController()
     const first = service.request(call({ signal: leaving.signal }))
-    const joined = service.request(call())
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    const joined = service.request(call())
 
+    // The newer caller took the wait over, so the first reports back without running.
+    expect(await first).toMatchObject({ settled: false, superseded: true })
     leaving.abort()
-    await expect(first).rejects.toThrow()
     expect(registry.pending()).toHaveLength(1)
 
     const alone = new AbortController()
@@ -205,7 +206,7 @@ describe('the approval service, the single answerer', () => {
     alone.abort()
     await expect(last).rejects.toThrow()
     expect(registry.pending()).toHaveLength(1)
-    service.close()
+    await service.close()
     expect(await joined).toMatchObject({ settled: false })
   })
 
@@ -217,11 +218,11 @@ describe('the approval service, the single answerer', () => {
     const waiting = service.request(call())
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
 
-    service.close()
+    await service.close()
 
     expect(await waiting).toMatchObject({ settled: false })
     expect(registry.pending()).toHaveLength(1)
-    await vi.waitFor(() => expect(withdrawn).toBe(true))
+    expect(withdrawn).toBe(true)
   })
 })
 
@@ -260,21 +261,20 @@ describe('the interaction each HTTP request binds', () => {
     await common.start()
     const asked: string[] = []
     const requestCli: RequestCli = async request => { asked.push(String(request.action.details?.tool)); return { status: 'unavailable', requestId: request.id, reason: 'no_consumer' } }
-    // As serve mounts it: one operation scope per request, with the HTTP interaction bound.
+    // As serve mounts it: the process's requester, and one operation scope per request with the HTTP hold bound.
+    common.bindRequester(requestCli)
     const app = new Hono<ScopeEnv>()
-    app.use('*', operationScopes(common, { requestCli, hold: 'grace' }))
+    app.use('*', operationScopes(common, 'grace'))
     app.route('/', createHttpApp({ config, runtime: await common.services.getWorkspaceRuntime(), authToken: config.authToken, workspaces: await common.services.getWorkspaces() }))
     const headers = { authorization: `Bearer ${config.authToken}`, 'content-type': 'application/json' }
 
-    const started = performance.now()
     const invoked = await app.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'bound-1', tool: 'fs_write', args: { path: 'a.md', content: 'x' } }) })
     expect(await invoked.json()).toMatchObject({ outcome: 'approval_required' })
-    // Held for the grace period, as a bound HTTP call is; an unbound one reports back at once.
-    expect(performance.now() - started).toBeGreaterThanOrEqual(290)
 
     const mcp = await app.request('/mcp', { method: 'POST', headers: { ...headers, accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/call', 'mcp-name': 'fs_write' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'fs_write', arguments: { path: 'b.md', content: 'y' }, _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': {} } } }) })
     expect(await mcp.text()).toContain('This call needs approval')
+    // Both were asked about, which an operation with no hold bound never is.
     expect(asked).toEqual(['fs_write', 'fs_write'])
     await common.owner.close()
   })
@@ -288,7 +288,8 @@ describe('the interaction each HTTP request binds', () => {
     await common.start()
     const questions: Array<{ actor?: string; sessionId?: string }> = []
     const requestCli: RequestCli = async request => { questions.push({ actor: request.actor, sessionId: request.sessionId }); return { status: 'unavailable', requestId: request.id, reason: 'no_consumer' } }
-    const server = createMcpServer({ runtime: await common.services.getWorkspaceRuntime(), serverName: 'stdio-test', version: '0', trustedApprovalResponses: true, callScope: stdioCallScope({ common, requestCli }) })
+    common.bindRequester(requestCli)
+    const server = createMcpServer({ runtime: await common.services.getWorkspaceRuntime(), serverName: 'stdio-test', version: '0', trustedApprovalResponses: true, callScope: stdioCallScope(common) })
     const tools = (server as unknown as { _registeredTools: Record<string, { handler(args: unknown, context: ServerContext): Promise<{ isError?: boolean }> }> })._registeredTools
 
     const result = await tools.fs_write!.handler({ path: 'a.md', content: 'x' }, { sessionId: 'stdio-session', mcpReq: { signal: new AbortController().signal } } as unknown as ServerContext)

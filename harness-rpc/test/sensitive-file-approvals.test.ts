@@ -33,7 +33,7 @@ it.each(['session', 'always'] as const)('records a %s denial, enforces scope and
   expect(outcome.kind).toBe('ask')
   if (outcome.kind !== 'ask') throw new Error('Expected approval')
   expect(outcome.asks[0]).toMatchObject({ reason: expect.stringContaining('WARNING'), offeredScopes: ['once'] })
-  const request = (await approvals.issue({ tool: 'fs_read', sessionId: 'one', asks: outcome.asks }))[0]!
+  const request = ((await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: outcome.asks })).requests)[0]!
   expect((await approvals.resolve({ token: request.token, approved: false, scope }, 'agent')).ok).toBe(false)
   expect((await approvals.resolve({ token: request.token, approved: false, scope }, 'admin')).ok).toBe(true)
   expect(check('one').kind).toBe('deny')
@@ -45,7 +45,7 @@ it.each(['session', 'always'] as const)('records a %s denial, enforces scope and
 it('does not permit durable sensitive-file approvals or reuse standing allow grants', async () => {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
   const approvals = createApprovalRegistry(grants, join(root, 'approvals.json'))
-  const request = (await approvals.issue({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }] }))[0]!
+  const request = ((await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }] })).requests)[0]!
   expect((await approvals.resolve({ token: request.token, approved: true, scope: 'always' })).ok).toBe(false)
   await grants.grant({ sessionId: 'one', rule: 'sensitive_path', subject: '/workspace/.env', scope: 'always' })
   expect(grants.activeSubjects({ sessionId: 'one', rule: 'sensitive_path' })).toEqual([])

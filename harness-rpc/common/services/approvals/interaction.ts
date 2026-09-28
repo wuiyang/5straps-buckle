@@ -8,7 +8,13 @@ import { defineScoped, type CliRequest, type PendingInteraction, type RequestCli
  */
 export type ApprovalHold = 'grace' | 'prompt'
 
-/** How an entry point reaches a person: its interaction function and how long it holds a call. */
+/**
+ * How an operation reaches a person: the process's requester and the hold its transport chose.
+ *
+ * Only the hold is scoped. The requester is process-level, bound once by main on the common runtime,
+ * because the approval service is a per-workspace singleton that keeps asking after a `grace` call
+ * returns, and a singleton must not retain a scoped value (nitro/runtime.md, Lifetimes; review L2).
+ */
 export interface Interaction {
   readonly requestCli: RequestCli
   readonly hold: ApprovalHold
@@ -16,8 +22,8 @@ export interface Interaction {
 
 /** Bound once per operation scope by the transport that opened it; read by the approval service. */
 export interface InteractionPort {
-  bind(interaction: Interaction): void
-  current(): Interaction | undefined
+  bind(hold: ApprovalHold): void
+  current(): ApprovalHold | undefined
 }
 
 /** The current operation's interaction, or undefined outside any bound operation. */
@@ -48,11 +54,11 @@ export async function approvalPending(request: CliRequest): Promise<PendingInter
 }
 
 function createInteractionPort(): InteractionPort {
-  let bound: Interaction | undefined
+  let bound: ApprovalHold | undefined
   return {
-    bind(interaction) {
+    bind(hold) {
       if (bound) throw new Error('This operation already has an interaction bound')
-      bound = interaction
+      bound = hold
     },
     current: () => bound,
   }

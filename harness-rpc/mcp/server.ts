@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
-import { describeApprovalRequest } from '../common/domain/approval-instruction.js'
+import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
 import { logger } from '../common/runtime/log.js'
 import type { ApprovalAuthority } from '../common/services/approvals/approval-registry.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -155,7 +155,7 @@ function askForApproval(approvals: ApprovalRequest[]) {
   const inputRequests = Object.fromEntries(approvals.map(approval => [
     approval.token,
     inputRequired.elicit({
-      message: `${approval.tool}: ${approval.reason}\nSubject: ${approval.subject}`,
+      message: `${printable(approval.tool)}: ${printable(approval.reason)}\nSubject: ${printable(approval.subject)}`,
       requestedSchema: {
         type: 'object',
         properties: approval.rule === 'sensitive_path' ? {

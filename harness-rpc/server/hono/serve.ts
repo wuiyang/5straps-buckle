@@ -1,11 +1,10 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { getRequestListener, type HttpBindings } from '@hono/node-server'
-import { registerHttpServerClose, type Logger, type RequestCli } from '@5straps/runtime'
+import { registerHttpServerClose, type Logger } from '@5straps/runtime'
 import { Hono } from 'hono'
 import { requireAuthToken, type BuckleConfig } from '../../common/runtime/config.js'
 import type { BuckleCommon } from '../../common/runtime/initialize.js'
-import type { Interaction } from '../../common/services/approvals/interaction.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { createHttpApp } from './http-app.js'
 import { operationScopes, notReadyResponse, type ScopeEnv } from './operation-scope.js'
@@ -17,11 +16,10 @@ export interface HttpAdapter {
 }
 
 // Listening before readiness is deliberate: the startup window answers 503, never a refused connection.
-export async function serveHttp(input: { config: BuckleConfig; common: BuckleCommon; logger: Logger; requestCli: RequestCli }): Promise<void> {
+export async function serveHttp(input: { config: BuckleConfig; common: BuckleCommon; logger: Logger }): Promise<void> {
   const { config, common } = input
   const authToken = requireAuthToken(config)
-  // Any route may answer while an HTTP call is held, so it waits for the grace period.
-  const http = createHttpAdapter(common, { requestCli: input.requestCli, hold: 'grace' })
+  const http = createHttpAdapter(common)
   const address = await http.listen({ host: config.host, port: config.port })
   await common.start()
   const runtime = await common.services.getWorkspaceRuntime()
@@ -29,7 +27,7 @@ export async function serveHttp(input: { config: BuckleConfig; common: BuckleCom
   logListening({ logger: input.logger, config, runtime, address })
 }
 
-export function createHttpAdapter(common: BuckleCommon, interaction: Interaction): HttpAdapter {
+export function createHttpAdapter(common: BuckleCommon): HttpAdapter {
   let root: Hono<ScopeEnv> | undefined
   const server = createServer(getRequestListener((request, env) => root ? root.fetch(request, env as HttpBindings) : notReadyResponse()))
   registerHttpServerClose({ server, owner: common.owner })
@@ -37,7 +35,8 @@ export function createHttpAdapter(common: BuckleCommon, interaction: Interaction
     listen: options => listen(server, options),
     mount(app) {
       const scoped = new Hono<ScopeEnv>()
-      scoped.use('*', operationScopes(common, interaction))
+      // Any route may answer while an HTTP call is held, so it waits for the grace period.
+      scoped.use('*', operationScopes(common, 'grace'))
       scoped.route('/', app)
       root = scoped
     },

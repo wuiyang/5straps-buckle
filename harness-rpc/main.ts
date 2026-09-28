@@ -78,9 +78,11 @@ async function runService(input: { kind: ServiceKind; config: BuckleConfig; logg
   // Main owns the process's one requester (nitro/coordination.md); its questions settle with the other waiters.
   const cli = setupCli({ terminal: terminalFor(input.kind) })
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
+  // HTTP asks through the cli:call hook, which main answers; MCP stdio is handed the requester itself.
+  common.bindRequester(input.kind === 'serve' ? createHookRequestCli({ dispatch: cliCallListener(cli.requestCli), hasListener: () => true }) : cli.requestCli)
   const shutdown = closeOnSignals({ common, logging })
   try {
-    await startService({ ...input, common, logger: logging.logger, shutdown, requestCli: cli.requestCli })
+    await startService({ ...input, common, logger: logging.logger, shutdown })
   } catch (error) {
     // A stop requested during startup is a normal stop, not a failed start.
     if (shutdown.requested()) return
@@ -90,11 +92,10 @@ async function runService(input: { kind: ServiceKind; config: BuckleConfig; logg
   }
 }
 
-function startService(input: { kind: ServiceKind; config: BuckleConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli }): Promise<void> {
-  if (input.kind === 'serve') return serveHttp({ ...input, requestCli: createHookRequestCli({ dispatch: cliCallListener(input.requestCli), hasListener: () => true }) })
+function startService(input: { kind: ServiceKind; config: BuckleConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown }): Promise<void> {
+  if (input.kind === 'serve') return serveHttp(input)
   // The client closing stdin ends the session. 'end' needs a reader, so attaching first misses nothing.
   process.stdin.once('end', () => { void input.shutdown.close() })
-  // MCP is handed the requester directly, without the HTTP hook.
   return serveMcpStdio(input)
 }
 

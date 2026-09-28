@@ -17,7 +17,7 @@ function registry() {
 }
 
 describe('BUCKLE-D14: only the admin credential writes a persisted approval', () => {
-  const ask = async (approvals: ReturnType<typeof registry>) => (await approvals.issue({ tool: 'fs_write', sessionId: 'writer', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session', 'always'] }] }))[0]!
+  const ask = async (approvals: ReturnType<typeof registry>) => ((await approvals.ask({ tool: 'fs_write', sessionId: 'writer', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session', 'always'] }] })).requests)[0]!
 
   it.each(['session', 'always'] as const)('refuses a %s decision carried by an agent credential', async scope => {
     const approvals = registry()
@@ -47,10 +47,10 @@ describe('once approvals are always bound', () => {
 describe('once approval consumption', () => {
   it('retains partial grants and consumes them exactly when every gate allows', async () => {
     const approvals = registry()
-    const issued = await approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [
+    const issued = (await approvals.ask({ tool: 'fs_read', sessionId: 'reader', asks: [
       { kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] },
       { kind: 'ask', rule: 'sensitive_path', subject: '/outside/credentials.json', reason: 'sensitive', offeredScopes: ['once'] },
-    ] })
+    ] })).requests
     const check = (subjects: unknown[]): PermissionOutcome => subjects.length === 2 ? { kind: 'allow', allowedBy: [] } : { kind: 'ask', asks: [] }
     await approvals.resolve({ token: issued[0]!.token, approved: true, scope: 'once' }, 'admin')
     expect((await approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check })).kind).toBe('ask')
@@ -62,7 +62,7 @@ describe('once approval consumption', () => {
   it('binds once grants to the issuing session and tool and expires pending tokens', async () => {
     vi.useFakeTimers()
     const approvals = registry()
-    const [request] = await approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })
+    const [request] = (await approvals.ask({ tool: 'fs_read', sessionId: 'reader', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })).requests
     const decision = { token: request!.token, approved: true, scope: 'once' as const }
     expect((await approvals.resolve(decision, 'admin')).ok).toBe(true)
     expect((await approvals.resolve(decision, 'admin')).ok).toBe(true)
@@ -78,10 +78,10 @@ describe('once approval consumption', () => {
 describe('which late onces a call spends', () => {
   it('leaves a once whose subject a session grant already covers', async () => {
     const approvals = registry()
-    const issued = await approvals.issue({ tool: 'fs_read', sessionId: 'reader', asks: [
+    const issued = (await approvals.ask({ tool: 'fs_read', sessionId: 'reader', asks: [
       { kind: 'ask', rule: 'read_scope', subject: '/granted', reason: 'outside', offeredScopes: ['once'] },
       { kind: 'ask', rule: 'read_scope', subject: '/needed', reason: 'outside', offeredScopes: ['once'] },
-    ] })
+    ] })).requests
     for (const item of issued) await approvals.resolve({ token: item.token, approved: true, scope: 'once' }, 'admin')
     // A session grant covers /granted, so the rule reports both subjects but needs only /needed.
     const coveredByGrant = (subjects: { subject: string }[]): PermissionOutcome => subjects.some(item => item.subject === '/needed')
@@ -104,7 +104,7 @@ describe('which late onces a call spends', () => {
   const root = mkdtempSync('/tmp/buckle-workspace-'); roots.push(root)
   const create = (workspace: string) => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), join(root, 'approvals.json'), workspace)
   const first = create('/first'); const second = create('/second')
-  const [request] = await first.issue({ tool: 'fs_read', sessionId: 'shared', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })
+  const [request] = (await first.ask({ tool: 'fs_read', sessionId: 'shared', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })).requests
   const decision = { token: request!.token, approved: true, scope: 'once' as const }
   expect(second.pending()).toEqual([])
   expect((await second.resolve(decision, 'admin')).ok).toBe(false)

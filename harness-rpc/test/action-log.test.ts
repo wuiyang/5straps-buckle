@@ -14,6 +14,7 @@ function logPath(): string {
 
 function entry(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
   return {
+    event: 'result',
     at: '2026-09-02T00:00:00.000Z',
     requestId: 'r1',
     sessionId: 's1',
@@ -149,6 +150,17 @@ describe('durable audit pages', () => {
     const third = log.page({ limit: 2, before: Number(second.nextCursor) })
     expect([...first.entries, ...second.entries, ...third.entries].map(item => item.requestId)).toEqual(['r5', 'r4', 'r3', 'r2', 'r1'])
     expect(third.nextCursor).toBeNull()
+  })
+
+  it('leaves out a line from before attempt and result entries, rather than returning it as stored', async () => {
+    const path = logPath()
+    const log = createFileActionLog(path)
+    await log.record(entry({ requestId: 'r1' }))
+    const { event: _dropped, ...legacy } = entry({ requestId: 'r2', args: { token: 'stored-before-redaction' } })
+    writeFileSync(path, `${readFileSync(path, 'utf8')}${JSON.stringify(legacy)}\n`)
+    await log.record(entry({ requestId: 'r3' }))
+
+    expect(log.page({ limit: 10 }).entries.map(item => item.requestId)).toEqual(['r3', 'r1'])
   })
 
   it('refuses recording when durable storage is unavailable', async () => {

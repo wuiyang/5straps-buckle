@@ -4,14 +4,18 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import type { CliRequest, RequestCli } from '@5straps/runtime'
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setupCli } from '../cli/setup.js'
 import { remainingMs } from '../common/domain/approval-deadline.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
+import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
+import { describeQuestion } from '../cli/terminal-consumer.js'
 import type { ApprovalHold } from '../common/services/approvals/interaction.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
+
+afterEach(() => { vi.useRealTimers() })
 
 function approval(token: string, expiresInMs = 60_000): ApprovalRequest {
   return {
@@ -54,7 +58,7 @@ function stubQueue(requests: ApprovalRequest[]) {
   let pending = [...requests]
   const resolved: ApprovalDecision[] = []
   const registry = {
-    ask: async () => ({ requests, joined: false }),
+    ask: async () => ({ requests, joined: false, answered: [] }),
     pending: vi.fn(() => pending.filter(request => remainingMs(request.expiresAt) > 0)),
     wasDenied: (tokens: string[]) => resolved.some(decision => tokens.includes(decision.token) && !decision.approved),
     resolve: async (decision: ApprovalDecision) => {
@@ -62,7 +66,11 @@ function stubQueue(requests: ApprovalRequest[]) {
       pending = pending.filter(request => request.token !== decision.token)
       return { ok: true }
     },
-    cancel: async (tokens: string[]) => { pending = pending.filter(request => !tokens.includes(request.token)) },
+    cancel: async (tokens: string[]) => {
+      const withdrawn = pending.filter(request => tokens.includes(request.token)).map(request => request.token)
+      pending = pending.filter(request => !tokens.includes(request.token))
+      return withdrawn
+    },
     sweep: async () => undefined,
   }
   return { registry: registry as unknown as ApprovalRegistry, pending: registry.pending, resolved, answerElsewhere: (token: string) => { pending = pending.filter(request => request.token !== token) } }
@@ -123,6 +131,14 @@ describe('the grace period before a gated call gives up', () => {
     expect(announce).toHaveBeenCalledOnce()
   })
 
+  it('schedules no expiry sweep for a call that issued no ask (review L6)', async () => {
+    const warn = vi.spyOn(process, 'emitWarning')
+    try {
+      await waitingService({ registry: stubQueue([]).registry, graceMs: 50 })()
+      expect(warn.mock.calls.filter(([, type]) => String(type) === 'TimeoutNegativeWarning')).toEqual([])
+    } finally { warn.mockRestore() }
+  })
+
   it('still waits when announcing fails, rather than failing the call itself', async () => {
     expect(await waitingService({ registry: stubQueue([]).registry, graceMs: 1_000, announce: async () => { throw new Error('telegram is down') } })()).toMatchObject({ settled: true })
   })
@@ -145,9 +161,12 @@ describe('the grace period before a gated call gives up', () => {
 
 describe('the terminal question after the grace period', () => {
   it('stays open past the grace deadline while the call reports back', async () => {
+    vi.useFakeTimers()
     const held = heldQuestion()
-    expect(await waitingService({ registry: stubQueue([approval('t1')]).registry, graceMs: 200, requestCli: held.requestCli })()).toMatchObject({ settled: false })
-    await new Promise(resolve => setTimeout(resolve, 600))
+    const waiting = waitingService({ registry: stubQueue([approval('t1')]).registry, graceMs: 200, requestCli: held.requestCli })()
+    await vi.advanceTimersByTimeAsync(200)
+    expect(await waiting).toMatchObject({ settled: false })
+    await vi.advanceTimersByTimeAsync(30_000)
     expect(held.withdrawn()).toBe(false)
   })
 
@@ -166,10 +185,14 @@ describe('the terminal question after the grace period', () => {
   })
 
   it('closes once the request expires', async () => {
+    vi.useFakeTimers()
     const held = heldQuestion()
-    expect(await waitingService({ registry: stubQueue([approval('t1', 700)]).registry, graceMs: 200, requestCli: held.requestCli })()).toMatchObject({ settled: false })
+    const waiting = waitingService({ registry: stubQueue([approval('t1', 700)]).registry, graceMs: 200, requestCli: held.requestCli })()
+    await vi.advanceTimersByTimeAsync(200)
+    expect(await waiting).toMatchObject({ settled: false })
     expect(held.withdrawn()).toBe(false)
-    await new Promise(resolve => setTimeout(resolve, 1_300))
+    // Past the expiry, the next poll finds the request gone.
+    await vi.advanceTimersByTimeAsync(1_000)
     expect(held.withdrawn()).toBe(true)
   })
 
@@ -261,6 +284,22 @@ describe('keys meant for another terminal question', () => {
     expect(await next).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
   })
 
+  it('drops a question cancelled while it waited its turn, without showing it', async () => {
+    const terminal = keyboardTerminal()
+    const cli = setupCli({ terminal })
+    const first = cli.requestCli(question('first', 600_000))
+    const cancelling = new AbortController()
+    const queued = cli.requestCli(question('queued', 600_000), { signal: cancelling.signal })
+    await prompted(terminal, 1)
+
+    cancelling.abort()
+    expect(await queued).toMatchObject({ status: 'cancelled' })
+    terminal.input.write('1\r')
+    expect(await first).toMatchObject({ status: 'answered', answer: { choice: 'once' } })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(terminal.shown().match(/needs approval/g)).toHaveLength(1)
+  })
+
   it('throws away keys typed while no question was open', async () => {
     const terminal = keyboardTerminal()
     const cli = setupCli({ terminal })
@@ -344,4 +383,27 @@ describe('Ctrl-C at a terminal question', () => {
       child.kill('SIGKILL')
     }
   }, SPAWN_TEST_TIMEOUT_MS)
+})
+
+describe('what an agent chose, on the owner\'s terminal (review M3)', () => {
+  // Moves up a line, erases it and rewrites the subject: on a terminal `rm -rf ~` would read as `ls -la`.
+  const spoofed = 'rm -rf ~\u001b[1A\u001b[2K\r  subject: ls -la'
+  const control = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202e]/
+
+  it('escapes every control character, so it shows as text and never acts', () => {
+    expect(printable(spoofed)).toBe('rm -rf ~\\u001b[1A\\u001b[2K\\u000d  subject: ls -la')
+    expect(printable('a\u009b2Jb\u007fc\u202ed\nf')).toBe('a\\u009b2Jb\\u007fc\\u202ed\\u000af')
+    expect(printable('/workspace/plain name.md')).toBe('/workspace/plain name.md')
+  })
+
+  it('shows a terminal question, and the lines sent to an MCP client, with the subject escaped', () => {
+    const request = { ...approval('t1'), subject: spoofed, reason: 'outside\u001b]0;title\u0007' }
+    const question = describeQuestion({ ...request, workspaceId: 'default' })
+    const lines = describeApprovalRequest({ request }).join('\n')
+
+    for (const shown of [question, lines]) {
+      expect(shown).not.toMatch(control)
+      expect(shown).toContain('subject: rm -rf ~\\u001b[1A')
+    }
+  })
 })

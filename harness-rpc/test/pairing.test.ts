@@ -189,6 +189,13 @@ describe('buckle init --pair', () => {
     expect(untouched(after)).toEqual(untouched(before))
   })
 
+  it('names the environment file in the start command after pairing a custom --out file', async () => {
+    const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.printed).toContain(`Start it with: BUCKLE_ENV_FILE=${out} buckle serve`)
+  })
+
   it('stays paired when Rings mints nothing, leaving the report settings to the operator', async () => {
     const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
 

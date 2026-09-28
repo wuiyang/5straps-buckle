@@ -29,15 +29,7 @@ export interface WebhookNotifierOptions {
  */
 export function createWebhookNotifier(options: WebhookNotifierOptions) {
   return async (requests: ApprovalRequest[]): Promise<void> => {
-    const response = await fetch(options.url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
-      },
-      body: JSON.stringify(sealForRings(options.approvalKey, SEALED_REPORT_PATHS.approvals, { serverId: options.serverId, workspaceId: options.workspaceId, approvals: requests.map(request => describe(request, options.workspaceId)) })),
-      signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
-    })
+    const response = await postSealed(options, { approvals: requests.map(request => describe(request, options.workspaceId)) })
     if (!response.ok) logger.warn('Approval webhook refused the notification', { status: response.status })
   }
 }
@@ -49,20 +41,25 @@ export function createWebhookNotifier(options: WebhookNotifierOptions) {
 export function createApprovalNoticeSender(options: WebhookNotifierOptions) {
   let refusalLogged = false
   return async (notices: ApprovalNotice[]): Promise<void> => {
-    const response = await fetch(options.url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
-      },
-      body: JSON.stringify(sealForRings(options.approvalKey, SEALED_REPORT_PATHS.approvals, { serverId: options.serverId, workspaceId: options.workspaceId, notices })),
-      signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
-    })
+    const response = await postSealed(options, { notices })
     if (response.ok) return
     if (refusalLogged) logger.debug('Approval webhook refused a lifecycle notice', { status: response.status })
     else logger.warn('Approval webhook refused a lifecycle notice; further refusals are logged at debug', { status: response.status })
     refusalLogged = true
   }
+}
+
+/** One body to the approval webhook, naming the node and workspace, sealed for Rings when a key was paired. */
+function postSealed(options: WebhookNotifierOptions, body: { approvals: unknown[] } | { notices: ApprovalNotice[] }): Promise<Response> {
+  return fetch(options.url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+    },
+    body: JSON.stringify(sealForRings(options.approvalKey, SEALED_REPORT_PATHS.approvals, { serverId: options.serverId, workspaceId: options.workspaceId, ...body })),
+    signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
+  })
 }
 
 function describe(request: ApprovalRequest, workspaceId: string) {

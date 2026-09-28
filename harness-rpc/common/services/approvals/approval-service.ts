@@ -18,9 +18,6 @@ const POLL_INTERVAL_MS = 400
 const SWEEP_MARGIN_MS = 1_000
 const MAX_TIMER_MS = 2_147_483_647
 
-/** A caller's hint on how long to wait (InvokeContext.approvalWait). It only ever shortens Buckle's own wait. */
-export type { ApprovalWait }
-
 /** What a terminal answer may choose. Its token is always the one its question asked about. */
 export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny' | 'deny_session' | 'deny_always'
 
@@ -34,10 +31,17 @@ export interface ApprovalAskInput {
   wait?: ApprovalWait
 }
 
-/** Settled: every token was answered or left the queue, or one was denied, so the caller checks again. */
+/**
+ * Settled: every token was answered or left the queue, or one was denied, so the caller checks again.
+ * `answered` names this call's asks answered before it joined them; its check counts them too.
+ * `superseded`: a newer call with the same requestId joined the wait and carries it on, so this one
+ * must not run (review M1: a joined re-send never executes twice).
+ */
 export interface ApprovalWaitResult {
   settled: boolean
   approvals: ApprovalRequest[]
+  answered: string[]
+  superseded?: true
 }
 
 export interface ApprovalAnswer {
@@ -68,6 +72,8 @@ export interface ApprovalService {
    * view of the locked state), then answers with the admin authority the setup face was opened with.
    */
   decideSealed(input: { body: unknown }): Promise<SealedDecisionResult>
+  /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
+  withdraw(tokens: string[]): Promise<void>
   /** The requests still waiting in this workspace's queue. */
   pending(): ApprovalRequest[]
   /**
@@ -95,11 +101,18 @@ export interface ApprovalServiceOptions {
   pollMs?: number
 }
 
-/** One ask, shared by every in-process call that joined it, so its questions are asked once. */
+/**
+ * One ask, shared by every in-process call that joined it (same requestId, session and actor), so its
+ * questions are asked once. Only the newest joined caller waits on it; each earlier one is superseded.
+ */
 interface OpenAsk {
+  readonly key: string
+  /** The requests its questions are about: those still waiting when it opened. */
   readonly approvals: ApprovalRequest[]
+  /** Those plus the ones answered before it opened: a denial among them settles it too. */
   readonly tokens: string[]
-  participants: number
+  /** One controller per waiting caller; aborting it supersedes that caller. */
+  readonly participants: Set<AbortController>
   /** Ends the questions and the watch. */
   readonly stop: AbortController
   /** Resolves once every token left the pending set, or one was denied. */
@@ -111,7 +124,7 @@ interface OpenAsk {
   readonly questions: Map<string, AbortController>
 }
 
-type Ending = 'settled' | 'elapsed' | 'prompt_ended' | 'aborted' | 'closed'
+type Ending = 'settled' | 'elapsed' | 'prompt_ended' | 'aborted' | 'closed' | 'superseded'
 
 interface QuestionContext {
   correlationId: string
@@ -130,14 +143,17 @@ interface QuestionContext {
  * request expires or another route answers.
  */
 export function createApprovalService(options: ApprovalServiceOptions): ApprovalService {
+  // By join key; `live` also holds an ask a newer group under the same key replaced, until it ends.
   const open = new Map<string, OpenAsk>()
+  const live = new Set<OpenAsk>()
   const closing = new AbortController()
   const pollMs = options.pollMs ?? POLL_INTERVAL_MS
   const nonces = options.nonces ?? createMemoryNonceClaims()
   const notices = options.notices ?? createApprovalNotices()
   // One sweep per issued ask at its expiry, so an ask nobody answered is reported expired on time.
   const sweeps = new Set<NodeJS.Timeout>()
-  // Calls still waiting, so close can let each one report back before the notices are flushed.
+  // Calls still waiting and terminal questions still running, so close lets each call report back and
+  // an answer already being recorded finish before the notices are flushed.
   const waiting = new Set<Promise<unknown>>()
   let unreadable = false
 
@@ -147,26 +163,37 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const interaction = (await options.interaction()) ?? NO_INTERACTION
       const scope = useScopeSafe()
       const actor = scope?.context.actor
-      const { requests: approvals, joined } = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, ...(actor === undefined ? {} : { actor }) })
-      if (!joined) {
+      const key = joinKey({ ...input, actor })
+      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, ...(actor === undefined ? {} : { actor }) })
+      const { requests: approvals, answered } = issued
+      const tokens = approvals.map(approval => approval.token)
+      if (!issued.joined) {
         await announce(options.announce, approvals)
         scheduleSweep(approvals)
       }
+      // Checked before any question is drawn: a caller that left during the announce is asked about no more (review L5).
+      await cancelIfLeft({ key, tokens, signal: input.signal })
+      if (closing.signal.aborted) return skip({ approvals, answered, reason: 'shutdown' })
       const holdMs = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
-      if (holdMs === 0 || closing.signal.aborted) {
-        await cancelIfLeft({ approvals, signal: input.signal })
-        const reason = closing.signal.aborted ? 'shutdown' : input.wait?.mode === 'none' ? 'caller_declined_wait' : 'no_wait'
-        notices.skipped(approvals.map(approval => approval.token), reason)
-        return { settled: false, approvals }
-      }
+      // The hint shortens the caller's wait and never who is asked: a node that keeps asking asks now
+      // too (review L3). A node whose own grace period is 0 asks nobody, as before.
+      const keepAsking = interaction.hold === 'grace' && options.graceMs !== 0
+      if (holdMs === 0 && !keepAsking) return skip({ approvals, answered, reason: input.wait?.mode === 'none' ? 'caller_declined_wait' : 'no_wait' })
 
-      const ask = openAsk(approvals)
-      ask.participants += 1
-      ask.prompting ??= startQuestions({ ask, interaction, context: { correlationId: scope?.context.correlationId ?? input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId } })
-      const result = waitFor({ ask, hold: interaction.hold, holdMs, signal: input.signal }).then(ending => finish({ ask, ending, hold: interaction.hold, signal: input.signal }))
-      const tracked = result.then(() => undefined, () => undefined)
-      waiting.add(tracked)
-      void tracked.finally(() => waiting.delete(tracked))
+      const ask = openAsk({ key, approvals, answered, joined: issued.joined })
+      const context = { correlationId: scope?.context.correlationId ?? input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId }
+      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, interaction, context }))
+      // The newest joined caller carries the wait; every earlier one ends without running (review M1).
+      for (const earlier of ask.participants) earlier.abort()
+      if (holdMs === 0) {
+        if (ask.participants.size === 0) release({ ask, keepAsking: true })
+        return skip({ approvals, answered, reason: 'caller_declined_wait' })
+      }
+      const participant = new AbortController()
+      ask.participants.add(participant)
+      const result = waitFor({ ask, participant, hold: interaction.hold, holdMs, signal: input.signal })
+        .then(ending => finish({ ask, participant, ending, hold: interaction.hold, signal: input.signal, own: { approvals, answered } }))
+      track(result)
       return result
     },
 
@@ -187,11 +214,13 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       return result.ok ? { status: 'answered' } : { status: 'rejected', reason: result.reason }
     },
 
+    withdraw: tokens => withdraw(tokens),
+
     pending: () => options.registry.pending(),
 
     async close() {
       closing.abort()
-      for (const ask of [...open.values()]) ask.stop.abort()
+      for (const ask of [...live]) ask.stop.abort()
       for (const sweep of sweeps) clearTimeout(sweep)
       sweeps.clear()
       await Promise.allSettled([...waiting])
@@ -199,7 +228,19 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
   }
 
+  function skip(input: { approvals: ApprovalRequest[]; answered: string[]; reason: ApprovalSkipReason }): ApprovalWaitResult {
+    notices.skipped(input.approvals.map(approval => approval.token), input.reason)
+    return { settled: false, approvals: input.approvals, answered: input.answered }
+  }
+
+  function track(work: Promise<unknown>): void {
+    const tracked = work.then(() => undefined, () => undefined)
+    waiting.add(tracked)
+    void tracked.finally(() => waiting.delete(tracked))
+  }
+
   function scheduleSweep(approvals: ApprovalRequest[]): void {
+    if (approvals.length === 0) return
     const remaining = Math.max(...approvals.map(approval => remainingMs(approval.expiresAt)))
     if (remaining === Infinity || closing.signal.aborted) return
     const sweep = setTimeout(() => {
@@ -211,16 +252,21 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     sweeps.add(sweep)
   }
 
-  function openAsk(approvals: ApprovalRequest[]): OpenAsk {
-    const tokens = approvals.map(approval => approval.token)
-    const key = tokens.join(' ')
+  /** The open ask a joined call shares, or a new one: a freshly issued group never reuses an older ask. */
+  function openAsk(input: { key: string; approvals: ApprovalRequest[]; answered: string[]; joined: boolean }): OpenAsk {
+    const { key } = input
     const existing = open.get(key)
-    if (existing) return existing
-    const ask: OpenAsk = { approvals, tokens, participants: 0, stop: new AbortController(), settled: Promise.withResolvers<void>(), prompting: undefined, promptEnded: false, questions: new Map() }
+    if (existing && input.joined && input.approvals.every(approval => existing.tokens.includes(approval.token))) return existing
+    const ask: OpenAsk = {
+      key, approvals: input.approvals, tokens: [...input.approvals.map(approval => approval.token), ...input.answered], participants: new Set(),
+      stop: new AbortController(), settled: Promise.withResolvers<void>(), prompting: undefined, promptEnded: false, questions: new Map(),
+    }
     open.set(key, ask)
+    live.add(ask)
     const watch = setInterval(() => check(ask), pollMs)
     ask.stop.signal.addEventListener('abort', () => {
       clearInterval(watch)
+      live.delete(ask)
       if (open.get(key) === ask) open.delete(key)
     }, { once: true })
     return ask
@@ -253,7 +299,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   }
 
   function wake(token: string): void {
-    for (const ask of [...open.values()]) if (ask.tokens.includes(token)) check(ask)
+    for (const ask of [...live]) if (ask.tokens.includes(token)) check(ask)
   }
 
   function startQuestions(input: { ask: OpenAsk; interaction: Interaction; context: QuestionContext }): Promise<void> {
@@ -290,7 +336,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     }
   }
 
-  function waitFor(input: { ask: OpenAsk; hold: ApprovalHold; holdMs: number | null; signal?: AbortSignal }): Promise<Ending> {
+  function waitFor(input: { ask: OpenAsk; participant: AbortController; hold: ApprovalHold; holdMs: number | null; signal?: AbortSignal }): Promise<Ending> {
     const { promise, resolve } = Promise.withResolvers<Ending>()
     const cleanups: Array<() => void> = []
     let finished = false
@@ -306,7 +352,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const timer = setTimeout(() => done('elapsed'), Math.min(input.holdMs, MAX_TIMER_MS))
       cleanups.push(() => clearTimeout(timer))
     }
-    const endings = [[input.signal, 'aborted'], [closing.signal, 'closed']] as const
+    const endings = [[input.signal, 'aborted'], [closing.signal, 'closed'], [input.participant.signal, 'superseded']] as const
     for (const [signal, ending] of endings) {
       if (!signal) continue
       const listener = () => done(ending)
@@ -319,27 +365,30 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     return promise
   }
 
-  async function finish(input: { ask: OpenAsk; ending: Ending; hold: ApprovalHold; signal?: AbortSignal }): Promise<ApprovalWaitResult> {
-    const { ask, ending } = input
-    const approvals = ask.approvals
-    ask.participants -= 1
-    const last = ask.participants === 0
+  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; signal?: AbortSignal; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
+    const { ask, ending, own } = input
+    ask.participants.delete(input.participant)
+    const last = ask.participants.size === 0
+    if (ending === 'superseded') {
+      // The newer caller carries the ask on; this one reports back without running.
+      if (last) release({ ask, keepAsking: input.hold === 'grace' })
+      return { settled: false, approvals: own.approvals, answered: own.answered, superseded: true }
+    }
     if (ending === 'aborted') {
       if (last) {
         ask.stop.abort()
-        await cancel(ask.tokens)
+        await withdraw(ask.tokens)
       }
       input.signal?.throwIfAborted()
     }
     const settled = ending === 'settled' || (ending !== 'closed' && isSettled(ask.tokens))
     if (last) release({ ask, keepAsking: !settled && ending === 'elapsed' && input.hold === 'grace' })
     if (!settled) notices.skipped(stillPending(ask.tokens), skipReason(ending))
-    return { settled, approvals }
+    return { settled, approvals: own.approvals, answered: own.answered }
   }
 
-  async function cancel(tokens: string[]): Promise<void> {
-    await options.registry.cancel(tokens)
-    notices.cancelled(tokens)
+  async function withdraw(tokens: string[]): Promise<void> {
+    notices.cancelled(await options.registry.cancel(tokens))
   }
 
   /** The tokens still waiting; all of them when the queue cannot be read. */
@@ -359,19 +408,23 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       return
     }
     void Promise.race([ask.settled.promise, ask.prompting]).then(() => {
-      if (ask.participants === 0) ask.stop.abort()
+      if (ask.participants.size === 0) ask.stop.abort()
     })
   }
 
-  /** Cancels the asks when the caller already left, as leaving inside the wait does. */
-  async function cancelIfLeft(input: { approvals: ApprovalRequest[]; signal?: AbortSignal }): Promise<void> {
+  /** Withdraws the asks when the caller already left and no joined caller still waits, as leaving inside the wait does. */
+  async function cancelIfLeft(input: { key: string; tokens: string[]; signal?: AbortSignal }): Promise<void> {
     if (!input.signal?.aborted) return
-    const tokens = input.approvals.map(approval => approval.token)
-    if (![...open.values()].some(ask => ask.tokens.join(' ') === tokens.join(' '))) await cancel(tokens)
+    if (!open.get(input.key)?.participants.size) await withdraw(input.tokens)
     input.signal.throwIfAborted()
   }
 
   return service
+}
+
+/** The in-process twin of the registry's join: the same requestId, session and actor. */
+function joinKey(input: { sessionId: string; requestId: string; actor?: string }): string {
+  return JSON.stringify([input.sessionId, input.actor ?? null, input.requestId])
 }
 
 /** Why a call stopped waiting while its ask stays pending. */

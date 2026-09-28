@@ -35,10 +35,10 @@ function serviceOf(config: BuckleConfig) {
 }
 
 async function issue(registry: ApprovalRegistry): Promise<string> {
-  const [request] = await registry.issue({
+  const [request] = (await registry.ask({
     tool: 'fs_write', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
-  })
+  })).requests
   return request!.token
 }
 
@@ -73,10 +73,10 @@ async function prompted(terminal: ReturnType<typeof keyboardTerminal>, times = 1
 
 /** A private address web_fetch asks about, which offers the persisted scope too. */
 async function issuePrivate(registry: ApprovalRegistry, subject: string): Promise<string> {
-  const [request] = await registry.issue({
+  const [request] = (await registry.ask({
     tool: 'web_fetch', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'network_egress', subject, reason: `${subject} is private`, offeredScopes: ['once', 'session', 'always'] }],
-  })
+  })).requests
   return request!.token
 }
 
@@ -375,7 +375,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
 it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file warning choices and persists %s denial', async (key, scope) => {
   const config = node()
   const registry = registryOf(config)
-  await registry.issue({ tool: 'fs_read', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
+  await registry.ask({ tool: 'fs_read', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
   const { terminal, done } = watch(serviceOf(config))
   try {
     await prompted(terminal)

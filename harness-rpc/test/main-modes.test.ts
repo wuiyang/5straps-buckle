@@ -10,7 +10,7 @@ const entry = vi.hoisted(() => ({
   runCli: vi.fn(async () => ({ exitCode: 5 })),
   serveHttp: vi.fn(async () => {}),
   serveMcpStdio: vi.fn(async () => {}),
-  initializeCommon: vi.fn(() => ({ owner: { onClose: vi.fn(), close: vi.fn(async () => {}) } })),
+  initializeCommon: vi.fn(() => ({ owner: { onClose: vi.fn(), close: vi.fn(async () => {}) }, bindRequester: vi.fn() })),
 }))
 vi.mock('../common/runtime/environment.js', () => ({ loadEnvironmentFile: entry.loadEnvironmentFile }))
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
@@ -66,12 +66,15 @@ describe('main', () => {
     expect(entry.loadEnvironmentFile.mock.invocationCallOrder[0]).toBeLessThan(entry.loadConfig.mock.invocationCallOrder[0]!)
     expect(entry.serveMcpStdio).not.toHaveBeenCalled()
     expect(entry.runCli).not.toHaveBeenCalled()
+    // The process's one requester is bound before anything is served.
+    expect(entry.initializeCommon.mock.results[0]!.value.bindRequester).toHaveBeenCalledTimes(1)
   })
 
   it('starts the stdio MCP server for mcp on one mcp-role common runtime, and no HTTP', async () => {
     expect(await main(['mcp'])).toBeUndefined()
     expect(entry.initializeCommon).toHaveBeenCalledWith(expect.objectContaining({ config, role: 'mcp' }))
     expect(entry.serveMcpStdio).toHaveBeenCalledWith(expect.objectContaining({ config, common: entry.initializeCommon.mock.results[0]!.value }))
+    expect(entry.initializeCommon.mock.results[0]!.value.bindRequester).toHaveBeenCalledTimes(1)
     expect(entry.serveHttp).not.toHaveBeenCalled()
   })
 

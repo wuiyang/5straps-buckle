@@ -9,19 +9,30 @@ import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js
 import { logger } from '../../runtime/log.js'
 
 const PENDING_TTL_MS = 10 * 60_000
+/**
+ * Asks one session may keep waiting at once. An agent calling in a loop with the hint `none` would
+ * otherwise grow the queue, and every update rewrites approvals.json whole (review L9).
+ */
+export const MAX_PENDING_PER_SESSION = 50
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
-// requestId and actor let a re-sent call join the ask it already made (ruling 5 of 2026-09-28).
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), requestId: z.string().optional(), actor: z.string().optional() })
+// requestId and actor let a re-sent call join the ask it already made (ruling 5 of 2026-09-28); an
+// answered entry keeps them, so a call re-sent after part of its asks were answered still joins.
+const joinKey = { requestId: z.string().optional(), actor: z.string().optional() }
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey })
 const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
-  sessionId: z.string(), tool: z.string(), expiresAt: z.string(),
+  sessionId: z.string(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(),
+})
+const resolvedSchema = z.object({
+  workspace: z.string(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string(),
+  request: ApprovalRequestSchema.optional(), sessionId: z.string().optional(), ...joinKey,
 })
 const fileSchema = z.object({
   version: z.literal(1),
   pending: z.array(pendingSchema),
   once: z.array(onceSchema),
-  resolved: z.array(z.object({ workspace: z.string(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string() })),
+  resolved: z.array(resolvedSchema),
 })
 type State = z.infer<typeof fileSchema>
 type OnceEntry = z.infer<typeof onceSchema>
@@ -35,6 +46,9 @@ export type ApprovalAuthority = 'admin' | 'agent'
 
 /** A call re-sent under the same requestId asked for something else: HTTP 409. */
 export class ApprovalConflictError extends Error {}
+
+/** The session already has `MAX_PENDING_PER_SESSION` asks waiting: retryable once some are answered or expire. */
+export class ApprovalLimitError extends Error {}
 
 export interface AskInput {
   tool: string
@@ -61,10 +75,19 @@ export interface ResolveOptions {
  */
 export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true } | { ok: false; reason: string }
 
+/**
+ * A joined call gets the requests still waiting and the tokens of its asks already answered, so its
+ * check after the wait counts a `once` given before it joined.
+ */
+export interface AskResult {
+  requests: ApprovalRequest[]
+  joined: boolean
+  answered: string[]
+}
+
 export interface ApprovalRegistry {
-  /** Issues the asks, or returns the ones a call with the same requestId, session and actor is already waiting on. */
-  ask(input: AskInput): Promise<{ requests: ApprovalRequest[]; joined: boolean }>
-  issue(input: AskInput): Promise<ApprovalRequest[]>
+  /** Issues the asks, or joins the ones a call with the same requestId, session and actor is already waiting on. */
+  ask(input: AskInput): Promise<AskResult>
   /**
    * `BUCKLE-D14`: a decision that outlives the call is written under the admin credential
    * alone. An `agent` authority may answer `once`, which expires with the call it unblocks.
@@ -77,7 +100,8 @@ export interface ApprovalRegistry {
     check: (subjects: GrantSubject[]) => PermissionOutcome
   }): Promise<PermissionOutcome>
   wasDenied(tokens: string[]): boolean
-  cancel(tokens: string[]): Promise<void>
+  /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
+  cancel(tokens: string[]): Promise<string[]>
   /** Drops the asks that expired unanswered, telling `onExpired` about them. Every update does this too. */
   sweep(): Promise<void>
   pending(): ApprovalRequest[]
@@ -108,21 +132,21 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   const registry: ApprovalRegistry = {
     ask({ tool, sessionId, asks, requestId, actor }) {
       return update(state => {
-        const waiting = requestId === undefined ? [] : state.pending.filter(entry => entry.workspace === workspace && entry.requestId === requestId && entry.sessionId === sessionId && entry.actor === actor)
-        if (waiting.length > 0) {
-          if (!sameAsks(waiting.map(entry => entry.request), { tool, asks })) throw new ApprovalConflictError(`Request ${requestId} is already waiting for approval of different asks`)
-          return { requests: waiting.map(entry => entry.request), joined: true }
+        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks } })
+        if (joined) return joined
+        const waiting = state.pending.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId).length
+        if (waiting + asks.length > MAX_PENDING_PER_SESSION) {
+          logger.warn('Approval refused: the session has too many asks waiting', { waiting, asked: asks.length, limit: MAX_PENDING_PER_SESSION })
+          throw new ApprovalLimitError(`This session already has ${waiting} approvals waiting; answer some or let them expire before asking for more (limit ${MAX_PENDING_PER_SESSION})`)
         }
         const requests = asks.map(item => ({
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: item.reason,
           tool, offeredScopes: item.offeredScopes, expiresAt: waitMs === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + waitMs).toISOString(),
         }))
         state.pending.push(...requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }) })))
-        return { requests, joined: false }
+        return { requests, joined: false, answered: [] }
       })
     },
-
-    issue: async input => (await registry.ask(input)).requests,
 
     async resolve(decision, authority = 'admin', options = {}) {
       if (decision.scope !== 'once' && authority !== 'admin') {
@@ -146,6 +170,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           return { ok: false, reason: `Scope ${decision.scope} is not offered for this approval` }
         }
         const { rule, subject, tool } = approval.request
+        const { requestId, actor } = approval
         if (rule === 'sensitive_path' && decision.approved && decision.scope !== 'once') return { ok: false, reason: 'Sensitive files can only be allowed once' }
         if (!decision.approved && decision.scope !== 'once' && rule !== 'sensitive_path') return { ok: false, reason: 'Persistent denials are supported only for sensitive files' }
         const expiresAt = new Date(Date.now() + PENDING_TTL_MS).toISOString()
@@ -154,14 +179,14 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           if (refusal) return { ok: false, reason: refusal }
         }
         if (decision.approved) {
-          if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt })
+          if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }) })
           else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}) })
           // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
           logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo ? { widened: true } : {}) })
         }
         if (!decision.approved && decision.scope !== 'once') await grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true })
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
-        state.resolved.push({ workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt })
+        state.resolved.push({ workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }) })
         return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject } } : { ok: true }
       })
     },
@@ -188,10 +213,12 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 
     wasDenied: tokens => store.read().resolved.some(entry => entry.workspace === workspace && tokens.includes(entry.decision.token) && !entry.decision.approved),
 
-    async cancel(tokens) {
-      await update(state => {
+    cancel(tokens) {
+      return update(state => {
+        const withdrawn = state.pending.filter(entry => entry.workspace === workspace && tokens.includes(entry.request.token)).map(entry => entry.request.token)
         state.pending = state.pending.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.request.token))
         state.once = state.once.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.token))
+        return withdrawn
       })
     },
 
@@ -202,12 +229,32 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   return registry
 }
 
-/** The same asks: tool, rule, subject and offered scopes, in any order. */
-function sameAsks(waiting: ApprovalRequest[], asked: { tool: string; asks: Ask[] }): boolean {
+interface JoinKey { requestId: string; sessionId: string; actor: string | undefined }
+
+/**
+ * The asks a call with this requestId, session and actor is still waiting on, when there are any.
+ * Its re-send asks again for everything still waiting, and may ask again for an answered `once`
+ * (it is spent only when a whole call clears) but not for an answered session grant; anything else
+ * is a different call reusing the id.
+ */
+function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[] } }): AskResult | null {
+  const { key } = input
+  const inGroup = (entry: { workspace: string; sessionId?: string; requestId?: string; actor?: string }) =>
+    entry.workspace === input.workspace && entry.requestId === key.requestId && entry.sessionId === key.sessionId && entry.actor === key.actor
+  const waiting = input.state.pending.filter(inGroup).map(entry => entry.request)
+  if (waiting.length === 0) return null
+  const answered = input.state.resolved.filter(inGroup).flatMap(entry => entry.request ? [entry.request] : [])
+  if (!sameGroup({ waiting, answered, call: input.call })) throw new ApprovalConflictError(`Request ${key.requestId} is already waiting for approval of different asks`)
+  return { requests: waiting, joined: true, answered: answered.map(request => request.token) }
+}
+
+/** Every waiting ask is asked again, and every ask the call makes is one of the group's: tool, rule, subject and offered scopes. */
+function sameGroup(input: { waiting: ApprovalRequest[]; answered: ApprovalRequest[]; call: { tool: string; asks: Ask[] } }): boolean {
   const key = (item: { rule: string; subject: string; offeredScopes: readonly string[] }) => JSON.stringify([item.rule, item.subject, [...item.offeredScopes].sort()])
-  const left = waiting.map(request => request.tool === asked.tool ? key(request) : '').sort()
-  const right = asked.asks.map(key).sort()
-  return left.length === right.length && left.every((value, index) => value !== '' && value === right[index])
+  const asked = new Set(input.call.asks.map(key))
+  const group = new Set([...input.waiting, ...input.answered].map(key))
+  const sameTool = [...input.waiting, ...input.answered].every(request => request.tool === input.call.tool)
+  return sameTool && input.waiting.every(request => asked.has(key(request))) && [...asked].every(item => group.has(item))
 }
 
 /**

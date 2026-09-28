@@ -47,13 +47,13 @@ beforeEach(() => {
   chmodSync(file, 0o640)
 })
 
-async function settings(argv: string[], environment: NodeJS.ProcessEnv = {}) {
+async function settings(argv: string[], environment: NodeJS.ProcessEnv = {}, environmentFile: string | null = file) {
   let out = ''
   let err = ''
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { out += String(chunk); return true })
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { err += String(chunk); return true })
   try {
-    const result = await settingsCommand({ argv, environment, environmentFile: file, cwd: root, home })
+    const result = await settingsCommand({ argv, environment, environmentFile, cwd: root, home })
     return { ...result, out, err, printed: out + err }
   } finally { stdout.mockRestore(); stderr.mockRestore() }
 }
@@ -65,6 +65,19 @@ function withLine(from: string, to: string): string {
 }
 
 describe('buckle settings show', () => {
+  it('shows the process environment and the defaults without an environment file, and only a write needs one', async () => {
+    const shown = await settings(['show'], { BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false' }, null)
+
+    expect(shown.exitCode).toBe(0)
+    expect(shown.out).toContain('from the process environment (no environment file for this directory; buckle init creates one)')
+    expect(shown.out).toMatch(/shell\s+BUCKLE_ALLOW_SHELL\s+false\s+process environment\n/)
+    expect(shown.out).toMatch(/name\s+BUCKLE_SERVER_NAME\s+.+default\n/)
+    expect((await settings([], { BUCKLE_STATE_DIR: state }, null)).exitCode).toBe(0)
+    const refused = await settings(['set', 'shell', 'off'], { BUCKLE_STATE_DIR: state }, null)
+    expect(refused.exitCode).toBe(1)
+    expect(refused.printed).toContain('No Buckle environment file for this directory')
+  })
+
   it('prints each allow-listed setting with its value and source, and every other key by name alone', async () => {
     const result = await settings(['show'], { BUCKLE_ALLOW_HOST_GIT: 'true' })
 

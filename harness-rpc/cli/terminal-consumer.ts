@@ -4,6 +4,7 @@ import type { CliConsumer, CliRequest } from '@5straps/runtime'
 import { PermissionRuleIdSchema, GrantScopeSchema, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
 import { z } from 'zod'
 import { describeExpiry, remainingMs } from '../common/domain/approval-deadline.js'
+import { printable } from '../common/domain/approval-instruction.js'
 import type { ApprovalChoice } from '../common/services/approvals/approval-service.js'
 import { APPROVAL_REQUEST_KIND } from '../common/services/approvals/interaction.js'
 import { QUIET_MS, discardTypedLine, watchKeys } from './terminal-keys.js'
@@ -96,10 +97,13 @@ export function createTerminalConsumer(options: TerminalOptions = {}): CliConsum
   }
 }
 
-/** What a terminal question shows, shared with `buckle approvals --watch` so both read alike. */
+/**
+ * What a terminal question shows, shared with `buckle approvals --watch` so both read alike. The
+ * agent chose the tool call, so its text is shown with control characters escaped.
+ */
 export function describeQuestion(question: ApprovalQuestion): string {
-  const workspace = question.workspaceId && question.workspaceId !== 'default' ? `  workspace: ${question.workspaceId}\n` : ''
-  return `\n${question.tool} needs approval\n  ${question.reason}\n  subject: ${question.subject}\n${workspace}  ${describeExpiry(question.expiresAt)}\n`
+  const workspace = question.workspaceId && question.workspaceId !== 'default' ? `  workspace: ${printable(question.workspaceId)}\n` : ''
+  return `\n${printable(question.tool)} needs approval\n  ${printable(question.reason)}\n  subject: ${printable(question.subject)}\n${workspace}  ${describeExpiry(question.expiresAt)}\n`
 }
 
 function approvalQuestion(request: CliRequest): ApprovalQuestion {

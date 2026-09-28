@@ -7,13 +7,13 @@ import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
-import { approveCommand } from '../common/domain/approval-instruction.js'
+import { approveCommand, printable } from '../common/domain/approval-instruction.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
 import { withOperationScope } from '@5straps/runtime'
 import { logger } from '../common/runtime/log.js'
-import { setupCli, type CliSetup } from './setup.js'
+import { setupCli } from './setup.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, repairStoredPolicy } from './policy.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
@@ -57,9 +57,10 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   const common = initializeCommon({ config: input.config, role: 'cli' })
   // A terminal answers a gated call in place; without one the call reports back at once (exit 3).
   const cli = setupCli({ terminal: process.stdin.isTTY ? { input: process.stdin, output: process.stderr } : null })
+  common.bindRequester(cli.requestCli)
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   try {
-    return await runCliCommand({ common, cli, config: input.config, command, rest })
+    return await runCliCommand({ common, config: input.config, command, rest })
   } catch (error) {
     if (isStateBusy(error)) return fail(error.message)
     throw error
@@ -70,7 +71,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   }
 }
 
-async function runCliCommand(input: { common: BuckleCommon; cli: CliSetup; config: BuckleConfig; command: string; rest: string[] }): Promise<CliResult> {
+async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig; command: string; rest: string[] }): Promise<CliResult> {
   const { common, command, rest } = input
   try {
     await common.start()
@@ -84,7 +85,7 @@ async function runCliCommand(input: { common: BuckleCommon; cli: CliSetup; confi
   const workspaces = await common.services.getWorkspaces()
   const scope = common.owner.registry.createScope({ context: { actor: 'local-owner' } })
   return withOperationScope(scope, async () => {
-    (await common.services.getInteraction(scope)).bind({ requestCli: input.cli.requestCli, hold: 'prompt' })
+    (await common.services.getInteraction(scope)).bind('prompt')
     return runAuditedCommand({ runtime, workspaces, config: input.config, command, rest })
   })
 }
@@ -263,9 +264,9 @@ async function approvals(input: CommandInput): Promise<CliResult> {
   }
 
   for (const request of pending) {
-    process.stdout.write(`${request.token}  ${request.tool}\n`)
-    process.stdout.write(`    ${request.rule}: ${request.subject}\n`)
-    process.stdout.write(`    ${request.reason}\n`)
+    process.stdout.write(`${request.token}  ${printable(request.tool)}\n`)
+    process.stdout.write(`    ${request.rule}: ${printable(request.subject)}\n`)
+    process.stdout.write(`    ${printable(request.reason)}\n`)
     process.stdout.write(`    scopes: ${request.offeredScopes.join(' | ')}\n`)
     process.stdout.write(`    ${describeExpiry(request.expiresAt)}\n`)
     process.stdout.write(`    ${approveCommand({ request, workspaceId: runtime.workspaceId })}\n`)
@@ -324,7 +325,7 @@ async function grants(runtime: BuckleRuntime, argv: string[]): Promise<CliResult
     return { exitCode: 0 }
   }
   for (const grant of runtime.grants.list()) {
-    process.stdout.write(`${grant.id}  ${grant.denied ? 'DENY ' : 'ALLOW'} ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${grant.subject}${grant.pattern ? '  (host pattern)' : ''}\n`)
+    process.stdout.write(`${grant.id}  ${grant.denied ? 'DENY ' : 'ALLOW'} ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${printable(grant.subject)}${grant.pattern ? '  (host pattern)' : ''}\n`)
   }
   return { exitCode: 0 }
 }
@@ -401,7 +402,7 @@ function reportResponse(input: { response: InvokeResponse; workspaceId: string }
   if (response.outcome === 'approval_required') {
     for (const approval of response.approvals) {
       process.stderr.write(
-        `Approval required: ${approval.reason}\n  subject: ${approval.subject}\n  ${describeExpiry(approval.expiresAt)}\n  ${approveCommand({ request: approval, workspaceId: input.workspaceId })}\n`,
+        `Approval required: ${printable(approval.reason)}\n  subject: ${printable(approval.subject)}\n  ${describeExpiry(approval.expiresAt)}\n  ${approveCommand({ request: approval, workspaceId: input.workspaceId })}\n`,
       )
     }
     return { exitCode: 3 }

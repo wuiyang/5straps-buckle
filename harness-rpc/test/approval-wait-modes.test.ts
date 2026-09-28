@@ -64,7 +64,7 @@ it.each([true, false])('waits beyond ten minutes until an owner answers approved
 it('does not give an answered once grant an indefinite lifetime', async () => {
   vi.useFakeTimers()
   const { approvals } = await fixture(null)
-  const requests = await approvals.issue({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/synthetic', reason: 'test write', offeredScopes: ['once'] }] })
+  const requests = (await approvals.ask({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/synthetic', reason: 'test write', offeredScopes: ['once'] }] })).requests
   await approvals.resolve({ token: requests[0]!.token, approved: true, scope: 'once' })
   expect(approvals.unspent('test')).toHaveLength(1)
   vi.advanceTimersByTime(10 * 60_000 + 1)

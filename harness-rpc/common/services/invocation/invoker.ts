@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { ChangeHistory } from '../history/journal.js'
-import type { DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
+import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine } from '../../domain/permission/engine.js'
@@ -17,8 +17,11 @@ import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
 import { resolveEffects } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
-import { ApprovalConflictError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
-import { shorterWait, type ApprovalService, type ApprovalWait } from '../approvals/approval-service.js'
+import { ApprovalConflictError, ApprovalLimitError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
+import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
+
+/** The audit log's bound on caller-chosen ids; the stored join key is held to it too (review L4). */
+const MAX_LOGGED_ID = 200
 
 export interface InvokerOptions {
   registry: ToolRegistry
@@ -70,8 +73,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
       // A required audit write that fails stops the call here, before anything runs (data.md).
       await options.actions.record({
         auditId, event: 'attempt', workspaceId: options.workspaceId ?? 'default',
-        at: new Date().toISOString(), requestId: request.requestId.slice(0, 200), sessionId: sessionId.slice(0, 200),
-        tool: request.tool.slice(0, 200), outcome: 'started', durationMs: 0, effects: [], args: redactAuditArguments(request.args),
+        at: new Date().toISOString(), requestId: request.requestId.slice(0, MAX_LOGGED_ID), sessionId: sessionId.slice(0, MAX_LOGGED_ID),
+        tool: request.tool.slice(0, MAX_LOGGED_ID), outcome: 'started', durationMs: 0, effects: [], args: redactAuditArguments(request.args),
         ...auditContext(request),
 
       })
@@ -143,9 +146,9 @@ function buildEntry(input: {
   const { request, response, gate } = input
   return {
     at: new Date().toISOString(),
-    requestId: request.requestId.slice(0, 200),
-    sessionId: input.sessionId.slice(0, 200),
-    tool: request.tool.slice(0, 200),
+    requestId: request.requestId.slice(0, MAX_LOGGED_ID),
+    sessionId: input.sessionId.slice(0, MAX_LOGGED_ID),
+    tool: request.tool.slice(0, MAX_LOGGED_ID),
     outcome: describeOutcome(response),
     durationMs: input.durationMs,
     effects: [...new Set(input.effects.map(effect => effect.kind))],
@@ -254,33 +257,40 @@ async function clearPermissions(input: {
   // Every answer, from any route, is recorded by the service; this call only learns whether all came in.
   // The caller's hint travels in the request (Rings sends none when its policy skips); the face may add its own.
   const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
-  const waited = await options.approvalService.request({ sessionId, requestId: request.requestId, tool: request.tool, asks: outcome.asks, signal: input.signal, wait })
+  const waited = await options.approvalService.request({ sessionId, requestId: request.requestId.slice(0, MAX_LOGGED_ID), tool: request.tool, asks: outcome.asks, signal: input.signal, wait })
   const { approvals } = waited
   const asked = approvals.map(approval => `${approval.rule}:${approval.subject}`)
+  if (waited.superseded) return { response: failed(request, SUPERSEDED), asked, approvedBy }
   if (!waited.settled) {
     return { response: { requestId: request.requestId, outcome: 'approval_required', approvals }, asked, approvedBy }
   }
 
-  const tokens = approvals.map(approval => approval.token)
-  const wasDenied = options.approvals.wasDenied(tokens)
-  if (wasDenied) await options.approvals.cancel(tokens)
-  const rechecked = wasDenied ? { kind: 'deny' as const } : await evaluate([...request.approvalTokens, ...tokens])
-  const resolvedBy = [...new Set(approvedBy)]
+  const tokens = [...approvals.map(approval => approval.token), ...waited.answered]
+  if (options.approvals.wasDenied(tokens)) {
+    // The siblings of a denied ask go through the service, so the webhook hears they were cancelled.
+    await options.approvalService.withdraw(tokens)
+    const first = approvals[0]
+    return {
+      response: denied(request, 'Approval was declined'),
+      asked,
+      approvedBy: [...new Set(approvedBy)],
+      denial: { rule: first?.rule ?? 'write_scope', subject: approvals.map(approval => approval.subject).join(', '), reason: 'Approval was declined' },
+    }
+  }
+  const rechecked = await evaluate([...request.approvalTokens, ...tokens])
   if (rechecked.kind === 'allow') {
-    return { response: null, asked, approvedBy: [...new Set([...resolvedBy, ...rechecked.allowedBy])], consumed }
+    return { response: null, asked, approvedBy: [...new Set([...approvedBy, ...rechecked.allowedBy])], consumed }
   }
+  // Nobody denied it: the asks expired, were withdrawn, or another call spent the `once`. Only a
+  // recorded denial is reported as one (review M1).
+  return { response: failed(request, UNANSWERED), asked, approvedBy: [...new Set(approvedBy)] }
+}
 
-  const first = approvals[0]
-  return {
-    response: denied(request, 'Approval was declined'),
-    asked,
-    approvedBy: resolvedBy,
-    denial: {
-      rule: first?.rule ?? 'write_scope',
-      subject: approvals.map(approval => approval.subject).join(', '),
-      reason: 'Approval was declined',
-    },
-  }
+const SUPERSEDED = { code: 'REQUEST_SUPERSEDED', message: 'A newer call with the same requestId joined this approval wait and carries it on; this call did not run', retryable: false }
+const UNANSWERED = { code: 'APPROVAL_UNANSWERED', message: 'The approval this call waited for expired, was withdrawn or was spent by another call; send the call again to ask again', retryable: true }
+
+function failed(request: InvokeRequest, error: { code: string; message: string; retryable: boolean }): InvokeResponse {
+  return { requestId: request.requestId, outcome: 'error', error }
 }
 
 function denied(request: InvokeRequest, message: string): InvokeResponse {
@@ -355,6 +365,7 @@ function shapeError(error: unknown, tool: string): { code: string; message: stri
   if (error instanceof ToolInputError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof ToolExecutionError) return { code: error.code, message: error.message, retryable: error.retryable }
   if (error instanceof ApprovalConflictError) return { code: 'APPROVAL_CONFLICT', message: error.message, retryable: false }
+  if (error instanceof ApprovalLimitError) return { code: 'APPROVAL_LIMIT', message: error.message, retryable: true }
   if (isStateBusy(error)) {
     logger.warn('Tool invocation found Buckle state busy', { tool, message: error.message })
     return { code: 'STATE_BUSY', message: STATE_BUSY_MESSAGE, retryable: true }
@@ -373,8 +384,8 @@ function inferTruncated(output: unknown): boolean {
 function auditContext(request: InvokeRequest): Pick<ActionLogEntry, 'runId' | 'stageId' | 'chatId' | 'projectId' | 'actorId' | 'agentId'> {
   const context = request.context
   return {
-    runId: context?.runId?.slice(0, 200), stageId: context?.stageId?.slice(0, 200),
-    chatId: context?.chatId?.slice(0, 200), projectId: context?.projectId?.slice(0, 200),
-    actorId: context?.actorId?.slice(0, 200), agentId: context?.agentId?.slice(0, 200),
+    runId: context?.runId?.slice(0, MAX_LOGGED_ID), stageId: context?.stageId?.slice(0, MAX_LOGGED_ID),
+    chatId: context?.chatId?.slice(0, MAX_LOGGED_ID), projectId: context?.projectId?.slice(0, MAX_LOGGED_ID),
+    actorId: context?.actorId?.slice(0, MAX_LOGGED_ID), agentId: context?.agentId?.slice(0, MAX_LOGGED_ID),
   }
 }

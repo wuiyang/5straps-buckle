@@ -1,4 +1,4 @@
-import { findWorkspaceConfig, registerWorkspaceConfig } from '../common/runtime/workspace-config.js'
+import { findWorkspaceConfig, isManagedWorkspaceConfig, registerWorkspaceConfig } from '../common/runtime/workspace-config.js'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
@@ -174,8 +174,13 @@ async function pair(input: { out: string; contents: string; code: string; rings:
   const baseUrl = input.url?.trim() || `http://127.0.0.1:${input.port}`
   const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, environmentText: input.contents, ...(input.home ? { home: input.home } : {}) })
   process.stdout.write(`\n${result.message}\n`)
-  if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}. Start it with: buckle serve\n`)
+  if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}. Start it with: ${serveCommand(input.out, input.home)}\n`)
   return { exitCode: result.ok ? 0 : 1 }
+}
+
+/** `buckle serve` finds a registered file from the workspace; a custom --out file has to be named. */
+function serveCommand(out: string, home: string | undefined): string {
+  return isManagedWorkspaceConfig(out, home) ? 'buckle serve' : `BUCKLE_ENV_FILE=${out} buckle serve`
 }
 
 /** Questions on stderr, so stdout stays the summary; the readline is opened only when one is asked. */

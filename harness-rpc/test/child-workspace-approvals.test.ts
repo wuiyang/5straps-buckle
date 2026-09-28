@@ -36,10 +36,10 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
 }
 
 async function pendingIn(runtime: BuckleRuntime): Promise<string> {
-  const [request] = await runtime.approvals.issue({
+  const [request] = (await runtime.approvals.ask({
     tool: 'fs_write', sessionId: 'chat-1',
     asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
-  })
+  })).requests
   return request!.token
 }
 

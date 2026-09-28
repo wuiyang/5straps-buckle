@@ -11,7 +11,7 @@ const MAX_PAGE_BYTES = 1_048_576
 const entrySchema = z.object({
   at: z.string(), requestId: z.string(), sessionId: z.string(), tool: z.string(),
   outcome: z.enum(['interrupted', 'started', 'ok', 'error', 'denied', 'approval_required']),
-  durationMs: z.number(), effects: z.array(z.string()), args: z.json(),
+  durationMs: z.number(), effects: z.array(z.string()), args: z.json(), event: z.enum(['attempt', 'result']).optional(),
 }).passthrough()
 
 export function createFileActionLog(filePath: string): ActionLog {
@@ -72,6 +72,8 @@ export function createFileActionLog(filePath: string): ActionLog {
           if (!line) continue
           try {
             const value = entrySchema.parse(JSON.parse(line))
+            // A line from before attempt and result entries (greenfield ruling) is not returned: its stored args predate redaction rules.
+            if (value.event === undefined) continue
             // The schema checks the required fields; optional metadata passes through.
             entries.push(value as ActionLogEntry)
           } catch { logger.warn('Skipped an unreadable action log record', { filePath }) }

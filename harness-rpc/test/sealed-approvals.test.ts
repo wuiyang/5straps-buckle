@@ -29,7 +29,7 @@ async function node(input: { key?: string; state?: string } = {}) {
   // Held for the grace period, as a call over HTTP is, so a decision posted meanwhile can free it.
   const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   const app = createHttpApp({ config, runtime, authToken: config.authToken })
-  const ask = async () => (await runtime.approvals.issue({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] }))[0]!
+  const ask = async () => ((await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })).requests)[0]!
   const decide = (body: unknown) => app.request('/setup/approvals', { method: 'POST', headers: ADMIN, body: JSON.stringify(body) })
   const refusals = () => runtime.actions.read(200).filter(entry => entry.tool === 'setup_approval_envelope_refused')
   return { state, config, runtime, app, ask, decide, refusals }

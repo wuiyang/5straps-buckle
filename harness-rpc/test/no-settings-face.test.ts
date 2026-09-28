@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mintApprovalKey } from '@5straps/protocol/envelope'
@@ -7,6 +7,7 @@ import { loadConfig } from '../common/runtime/config.js'
 import { createHttpApp } from '../server/hono/http-app.js'
 import { createMcpServer } from '../mcp/server.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { PACKAGE_ROOT, sourceFiles } from './support/sources.js'
 
 /**
  * `BUCKLE-D19`: node settings are the owner's CLI writing the environment file. No HTTP route
@@ -59,12 +60,14 @@ describe('no face exposes node settings', () => {
     await server.close()
   })
 
-  it('keeps the settings writer out of everything but the CLI and its entry point', () => {
-    const packageRoot = join(import.meta.dirname, '..')
-    const sources = ['common', 'mcp', 'server'].flatMap(folder => walk(join(packageRoot, folder)))
+  it('keeps the settings writer, the environment reader and the path map out of everything but the CLI and its entry point', () => {
+    const sources = sourceFiles('common', 'mcp', 'server', 'layers')
+    const runtime = join(PACKAGE_ROOT, 'common/runtime')
 
     expect(sources.length).toBeGreaterThan(20)
     for (const path of sources) expect(readFileSync(path, 'utf8'), path).not.toMatch(/cli\/(settings|node-settings|environment-file)\.js/)
+    // The reader and the map writer sit in common/runtime for main and the CLI; no face or service may reach them.
+    for (const path of sources.filter(path => !path.startsWith(runtime))) expect(readFileSync(path, 'utf8'), path).not.toMatch(/runtime\/(?:environment|workspace-config)\.js/)
   })
 
   it('echoes a setting\'s value only where a route reports its effect, on every GET route and with either credential', async () => {
@@ -140,9 +143,3 @@ describe('the manifest an agent token reads', () => {
   })
 })
 
-function walk(directory: string): string[] {
-  return readdirSync(directory).flatMap(name => {
-    const path = join(directory, name)
-    return statSync(path).isDirectory() ? walk(path) : path.endsWith('.ts') ? [path] : []
-  })
-}

@@ -26,10 +26,11 @@ Lists are comma separated. A change takes effect when buckle serve restarts.
 
 /**
  * `BUCKLE-D19`: node settings are the owner's CLI writing the environment file, never a face. The
- * file is read from `BUCKLE_ENV_FILE` or `.env`, as `buckle serve` reads it, and only the
- * allow-listed keys in `NODE_SETTINGS` are printed or written; every other line, credentials
- * included, is kept byte for byte and shown by name at most. Each run is audited in the node's
- * action log, a write with the key and value it set.
+ * file is the one `buckle serve` reads: `BUCKLE_ENV_FILE`, or the file `buckle init` registered for
+ * this directory. Only the allow-listed keys in `NODE_SETTINGS` are printed or written; every other
+ * line, credentials included, is kept byte for byte and shown by name at most. Without a file,
+ * `show` still reports the process environment and the defaults; only a write needs one. Each run
+ * is audited in the node's action log, a write with the key and value it set.
  */
 export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string | null; cwd: string; home?: string }): Promise<CliResult> {
   const file = input.environmentFile === null ? null : resolve(input.cwd, input.environmentFile)
@@ -39,7 +40,7 @@ export async function settingsCommand(input: { argv: string[]; environment: Node
     actions: createFileActionLog(actionsPath({ stateDirectory: stateDirectoryOf(merged) })),
     workspaceId: 'default', tool: 'cli_settings', sessionId: 'local-owner',
     isSuccessful: result => result.exitCode === 0, describe: result => result.detail,
-    operation: () => file === null ? fail(NO_ENVIRONMENT_FILE) : dispatch({ ...input, file, fileText, merged }),
+    operation: () => dispatch({ ...input, file, fileText, merged }),
   })
 }
 
@@ -48,7 +49,8 @@ const NO_ENVIRONMENT_FILE = 'No Buckle environment file for this directory. Run 
 interface SettingsContext {
   argv: string[]
   environment: NodeJS.ProcessEnv
-  file: string
+  /** Null when no environment file applies here: nothing to write to, the process environment still shows. */
+  file: string | null
   fileText: string | null
   merged: NodeJS.ProcessEnv
   cwd: string
@@ -58,14 +60,19 @@ interface SettingsContext {
 function dispatch(context: SettingsContext): CliResult | Promise<CliResult> {
   const [action, ...rest] = context.argv
   if (action === undefined || action === 'show') return rest.length ? usage() : show(context)
-  if (action === 'set' && rest.length === 2) return write(context, rest[0]!, rest[1]!)
-  if (action === 'unset' && rest.length === 1) return write(context, rest[0]!, null)
+  if (action === 'set' && rest.length === 2) return writeTo(context, rest[0]!, rest[1]!)
+  if (action === 'unset' && rest.length === 1) return writeTo(context, rest[0]!, null)
   return usage()
+}
+
+function writeTo(context: SettingsContext, name: string, raw: string | null): CliResult | Promise<CliResult> {
+  const { file } = context
+  return file === null ? fail(NO_ENVIRONMENT_FILE) : write({ ...context, file }, name, raw)
 }
 
 function show(context: SettingsContext): CliResult {
   const fileValues = context.fileText === null ? {} : parseEnv(context.fileText)
-  process.stdout.write(`Node settings, from ${context.fileText === null ? `${context.file} (not written yet)` : context.file}\n\n`)
+  process.stdout.write(`Node settings, from ${describeSource(context)}\n\n`)
   for (const setting of NODE_SETTINGS) {
     const [value, source] = context.environment[setting.key] !== undefined
       ? [context.environment[setting.key]!, fileValues[setting.key] !== undefined ? 'process environment, over the file' : 'process environment']
@@ -81,7 +88,12 @@ function show(context: SettingsContext): CliResult {
   return { exitCode: 0 }
 }
 
-async function write(context: SettingsContext, name: string, raw: string | null): Promise<CliResult> {
+function describeSource(context: SettingsContext): string {
+  if (context.file === null) return 'the process environment (no environment file for this directory; buckle init creates one)'
+  return context.fileText === null ? `${context.file} (not written yet)` : context.file
+}
+
+async function write(context: SettingsContext & { file: string }, name: string, raw: string | null): Promise<CliResult> {
   const setting = findNodeSetting(name)
   if (!setting) return fail(`${name} is not a node setting buckle settings writes. Edit ${context.file} by hand for it.\nSettings: ${NODE_SETTINGS.map(item => item.alias).join(', ')}`)
   if (context.fileText === null) return fail(`${context.file} does not exist. Run buckle init first, or point BUCKLE_ENV_FILE at the node's environment file.`)

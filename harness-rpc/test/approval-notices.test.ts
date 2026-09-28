@@ -56,7 +56,7 @@ describe('the approval wait hint in InvokeContext', () => {
     const common = initializeCommon({ config, role: 'server' })
     await common.start()
     const app = new Hono<ScopeEnv>()
-    app.use('*', operationScopes(common, headlessGrace))
+    app.use('*', operationScopes(common, 'grace'))
     app.route('/', createHttpApp({ config, runtime: await common.services.getWorkspaceRuntime(), authToken: config.authToken, workspaces: await common.services.getWorkspaces() }))
     const started = performance.now()
     const response = await app.request('/v1/invoke', { method: 'POST', headers: { authorization: `Bearer ${config.authToken}`, 'content-type': 'application/json' }, body: JSON.stringify(write('one/a.md', { mode: 'none' })) })
@@ -108,6 +108,30 @@ describe('lifecycle notices on the approval webhook', () => {
         expect.objectContaining({ token: second, event: 'denied', scope: 'once' }),
       ]))
       expect(webhook.bodies[0]).toMatchObject({ serverId: config.serverId, workspaceId: 'default' })
+      await runtime.history.close()
+    } finally {
+      await webhook.close()
+    }
+  })
+})
+
+describe('the siblings of a denied ask', () => {
+  it('are withdrawn through the service, so the webhook hears they were cancelled (review L1)', async () => {
+    const webhook = await captureWebhook()
+    try {
+      const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url, BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+      const runtime = await createRuntime({ config, interaction: fixedInteraction() })
+      const request = { requestId: 'batch-1', tool: 'fs_write_batch', args: { files: [{ path: 'one/a.md', content: 'a' }, { path: 'two/b.md', content: 'b' }] }, approvalTokens: [] }
+      const waiting = runtime.invoke({ sessionId: 's', request })
+      await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(2))
+      const [denied, sibling] = runtime.approvalService.pending()
+
+      expect((await runtime.approvalService.answer({ decision: { token: denied!.token, approved: false, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+      expect(await waiting).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Approval was declined' } })
+      await runtime.approvalService.close()
+
+      expect(runtime.approvalService.pending()).toEqual([])
+      expect(webhook.notices.filter(notice => notice.event !== 'skipped').map(notice => [notice.token, notice.event])).toEqual([[denied!.token, 'denied'], [sibling!.token, 'cancelled']])
       await runtime.history.close()
     } finally {
       await webhook.close()

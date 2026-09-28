@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { InvokeRequestSchema } from '@5straps/protocol'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
+import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import type { BuckleConfig } from '../../common/runtime/config.js'
 import type { TokenSource } from '../../common/services/access/tokens.js'
 import { requireBearerToken } from './auth.js'
@@ -18,6 +19,12 @@ export interface RpcAppDependencies {
 
 /** Mirrors the MCP face's fallback, so both name a session the same way when a caller gives none. */
 const ANONYMOUS_SESSION_ID = 'rpc'
+
+/**
+ * A re-sent call that asks for something other than what its requestId already waits on is a
+ * conflict; a session with too many asks waiting is told to slow down. Other refusals are 422.
+ */
+const ERROR_STATUS: Readonly<Record<string, ContentfulStatusCode>> = { APPROVAL_CONFLICT: 409, APPROVAL_LIMIT: 429 }
 
 export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies): Hono {
   const app = new Hono()
@@ -68,9 +75,7 @@ export function createRpcApp({ config, runtime, authToken }: RpcAppDependencies)
     const sessionId = parsed.data.context?.sessionId ?? ANONYMOUS_SESSION_ID
     dispatched.add(context.req.raw)
     const response = await runtime.invoke({ request: parsed.data, sessionId, signal: context.req.raw.signal })
-    // A re-sent call that asks for something other than what its requestId already waits on.
-    if (response.outcome === 'error' && response.error.code === 'APPROVAL_CONFLICT') return context.json(response, 409)
-    return context.json(response, response.outcome === 'error' ? 422 : 200)
+    return context.json(response, response.outcome === 'error' ? ERROR_STATUS[response.error.code] ?? 422 : 200)
   })
 
   app.onError((error, context) => {
