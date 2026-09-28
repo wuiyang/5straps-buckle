@@ -6,7 +6,7 @@ import { WorkspacePolicySchema, emptyWorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import type { InteractionSource } from '../approvals/interaction.js'
 import type { BuckleConfig } from '../../runtime/config.js'
-import { compilePolicy } from '../../domain/policy.js'
+import { compilePolicy, DangerouslyAllowLocalOnlyError } from '../../domain/policy.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { tokenMatches } from '../access/tokens.js'
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
@@ -117,6 +117,8 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       const root = canonicalDirectory(value.root)
       assertNoHostExposure(root, exposedRoots)
       compilePolicy(value.policy)
+      // The switch is set only by `buckle policy dangerously-allow --workspace` (ruling H1e), never at registration.
+      if (value.policy.dangerouslyAllow !== undefined) throw new DangerouslyAllowLocalOnlyError()
       const at = new Date().toISOString()
       return store.update(state => {
         if (state.workspaces.some(workspace => workspace.id === value.id)) throw new WorkspaceError('Workspace ID already exists', 409)
@@ -254,7 +256,9 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           nodePolicy: structuredClone(input.config.policy),
         }
         // One audit health per process: a registered workspace's log failing makes the node unready too.
-        pending = createRuntime({ config, workspaceId: id, auditHealth: input.runtime.auditHealth, executionBudget: input.runtime.executionBudget, ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
+        pending = createRuntime({ config, workspaceId: id, auditHealth: input.runtime.auditHealth, executionBudget: input.runtime.executionBudget,
+          // The node's own switch is the ceiling this workspace's switch needs too (policy.md: ceilings must all permit).
+          nodeDangerouslyAllowed: () => input.runtime.policy.dangerouslyAllow().on, ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
         runtimes.set(id, pending)
         void pending.catch(() => { runtimes.delete(id) })
       }

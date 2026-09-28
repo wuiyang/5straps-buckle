@@ -33,5 +33,15 @@ export function createFilePolicyStore(input: { filePath: string; workspace: stri
         delete state.workspaces[input.workspace]
       })
     },
+
+    async update(change, expectedRevision) {
+      await store.update(state => {
+        const current = state.workspaces[input.workspace] ?? null
+        if (expectedRevision !== undefined && policyRevision(current) !== expectedRevision) throw new PolicyConflictError('Workspace policy changed; reload before saving')
+        const next = change(current)
+        if (next) state.workspaces[input.workspace] = next
+        else delete state.workspaces[input.workspace]
+      })
+    },
   }
 }

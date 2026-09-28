@@ -3,9 +3,10 @@ import { parseArgs } from 'node:util'
 import { destructivePatterns, emptyWorkspacePolicy, isWorkspaceToolAllowed, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
-import { compilePolicy, mergePolicies, PolicyError, type StoredPolicyError } from '../common/domain/policy.js'
+import { clearKeepingDangerouslyAllow, compilePolicy, mergePolicies, PolicyError, type StoredPolicyError } from '../common/domain/policy.js'
 import { actionsPath, policyPath, type BuckleConfig } from '../common/runtime/config.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
+import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 export interface CliResult {
@@ -27,6 +28,10 @@ const USAGE = `Usage:
   buckle policy import <file.json>            Replace the stored policy from a file
   buckle policy export                        Print the stored policy as JSON
   buckle policy clear                         Drop the stored policy, leaving the environment's
+  buckle policy dangerously-allow on|off [--workspace <id>]
+                                              DANGEROUS: allow every ask in the workspace without a
+                                              person, sensitive files and file writes included; each
+                                              use is audited, and deny rules still refuse
 
 A command glob is matched one shell word at a time. 'pnpm {build,test} *' allows 'pnpm build'
 with any arguments after it: * stands for one word, and a trailing * for the rest of the line.
@@ -37,7 +42,7 @@ An allow glob must cover the whole line; a deny glob covers every line starting 
  * Edits the stored policy for this workspace. Each change is validated as the union with the
  * environment's share before it is written, so a bad pattern never lands.
  */
-export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
+export async function policyCommand(runtime: BuckleRuntime, argv: string[], workspaces: WorkspaceManager): Promise<CliResult> {
   const [action, ...rest] = argv
   const current = (): WorkspacePolicy => runtime.policy.stored() ?? emptyWorkspacePolicy()
 
@@ -76,7 +81,10 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
       case 'clear':
         await runtime.policy.clear()
         process.stdout.write('Stored policy cleared\n')
+        if (runtime.policy.dangerouslyAllow().on) process.stdout.write('The dangerously-allow switch stays on: only `buckle policy dangerously-allow off` turns it off.\n')
         return { exitCode: 0 }
+      case 'dangerously-allow':
+        return await dangerouslyAllow({ runtime, workspaces, argv: rest })
       default:
         process.stderr.write(USAGE)
         return { exitCode: 1 }
@@ -88,6 +96,26 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
     }
     throw error
   }
+}
+
+/**
+ * The one switch for a workspace's dangerously-allow flags (rulings 11 and H1 of 2026-09-28), local
+ * only (H1e). It needs no restart: a running node reads it at every call. A registered workspace's
+ * switch takes effect only while the node's own is on too.
+ */
+async function dangerouslyAllow(input: { runtime: BuckleRuntime; workspaces: WorkspaceManager; argv: string[] }): Promise<CliResult> {
+  const { values, positionals } = parseArgs({ args: input.argv, options: { workspace: { type: 'string' } }, allowPositionals: true })
+  const [state] = positionals
+  if ((state !== 'on' && state !== 'off') || positionals.length !== 1) throw new UsageError(`buckle policy dangerously-allow takes on or off\n${USAGE}`)
+  const target = !values.workspace || values.workspace === 'default' ? input.runtime : (await input.workspaces.resolve(values.workspace, { setup: true })).runtime
+  await target.policy.setDangerouslyAllow(state === 'on')
+  const now = target.policy.dangerouslyAllow()
+  if (!now.on) process.stdout.write(`Dangerously allow is off for workspace ${target.workspaceId}: asks wait for a person again.\n`)
+  else {
+    process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceId}. Every ask there is allowed without a person, sensitive files and file writes included. Each use is audited as policy_dangerously_allowed; deny rules, the node's own policy and the mount boundary still refuse.\n`)
+    if (now.allowedByNode === false) process.stdout.write('It has no effect until the node\'s own switch is on too: buckle policy dangerously-allow on\n')
+  }
+  return { exitCode: 0, detail: `dangerously-allow ${state}${values.workspace ? ` ${values.workspace}` : ''}` }
 }
 
 /**
@@ -117,7 +145,7 @@ async function repairStoredPolicyAction(input: { config: BuckleConfig; argv: str
         return { exitCode: 0 }
       }
       case 'clear':
-        await store.clear()
+        await store.update(current => clearKeepingDangerouslyAllow(current, new Date().toISOString()))
         process.stdout.write('Stored policy cleared\n')
         return { exitCode: 0 }
       case 'export':
@@ -216,7 +244,8 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   const effective = runtime.policy.effective()
   const base = runtime.policy.base()
   const stored = runtime.policy.stored()
-  if (values.json) return print({ effective, base, stored })
+  const dangerously = runtime.policy.dangerouslyAllow()
+  if (values.json) return print({ effective, base, stored, dangerouslyAllow: dangerously })
 
   const origin = (list: (policy: WorkspacePolicy) => string[], item: string): string => {
     const fromBase = list(base).includes(item)
@@ -230,7 +259,8 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   }
 
   process.stdout.write(`Workspace ${runtime.paths().root}\n`)
-  process.stdout.write(`Mount     ${effective.mount ?? '(none: the real path shows through)'}\n\n`)
+  process.stdout.write(`Mount     ${effective.mount ?? '(none: the real path shows through)'}\n`)
+  process.stdout.write(`Dangerously allow  ${describeDangerously(dangerously)}\n\n`)
   section('Command allow list (only these may run)', effective.commands.allow, policy => policy.commands.allow)
   section('Command deny list (refused outright)', effective.commands.deny, policy => policy.commands.deny)
   section('Destructive additions (these ask, on top of the built-in floor)', destructivePatterns(effective), destructivePatterns)
@@ -239,6 +269,11 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   if (effective.tools?.allow !== undefined) section('Tool allow list (only these tools may run)', effective.tools.allow, policy => policy.tools?.allow ?? [])
   process.stdout.write(`\nStored ${stored?.updatedAt ? `at ${stored.updatedAt}` : 'nothing'}; environment and stored parts are unioned.\n`)
   return { exitCode: 0 }
+}
+
+function describeDangerously(state: { on: boolean; allowedByNode: boolean | null; effective: boolean }): string {
+  if (!state.on) return 'off'
+  return state.effective ? 'ON: every ask is allowed without a person, and each use is audited' : 'on, without effect: the node\'s own switch is off'
 }
 
 function print(value: unknown): CliResult {

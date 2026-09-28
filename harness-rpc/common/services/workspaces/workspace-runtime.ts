@@ -14,7 +14,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
-import { PROTOCOL_VERSION, isWorkspaceToolAllowed, type HarnessManifest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
+import { PROTOCOL_VERSION, emptyWorkspacePolicy, isWorkspaceToolAllowed, type HarnessManifest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { createPluginRegistry, type PluginRegistry } from '../../adapters/plugin-registry.js'
 import { createFileGrantStore } from '../../adapters/grant-store/file-grant-store.js'
@@ -34,7 +34,8 @@ import { createProcessProbeRule } from '../../domain/permission/rules/process-pr
 import { createReadScopeRule } from '../../domain/permission/rules/read-scope-rule.js'
 import { createSensitivePathRule } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from '../../domain/permission/rules/write-scope-rule.js'
-import { compilePolicy, mergePolicies, policyRevision, PolicyConflictError, PolicyError, StoredPolicyError, type CompiledPolicy } from '../../domain/policy.js'
+import { clearKeepingDangerouslyAllow, compilePolicy, keepDangerouslyAllow, mergePolicies, policyRevision, PolicyConflictError, PolicyError, StoredPolicyError, type CompiledPolicy } from '../../domain/policy.js'
+import { isDangerouslyAllowed, withDangerouslyAllow } from '../../domain/permission/rules/dangerously-allow.js'
 import { loadSkills } from '../../domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from '../../domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from '../../domain/tool-registry.js'
@@ -55,6 +56,7 @@ import { createExecutionBudget, createExecutions, type ExecutionBudget } from '.
 import { createInvoker, InvocationsClosedError, type InvokeInput } from '../invocation/invoker.js'
 import { createAuditHealth } from '../audit/audit-health.js'
 import { logger } from '../../runtime/log.js'
+import { auditOperation } from '../audit/audit-operation.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 
 /**
@@ -73,8 +75,16 @@ export interface PolicyHandle {
   /** Validates against the base, stores, and rebuilds the rules and packs. Throws PolicyError. */
   revision(): string
   apply(policy: WorkspacePolicy, expectedRevision?: string): Promise<WorkspacePolicy>
-  /** Drops the stored policy, leaving the environment's. */
+  /** Drops the stored policy, leaving the environment's; a dangerously-allow switch that is on stays. */
   clear(expectedRevision?: string): Promise<WorkspacePolicy>
+  /**
+   * The dangerously-allow switch as stored now, read from the store at every call, so the local
+   * switch applies in a running node at once: `on`, whether the node's own switch allows it over a
+   * registered workspace (null on the node's workspace), and whether calls here are allowed by it.
+   */
+  dangerouslyAllow(): { on: boolean; allowedByNode: boolean | null; effective: boolean }
+  /** The one switch, for the owner's local CLI only (ruling H1e): sets both flags, audited `policy_dangerously_allow_changed`. */
+  setDangerouslyAllow(on: boolean): Promise<void>
 }
 
 export interface BuckleRuntime {
@@ -125,6 +135,8 @@ interface RuntimeInput {
   auditHealth?: AuditHealth
   /** The node's budget for kept responses, shared with its other workspaces; a fresh one when absent. */
   executionBudget?: ExecutionBudget
+  /** For a registered workspace: whether the node's own dangerously-allow switch is on, the ceiling it needs too. */
+  nodeDangerouslyAllowed?: () => boolean
 }
 
 export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime> {
@@ -185,7 +197,15 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
 
   let compiled = compileStartupPolicy()
   let paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
-  let permissions = buildPermissionEngine({ config, compiled, ceiling, paths })
+  // Read from the store at each evaluation; an unreadable store fails closed.
+  const dangerouslyAllow = () => {
+    let on = false
+    try { on = isDangerouslyAllowed(policyStore.read()?.dangerouslyAllow) } catch { on = false }
+    const allowedByNode = input.nodeDangerouslyAllowed ? input.nodeDangerouslyAllowed() : null
+    return { on, allowedByNode, effective: on && allowedByNode !== false }
+  }
+  const dangerouslyAllowed = () => dangerouslyAllow().effective
+  let permissions = buildPermissionEngine({ config, compiled, ceiling, paths, dangerouslyAllowed })
   let packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history })
   let registry = createToolRegistry(availableTools(packs))
 
@@ -259,15 +279,29 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
       async apply(policy, expectedRevision) {
         if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
         compileEffective(policy)
-        await policyStore.write({ ...policy, updatedAt: new Date().toISOString() }, expectedRevision)
+        const updatedAt = new Date().toISOString()
+        await policyStore.update(current => ({ ...keepDangerouslyAllow(policy, current), updatedAt }), expectedRevision)
         await runtime.reload()
         return compiled.policy
       },
       async clear(expectedRevision) {
         if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
-        await policyStore.clear(expectedRevision)
+        const updatedAt = new Date().toISOString()
+        await policyStore.update(current => clearKeepingDangerouslyAllow(current, updatedAt), expectedRevision)
         await runtime.reload()
         return compiled.policy
+      },
+      dangerouslyAllow,
+      async setDangerouslyAllow(on) {
+        // No active-work check and no reload: turning it off must apply at once, and the rules read it per call.
+        await auditOperation({
+          actions, workspaceId, tool: 'policy_dangerously_allow_changed', sessionId: 'local-owner', describe: () => (on ? 'on' : 'off'),
+          operation: () => policyStore.update((current) => {
+            const { dangerouslyAllow: _previous, ...rest } = current ?? emptyWorkspacePolicy()
+            return { ...rest, ...(on ? { dangerouslyAllow: { commands: true, fileReads: true } } : {}), updatedAt: new Date().toISOString() }
+          }),
+        })
+        logger.warn(on ? 'Dangerously allow is on: every ask in this workspace is allowed without a person, and each use is audited' : 'Dangerously allow is off', { workspaceId })
       },
     },
 
@@ -313,7 +347,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
       await workbenches.policyChanged()
       compiled = compileEffective()
       paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
-      permissions = buildPermissionEngine({ config, compiled, ceiling, paths })
+      permissions = buildPermissionEngine({ config, compiled, ceiling, paths, dangerouslyAllowed })
       packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history })
       registry = createToolRegistry(availableTools(packs))
       for (const listener of listeners) listener()
@@ -430,9 +464,9 @@ function networkEgressRule(compiled: CompiledPolicy, ceiling: CompiledPolicy | n
  * can never unlock a credential file or a destructive command inside it. The owner's command
  * policy sits first among the floors, because its answer is a denial rather than a question.
  */
-function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; ceiling: CompiledPolicy | null; paths: PathView }): PermissionEngine {
+function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; ceiling: CompiledPolicy | null; paths: PathView; dangerouslyAllowed: () => boolean }): PermissionEngine {
   const { config, compiled, ceiling, paths } = input
-  return createPermissionEngine([
+  return withDangerouslyAllow(createPermissionEngine([
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config) }),
     ...(ceiling ? [createCommandPolicyRule(ceiling, { enforceWrapperAllow: false })] : []),
     createCommandPolicyRule(compiled, { enforceWrapperAllow: !ceiling?.commands.allow.length }),
@@ -442,7 +476,7 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
     createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy, ceiling: ceiling?.policy }),
     createReadScopeRule({ paths }),
     createWriteScopeRule({ paths, strict: config.strictWrites, pathDecision: path => filesystemPathDecision({ root: config.cwd, path, operation: 'write', policy: compiled.policy, ceiling: ceiling?.policy }) }),
-  ])
+  ]), input.dangerouslyAllowed)
 }
 
 function buildManifest(input: {

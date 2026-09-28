@@ -84,7 +84,7 @@ describe('pushing a policy', () => {
     })
     expect(put.status).toBe(200)
     // Writes return the same policy view as reads.
-    expect(Object.keys(await put.json() as object).sort()).toEqual(['base', 'ceiling', 'effective', 'revision', 'stored'])
+    expect(Object.keys(await put.json() as object).sort()).toEqual(['base', 'ceiling', 'dangerouslyAllow', 'effective', 'revision', 'stored'])
 
     const body = await (await app.request('/setup/policy', { headers: bearer(SETUP) })).json() as {
       base: { commands: { deny: string[] } }

@@ -50,6 +50,8 @@ export function createSetupViews(): SetupViews {
         reporting: runtime.reporter.configured,
         // Unavailable while this workspace's audit log refuses writes: its tool calls are refused until it is repaired (B19).
         audit: runtime.auditHealth.failing(actionsPath(config)) ? 'unavailable' : 'available',
+        // Read-only here: only the owner's local `buckle policy dangerously-allow` changes it (ruling H1e).
+        dangerouslyAllow: runtime.policy.dangerouslyAllow(),
         approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',
         // Read as inspection reads: nothing is owned or recovered to answer it (review L4 of B15-B17).
         activeWork: runtime.inspectActiveWork(),
@@ -58,6 +60,7 @@ export function createSetupViews(): SetupViews {
 
     policy: ({ config, runtime }) => ({
       effective: runtime.policy.effective(),
+      dangerouslyAllow: runtime.policy.dangerouslyAllow(),
       revision: runtime.policy.revision(),
       stored: runtime.policy.stored(),
       base: runtime.policy.base(),

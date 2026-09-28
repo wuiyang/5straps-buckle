@@ -10,6 +10,8 @@ import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine } from '../../domain/permission/engine.js'
 import type { GrantLookup } from '../../domain/permission/decision.js'
 import { redactAuditArguments } from '../../domain/redact.js'
+import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
+import { AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
 import { ToolExecutionError, ToolInputError, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
@@ -134,6 +136,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait })
           stop?.throwIfAborted()
           if (gate.response) return gate.response
+          await auditDangerousUses({ options, request, sessionId, allowedBy: gate.approvedBy })
 
           // Cleared: this call becomes the key's one execution, unless a re-send of it got there first.
           const claim = options.executions.claim(key)
@@ -160,6 +163,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
             meta: { durationMs: Math.round(performance.now() - startedAt), truncated: inferTruncated(output) },
           }
         } catch (error) {
+          // A required audit entry that cannot be written stops the call, as the attempt's does.
+          if (error instanceof AuditUnavailableError) throw error
           return { requestId: request.requestId, outcome: 'error', error: shapeError(error, request.tool) }
         }
       })()
@@ -240,6 +245,36 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Pro
     work.then(resolve, reject).finally(() => signal.removeEventListener('abort', leave))
   })
 }
+
+/**
+ * Every ask the workspace's dangerously-allow switch let through is audited on its own (ruling 11 of
+ * 2026-09-28): an entry per use naming the rule and the redacted subject, a warning in the owner's
+ * log, and the same entry in the action report to Rings. The entry is required: a use that cannot be
+ * recorded does not go ahead.
+ */
+async function auditDangerousUses(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; allowedBy: readonly string[] }): Promise<void> {
+  const { options, request } = input
+  const workspaceId = options.workspaceId ?? 'default'
+  for (const use of dangerousUses(input.allowedBy)) {
+    const subject = redactedSubject(use.rule, use.subject)
+    const at = new Date().toISOString()
+    const entry: ActionLogEntry = {
+      at, requestId: request.requestId.slice(0, MAX_LOGGED_ID), sessionId: input.sessionId.slice(0, MAX_LOGGED_ID), tool: DANGEROUSLY_ALLOWED_TOOL,
+      outcome: 'ok', durationMs: 0, effects: [], args: { tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule, subject }, approvedBy: [DANGEROUSLY_ALLOW], detail: use.rule,
+    }
+    await options.actions.record({ ...entry, auditId: randomUUID(), event: 'result', workspaceId, ...auditContext(request) })
+    logger.warn('Dangerously allowed without a person', { workspaceId, tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule })
+    if (!options.reporter.configured) continue
+    options.reporter.record({
+      workspace: options.paths.root, workspaceId, at, requestId: entry.requestId, sessionId: entry.sessionId, tool: DANGEROUSLY_ALLOWED_TOOL,
+      outcome: 'ok', durationMs: 0, effects: [], args: entry.args, rule: use.rule, subject, reason: DANGEROUSLY_ALLOWED_REASON,
+      asked: [], approvedBy: [DANGEROUSLY_ALLOW], detail: use.rule,
+    })
+  }
+}
+
+const DANGEROUSLY_ALLOWED_TOOL = 'policy_dangerously_allowed'
+const DANGEROUSLY_ALLOWED_REASON = 'Allowed without a person by the workspace\'s dangerously-allow switch'
 
 /**
  * Told as it happens, and never awaited: the refusal already stands, and a report endpoint
@@ -423,10 +458,13 @@ async function executeWithTimeout(input: {
       signal: input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal,
       authorizeRead: async path => {
         const effects = await resolveEffects({ effects: [{ kind: 'read_path', path }], paths: input.options.paths })
-        return input.options.permissions.evaluate({
+        const outcome = input.options.permissions.evaluate({
           tool: input.request.tool, effects,
           grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
-        }).kind === 'allow'
+        })
+        if (outcome.kind !== 'allow') return false
+        await auditDangerousUses({ ...input, allowedBy: outcome.allowedBy })
+        return true
       },
       judgeNetwork: url => judgeNetwork({ ...input, url }),
     })
@@ -444,6 +482,10 @@ function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; 
   })
   if (outcome.kind === 'deny') return { kind: 'refused', reason: outcome.denial.reason }
   if (outcome.kind === 'ask') return { kind: 'refused', reason: outcome.asks.map(item => item.reason).join('; ') }
+  // A tool judges its own requests as it makes them, so this use is audited without holding it.
+  if (dangerousUses(outcome.allowedBy).length > 0) {
+    void auditDangerousUses({ ...input, allowedBy: outcome.allowedBy }).catch((error: unknown) => { logger.error('Could not record a dangerously allowed request', { tool: input.request.tool, error }) })
+  }
   return outcome.allowedBy.some(key => key.startsWith('network_egress:')) ? { kind: 'granted' } : { kind: 'allowed' }
 }
 

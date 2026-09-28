@@ -125,7 +125,7 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
   if (command === 'history') return historyCommand(runtime, rest)
   if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
-  if (command === 'policy') return policyCommand(runtime, rest)
+  if (command === 'policy') return policyCommand(runtime, rest, input.workspaces)
   if (command === 'call') return callByName(runtime, rest)
   return callByCommand(runtime, command, rest)
 }

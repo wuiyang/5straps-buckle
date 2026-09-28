@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { destructivePatterns, emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
+import { destructivePatterns, emptyWorkspacePolicy, MountPathSchema, type DangerouslyAllow, type WorkspacePolicy } from '@5straps/protocol'
 import { compileCommandGlob, CommandGlobError, type CommandGlob } from './command-glob.js'
 import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-pattern.js'
 import type { ServiceFailure } from '../types/service-failure.js'
@@ -30,6 +30,34 @@ export class PolicyError extends Error implements ServiceFailure {
 export class PolicyConflictError extends PolicyError {
   override readonly code = 'POLICY_CONFLICT'
   override readonly status = 409
+}
+
+/** A policy write that would change the dangerously-allow switch other than through its own command: HTTP 409 (ruling H1e). */
+export class DangerouslyAllowLocalOnlyError extends PolicyError {
+  override readonly code = 'POLICY_DANGEROUSLY_ALLOW_LOCAL_ONLY'
+  override readonly status = 409
+  constructor() {
+    super('The dangerously-allow switch changes only through the owner\'s local CLI: buckle policy dangerously-allow on|off')
+  }
+}
+
+/**
+ * Every policy write but the switch's own keeps the stored dangerously-allow switch (ruling H1e): a
+ * policy that leaves it out keeps it, and one that asks for another value is refused.
+ */
+export function keepDangerouslyAllow(policy: WorkspacePolicy, current: WorkspacePolicy | null): WorkspacePolicy {
+  const { dangerouslyAllow: asked, ...rest } = policy
+  if (asked !== undefined && !sameSwitch(asked, current?.dangerouslyAllow)) throw new DangerouslyAllowLocalOnlyError()
+  return current?.dangerouslyAllow ? { ...rest, dangerouslyAllow: current.dangerouslyAllow } : rest
+}
+
+/** Clearing the stored policy keeps a dangerously-allow switch that is set: only its own command turns it off. */
+export function clearKeepingDangerouslyAllow(current: WorkspacePolicy | null, updatedAt: string): WorkspacePolicy | null {
+  return current?.dangerouslyAllow ? { ...emptyWorkspacePolicy(), dangerouslyAllow: current.dangerouslyAllow, updatedAt } : null
+}
+
+function sameSwitch(left: DangerouslyAllow | undefined, right: DangerouslyAllow | undefined): boolean {
+  return Boolean(left?.commands) === Boolean(right?.commands) && Boolean(left?.fileReads) === Boolean(right?.fileReads)
 }
 
 /** The stored policy stops the node from loading; the message names the file, what it refuses and the repair. */

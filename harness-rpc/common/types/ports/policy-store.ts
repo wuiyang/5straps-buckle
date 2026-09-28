@@ -5,4 +5,6 @@ export interface PolicyStore {
   read(): WorkspacePolicy | null
   write(policy: WorkspacePolicy, expectedRevision?: string): Promise<void>
   clear(expectedRevision?: string): Promise<void>
+  /** Reads, changes and stores under the file's lock; `change` returning null drops the stored policy. */
+  update(change: (current: WorkspacePolicy | null) => WorkspacePolicy | null, expectedRevision?: string): Promise<void>
 }
