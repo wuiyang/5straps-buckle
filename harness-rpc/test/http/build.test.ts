@@ -7,6 +7,7 @@ import * as runtime from '@5straps/runtime'
 import { NitroErrorCode, registerCliListener, useHost } from '@5straps/runtime/nitro'
 import { afterEach, describe, expect, inject, it, vi } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
+import { layerRoutes } from '../support/routes.js'
 
 const build = inject('buckleBuild')
 const nodes: BuckleHttp[] = []
@@ -127,6 +128,13 @@ describe('the built server (.output)', () => {
     expect((await full.request('/workspaces/default/setup/status', { headers: admin })).status).toBe(200)
   })
 
+  it('compiles exactly the layers\' file routes, and no middleware, into the router (review M3 of B18-B19)', () => {
+    const table = (routes: Array<{ method: string; path: string }>) => routes.map(route => `${route.method} ${route.path}`).sort()
+    expect(table(compiledRoutes(build.outputs.full))).toEqual(table(layerRoutes()))
+    expect(table(compiledRoutes(build.outputs.headless))).toEqual(table(layerRoutes(['common', 'mcp'])))
+    for (const output of Object.values(build.outputs)) expect(readFileSync(join(output, 'server', 'index.mjs'), 'utf8')).not.toContain('["~middleware"]')
+  })
+
   it('bundles no admin route into the build without the admin layer', () => {
     const routesOf = (output: string) => files(join(output, 'server', '_routes')).map(path => relative(join(output, 'server', '_routes'), path))
     expect(routesOf(build.outputs.full).filter(path => path.startsWith('setup/'))).not.toEqual([])
@@ -135,3 +143,10 @@ describe('the built server (.output)', () => {
     expect(readFileSync(join(build.outputs.full, 'server', 'index.mjs'), 'utf8')).toContain('"/setup/status"')
   })
 })
+
+/** The router Nitro compiles into the entry: each handler's route and method ('ALL' when it has none), catch-alls as `**`. */
+function compiledRoutes(output: string): Array<{ method: string; path: string }> {
+  const entry = readFileSync(join(output, 'server', 'index.mjs'), 'utf8')
+  const routes = [...entry.matchAll(/\{\s*route: "([^"]+)",(?:\s*method: "(\w+)",)?\s*handler:/g)]
+  return routes.map(match => ({ method: (match[2] ?? 'all').toUpperCase(), path: match[1]!.replace(/\*\*:\w+/g, '**') }))
+}

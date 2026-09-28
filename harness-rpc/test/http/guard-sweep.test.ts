@@ -7,7 +7,8 @@ import { nodeEnvironment } from '../support/node-environment.js'
 
 // Review M2 of B15-B17: the guard property across the whole route table, not by sample. Every route
 // the built layers serve, with every method, under every kind of credential a caller can hold. MCP
-// over HTTP takes the agent credential, so the agent rows cover it.
+// over HTTP takes the agent credential, so the agent rows cover it. Review M3 of B18-B19: exact
+// statuses, and each workspace's agent credential held against the other workspace's paths.
 
 const NODE_AGENT = 'sweep-node-agent-token-fixture-only'
 const NODE_ADMIN = 'sweep-node-admin-token-fixture-only'
@@ -16,9 +17,19 @@ const CHILD_ADMIN = 'sweep-child-admin-token-fixture-only'
 const GRANT = { id: randomUUID(), token: 'sweep-node-workbench-grant-fixture-only', projectId: 'project', chatId: 'chat', allowShell: false }
 const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const
 const CREDENTIALS = { none: undefined, 'node agent': NODE_AGENT, 'child agent': CHILD_AGENT, 'node admin': NODE_ADMIN, 'child admin': CHILD_ADMIN, 'workbench grant': GRANT.token } as const
+const OPEN_PATHS = ['/health', '/health/ready']
 type Credential = keyof typeof CREDENTIALS
+type Face = 'setup' | 'agent' | 'workbench'
+type Workspace = 'node' | 'child'
 
-interface Probe { path: string; method: string; credential: Credential; status: number; audited: boolean }
+/** The one credential each face accepts per workspace; the workbench grant was minted on the node. */
+const ACCEPTS: Record<Face, Record<Workspace, Credential | undefined>> = {
+  setup: { node: 'node admin', child: 'child admin' },
+  agent: { node: 'node agent', child: 'child agent' },
+  workbench: { node: 'workbench grant', child: undefined },
+}
+
+interface Probe { path: string; method: string; credential: Credential; status: number; audited: boolean; served: boolean }
 
 let buckle: BuckleHttp
 let probes: Probe[]
@@ -38,27 +49,39 @@ function bearer(token: string | undefined): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {}
 }
 
-/** Each route as concrete paths: a twin under the node's alias and under the child, parameters filled. */
-function concretePaths(): string[] {
+/**
+ * Each route as concrete paths, a twin under the node's alias and under the child, parameters filled,
+ * with the methods its route files serve there ('ALL' for a file without a method suffix).
+ */
+function concretePaths(): Map<string, Set<string>> {
   const fill = (path: string) => path
     .replace(/(\/v1\/workbenches\/):workbenchId/, `$1${GRANT.id}`)
     .replace(/:workbenchId|:terminalId/g, () => randomUUID())
     .replace(/:workspaceId/g, 'ghost')
     .replace(/:(?:skillId|grantId|checkpointId|tokenId)/g, 'nope')
     .replace(/\*\*$/, 'sweep-probe')
-  const paths = buckle.routes().flatMap(route => route.path.startsWith('/workspaces/:id/') ? ['default', 'child'].map(id => route.path.replace(':id', id)) : [route.path])
-  return [...new Set(paths.map(fill))]
+  const served = new Map<string, Set<string>>()
+  for (const route of buckle.routes()) {
+    const twins = route.path.startsWith('/workspaces/:id/') ? ['default', 'child'].map(id => route.path.replace(':id', id)) : [route.path]
+    for (const path of twins.map(fill)) served.set(path, (served.get(path) ?? new Set()).add(route.method))
+  }
+  return served
+}
+
+/** Whether a route file at the path serves the method itself; HEAD is served wherever GET is (20.head.ts). */
+function serves(methods: Set<string>, method: string): boolean {
+  return methods.has('ALL') || methods.has(method) || method === 'HEAD' && methods.has('GET')
 }
 
 async function sweep(): Promise<Probe[]> {
   const results: Probe[] = []
-  for (const path of concretePaths()) {
+  for (const [path, methods] of concretePaths()) {
     for (const method of METHODS) {
       for (const [credential, token] of Object.entries(CREDENTIALS) as Array<[Credential, string | undefined]>) {
         const before = newestAudit()
         const response = await buckle.request(path, { method, headers: { 'content-type': 'application/json', ...bearer(token) } })
         await response.body?.cancel()
-        results.push({ path, method, credential, status: response.status, audited: newestAudit() !== before })
+        results.push({ path, method, credential, status: response.status, audited: newestAudit() !== before, served: serves(methods, method) })
       }
     }
   }
@@ -78,11 +101,22 @@ function isWorkbench(path: string): boolean {
   return /^\/(?:workspaces\/[^/]+\/)?v1\/workbenches\//.test(path)
 }
 
-/** The admin credential that opens a setup path: the child's for its own, the node's for the rest. */
-function setupOwner(path: string): Credential {
-  return path.startsWith('/workspaces/child/') ? 'child admin' : 'node admin'
+function workspaceOf(path: string): Workspace {
+  return path.startsWith('/workspaces/child/') ? 'child' : 'node'
 }
 
+/**
+ * The face of the route that answers: the path's own route file, or, for a method no file there
+ * serves, its catch-all (the /setup one on admin paths, the agent's /v1 or /workspaces/[id] one
+ * elsewhere, workbench paths included).
+ */
+function faceOf(probe: Probe): Face {
+  if (isSetup(probe.path)) return 'setup'
+  return probe.served && isWorkbench(probe.path) ? 'workbench' : 'agent'
+}
+
+const accepted = (probe: Probe) => ACCEPTS[faceOf(probe)][workspaceOf(probe.path)] === probe.credential
+const guarded = (probe: Probe) => !OPEN_PATHS.includes(probe.path)
 const succeeded = (probe: Probe) => probe.status >= 200 && probe.status < 300
 const describeProbe = (probe: Probe) => `${probe.method} ${probe.path} as ${probe.credential}: ${probe.status}`
 
@@ -92,19 +126,42 @@ describe('the guard sweep over every route, method and credential', () => {
     expect(probes.length).toBe(new Set(probes.map(probe => probe.path)).size * METHODS.length * Object.keys(CREDENTIALS).length)
   })
 
+  it('answers 401, exactly, to every credential the answering face does not accept, on every path and method but /health and /health/ready', () => {
+    const refused = probes.filter(probe => guarded(probe) && !accepted(probe))
+    expect(refused.length).toBeGreaterThan(3_000)
+    expect(refused.filter(probe => probe.status !== 401).map(describeProbe)).toEqual([])
+  })
+
+  it('answers a method no route file serves from the catch-all: 404 to its own credential only, a workbench path\'s agent credential included', () => {
+    const caught = probes.filter(probe => guarded(probe) && !probe.served && accepted(probe))
+    expect(caught.filter(probe => probe.status !== 404).map(describeProbe)).toEqual([])
+    // The documented v1 catch-all 404: a wrong method on a workbench path with that workspace's agent credential.
+    const workbench = caught.filter(probe => isWorkbench(probe.path))
+    expect(workbench.length).toBeGreaterThan(100)
+    expect(workbench.every(probe => probe.credential === ACCEPTS.agent[workspaceOf(probe.path)])).toBe(true)
+  })
+
+  it('refuses each workspace\'s agent credential on the other\'s paths: the node agent on the child\'s, the child agent on the node\'s /v1 and /mcp', () => {
+    const nodeOnChild = probes.filter(probe => probe.credential === 'node agent' && workspaceOf(probe.path) === 'child')
+    const childOnNode = probes.filter(probe => probe.credential === 'child agent' && /^\/(?:v1\/|mcp$|workspaces\/default\/)/.test(probe.path))
+    expect(nodeOnChild.some(probe => probe.path.startsWith('/workspaces/child/v1/'))).toBe(true)
+    expect(childOnNode.some(probe => probe.path.startsWith('/v1/'))).toBe(true)
+    expect([...nodeOnChild, ...childOnNode].filter(probe => probe.status !== 401).map(describeProbe)).toEqual([])
+  })
+
   it('answers nothing below 400 without a credential but /health and /health/ready', () => {
-    const open = probes.filter(probe => probe.credential === 'none' && probe.status < 400 && !['/health', '/health/ready'].includes(probe.path))
+    const open = probes.filter(probe => probe.credential === 'none' && probe.status < 400 && guarded(probe))
     expect(open.map(describeProbe)).toEqual([])
   })
 
   it('answers a /setup path 2xx to its own admin credential only', () => {
-    const leaks = probes.filter(probe => isSetup(probe.path) && succeeded(probe) && probe.credential !== setupOwner(probe.path))
+    const leaks = probes.filter(probe => isSetup(probe.path) && succeeded(probe) && !accepted(probe))
     expect(leaks.map(describeProbe)).toEqual([])
     expect(probes.some(probe => isSetup(probe.path) && succeeded(probe))).toBe(true)
   })
 
   it('never answers /v1 or /mcp 2xx to an admin credential, and a workbench path 2xx only to its own grant', () => {
-    const agentPaths = probes.filter(probe => !isSetup(probe.path) && !['/health', '/health/ready'].includes(probe.path))
+    const agentPaths = probes.filter(probe => !isSetup(probe.path) && guarded(probe))
     const adminLeaks = agentPaths.filter(probe => succeeded(probe) && probe.credential.endsWith('admin'))
     expect(adminLeaks.map(describeProbe)).toEqual([])
     const grantLeaks = agentPaths.filter(probe => succeeded(probe) && (probe.credential === 'workbench grant') !== isWorkbench(probe.path))

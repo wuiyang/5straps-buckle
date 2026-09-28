@@ -89,10 +89,28 @@ describe('the layer boundary', () => {
     expect(MUTABLE.test('const LIMIT = 1_024')).toBe(false)
   })
 
-  it('has no scanned middleware: guards and audit run inside each handler (layers.md, Security boundaries)', () => {
+  it('serves handlers from server/routes only: no api, middleware, tasks or modules directory in a layer, and only the listed plugins; guards and audit run inside each handler (layers.md, Security boundaries; review M3 of B18-B19)', () => {
+    // Nitro scans api/ (under /api), middleware/, plugins/, tasks/ and modules/ in every scan dir besides routes/.
     const layers = readdirSync(join(PACKAGE_ROOT, 'layers'))
     expect(layers.sort()).toEqual(['admin', 'common', 'mcp'])
-    expect(layers.filter(layer => existsSync(join(PACKAGE_ROOT, 'layers', layer, 'server', 'middleware')))).toEqual([])
+    const scanned = layers.flatMap(layer => readdirSync(join(PACKAGE_ROOT, 'layers', layer, 'server')).map(entry => `${layer}/${entry}`))
+    expect(scanned.filter(entry => !SERVER_ENTRIES.includes(entry.split('/')[1]!))).toEqual([])
+    const plugins = sourceFiles('layers').map(file => relative(PACKAGE_ROOT, file)).filter(file => /^layers\/\w+\/server\/plugins\//.test(file))
+    expect(plugins.sort()).toEqual(PLUGINS)
+  })
+
+  it('registers no handler, route rule, plugin or module through a nitro.config.ts, and scans each layer\'s own server directory only (review M3 of B18-B19)', () => {
+    const configs = ['nitro.config.ts', ...readdirSync(join(PACKAGE_ROOT, 'layers')).map(layer => `layers/${layer}/nitro.config.ts`)]
+    for (const config of configs) {
+      const text = withoutComments(readFileSync(join(PACKAGE_ROOT, config), 'utf8'))
+      expect([...text.matchAll(CONFIG_HANDLER_KEYS)].map(match => match[1]), config).toEqual([])
+      if (config === 'nitro.config.ts') expect(text, config).toMatch(/\bserverDir: false,/)
+      else expect(text, config).toMatch(/defineConfig\(\{ scanDirs: \[fileURLToPath\(new URL\('\.\/server', import\.meta\.url\)\)\] \}\)/)
+    }
+    // Positive controls: each spelling a config could register a handler with is caught.
+    for (const key of ['handlers', 'devHandlers', 'routes', 'routeRules', 'plugins', 'modules', 'tasks', 'scheduledTasks', 'apiDir', 'routesDir', 'scanDirs']) {
+      expect([...`defineConfig({ ${key}: [] })`.matchAll(CONFIG_HANDLER_KEYS)].length, key).toBe(key === 'scanDirs' ? 0 : 1)
+    }
   })
 
   it('has no Hono anywhere in Buckle: no import in any source, script or test, and no dependency (B18 cut-over)', () => {
@@ -131,8 +149,17 @@ describe('the layer boundary', () => {
 })
 
 const OPEN_ROUTES = ['layers/common/server/routes/health.get.ts', 'layers/common/server/routes/health/ready.get.ts']
+/** What a layer's server directory may hold: Nitro scans only routes/ and plugins/ of these. */
+const SERVER_ENTRIES = ['routes', 'plugins', 'utils', 'types']
+const PLUGINS = ['layers/common/server/plugins/10.context.ts', 'layers/common/server/plugins/20.head.ts', 'layers/common/server/plugins/30.request-log.ts']
+/** nitro.config.ts keys that add a handler, a redirect or proxy, a plugin, a module or a task, or move a scanned directory. */
+const CONFIG_HANDLER_KEYS = /\b(handlers|devHandlers|routes|routeRules|plugins|modules|tasks|scheduledTasks|apiDir|routesDir|apiBaseURL)\s*:/g
 const GUARDED_BUILDER = /^export default define(Operation|Workbench|Setup|Registry)Handler\(/m
 const RE_EXPORT = /^(?:\s*\/\/[^\n]*\n)*\s*export \{ default \} from '([^']+)'\s*$/
+
+function withoutComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+}
 
 function routeFiles(): string[] {
   return sourceFiles('layers').map(file => relative(PACKAGE_ROOT, file)).filter(file => /^layers\/\w+\/server\/routes\//.test(file))
