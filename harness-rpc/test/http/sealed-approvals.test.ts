@@ -128,7 +128,10 @@ describe('sealed approval decisions on the setup face', () => {
   it('keeps the key out of the manifest and the status, which reports the envelope enabled', async () => {
     const encoded = mintApprovalKey()
     const { app } = await node({ key: encoded })
-    const manifest = await (await app.request('/v1/manifest', { headers: { authorization: 'Bearer agent-token-fixture' } })).text()
+    const manifestResponse = await app.request('/v1/manifest', { headers: { authorization: 'Bearer agent-token-fixture' } })
+    // A refused manifest would pass the key check vacuously (review L7 of B15-B17).
+    expect(manifestResponse.status).toBe(200)
+    const manifest = await manifestResponse.text()
     const status = await (await app.request('/setup/status', { headers: ADMIN })).text()
     expect(manifest).not.toContain(encoded)
     expect(status).not.toContain(encoded)

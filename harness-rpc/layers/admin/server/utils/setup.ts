@@ -7,7 +7,7 @@ import { readJson, SETUP_BODY_LIMIT } from '../../../common/server/utils/body.js
 import { mapFailures } from '../../../common/server/utils/errors.js'
 import { defineOperationHandler } from '../../../common/server/utils/operation.js'
 import { useServices } from '../../../common/server/utils/services.js'
-import { NODE_WORKSPACE, useTarget } from '../../../common/server/utils/target.js'
+import { NODE_WORKSPACE, targetId } from '../../../common/server/utils/target.js'
 import { withSetupAudit } from './audit.js'
 import { REGISTRY_REFUSED, registryTransportTool, requireAdmin, SETUP_REFUSED, type AdminAccess } from './guards.js'
 
@@ -32,12 +32,18 @@ export function defineSetupHandler(definition: { access: AdminAccess | ((event: 
   return defineOperationHandler({
     guards: [event => requireAdmin(accessOf(event), SETUP_REFUSED)(event)],
     handler: async (event) => {
-      const workspace = await useTarget(event, { setup: !definition.active })
+      const workspace = await useSetupTarget(event, { setup: !definition.active })
       const resource = typeof definition.resource === 'function' ? definition.resource(event) : definition.resource
       const call: SetupCall = { event, workspace, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams) }
       return withSetupAudit(event, { actions: workspace.runtime.actions, workspaceId: workspace.runtime.workspaceId, resource }, () => mapFailures(() => definition.handler(call)))
     },
   })
+}
+
+/** The addressed workspace as the owner's face opens it: failures with their full messages, since only its admin credential reaches here. */
+async function useSetupTarget(event: H3Event, options: { setup: boolean }): Promise<ManagedWorkspace> {
+  const workspaces = await useServices(event).getWorkspaces()
+  return mapFailures(() => workspaces.resolve(targetId(event), options))
 }
 
 interface RegistryCall {
@@ -51,12 +57,13 @@ interface RegistryCall {
 }
 
 /**
- * One route of the node's workspace registry (node level only): the admin guard of the node, then the
- * http_workspace_registry_<method> transport audit around the work.
+ * One route of the node's workspace registry (node level only): the admin guard of the node, whatever
+ * the route's parameters are named, so no child's admin credential ever opens the registry (review L5
+ * of B15-B17), then the http_workspace_registry_<method> transport audit around the work.
  */
 export function defineRegistryHandler(definition: { access: AdminAccess; handler: (call: RegistryCall) => unknown }) {
   return defineOperationHandler({
-    guards: [requireAdmin(definition.access, REGISTRY_REFUSED)],
+    guards: [requireAdmin(definition.access, REGISTRY_REFUSED, () => NODE_WORKSPACE)],
     handler: async (event) => {
       const services = useServices(event)
       const { actions } = await services.getWorkspaceRuntime()

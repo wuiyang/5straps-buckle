@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ApprovalDecisionSchema } from '@5straps/protocol'
@@ -9,6 +9,8 @@ import { actionsPath, approvalsPath, grantsPath, loadConfig, type BuckleConfig }
 import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
 import { runCli } from '../cli/main.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { openChangeHistory } from '../common/services/history/journal.js'
+import { workspaceStateKey } from '../common/domain/workspace-key.js'
 
 function node(): BuckleConfig {
   return loadConfig({
@@ -82,6 +84,24 @@ describe('buckle approvals, the queue a person answers from', () => {
     expect(shown.stdout).toContain('read_path /work/notes\\u200b.md')
     expect(shown.stdout).toContain('asked: read_scope:/x\\u2066y')
     expect(shown.stdout).toContain('Unknown tool: fs_read\\u001b[2K')
+  })
+
+  it('shows buckle history list with the agent-chosen session, stage and paths escaped (review L8 of B15-B17)', async () => {
+    const config = node()
+    const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(realpathSync(config.cwd))), excluded: [config.stateDirectory], maxBytes: 1_000_000, retentionDays: 30 })
+    await history.run({ sessionId: 'chat\u202egnp.exe', stageId: 'stage\u200b1', tool: 'fs_write', roots: [realpathSync(config.cwd)] }, async () => {
+      writeFileSync(join(config.cwd, 'notes\u2066.md'), 'x')
+      return null
+    })
+    await history.close()
+
+    const shown = await capture({ argv: ['history', 'list'], config })
+
+    expect(shown.exitCode).toBe(0)
+    expect(shown.stdout).not.toMatch(/[\u0080-\u009f\u200b\u202e\u2066]/)
+    expect(shown.stdout).toContain('chat\\\\u202egnp.exe')
+    expect(shown.stdout).toContain('stage\\\\u200b1')
+    expect(shown.stdout).toContain('notes\\\\u2066.md')
   })
 
   it('says so plainly when nothing is waiting', async () => {

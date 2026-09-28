@@ -97,4 +97,67 @@ describe('the MCP face over HTTP', () => {
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('workspace one content')
   })
+
+  it('keeps one tools-changed listener per workspace runtime however many requests it serves (review L7 of B15-B17)', async () => {
+    const buckle = await node()
+    const listen = vi.spyOn(buckle.runtime, 'onToolsChanged')
+    for (let index = 0; index < 8; index += 1) {
+      const response = await buckle.request('/mcp', { method: 'POST', headers: headers(), body: initialize })
+      expect(response.status).toBe(200)
+      await response.text()
+    }
+    const list = toolList()
+    expect((await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, list.headers), body: list.body })).status).toBe(200)
+    expect(listen).toHaveBeenCalledTimes(1)
+  })
+
+  it('tells an open subscription the tool list changed when the runtime reloads (review L7 of B15-B17)', async () => {
+    const buckle = await node()
+    const listen = subscribe()
+    const response = await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, listen.headers), body: listen.body })
+    expect(response.status).toBe(200)
+    const events = sseMessages(response)
+    expect(await events.next()).toMatchObject({ method: 'notifications/subscriptions/acknowledged' })
+    await buckle.runtime.reload()
+    expect(await events.next()).toMatchObject({ method: 'notifications/tools/list_changed' })
+    await events.stop()
+  })
 })
+
+function toolList(): { body: string; headers: Record<string, string> } {
+  return {
+    body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': PROTOCOL, 'io.modelcontextprotocol/clientCapabilities': {} } } }),
+    headers: { 'mcp-protocol-version': PROTOCOL, 'mcp-method': 'tools/list' },
+  }
+}
+
+function subscribe(): { body: string; headers: Record<string, string> } {
+  return {
+    body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'subscriptions/listen', params: { notifications: { toolsListChanged: true }, _meta: { 'io.modelcontextprotocol/protocolVersion': PROTOCOL, 'io.modelcontextprotocol/clientCapabilities': {} } } }),
+    headers: { 'mcp-protocol-version': PROTOCOL, 'mcp-method': 'subscriptions/listen' },
+  }
+}
+
+/** The JSON-RPC messages of an SSE body, one at a time (frames without data, such as keepalives, skipped), and a way to hang up. */
+function sseMessages(response: Response): { next(): Promise<unknown>; stop(): Promise<void> } {
+  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader()
+  const dataOf = (frame: string) => frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('')
+  let buffer = ''
+  return {
+    async next() {
+      for (;;) {
+        const end = buffer.indexOf('\n\n')
+        if (end < 0) {
+          const { value, done } = await reader.read()
+          if (done) throw new Error('The stream ended before the next message')
+          buffer += value
+          continue
+        }
+        const data = dataOf(buffer.slice(0, end))
+        buffer = buffer.slice(end + 2)
+        if (data) return JSON.parse(data) as unknown
+      }
+    },
+    stop: () => reader.cancel(),
+  }
+}

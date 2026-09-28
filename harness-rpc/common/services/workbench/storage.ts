@@ -14,6 +14,13 @@ export class WorkbenchError extends Error implements ServiceFailure {
 export const StoredWorkbenchSchema = WorkbenchRecordSchema.extend({ tokenHash: z.string(), policyHash: z.string() })
 export type StoredWorkbench = z.infer<typeof StoredWorkbenchSchema>
 export function workbenchHash(value: string | Buffer): string { return createHash('sha256').update(value).digest('hex') }
+/** A grant is a bearer token at least this long; a shorter one is never checked against a workbench. */
+const MIN_GRANT_LENGTH = 32
+/** The grant an authorization header presents, or null when it presents none worth checking. */
+export function workbenchGrant(authorization: string | undefined): string | null {
+  const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : ''
+  return token.length >= MIN_GRANT_LENGTH ? token : null
+}
 export function publicWorkbench(record: StoredWorkbench): WorkbenchRecord {
   const { tokenHash: _token, policyHash: _policy, ...value } = record
   return structuredClone(value)

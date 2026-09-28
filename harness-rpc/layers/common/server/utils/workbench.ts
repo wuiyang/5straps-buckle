@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { WorkbenchManager } from '../../../../common/services/workbench/manager.js'
 import { withTransportAudit } from './audit.js'
 import { readJson, WORKBENCH_BODY_LIMIT } from './body.js'
-import { hasCode, toHttpError } from './errors.js'
+import { hasCode, mapAgentFailures } from './errors.js'
 import { isMutation, requireWorkbench, workbenchTransportTool } from './guards.js'
 import { defineOperationHandler } from './operation.js'
 import { noStore } from './respond.js'
@@ -22,7 +22,7 @@ interface WorkbenchCall {
 
 /**
  * One workbench operation: the grant guard, then its transport audit when it changes anything, its
- * failures mapped and its answer never cached (plan section B, route mapping).
+ * failures mapped as an agent may read them and its answer never cached (plan section B, route mapping).
  */
 export function defineWorkbenchHandler(operation: (call: WorkbenchCall) => Promise<unknown>) {
   return defineOperationHandler({
@@ -31,7 +31,7 @@ export function defineWorkbenchHandler(operation: (call: WorkbenchCall) => Promi
       const { runtime } = await useTarget(event)
       const param = (name: string) => getRouterParam(event, name, { decode: true }) ?? ''
       const call: WorkbenchCall = { event, workbenches: runtime.workbenches, workbenchId: param('workbenchId'), param, body: schema => readWorkbenchBody(event, schema) }
-      const answer = () => workbenchAnswer(event, () => operation(call))
+      const answer = () => mapAgentFailures(() => workbenchAnswer(event, () => operation(call)))
       return isMutation(event) ? withTransportAudit(runtime.actions, { tool: workbenchTransportTool(event), workspaceId: runtime.workspaceId }, answer) : answer()
     },
   })
@@ -39,15 +39,15 @@ export function defineWorkbenchHandler(operation: (call: WorkbenchCall) => Promi
 
 /**
  * A workbench answer, for the agent routes and the owner's alike: the workbench's own refusals and
- * busy state by their status, a body that fails its schema 400, and anything else 422 with the cause
- * in the log only.
+ * busy state go on to the route's error mapping (the agent allowlist, or the owner's full messages),
+ * a body that fails its schema is 400, and anything else 422 with the cause in the log only.
  */
 export async function workbenchAnswer(event: H3Event, run: () => Promise<unknown>): Promise<Response> {
   try {
     return noStore(await run())
   } catch (error) {
     if (HTTPError.isError(error)) throw error
-    if (hasCode(error, 'WORKBENCH_REFUSED') || hasCode(error, 'STATE_BUSY')) throw toHttpError(error)
+    if (hasCode(error, 'WORKBENCH_REFUSED') || hasCode(error, 'STATE_BUSY')) throw error
     if (error instanceof z.ZodError || error instanceof SyntaxError) throw invalidWorkbenchRequest()
     event.context.logger?.error('Workbench request failed', { message: error instanceof Error ? error.message : 'Unknown error', path: event.url.pathname })
     throw HTTPError.status(422, 'Unprocessable Content', { message: 'Workbench operation failed; inspect Buckle logs' })

@@ -45,6 +45,8 @@ describe('several agent tokens per workspace', () => {
 
     const minted = await app.request('/setup/workspaces/one/tokens', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ label: 'second harness' }) })
     expect(minted.status).toBe(201)
+    // The secret is shown once, and no cache on the way keeps it (review L9 of B15-B17).
+    expect(minted.headers.get('cache-control')).toBe('no-store')
     const { token } = await minted.json() as { token: { id: string; token: string; label: string } }
     expect(token.label).toBe('second harness')
 
@@ -132,7 +134,7 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
       ['/workspaces/consultation/v1/manifest', { headers: headers(LEGACY_AGENT) }, null],
       ['/workspaces/consultation/v1/invoke', { method: 'POST', headers: headers(LEGACY_AGENT), body: '{}' }, 'workspace_invoke_rejected'],
       ['/workspaces/anything/setup/status', {}, 'workspace_setup_auth_rejected'],
-      ['/workspaces/anything/v1/workbenches/one', {}, null],
+      ['/workspaces/anything/v1/workbenches/one', { headers: headers('a-plausible-workbench-grant-of-32-characters') }, 'workbench_auth_rejected'],
     ] as const) {
       const response = await app.request(path, init)
       expect(response.status).toBe(503)
@@ -142,6 +144,8 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
       expect(body).not.toContain('workspaces.0')
       if (tool) expect(runtime.actions.read(1)[0]).toMatchObject({ tool, workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 503' })
     }
+    // A workbench path without a grant reads nothing, the registry included: the plain 401 (review L6 of B15-B17).
+    expect((await app.request('/workspaces/anything/v1/workbenches/one')).status).toBe(401)
   })
 
   it('reports the same repair from buckle workspace list', async () => {

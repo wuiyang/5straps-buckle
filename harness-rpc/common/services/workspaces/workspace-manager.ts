@@ -9,6 +9,7 @@ import type { BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { tokenMatches } from '../access/tokens.js'
+import { workbenchGrant } from '../workbench/storage.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 
 /** The code a transport tells an unreadable registry by, before it has authenticated anyone. */
@@ -178,6 +179,17 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
     authenticateAdmin(id: string, authorization: string | undefined): boolean {
       const credential = manager.adminToken(id)
       return credential !== null && tokenMatches(authorization, credential)
+    },
+    /**
+     * Whether the authorization header presents the grant of one workbench in the workspace. Nothing
+     * is opened for a header that carries no grant or for a workspace the registry does not hold, so
+     * neither tells a caller anything (review L6 of B15-B17). A disabled or retired workspace opens as
+     * the owner's face opens it, so its grant holder, and only they, learn why the route refuses.
+     */
+    async authenticateWorkbench(id: string, workbenchId: string, authorization: string | undefined): Promise<boolean> {
+      if (!workbenchGrant(authorization) || !manager.known(id)) return false
+      const { runtime } = await manager.resolve(id, { setup: true })
+      return runtime.workbenches.authenticate(workbenchId, authorization)
     },
     /** The node's own workspace has an admin credential only when BUCKLE_ADMIN_TOKEN is set; a registered one always has one. */
     hasAdminCredential(id: string): boolean {

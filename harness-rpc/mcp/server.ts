@@ -3,6 +3,7 @@ import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
 import { logger } from '../common/runtime/log.js'
+import { agentFailureMessage } from '../common/services/agent-failure.js'
 import type { ApprovalAuthority } from '../common/services/approvals/approval-registry.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -67,30 +68,34 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
         annotations: { readOnlyHint: tool.capability.risk === 'read' },
       },
       async (args, context) => inScope(async () => {
-        const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
-        const approvalTokens = await resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
-        // The host asks its user itself, so the call reports back at once instead of waiting.
-        const elicits = trustedApprovalResponses && supportsElicitation(readers, context)
+        try {
+          const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
+          const approvalTokens = await resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
+          // The host asks its user itself, so the call reports back at once instead of waiting.
+          const elicits = trustedApprovalResponses && supportsElicitation(readers, context)
 
-        const response = await runtime.invoke({
-          request: {
-            requestId: randomUUID(),
-            tool: tool.capability.name,
-            args: args as JsonObject,
-            approvalTokens,
-            context: { stageId: typeof context.mcpReq?._meta?.['5straps/stageId'] === 'string' ? String(context.mcpReq._meta['5straps/stageId']).slice(0, 200) : undefined },
-          },
-          sessionId: mcpSessionId(context),
-          signal: context.mcpReq.signal,
-          ...(elicits ? { approvalWait: { mode: 'none' as const } } : {}),
-        })
+          const response = await runtime.invoke({
+            request: {
+              requestId: randomUUID(),
+              tool: tool.capability.name,
+              args: args as JsonObject,
+              approvalTokens,
+              context: { stageId: typeof context.mcpReq?._meta?.['5straps/stageId'] === 'string' ? String(context.mcpReq._meta['5straps/stageId']).slice(0, 200) : undefined },
+            },
+            sessionId: mcpSessionId(context),
+            signal: context.mcpReq.signal,
+            ...(elicits ? { approvalWait: { mode: 'none' as const } } : {}),
+          })
 
-        if (response.outcome === 'approval_required') {
-          return elicits
-            ? askForApproval(response.approvals)
-            : relayApproval({ approvals: response.approvals, workspaceId: runtime.workspaceId, nodeName: serverName })
+          if (response.outcome === 'approval_required') {
+            return elicits
+              ? askForApproval(response.approvals)
+              : relayApproval({ approvals: response.approvals, workspaceId: runtime.workspaceId, nodeName: serverName })
+          }
+          return toCallToolResult(response)
+        } catch (error) {
+          return failedCall(error)
         }
-        return toCallToolResult(response)
       }, { sessionId: mcpSessionId(context) }),
     ))
   }
@@ -217,6 +222,16 @@ function registerSkills(server: McpServer, runtime: BuckleRuntime): void {
       async uri => ({ contents: [{ uri: uri.href, mimeType: 'text/markdown', text: skill.content }] }),
     )
   }
+}
+
+/**
+ * A failure that escaped the invoker, such as an audit or approval write that could not be made: the
+ * SDK would hand its message to the agent, so the agent gets path-free text and the owner's log the
+ * cause (review M1 of B15-B17).
+ */
+function failedCall(error: unknown) {
+  logger.error('MCP tool call failed before it had an outcome', { error })
+  return { isError: true, content: [{ type: 'text' as const, text: agentFailureMessage(error) }] }
 }
 
 function toCallToolResult(response: Extract<InvokeResponse, { outcome: 'ok' | 'error' }>) {

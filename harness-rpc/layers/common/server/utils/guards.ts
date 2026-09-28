@@ -1,14 +1,11 @@
-import { getRouterParam, HTTPError, type H3Event } from 'h3'
+import { getRouterParam, type H3Event } from 'h3'
 import type { Guard } from '@5straps/runtime/nitro'
 import type { ActionLog } from '../../../../common/types/ports/action-log.js'
-import type { WORKSPACE_REGISTRY_UNREADABLE } from '../../../../common/services/workspaces/workspace-manager.js'
 import { nodeActions, recordRefusal, recordTransportRefusal } from './audit.js'
-import { hasCode, mapFailures, toHttpError, unauthorized } from './errors.js'
+import { beforeCredential, hasCode, isRegistryFailure, unauthorized } from './errors.js'
 import { useServices } from './services.js'
-import { namedWorkspace, targetId } from './target.js'
+import { NODE_WORKSPACE, namedWorkspace, targetId } from './target.js'
 
-// Checked against the common constant at compile time; the layers take common code as types only.
-const REGISTRY_UNREADABLE: typeof WORKSPACE_REGISTRY_UNREADABLE = 'WORKSPACE_REGISTRY_UNREADABLE'
 const UNRESOLVED = 'unresolved'
 
 /**
@@ -30,29 +27,23 @@ export function isMutation(event: H3Event): boolean {
 }
 
 /**
- * Before authentication a caller learns nothing about the registry beyond that it needs repair: a
- * generic 503, audited where the face audits refusals (review M3 of B6-B9).
+ * Runs one credential check for the addressed workspace: 401 when the check fails; when the check
+ * itself fails, the registry's 503, a workspace the registry refuses by its path-free message, or a
+ * fixed 503 with the cause in the owner's log only (review M1 of B15-B17). Each is audited through
+ * the face's refusal audit. Every guard of every layer goes through this, so none can skip the audit.
  */
-export function registryNeedsRepair(): HTTPError {
-  return HTTPError.status(503, 'Service Unavailable', { message: 'Workspace registry needs owner repair' })
-}
-
-/**
- * Runs one credential check for the addressed workspace: 503 when the registry cannot be read, 401
- * when the check fails, each audited through the face's refusal audit, and what the check returned
- * otherwise. Every guard of every layer goes through this, so none can skip the audit.
- */
-export async function checkCredential<T>(event: H3Event, input: { verify: () => T | null; refusal?: RefusalAudit }): Promise<T> {
+export async function checkCredential<T>(event: H3Event, input: { verify: () => T | null | Promise<T | null>; refusal?: RefusalAudit }): Promise<T> {
   let verified: T | null
   try {
-    verified = input.verify()
+    verified = await input.verify()
   } catch (error) {
-    if (!hasCode(error, REGISTRY_UNREADABLE)) throw error
-    await audit(event, input.refusal, 503)
-    throw registryNeedsRepair()
+    const refused = beforeCredential(error)
+    if (!isRegistryFailure(error) && !hasCode(error, 'WORKSPACE_REFUSED')) event.context.logger?.error('The workspace could not be opened to check a credential', { route: event.context.matchedRoute?.route, error })
+    await audit(event, input.refusal, { status: refused.status, registryReadable: !isRegistryFailure(error) })
+    throw refused
   }
   if (verified === null) {
-    await audit(event, input.refusal, 401)
+    await audit(event, input.refusal, { status: 401, registryReadable: true })
     throw unauthorized()
   }
   return verified
@@ -72,36 +63,44 @@ export function requireAgent(refusal?: RefusalAudit): Guard {
 }
 
 /**
+ * A grant's refusal: on the node's log at node level, with the transport pair for a change, since a
+ * workbench's transport audit took in its credential check too; under /workspaces/[id]/ on the node's
+ * log under the face's name, as every other twin records its refusals.
+ */
+const WORKBENCH_REFUSED: RefusalAudit = {
+  node: async ({ event, actions, status }) => {
+    await recordRefusal(actions, { tool: 'workbench_auth_rejected', workspaceId: NODE_WORKSPACE, sessionId: 'workbench-untrusted', status, detail: `HTTP ${status}` })
+    if (isMutation(event)) await recordTransportRefusal(actions, { tool: workbenchTransportTool(event), workspaceId: NODE_WORKSPACE, status })
+  },
+  named: 'workbench_auth_rejected',
+}
+
+/**
  * The grant of one workbench in the addressed workspace, which the workspace's agent tokens do not
- * open. The workspace resolves first, as before the move: 404 or 409 before 401.
+ * open. The grant is checked before anything about the workspace is told: an unknown or disabled
+ * workspace and a wrong grant are the same 401 (review L6 of B15-B17), and a disabled workspace
+ * answers its 409 to the grant holder only, from the route.
  */
 export const requireWorkbench: Guard = async (event) => {
+  const workspaceId = targetId(event)
   const workbenchId = getRouterParam(event, 'workbenchId', { decode: true }) ?? ''
   const workspaces = await useServices(event).getWorkspaces()
-  const { runtime } = await workspaces.resolve(targetId(event)).catch((error: unknown) => {
-    throw hasCode(error, REGISTRY_UNREADABLE) ? registryNeedsRepair() : toHttpError(error)
-  })
-  if (!await mapFailures(() => runtime.workbenches.authenticate(workbenchId, authorization(event)))) {
-    await runtime.workbenches.auditRejected()
-    // At node level a workbench's transport audit took in its credential check too.
-    if (!namedWorkspace(event) && isMutation(event)) await recordTransportRefusal(runtime.actions, { tool: workbenchTransportTool(event), workspaceId: runtime.workspaceId, status: 401 })
-    throw unauthorized()
-  }
-  return { actor: `workbench:${workbenchId}`, workspaceId: targetId(event) }
+  await checkCredential(event, { verify: async () => (await workspaces.authenticateWorkbench(workspaceId, workbenchId, authorization(event))) || null, refusal: WORKBENCH_REFUSED })
+  return { actor: `workbench:${workbenchId}`, workspaceId }
 }
 
 export function workbenchTransportTool(event: H3Event): string {
   return `http_workbench_${event.req.method.toLowerCase()}`
 }
 
-async function audit(event: H3Event, refusal: RefusalAudit | undefined, status: number): Promise<void> {
+async function audit(event: H3Event, refusal: RefusalAudit | undefined, input: { status: number; registryReadable: boolean }): Promise<void> {
   if (!refusal) return
   const actions = await nodeActions(event)
-  if (!namedWorkspace(event)) return refusal.node({ event, actions, status })
+  if (!namedWorkspace(event)) return refusal.node({ event, actions, status: input.status })
   const workspaceId = targetId(event)
-  const known = status !== 503 && await knownWorkspace(event, workspaceId)
+  const known = input.registryReadable && await knownWorkspace(event, workspaceId)
   // Refused before anyone was authenticated, the registry's 503 included.
-  await recordRefusal(actions, { tool: refusal.named, workspaceId: known ? workspaceId : UNRESOLVED, sessionId: 'http-untrusted', status, outcome: 'denied', detail: `HTTP ${status}` })
+  await recordRefusal(actions, { tool: refusal.named, workspaceId: known ? workspaceId : UNRESOLVED, sessionId: 'http-untrusted', status: input.status, outcome: 'denied', detail: `HTTP ${input.status}` })
 }
 
 async function knownWorkspace(event: H3Event, workspaceId: string): Promise<boolean> {

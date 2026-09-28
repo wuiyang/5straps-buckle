@@ -48,7 +48,8 @@ export function createSetupViews(): SetupViews {
         policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },
         reporting: runtime.reporter.configured,
         approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',
-        activeWork: await runtime.hasActiveWork(),
+        // Read as inspection reads: nothing is owned or recovered to answer it (review L4 of B15-B17).
+        activeWork: runtime.inspectActiveWork(),
       }
     },
 

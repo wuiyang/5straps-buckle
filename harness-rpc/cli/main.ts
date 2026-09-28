@@ -10,6 +10,7 @@ import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { approveCommand, printable } from '../common/domain/approval-instruction.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { CheckpointSummary } from '../common/services/history/journal.js'
 import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
 import { withOperationScope } from '@5straps/runtime'
 import { logger } from '../common/runtime/log.js'
@@ -425,12 +426,27 @@ function fail(message: string): CliResult {
 
 async function historyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
   const [command = 'list', id] = argv
-  if (command === 'list') return print(await runtime.history.list())
+  if (command === 'list') return print((await runtime.history.list()).map(printableCheckpoint))
   if (command === 'prune') return print(await runtime.history.prune())
   if (command === 'restore-stage' && id && argv[2]) return print(await runtime.history.restoreStage(id, argv[2]))
   if (command === 'restore' && id) return print(await runtime.history.restore(id))
   if (command === 'recover' && id) return print(await runtime.history.recover(id))
   return fail('Usage: buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune')
+}
+
+/**
+ * A checkpoint as a person reads it: the session, stage and paths an agent chose, escaped as every
+ * other rendering of agent text is (review L8 of B15-B17).
+ */
+function printableCheckpoint(checkpoint: CheckpointSummary): CheckpointSummary {
+  return {
+    ...checkpoint,
+    sessionId: printable(checkpoint.sessionId),
+    stageId: printable(checkpoint.stageId),
+    tool: printable(checkpoint.tool),
+    paths: checkpoint.paths.map(printable),
+    changes: checkpoint.changes.map(change => ({ ...change, path: printable(change.path) })),
+  }
 }
 
 async function shellWorkspacesCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {

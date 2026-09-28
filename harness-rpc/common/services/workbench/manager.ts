@@ -6,7 +6,7 @@ import { z } from 'zod'
 import {
   WorkbenchApplySchema, WorkbenchControlSchema, WorkbenchInvokeSchema, WorkbenchProvisionSchema,
   WorkbenchTerminalInputSchema, WorkbenchTerminalResizeSchema, WorkbenchTerminalStartSchema,
-  type WorkbenchProvision, type WorkbenchReview,
+  type WorkbenchProvision, type WorkbenchRecord, type WorkbenchReview,
 } from '@5straps/protocol'
 import type { ActionLog } from '../../types/ports/action-log.js'
 import type { PtySpawner, PtySpawnRequest } from '../../types/ports/pty-process.js'
@@ -14,7 +14,7 @@ import type { ChangeHistory } from '../history/journal.js'
 import { assertSnapshotMatches, changedPaths, snapshotSchema } from '../history/snapshot.js'
 import { createWorkbenchFiles, type WorkbenchFileOptions } from './files.js'
 import { createWorkbenchTerminals } from './terminals.js'
-import { createWorkbenchStorage, publicWorkbench, StoredWorkbenchSchema, WorkbenchError, workbenchHash, writeWorkbenchJson, type StoredWorkbench } from './storage.js'
+import { createWorkbenchStorage, publicWorkbench, StoredWorkbenchSchema, WorkbenchError, workbenchGrant, workbenchHash, writeWorkbenchJson, type StoredWorkbench } from './storage.js'
 
 const reviewStorageSchema = z.object({ id: z.string().uuid(), workbenchId: z.string().uuid(), revision: z.number().int(), createdAt: z.string(), target: snapshotSchema })
 const CLOSED = new Set(['applied', 'discarded'])
@@ -93,13 +93,21 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
   return {
     get: async (id: string) => publicWorkbench(await get(id)),
     async list() { await own(); return [...records.values()].map(publicWorkbench) },
+    /**
+     * Inspection, which mutates nothing (layers.md, Security boundaries): the records as stored, read
+     * without taking ownership or recovering interrupted ones (review L4 of B15-B17). Recovery runs on
+     * the first operation that owns the workbenches.
+     */
+    inspect(): WorkbenchRecord[] { return storage.list().map(publicWorkbench) },
+    /** Whether inspection shows any workbench still open, read as inspect() reads. */
+    inspectActive(): boolean { return storage.list().some(record => !CLOSED.has(record.status)) },
     async hasActiveWork() { await own(); return [...records.values()].some(record => !CLOSED.has(record.status)) },
     async authenticate(id: string, authorization: string | undefined): Promise<boolean> {
+      const token = workbenchGrant(authorization)
+      if (!token) return false
       try {
         const record = await get(id)
-        const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : ''
-        const candidate = workbenchHash(token)
-        return token.length >= 32 && timingSafeEqual(Buffer.from(record.tokenHash, 'hex'), Buffer.from(candidate, 'hex'))
+        return timingSafeEqual(Buffer.from(record.tokenHash, 'hex'), Buffer.from(workbenchHash(token), 'hex'))
       } catch (error) { if (error instanceof WorkbenchError && error.status === 404) return false; throw error }
     },
     async provision(input: WorkbenchProvision) {
@@ -247,11 +255,6 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     async close() {
       for (const record of records.values()) await terminals.stopAll(record)
       await storage.close()
-    },
-    async auditRejected() {
-      const id = randomUUID()
-      await options.actions.record({ auditId: id, event: 'result', workspaceId: options.workspaceId, at: time(), requestId: id, sessionId: 'workbench-untrusted',
-        tool: 'workbench_auth_rejected', outcome: 'denied', durationMs: 0, effects: [], args: {} })
     },
   }
 }

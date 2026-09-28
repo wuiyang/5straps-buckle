@@ -313,3 +313,48 @@ describe('health', () => {
     expect((await buckle.request('/workspaces/one/health', { headers: bearer(ONE_AGENT) })).status).toBe(200)
   })
 })
+
+// Review L1 of B15-B17 flip: HEAD on a route file that serves GET answers as GET does, headers only.
+// Before, the compiled router had no HEAD entry and HEAD fell to a catch-all or the router's 404.
+describe('HEAD on GET routes', () => {
+  it('answers the open health routes and the guarded GET routes as GET, without a body', async () => {
+    const buckle = await node()
+    await buckle.registerOne()
+    const rows: Array<{ path: string; token?: string; status: number }> = [
+      { path: '/health', status: 200 },
+      { path: '/health/ready', status: 200 },
+      { path: '/v1/manifest', status: 401 },
+      { path: '/v1/manifest', token: NODE_AGENT, status: 200 },
+      { path: '/workspaces/one/v1/skills', token: ONE_AGENT, status: 200 },
+      { path: '/setup/status', token: NODE_ADMIN, status: 200 },
+      { path: '/workspaces/one/setup/status', token: ONE_ADMIN, status: 200 },
+      { path: '/v1/invoke', token: NODE_AGENT, status: 404 },
+    ]
+    for (const row of rows) {
+      const response = await buckle.request(row.path, { method: 'HEAD', headers: row.token ? bearer(row.token) : {} })
+      expect({ path: row.path, status: response.status, body: await response.text() }).toEqual({ path: row.path, status: row.status, body: '' })
+    }
+    // The owner's route audits HEAD under its own method.
+    expect(audited(buckle.runtime).map(entry => entry.tool)).toContain('setup_head_status')
+  })
+
+  it('leaves a route that serves every method its own answer: MCP answers HEAD 405', async () => {
+    const buckle = await node()
+    const response = await buckle.request('/mcp', { method: 'HEAD', headers: { ...bearer(NODE_AGENT), ...MCP_HEADERS } })
+    expect(response.status).toBe(405)
+  })
+})
+
+// Review L2 of B15-B17: every method but POST on /v1/invoke is refused and audited as the invoke face
+// refuses a call before the invoker sees it, as the Hono middleware did for every method.
+describe('other methods on /v1/invoke', () => {
+  it('audits rpc_invoke_rejected at node level and workspace_invoke_rejected under a workspace', async () => {
+    const buckle = await node()
+    await buckle.registerOne()
+    expect((await buckle.request('/v1/invoke')).status).toBe(401)
+    expect((await buckle.request('/v1/invoke', { method: 'PUT', headers: bearer(NODE_AGENT) })).status).toBe(404)
+    expect((await buckle.request('/workspaces/one/v1/invoke', { method: 'DELETE' })).status).toBe(401)
+    const entries = audited(buckle.runtime).filter(entry => entry.tool.endsWith('invoke_rejected')).map(entry => `${entry.tool}:${entry.workspaceId}:${entry.detail}`)
+    expect(entries).toEqual(expect.arrayContaining(['rpc_invoke_rejected:default:HTTP 401', 'rpc_invoke_rejected:default:HTTP 404', 'workspace_invoke_rejected:one:HTTP 401']))
+  })
+})

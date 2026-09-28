@@ -26,8 +26,10 @@ export function createPendingAudit(input: {
   processInstanceId: string
   record: (entry: ActionLogEntry) => Promise<void>
   isAlive?: (pid: number) => boolean
+  /** How long a write waits for another process holding the pending state (the node's state lock wait). */
+  lockDeadlineMs?: number
 }) {
-  const store = createJsonFileStore({ filePath: `${input.filePath}.pending.json`, schema: pendingSchema, fallback: { version: 1 as const, pending: {} } })
+  const store = createJsonFileStore({ filePath: `${input.filePath}.pending.json`, schema: pendingSchema, fallback: { version: 1 as const, pending: {} }, lockDeadlineMs: input.lockDeadlineMs })
   return {
     async track(entry: ActionLogEntry, offset: number): Promise<void> {
       if (!entry.auditId || !entry.event) return

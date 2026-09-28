@@ -1,5 +1,13 @@
 import { HTTPError } from 'h3'
+import type { AGENT_READABLE_CODES } from '../../../../common/services/agent-failure.js'
+import type { STATE_BUSY_MESSAGE } from '../../../../common/services/state-busy.js'
+import type { WORKSPACE_REGISTRY_UNREADABLE } from '../../../../common/services/workspaces/workspace-manager.js'
 import type { ServiceFailure } from '../../../../common/types/service-failure.js'
+
+// Checked against the common constants at compile time; the layers take common code as types only.
+const REGISTRY_UNREADABLE: typeof WORKSPACE_REGISTRY_UNREADABLE = 'WORKSPACE_REGISTRY_UNREADABLE'
+const STATE_BUSY_TEXT: typeof STATE_BUSY_MESSAGE = 'Buckle state is busy in another process; retry shortly'
+const AGENT_READABLE = Object.freeze<Record<(typeof AGENT_READABLE_CODES)[number], true>>({ WORKSPACE_REFUSED: true, WORKBENCH_REFUSED: true })
 
 /** A common error that carries its code and HTTP status (common/types/service-failure.ts). */
 export function isServiceFailure(error: unknown): error is ServiceFailure {
@@ -12,21 +20,71 @@ export function hasCode(error: unknown, code: string): boolean {
 }
 
 /**
- * The HTTP error a failure answers with: an HTTPError as it is, a service failure by its own status
- * and message, and nothing else, which the error handler answers as an unhandled 500 and logs.
+ * The HTTP error a failure answers with on the owner's routes: an HTTPError as it is, a service
+ * failure by its own status and message, and nothing else, which the error handler answers as an
+ * unhandled 500 and logs.
  */
 export function toHttpError(error: unknown): unknown {
   if (!isServiceFailure(error)) return error
   return new HTTPError({ status: error.status, statusText: statusText(error.status), message: error.message })
 }
 
-/** Runs a service call, answering its failures by their status (plan section B: explicit error mapping). */
+/** Runs a service call on an owner's route, answering its failures by their status (plan section B: explicit error mapping). */
 export async function mapFailures<T>(run: () => T | Promise<T>): Promise<T> {
   try {
     return await run()
   } catch (error) {
     throw toHttpError(error)
   }
+}
+
+/**
+ * The HTTP error a failure answers with where an agent reads it (agent credential, workbench grant,
+ * MCP): only codes whose messages never name a path keep their own; busy state, an unreadable
+ * registry and a stored policy that will not load get fixed text, because the state directory is
+ * hidden from agents by design; any other failure is an unhandled 500 with its cause in the owner's
+ * log only (review M1 of B15-B17).
+ */
+export function toAgentError(error: unknown): unknown {
+  if (!isServiceFailure(error)) return error
+  if (Object.hasOwn(AGENT_READABLE, error.code)) return toHttpError(error)
+  if (error.code === 'STATE_BUSY') return HTTPError.status(503, 'Service Unavailable', { message: STATE_BUSY_TEXT })
+  if (error.code === REGISTRY_UNREADABLE) return registryNeedsRepair()
+  if (error.code.startsWith('POLICY_')) return HTTPError.status(409, 'Conflict', { message: 'Workspace policy needs owner repair' })
+  return new Error(`A ${error.code} failure is not shown to agents`, { cause: error })
+}
+
+/** Runs a service call on an agent-facing route, answering its failures through the agent allowlist. */
+export async function mapAgentFailures<T>(run: () => T | Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (error) {
+    throw toAgentError(error)
+  }
+}
+
+/**
+ * What a failure before any credential was checked answers: the registry's own 503, a workspace the
+ * registry refuses by its own path-free message, and anything else a fixed 503 without its cause,
+ * because the caller is unauthenticated (review M1 of B15-B17).
+ */
+export function beforeCredential(error: unknown): HTTPError {
+  if (hasCode(error, REGISTRY_UNREADABLE)) return registryNeedsRepair()
+  if (hasCode(error, 'WORKSPACE_REFUSED')) return toHttpError(error) as HTTPError
+  return HTTPError.status(503, 'Service Unavailable', { message: 'Workspace is unavailable' })
+}
+
+/** Whether a failure before the credential was the registry's own, which says nothing about one workspace. */
+export function isRegistryFailure(error: unknown): boolean {
+  return hasCode(error, REGISTRY_UNREADABLE)
+}
+
+/**
+ * Before authentication a caller learns nothing about the registry beyond that it needs repair: a
+ * generic 503, audited where the face audits refusals (review M3 of B6-B9).
+ */
+export function registryNeedsRepair(): HTTPError {
+  return HTTPError.status(503, 'Service Unavailable', { message: 'Workspace registry needs owner repair' })
 }
 
 export function unauthorized(): HTTPError {

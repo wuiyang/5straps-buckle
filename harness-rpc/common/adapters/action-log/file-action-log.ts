@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { StateBusyError } from '../json-file-store.js'
 import { createPendingAudit } from './pending-audit.js'
 import { closeSync, fsyncSync, fchmodSync, fstatSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -14,8 +15,8 @@ const entrySchema = z.object({
   durationMs: z.number(), effects: z.array(z.string()), args: z.json(), event: z.enum(['attempt', 'result']).optional(),
 }).passthrough()
 
-export function createFileActionLog(filePath: string): ActionLog {
-  const pending = createPendingAudit({ filePath, processInstanceId: PROCESS_INSTANCE_ID, record: entry => log.record(entry) })
+export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number } = {}): ActionLog {
+  const pending = createPendingAudit({ filePath, processInstanceId: PROCESS_INSTANCE_ID, record: entry => log.record(entry), lockDeadlineMs: options.lockDeadlineMs })
   const log: ActionLog = {
     recoverInterrupted: () => pending.recover(),
     async record(entry) {
@@ -42,6 +43,9 @@ export function createFileActionLog(filePath: string): ActionLog {
         await pending.track(entry, offset)
       } catch (error) {
         logger.error('Could not durably write the action log', { filePath })
+        // Another process held the pending-audit state past the wait: temporary, so the caller is told
+        // to retry, as for any busy state (review L3 of B15-B17).
+        if (error instanceof StateBusyError) throw error
         throw new Error('Audit storage unavailable; tool execution cannot continue', { cause: error })
       }
     },

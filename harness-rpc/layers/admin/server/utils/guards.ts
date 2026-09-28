@@ -35,12 +35,13 @@ export function registryTransportTool(event: H3Event): string {
 }
 
 /**
- * The guard for one kind of admin access to the addressed workspace. A node without BUCKLE_ADMIN_TOKEN
- * has no owner's face: 404, as when the face was not mounted. The actor is admin:<workspace>.
+ * The guard for one kind of admin access to the addressed workspace, or to the one `target` names. A
+ * node without BUCKLE_ADMIN_TOKEN has no owner's face: 404, as when the face was not mounted. The
+ * actor is admin:<workspace>.
  */
-export function requireAdmin(access: AdminAccess, refusal: RefusalAudit): Guard {
+export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target: (event: H3Event) => string = targetId): Guard {
   return async (event) => {
-    const workspaceId = targetId(event)
+    const workspaceId = target(event)
     const workspaces = await useServices(event).getWorkspaces()
     if (workspaceId === NODE_WORKSPACE && !workspaces.hasAdminCredential(NODE_WORKSPACE)) throw notFound()
     const credential = ACCEPTS[access]

@@ -78,6 +78,8 @@ export interface BuckleRuntime {
   readonly workspaceId: string
   workbenches: ReturnType<typeof createWorkbenchManager>
   hasActiveWork(): Promise<boolean>
+  /** The same question for inspection, read without taking workbench ownership (review L4 of B15-B17). */
+  inspectActiveWork(): boolean
   manifest(): HarnessManifest
   toolCatalog(): { tools: ToolCapability[]; unavailable: Array<{ name: string; reason: string }> }
   registry(): ToolRegistry
@@ -139,7 +141,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
   const notices = createApprovalNotices(webhook ? createApprovalNoticeSender(webhook) : undefined)
   const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, { lockDeadlineMs, onExpired: requests => notices.expired(requests) })
-  const actions = createFileActionLog(actionsPath(config))
+  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs })
   await actions.recoverInterrupted()
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
@@ -203,6 +205,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     workspaceId,
     workbenches,
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
+    inspectActiveWork: () => activeInvocations > 0 || workbenches.inspectActive() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: registry.capabilities().filter(tool => toolDenial(tool.name) === null) }),
     toolCatalog: () => ({ tools: registry.capabilities(), unavailable: registry.capabilities().flatMap(tool => {
       const reason = toolDenial(tool.name)

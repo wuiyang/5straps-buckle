@@ -1,6 +1,7 @@
 import type { H3Event } from 'h3'
 import { recordTransportRefusal, withTransportAudit } from '../../../common/server/utils/audit.js'
 import { readBody } from '../../../common/server/utils/body.js'
+import { mapAgentFailures } from '../../../common/server/utils/errors.js'
 import { isMutation, requireAgent, type RefusalAudit } from '../../../common/server/utils/guards.js'
 import { defineOperationHandler } from '../../../common/server/utils/operation.js'
 import { useServices } from '../../../common/server/utils/services.js'
@@ -21,7 +22,7 @@ export default defineOperationHandler({
     const { config, runtime } = workspace
     return withTransportAudit(runtime.actions, { tool: transportTool(event), workspaceId: runtime.workspaceId }, async () => {
       const request = await bufferedRequest(event, config.maxRequestBytes)
-      return useServices(event).getMcpHandlers().fetch(workspace, request)
+      return mapAgentFailures(() => useServices(event).getMcpHandlers().fetch(workspace, request))
     })
   },
 })
@@ -32,9 +33,9 @@ function transportTool(event: H3Event): string {
 
 async function bufferedRequest(event: H3Event, limit: number): Promise<Request> {
   // The SDK gets the body buffered, so the wire's length or chunked encoding would be wrong for it.
+  // The guard has read the credential; nothing past it needs the agent's token (review L9 of B15-B17).
   const headers = new Headers(event.req.headers)
-  headers.delete('content-length')
-  headers.delete('transfer-encoding')
+  for (const name of ['content-length', 'transfer-encoding', 'authorization']) headers.delete(name)
   const body = isMutation(event) ? await readBody(event, limit) : undefined
   return new Request(event.req.url, { method: event.req.method, headers, signal: event.req.signal, ...(body ? { body } : {}) })
 }
