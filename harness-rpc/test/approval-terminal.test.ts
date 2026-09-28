@@ -14,6 +14,7 @@ import { describeApprovalRequest, printable } from '../common/domain/approval-in
 import { describeQuestion } from '../cli/terminal-consumer.js'
 import type { ApprovalHold } from '../common/services/approvals/interaction.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
+import { runsNativeTerminal } from './support/native-terminal.js'
 
 afterEach(() => { vi.useRealTimers() })
 
@@ -324,9 +325,6 @@ describe('keys meant for another terminal question', () => {
   })
 })
 
-/** `node-pty` is an optional native dependency, so the real-terminal check runs only where it loads. */
-const nativeTerminal = await import('node-pty').then(() => true, () => false)
-
 describe('Ctrl-C at a terminal question', () => {
   it('drops the open question and every queued one, and stops the process once', async () => {
     const terminal = keyboardTerminal()
@@ -353,7 +351,7 @@ describe('Ctrl-C at a terminal question', () => {
     expect(onInterrupt).toHaveBeenCalledTimes(1)
   })
 
-  it.runIf(process.platform === 'linux' && nativeTerminal)('stops the process on the first Ctrl-C in a real terminal, with questions open and queued', async () => {
+  it.runIf(runsNativeTerminal)('stops the process on the first Ctrl-C in a real terminal, with questions open and queued', async () => {
     const pty = await import('node-pty')
     const script = join(mkdtempSync(join(tmpdir(), 'buckle-ctrl-c-')), 'serve-like.mts')
     writeFileSync(script, `

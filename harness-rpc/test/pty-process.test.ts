@@ -2,11 +2,13 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { spawnPtyProcess } from '../common/adapters/pty-process.js'
+import { nativeTerminal, runsNativeTerminal } from './support/native-terminal.js'
 
-/** `node-pty` is an optional native dependency: an installation without it serves a 503 instead. */
-const nativeTerminal = await import('node-pty').then(() => true, () => false)
+it.runIf(process.platform === 'linux' && process.env.CI === 'true')('loads the node-pty addon on Linux CI, where it must have built (review M8 of B20-B22)', () => {
+  expect(nativeTerminal).toBe(true)
+})
 
-it.runIf(process.platform === 'linux' && nativeTerminal)('preserves interactive shell state, streams output and exits through the native PTY adapter', async () => {
+it.runIf(runsNativeTerminal)('preserves interactive shell state, streams output and exits through the native PTY adapter', async () => {
   const root = mkdtempSync('/tmp/buckle-pty-adapter-')
   mkdirSync(join(root, 'child'))
   const terminal = await spawnPtyProcess({ command: '/bin/bash', args: ['--noprofile', '--norc', '-i'], cwd: root,
