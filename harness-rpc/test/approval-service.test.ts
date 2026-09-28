@@ -163,11 +163,11 @@ describe('the approval service, the single answerer', () => {
     expect(await waiting).toMatchObject({ settled: true })
   })
 
-  it('cancels the asks when the caller leaves inside the wait, but not once a joined caller carries them', async () => {
+  it('cancels the asks when the caller cancels inside the wait, but not once a joined caller carries them', async () => {
     const { registry } = queue()
     const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
     const leaving = new AbortController()
-    const first = service.request(call({ signal: leaving.signal }))
+    const first = service.request(call({ signal: leaving.signal, isCancel: () => true }))
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
     const joined = service.request(call())
 
@@ -177,13 +177,43 @@ describe('the approval service, the single answerer', () => {
     expect(registry.pending()).toHaveLength(1)
 
     const alone = new AbortController()
-    const last = service.request(call({ requestId: 'request-2', asks: [ask('/outside/c.md')], signal: alone.signal }))
+    const last = service.request(call({ requestId: 'request-2', asks: [ask('/outside/c.md')], signal: alone.signal, isCancel: () => true }))
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(2))
     alone.abort()
     await expect(last).rejects.toThrow()
     expect(registry.pending()).toHaveLength(1)
     await service.close()
     expect(await joined).toMatchObject({ settled: false })
+  })
+
+  it('keeps the asks pending when the caller\'s transport drops inside the wait, and a re-send with the same requestId joins them (owner decision D4)', async () => {
+    const { registry } = queue()
+    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
+    const dropped = new AbortController()
+    const first = service.request(call({ signal: dropped.signal }))
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    const [token] = registry.pending().map(request => request.token)
+    dropped.abort()
+    await expect(first).rejects.toThrow()
+    expect(registry.pending().map(request => request.token)).toEqual([token])
+
+    const resent = service.request(call())
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    await service.answer({ decision: { token: token!, approved: true, scope: 'once' }, authority: 'admin' })
+    expect(await resent).toMatchObject({ settled: true, approvals: [expect.objectContaining({ token })] })
+    await service.close()
+  })
+
+  it('reads only an explicit cancel as one: without a way to tell, an abort is a dropped transport', async () => {
+    const { registry } = queue()
+    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
+    const dropped = new AbortController()
+    const waiting = service.request(call({ signal: dropped.signal, isCancel: reason => reason === 'client cancelled' }))
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    dropped.abort(new Error('Connection closed'))
+    await expect(waiting).rejects.toThrow('Connection closed')
+    expect(registry.pending()).toHaveLength(1)
+    await service.close()
   })
 
   it('settles every open wait as still pending on close, keeping the asks', async () => {

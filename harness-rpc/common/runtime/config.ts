@@ -58,7 +58,7 @@ export interface BuckleConfig {
   agentBrowserCommand: string
   /** Show the browser window. Headless by default, because a Buckle node usually has no display. */
   browserHeaded: boolean
-  /** Milliseconds to wait, null for forever, or zero for immediate approval instructions. */
+  /** How long a gated call is held for an answer, in milliseconds; null holds it until someone answers (BUCKLE_APPROVAL_TIMEOUT_MS=0). */
   approvalTimeoutMs: number | null
   /** Where to announce a pending approval, so a person can be reached away from the machine. */
   approvalWebhook?: string
@@ -228,16 +228,15 @@ function parseSandboxMode(value: string | undefined): BuckleConfig['sandboxMode'
   return parsed.data
 }
 
-/** Unlike the other durations, zero is meaningful here: it turns the grace period off. */
 /**
  * BUCKLE_APPROVAL_TIMEOUT_MS: how long Buckle holds a gated call for an answer when the caller sends no
- * wait of its own, in milliseconds; 0 (or `forever`) holds it until someone answers, with no deadline.
- * A caller's hint overrides it either way (InvokeContext.approvalWait, owner ruling of 2026-09-28).
- * Returns null for no deadline.
+ * wait of its own, in milliseconds; 0 holds it until someone answers, with no deadline. A caller's hint
+ * overrides it either way (InvokeContext.approvalWait, owner ruling of 2026-09-28). Returns null for no
+ * deadline. One spelling (ruling 2): `forever` is refused with the one to use.
  */
 export function parseApprovalTimeout(value: string | undefined, fallback: number): number | null {
   if (value === undefined || value === '') return fallback
-  if (value === 'forever') return null
+  if (value === 'forever') throw new Error('Invalid BUCKLE_APPROVAL_TIMEOUT_MS: forever; use 0 to wait until someone answers')
   const parsed = /^\d+$/.test(value) ? Number(value) : NaN
   if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 2_147_483_647) throw new Error(`Invalid BUCKLE_APPROVAL_TIMEOUT_MS: ${value}`)
   return parsed === 0 ? null : parsed

@@ -133,29 +133,31 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   }
 }
 
-/** How long shutdown waits for one browser daemon to close. */
+/** How long shutdown waits for the browser daemons to close, all of them together. */
 const CLOSE_TIMEOUT_MS = 5_000
 
 /**
  * At shutdown: closes each browser this pack started, as the close command would, and forgets its
- * session, so no daemon outlives the node by its idle timeout. A daemon that will not close is left
- * to that timeout, with a warning.
+ * session, so no daemon outlives the node by its idle timeout. They close in parallel under one bound,
+ * so a few stuck daemons cannot outlast the close step before the store is updated (review L10 of
+ * B18-B19). A daemon that will not close is left to that timeout, with a warning.
  */
 async function closeSessions(input: { options: BrowserPackOptions; sessions: JsonFileStore<z.infer<typeof SessionsSchema>>; opened: Set<string> }): Promise<void> {
   const closing = [...input.opened]
   input.opened.clear()
-  for (const session of closing) {
+  if (closing.length === 0) return
+  const bound = AbortSignal.timeout(CLOSE_TIMEOUT_MS)
+  await Promise.all(closing.map(async (session) => {
     const result = await input.options.runProcess({
       command: input.options.agentBrowserCommand,
       args: ['close', '--session', session, '--json'],
       cwd: input.options.sessionDirectory,
       timeoutMs: CLOSE_TIMEOUT_MS,
       environment: buildChildEnvironment({ parent: process.env, extra: {} }),
-      signal: AbortSignal.timeout(CLOSE_TIMEOUT_MS),
+      signal: bound,
     }).catch((error: unknown) => ({ exitCode: null, error }))
     if (result.exitCode !== 0) logger.warn('A browser session did not close at shutdown; its idle timeout ends it', { exitCode: result.exitCode })
-  }
-  if (closing.length === 0) return
+  }))
   await input.sessions.update((state) => {
     for (const [key, session] of Object.entries(state.sessions)) {
       if (!closing.includes(session)) continue

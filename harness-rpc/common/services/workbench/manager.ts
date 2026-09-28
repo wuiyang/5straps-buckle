@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../../runtime/log.js'
@@ -14,7 +14,7 @@ import type { ChangeHistory } from '../history/journal.js'
 import { assertSnapshotMatches, changedPaths, snapshotSchema } from '../history/snapshot.js'
 import { createWorkbenchFiles, type WorkbenchFileOptions } from './files.js'
 import { createWorkbenchTerminals } from './terminals.js'
-import { createWorkbenchStorage, publicWorkbench, StoredWorkbenchSchema, WorkbenchError, workbenchGrant, workbenchHash, writeWorkbenchJson, type StoredWorkbench } from './storage.js'
+import { createWorkbenchStorage, publicWorkbench, StoredWorkbenchSchema, WorkbenchError, workbenchHash, writeWorkbenchJson, type StoredWorkbench } from './storage.js'
 
 const reviewStorageSchema = z.object({ id: z.string().uuid(), workbenchId: z.string().uuid(), revision: z.number().int(), createdAt: z.string(), target: snapshotSchema })
 const CLOSED = new Set(['applied', 'discarded'])
@@ -102,14 +102,6 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     /** Whether inspection shows any workbench still open, read as inspect() reads. */
     inspectActive(): boolean { return storage.list().some(record => !CLOSED.has(record.status)) },
     async hasActiveWork() { await own(); return [...records.values()].some(record => !CLOSED.has(record.status)) },
-    async authenticate(id: string, authorization: string | undefined): Promise<boolean> {
-      const token = workbenchGrant(authorization)
-      if (!token) return false
-      try {
-        const record = await get(id)
-        return timingSafeEqual(Buffer.from(record.tokenHash, 'hex'), Buffer.from(workbenchHash(token), 'hex'))
-      } catch (error) { if (error instanceof WorkbenchError && error.status === 404) return false; throw error }
-    },
     async provision(input: WorkbenchProvision) {
       const parsed = WorkbenchProvisionSchema.parse(input)
       await own(true)

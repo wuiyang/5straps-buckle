@@ -84,13 +84,14 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
   const roots: string[] = []
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-  async function fixture(network: string[], ceiling?: string[]) {
+  async function fixture(network: string[], ceiling?: string[], closeDelayMs = 0) {
     const root = mkdtempSync(join(tmpdir(), 'buckle-allowed-domains-'))
     roots.push(root)
     mkdirSync(join(root, 'workspace'))
     const log = join(root, 'calls.jsonl')
     const binary = join(root, 'agent-browser')
-    writeFileSync(binary, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nprocess.stdout.write('{"success":true}')\n`)
+    const slowClose = closeDelayMs > 0 ? `if (process.argv[2] === 'close') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${closeDelayMs})\n` : ''
+    writeFileSync(binary, `#!/usr/bin/env node\n${slowClose}require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nprocess.stdout.write('{"success":true}')\n`)
     chmodSync(binary, 0o755)
     const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary })
     const runtime = await createRuntime({ config: ceiling ? { ...config, nodePolicy: policy(ceiling) } : config })
@@ -130,6 +131,25 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     expect(sessionOf(calls().at(-1))).not.toBe(session)
     await runtime.closeSessions()
     expect(calls().filter(call => call[0] === 'close')).toHaveLength(2)
+  })
+
+  it('closes several browsers in parallel under one bound, then forgets them all (review L10 of B18-B19)', async () => {
+    const { runtime, calls } = await fixture(['*.example.test'], undefined, 1_500)
+    for (const agent of ['a', 'b', 'c']) {
+      const response = await runtime.invoke({ request: { requestId: `browse-${agent}`, tool: 'browser_command', args: { command: 'open', args: ['https://app.example.test'] }, approvalTokens: [] }, sessionId: `agent-${agent}` })
+      expect(response).toMatchObject({ outcome: 'ok' })
+    }
+    const sessions = new Set(calls().map(sessionOf))
+    expect(sessions.size).toBe(3)
+
+    const started = performance.now()
+    await runtime.closeSessions()
+
+    // One after another they would take at least 4.5 s.
+    expect(performance.now() - started).toBeLessThan(4_000)
+    expect(new Set(calls().filter(call => call[0] === 'close').map(sessionOf))).toEqual(sessions)
+    await runtime.closeSessions()
+    expect(calls().filter(call => call[0] === 'close')).toHaveLength(3)
   })
 
   it('launches the browser with the approved list as its allowed domains', async () => {

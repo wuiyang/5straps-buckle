@@ -16,9 +16,10 @@ const ANONYMOUS_SESSION_ID = 'rpc'
  * A requestId that already names another call, or a re-sent call that asks for something other than
  * what its requestId already waits on, or that already ran and cannot be answered with its own
  * response, is a conflict; a session or workspace with too many asks waiting is told to slow down; a
- * session id past its cap is a bad request. Other refusals are 422.
+ * session id past its cap is a bad request; a node shutting down or state busy in another process is
+ * unavailable (review L7 of B18-B19). Other refusals are 422.
  */
-const ERROR_STATUS: Readonly<Record<string, number>> = { APPROVAL_CONFLICT: 409, REQUEST_ID_REUSED: 409, REQUEST_ALREADY_EXECUTED: 409, APPROVAL_LIMIT: 429, SESSION_ID_TOO_LONG: 400 }
+const ERROR_STATUS: Readonly<Record<string, number>> = { APPROVAL_CONFLICT: 409, REQUEST_ID_REUSED: 409, REQUEST_ALREADY_EXECUTED: 409, APPROVAL_LIMIT: 429, SESSION_ID_TOO_LONG: 400, BUCKLE_SHUTTING_DOWN: 503, STATE_BUSY: 503 }
 
 export default defineOperationHandler({
   guards: [requireAgent(INVOKE_REFUSED)],

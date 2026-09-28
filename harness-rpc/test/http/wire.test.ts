@@ -1,5 +1,5 @@
 import { request as httpRequest } from 'node:http'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -80,18 +80,34 @@ describe('/v1/invoke over node:http', () => {
 })
 
 describe('a client that hangs up over node:http', () => {
-  it('cancels the ask it left waiting for approval, and nothing runs', async () => {
+  // Owner decision D4 (rpc.md: resumable waiting): a dropped transport is not a cancel. HTTP cannot
+  // tell the two apart, so the ask stays pending, as after an elapsed hold, and a re-send joins it.
+  it('keeps the ask it left waiting for approval; a re-send with the same requestId joins it and the tool runs once', async () => {
     const { url, root, buckle } = await listening({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
     const body = JSON.stringify({ requestId: 'wire-hang-up', tool: 'fs_write', args: { path: join(root, 'outside.md'), content: 'x' } })
     const request = httpRequest(new URL('/v1/invoke', url), { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) } })
     request.on('error', () => undefined)
     request.end(body)
     await vi.waitFor(() => expect(buckle.runtime.approvals.pending()).toHaveLength(1), { timeout: 10_000 })
+    const [token] = buckle.runtime.approvals.pending().map(pending => pending.token)
 
     request.destroy()
 
-    await vi.waitFor(() => expect(buckle.runtime.approvals.pending()).toEqual([]), { timeout: 10_000 })
-    await vi.waitFor(() => expect(buckle.runtime.actions.read(20)).toContainEqual(expect.objectContaining({ tool: 'fs_write', event: 'result', requestId: 'wire-hang-up' })), { timeout: 10_000 })
+    const results = () => buckle.runtime.actions.read(50).filter(entry => entry.event === 'result' && entry.requestId === 'wire-hang-up')
+    await vi.waitFor(() => expect(results()).toHaveLength(1), { timeout: 10_000 })
+    expect(buckle.runtime.approvals.pending().map(pending => pending.token)).toEqual([token])
     expect(existsSync(join(root, 'outside.md'))).toBe(false)
+
+    const resent = fetch(new URL('/v1/invoke', url), { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body })
+    await vi.waitFor(() => expect(buckle.runtime.actions.read(50).filter(entry => entry.event === 'attempt' && entry.requestId === 'wire-hang-up')).toHaveLength(2), { timeout: 10_000 })
+    // Joined: no second ask was issued.
+    expect(buckle.runtime.approvals.pending().map(pending => pending.token)).toEqual([token])
+    expect((await buckle.runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+
+    const reply = await resent
+    expect(reply.status).toBe(200)
+    expect(await reply.json()).toMatchObject({ requestId: 'wire-hang-up', outcome: 'ok' })
+    expect(readFileSync(join(root, 'outside.md'), 'utf8')).toBe('x')
+    expect(results().map(entry => entry.outcome).filter(outcome => outcome === 'ok')).toHaveLength(1)
   })
 })

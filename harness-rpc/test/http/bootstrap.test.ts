@@ -186,13 +186,16 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     expect(buckle.lines().at(-1)?.message).toBe('5straps Buckle stopped')
   }, 60_000)
 
-  it('closes stage by stage and exits 0 on SIGINT too', async () => {
+  it('closes stage by stage and exits 0 on SIGINT too, with no client, well within one close step\'s bound', async () => {
     const node = await prepareNode()
     const buckle = serve(node)
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
 
+    const stopping = performance.now()
     buckle.child.kill('SIGINT')
     expect(await buckle.exited).toEqual({ code: 0, signal: null })
+    // A leaked pre-cut-over serve once outlived its SIGINT; nothing here waits out a bound.
+    expect(performance.now() - stopping).toBeLessThan(10_000)
     expect(buckle.lines()).toContainEqual(expect.objectContaining({ message: 'Shutdown requested', fields: expect.objectContaining({ signal: 'SIGINT' }) }))
     const steps = closeSteps(buckle.lines())
     expect(steps).toEqual(expect.arrayContaining([{ stage: 'accept', name: 'http server' }, { stage: 'databases', name: 'workspace history' }, { stage: 'sinks', name: 'logger' }]))
@@ -202,7 +205,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
   }, 60_000)
 
   it('settles a call waiting for approval as approval_required on SIGTERM, keeps its ask pending, and exits 0', async () => {
-    const node = await prepareNode({ BUCKLE_APPROVAL_TIMEOUT_MS: 'forever', BUCKLE_PACKS: 'fs' })
+    const node = await prepareNode({ BUCKLE_APPROVAL_TIMEOUT_MS: '0', BUCKLE_PACKS: 'fs' })
     const buckle = serve(node)
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
     const pendingTokens = () => existsSync(join(node.state, 'approvals.json'))
@@ -222,7 +225,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     expect(existsSync(join(node.workspace, 'held.md'))).toBe(false)
   }, 60_000)
 
-  it('cancels a running shell on SIGTERM: the call answers, the process is gone, and Buckle exits 0 without waiting out its close bound (B19)', async () => {
+  it('cancels a running shell on SIGTERM: the call answers BUCKLE_SHUTTING_DOWN with 503, the process is gone, and Buckle exits 0 with no close step running out its bound (B19)', async () => {
     const marker = `${31 + Math.random()}`.slice(0, 12)
     const node = await prepareNode({ BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell', BUCKLE_ADMIN_TOKEN: 'bootstrap-admin-token', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
     const buckle = serve(node)
@@ -237,12 +240,15 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     expect(answered.status).toBe(200)
     await expect.poll(running, { timeout: 20_000 }).toBe(true)
 
-    const stopping = performance.now()
     buckle.child.kill('SIGTERM')
 
-    expect(await (await waiting).json()).toMatchObject({ requestId: 'long-shell' })
+    // Review L7 and L12 of B18-B19: the cancelled call says why, as a 503.
+    const reply = await waiting
+    expect(reply.status).toBe(503)
+    expect(await reply.json()).toMatchObject({ requestId: 'long-shell', outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN', retryable: false } })
+    // Exit 0 means no close step ran out its bound: one that did fails the close, which exits 1. No wall clock, so a slow ARM64 runner does not flake.
     expect(await buckle.exited).toEqual({ code: 0, signal: null })
-    expect(performance.now() - stopping).toBeLessThan(8_000)
+    expect(buckle.lines().map(line => line.message)).not.toContain('Buckle closed with errors')
     expect(running()).toBe(false)
     expect(closeSteps(buckle.lines())).toContainEqual({ stage: 'jobs', name: 'tool calls' })
   }, 60_000)
@@ -358,6 +364,52 @@ describe('a state directory other users can reach (ruling 7)', () => {
       expect(run.stderr()).toContain(`chmod 700 ${node.state}`)
     }
     expect(readdirSync(node.state)).toEqual([])
+  }, 60_000)
+})
+
+describe('a project outside the root the environment file names (review M4 of B18-B19, owner decision D5: warn)', () => {
+  // The state directory's own file names the root, as `buckle init` writes it; the process environment names neither the file nor a root.
+  async function nodeFromFile(): Promise<{ node: Node; env: NodeJS.ProcessEnv; elsewhere: string }> {
+    const node = await prepareNode({ BUCKLE_PACKS: 'fs' })
+    writeFileSync(join(node.state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${node.workspace}\nBUCKLE_AUTH_TOKEN=outside-root-agent-token\n`, { mode: 0o600 })
+    const { BUCKLE_ENV_FILE: _file, BUCKLE_WORKSPACE_ROOT: _root, BUCKLE_AUTH_TOKEN: _token, ...env } = node.env
+    const elsewhere = join(node.root, 'another-project')
+    mkdirSync(elsewhere)
+    return { node, env, elsewhere }
+  }
+  const warning = (text: string) => text.split('\n').filter(line => line.startsWith('Warning: Buckle serves'))
+
+  it('warns once from buckle call and buckle mcp, naming the working directory, the root and both ways to give the project its own node, and still runs', async () => {
+    const { node, env, elsewhere } = await nodeFromFile()
+    const call = spawnBuckle({ entry, args: ['call', 'fs_list', '--json', '{"path":"."}'], env, cwd: elsewhere })
+    running.push(call)
+    expect(await call.exited).toEqual({ code: 0, signal: null })
+    const [line] = warning(call.stderr())
+    expect(warning(call.stderr())).toHaveLength(1)
+    for (const part of [node.workspace, elsewhere, join(node.state, 'buckle.env'), 'BUCKLE_ENV_FILE', 'BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR']) expect(line).toContain(part)
+    expect(call.stderr()).not.toContain('outside-root-agent-token')
+
+    const mcp = spawnBuckle({ entry, args: ['mcp'], env, cwd: elsewhere, stdin: 'pipe' })
+    running.push(mcp)
+    await mcp.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')
+    mcp.child.stdin!.end()
+    expect(await mcp.exited).toEqual({ code: 0, signal: null })
+    expect(warning(mcp.stderr())).toHaveLength(1)
+  }, 60_000)
+
+  it('stays quiet inside the root, when the process environment names the root or the file, and for other commands', async () => {
+    const { node, env, elsewhere } = await nodeFromFile()
+    const runs = [
+      spawnBuckle({ entry, args: ['call', 'fs_list', '--json', '{"path":"."}'], env, cwd: node.workspace }),
+      spawnBuckle({ entry, args: ['call', 'fs_list', '--json', '{"path":"."}'], env: { ...env, BUCKLE_WORKSPACE_ROOT: node.workspace }, cwd: elsewhere }),
+      spawnBuckle({ entry, args: ['call', 'fs_list', '--json', '{"path":"."}'], env: { ...env, BUCKLE_ENV_FILE: join(node.state, 'buckle.env') }, cwd: elsewhere }),
+      spawnBuckle({ entry, args: ['tools'], env, cwd: elsewhere }),
+    ]
+    running.push(...runs)
+    for (const run of runs) {
+      expect(await run.exited).toEqual({ code: 0, signal: null })
+      expect(warning(run.stderr())).toEqual([])
+    }
   }, 60_000)
 })
 

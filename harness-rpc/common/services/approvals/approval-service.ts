@@ -26,8 +26,18 @@ export interface ApprovalAskInput {
   requestId: string
   tool: string
   asks: Ask[]
-  /** The caller leaving inside the wait cancels the asks; after it, the asks stay answerable. */
+  /**
+   * The caller's own signal. Its abort ends this caller's wait; what becomes of the asks depends on
+   * `isCancel` (owner decision D4, rpc.md: resumable waiting).
+   */
   signal?: AbortSignal
+  /**
+   * Whether an abort is the caller's explicit cancel (MCP notifications/cancelled), which withdraws
+   * the asks. Any other abort is a transport that dropped: the asks stay pending, as after an
+   * elapsed hold, and a re-send with the same requestId joins them. HTTP cannot tell a stop from a
+   * dropped connection, so it passes none and every abort keeps the asks.
+   */
+  isCancel?: (reason: unknown) => boolean
   wait?: ApprovalWait
 }
 
@@ -138,9 +148,10 @@ interface QuestionContext {
  * An ask is issued to the durable queue before anyone is asked, so every entry point has a token and
  * a missing listener is never an approval. The call then races the terminal questions, an answer
  * from another route (in this process at once, from another process within the poll interval), its
- * entry point's hold and the caller's signal. A caller that leaves inside the wait cancels the asks.
- * When a `grace` hold ends first, the call reports back and the terminal keeps asking until the
- * request expires or another route answers.
+ * entry point's hold and the caller's signal. A caller that cancels inside the wait withdraws the
+ * asks; a caller whose transport drops leaves them pending for a re-send to join. When a `grace`
+ * hold ends first, or the caller drops, the call reports back and the terminal keeps asking until
+ * the request expires or another route answers.
  */
 export function createApprovalService(options: ApprovalServiceOptions): ApprovalService {
   // By join key; `live` also holds an ask a newer group under the same key replaced, until it ends.
@@ -171,8 +182,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         await announce(options.announce, approvals)
         scheduleSweep(approvals)
       }
-      // Checked before any question is drawn: a caller that left during the announce is asked about no more (review L5).
-      await cancelIfLeft({ key, tokens, signal: input.signal })
+      // Checked before any question is drawn: a caller that cancelled during the announce is asked about no more (review L5).
+      await cancelIfCancelled({ key, tokens, signal: input.signal, isCancel: input.isCancel })
       if (closing.signal.aborted) return skip({ approvals, answered, reason: 'shutdown' })
       const holdMs = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
       // The hint sets how long the caller is held and never who is asked: a `grace` entry point asks
@@ -184,7 +195,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const context = { correlationId: scope?.context.correlationId ?? input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId }
       if (!ask.prompting) track(ask.prompting = startQuestions({ ask, interaction, context }))
       // The newest joined caller carries the wait; every earlier one ends without running (review M1).
-      for (const earlier of ask.participants) earlier.abort()
+      // A re-send whose own transport already dropped carries nothing on, so the earlier one keeps it.
+      if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
       if (holdMs === 0) {
         if (ask.participants.size === 0) release({ ask, keepAsking: true })
         return skip({ approvals, answered, reason: input.wait?.mode === 'none' ? 'caller_declined_wait' : 'no_wait' })
@@ -192,7 +204,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const participant = new AbortController()
       ask.participants.add(participant)
       const result = waitFor({ ask, participant, hold: interaction.hold, holdMs, signal: input.signal })
-        .then(ending => finish({ ask, participant, ending, hold: interaction.hold, signal: input.signal, own: { approvals, answered } }))
+        .then(ending => finish({ ask, participant, ending, hold: interaction.hold, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
       track(result)
       return result
     },
@@ -365,7 +377,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     return promise
   }
 
-  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; signal?: AbortSignal; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
+  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
     const { ask, ending, own } = input
     ask.participants.delete(input.participant)
     const last = ask.participants.size === 0
@@ -375,9 +387,12 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       return { settled: false, approvals: own.approvals, answered: own.answered, superseded: true }
     }
     if (ending === 'aborted') {
-      if (last) {
+      if (last && cancels(input.signal, input.isCancel)) {
         ask.stop.abort()
         await withdraw(ask.tokens)
+      } else if (last) {
+        // A dropped transport: the asks stay pending and a `grace` terminal keeps asking, as after an elapsed hold.
+        release({ ask, keepAsking: input.hold === 'grace' })
       }
       input.signal?.throwIfAborted()
     }
@@ -412,14 +427,23 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     })
   }
 
-  /** Withdraws the asks when the caller already left and no joined caller still waits, as leaving inside the wait does. */
-  async function cancelIfLeft(input: { key: string; tokens: string[]; signal?: AbortSignal }): Promise<void> {
-    if (!input.signal?.aborted) return
+  /**
+   * Withdraws the asks when the caller already cancelled and no joined caller still waits, as a
+   * cancel inside the wait does. A caller whose transport dropped goes on to the wait, which ends at
+   * once and leaves the asks pending.
+   */
+  async function cancelIfCancelled(input: { key: string; tokens: string[]; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean }): Promise<void> {
+    if (!input.signal?.aborted || !cancels(input.signal, input.isCancel)) return
     if (!open.get(input.key)?.participants.size) await withdraw(input.tokens)
     input.signal.throwIfAborted()
   }
 
   return service
+}
+
+/** Whether the caller's abort is an explicit cancel; without a way to tell, it is a dropped transport. */
+function cancels(signal: AbortSignal | undefined, isCancel: ((reason: unknown) => boolean) | undefined): boolean {
+  return signal?.aborted === true && isCancel?.(signal.reason) === true
 }
 
 /** The in-process twin of the registry's join: the same requestId, session and actor. */

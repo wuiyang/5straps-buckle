@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -168,13 +168,39 @@ describe('durable audit pages', () => {
     const file = logPath()
     writeFileSync(file, 'not a directory')
     const health = createAuditHealth()
-    const refused = createFileActionLog(join(file, 'actions.jsonl'), { health }).record(entry())
+    const broken = join(file, 'actions.jsonl')
+    const refused = createFileActionLog(broken, { health }).record(entry())
     await expect(refused).rejects.toBeInstanceOf(AuditUnavailableError)
     await expect(refused).rejects.toMatchObject({ code: 'AUDIT_UNAVAILABLE', status: 503 })
     await expect(refused).rejects.not.toThrow(file)
     expect(health.available).toBe(false)
+    expect(health.failing(broken)).toBe(true)
+    // Health is kept per log (review M2 of B18-B19): another log writing does not clear this one.
     await createFileActionLog(logPath(), { health }).record(entry())
+    expect(health.available).toBe(false)
+    rmSync(file)
+    await createFileActionLog(broken, { health }).record(entry())
     expect(health.available).toBe(true)
+  })
+
+  it('probes a failing log again at most once per interval, and clears it once the probe opens the log (review M2 of B18-B19)', async () => {
+    const file = logPath()
+    writeFileSync(file, 'not a directory')
+    let now = 0
+    const health = createAuditHealth({ now: () => now, probeIntervalMs: 2_000 })
+    const broken = join(file, 'actions.jsonl')
+    await expect(createFileActionLog(broken, { health }).record(entry())).rejects.toBeInstanceOf(AuditUnavailableError)
+    health.recheck()
+    expect(health.available).toBe(false)
+    rmSync(file)
+    now = 1_999
+    health.recheck()
+    expect(health.available).toBe(false)
+    now = 2_000
+    health.recheck()
+    expect(health.available).toBe(true)
+    // The probe opens the log for append and writes no entry.
+    expect(readFileSync(broken, 'utf8')).toBe('')
   })
 })
 

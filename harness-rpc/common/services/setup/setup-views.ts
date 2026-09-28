@@ -1,6 +1,7 @@
 import { resolveFilesystemAccess, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { isRestrictive } from '../../domain/policy.js'
+import { actionsPath } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { WorkspacePatchSchema, WorkspaceRegistrationSchema, WorkspaceTokenInputSchema, type ManagedWorkspace, type WorkspaceManager, type WorkspaceRegistration } from '../workspaces/workspace-manager.js'
 import { browseDirectories, DirectoryQuerySchema } from './directory-browser.js'
@@ -47,8 +48,8 @@ export function createSetupViews(): SetupViews {
         packs: manifest.packs,
         policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },
         reporting: runtime.reporter.configured,
-        // Unavailable while the audit log refuses writes: tool calls are refused until it is repaired (B19).
-        audit: runtime.auditHealth.available ? 'available' : 'unavailable',
+        // Unavailable while this workspace's audit log refuses writes: its tool calls are refused until it is repaired (B19).
+        audit: runtime.auditHealth.failing(actionsPath(config)) ? 'unavailable' : 'available',
         approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',
         // Read as inspection reads: nothing is owned or recovered to answer it (review L4 of B15-B17).
         activeWork: runtime.inspectActiveWork(),

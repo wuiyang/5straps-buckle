@@ -5,7 +5,7 @@ import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit } from '../cli/init.js'
 import { settingsCommand } from '../cli/settings.js'
-import { defaultEnvironmentFile, environmentFilePath, loadEnvironmentFile } from '../common/runtime/environment.js'
+import { defaultEnvironmentFile, environmentFilePath, loadEnvironmentFile, meetOutsideRoot, namesItsNode, outsideRootNotice } from '../common/runtime/environment.js'
 
 // Owner ruling (2026-09-28): the node's settings live under ~/.5straps, in buckle.env in its state
 // directory, and never in the working directory; BUCKLE_ENV_FILE still names any other file.
@@ -14,7 +14,10 @@ let base: string
 let home: string
 let root: string
 let printed: string
+// loadEnvironmentFile copies the file's BUCKLE_ values into process.env: restored after each test (review L12 of B18-B19).
+let savedEnvironment: NodeJS.ProcessEnv
 beforeEach(() => {
+  savedEnvironment = { ...process.env }
   base = mkdtempSync(join(tmpdir(), 'buckle-env-location-'))
   home = join(base, 'home')
   root = join(base, 'project')
@@ -27,7 +30,13 @@ beforeEach(() => {
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed += String(chunk); return true })
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { printed += String(chunk); return true })
 })
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }) })
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+  for (const name of Object.keys(process.env)) if (!(name in savedEnvironment)) delete process.env[name]
+  Object.assign(process.env, savedEnvironment)
+  rmSync(base, { recursive: true, force: true })
+})
 
 const prompt = { interactive: false, question: async () => '', say: () => {}, close: () => {} }
 const stateFile = () => join(home, '.5straps', 'buckle', 'buckle.env')
@@ -48,6 +57,11 @@ describe('where the environment file is', () => {
     vi.stubEnv('BUCKLE_STATE_DIR', join(base, 'elsewhere'))
     vi.stubEnv('BUCKLE_ENV_FILE', join(base, 'custom.env'))
     expect(environmentFilePath()).toBe(join(base, 'custom.env'))
+  })
+
+  it('refuses a relative BUCKLE_ENV_FILE, which would name another file in every working directory (review L9 of B18-B19)', () => {
+    vi.stubEnv('BUCKLE_ENV_FILE', 'custom.env')
+    expect(() => environmentFilePath()).toThrow('BUCKLE_ENV_FILE must be an absolute path, not custom.env')
   })
 })
 
@@ -71,6 +85,18 @@ describe('loading it', () => {
   it('leaves a .env without BUCKLE_ variables alone', () => {
     writeFileSync(join(root, '.env'), 'APPLICATION_FIXTURE=true\n')
     expect(loadEnvironmentFile()).toEqual({ file: null, openToOthers: false })
+  })
+
+  it('refuses an environment file that names another one, so settings and serve read the same file (review L9 of B18-B19)', async () => {
+    expect((await runInit(['--root', root, '--yes'], prompt)).exitCode).toBe(0)
+    writeFileSync(stateFile(), `${readFileSync(stateFile(), 'utf8')}BUCKLE_ENV_FILE=${join(base, 'other.env')}\n`)
+    expect(() => loadEnvironmentFile()).toThrow(`${stateFile()} sets BUCKLE_ENV_FILE, but an environment file cannot name another one`)
+    expect(process.env.BUCKLE_ENV_FILE).toBeUndefined()
+    // The same when the shell named this file.
+    const named = join(base, 'named.env')
+    writeFileSync(named, `BUCKLE_ENV_FILE=${join(base, 'third.env')}\n`, { mode: 0o600 })
+    vi.stubEnv('BUCKLE_ENV_FILE', named)
+    expect(() => loadEnvironmentFile()).toThrow('cannot name another one')
   })
 
   it('refuses a state directory file that moves the state directory', async () => {
@@ -132,5 +158,27 @@ describe('buckle settings on the state directory file', () => {
     expect(parseEnv(readFileSync(stateFile(), 'utf8')).BUCKLE_WORKSPACE_ROOT).toBe(next)
     expect((await settingsCommand({ ...context, argv: ['unset', 'root'] })).exitCode).toBe(1)
     expect(printed).toContain('must name its workspace root')
+  })
+})
+
+describe('a project outside the root the file names (review M4 of B18-B19, owner decision D5)', () => {
+  it('names the working directory, the root, the file and both ways to give the project its own node', () => {
+    const notice = outsideRootNotice({ namedNode: false, root, cwd: base, file: stateFile() })
+    for (const part of [root, base, stateFile(), 'BUCKLE_ENV_FILE', 'BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR', 'in the MCP config\'s env']) expect(notice).toContain(part)
+  })
+
+  it('says nothing inside the root, or when the process environment named the node itself', () => {
+    mkdirSync(join(root, 'src'))
+    expect(outsideRootNotice({ namedNode: false, root, cwd: root, file: stateFile() })).toBeNull()
+    expect(outsideRootNotice({ namedNode: false, root, cwd: join(root, 'src'), file: stateFile() })).toBeNull()
+    expect(outsideRootNotice({ namedNode: true, root, cwd: base, file: stateFile() })).toBeNull()
+    expect(namesItsNode({})).toBe(false)
+    expect(namesItsNode({ BUCKLE_WORKSPACE_ROOT: root })).toBe(true)
+    expect(namesItsNode({ BUCKLE_ENV_FILE: stateFile() })).toBe(true)
+  })
+
+  it('warns on stderr and goes on: the owner chose warn, not refuse', () => {
+    expect(() => meetOutsideRoot('the notice')).not.toThrow()
+    expect(printed).toBe('Warning: the notice\n')
   })
 })

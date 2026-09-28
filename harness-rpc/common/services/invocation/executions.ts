@@ -7,6 +7,9 @@ export const EXECUTION_TTL_MS = 10 * 60_000
 export const EXECUTION_LIMIT = 256
 /** A finished response kept whole up to this size; a larger one is answered with a stub that names its audit entry. */
 export const EXECUTION_RESPONSE_BYTES = 256 * 1_024
+/** The kept responses' bytes per workspace, and across the node's workspaces; the oldest go first (review L3 of B18-B19). */
+export const WORKSPACE_EXECUTION_BYTES = 16 * 1_024 * 1_024
+export const NODE_EXECUTION_BYTES = 64 * 1_024 * 1_024
 /** What a re-send of a call that already ran is told when its own response cannot be given. */
 export const REQUEST_ALREADY_EXECUTED = 'REQUEST_ALREADY_EXECUTED'
 /** What a call is told when its requestId already names a different call (another tool or other arguments). */
@@ -23,6 +26,14 @@ export interface ExecutionKey {
   requestId: string
   /** The tool and its arguments, hashed (requestFingerprint). */
   fingerprint: string
+}
+
+/**
+ * The key a requestId joins and dedupes under: a hash of the whole id, so two ids that share a
+ * prefix never meet, and a long id stores as 64 characters (review L2 of B18-B19).
+ */
+export function requestIdKey(requestId: string): string {
+  return createHash('sha256').update(requestId).digest('hex')
 }
 
 /** The same call's fingerprint whatever order its arguments' keys arrive in. */
@@ -62,33 +73,82 @@ interface Kept<T> {
 
 interface Finished extends Kept<InvokeResponse> {
   expiresAt: number
+  slot: BudgetSlot
+}
+
+/** One kept response as the node's budget counts it; `evict` drops it from its workspace's store. */
+export interface BudgetSlot {
+  readonly bytes: number
+  evict(): void
+}
+
+/** The node's byte budget for kept responses, shared by every workspace's store; the node-wide oldest goes first. */
+export interface ExecutionBudget {
+  add(slot: BudgetSlot): void
+  remove(slot: BudgetSlot): void
+}
+
+export function createExecutionBudget(limitBytes = NODE_EXECUTION_BYTES): ExecutionBudget {
+  // Insertion order is age: the first slot is the node's oldest kept response.
+  const slots = new Set<BudgetSlot>()
+  let bytes = 0
+  const budget: ExecutionBudget = {
+    add(slot) {
+      slots.add(slot)
+      bytes += slot.bytes
+      for (const oldest of slots) {
+        if (bytes <= limitBytes) break
+        oldest.evict()
+      }
+    },
+    remove(slot) {
+      if (slots.delete(slot)) bytes -= slot.bytes
+    },
+  }
+  return budget
 }
 
 /**
  * Execution dedupe by requestId, per workspace (nitro/coordination.md, Completion and queue:
  * "Reconnection must not execute a request twice"; review M2 of B13-B14). A re-send while the call
  * runs gets its response when it settles; a finished call answers a re-send for EXECUTION_TTL_MS, its
- * response kept whole when small and as a REQUEST_ALREADY_EXECUTED stub otherwise. Only calls whose
- * tool actually ran are kept: a refusal, an approval still required or a superseded call asks again.
+ * response kept whole when small and as a REQUEST_ALREADY_EXECUTED stub otherwise, within a byte
+ * budget per workspace and one per node. Only calls whose tool actually ran are kept: a refusal, an
+ * approval still required or a superseded call asks again, and so does an error the tool called
+ * retryable, so an idempotent retry under the same requestId runs again (review L4 of B18-B19).
  * Kept in memory, so a restart forgets them; the action log keeps every run.
  */
-export function createExecutions(options: { now?: () => number } = {}): Executions {
+export function createExecutions(options: { now?: () => number; budget?: ExecutionBudget; workspaceBytes?: number } = {}): Executions {
   const now = options.now ?? Date.now
+  const budget = options.budget ?? createExecutionBudget()
+  const workspaceBytes = options.workspaceBytes ?? WORKSPACE_EXECUTION_BYTES
   const running = new Map<string, Kept<Promise<InvokeResponse>>>()
   const finished = new Map<string, Finished>()
+  let bytes = 0
+
+  function forget(id: string): void {
+    const entry = finished.get(id)
+    if (!entry) return
+    finished.delete(id)
+    bytes -= entry.slot.bytes
+    budget.remove(entry.slot)
+  }
 
   function finishedFor(id: string): Finished | undefined {
     const entry = finished.get(id)
-    if (entry && entry.expiresAt <= now()) finished.delete(id)
+    if (entry && entry.expiresAt <= now()) forget(id)
     return finished.get(id)
   }
 
-  function keep(id: string, entry: Kept<InvokeResponse>): void {
-    finished.delete(id)
-    finished.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS })
+  function keep(id: string, entry: Kept<InvokeResponse>, size: number): void {
+    forget(id)
+    const slot: BudgetSlot = { bytes: size, evict: () => { if (finished.get(id)?.slot === slot) forget(id) } }
+    finished.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS, slot })
+    bytes += size
+    budget.add(slot)
     for (const oldest of finished.keys()) {
-      if (finished.size <= EXECUTION_LIMIT) break
-      finished.delete(oldest)
+      if (finished.size <= EXECUTION_LIMIT && bytes <= workspaceBytes) break
+      forget(oldest)
     }
   }
 
@@ -117,7 +177,10 @@ export function createExecutions(options: { now?: () => number } = {}): Executio
             running.delete(id)
             const answer = started && callerLeft ? alreadyExecuted({ requestId: response.requestId, auditId, reason: 'interrupted' }) : response
             settled.resolve(answer)
-            if (started) keep(id, { fingerprint: key.fingerprint, outcome: fitsKept(answer) ? answer : alreadyExecuted({ requestId: response.requestId, auditId, reason: 'too_large' }) })
+            if (!started || isRetryable(answer)) return
+            const size = responseBytes(answer)
+            const kept = size <= EXECUTION_RESPONSE_BYTES ? answer : alreadyExecuted({ requestId: response.requestId, auditId, reason: 'too_large' })
+            keep(id, { fingerprint: key.fingerprint, outcome: kept }, kept === answer ? size : responseBytes(kept))
           },
         },
       }
@@ -135,8 +198,12 @@ function canonical(value: JsonValue): JsonValue {
   return Object.fromEntries(Object.keys(value).sort().map(name => [name, canonical(value[name]!)]))
 }
 
-function fitsKept(response: InvokeResponse): boolean {
-  return Buffer.byteLength(JSON.stringify(response)) <= EXECUTION_RESPONSE_BYTES
+function responseBytes(response: InvokeResponse): number {
+  return Buffer.byteLength(JSON.stringify(response))
+}
+
+function isRetryable(response: InvokeResponse): boolean {
+  return response.outcome === 'error' && response.error.retryable
 }
 
 const ALREADY_EXECUTED_MESSAGE = {

@@ -57,13 +57,13 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
           }
         } finally { closeSync(descriptor) }
         await pending.track(entry, offset)
-        options.health?.succeeded()
+        options.health?.succeeded(filePath)
       } catch (error) {
         logger.error('Could not durably write the action log', { filePath, error })
         // Another process held the pending-audit state past the wait: temporary, so the caller is told
         // to retry, as for any busy state (review L3 of B15-B17), and the storage is not unhealthy.
         if (error instanceof StateBusyError) throw error
-        options.health?.failed()
+        options.health?.failed(filePath, () => probe(filePath))
         throw new AuditUnavailableError({ cause: error })
       }
     },
@@ -106,4 +106,14 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     },
   }
   return log
+}
+
+/**
+ * Whether the log takes writes again, without writing an entry: its directory and the file open for
+ * append, and the file syncs. A disk that is full still passes; the next write marks it again.
+ */
+function probe(filePath: string): void {
+  mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
+  const descriptor = openSync(filePath, 'a', 0o600)
+  try { fsyncSync(descriptor) } finally { closeSync(descriptor) }
 }

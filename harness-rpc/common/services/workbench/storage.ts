@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { acquireFileLock, type FileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { WorkbenchIdSchema, WorkbenchRecordSchema, type WorkbenchRecord } from '@5straps/protocol'
+import { workspaceStateKey } from '../../domain/workspace-key.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 
 export class WorkbenchError extends Error implements ServiceFailure {
@@ -20,6 +21,26 @@ const MIN_GRANT_LENGTH = 32
 export function workbenchGrant(authorization: string | undefined): string | null {
   const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : ''
   return token.length >= MIN_GRANT_LENGTH ? token : null
+}
+/** Where a workspace keeps its workbenches: under its state directory, keyed by its root. */
+export function workbenchesDirectory(input: { stateDirectory: string; root: string }): string {
+  return join(input.stateDirectory, 'workbenches', workspaceStateKey(input.root))
+}
+/**
+ * Whether the grant opens the workbench as stored, compared in constant time and read without owning,
+ * creating or recovering anything: the check that runs before any workspace runtime opens (review L1
+ * of B18-B19). Anything unreadable is simply not a match.
+ */
+export function storedGrantMatches(input: { directory: string; workbenchId: string; token: string }): boolean {
+  if (!WorkbenchIdSchema.safeParse(input.workbenchId).success) return false
+  try {
+    const { tokenHash } = StoredWorkbenchSchema.pick({ tokenHash: true }).parse(JSON.parse(readFileSync(join(input.directory, input.workbenchId, 'state.json'), 'utf8')))
+    const stored = Buffer.from(tokenHash, 'hex')
+    const presented = Buffer.from(workbenchHash(input.token), 'hex')
+    return stored.length === presented.length && timingSafeEqual(stored, presented)
+  } catch {
+    return false
+  }
 }
 export function publicWorkbench(record: StoredWorkbench): WorkbenchRecord {
   const { tokenHash: _token, policyHash: _policy, ...value } = record

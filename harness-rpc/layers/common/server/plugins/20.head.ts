@@ -10,7 +10,8 @@ import { definePlugin } from 'nitro'
  */
 export default definePlugin((nitroApp) => {
   const app = nitroApp.h3
-  if (!app) return
+  // A Nitro or h3 bump that renames either fails the start, never HEAD silently (review L12 of B18-B19; plan risk 7).
+  if (!app || typeof app['~findRoute'] !== 'function') throw new Error('Buckle serves HEAD through the h3 app\'s ~findRoute, which this Nitro build does not have; re-verify 20.head.ts against the pinned nitro and h3')
   const findRoute = app['~findRoute'].bind(app)
   app['~findRoute'] = (event) => {
     if (event.req.method !== 'HEAD') return findRoute(event)

@@ -107,11 +107,14 @@ describe('a re-sent call after part of its asks were answered (review M2)', () =
 })
 
 describe('what the registry keeps about an ask', () => {
-  it('stores a caller-chosen requestId no longer than the audit log does (review L4)', async () => {
+  it('stores a caller-chosen requestId as a hash of the whole id, so ids that share a long prefix never join (review L2 of B18-B19)', async () => {
     const { config, runtime } = await node()
-    await runtime.invoke({ sessionId: 'chat-1', request: single('r'.repeat(5_000)), approvalWait: { mode: 'none' } })
+    const prefix = 'r'.repeat(5_000)
+    await runtime.invoke({ sessionId: 'chat-1', request: single(`${prefix}-a`), approvalWait: { mode: 'none' } })
+    await runtime.invoke({ sessionId: 'chat-1', request: single(`${prefix}-b`), approvalWait: { mode: 'none' } })
     const stored = JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as { pending: Array<{ requestId: string }> }
-    expect(stored.pending.map(entry => entry.requestId.length)).toEqual([200])
+    expect(stored.pending.map(entry => entry.requestId)).toEqual([expect.stringMatching(/^[\da-f]{64}$/), expect.stringMatching(/^[\da-f]{64}$/)])
+    expect(new Set(stored.pending.map(entry => entry.requestId)).size).toBe(2)
     await runtime.history.close()
   })
 
@@ -196,17 +199,31 @@ describe('ordering inside a request and at close (review L5)', () => {
   }
   const call = { sessionId: 's', requestId: 'r', tool: 'fs_write', asks: [outside(1)] }
 
-  it('draws no question for a caller that left while the ask was announced', async () => {
+  it('draws no question for a caller that cancelled while the ask was announced, and withdraws it', async () => {
     const registry = queue()
     const requestCli = vi.fn<RequestCli>(async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' }))
     const leaving = new AbortController()
     const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction({ hold: 'grace', requestCli }),
       announce: async () => { leaving.abort() } })
 
-    await expect(service.request({ ...call, signal: leaving.signal })).rejects.toThrow()
+    await expect(service.request({ ...call, signal: leaving.signal, isCancel: () => true })).rejects.toThrow()
 
     expect(requestCli).not.toHaveBeenCalled()
     expect(registry.pending()).toEqual([])
+  })
+
+  it('keeps the ask of a caller whose transport dropped while it was announced, and a grace terminal still asks (owner decision D4)', async () => {
+    const registry = queue()
+    const requestCli = vi.fn<RequestCli>(async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' }))
+    const dropped = new AbortController()
+    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction({ hold: 'grace', requestCli }),
+      announce: async () => { dropped.abort() } })
+
+    await expect(service.request({ ...call, signal: dropped.signal })).rejects.toThrow()
+
+    expect(registry.pending()).toHaveLength(1)
+    await vi.waitFor(() => expect(requestCli).toHaveBeenCalledTimes(1))
+    await service.close()
   })
 
   it('lets a terminal answer already being recorded finish before close returns', async () => {

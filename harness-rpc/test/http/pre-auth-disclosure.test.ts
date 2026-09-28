@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ActionLogEntry } from '../../common/types/ports/action-log.js'
@@ -56,7 +56,8 @@ describe('a workspace whose stored policy will not load', () => {
     const probes: Array<{ path: string; token?: string; method?: string; status: number; error: string }> = [
       // The review's probe: no credential on a workbench twin opens nothing and says nothing.
       { path: workbench, status: 401, error: 'Unauthorized' },
-      { path: workbench, token: FAKE_GRANT, status: 503, error: 'Workspace is unavailable' },
+      // Review L1 of B18-B19: a fake grant is checked against the stored record, so nothing opens and it is a 401 too.
+      { path: workbench, token: FAKE_GRANT, status: 401, error: 'Unauthorized' },
       { path: '/workspaces/two/v1/manifest', token: agent('two'), status: 409, error: 'Workspace policy needs owner repair' },
       { path: '/workspaces/two/v1/skills', token: agent('two'), status: 409, error: 'Workspace policy needs owner repair' },
       { path: '/workspaces/two/health', token: agent('two'), status: 409, error: 'Workspace policy needs owner repair' },
@@ -80,7 +81,7 @@ describe('a workspace whose stored policy will not load', () => {
     breakStoredPolicy(buckle.state, 'two', await register(buckle, 'two'))
     await buckle.request(`/workspaces/two/v1/workbenches/${randomUUID()}`, { headers: bearer(FAKE_GRANT) })
     const refusal = nodeLog(buckle).find(entry => entry.tool === 'workbench_auth_rejected')
-    expect(refusal).toMatchObject({ workspaceId: 'two', detail: 'HTTP 503' })
+    expect(refusal).toMatchObject({ workspaceId: 'two', detail: 'HTTP 401' })
     expect(JSON.stringify(nodeLog(buckle))).not.toContain(FAKE_GRANT)
   })
 })
@@ -98,5 +99,35 @@ describe('workbench twins before the grant (review L6)', () => {
     }
     const unresolved = nodeLog(buckle).filter(entry => entry.tool === 'workbench_auth_rejected' && entry.workspaceId === 'unresolved')
     expect(unresolved).toHaveLength(3)
+  })
+})
+
+describe('a fake grant before authentication (review L1 of B18-B19)', () => {
+  it('answers 401 for a workspace whose root is gone, a broken policy, a disabled one and a healthy one, and opens none of their runtimes', async () => {
+    const buckle = await node()
+    const gone = await register(buckle, 'gone')
+    breakStoredPolicy(buckle.state, 'broken', await register(buckle, 'broken'))
+    await register(buckle, 'sleepy')
+    await register(buckle, 'healthy')
+    expect((await buckle.request('/setup/workspaces/sleepy', { method: 'PATCH', headers: bearer(NODE_ADMIN), body: JSON.stringify({ enabled: false }) })).status).toBe(200)
+    rmSync(gone, { recursive: true })
+    const opened = async () => (await (await buckle.services.getWorkspaces()).opened()).map(runtime => runtime.workspaceId)
+    const before = await opened()
+    // Only the PATCH that disabled it opened one; the probes below must open no other.
+    expect(before).toEqual(['sleepy'])
+
+    for (const workspace of ['gone', 'broken', 'sleepy', 'healthy', 'default']) {
+      const response = await buckle.request(`/workspaces/${workspace}/v1/workbenches/${randomUUID()}`, { headers: bearer(FAKE_GRANT) })
+      expect({ workspace, status: response.status, body: await response.json() }).toEqual({ workspace, status: 401, body: { error: 'Unauthorized' } })
+    }
+    expect(await opened()).toEqual(before)
+  })
+
+  it('still answers the registry\'s own 503 when the registry cannot be read', async () => {
+    const buckle = await node()
+    await register(buckle, 'one')
+    writeFileSync(join(buckle.state, 'workspaces.json'), '{ not json')
+    const response = await buckle.request(`/workspaces/one/v1/workbenches/${randomUUID()}`, { headers: bearer(FAKE_GRANT) })
+    expect({ status: response.status, body: await response.json() }).toEqual({ status: 503, body: { error: 'Workspace registry needs owner repair' } })
   })
 })

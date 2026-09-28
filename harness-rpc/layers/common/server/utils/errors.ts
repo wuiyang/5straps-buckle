@@ -64,14 +64,13 @@ export async function mapAgentFailures<T>(run: () => T | Promise<T>): Promise<T>
 }
 
 /**
- * What a failure before any credential was checked answers: the registry's own 503, a workspace the
- * registry refuses by its own path-free message, and anything else a fixed 503 without its cause,
- * because the caller is unauthenticated (review M1 of B15-B17).
+ * What a failure before any credential was checked answers: the registry's own 503, and 401 for
+ * anything else, so an unauthenticated caller cannot tell a broken workspace from a wrong credential
+ * (review M1 of B15-B17, L1 of B18-B19). The cause goes to the owner's log only.
  */
 export function beforeCredential(error: unknown): HTTPError {
   if (hasCode(error, REGISTRY_UNREADABLE)) return registryNeedsRepair()
-  if (hasCode(error, 'WORKSPACE_REFUSED')) return toHttpError(error) as HTTPError
-  return HTTPError.status(503, 'Service Unavailable', { message: 'Workspace is unavailable' })
+  return unauthorized()
 }
 
 /** Whether a failure before the credential was the registry's own, which says nothing about one workspace. */

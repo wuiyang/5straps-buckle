@@ -1,5 +1,7 @@
 import { CLIENT_CAPABILITIES_META_KEY, type ServerContext } from '@modelcontextprotocol/server'
 import { createMcpServer } from '../mcp/server.js'
+import { isExplicitCancel } from '../mcp/stdio.js'
+import { SdkError, SdkErrorCode } from '@modelcontextprotocol/server'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,11 +33,13 @@ async function fixture(timeoutMs: number | null) {
 it.each(['-1', '60000ms', 'Infinity', '2147483648', '1.5'])('rejects invalid wait %s', value => {
   expect(() => parseApprovalTimeout(value, 15_000)).toThrow()
 })
-it('accepts a minute, and 0 or forever for a wait with no deadline', () => {
+it('accepts a minute, and 0 for a wait with no deadline', () => {
   expect(parseApprovalTimeout('60000', 15_000)).toBe(60_000)
-  expect(parseApprovalTimeout('forever', 15_000)).toBeNull()
   // Owner ruling of 2026-09-28: 0 holds a call until someone answers.
   expect(parseApprovalTimeout('0', 15_000)).toBeNull()
+})
+it('refuses the old forever spelling, naming 0 (ruling 2: one spelling)', () => {
+  expect(() => parseApprovalTimeout('forever', 15_000)).toThrow('use 0 to wait until someone answers')
 })
 it('holds for one minute, then leaves the question answerable', async () => {
   vi.useFakeTimers()
@@ -75,18 +79,22 @@ it('represents indefinite questions without overflowing terminal timers', () => 
   expect(remainingMs(APPROVAL_NO_DEADLINE)).toBe(Infinity)
   expect(describeExpiry(APPROVAL_NO_DEADLINE)).toContain('no expiry')
 })
-it('cancels a waiting invocation, removes its pending approval and never writes', async () => {
+it.each([
+  ['an explicit cancel removes its pending approval', true, 0],
+  ['a dropped transport keeps its pending approval (owner decision D4)', false, 1],
+] as const)('ends a waiting invocation on its caller\'s abort, never writes, and %s', async (_, cancel, pending) => {
   const root = directory()
   mkdirSync(join(root, 'workspace'))
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: 'forever' })
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
   const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   const controller = new AbortController()
-  const result = runtime.invoke({ sessionId: 'cancel-test', signal: controller.signal, request: { requestId: 'cancel-write', tool: 'fs_write', args: { path: 'probe.txt', content: 'must not land' }, approvalTokens: [] } })
+  const result = runtime.invoke({ sessionId: 'cancel-test', signal: controller.signal, ...(cancel ? { isCancel: () => true } : {}), request: { requestId: 'cancel-write', tool: 'fs_write', args: { path: 'probe.txt', content: 'must not land' }, approvalTokens: [] } })
   await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
   controller.abort()
   expect((await result).outcome).toBe('error')
-  expect(runtime.approvals.pending()).toEqual([])
+  expect(runtime.approvals.pending()).toHaveLength(pending)
   expect(existsSync(join(config.cwd, 'probe.txt'))).toBe(false)
+  await runtime.approvalService.close()
 })
 
 it.each([true, false])('finishes the same MCP call after owner decision approved=%s', async approved => {
@@ -99,27 +107,42 @@ it.each([true, false])('finishes the same MCP call after owner decision approved
   expect(Boolean(result.isError)).toBe(!approved)
   expect(existsSync(join(runtime.paths().root, 'probe.txt'))).toBe(approved)
 })
-it('propagates MCP cancellation without executing the pending write', async () => {
-  const { runtime, call } = await mcpFixture()
+it('propagates MCP stdio cancellation without executing the pending write, and withdraws the ask', async () => {
+  const { runtime, call } = await mcpFixture(false, isExplicitCancel)
   const controller = new AbortController()
   const waiting = call(controller.signal)
   await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
-  controller.abort()
+  // notifications/cancelled: the SDK aborts with the client's reason.
+  controller.abort('user stopped the call')
   expect((await waiting).isError).toBe(true)
   expect(runtime.approvals.pending()).toHaveLength(0)
   expect(existsSync(join(runtime.paths().root, 'probe.txt'))).toBe(false)
 })
-it('offers native elicitation immediately even when external approval wait is forever', async () => {
+it.each([
+  ['stdio, when the connection closes', isExplicitCancel, new SdkError(SdkErrorCode.ConnectionClosed, 'Connection closed')],
+  ['HTTP, which cannot tell a cancel from a dropped socket', undefined, 'user stopped the call'],
+] as const)('keeps the ask of an MCP call over %s, and writes nothing (owner decision D4)', async (_, isCancel, reason) => {
+  const { runtime, call } = await mcpFixture(false, isCancel)
+  const controller = new AbortController()
+  const waiting = call(controller.signal)
+  await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
+  controller.abort(reason)
+  expect((await waiting).isError).toBe(true)
+  expect(runtime.approvals.pending()).toHaveLength(1)
+  expect(existsSync(join(runtime.paths().root, 'probe.txt'))).toBe(false)
+  await runtime.approvalService.close()
+})
+it('offers native elicitation immediately even when the node waits until answered', async () => {
   const { call } = await mcpFixture(true)
   expect(await call(new AbortController().signal)).toMatchObject({ resultType: 'input_required' })
 })
 
-async function mcpFixture(nativePrompt = false) {
+async function mcpFixture(nativePrompt = false, isCancel?: (reason: unknown) => boolean) {
   const root = directory()
   mkdirSync(join(root, 'workspace'))
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: 'forever' })
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
   const runtime = await createRuntime({ config, interaction: fixedInteraction() })
-  const server = createMcpServer({ runtime, serverName: 'wait-test', version: '1', trustedApprovalResponses: nativePrompt })
+  const server = createMcpServer({ runtime, serverName: 'wait-test', version: '1', trustedApprovalResponses: nativePrompt, ...(isCancel ? { isCancel } : {}) })
   // The SDK does not expose handlers publicly; exercise its registered callback with a request context.
   const registered = (server as unknown as { _registeredTools: Record<string, { handler(args: unknown, context: ServerContext): Promise<{ isError?: boolean }> }> })._registeredTools
   return { runtime, call: (signal: AbortSignal) => registered.fs_write!.handler({ path: 'probe.txt', content: 'approved' }, {
@@ -127,7 +150,7 @@ async function mcpFixture(nativePrompt = false) {
   } as unknown as ServerContext) }
 }
 
-it('ends a forever wait when one of several gates is denied', async () => {
+it('ends a wait with no deadline when one of several gates is denied', async () => {
   vi.useFakeTimers()
   const { approvals, request } = await fixture(null)
   const waiting = request([

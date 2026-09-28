@@ -37,12 +37,17 @@ export interface ActionLog {
 }
 
 /**
- * Whether the audit log takes its writes, for readiness and the owner's status (B19). One per process,
- * shared by every workspace's log: the last write decides, so a repaired storage is ready again at its
- * next write.
+ * Whether the node's audit logs take their writes, for readiness and the owner's status (B19). One
+ * per process, shared by every workspace's log, and kept per log: the node is ready while no log
+ * fails (review M2 of B18-B19).
  */
 export interface AuditHealth {
+  /** No log's last write, or last probe, failed. */
   readonly available: boolean
-  succeeded(): void
-  failed(): void
+  failing(log: string): boolean
+  succeeded(log: string): void
+  /** `probe` tries the log again without writing an entry, and throws while it still fails. */
+  failed(log: string, probe: () => void): void
+  /** Probes each failing log, at most once per interval; a probe that succeeds clears its log. */
+  recheck(): void
 }

@@ -5,8 +5,9 @@ import { createOperationScope, runInScope } from '@5straps/runtime'
 import type { InvokeRequest, InvokeResponse } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
-import { createExecutions, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint } from '../common/services/invocation/executions.js'
+import { createExecutionBudget, createExecutions, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint, requestIdKey } from '../common/services/invocation/executions.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { ToolExecutionError } from '../common/domain/tool.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
 // Review M2 of B13-B14 (plan corrections): a re-send never runs a call twice, beyond the approval wait
@@ -152,6 +153,54 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
   })
 })
 
+describe('the requestId, the result write and retryable errors (review L2, L4 and L5 of B18-B19)', () => {
+  it('keys a re-send on the whole requestId: two ids that share their first 200 characters are two calls, each answered with its own id', async () => {
+    const { runtime } = await node()
+    const runs = watchRuns(runtime, 'fs_read')
+    const prefix = 'p'.repeat(200)
+    const one = await runtime.invoke({ sessionId: 'chat-1', request: read(`${prefix}-one`) })
+    const two = await runtime.invoke({ sessionId: 'chat-1', request: read(`${prefix}-two`) })
+    expect(runs.runs()).toBe(2)
+    expect(one.requestId).toBe(`${prefix}-one`)
+    expect(two.requestId).toBe(`${prefix}-two`)
+    // The replay of a kept call echoes the caller's own id.
+    expect((await runtime.invoke({ sessionId: 'chat-1', request: read(`${prefix}-two`) })).requestId).toBe(`${prefix}-two`)
+    expect(runs.runs()).toBe(2)
+    expect(requestIdKey('x'.repeat(10_000))).toMatch(/^[\da-f]{64}$/)
+  })
+
+  it('keeps no response whose error the tool called retryable, so a retry under the same requestId runs again', async () => {
+    const { runtime } = await node()
+    const registered = runtime.registry().get('fs_read')
+    const prepare = registered.prepare.bind(registered)
+    let runs = 0
+    vi.spyOn(registered, 'prepare').mockImplementation(args => ({ ...prepare(args), execute: async () => {
+      runs += 1
+      throw new ToolExecutionError('timed out', { code: 'LSP_TIMEOUT', retryable: true })
+    } }))
+    expect(await runtime.invoke({ sessionId: 'chat-1', request: read('flaky') })).toMatchObject({ outcome: 'error', error: { code: 'LSP_TIMEOUT', retryable: true } })
+    expect(await runtime.invoke({ sessionId: 'chat-1', request: read('flaky') })).toMatchObject({ outcome: 'error', error: { code: 'LSP_TIMEOUT' } })
+    expect(runs).toBe(2)
+    expect(results(runtime, 'flaky').filter(entry => entry.detail === 'REPLAYED')).toEqual([])
+  })
+
+  it('answers a call that ran with its real response when the result entry cannot be written', async () => {
+    const { runtime } = await node()
+    const record = runtime.actions.record.bind(runtime.actions)
+    vi.spyOn(runtime.actions, 'record').mockImplementation(async (entry) => {
+      if (entry.event === 'result' && entry.requestId === 'ran-unrecorded') throw new Error('disk gone')
+      return record(entry)
+    })
+    expect(await runtime.invoke({ sessionId: 'chat-1', request: read('ran-unrecorded') })).toMatchObject({ outcome: 'ok', output: { content: 'first body' } })
+    // A call refused before it ran still needs its entry: nothing ran, so the failure stands.
+    vi.mocked(runtime.actions.record).mockImplementation(async (entry) => {
+      if (entry.event === 'result') throw new Error('disk gone')
+      return record(entry)
+    })
+    await expect(runtime.invoke({ sessionId: 'x'.repeat(201), request: read('refused-unrecorded') })).rejects.toThrow('disk gone')
+  })
+})
+
 describe('shutdown\'s tool calls step (B19)', () => {
   it('cancels a running call, which answers before the step ends, and refuses later calls without running them', async () => {
     const { runtime } = await node()
@@ -168,6 +217,17 @@ describe('shutdown\'s tool calls step (B19)', () => {
     expect(await runtime.invoke({ sessionId: 'chat-1', request: read('late') })).toMatchObject({ outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN' } })
     expect(runs.runs()).toBe(1)
     expect(results(runtime, 'late')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'BUCKLE_SHUTTING_DOWN' })])
+  })
+
+  it('never reads shutdown as the caller leaving: an ask made while the tool calls step fires stays pending (review L6 of B18-B19)', async () => {
+    const { runtime, root } = await node()
+    await runtime.cancelInvocations()
+    // The service's own close settles waits; the jobs step alone reaches no approval wait.
+    const waiting = runtime.approvalService.request({ sessionId: 'chat-1', requestId: requestIdKey('after-jobs'), tool: 'fs_write', asks: [{ kind: 'ask', rule: 'write_scope', subject: join(root, 'outside.md'), reason: 'outside', offeredScopes: ['once'] }] })
+    await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
+    await runtime.approvalService.close()
+    expect(await waiting).toMatchObject({ settled: false })
+    expect(runtime.approvals.pending()).toHaveLength(1)
   })
 })
 
@@ -201,6 +261,28 @@ describe('the execution store', () => {
     for (let index = 0; index <= EXECUTION_LIMIT; index += 1) ran(executions, `r${index}`)
     expect(executions.earlier(key('r0'))).toBeUndefined()
     expect(executions.earlier(key(`r${EXECUTION_LIMIT}`))).toBeDefined()
+  })
+
+  it('keeps the responses within a byte budget per workspace, and one per node shared by every workspace, the oldest going first (review L3 of B18-B19)', async () => {
+    const answer = (requestId: string) => response(requestId, 'x'.repeat(100_000))
+    const perWorkspace = createExecutions({ workspaceBytes: 250_000 })
+    for (const id of ['w1', 'w2', 'w3']) ran(perWorkspace, id, answer(id))
+    expect(perWorkspace.earlier(key('w1'))).toBeUndefined()
+    expect(await replayed(perWorkspace, 'w3')).toEqual(answer('w3'))
+
+    const budget = createExecutionBudget(250_000)
+    const nodeStore = createExecutions({ budget })
+    const child = createExecutions({ budget })
+    ran(nodeStore, 'n1', answer('n1'))
+    ran(child, 'c1', answer('c1'))
+    ran(child, 'c2', answer('c2'))
+    // The node's oldest went, although it was another workspace's.
+    expect(nodeStore.earlier(key('n1'))).toBeUndefined()
+    expect(await replayed(child, 'c1')).toEqual(answer('c1'))
+    expect(await replayed(child, 'c2')).toEqual(answer('c2'))
+    // A forgotten entry gives its bytes back: another fits without evicting.
+    ran(nodeStore, 'n2', response('n2'))
+    expect(await replayed(child, 'c1')).toEqual(answer('c1'))
   })
 
   it('keeps a large response as a stub naming its audit entry', async () => {

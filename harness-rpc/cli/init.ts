@@ -35,11 +35,6 @@ defaults to http://127.0.0.1:<port>, which only serves a Rings on this host. Pai
 beside an existing environment file keeps its credentials and updates the node's URL.
 `
 
-/**
- * Onboards a workspace: one file the node starts from, two credentials that never meet. The
- * agent token is what a harness or Rings calls tools with; the admin credential is what Rings
- * configures the node with, and no tool call can present it.
- */
 /** Where the questions are asked. A terminal by default; a test hands in scripted answers. */
 export interface InitPrompt {
   interactive: boolean

@@ -109,16 +109,28 @@ describe('why a call stopped waiting while its ask stays pending', () => {
     expect(await waiting).toMatchObject({ settled: false })
   })
 
-  it('tells a cancelled ask when its caller leaves inside the wait', async () => {
+  it('tells a cancelled ask when its caller cancels inside the wait', async () => {
     const { ask, sent, notices, registry } = service({ graceMs: null })
     const leaving = new AbortController()
-    const waiting = ask({ signal: leaving.signal })
+    const waiting = ask({ signal: leaving.signal, isCancel: () => true })
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
     const [pending] = registry.pending()
     leaving.abort()
     await expect(waiting).rejects.toThrow()
     await notices.settle()
     expect(sent).toEqual([{ token: pending!.token, event: 'cancelled', at: expect.any(String) }])
+  })
+
+  it('tells nothing when the caller\'s transport drops inside the wait: the ask stays pending (owner decision D4)', async () => {
+    const { ask, sent, notices, registry } = service({ graceMs: null })
+    const dropped = new AbortController()
+    const waiting = ask({ signal: dropped.signal })
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    dropped.abort()
+    await expect(waiting).rejects.toThrow()
+    await notices.settle()
+    expect(sent).toEqual([])
+    expect(registry.pending()).toHaveLength(1)
   })
 })
 

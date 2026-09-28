@@ -1,7 +1,7 @@
 import { validateSandboxMounts } from '../../domain/sandbox-mounts.js'
 import { protectedStateRoots } from '../../runtime/config.js'
 import { createWorkbenchManager } from '../workbench/manager.js'
-import { WorkbenchError, workbenchHash } from '../workbench/storage.js'
+import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
 import { spawnPtyProcess } from '../../adapters/pty-process.js'
 import { buildChildEnvironment } from '../../domain/environment.js'
 import { hasExecutable } from '../../domain/executable.js'
@@ -51,7 +51,7 @@ import { createApprovalService, type ApprovalService } from '../approvals/approv
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
 import { createApprovalNotices } from '../approvals/approval-notices.js'
-import { createExecutions } from '../invocation/executions.js'
+import { createExecutionBudget, createExecutions, type ExecutionBudget } from '../invocation/executions.js'
 import { createInvoker, InvocationsClosedError, type InvokeInput } from '../invocation/invoker.js'
 import { createAuditHealth } from '../audit/audit-health.js'
 import { logger } from '../../runtime/log.js'
@@ -98,6 +98,8 @@ export interface BuckleRuntime {
   actions: ActionLog
   /** Whether the audit log takes its writes; shared by the node's workspaces, read by readiness. */
   readonly auditHealth: AuditHealth
+  /** The node's byte budget for the responses kept for re-sends, shared the same way. */
+  readonly executionBudget: ExecutionBudget
   plugins: PluginRegistry
   reporter: Reporter
   invoke(input: InvokeInput): Promise<InvokeResponse>
@@ -121,6 +123,8 @@ interface RuntimeInput {
   reporter?: Reporter
   /** The process's audit health, shared with the node's other workspaces; a fresh one when absent. */
   auditHealth?: AuditHealth
+  /** The node's budget for kept responses, shared with its other workspaces; a fresh one when absent. */
+  executionBudget?: ExecutionBudget
 }
 
 export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime> {
@@ -186,12 +190,13 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
-  const executions = createExecutions()
+  const executionBudget = input.executionBudget ?? createExecutionBudget()
+  const executions = createExecutions({ budget: executionBudget })
   // Every call running here, so shutdown can cancel them and wait for each to answer.
   const inFlight = new Set<Promise<unknown>>()
   const stopping = new AbortController()
   const workbenches = createWorkbenchManager({
-    directory: join(config.stateDirectory, 'workbenches', workspaceStateKey(config.cwd)),
+    directory: workbenchesDirectory({ stateDirectory: config.stateDirectory, root: config.cwd }),
     sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
     protectedRoots: protectedStateRoots(config), actions, history,
     hasRipgrep: hasExecutable('rg'), spawnPty: spawnPtyProcess,
@@ -224,6 +229,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     workspaceId,
     workbenches,
     auditHealth,
+    executionBudget,
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     inspectActiveWork: () => activeInvocations > 0 || workbenches.inspectActive() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: registry.capabilities().filter(tool => toolDenial(tool.name) === null) }),
@@ -267,7 +273,6 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
 
     async invoke(call) {
       activeInvocations++
-      const signal = call.signal ? AbortSignal.any([call.signal, stopping.signal]) : stopping.signal
       const running = createInvoker({
         registry,
         permissions,
@@ -285,7 +290,8 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
         defaultTimeoutMs: config.defaultTimeoutMs,
         maxTimeoutMs: config.maxTimeoutMs,
         toolDenial,
-      }).invoke({ ...call, signal })
+        shutdown: stopping.signal,
+      }).invoke(call)
       inFlight.add(running)
       try { return await running } finally {
         inFlight.delete(running)

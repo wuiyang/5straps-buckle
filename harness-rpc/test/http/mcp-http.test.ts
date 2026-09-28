@@ -1,6 +1,8 @@
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { useHost } from '@5straps/runtime/nitro'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { McpHttpHandlers } from '../../common/types/ports/mcp-http.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
@@ -34,6 +36,18 @@ function toolCall(name: string, args: Record<string, unknown>): { body: string; 
 }
 
 describe('the MCP face over HTTP', () => {
+  it('hands the SDK the request without the agent\'s credential or the wire\'s framing headers (review L12 of B18-B19)', async () => {
+    const buckle = await node()
+    const handlers = (useHost(buckle.nitroApp)?.services as { getMcpHandlers(): McpHttpHandlers }).getMcpHandlers()
+    const fetch = vi.spyOn(handlers, 'fetch')
+    const response = await buckle.request('/mcp', { method: 'POST', headers: { ...headers(), 'content-length': String(Buffer.byteLength(initialize)) }, body: initialize })
+    expect(response.status).toBe(200)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    const [, handed] = fetch.mock.calls[0]!
+    for (const name of ['authorization', 'content-length', 'transfer-encoding']) expect(handed.headers.has(name), name).toBe(false)
+    expect(handed.headers.get('accept')).toBe('application/json, text/event-stream')
+  })
+
   it('answers initialize with the node\'s server info, audited as transport status', async () => {
     const buckle = await node()
     const response = await buckle.request('/mcp', { method: 'POST', headers: headers(), body: initialize })
@@ -67,18 +81,20 @@ describe('the MCP face over HTTP', () => {
     }
   })
 
-  it('cancels a call the client abandons while it waits for approval, leaving nothing pending', async () => {
+  it('ends a call the client abandons while it waits for approval, runs nothing, and keeps its ask: HTTP cannot tell a cancel from a dropped connection (owner decision D4)', async () => {
     const buckle = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
     const write = toolCall('fs_write', { path: join(buckle.root, 'abandoned.md'), content: 'x' })
     const controller = new AbortController()
     const waiting = buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, write.headers), body: write.body, signal: controller.signal }).then(response => response.text()).catch((error: unknown) => error)
     await vi.waitFor(() => expect(buckle.runtime.approvals.pending()).toHaveLength(1), { timeout: 10_000 })
+    const [token] = buckle.runtime.approvals.pending().map(request => request.token)
 
     controller.abort()
     await waiting
 
-    await vi.waitFor(() => expect(buckle.runtime.approvals.pending()).toEqual([]), { timeout: 10_000 })
-    expect(buckle.runtime.actions.read(50)).toContainEqual(expect.objectContaining({ tool: 'fs_write', event: 'result' }))
+    await vi.waitFor(() => expect(buckle.runtime.actions.read(50)).toContainEqual(expect.objectContaining({ tool: 'fs_write', event: 'result' })), { timeout: 10_000 })
+    expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual([token])
+    expect(existsSync(join(buckle.root, 'abandoned.md'))).toBe(false)
   })
 
   it('serves a registered workspace at /workspaces/[id]/mcp under its own agent token only', async () => {

@@ -52,11 +52,11 @@ function assertRoomFor(input: { state: State; workspace: string; sessionId: stri
   const session = waiting.filter(entry => entry.sessionId === input.sessionId).length
   if (session + input.asked > MAX_PENDING_PER_SESSION) {
     logger.warn('Approval refused: the session has too many asks waiting', { waiting: session, asked: input.asked, limit: MAX_PENDING_PER_SESSION })
-    throw new ApprovalLimitError(`This session already has ${session} approvals waiting; answer some or let them expire before asking for more (limit ${MAX_PENDING_PER_SESSION})`)
+    throw new ApprovalLimitError(`This session already has ${session} approvals waiting; ask again once some are answered or withdrawn (limit ${MAX_PENDING_PER_SESSION})`)
   }
   if (waiting.length + input.asked > MAX_PENDING_PER_WORKSPACE) {
     logger.warn('Approval refused: the workspace has too many asks waiting', { waiting: waiting.length, asked: input.asked, limit: MAX_PENDING_PER_WORKSPACE })
-    throw new ApprovalLimitError(`This workspace already has ${waiting.length} approvals waiting; answer some or let them expire before asking for more (limit ${MAX_PENDING_PER_WORKSPACE})`)
+    throw new ApprovalLimitError(`This workspace already has ${waiting.length} approvals waiting; ask again once some are answered or withdrawn (limit ${MAX_PENDING_PER_WORKSPACE})`)
   }
 }
 

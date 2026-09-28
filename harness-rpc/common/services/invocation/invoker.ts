@@ -20,14 +20,14 @@ import { resolveEffects } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ApprovalConflictError, ApprovalLimitError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
-import { requestFingerprint, REQUEST_ID_REUSED, type Earlier, type Execution, type ExecutionKey, type Executions } from './executions.js'
+import { requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type Execution, type ExecutionKey, type Executions } from './executions.js'
 
 /** Why a call's signal fired when its runtime shut down (B19): not the caller leaving. */
 export class InvocationsClosedError extends Error {
   constructor() { super('Buckle is shutting down') }
 }
 
-/** The audit log's bound on caller-chosen ids; the stored join key is held to it too (review L4). */
+/** The audit log's bound on caller-chosen ids. The join and dedupe keys hash the whole requestId instead (review L2 of B18-B19). */
 const MAX_LOGGED_ID = 200
 /**
  * The longest session id a caller may choose. It is stored with every ask and grant it makes, so an
@@ -54,13 +54,21 @@ export interface InvokerOptions {
   defaultTimeoutMs: number
   maxTimeoutMs: number
   toolDenial?(tool: string): string | null
+  /**
+   * The runtime's shutdown (B19): cancels a running tool and refuses calls that arrive later, but is
+   * never the caller leaving, so an approval wait it ends leaves the asks pending (review L6 of B18-B19).
+   */
+  shutdown?: AbortSignal
 }
 
 export interface InvokeInput {
   request: InvokeRequest
   sessionId: string
+  /** The caller's own signal: it ends the call's wait, and cancels a running tool. */
   signal?: AbortSignal
-  /** How long the caller will wait for an approval; it can only shorten the entry point's own hold. */
+  /** Whether an abort of `signal` is an explicit cancel, which withdraws the call's asks (approval-service.ts). */
+  isCancel?: (reason: unknown) => boolean
+  /** The entry point's wait for an approval; with the caller's own hint, the shorter one holds. */
   approvalWait?: ApprovalWait
 }
 
@@ -81,7 +89,7 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   return {
-    async invoke({ request, sessionId, signal, approvalWait }) {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
@@ -98,15 +106,19 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const key = executionKey({ request, sessionId })
       let execution: Execution | undefined
       let replayed = false
-      const answerEarlier = (earlier: Earlier): Promise<InvokeResponse> | InvokeResponse => {
+      let ran = false
+      // The caller leaving or the runtime shutting down: either stops a running tool.
+      const stop = anySignal(signal, options.shutdown)
+      const answerEarlier = async (earlier: Earlier): Promise<InvokeResponse> => {
         if (earlier.kind === 'reused') return failed(request, REUSED)
         replayed = true
-        return untilAborted(earlier.response, signal)
+        // The key hashes the whole requestId, so the earlier call's is the same; the caller's own is echoed all the same.
+        return { ...await untilAborted(earlier.response, stop), requestId: request.requestId }
       }
 
       const response = await (async (): Promise<InvokeResponse> => {
         try {
-          signal?.throwIfAborted()
+          stop?.throwIfAborted()
           if (sessionId.length > MAX_SESSION_ID) return sessionIdTooLong(request)
           const earlier = options.executions.earlier(key)
           if (earlier) return await answerEarlier(earlier)
@@ -119,8 +131,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
-          gate = await clearPermissions({ options, request, sessionId, effects, signal, approvalWait })
-          signal?.throwIfAborted()
+          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait })
+          stop?.throwIfAborted()
           if (gate.response) return gate.response
 
           // Cleared: this call becomes the key's one execution, unless a re-send of it got there first.
@@ -129,14 +141,18 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const owned = execution = claim.execution
           const execute = () => {
             owned.started()
-            return executeWithTimeout({ options, request, sessionId, signal, consumed: gate.consumed ?? [], execute: prepared.execute })
+            ran = true
+            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], execute: prepared.execute })
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
           const output = options.history && tracksChanges && !prepared.managesHistory
-            ? await options.history.run({ sessionId, stageId: request.context?.stageId ?? request.context?.runId ?? request.requestId, tool: request.tool, roots: [...new Set(roots)] }, execute, signal)
+            ? await options.history.run({ sessionId, stageId: request.context?.stageId ?? request.context?.runId ?? request.requestId, tool: request.tool, roots: [...new Set(roots)] }, execute, stop)
             : await execute()
+          // A tool that returns what its killed process left (a shell) ran into the shutdown all the same:
+          // it answers as a tool that throws does, effects unknown (review L12 of B18-B19).
+          if (options.shutdown?.aborted) throw options.shutdown.reason
           return {
             requestId: request.requestId,
             outcome: 'ok',
@@ -159,10 +175,12 @@ export function createInvoker(options: InvokerOptions): Invoker {
         durationMs: Math.round(performance.now() - startedAt),
         replayed,
       })
-      await options.actions.record({ ...entry, auditId, event: 'result', workspaceId: options.workspaceId ?? 'default',
-        ...auditContext(request),
-
-      })
+      const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId ?? 'default', ...auditContext(request) }
+      // A call that ran answers with what it did even when its result cannot be written: refusing it
+      // would tell the caller it did not run, and a retry would run it twice (review L5 of B18-B19). The
+      // attempt is already in the log, and recovery marks it interrupted.
+      if (ran) await options.actions.record(result).catch((error: unknown) => { logger.error('Could not record the result of a call that ran', { auditId, tool: entry.tool, outcome: entry.outcome, error }) })
+      else await options.actions.record(result)
       if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
       reportEntry({ options, entry, denial: gate.denial })
       return response
@@ -201,10 +219,15 @@ function buildEntry(input: {
 /** The detail of an attempt answered with an earlier run's outcome, so every replay is in the audit log. */
 const REPLAYED = 'REPLAYED'
 
-/** The approval join's key (approval-service.ts): the session, the actor the guard set, and the requestId as the log bounds it. */
+/** The approval join's key (approval-service.ts): the session, the actor the guard set, and the whole requestId, hashed. */
 function executionKey(input: { request: InvokeRequest; sessionId: string }): ExecutionKey {
   const actor = useScopeSafe()?.context.actor
-  return { sessionId: input.sessionId, requestId: input.request.requestId.slice(0, MAX_LOGGED_ID), fingerprint: requestFingerprint(input.request), ...(actor === undefined ? {} : { actor }) }
+  return { sessionId: input.sessionId, requestId: requestIdKey(input.request.requestId), fingerprint: requestFingerprint(input.request), ...(actor === undefined ? {} : { actor }) }
+}
+
+function anySignal(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const present = signals.filter(signal => signal !== undefined)
+  return present.length > 1 ? AbortSignal.any(present) : present[0]
 }
 
 /** An earlier run's outcome, unless this caller leaves first: then the wait ends as any cancelled call does. */
@@ -288,6 +311,7 @@ async function clearPermissions(input: {
   sessionId: string
   effects: ResolvedEffect[]
   signal?: AbortSignal
+  isCancel?: (reason: unknown) => boolean
   approvalWait?: ApprovalWait
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects } = input
@@ -317,7 +341,8 @@ async function clearPermissions(input: {
   // The caller's hint travels in the request and overrides the node's own wait (Rings sends none when
   // its policy skips); an entry point may add its own, and the one that holds less wins.
   const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
-  const waited = await options.approvalService.request({ sessionId, requestId: request.requestId.slice(0, MAX_LOGGED_ID), tool: request.tool, asks: outcome.asks, signal: input.signal, wait })
+  // Only the caller's own signal reaches the wait: shutdown settles waits through the service's close.
+  const waited = await options.approvalService.request({ sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait })
   const { approvals } = waited
   const asked = approvals.map(approval => `${approval.rule}:${approval.subject}`)
   if (waited.superseded) return { response: failed(request, SUPERSEDED), asked, approvedBy }

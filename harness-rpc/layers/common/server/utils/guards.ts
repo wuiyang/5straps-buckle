@@ -2,7 +2,7 @@ import { getRouterParam, type H3Event } from 'h3'
 import type { Guard } from '@5straps/runtime/nitro'
 import type { ActionLog } from '../../../../common/types/ports/action-log.js'
 import { nodeActions, recordRefusal, recordTransportRefusal, tolerantLog } from './audit.js'
-import { beforeCredential, hasCode, isRegistryFailure, unauthorized } from './errors.js'
+import { beforeCredential, isRegistryFailure, unauthorized } from './errors.js'
 import { useServices } from './services.js'
 import { NODE_WORKSPACE, namedWorkspace, targetId } from './target.js'
 
@@ -38,7 +38,7 @@ export async function checkCredential<T>(event: H3Event, input: { verify: () => 
     verified = await input.verify()
   } catch (error) {
     const refused = beforeCredential(error)
-    if (!isRegistryFailure(error) && !hasCode(error, 'WORKSPACE_REFUSED')) event.context.logger?.error('The workspace could not be opened to check a credential', { route: event.context.matchedRoute?.route, error })
+    if (!isRegistryFailure(error)) event.context.logger?.error('A credential could not be checked', { route: event.context.matchedRoute?.route, error })
     await audit(event, input.refusal, { status: refused.status, registryReadable: !isRegistryFailure(error) })
     throw refused
   }

@@ -6,7 +6,7 @@ import type { ActionLogEntry } from '../common/types/ports/action-log.js'
 import type { PtyProcess, PtySpawnRequest } from '../common/types/ports/pty-process.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { createWorkbenchManager, type WorkbenchManager } from '../common/services/workbench/manager.js'
-import { workbenchHash } from '../common/services/workbench/storage.js'
+import { storedGrantMatches, workbenchHash } from '../common/services/workbench/storage.js'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
@@ -71,8 +71,11 @@ describe('staged workbench files and publication', () => {
   it('persists only a token hash, binds the grant to one chat, and makes setup retries idempotent', async () => {
     const f = await fixture()
     expect(await f.manager.provision(f.grant)).toMatchObject({ id: f.grant.id, chatId: 'chat-a' })
-    expect(await f.manager.authenticate(f.grant.id, 'Bearer ' + f.grant.token)).toBe(true)
-    expect(await f.manager.authenticate(f.grant.id, 'Bearer agent-token')).toBe(false)
+    // The stored hash is what the grant is checked against, before any runtime opens (review L1 of B18-B19).
+    expect(storedGrantMatches({ directory: f.options.directory, workbenchId: f.grant.id, token: f.grant.token })).toBe(true)
+    expect(storedGrantMatches({ directory: f.options.directory, workbenchId: f.grant.id, token: 'agent-token-that-is-long-enough-to-check' })).toBe(false)
+    expect(storedGrantMatches({ directory: f.options.directory, workbenchId: randomUUID(), token: f.grant.token })).toBe(false)
+    expect(storedGrantMatches({ directory: f.options.directory, workbenchId: '../escape', token: f.grant.token })).toBe(false)
     expect(readFileSync(join(f.options.directory, f.grant.id, 'state.json'), 'utf8')).not.toContain(f.grant.token)
     await expect(f.manager.provision({ ...f.grant, token: 'different-workbench-fixture-secret-token' })).rejects.toThrow('conflicts')
     await expect(f.manager.provision({ ...f.grant, id: randomUUID() })).rejects.toThrow('unresolved')

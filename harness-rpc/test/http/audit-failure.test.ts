@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
@@ -43,18 +43,51 @@ describe('an audit log that will not take writes', () => {
     expect((await buckle.request('/mcp', { method: 'POST', headers: { ...headers(AGENT), accept: 'application/json, text/event-stream' }, body: '{}' })).status).toBe(503)
   })
 
-  it('reports readiness 503 while liveness stays 200, and ready again once a write succeeds', async () => {
+  it('reports readiness 503 while liveness stays 200, and ready again once repaired, seen through readiness polls alone (review M2 of B18-B19)', async () => {
     const { buckle, repair } = await brokenAudit()
     expect((await buckle.request('/v1/invoke', { method: 'POST', headers: headers(AGENT), body: read('first') })).status).toBe(503)
     const ready = await buckle.request('/health/ready')
     expect(ready.status).toBe(503)
     expect(await ready.json()).toEqual({ error: expect.stringContaining('audit log is unavailable') })
     expect((await buckle.request('/health')).status).toBe(200)
+    // A refusal writes no entry and clears nothing.
+    expect((await buckle.request('/v1/manifest', { headers: headers('not-the-agent-token') })).status).toBe(401)
+    expect((await buckle.request('/health/ready')).status).toBe(503)
 
     repair()
+    const entries = buckle.runtime.actions.read(200).length
+    // No traffic but readiness polls: each may probe the log again, a few seconds apart.
+    await vi.waitFor(async () => expect((await buckle.request('/health/ready')).status).toBe(200), { timeout: 10_000, interval: 250 })
+    expect(buckle.runtime.actions.read(200)).toHaveLength(entries)
     const again = await buckle.request('/v1/invoke', { method: 'POST', headers: headers(AGENT), body: read('after-repair') })
     expect(await again.json()).toMatchObject({ outcome: 'ok', output: { content: 'audited read' } })
-    expect((await buckle.request('/health/ready')).status).toBe(200)
+  })
+
+  it('keeps health per log: one workspace\'s broken log keeps the node unready however well the others write (review M2 of B18-B19)', async () => {
+    const { state, root, environment } = nodeEnvironment('buckle-audit-two-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
+    const buckle = await createBuckleHttp({ environment })
+    nodes.push(buckle)
+    mkdirSync(join(root, 'child'))
+    writeFileSync(join(root, 'child', 'note.md'), 'child read')
+    const child = { id: 'child', name: 'child', root: join(root, 'child'), authToken: 'audit-failure-child-agent-token', adminToken: 'audit-failure-child-admin-token' }
+    expect((await buckle.request('/setup/workspaces', { method: 'POST', headers: headers(ADMIN), body: JSON.stringify(child) })).status).toBe(201)
+    const childRead = (requestId: string) => buckle.request('/workspaces/child/v1/invoke', { method: 'POST', headers: headers(child.authToken), body: JSON.stringify({ requestId, tool: 'fs_read', args: { path: '/workspace/note.md' } }) })
+    expect(await (await childRead('child-opens')).json()).toMatchObject({ outcome: 'ok' })
+    const childLog = join(state, 'workspaces', 'child', 'actions.jsonl')
+    rmSync(childLog, { force: true })
+    mkdirSync(childLog)
+
+    expect((await childRead('child-1')).status).toBe(503)
+    writeFileSync(join(environment.BUCKLE_WORKSPACE_ROOT!, 'note.md'), 'node read')
+    const nodeCall = await buckle.request('/v1/invoke', { method: 'POST', headers: headers(AGENT), body: read('node-1') })
+    expect(await nodeCall.json()).toMatchObject({ outcome: 'ok' })
+
+    expect((await buckle.request('/health/ready')).status).toBe(503)
+    expect(await (await buckle.request('/setup/status', { headers: headers(ADMIN) })).json()).toMatchObject({ audit: 'available' })
+    expect(await (await buckle.request('/workspaces/child/setup/status', { headers: headers(child.adminToken) })).json()).toMatchObject({ audit: 'unavailable' })
+
+    rmSync(childLog, { recursive: true })
+    await vi.waitFor(async () => expect((await buckle.request('/health/ready')).status).toBe(200), { timeout: 10_000, interval: 250 })
   })
 
   it('lets the owner inspect the node, refuses the owner\'s changes, and still answers refusals', async () => {

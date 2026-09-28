@@ -6,7 +6,7 @@ import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand 
 import { setupCli } from './cli/setup.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { loadConfig, type BuckleConfig } from './common/runtime/config.js'
-import { loadEnvironmentFile } from './common/runtime/environment.js'
+import { loadEnvironmentFile, meetOutsideRoot, namesItsNode, outsideRootNotice } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
 import { serveMcpStdio } from './mcp/stdio.js'
@@ -35,7 +35,7 @@ export function selectMode(argv: readonly string[]): Mode {
 export async function main(argv: readonly string[]): Promise<number | undefined> {
   const mode = selectMode(argv)
   if (!('argv' in mode)) {
-    await runService({ kind: mode.kind, ...configureProcess() })
+    await runService({ kind: mode.kind, ...configureProcess({ servesTools: mode.kind === 'mcp' }) })
     return undefined
   }
   try {
@@ -52,15 +52,21 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<numb
   // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
   const answered = answerWithoutConfiguration(mode.argv)
   if (answered) return answered.exitCode
-  return (await runCli({ argv: mode.argv, config: configureProcess().config })).exitCode
+  return (await runCli({ argv: mode.argv, config: configureProcess({ servesTools: mode.argv[0] === 'call' }).config })).exitCode
 }
 
-function configureProcess(): { config: BuckleConfig; logging: LoggerRoot } {
+/** `servesTools`: an MCP session or `buckle call`, which an agent's project starts and which run tools on the root. */
+function configureProcess(input: { servesTools: boolean }): { config: BuckleConfig; logging: LoggerRoot } {
+  // Read before the file fills the environment in: only the caller's own choice counts.
+  const namedNode = namesItsNode()
   const environment = loadEnvironmentFile()
   const logging = configureRootLogger(loggerConfigFrom(process.env))
   // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
   if (environment.openToOthers && environment.file) logging.logger.warn(`The environment file ${environment.file} can be read by other users; run chmod 600 ${environment.file}`)
-  return { config: loadConfig(), logging }
+  const config = loadConfig()
+  const notice = input.servesTools ? outsideRootNotice({ namedNode, root: config.cwd, cwd: process.cwd(), file: environment.file }) : null
+  if (notice) meetOutsideRoot(notice)
+  return { config, logging }
 }
 
 // A one-shot command answers a person at a terminal: the reason on one line, the detail at debug level.

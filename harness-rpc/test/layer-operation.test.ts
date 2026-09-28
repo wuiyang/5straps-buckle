@@ -56,3 +56,14 @@ describe('a Buckle operation handler on the Nitro layer', () => {
     expect(ran).toBe(false)
   })
 })
+
+describe('the HEAD plugin (review L12 of B18-B19)', () => {
+  it('refuses to start without the h3 app or its ~findRoute, instead of leaving HEAD unserved', async () => {
+    const { default: headPlugin } = await import('../layers/common/server/plugins/20.head.js')
+    const start = (nitroApp: unknown) => () => headPlugin(nitroApp as Parameters<typeof headPlugin>[0])
+    expect(start({})).toThrow('~findRoute')
+    expect(start({ h3: {} })).toThrow('~findRoute')
+    const app = new H3()
+    expect(start({ h3: app })).not.toThrow()
+  })
+})

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 
-const config = { serverId: 'mode-dispatch', stateDirectory: '/nonexistent/buckle-mode-dispatch-state' } as BuckleConfig
+const config = { serverId: 'mode-dispatch', stateDirectory: '/nonexistent/buckle-mode-dispatch-state', cwd: process.cwd() } as BuckleConfig
 const entry = vi.hoisted(() => ({
   loadEnvironmentFile: vi.fn(() => ({ file: null, openToOthers: false })),
   loadConfig: vi.fn(),
@@ -13,7 +13,7 @@ const entry = vi.hoisted(() => ({
   serveMcpStdio: vi.fn(async () => {}),
   initializeCommon: vi.fn(() => ({ owner: { onClose: vi.fn(), close: vi.fn(async () => {}) }, bindRequester: vi.fn() })),
 }))
-vi.mock('../common/runtime/environment.js', () => ({ loadEnvironmentFile: entry.loadEnvironmentFile }))
+vi.mock('../common/runtime/environment.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/environment.js')>(), loadEnvironmentFile: entry.loadEnvironmentFile }))
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
 vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runCli: entry.runCli, answerWithoutConfiguration: () => null }))
 vi.mock('../server/serve.js', () => ({ serveHttp: entry.serveHttp }))

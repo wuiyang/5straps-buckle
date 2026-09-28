@@ -9,7 +9,7 @@ import type { BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { tokenMatches } from '../access/tokens.js'
-import { workbenchGrant } from '../workbench/storage.js'
+import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 
 /** The code a transport tells an unreadable registry by, before it has authenticated anyone. */
@@ -181,15 +181,16 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       return credential !== null && tokenMatches(authorization, credential)
     },
     /**
-     * Whether the authorization header presents the grant of one workbench in the workspace. Nothing
-     * is opened for a header that carries no grant or for a workspace the registry does not hold, so
-     * neither tells a caller anything (review L6 of B15-B17). A disabled or retired workspace opens as
-     * the owner's face opens it, so its grant holder, and only they, learn why the route refuses.
+     * Whether the authorization header presents the grant of one workbench in the workspace, checked
+     * against the stored record in constant time. No runtime opens before it matches, so a disabled,
+     * broken or unknown workspace and a wrong grant are one 401 (review L6 of B15-B17, L1 of
+     * B18-B19); only an unreadable registry throws. A disabled or retired workspace then opens as the
+     * owner's face opens it, so its grant holder, and only they, learn why the route refuses.
      */
-    async authenticateWorkbench(id: string, workbenchId: string, authorization: string | undefined): Promise<boolean> {
-      if (!workbenchGrant(authorization) || !manager.known(id)) return false
-      const { runtime } = await manager.resolve(id, { setup: true })
-      return runtime.workbenches.authenticate(workbenchId, authorization)
+    authenticateWorkbench(id: string, workbenchId: string, authorization: string | undefined): boolean {
+      const token = workbenchGrant(authorization)
+      const directory = token ? workbenchesOf(id) : null
+      return directory !== null && storedGrantMatches({ directory, workbenchId, token: token! })
     },
     /** The node's own workspace has an admin credential only when BUCKLE_ADMIN_TOKEN is set; a registered one always has one. */
     hasAdminCredential(id: string): boolean {
@@ -253,7 +254,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           nodePolicy: structuredClone(input.config.policy),
         }
         // One audit health per process: a registered workspace's log failing makes the node unready too.
-        pending = createRuntime({ config, workspaceId: id, auditHealth: input.runtime.auditHealth, ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
+        pending = createRuntime({ config, workspaceId: id, auditHealth: input.runtime.auditHealth, executionBudget: input.runtime.executionBudget, ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
         runtimes.set(id, pending)
         void pending.catch(() => { runtimes.delete(id) })
       }
@@ -265,6 +266,13 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       return settled.flatMap(result => result.status === 'fulfilled' ? [result.value.runtime] : [])
     },
   }
+  /** A known workspace's workbench directory, as its runtime would open it; null for an unknown one. */
+  function workbenchesOf(id: string): string | null {
+    if (id === 'default') return workbenchesDirectory({ stateDirectory: input.config.stateDirectory, root: input.config.cwd })
+    const workspace = store.read().workspaces.find(item => item.id === id)
+    return workspace ? workbenchesDirectory({ stateDirectory: join(stateRoot, 'workspaces', workspace.id), root: workspace.root }) : null
+  }
+
   return manager
 }
 export type WorkspaceManager = ReturnType<typeof createWorkspaceManager>

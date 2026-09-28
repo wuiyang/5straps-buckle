@@ -28,6 +28,11 @@ export interface McpServerOptions {
    * on the runtime for good.
    */
   followToolChanges?: boolean
+  /**
+   * Whether a tool call's abort is the client's explicit cancel, which withdraws the call's asks.
+   * Without it every abort is a dropped transport and the asks stay pending (owner decision D4).
+   */
+  isCancel?: (reason: unknown) => boolean
 }
 
 /**
@@ -84,6 +89,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
             },
             sessionId: mcpSessionId(context),
             signal: context.mcpReq.signal,
+            ...(options.isCancel ? { isCancel: options.isCancel } : {}),
             ...(elicits ? { approvalWait: { mode: 'none' as const } } : {}),
           })
 
