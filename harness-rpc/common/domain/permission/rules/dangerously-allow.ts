@@ -1,4 +1,6 @@
-import type { DangerouslyAllow, PermissionRuleId } from '@5straps/protocol'
+import type { PermissionRuleId } from '@5straps/protocol'
+import { isInside } from '../../paths.js'
+import type { PermissionDecision } from '../decision.js'
 import type { PermissionEngine } from '../engine.js'
 
 /** How an ask the switch let through reads in allowedBy and approvedBy: `dangerously_allow:<rule>:<subject>`. */
@@ -7,26 +9,53 @@ export const DANGEROUSLY_ALLOW = 'dangerously_allow'
 /** A command subject keeps its executable only: its arguments can carry a credential. */
 const MAX_SUBJECT_LENGTH = 200
 
-/** On only when both flags are: the one switch sets them together, so a half-set policy does not widen anything. */
-export function isDangerouslyAllowed(flags: DangerouslyAllow | undefined): boolean {
-  return flags?.commands === true && flags.fileReads === true
-}
+/** What the switch covers, as the owner said it (decision D7): bound to the workspace root, or its mount when one is set. */
+export const DANGEROUSLY_ALLOW_SCOPE = 'bound to the workspace root, or its mount when one is set'
+
+type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
 /**
- * The workspace's dangerously-allow switch (rulings 11 and H1 of 2026-09-28): every ask becomes an
- * allow, sensitive files and file writes included, reported as `dangerously_allow:<rule>:<subject>`
- * so the invoker audits each use. A deny is never turned: the engine returns the first deny before
+ * The workspace's dangerously-allow switch (rulings 11 and H1 of 2026-09-28, owner decision D7 of
+ * 2026-09-29): every ask becomes an allow, sensitive files and file writes included, reported as
+ * `dangerously_allow:<rule>:<subject>` so the invoker audits each use. It is bound to the workspace:
+ * an ask about a path outside the workspace root (which a mount presents) keeps its question, so the
+ * switch never opens the rest of the host. Asks that name no path (commands, hosts, process probes)
+ * are covered wherever they point. A deny is never turned: the engine returns the first deny before
  * any ask, so an owner's deny rule, the node's policy over the workspace, the mount boundary and the
- * state directory still refuse. `enabled` is read at every evaluation, so the local switch takes
- * effect in a running node at once, off as well as on.
+ * state directory still refuse. `enabled` and `root` are read at every evaluation, so the local
+ * switch takes effect in a running node at once, off as well as on.
  */
-export function withDangerouslyAllow(engine: PermissionEngine, enabled: () => boolean): PermissionEngine {
+export function withDangerouslyAllow(engine: PermissionEngine, input: { enabled: () => boolean; root: () => string }): PermissionEngine {
   return {
-    evaluate(input) {
-      const outcome = engine.evaluate(input)
-      if (outcome.kind !== 'ask' || !enabled()) return outcome
+    evaluate(call) {
+      const outcome = engine.evaluate(call)
+      if (outcome.kind !== 'ask' || !input.enabled()) return outcome
+      const root = input.root()
+      const outside = outcome.asks.filter(ask => !covers(ask, root))
+      if (outside.length > 0) return { kind: 'ask', asks: outside }
       return { kind: 'allow', allowedBy: outcome.asks.map(ask => `${DANGEROUSLY_ALLOW}:${ask.rule}:${ask.subject}`) }
     },
+  }
+}
+
+/** Whether the switch answers this ask: one about a path only inside the workspace root. */
+function covers(ask: Ask, root: string): boolean {
+  const path = askedPath(ask)
+  return path === null || isInside(root, path)
+}
+
+/** The real path a path rule asks about; null for a rule whose subject is not a path. */
+function askedPath(ask: Ask): string | null {
+  switch (ask.rule) {
+    case 'sensitive_path':
+    case 'read_scope':
+    case 'write_scope':
+      return ask.subject
+    // `read:<path>` or `write:<path>` (filesystem-policy.ts).
+    case 'filesystem_policy':
+      return ask.subject.slice(ask.subject.indexOf(':') + 1)
+    default:
+      return null
   }
 }
 

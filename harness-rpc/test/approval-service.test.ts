@@ -125,15 +125,16 @@ describe('the approval service, the single answerer', () => {
 
   it('joins a re-sent call with the same requestId, session and actor to the same asks, and refuses different ones', async () => {
     const { registry } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 0, interaction: fixedInteraction(headlessGrace) })
+    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
+    const none = { wait: { mode: 'none' } } as const
 
-    const [first, again] = await Promise.all([service.request(call()), service.request(call())])
+    const [first, again] = await Promise.all([service.request(call(none)), service.request(call(none))])
 
     expect(again.approvals.map(request => request.token)).toEqual(first.approvals.map(request => request.token))
     expect(registry.pending()).toHaveLength(1)
-    await expect(service.request(call({ asks: [ask('/outside/other.md')] }))).rejects.toBeInstanceOf(ApprovalConflictError)
+    await expect(service.request(call({ ...none, asks: [ask('/outside/other.md')] }))).rejects.toBeInstanceOf(ApprovalConflictError)
     // Another session reusing the id is not a join: it gets asks of its own.
-    expect((await service.request(call({ sessionId: 'chat-9' }))).approvals[0]!.token).not.toBe(first.approvals[0]!.token)
+    expect((await service.request(call({ ...none, sessionId: 'chat-9' }))).approvals[0]!.token).not.toBe(first.approvals[0]!.token)
   })
 
   it('wakes the waiter at once for an answer given in this process', async () => {

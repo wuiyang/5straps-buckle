@@ -1,5 +1,6 @@
 import { useScopeSafe, type CliOutcome, type CliRequest, type CliWait } from '@5straps/runtime'
-import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw } from '@5straps/protocol'
+import { requestIdKey } from '../invocation/executions.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
 import { remainingMs } from '../../domain/approval-deadline.js'
@@ -84,6 +85,12 @@ export interface ApprovalService {
   decideSealed(input: { body: unknown }): Promise<SealedDecisionResult>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
+  /**
+   * The setup face's explicit cancel for one call (owner decision D6): withdraws its asks still
+   * waiting, tells the webhook they were cancelled, and wakes the callers and questions waiting on
+   * them. Returns the withdrawn tokens; none when nothing of that call waits.
+   */
+  withdrawCall(selector: ApprovalWithdraw): Promise<string[]>
   /** The requests still waiting in this workspace's queue. */
   pending(): ApprovalRequest[]
   /**
@@ -96,7 +103,7 @@ export interface ApprovalService {
 export interface ApprovalServiceOptions {
   registry: ApprovalRegistry
   workspaceId: string
-  /** `BUCKLE_APPROVAL_TIMEOUT_MS`: how long a `grace` hold lasts when the caller sends no wait; null holds it until answered. */
+  /** `BUCKLE_APPROVAL_TIMEOUT_MS`: how long a `grace` hold lasts when the caller sends no wait, in positive ms; null holds it until answered. */
   graceMs: number | null
   /** The current operation's interaction; an unbound operation asks nobody. */
   interaction: InteractionSource
@@ -177,6 +184,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const key = joinKey({ ...input, actor })
       const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(actor === undefined ? {} : { actor }) })
       const { requests: approvals, answered } = issued
+      // Joined to asks all answered, one of them denied: nothing to wait for, and the caller refuses.
+      if (issued.joined && approvals.length === 0) return { settled: true, approvals, answered }
       const tokens = approvals.map(approval => approval.token)
       if (!issued.joined) {
         await announce(options.announce, approvals)
@@ -189,7 +198,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       // The hint sets how long the caller is held and never who is asked: a `grace` entry point asks
       // its terminal whatever the hint says, and keeps asking after the caller returns (owner ruling).
       const keepAsking = interaction.hold === 'grace'
-      if (holdMs === 0 && !keepAsking) return skip({ approvals, answered, reason: input.wait?.mode === 'none' ? 'caller_declined_wait' : 'no_wait' })
+      // A hold of 0 comes only from the caller's hint `none`: the node's own is positive or null (D3).
+      if (holdMs === 0 && !keepAsking) return skip({ approvals, answered, reason: 'caller_declined_wait' })
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
       const context = { correlationId: scope?.context.correlationId ?? input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId }
@@ -199,7 +209,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
       if (holdMs === 0) {
         if (ask.participants.size === 0) release({ ask, keepAsking: true })
-        return skip({ approvals, answered, reason: input.wait?.mode === 'none' ? 'caller_declined_wait' : 'no_wait' })
+        return skip({ approvals, answered, reason: 'caller_declined_wait' })
       }
       const participant = new AbortController()
       ask.participants.add(participant)
@@ -227,6 +237,15 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
 
     withdraw: tokens => withdraw(tokens),
+
+    async withdrawCall(selector) {
+      // The registry keeps a call's requestId hashed, as the invoker joins it.
+      const withdrawn = await options.registry.cancelGroup('token' in selector ? selector : { requestId: requestIdKey(selector.requestId), sessionId: selector.sessionId })
+      notices.cancelled(withdrawn)
+      for (const token of withdrawn) wake(token)
+      if (withdrawn.length > 0) logger.info('Withdrew a call\'s approval asks through the setup face', { withdrawn: withdrawn.length, workspaceId: options.workspaceId })
+      return withdrawn
+    },
 
     pending: () => options.registry.pending(),
 

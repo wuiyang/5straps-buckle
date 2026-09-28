@@ -15,7 +15,7 @@ export interface ToolContext {
    * approvals this call consumed, so a fetch honours what the owner approved without a copy of
    * the allow logic.
    */
-  judgeNetwork?: (url: URL) => NetworkVerdict
+  judgeNetwork?: (url: URL) => Promise<NetworkVerdict>
 }
 
 /**

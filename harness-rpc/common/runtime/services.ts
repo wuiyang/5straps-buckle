@@ -41,11 +41,17 @@ type OnClose = (stage: CloseStage, name: string, closer: Closer) => void
  */
 function closeWithOwner(input: { onClose: OnClose; registered: boolean; runtimes: () => Promise<BuckleRuntime[]> }): void {
   const each = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => { for (const runtime of await input.runtimes()) await step(runtime) }
+  // Browser sessions and language servers close for every workspace at once, inside the step's one limit (review L14 of B20-B22).
+  const all = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => {
+    const results = await Promise.allSettled((await input.runtimes()).map(step))
+    const failures = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
+    if (failures.length > 0) throw new AggregateError(failures, 'Some workspaces could not close their sessions')
+  }
   const named = (name: string) => (input.registered ? `registered workspace ${name.replace(/^workspace /, '')}` : name)
   input.onClose('waiters', named('approval waits'), each(runtime => runtime.approvalService.close()))
   input.onClose('jobs', named('tool calls'), each(runtime => runtime.cancelInvocations()))
   input.onClose('streams', named('workbench terminals'), each(runtime => runtime.workbenches.stopTerminals()))
-  input.onClose('streams', named('language servers and browser sessions'), each(runtime => runtime.closeSessions()))
+  input.onClose('streams', named('language servers and browser sessions'), all(runtime => runtime.closeSessions()))
   input.onClose('locks', named('workbench ownership'), each(runtime => runtime.workbenches.close()))
   input.onClose('databases', named('workspace history'), each(runtime => runtime.history.close()))
   input.onClose('sinks', named('action reports'), each(runtime => runtime.reporter.flush()))

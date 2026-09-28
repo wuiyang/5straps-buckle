@@ -47,3 +47,18 @@ describe('busy audit state while the invoke attempt is recorded (review L3 of B1
     expect(existsSync(join(workspace, 'never.md'))).toBe(false)
   })
 })
+
+describe('a refusal while the audit state is busy (review L7 of B20-B22)', () => {
+  it('answers a wrong credential 401 on the owner\'s face, /v1/invoke and /mcp, never 500, though its entry cannot be written', async () => {
+    const { state, environment } = nodeEnvironment('buckle-locks-refusal-', { BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_PACKS: 'fs' })
+    const buckle = await createBuckleHttp({ environment, configure: (config) => { config.stateLockDeadlineMs = 300 } })
+    nodes.push(buckle)
+    holders.push(await holdLockInProcess(join(state, 'actions.jsonl.pending.json.lock.sqlite')))
+    const wrong = { authorization: 'Bearer wrong-token-fixture-only-000000', 'content-type': 'application/json' }
+    for (const [path, method] of [['/setup/status', 'GET'], ['/setup/policy', 'PUT'], ['/v1/invoke', 'POST'], ['/mcp', 'POST'], ['/workspaces/default/setup/status', 'GET']] as const) {
+      const response = await buckle.request(path, { method, headers: wrong, ...(method === 'GET' ? {} : { body: '{}' }) })
+      expect({ path, status: response.status }).toEqual({ path, status: 401 })
+    }
+  })
+})
+

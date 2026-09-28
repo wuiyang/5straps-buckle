@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CliRequest } from '@5straps/runtime'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCli } from '../../cli/main.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
@@ -99,3 +99,47 @@ describe('lifecycle notices on the approval webhook', () => {
     }
   })
 })
+
+describe('the setup face withdraws one call\'s asks (owner decision D6, review M1 of B20-B22)', () => {
+  it('by requestId and session, or by a token of its group, telling each cancelled, ending a waiting caller, and never touching another call', async () => {
+    const webhook = await captureWebhook()
+    try {
+      const buckle = await node({ BUCKLE_ADMIN_TOKEN: 'approval-http-admin-token', BUCKLE_APPROVAL_WEBHOOK: webhook.url, BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+      for (const directory of ['one', 'two', 'three']) mkdirSync(join(buckle.workspace, directory))
+      const admin = { authorization: 'Bearer approval-http-admin-token', 'content-type': 'application/json' }
+      const withdraw = (body: unknown, path = '/setup/approvals/withdraw') => buckle.request(path, { method: 'POST', headers: admin, body: JSON.stringify(body) })
+      const invoke = (requestId: string, path: string) => buckle.request('/v1/invoke', { method: 'POST', headers,
+        body: JSON.stringify({ requestId, tool: 'fs_write_batch', args: { files: [{ path: `${path}/a.md`, content: 'x' }, { path: `${path}/b/c.md`, content: 'y' }] }, context: { sessionId: 'rings-chat' } }) })
+
+      // A call Rings still waits on: withdrawing ends its wait, as a run cancel would.
+      mkdirSync(join(buckle.workspace, 'one', 'b'))
+      const waiting = invoke('run-1', 'one')
+      await vi.waitFor(() => expect(buckle.runtime.approvals.pending()).toHaveLength(2), { timeout: 10_000 })
+      const kept = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'run-2', tool: 'fs_write', args: { path: 'two/a.md', content: 'x' }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { approvals: Array<{ token: string }> }
+      const byRequest = await withdraw({ requestId: 'run-1', sessionId: 'rings-chat' })
+      expect(byRequest.status).toBe(200)
+      const withdrawn = (await byRequest.json() as { withdrawn: string[] }).withdrawn
+      expect(withdrawn).toHaveLength(2)
+      expect(await (await waiting).json()).toMatchObject({ requestId: 'run-1', outcome: 'error', error: { code: 'APPROVAL_UNANSWERED' } })
+      expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual(kept.approvals.map(request => request.token))
+
+      // By a token of the group, under the workspace twin; a second withdraw finds nothing and says so.
+      mkdirSync(join(buckle.workspace, 'three', 'b'))
+      const three = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'run-3', tool: 'fs_write_batch', args: { files: [{ path: 'three/a.md', content: 'x' }, { path: 'three/b/c.md', content: 'y' }] }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { approvals: Array<{ token: string }> }
+      const byToken = await withdraw({ token: three.approvals[0]!.token }, '/workspaces/default/setup/approvals/withdraw')
+      expect((await byToken.json() as { withdrawn: string[] }).withdrawn.sort()).toEqual(three.approvals.map(request => request.token).sort())
+      expect(await (await withdraw({ token: three.approvals[0]!.token })).json()).toEqual({ withdrawn: [] })
+      expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual(kept.approvals.map(request => request.token))
+
+      expect((await withdraw({ requestId: 'run-1' })).status).toBe(400)
+      expect((await withdraw({ token: 'x', approved: true })).status).toBe(400)
+      await buckle.runtime.approvalService.close()
+      const cancelled = webhook.notices.filter(notice => notice.event === 'cancelled').map(notice => notice.token).sort()
+      expect(cancelled).toEqual([...withdrawn, ...three.approvals.map(request => request.token)].sort())
+      expect(buckle.runtime.actions.read(50).filter(entry => entry.tool === 'setup_post_approvals-withdraw' && entry.event === 'result').map(entry => entry.detail)).toEqual(['HTTP 200', 'HTTP 200', 'HTTP 200', 'HTTP 400', 'HTTP 400'])
+    } finally {
+      await webhook.close()
+    }
+  })
+})
+

@@ -40,6 +40,10 @@ export function createPendingAudit(input: {
         } else { delete state.pending[auditId] }
       })
     },
+    /** What a write needs of the pending store: it reads, and is written back, under its lock. */
+    async probe(): Promise<void> {
+      await store.update(() => undefined)
+    },
     async recover(): Promise<number> {
       const pending = store.read().pending
       if (!Object.keys(pending).length) return 0

@@ -1,5 +1,5 @@
 import { HTTPError } from 'h3'
-import { recordRefusal } from '../../../../common/server/utils/audit.js'
+import { recordRefusal, tolerantLog } from '../../../../common/server/utils/audit.js'
 import { defineSetupHandler } from '../../utils/setup.js'
 
 // The approval guard: a decision, plain or in the envelope Rings seals, answered through the approval
@@ -11,7 +11,7 @@ export default defineSetupHandler({
     const { runtime } = workspace
     const decided = await runtime.approvalService.decideSealed({ body: (await body()) ?? null })
     if (decided.status === 'refused') {
-      await recordRefusal(runtime.actions, { tool: 'setup_approval_envelope_refused', workspaceId: runtime.workspaceId, sessionId: 'workspace-admin', status: 401, detail: decided.reason })
+      await recordRefusal(tolerantLog(event, runtime.actions), { tool: 'setup_approval_envelope_refused', workspaceId: runtime.workspaceId, sessionId: 'workspace-admin', status: 401, detail: decided.reason })
       event.context.logger?.warn('Refused an approval decision envelope', { reason: decided.reason, workspaceId: runtime.workspaceId })
       throw HTTPError.status(401, 'Unauthorized', { message: `Approval decision refused: ${decided.reason}` })
     }

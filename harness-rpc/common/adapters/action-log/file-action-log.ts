@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { StateBusyError } from '../json-file-store.js'
 import { createPendingAudit } from './pending-audit.js'
-import { closeSync, fsyncSync, fchmodSync, fstatSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, fchmodSync, fstatSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { logger } from '../../runtime/log.js'
@@ -31,7 +31,7 @@ export class AuditUnavailableError extends Error implements ServiceFailure {
   }
 }
 
-export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth } = {}): ActionLog {
+export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string } = {}): ActionLog {
   const pending = createPendingAudit({ filePath, processInstanceId: PROCESS_INSTANCE_ID, record: entry => log.record(entry), lockDeadlineMs: options.lockDeadlineMs })
   const log: ActionLog = {
     recoverInterrupted: () => pending.recover(),
@@ -63,7 +63,7 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
         // Another process held the pending-audit state past the wait: temporary, so the caller is told
         // to retry, as for any busy state (review L3 of B15-B17), and the storage is not unhealthy.
         if (error instanceof StateBusyError) throw error
-        options.health?.failed(filePath, () => probe(filePath))
+        options.health?.failed(filePath, { probe: () => probe(filePath, pending), workspaceId: options.workspaceId ?? 'default' })
         throw new AuditUnavailableError({ cause: error })
       }
     },
@@ -109,11 +109,22 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
 }
 
 /**
- * Whether the log takes writes again, without writing an entry: its directory and the file open for
- * append, and the file syncs. A disk that is full still passes; the next write marks it again.
+ * Whether the log takes writes again, without writing an entry, testing what `record` needs (review
+ * M4 of B20-B22): the file opens for append and syncs, one byte beside it is written and synced (a
+ * full disk fails here), and the pending store that tracks each attempt reads and writes under its lock.
  */
-function probe(filePath: string): void {
+async function probe(filePath: string, pending: { probe(): Promise<void> }): Promise<void> {
   mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
   const descriptor = openSync(filePath, 'a', 0o600)
   try { fsyncSync(descriptor) } finally { closeSync(descriptor) }
+  const sidecar = `${filePath}.probe`
+  const byte = openSync(sidecar, 'w', 0o600)
+  try {
+    if (writeSync(byte, Buffer.from('\n')) !== 1) throw new Error('Incomplete audit probe write')
+    fsyncSync(byte)
+  } finally {
+    closeSync(byte)
+    rmSync(sidecar, { force: true })
+  }
+  await pending.probe()
 }

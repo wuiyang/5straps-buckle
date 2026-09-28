@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -190,17 +190,56 @@ describe('durable audit pages', () => {
     const health = createAuditHealth({ now: () => now, probeIntervalMs: 2_000 })
     const broken = join(file, 'actions.jsonl')
     await expect(createFileActionLog(broken, { health }).record(entry())).rejects.toBeInstanceOf(AuditUnavailableError)
-    health.recheck()
+    await health.recheck()
     expect(health.available).toBe(false)
     rmSync(file)
     now = 1_999
-    health.recheck()
+    await health.recheck()
     expect(health.available).toBe(false)
     now = 2_000
-    health.recheck()
+    await health.recheck()
     expect(health.available).toBe(true)
-    // The probe opens the log for append and writes no entry.
+    // The probe opens the log for append and writes no entry, and leaves no sidecar behind.
     expect(readFileSync(broken, 'utf8')).toBe('')
+    expect(existsSync(`${broken}.probe`)).toBe(false)
+    // The last failure stays for the owner's status after the repair (review M4 of B20-B22).
+    expect(health.lastFailureAt(broken)).toBe(new Date(0).toISOString())
+  })
+
+  it('keeps a log failing while its pending store is corrupt, though the log itself opens, until the store is repaired (review M4 of B20-B22)', async () => {
+    const path = logPath()
+    let now = 0
+    const health = createAuditHealth({ now: () => now, probeIntervalMs: 1 })
+    const log = createFileActionLog(path, { health, workspaceId: 'child' })
+    // An attempt is tracked in the pending store until its result lands.
+    await log.record(entry({ requestId: 'fine', auditId: 'a1', event: 'attempt' }))
+    writeFileSync(`${path}.pending.json`, '{ corrupt')
+    await expect(log.record(entry({ requestId: 'refused', auditId: 'a2', event: 'attempt' }))).rejects.toBeInstanceOf(AuditUnavailableError)
+    expect(health.failingWorkspaces()).toEqual(['child'])
+    for (const at of [5, 10]) {
+      now = at
+      await health.recheck()
+      expect(health.failing(path)).toBe(true)
+    }
+    expect(health.lastFailureAt(path)).toBe(new Date(10).toISOString())
+    rmSync(`${path}.pending.json`)
+    now = 20
+    await health.recheck()
+    expect(health.available).toBe(true)
+    expect(health.failingWorkspaces()).toEqual([])
+    await log.record(entry({ requestId: 'again', auditId: 'a3', event: 'attempt' }))
+  })
+
+  it('forgets a log whose workspace no longer serves calls (review L5 of B20-B22)', async () => {
+    const file = logPath()
+    writeFileSync(file, 'not a directory')
+    const health = createAuditHealth()
+    const broken = join(file, 'actions.jsonl')
+    await expect(createFileActionLog(broken, { health, workspaceId: 'retired' }).record(entry())).rejects.toBeInstanceOf(AuditUnavailableError)
+    expect(health.failingWorkspaces()).toEqual(['retired'])
+    health.forget(broken)
+    expect(health.available).toBe(true)
+    expect(health.lastFailureAt(broken)).not.toBeNull()
   })
 })
 

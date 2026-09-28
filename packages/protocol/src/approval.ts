@@ -69,11 +69,10 @@ export const ApprovalLifecycleEventSchema = z.enum(['answered', 'denied', 'expir
 export type ApprovalLifecycleEvent = z.infer<typeof ApprovalLifecycleEventSchema>
 
 /**
- * Why a call stopped waiting while its ask stays pending: the caller's wait hint said none, the
- * node holds no call (a zero grace period), nobody was at a terminal to ask, the wait ran out, or
- * the node shut down.
+ * Why a call stopped waiting while its ask stays pending: the caller's wait hint said none, nobody
+ * was at a terminal to ask, the wait ran out, or the node shut down.
  */
-export const ApprovalSkipReasonSchema = z.enum(['caller_declined_wait', 'no_wait', 'no_approver', 'wait_elapsed', 'shutdown'])
+export const ApprovalSkipReasonSchema = z.enum(['caller_declined_wait', 'no_approver', 'wait_elapsed', 'shutdown'])
 export type ApprovalSkipReason = z.infer<typeof ApprovalSkipReasonSchema>
 
 export const ApprovalNoticeSchema = z.object({
@@ -102,3 +101,15 @@ export const ApprovalDecisionSchema = z.object({
   note: JsonValueSchema.optional(),
 })
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>
+
+/**
+ * Withdraws one call's asks still waiting (owner decision D6 of 2026-09-29), as an explicit cancel
+ * does: named by one of its ask tokens, or by the requestId and session the call was sent with. Each
+ * withdrawn ask is told `cancelled`. Withdrawing never approves anything.
+ */
+export const ApprovalWithdrawSchema = z.union([
+  z.object({ token: z.string().min(1).max(200) }).strict(),
+  z.object({ requestId: z.string().min(1), sessionId: z.string().min(1).max(200) }).strict(),
+])
+export type ApprovalWithdraw = z.infer<typeof ApprovalWithdrawSchema>
+export interface ApprovalWithdrawResult { withdrawn: string[] }

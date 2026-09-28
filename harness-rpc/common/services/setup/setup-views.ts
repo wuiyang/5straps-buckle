@@ -1,6 +1,7 @@
 import { resolveFilesystemAccess, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
-import { isRestrictive } from '../../domain/policy.js'
+import { isRestrictive, refuseSwitchIn } from '../../domain/policy.js'
+import { ApprovalWithdrawSchema, WorkspacePolicyUpdateSchema, type ApprovalWithdraw, type WorkspacePolicy } from '@5straps/protocol'
 import { actionsPath } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { WorkspacePatchSchema, WorkspaceRegistrationSchema, WorkspaceTokenInputSchema, type ManagedWorkspace, type WorkspaceManager, type WorkspaceRegistration } from '../workspaces/workspace-manager.js'
@@ -27,6 +28,11 @@ export interface SetupViews {
   files(workspace: ManagedWorkspace, query: Query): Promise<Record<string, unknown>>
   /** One page of host directories, each marked whether it can become a workspace root. */
   directories(workspaces: WorkspaceManager, query: Query): Promise<Record<string, unknown>>
+  /** A policy to store, with the revision it was written against; one that names the dangerously-allow switch is refused 409. */
+  policyUpdate(body: unknown): { policy: WorkspacePolicy; expectedRevision?: string }
+  /** Which call's asks to withdraw: one of its tokens, or its requestId and session. */
+  approvalWithdraw(body: unknown): ApprovalWithdraw
+  /** A workspace to register; a policy in it that names the dangerously-allow switch is refused 409. */
   registration(body: unknown): WorkspaceRegistration
   workspacePatch(body: unknown): ReturnType<typeof WorkspacePatchSchema.parse>
   tokenInput(body: unknown): ReturnType<typeof WorkspaceTokenInputSchema.parse>
@@ -50,6 +56,9 @@ export function createSetupViews(): SetupViews {
         reporting: runtime.reporter.configured,
         // Unavailable while this workspace's audit log refuses writes: its tool calls are refused until it is repaired (B19).
         audit: runtime.auditHealth.failing(actionsPath(config)) ? 'unavailable' : 'available',
+        auditLastFailureAt: runtime.auditHealth.lastFailureAt(actionsPath(config)),
+        // The node's own face names every workspace whose log keeps readiness at 503 (review L5 of B20-B22).
+        ...(runtime.workspaceId === 'default' ? { auditFailingWorkspaces: runtime.auditHealth.failingWorkspaces() } : {}),
         // Read-only here: only the owner's local `buckle policy dangerously-allow` changes it (ruling H1e).
         dangerouslyAllow: runtime.policy.dangerouslyAllow(),
         approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',
@@ -91,7 +100,19 @@ export function createSetupViews(): SetupViews {
       return browseDirectories({ ...parsed.data, eligibility: workspaces.eligibility })
     },
 
-    registration: body => parsedOr(WorkspaceRegistrationSchema.safeParse(body), 'Invalid workspace registration'),
+    policyUpdate(body) {
+      refuseSwitchIn(body)
+      const parsed = WorkspacePolicyUpdateSchema.safeParse(body)
+      // Field paths only, as the parse issues named them before: a value can be anything the caller sent.
+      if (!parsed.success) throw new SetupRequestError(`Invalid workspace policy at ${[...new Set(parsed.error.issues.map(issue => issue.path.join('.') || '(root)'))].join(', ')}`)
+      const { expectedRevision, ...policy } = parsed.data
+      return expectedRevision === undefined ? { policy } : { policy, expectedRevision }
+    },
+    approvalWithdraw: body => parsedOr(ApprovalWithdrawSchema.safeParse(body), 'Invalid approval withdrawal: send {token} or {requestId, sessionId}'),
+    registration(body) {
+      refuseSwitchIn((body as { policy?: unknown } | null)?.policy)
+      return parsedOr(WorkspaceRegistrationSchema.safeParse(body), 'Invalid workspace registration')
+    },
     workspacePatch: body => parsedOr(WorkspacePatchSchema.safeParse(body), 'Invalid workspace settings'),
     tokenInput: body => parsedOr(WorkspaceTokenInputSchema.safeParse(body), 'Invalid workspace token request'),
   }

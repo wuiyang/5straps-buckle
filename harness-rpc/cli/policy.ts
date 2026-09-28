@@ -3,8 +3,9 @@ import { parseArgs } from 'node:util'
 import { destructivePatterns, emptyWorkspacePolicy, isWorkspaceToolAllowed, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
-import { clearKeepingDangerouslyAllow, compilePolicy, mergePolicies, PolicyError, type StoredPolicyError } from '../common/domain/policy.js'
+import { compilePolicy, mergePolicies, PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
 import { actionsPath, policyPath, type BuckleConfig } from '../common/runtime/config.js'
+import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -30,8 +31,13 @@ const USAGE = `Usage:
   buckle policy clear                         Drop the stored policy, leaving the environment's
   buckle policy dangerously-allow on|off [--workspace <id>]
                                               DANGEROUS: allow every ask in the workspace without a
-                                              person, sensitive files and file writes included; each
-                                              use is audited, and deny rules still refuse
+                                              person, sensitive files and file writes included, bound
+                                              to the workspace root, or its mount when one is set;
+                                              each use is audited, and deny rules still refuse
+
+Exits 0 when done, 1 when the node refuses the change or the input, and 2 when the change conflicts
+with the node's state (the refusals the setup face answers 409): active work, or a policy file that
+names the dangerously-allow switch.
 
 A command glob is matched one shell word at a time. 'pnpm {build,test} *' allows 'pnpm build'
 with any arguments after it: * stands for one word, and a trailing * for the rest of the line.
@@ -74,14 +80,17 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
         if (result.exitCode === 0 && opensNetwork(before, next, runtime.policy.base())) process.stdout.write(EMPTY_LIST_WARNING)
         return result
       }
-      case 'import':
-        return await save(runtime, WorkspacePolicySchema.parse(JSON.parse(readFileSync(required(rest[0], action), 'utf8'))))
+      case 'import': {
+        const document: unknown = JSON.parse(readFileSync(required(rest[0], action), 'utf8'))
+        refuseSwitchIn(document)
+        return await save(runtime, WorkspacePolicySchema.parse(document))
+      }
       case 'export':
         return print(runtime.policy.stored() ?? emptyWorkspacePolicy())
       case 'clear':
         await runtime.policy.clear()
         process.stdout.write('Stored policy cleared\n')
-        if (runtime.policy.dangerouslyAllow().on) process.stdout.write('The dangerously-allow switch stays on: only `buckle policy dangerously-allow off` turns it off.\n')
+        if (runtime.policy.dangerouslyAllow().on) process.stdout.write('The dangerously-allow switch is apart from the policy and stays on: only `buckle policy dangerously-allow off` turns it off.\n')
         return { exitCode: 0 }
       case 'dangerously-allow':
         return await dangerouslyAllow({ runtime, workspaces, argv: rest })
@@ -92,10 +101,15 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
   } catch (error) {
     if (error instanceof PolicyError || error instanceof UsageError) {
       process.stderr.write(`${error.message}\n`)
-      return { exitCode: 1 }
+      return { exitCode: exitCodeOf(error) }
     }
     throw error
   }
+}
+
+/** A conflict with the node's state exits 2, the CLI's form of the setup face's 409; any other refusal exits 1. */
+function exitCodeOf(error: PolicyError | UsageError): number {
+  return error instanceof PolicyError && error.status === 409 ? 2 : 1
 }
 
 /**
@@ -112,7 +126,7 @@ async function dangerouslyAllow(input: { runtime: BuckleRuntime; workspaces: Wor
   const now = target.policy.dangerouslyAllow()
   if (!now.on) process.stdout.write(`Dangerously allow is off for workspace ${target.workspaceId}: asks wait for a person again.\n`)
   else {
-    process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceId}. Every ask there is allowed without a person, sensitive files and file writes included. Each use is audited as policy_dangerously_allowed; deny rules, the node's own policy and the mount boundary still refuse.\n`)
+    process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceId}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). Every ask about a path inside it, and every command, host and process ask, is allowed without a person, sensitive files and file writes included. Paths outside it still ask. Each use is audited as policy_dangerously_allowed; deny rules and the node's own policy still refuse.\n`)
     if (now.allowedByNode === false) process.stdout.write('It has no effect until the node\'s own switch is on too: buckle policy dangerously-allow on\n')
   }
   return { exitCode: 0, detail: `dangerously-allow ${state}${values.workspace ? ` ${values.workspace}` : ''}` }
@@ -145,7 +159,7 @@ async function repairStoredPolicyAction(input: { config: BuckleConfig; argv: str
         return { exitCode: 0 }
       }
       case 'clear':
-        await store.update(current => clearKeepingDangerouslyAllow(current, new Date().toISOString()))
+        await store.update(() => null)
         process.stdout.write('Stored policy cleared\n')
         return { exitCode: 0 }
       case 'export':
@@ -162,7 +176,7 @@ async function repairStoredPolicyAction(input: { config: BuckleConfig; argv: str
   } catch (error) {
     if (error instanceof PolicyError || error instanceof UsageError) {
       process.stderr.write(`${error.message}\n`)
-      return { exitCode: 1 }
+      return { exitCode: exitCodeOf(error) }
     }
     throw error
   }
@@ -271,9 +285,9 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   return { exitCode: 0 }
 }
 
-function describeDangerously(state: { on: boolean; allowedByNode: boolean | null; effective: boolean }): string {
+function describeDangerously(state: { on: boolean; allowedByNode: boolean | null; effective: boolean; boundTo: string }): string {
   if (!state.on) return 'off'
-  return state.effective ? 'ON: every ask is allowed without a person, and each use is audited' : 'on, without effect: the node\'s own switch is off'
+  return state.effective ? `ON, ${DANGEROUSLY_ALLOW_SCOPE} (${state.boundTo}): every ask there is allowed without a person, and each use is audited` : 'on, without effect: the node\'s own switch is off'
 }
 
 function print(value: unknown): CliResult {

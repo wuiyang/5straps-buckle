@@ -20,7 +20,7 @@ export async function guardedFetch(input: {
   /** The owner's approved list. When set, every hop must be on it, and a listed private address is fine. */
   approved: UrlMatcher | null
   /** The permission rules on each hop, so a host the owner approved is reached like a listed one. */
-  judge?: (url: URL) => NetworkVerdict
+  judge?: (url: URL) => Promise<NetworkVerdict>
 }): Promise<Response> {
   let current = input.url
 
@@ -46,7 +46,7 @@ export async function guardedFetch(input: {
   throw new ToolExecutionError(`Exceeded ${MAX_REDIRECTS} redirects`, { code: 'TOO_MANY_REDIRECTS' })
 }
 
-async function assertReachable(url: URL, allowedHosts: string[], approved: UrlMatcher | null, judge?: (url: URL) => NetworkVerdict): Promise<void> {
+async function assertReachable(url: URL, allowedHosts: string[], approved: UrlMatcher | null, judge?: (url: URL) => Promise<NetworkVerdict>): Promise<void> {
   const starred = starredHostRefusal(url)
   if (starred) throw new ToolExecutionError(starred, { code: 'EGRESS_BLOCKED' })
   if (approved) {
@@ -56,7 +56,8 @@ async function assertReachable(url: URL, allowedHosts: string[], approved: UrlMa
   // The approved list's host grammar, per `BUCKLE-D18`: `*.internal.test` covers the apex and every subdomain.
   if (matchingHostEntry(allowedHosts, url)) return
 
-  const verdict = judge?.(url)
+  // Awaited: a dangerously-allowed hop is audited before it is made, and an audit that fails refuses it.
+  const verdict = await judge?.(url)
   if (verdict?.kind === 'granted') return
   if (verdict?.kind === 'refused') throw new ToolExecutionError(verdict.reason, { code: 'EGRESS_BLOCKED' })
 

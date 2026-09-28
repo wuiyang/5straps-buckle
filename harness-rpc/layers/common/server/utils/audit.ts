@@ -1,11 +1,13 @@
 import type { H3Event } from 'h3'
 import type { AUDIT_UNAVAILABLE } from '../../../../common/adapters/action-log/file-action-log.js'
+import type { STATE_BUSY } from '../../../../common/adapters/json-file-store.js'
 import type { ActionLog, ActionLogEntry } from '../../../../common/types/ports/action-log.js'
 import { hasCode } from './errors.js'
 import { useServices } from './services.js'
 
-// Checked against the common constant at compile time; the layers take common code as types only.
+// Checked against the common constants at compile time; the layers take common code as types only.
 const AUDIT_UNAVAILABLE_CODE: typeof AUDIT_UNAVAILABLE = 'AUDIT_UNAVAILABLE'
+const STATE_BUSY_CODE: typeof STATE_BUSY = 'STATE_BUSY'
 
 type Outcome = ActionLogEntry['outcome']
 
@@ -36,16 +38,17 @@ export async function recordRefusal(actions: ActionLog, input: { tool: string; w
 
 /**
  * The log for an entry the answer does not depend on: a refusal, which stands anyway, an owner's read,
- * and the result of work already done. When the audit storage will not take it, the owner's log
- * records that and readiness reports it (B19), and the answer still goes out. Nothing an agent can
- * run goes through this: a tool call's attempt, and any change's, must be written first.
+ * and the result of work already done. When the audit storage will not take it, or another process
+ * holds its pending state past the wait, the owner's log records that, readiness reports a failing
+ * log (B19), and the answer still goes out (review L7 of B20-B22). Nothing an agent can run goes
+ * through this: a tool call's attempt, and any change's, must be written first.
  */
 export function tolerantLog(event: H3Event, actions: ActionLog): ActionLog {
   return {
     ...actions,
     record: entry => actions.record(entry).catch((error: unknown) => {
-      if (!hasCode(error, AUDIT_UNAVAILABLE_CODE)) throw error
-      event.context.logger?.error('Answering without an audit entry the storage would not take', { tool: entry.tool, event: entry.event ?? 'result' })
+      if (!hasCode(error, AUDIT_UNAVAILABLE_CODE) && !hasCode(error, STATE_BUSY_CODE)) throw error
+      event.context.logger?.error('Answering without an audit entry the storage would not take', { tool: entry.tool, event: entry.event ?? 'result', code: hasCode(error, STATE_BUSY_CODE) ? STATE_BUSY_CODE : AUDIT_UNAVAILABLE_CODE })
     }),
   }
 }

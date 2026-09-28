@@ -2,12 +2,13 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createOperationScope, runInScope } from '@5straps/runtime'
-import type { InvokeRequest, InvokeResponse } from '@5straps/protocol'
+import { emptyWorkspacePolicy, type InvokeRequest, type InvokeResponse } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
 import { createExecutionBudget, createExecutions, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint, requestIdKey } from '../common/services/invocation/executions.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { ToolExecutionError } from '../common/domain/tool.js'
+import { AuditUnavailableError } from '../common/adapters/action-log/file-action-log.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
 // Review M2 of B13-B14 (plan corrections): a re-send never runs a call twice, beyond the approval wait
@@ -219,6 +220,23 @@ describe('shutdown\'s tool calls step (B19)', () => {
     expect(results(runtime, 'late')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'BUCKLE_SHUTTING_DOWN' })])
   })
 
+  it('answers a tool that throws its own error once the shutdown killed it as the shutdown (review L8 of B20-B22)', async () => {
+    const { runtime } = await node()
+    const registered = runtime.registry().get('fs_read')
+    const prepare = registered.prepare.bind(registered)
+    let started = false
+    vi.spyOn(registered, 'prepare').mockImplementation(args => ({ ...prepare(args), execute: async (context) => {
+      started = true
+      // A git or a shell that dies under the signal reports its own failure, not the signal's reason.
+      await new Promise((_, reject) => context.signal.addEventListener('abort', () => reject(new ToolExecutionError('git exited with signal SIGTERM', { code: 'GIT_FAILED' })), { once: true }))
+      return null
+    } }))
+    const running = runtime.invoke({ sessionId: 'chat-1', request: read('killed') })
+    await vi.waitFor(() => expect(started).toBe(true))
+    await runtime.cancelInvocations()
+    expect(await running).toMatchObject({ outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN', retryable: false } })
+  })
+
   it('never reads shutdown as the caller leaving: an ask made while the tool calls step fires stays pending (review L6 of B18-B19)', async () => {
     const { runtime, root } = await node()
     await runtime.cancelInvocations()
@@ -310,3 +328,33 @@ describe('the execution store', () => {
     expect(executions.earlier(key('busy'))).toBeUndefined()
   })
 })
+
+describe('a call stopped by an audit failure while its tool runs (review L1 of B20-B22)', () => {
+  it('settles its execution, so a re-send with the same requestId runs once the audit takes writes again instead of waiting forever', async () => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'private'))
+    writeFileSync(join(workspace, 'private', 'notes.md'), 'private')
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: 'private', read: 'ask' }] } })
+    await runtime.policy.setDangerouslyAllow(true)
+    const registered = runtime.registry().get('fs_read')
+    const prepare = registered.prepare.bind(registered)
+    let runs = 0
+    // The tool reads a path the switch lets through while it runs, as a tree walk does.
+    vi.spyOn(registered, 'prepare').mockImplementation(args => ({ ...prepare(args), execute: async (context) => {
+      runs += 1
+      return await context.authorizeRead!(join(workspace, 'private', 'notes.md'))
+    } }))
+    const record = runtime.actions.record.bind(runtime.actions)
+    let broken = true
+    vi.spyOn(runtime.actions, 'record').mockImplementation(async entry => {
+      if (broken && entry.tool === 'policy_dangerously_allowed') throw new AuditUnavailableError()
+      return record(entry)
+    })
+    await expect(runtime.invoke({ sessionId: 'chat-1', request: read('mid-call-audit') })).rejects.toBeInstanceOf(AuditUnavailableError)
+    broken = false
+    const again = await Promise.race([runtime.invoke({ sessionId: 'chat-1', request: read('mid-call-audit') }), new Promise(resolve => setTimeout(() => resolve('still waiting'), 5_000))])
+    expect(again).toMatchObject({ outcome: 'ok', output: true })
+    expect(runs).toBe(2)
+  })
+})
+

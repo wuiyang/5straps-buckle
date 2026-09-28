@@ -111,3 +111,48 @@ describe('a client that hangs up over node:http', () => {
     expect(results().map(entry => entry.outcome).filter(outcome => outcome === 'ok')).toHaveLength(1)
   })
 })
+
+describe('a re-send after every ask of the dropped call was answered (review M2 of B20-B22)', () => {
+  /** Sends the call, waits for its ask, hangs up, and waits for its result entry; the ask stays pending. */
+  async function dropWhileAsking(input: { url: string; buckle: BuckleHttp; body: string; requestId: string }): Promise<string> {
+    const request = httpRequest(new URL('/v1/invoke', input.url), { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(input.body)) } })
+    request.on('error', () => undefined)
+    request.end(input.body)
+    await vi.waitFor(() => expect(input.buckle.runtime.approvals.pending()).toHaveLength(1), { timeout: 10_000 })
+    const [token] = input.buckle.runtime.approvals.pending().map(pending => pending.token)
+    request.destroy()
+    await vi.waitFor(() => expect(input.buckle.runtime.actions.read(50).filter(entry => entry.event === 'result' && entry.requestId === input.requestId)).toHaveLength(1), { timeout: 10_000 })
+    return token!
+  }
+
+  const send = (url: string, body: string) => fetch(new URL('/v1/invoke', url), { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body })
+
+  it('refuses the re-send of a call denied once: it joins the answered asks and asks nobody again', async () => {
+    const { url, root, buckle } = await listening({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const body = JSON.stringify({ requestId: 'wire-deny-once', tool: 'fs_write', args: { path: join(root, 'denied.md'), content: 'x' } })
+    const token = await dropWhileAsking({ url, buckle, body, requestId: 'wire-deny-once' })
+    expect((await buckle.runtime.approvalService.answer({ decision: { token, approved: false, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+
+    const reply = await send(url, body)
+    expect(reply.status).toBe(422)
+    expect(await reply.json()).toMatchObject({ requestId: 'wire-deny-once', outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
+    expect(buckle.runtime.approvals.pending()).toEqual([])
+    expect(existsSync(join(root, 'denied.md'))).toBe(false)
+  })
+
+  it('runs the call approved once exactly once for two re-sends at the same time, the second replaying the first, and asks nobody again', async () => {
+    const { url, root, buckle } = await listening({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const body = JSON.stringify({ requestId: 'wire-approve-once', tool: 'fs_write', args: { path: join(root, 'approved.md'), content: 'once' } })
+    const token = await dropWhileAsking({ url, buckle, body, requestId: 'wire-approve-once' })
+    expect((await buckle.runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+
+    const replies = await Promise.all([send(url, body), send(url, body)])
+    const answers = await Promise.all(replies.map(async reply => ({ status: reply.status, body: await reply.json() as { outcome: string } })))
+    expect(answers.map(answer => [answer.status, answer.body.outcome])).toEqual([[200, 'ok'], [200, 'ok']])
+    expect(buckle.runtime.approvals.pending()).toEqual([])
+    expect(readFileSync(join(root, 'approved.md'), 'utf8')).toBe('once')
+    const results = buckle.runtime.actions.read(50).filter(entry => entry.event === 'result' && entry.requestId === 'wire-approve-once' && entry.outcome === 'ok')
+    expect(results.map(entry => entry.detail ?? null).sort()).toEqual(['REPLAYED', null].sort())
+  })
+})
+

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit } from '../cli/init.js'
 import { settingsCommand } from '../cli/settings.js'
 import { defaultEnvironmentFile, environmentFilePath, loadEnvironmentFile, meetOutsideRoot, namesItsNode, outsideRootNotice } from '../common/runtime/environment.js'
+import { loadConfig } from '../common/runtime/config.js'
 
 // Owner ruling (2026-09-28): the node's settings live under ~/.5straps, in buckle.env in its state
 // directory, and never in the working directory; BUCKLE_ENV_FILE still names any other file.
@@ -62,6 +63,14 @@ describe('where the environment file is', () => {
   it('refuses a relative BUCKLE_ENV_FILE, which would name another file in every working directory (review L9 of B18-B19)', () => {
     vi.stubEnv('BUCKLE_ENV_FILE', 'custom.env')
     expect(() => environmentFilePath()).toThrow('BUCKLE_ENV_FILE must be an absolute path, not custom.env')
+  })
+
+  it('refuses a relative BUCKLE_STATE_DIR too, before anything is created under the working directory (review L13 of B20-B22)', () => {
+    vi.stubEnv('BUCKLE_ENV_FILE', '')
+    vi.stubEnv('BUCKLE_STATE_DIR', 'rel-state')
+    expect(() => environmentFilePath()).toThrow('BUCKLE_STATE_DIR must be an absolute path, not rel-state')
+    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: 'rel-state' })).toThrow('BUCKLE_STATE_DIR must be an absolute path')
+    expect(existsSync(join(process.cwd(), 'rel-state'))).toBe(false)
   })
 })
 
@@ -164,7 +173,7 @@ describe('buckle settings on the state directory file', () => {
 describe('a project outside the root the file names (review M4 of B18-B19, owner decision D5)', () => {
   it('names the working directory, the root, the file and both ways to give the project its own node', () => {
     const notice = outsideRootNotice({ namedNode: false, root, cwd: base, file: stateFile() })
-    for (const part of [root, base, stateFile(), 'BUCKLE_ENV_FILE', 'BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR', 'in the MCP config\'s env']) expect(notice).toContain(part)
+    for (const part of [root, base, stateFile(), 'BUCKLE_ENV_FILE', 'BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR', 'in the shell or the MCP config\'s env']) expect(notice).toContain(part)
   })
 
   it('says nothing inside the root, or when the process environment named the node itself', () => {

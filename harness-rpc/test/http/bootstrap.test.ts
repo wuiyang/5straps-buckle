@@ -379,15 +379,21 @@ describe('a project outside the root the environment file names (review M4 of B1
   }
   const warning = (text: string) => text.split('\n').filter(line => line.startsWith('Warning: Buckle serves'))
 
-  it('warns once from buckle call and buckle mcp, naming the working directory, the root and both ways to give the project its own node, and still runs', async () => {
+  it('warns once from buckle call, buckle <group> <verb> and buckle mcp, naming the working directory, the root and both ways to give the project its own node, and still runs (review M5 of B20-B22)', async () => {
     const { node, env, elsewhere } = await nodeFromFile()
     const call = spawnBuckle({ entry, args: ['call', 'fs_list', '--json', '{"path":"."}'], env, cwd: elsewhere })
     running.push(call)
     expect(await call.exited).toEqual({ code: 0, signal: null })
     const [line] = warning(call.stderr())
     expect(warning(call.stderr())).toHaveLength(1)
-    for (const part of [node.workspace, elsewhere, join(node.state, 'buckle.env'), 'BUCKLE_ENV_FILE', 'BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR']) expect(line).toContain(part)
+    for (const part of [node.workspace, elsewhere, join(node.state, 'buckle.env'), 'BUCKLE_ENV_FILE', 'BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR', 'in the shell or the MCP config\'s env']) expect(line).toContain(part)
     expect(call.stderr()).not.toContain('outside-root-agent-token')
+
+    // The spelling the skills teach agents runs a tool on the root just the same.
+    const verb = spawnBuckle({ entry, args: ['fs', 'list'], env, cwd: elsewhere })
+    running.push(verb)
+    expect(await verb.exited).toEqual({ code: 0, signal: null })
+    expect(warning(verb.stderr())).toEqual([line])
 
     const mcp = spawnBuckle({ entry, args: ['mcp'], env, cwd: elsewhere, stdin: 'pipe' })
     running.push(mcp)

@@ -93,9 +93,17 @@ export function workbenchTransportTool(event: H3Event): string {
   return `http_workbench_${event.req.method.toLowerCase()}`
 }
 
+/** A refusal stands whether or not its entry can be written (B19): no failure to record it turns it into a 500 (review L7 of B20-B22). */
 async function audit(event: H3Event, refusal: RefusalAudit | undefined, input: { status: number; registryReadable: boolean }): Promise<void> {
+  try {
+    await auditRefusal(event, refusal, input)
+  } catch (error) {
+    event.context.logger?.error('Refused without an audit entry', { route: event.context.matchedRoute?.route, status: input.status, error })
+  }
+}
+
+async function auditRefusal(event: H3Event, refusal: RefusalAudit | undefined, input: { status: number; registryReadable: boolean }): Promise<void> {
   if (!refusal) return
-  // A refusal stands whether or not its entry can be written (B19).
   const actions = tolerantLog(event, await nodeActions(event))
   if (!namedWorkspace(event)) return refusal.node({ event, actions, status: input.status })
   const workspaceId = targetId(event)

@@ -84,14 +84,15 @@ export function namesItsNode(environment: NodeJS.ProcessEnv = process.env): bool
 }
 
 /**
- * One node per state directory (review M4 of B18-B19): `buckle mcp` or `buckle call` started in a
- * project outside the file's workspace root serves that root, not the project. Null when the process
- * environment named its node, or the working directory is inside the root.
+ * One node per state directory (review M4 of B18-B19): `buckle mcp`, or a command that runs a tool
+ * (`buckle call`, `buckle <group> <verb>`), started in a project outside the file's workspace root
+ * serves that root, not the project. Null when the process environment named its node, or the
+ * working directory is inside the root.
  */
 export function outsideRootNotice(input: { namedNode: boolean; root: string; cwd: string; file: string | null }): string | null {
   if (input.namedNode || isInside(realPath(input.root), realPath(input.cwd))) return null
   const source = input.file ? `the workspace root ${input.file} sets` : 'its workspace root'
-  return `Buckle serves ${input.root}, ${source}, but started in ${input.cwd}, outside it: this project gets that root's files, grants and history. To give this project its own node, set BUCKLE_ENV_FILE to its own environment file, or BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR, in the MCP config's env.`
+  return `Buckle serves ${input.root}, ${source}, but started in ${input.cwd}, outside it: this project gets that root's files, grants and history. To give this project its own node, set BUCKLE_ENV_FILE to its own environment file, or BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR, in the shell or the MCP config's env.`
 }
 
 function realPath(path: string): string {

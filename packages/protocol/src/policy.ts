@@ -51,19 +51,12 @@ export const WorkspaceToolPolicySchema = z.object({
 }).strict()
 
 /**
- * The workspace's dangerously-allow switch (owner rulings 11 and H1 of 2026-09-28): on, every ask in
- * the workspace is allowed without a person, sensitive files and file writes included, and each use
- * is audited. Only explicit deny rules, the node's own policy over the workspace and the mount
- * boundary still refuse. One switch sets both flags; absent, both are off. Only the owner's local
- * `buckle policy dangerously-allow on|off` changes it.
+ * A workspace's policy document. The dangerously-allow switch is not part of it: Buckle keeps that
+ * switch in its own file, which only the owner's local CLI changes.
  */
-export const DangerouslyAllowSchema = z.object({ commands: z.boolean(), fileReads: z.boolean() }).strict()
-export type DangerouslyAllow = z.infer<typeof DangerouslyAllowSchema>
-
 export const WorkspacePolicySchema = z.object({
   version: z.literal(1),
   filesystem: FilesystemPolicySchema.optional(),
-  dangerouslyAllow: DangerouslyAllowSchema.optional(),
   tools: WorkspaceToolPolicySchema.optional(),
   commands: CommandPolicySchema.default({ allow: [], deny: [] }),
   network: NetworkPolicySchema.default({ allow: [] }),

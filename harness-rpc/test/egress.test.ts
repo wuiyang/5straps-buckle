@@ -111,7 +111,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
       allowedHosts: [], approved: null,
-      judge: () => ({ kind: 'granted' }),
+      judge: async () => ({ kind: 'granted' }),
     })
     expect(await response.text()).toBe('arrived')
   })
@@ -121,7 +121,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
       allowedHosts: [], approved: null,
-      judge: () => ({ kind: 'refused', reason: '127.0.0.1 is in the loopback range' }),
+      judge: async () => ({ kind: 'refused', reason: '127.0.0.1 is in the loopback range' }),
     })).rejects.toThrow(/loopback/)
   })
 
@@ -130,7 +130,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
       allowedHosts: [], approved: null,
-      judge: () => ({ kind: 'allowed' }),
+      judge: async () => ({ kind: 'allowed' }),
     })).rejects.toThrow(/loopback/)
   })
 
@@ -139,7 +139,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
       allowedHosts: allowLocal(), approved: null,
-      judge: () => ({ kind: 'refused', reason: 'not consulted' }),
+      judge: async () => ({ kind: 'refused', reason: 'not consulted' }),
     })
     expect(await response.text()).toBe('arrived')
   })
@@ -149,7 +149,7 @@ describe('guardedFetch', () => {
       url: new URL(`http://localhost:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
       allowedHosts: [`*.localhost:${port}`], approved: null,
-      judge: () => ({ kind: 'refused', reason: 'not consulted' }),
+      judge: async () => ({ kind: 'refused', reason: 'not consulted' }),
     })
     expect(await response.text()).toBe('arrived')
   })
@@ -173,7 +173,7 @@ describe('a * in a host', () => {
     await expect(guardedFetch({
       url: new URL('http://*.localhost/'),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
-      allowedHosts: ['*.localhost'], approved: null, judge: () => ({ kind: 'granted' }),
+      allowedHosts: ['*.localhost'], approved: null, judge: async () => ({ kind: 'granted' }),
     })).rejects.toThrow(/A host cannot contain \*/)
   })
 })

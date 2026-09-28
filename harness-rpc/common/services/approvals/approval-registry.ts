@@ -113,13 +113,24 @@ export interface ApprovalRegistry {
    * this from the owner's own process or from behind the admin credential.
    */
   resolve(decision: ApprovalDecision, authority?: ApprovalAuthority, options?: ResolveOptions): Promise<Resolution>
+  /**
+   * The last check clears the call or not. A cleared call's `once` approvals are spent under the
+   * queue's lock, and `admit` runs under it first: false (another run of the call holds it) leaves them
+   * unspent.
+   */
   evaluate(input: {
     tokens: string[]; sessionId: string; tool: string
     check: (subjects: GrantSubject[]) => PermissionOutcome
+    admit?: () => boolean
   }): Promise<PermissionOutcome>
   wasDenied(tokens: string[]): boolean
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
   cancel(tokens: string[]): Promise<string[]>
+  /**
+   * Withdraws one call's asks still waiting: the group of the ask a token names (its requestId,
+   * session and actor), or every ask waiting under a hashed requestId and session. Returns them.
+   */
+  cancelGroup(selector: { token: string } | { requestId: string; sessionId: string }): Promise<string[]>
   /** Drops the asks that expired unanswered, telling `onExpired` about them. Every update does this too. */
   sweep(): Promise<void>
   pending(): ApprovalRequest[]
@@ -205,7 +216,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       })
     },
 
-    evaluate({ tokens, sessionId, tool, check }) {
+    evaluate({ tokens, sessionId, tool, check, admit }) {
       return update(state => {
         const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool)
         const usable = bound.filter(entry => tokens.includes(entry.token))
@@ -213,7 +224,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         // The last check is the one the caller acts on, so it sees only the approvals this call uses.
         const outcome = check(used.map(entry => entry.subject))
         // Keep partial approvals until every gate clears; consume under the same process lock.
-        if (outcome.kind === 'allow') {
+        if (outcome.kind === 'allow' && (admit?.() ?? true)) {
           const consumed = new Set(used.map(entry => entry.token))
           state.once = state.once.filter(entry => !consumed.has(entry.token))
         }
@@ -236,6 +247,20 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       })
     },
 
+    cancelGroup(selector) {
+      return update((state) => {
+        const mine = state.pending.filter(entry => entry.workspace === workspace)
+        const named = 'token' in selector ? mine.find(entry => entry.request.token === selector.token) : undefined
+        const inGroup = 'token' in selector
+          ? (entry: State['pending'][number]) => entry === named || (named?.requestId !== undefined && entry.requestId === named.requestId && entry.sessionId === named.sessionId && entry.actor === named.actor)
+          : (entry: State['pending'][number]) => entry.requestId === selector.requestId && entry.sessionId === selector.sessionId
+        const withdrawn = mine.filter(inGroup).map(entry => entry.request.token)
+        state.pending = state.pending.filter(entry => entry.workspace !== workspace || !withdrawn.includes(entry.request.token))
+        state.once = state.once.filter(entry => entry.workspace !== workspace || !withdrawn.includes(entry.token))
+        return withdrawn
+      })
+    },
+
     sweep: () => update(() => undefined),
 
     pending: () => store.read().pending.filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now()).map(entry => entry.request),
@@ -246,18 +271,21 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 interface JoinKey { requestId: string; sessionId: string; actor: string | undefined }
 
 /**
- * The asks a call with this requestId, session and actor is still waiting on, when there are any.
- * Its re-send asks again for everything still waiting, and may ask again for an answered `once`
- * (it is spent only when a whole call clears) but not for an answered session grant; anything else
- * is a different call reusing the id.
+ * The asks a call with this requestId, session and actor is still waiting on, when there are any, or
+ * the group's answered asks when none waits but one was denied (review M2 of B20-B22): its re-send is
+ * refused, never asked again. Its re-send asks again for everything still waiting, and may ask again
+ * for an answered `once` (it is spent only when a whole call clears) but not for an answered session
+ * grant; anything else is a different call reusing the id. A group answered with approvals alone is
+ * not joined: its call ran (a re-send replays it) or asks afresh.
  */
 function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[] } }): AskResult | null {
   const { key } = input
   const inGroup = (entry: { workspace: string; sessionId?: string; requestId?: string; actor?: string }) =>
     entry.workspace === input.workspace && entry.requestId === key.requestId && entry.sessionId === key.sessionId && entry.actor === key.actor
   const waiting = input.state.pending.filter(inGroup).map(entry => entry.request)
-  if (waiting.length === 0) return null
-  const answered = input.state.resolved.filter(inGroup).flatMap(entry => entry.request ? [entry.request] : [])
+  const resolved = input.state.resolved.filter(inGroup)
+  if (waiting.length === 0 && !resolved.some(entry => !entry.decision.approved)) return null
+  const answered = resolved.flatMap(entry => entry.request ? [entry.request] : [])
   if (!sameGroup({ waiting, answered, call: input.call })) throw new ApprovalConflictError(`Request ${key.requestId} is already waiting for approval of different asks`)
   return { requests: waiting, joined: true, answered: answered.map(request => request.token) }
 }

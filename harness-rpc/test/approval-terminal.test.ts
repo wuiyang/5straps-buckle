@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import type { CliRequest, RequestCli } from '@5straps/runtime'
-import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
+import type { ApprovalDecision, ApprovalRequest, ApprovalWait } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setupCli } from '../cli/setup.js'
 import { remainingMs } from '../common/domain/approval-deadline.js'
@@ -80,7 +80,7 @@ const nobody: RequestCli = async request => ({ status: 'unavailable', requestId:
 
 function waitingService(input: { registry: ApprovalRegistry; graceMs: number | null; requestCli?: RequestCli; hold?: ApprovalHold; announce?: (requests: ApprovalRequest[]) => Promise<void> }) {
   const service = createApprovalService({ registry: input.registry, workspaceId: 'default', graceMs: input.graceMs, interaction: async () => ({ requestCli: input.requestCli ?? nobody, hold: input.hold ?? 'grace' }), ...(input.announce ? { announce: input.announce } : {}) })
-  return (tokens = 1) => service.request({ sessionId: 's', requestId: 'r', tool: 'fs_read', asks: Array.from({ length: tokens }, () => ({ kind: 'ask' as const, rule: 'read_scope' as const, subject: '/shots', reason: 'outside the sandbox', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })) })
+  return (tokens = 1, wait?: ApprovalWait) => service.request({ sessionId: 's', requestId: 'r', tool: 'fs_read', asks: Array.from({ length: tokens }, () => ({ kind: 'ask' as const, rule: 'read_scope' as const, subject: '/shots', reason: 'outside the sandbox', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })), ...(wait ? { wait } : {}) })
 }
 
 /** A question held on screen until the test answers it, recording whether it was withdrawn. */
@@ -107,10 +107,10 @@ describe('the grace period before a gated call gives up', () => {
     expect(await waitingService({ registry: stubQueue([approval('t1')]).registry, graceMs: 600 })()).toMatchObject({ settled: false })
   })
 
-  it('returns at once when the hold is 0, and still asks the terminal (owner ruling of 2026-09-28)', async () => {
+  it('returns at once when the caller\'s hint says none, and still asks the terminal (owner ruling of 2026-09-28)', async () => {
     const queue = stubQueue([approval('t1')])
     const requestCli = vi.fn(nobody)
-    expect(await waitingService({ registry: queue.registry, graceMs: 0, requestCli })()).toMatchObject({ settled: false })
+    expect(await waitingService({ registry: queue.registry, graceMs: 60_000, requestCli })(1, { mode: 'none' })).toMatchObject({ settled: false })
     await vi.waitFor(() => expect(requestCli).toHaveBeenCalledTimes(1))
   })
 

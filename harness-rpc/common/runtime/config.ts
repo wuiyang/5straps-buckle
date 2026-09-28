@@ -1,6 +1,6 @@
 import { parseSandboxMounts, type SandboxMount } from '../domain/sandbox-mounts.js'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
 import { isInside } from '../domain/paths.js'
@@ -159,7 +159,11 @@ export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' 
 
 /** Where grants, approvals and the action log live, read without loading the rest of the config. */
 export function stateDirectoryOf(environment: NodeJS.ProcessEnv): string {
-  return environment.BUCKLE_STATE_DIR ? resolve(environment.BUCKLE_STATE_DIR) : join(homedir(), '.5straps', 'buckle')
+  const named = environment.BUCKLE_STATE_DIR
+  if (!named) return join(homedir(), '.5straps', 'buckle')
+  // Relative, it would name another directory in every directory a command starts in (review L13 of B20-B22).
+  if (!isAbsolute(named)) throw new Error(`BUCKLE_STATE_DIR must be an absolute path, not ${named}: Buckle never resolves its state against the working directory`)
+  return resolve(named)
 }
 
 /** The HTTP face exposes tools over the network, so it refuses to start without a token. */
@@ -190,6 +194,11 @@ export function actionsPath(config: Pick<BuckleConfig, 'stateDirectory'>): strin
 
 export function policyPath(config: BuckleConfig): string {
   return join(config.stateDirectory, 'policy.json')
+}
+
+/** The dangerously-allow switch, beside the policy and never inside it (review H1 of B20-B22). */
+export function dangerouslyAllowPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
+  return join(config.stateDirectory, 'dangerously-allow.json')
 }
 
 /** The value is never echoed: a malformed key names the variable and the fix alone. */

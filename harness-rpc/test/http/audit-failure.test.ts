@@ -83,11 +83,34 @@ describe('an audit log that will not take writes', () => {
     expect(await nodeCall.json()).toMatchObject({ outcome: 'ok' })
 
     expect((await buckle.request('/health/ready')).status).toBe(503)
-    expect(await (await buckle.request('/setup/status', { headers: headers(ADMIN) })).json()).toMatchObject({ audit: 'available' })
-    expect(await (await buckle.request('/workspaces/child/setup/status', { headers: headers(child.adminToken) })).json()).toMatchObject({ audit: 'unavailable' })
+    // The node's own face names the workspace keeping it unready, and each log says when it last failed (review M4 and L5 of B20-B22).
+    expect(await (await buckle.request('/setup/status', { headers: headers(ADMIN) })).json()).toMatchObject({ audit: 'available', auditLastFailureAt: null, auditFailingWorkspaces: ['child'] })
+    const childStatus = await (await buckle.request('/workspaces/child/setup/status', { headers: headers(child.adminToken) })).json() as Record<string, unknown>
+    expect(childStatus).toMatchObject({ audit: 'unavailable', auditLastFailureAt: expect.stringMatching(/^\d{4}-/) })
+    expect(Object.keys(childStatus)).not.toContain('auditFailingWorkspaces')
 
     rmSync(childLog, { recursive: true })
     await vi.waitFor(async () => expect((await buckle.request('/health/ready')).status).toBe(200), { timeout: 10_000, interval: 250 })
+    expect(await (await buckle.request('/setup/status', { headers: headers(ADMIN) })).json()).toMatchObject({ auditFailingWorkspaces: [] })
+  })
+
+  it('stops counting a retired workspace\'s broken log toward readiness (review L5 of B20-B22)', async () => {
+    const { state, root, environment } = nodeEnvironment('buckle-audit-retired-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
+    const buckle = await createBuckleHttp({ environment })
+    nodes.push(buckle)
+    mkdirSync(join(root, 'child'))
+    const child = { id: 'child', name: 'child', root: join(root, 'child'), authToken: 'audit-retired-child-agent-token', adminToken: 'audit-retired-child-admin-token' }
+    expect((await buckle.request('/setup/workspaces', { method: 'POST', headers: headers(ADMIN), body: JSON.stringify(child) })).status).toBe(201)
+    const childRead = (requestId: string) => buckle.request('/workspaces/child/v1/invoke', { method: 'POST', headers: headers(child.authToken), body: JSON.stringify({ requestId, tool: 'fs_list', args: { path: '/workspace' } }) })
+    expect((await childRead('opens')).status).toBe(200)
+    const childLog = join(state, 'workspaces', 'child', 'actions.jsonl')
+    rmSync(childLog, { force: true })
+    mkdirSync(childLog)
+    expect((await childRead('refused')).status).toBe(503)
+    expect((await buckle.request('/health/ready')).status).toBe(503)
+
+    expect((await buckle.request('/setup/workspaces/child', { method: 'DELETE', headers: headers(ADMIN) })).status).toBe(204)
+    expect((await buckle.request('/health/ready')).status).toBe(200)
   })
 
   it('lets the owner inspect the node, refuses the owner\'s changes, and still answers refusals', async () => {

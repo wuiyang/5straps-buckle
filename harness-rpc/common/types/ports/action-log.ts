@@ -45,9 +45,15 @@ export interface AuditHealth {
   /** No log's last write, or last probe, failed. */
   readonly available: boolean
   failing(log: string): boolean
+  /** When the log last failed a write or a probe in this process, as an ISO time; null when it never has (review M4 of B20-B22). */
+  lastFailureAt(log: string): string | null
+  /** The workspaces whose logs fail now (review L5 of B20-B22). */
+  failingWorkspaces(): string[]
   succeeded(log: string): void
-  /** `probe` tries the log again without writing an entry, and throws while it still fails. */
-  failed(log: string, probe: () => void): void
+  /** `probe` tries what a write needs without writing an entry, and rejects while that still fails. */
+  failed(log: string, input: { probe: () => Promise<void>; workspaceId: string }): void
+  /** Stops counting a log, whose workspace was retired or disabled (review L5 of B20-B22). */
+  forget(log: string): void
   /** Probes each failing log, at most once per interval; a probe that succeeds clears its log. */
-  recheck(): void
+  recheck(): Promise<void>
 }

@@ -2,7 +2,7 @@
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { Logger, LoggerRoot, RequestCli } from '@5straps/runtime'
-import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand } from './cli/main.js'
+import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand, runsTool } from './cli/main.js'
 import { setupCli } from './cli/setup.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { loadConfig, type BuckleConfig } from './common/runtime/config.js'
@@ -18,6 +18,9 @@ export type Mode =
   | { kind: 'serve' | 'mcp' }
 
 type ServiceKind = 'serve' | 'mcp'
+
+/** How long the logger may take to flush its last lines at exit. */
+const LOGGING_CLOSE_MS = 2_000
 
 interface Shutdown {
   close(): Promise<void>
@@ -52,10 +55,10 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<numb
   // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
   const answered = answerWithoutConfiguration(mode.argv)
   if (answered) return answered.exitCode
-  return (await runCli({ argv: mode.argv, config: configureProcess({ servesTools: mode.argv[0] === 'call' }).config })).exitCode
+  return (await runCli({ argv: mode.argv, config: configureProcess({ servesTools: runsTool(mode.argv) }).config })).exitCode
 }
 
-/** `servesTools`: an MCP session or `buckle call`, which an agent's project starts and which run tools on the root. */
+/** `servesTools`: an MCP session, or a command that runs a tool (`buckle call`, `buckle <group> <verb>`), which an agent's project starts and which run on the root. */
 function configureProcess(input: { servesTools: boolean }): { config: BuckleConfig; logging: LoggerRoot } {
   // Read before the file fills the environment in: only the caller's own choice counts.
   const namedNode = namesItsNode()
@@ -135,7 +138,8 @@ async function closeProcess(input: { common: BuckleCommon; logging: LoggerRoot }
     process.exitCode = 1
   })
   input.logging.logger.info('5straps Buckle stopped')
-  await input.logging.close()
+  // Bounded: a sink that waits for stderr to drain (an unread pipe) must not keep the process alive (review L3 of B20-B22).
+  await Promise.race([input.logging.close(), new Promise(resolve => setTimeout(resolve, LOGGING_CLOSE_MS).unref())])
   // Every subsystem Buckle starts has a close step; a handle a plugin or a child left open must not keep the process alive.
   process.exit()
 }

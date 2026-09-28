@@ -5,12 +5,15 @@ import { z } from 'zod'
 import { WorkspacePolicySchema, emptyWorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import type { InteractionSource } from '../approvals/interaction.js'
-import type { BuckleConfig } from '../../runtime/config.js'
-import { compilePolicy, DangerouslyAllowLocalOnlyError } from '../../domain/policy.js'
+import { actionsPath, type BuckleConfig } from '../../runtime/config.js'
+import { compilePolicy } from '../../domain/policy.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { tokenMatches } from '../access/tokens.js'
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
+
+/** What a credential is compared against for a workspace id the registry does not hold: random, so nothing matches it. */
+const ABSENT_TOKEN = Object.freeze({ id: '', token: randomBytes(24).toString('base64url') })
 
 /** The code a transport tells an unreadable registry by, before it has authenticated anyone. */
 export const WORKSPACE_REGISTRY_UNREADABLE = 'WORKSPACE_REGISTRY_UNREADABLE'
@@ -117,8 +120,6 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       const root = canonicalDirectory(value.root)
       assertNoHostExposure(root, exposedRoots)
       compilePolicy(value.policy)
-      // The switch is set only by `buckle policy dangerously-allow --workspace` (ruling H1e), never at registration.
-      if (value.policy.dangerouslyAllow !== undefined) throw new DangerouslyAllowLocalOnlyError()
       const at = new Date().toISOString()
       return store.update(state => {
         if (state.workspaces.some(workspace => workspace.id === value.id)) throw new WorkspaceError('Workspace ID already exists', 409)
@@ -172,7 +173,9 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
     authenticateAgent(id: string, authorization: string | undefined): string | null {
       if (id === 'default') return input.config.authToken && tokenMatches(authorization, input.config.authToken) ? NODE_AGENT_TOKEN_ID : null
       const workspace = store.read().workspaces.find(item => item.id === id)
-      return workspace?.tokens.find(entry => tokenMatches(authorization, entry.token))?.id ?? null
+      // An unknown id is compared as a known one is, so timing does not tell them apart (review L11 of B20-B22).
+      const matched = (workspace?.tokens ?? [ABSENT_TOKEN]).find(entry => tokenMatches(authorization, entry.token))
+      return workspace && matched ? matched.id : null
     },
     /**
      * Whether the authorization header presents the workspace's admin credential, compared in constant
@@ -180,7 +183,8 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
      */
     authenticateAdmin(id: string, authorization: string | undefined): boolean {
       const credential = manager.adminToken(id)
-      return credential !== null && tokenMatches(authorization, credential)
+      const matches = tokenMatches(authorization, credential ?? ABSENT_TOKEN.token)
+      return credential !== null && matches
     },
     /**
      * Whether the authorization header presents the grant of one workbench in the workspace, checked
@@ -206,7 +210,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       if (id === 'default') throw new WorkspaceError('The default workspace is controlled by the node process', 409)
       const resolved = await manager.resolve(id, { setup: true })
       const busy = input.retired || input.enabled === false ? await resolved.runtime.hasActiveWork() : false
-      return store.update(state => {
+      const described = await store.update(state => {
         const workspace = state.workspaces.find(item => item.id === id)
         if (!workspace) throw new WorkspaceError('Workspace not found', 404)
         if (input.expectedUpdatedAt !== undefined && workspace.updatedAt !== input.expectedUpdatedAt) throw new WorkspaceError('Workspace changed; reload before saving', 409)
@@ -219,6 +223,9 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
         resolved.config.serverName = workspace.name
         return describe(workspace)
       })
+      // A retired or disabled workspace serves no call, so its log no longer holds the node's readiness (review L5 of B20-B22).
+      if (!described.enabled) resolved.runtime.auditHealth.forget(actionsPath(resolved.config))
+      return described
     },
     async setEnabled(id: string, enabled: boolean): Promise<WorkspaceDescriptor> { return manager.update(id, { enabled }) },
     known(id: string): boolean {

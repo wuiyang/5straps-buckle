@@ -14,7 +14,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
-import { PROTOCOL_VERSION, emptyWorkspacePolicy, isWorkspaceToolAllowed, type HarnessManifest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
+import { PROTOCOL_VERSION, isWorkspaceToolAllowed, type HarnessManifest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { createPluginRegistry, type PluginRegistry } from '../../adapters/plugin-registry.js'
 import { createFileGrantStore } from '../../adapters/grant-store/file-grant-store.js'
@@ -22,7 +22,8 @@ import { createFilePolicyStore } from '../../adapters/policy-store/file-policy-s
 import { runProcess } from '../../adapters/process-runner.js'
 import { createWebhookReporter } from '../../adapters/report/webhook-reporter.js'
 import { resolveSandbox, type SandboxResolution } from '../../adapters/sandbox/create-sandbox.js'
-import { actionsPath, approvalNoncesPath, approvalsPath, grantsPath, pluginsPath, policyPath, type BuckleConfig } from '../../runtime/config.js'
+import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, pluginsPath, policyPath, type BuckleConfig } from '../../runtime/config.js'
+import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
 import { createPathView, type PathView } from '../../domain/path-view.js'
@@ -34,8 +35,8 @@ import { createProcessProbeRule } from '../../domain/permission/rules/process-pr
 import { createReadScopeRule } from '../../domain/permission/rules/read-scope-rule.js'
 import { createSensitivePathRule } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from '../../domain/permission/rules/write-scope-rule.js'
-import { clearKeepingDangerouslyAllow, compilePolicy, keepDangerouslyAllow, mergePolicies, policyRevision, PolicyConflictError, PolicyError, StoredPolicyError, type CompiledPolicy } from '../../domain/policy.js'
-import { isDangerouslyAllowed, withDangerouslyAllow } from '../../domain/permission/rules/dangerously-allow.js'
+import { compilePolicy, mergePolicies, policyRevision, PolicyConflictError, PolicyError, StoredPolicyError, type CompiledPolicy } from '../../domain/policy.js'
+import { withDangerouslyAllow } from '../../domain/permission/rules/dangerously-allow.js'
 import { loadSkills } from '../../domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from '../../domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from '../../domain/tool-registry.js'
@@ -60,9 +61,11 @@ import { auditOperation } from '../audit/audit-operation.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 
 /**
- * The owner's policy as the runtime holds it. `base` came from the environment, `stored` from
- * `buckle policy` or a push through setup. Managed children replace their initial policy;
- * the separate immutable installation ceiling always applies. The default workspace merges both.
+ * The owner's policy as the runtime holds it. `base` came from the environment, or for a registered
+ * workspace from its registration; `stored` from `buckle policy` or a push through setup. A stored
+ * policy replaces a registered workspace's registration policy until it is cleared; the node's own
+ * policy over it always applies. The default workspace merges both. The dangerously-allow switch is
+ * stored apart and never touches either (review H1 of B20-B22).
  */
 export interface PolicyHandle {
   base(): WorkspacePolicy
@@ -75,15 +78,16 @@ export interface PolicyHandle {
   /** Validates against the base, stores, and rebuilds the rules and packs. Throws PolicyError. */
   revision(): string
   apply(policy: WorkspacePolicy, expectedRevision?: string): Promise<WorkspacePolicy>
-  /** Drops the stored policy, leaving the environment's; a dangerously-allow switch that is on stays. */
+  /** Drops the stored policy, leaving the environment's, or a registered workspace's registration policy. The switch is left as it is. */
   clear(expectedRevision?: string): Promise<WorkspacePolicy>
   /**
    * The dangerously-allow switch as stored now, read from the store at every call, so the local
    * switch applies in a running node at once: `on`, whether the node's own switch allows it over a
-   * registered workspace (null on the node's workspace), and whether calls here are allowed by it.
+   * registered workspace (null on the node's workspace), whether calls here are allowed by it, and
+   * the root it is bound to, as the agent names it (owner decision D7).
    */
-  dangerouslyAllow(): { on: boolean; allowedByNode: boolean | null; effective: boolean }
-  /** The one switch, for the owner's local CLI only (ruling H1e): sets both flags, audited `policy_dangerously_allow_changed`. */
+  dangerouslyAllow(): { on: boolean; allowedByNode: boolean | null; effective: boolean; boundTo: string }
+  /** The one switch, for the owner's local CLI only (ruling H1e), audited `policy_dangerously_allow_changed`. Writes nothing the policy is read from. */
   setDangerouslyAllow(on: boolean): Promise<void>
 }
 
@@ -172,7 +176,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const notices = createApprovalNotices(webhook ? createApprovalNoticeSender(webhook) : undefined)
   const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, { lockDeadlineMs, onExpired: requests => notices.expired(requests) })
   const auditHealth = input.auditHealth ?? createAuditHealth()
-  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth })
+  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId: input.workspaceId ?? 'default' })
   await actions.recoverInterrupted()
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
@@ -183,6 +187,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
   })
   const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd, lockDeadlineMs })
+  const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: config.cwd, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
     : nullReporter)
@@ -200,9 +205,9 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   // Read from the store at each evaluation; an unreadable store fails closed.
   const dangerouslyAllow = () => {
     let on = false
-    try { on = isDangerouslyAllowed(policyStore.read()?.dangerouslyAllow) } catch { on = false }
+    try { on = switchStore.isOn() } catch { on = false }
     const allowedByNode = input.nodeDangerouslyAllowed ? input.nodeDangerouslyAllowed() : null
-    return { on, allowedByNode, effective: on && allowedByNode !== false }
+    return { on, allowedByNode, effective: on && allowedByNode !== false, boundTo: paths.displayRoot }
   }
   const dangerouslyAllowed = () => dangerouslyAllow().effective
   let permissions = buildPermissionEngine({ config, compiled, ceiling, paths, dangerouslyAllowed })
@@ -279,15 +284,13 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
       async apply(policy, expectedRevision) {
         if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
         compileEffective(policy)
-        const updatedAt = new Date().toISOString()
-        await policyStore.update(current => ({ ...keepDangerouslyAllow(policy, current), updatedAt }), expectedRevision)
+        await policyStore.write({ ...policy, updatedAt: new Date().toISOString() }, expectedRevision)
         await runtime.reload()
         return compiled.policy
       },
       async clear(expectedRevision) {
         if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
-        const updatedAt = new Date().toISOString()
-        await policyStore.update(current => clearKeepingDangerouslyAllow(current, updatedAt), expectedRevision)
+        await policyStore.update(() => null, expectedRevision)
         await runtime.reload()
         return compiled.policy
       },
@@ -296,10 +299,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
         // No active-work check and no reload: turning it off must apply at once, and the rules read it per call.
         await auditOperation({
           actions, workspaceId, tool: 'policy_dangerously_allow_changed', sessionId: 'local-owner', describe: () => (on ? 'on' : 'off'),
-          operation: () => policyStore.update((current) => {
-            const { dangerouslyAllow: _previous, ...rest } = current ?? emptyWorkspacePolicy()
-            return { ...rest, ...(on ? { dangerouslyAllow: { commands: true, fileReads: true } } : {}), updatedAt: new Date().toISOString() }
-          }),
+          operation: () => switchStore.set(on),
         })
         logger.warn(on ? 'Dangerously allow is on: every ask in this workspace is allowed without a person, and each use is audited' : 'Dangerously allow is off', { workspaceId })
       },
@@ -476,7 +476,7 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
     createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy, ceiling: ceiling?.policy }),
     createReadScopeRule({ paths }),
     createWriteScopeRule({ paths, strict: config.strictWrites, pathDecision: path => filesystemPathDecision({ root: config.cwd, path, operation: 'write', policy: compiled.policy, ceiling: ceiling?.policy }) }),
-  ]), input.dangerouslyAllowed)
+  ]), { enabled: input.dangerouslyAllowed, root: () => paths.root })
 }
 
 function buildManifest(input: {

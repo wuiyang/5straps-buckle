@@ -7,7 +7,7 @@ import type { ChangeHistory } from '../history/journal.js'
 import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
-import type { PermissionEngine } from '../../domain/permission/engine.js'
+import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantLookup } from '../../domain/permission/decision.js'
 import { redactAuditArguments } from '../../domain/redact.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
@@ -22,7 +22,7 @@ import { resolveEffects } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ApprovalConflictError, ApprovalLimitError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
-import { requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type Execution, type ExecutionKey, type Executions } from './executions.js'
+import { requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
 
 /** Why a call's signal fired when its runtime shut down (B19): not the caller leaving. */
 export class InvocationsClosedError extends Error {
@@ -87,6 +87,8 @@ interface GateOutcome {
   denial?: { rule: PermissionRuleId; subject: string; reason: string }
   /** The once approvals this call was cleared with, which also cover what it reaches mid-call. */
   consumed?: GrantSubject[]
+  /** A call of the same key ran or runs: its outcome answers this one, which does not run. */
+  earlier?: Earlier
 }
 
 export function createInvoker(options: InvokerOptions): Invoker {
@@ -106,11 +108,14 @@ export function createInvoker(options: InvokerOptions): Invoker {
       let gate: GateOutcome = { response: null, asked: [], approvedBy: [] }
       // A re-send is the same call when it comes from the same session and actor (review M2 of B13-B14).
       const key = executionKey({ request, sessionId })
-      let execution: Execution | undefined
+      // The key's one execution, once the gate claims it; settled below whatever happens after.
+      const held: { claim?: ExecutionClaim } = {}
       let replayed = false
       let ran = false
       // The caller leaving or the runtime shutting down: either stops a running tool.
       const stop = anySignal(signal, options.shutdown)
+      // One entry per rule and subject a call's dangerously-allowed uses name, however often it meets them (review L12 of B20-B22).
+      const auditUses = useAuditor({ options, request, sessionId })
       const answerEarlier = async (earlier: Earlier): Promise<InvokeResponse> => {
         if (earlier.kind === 'reused') return failed(request, REUSED)
         replayed = true
@@ -118,7 +123,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
         return { ...await untilAborted(earlier.response, stop), requestId: request.requestId }
       }
 
-      const response = await (async (): Promise<InvokeResponse> => {
+      let answered: InvokeResponse | undefined
+      try { answered = await (async (): Promise<InvokeResponse> => {
         try {
           stop?.throwIfAborted()
           if (sessionId.length > MAX_SESSION_ID) return sessionIdTooLong(request)
@@ -133,19 +139,18 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
-          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait })
+          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, key, held })
           stop?.throwIfAborted()
+          if (gate.earlier) return await answerEarlier(gate.earlier)
           if (gate.response) return gate.response
-          await auditDangerousUses({ options, request, sessionId, allowedBy: gate.approvedBy })
-
-          // Cleared: this call becomes the key's one execution, unless a re-send of it got there first.
-          const claim = options.executions.claim(key)
-          if (claim.kind !== 'owner') return await answerEarlier(claim)
-          const owned = execution = claim.execution
+          // Cleared: the gate claimed this key's one execution as it spent the call's approvals.
+          if (held.claim?.kind !== 'owner') throw new Error('A cleared call holds no execution claim')
+          const owned = held.claim.execution
+          await auditUses(gate.approvedBy)
           const execute = () => {
             owned.started()
             ran = true
-            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], execute: prepared.execute })
+            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], auditUses, execute: prepared.execute })
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
@@ -165,11 +170,16 @@ export function createInvoker(options: InvokerOptions): Invoker {
         } catch (error) {
           // A required audit entry that cannot be written stops the call, as the attempt's does.
           if (error instanceof AuditUnavailableError) throw error
-          return { requestId: request.requestId, outcome: 'error', error: shapeError(error, request.tool) }
+          // A tool killed by the shutdown answers as the shutdown, not with what its process left (review L8 of B20-B22).
+          const cause = options.shutdown?.aborted ? options.shutdown.reason : error
+          return { requestId: request.requestId, outcome: 'error', error: shapeError(cause, request.tool) }
         }
-      })()
-      // Settled before the result is recorded: the tool ran whether or not the record can be written.
-      execution?.settle({ response, auditId, callerLeft: signal?.aborted === true })
+      })() } finally {
+        // Settled whatever happened, before the result is recorded, so a re-send never waits on a call
+        // that stopped (review L1 of B20-B22); an audit failure answers it as a retryable 503 would.
+        if (held.claim?.kind === 'owner') held.claim.execution.settle({ response: answered ?? auditFailed(request), auditId, callerLeft: signal?.aborted === true })
+      }
+      const response = answered
 
       const entry = buildEntry({
         request,
@@ -246,16 +256,26 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Pro
   })
 }
 
+/** Audits the dangerously-allowed uses an allowedBy list names; a call's auditor writes each rule and subject once. */
+type UseAuditor = (allowedBy: readonly string[]) => Promise<void>
+
+function useAuditor(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string }): UseAuditor {
+  const audited = new Set<string>()
+  return allowedBy => auditDangerousUses({ ...input, allowedBy, audited })
+}
+
 /**
  * Every ask the workspace's dangerously-allow switch let through is audited on its own (ruling 11 of
  * 2026-09-28): an entry per use naming the rule and the redacted subject, a warning in the owner's
  * log, and the same entry in the action report to Rings. The entry is required: a use that cannot be
- * recorded does not go ahead.
+ * recorded does not go ahead. A rule and subject the call already recorded is not written again.
  */
-async function auditDangerousUses(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; allowedBy: readonly string[] }): Promise<void> {
+async function auditDangerousUses(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; allowedBy: readonly string[]; audited: Set<string> }): Promise<void> {
   const { options, request } = input
   const workspaceId = options.workspaceId ?? 'default'
   for (const use of dangerousUses(input.allowedBy)) {
+    const key = JSON.stringify([use.rule, use.subject])
+    if (input.audited.has(key)) continue
     const subject = redactedSubject(use.rule, use.subject)
     const at = new Date().toISOString()
     const entry: ActionLogEntry = {
@@ -263,6 +283,7 @@ async function auditDangerousUses(input: { options: InvokerOptions; request: Inv
       outcome: 'ok', durationMs: 0, effects: [], args: { tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule, subject }, approvedBy: [DANGEROUSLY_ALLOW], detail: use.rule,
     }
     await options.actions.record({ ...entry, auditId: randomUUID(), event: 'result', workspaceId, ...auditContext(request) })
+    input.audited.add(key)
     logger.warn('Dangerously allowed without a person', { workspaceId, tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule })
     if (!options.reporter.configured) continue
     options.reporter.record({
@@ -339,7 +360,12 @@ function describeDetail(response: InvokeResponse): string | undefined {
   return undefined
 }
 
-/** Returns a response when the call cannot proceed, or a null response when it is cleared to run. */
+/**
+ * Returns a response when the call cannot proceed, an earlier call's outcome when a call of the same
+ * key ran or runs, or a null response when it is cleared to run. A cleared call claims the key's one
+ * execution (into `held`) under the same lock that spends its `once` approvals, so a re-send racing it
+ * finds the execution instead of asking again (review M2 of B20-B22).
+ */
 async function clearPermissions(input: {
   options: InvokerOptions
   request: InvokeRequest
@@ -348,8 +374,10 @@ async function clearPermissions(input: {
   signal?: AbortSignal
   isCancel?: (reason: unknown) => boolean
   approvalWait?: ApprovalWait
+  key: ExecutionKey
+  held: { claim?: ExecutionClaim }
 }): Promise<GateOutcome> {
-  const { options, request, sessionId, effects } = input
+  const { options, request, sessionId, effects, held } = input
   const approvedBy: string[] = []
   let consumed: GrantSubject[] = []
   const evaluate = (tokens: string[]) => options.approvals.evaluate({
@@ -360,9 +388,16 @@ async function clearPermissions(input: {
       approvedBy.splice(0, approvedBy.length, ...subjects.map(subject => `${subject.rule}:${subject.subject}`))
       return options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: subjects }) })
     },
+    admit: () => {
+      held.claim = options.executions.claim(input.key)
+      return held.claim.kind === 'owner'
+    },
   })
+  const cleared = (outcome: Extract<PermissionOutcome, { kind: 'allow' }>, asked: string[]): GateOutcome => held.claim?.kind === 'owner'
+    ? { response: null, asked, approvedBy: [...new Set([...approvedBy, ...outcome.allowedBy])], consumed }
+    : { response: null, asked, approvedBy: [...new Set(approvedBy)], ...(held.claim ? { earlier: held.claim } : {}) }
   const outcome = await evaluate(request.approvalTokens)
-  if (outcome.kind === 'allow') return { response: null, asked: [], approvedBy: [...approvedBy, ...outcome.allowedBy], consumed }
+  if (outcome.kind === 'allow') return cleared(outcome, [])
   if (outcome.kind === 'deny') {
     return {
       response: denied(request, outcome.denial.reason),
@@ -372,14 +407,19 @@ async function clearPermissions(input: {
     }
   }
 
+  // A re-send of a call that spent its `once` a moment ago: that call is this one (review M2 of B20-B22).
+  const sibling = options.executions.earlier(input.key)
+  if (sibling) return { response: null, asked: [], approvedBy, earlier: sibling }
+
   // Every answer, from any route, is recorded by the service; this call only learns whether all came in.
   // The caller's hint travels in the request and overrides the node's own wait (Rings sends none when
   // its policy skips); an entry point may add its own, and the one that holds less wins.
   const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
   // Only the caller's own signal reaches the wait: shutdown settles waits through the service's close.
   const waited = await options.approvalService.request({ sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait })
-  const { approvals } = waited
-  const asked = approvals.map(approval => `${approval.rule}:${approval.subject}`)
+  // A re-send joined to asks already answered has none still waiting: it is told what it asked.
+  const approvals = waited.approvals
+  const asked = (approvals.length > 0 ? approvals : outcome.asks).map(approval => `${approval.rule}:${approval.subject}`)
   if (waited.superseded) return { response: failed(request, SUPERSEDED), asked, approvedBy }
   if (!waited.settled) {
     return { response: { requestId: request.requestId, outcome: 'approval_required', approvals }, asked, approvedBy }
@@ -389,21 +429,24 @@ async function clearPermissions(input: {
   if (options.approvals.wasDenied(tokens)) {
     // The siblings of a denied ask go through the service, so the webhook hears they were cancelled.
     await options.approvalService.withdraw(tokens)
-    const first = approvals[0]
+    const described = approvals.length > 0 ? approvals : outcome.asks
     return {
       response: denied(request, 'Approval was declined'),
       asked,
       approvedBy: [...new Set(approvedBy)],
-      denial: { rule: first?.rule ?? 'write_scope', subject: approvals.map(approval => approval.subject).join(', '), reason: 'Approval was declined' },
+      denial: { rule: described[0]?.rule ?? 'write_scope', subject: described.map(approval => approval.subject).join(', '), reason: 'Approval was declined' },
     }
   }
   const rechecked = await evaluate([...request.approvalTokens, ...tokens])
-  if (rechecked.kind === 'allow') {
-    return { response: null, asked, approvedBy: [...new Set([...approvedBy, ...rechecked.allowedBy])], consumed }
-  }
+  if (rechecked.kind === 'allow') return cleared(rechecked, asked)
   // Nobody denied it: the asks expired, were withdrawn, or another call spent the `once`. Only a
   // recorded denial is reported as one (review M1).
   return { response: failed(request, UNANSWERED), asked, approvedBy: [...new Set(approvedBy)] }
+}
+
+/** How a re-send of a call stopped by an audit failure is answered: retryable, so it runs once the storage is repaired. */
+function auditFailed(request: InvokeRequest): InvokeResponse {
+  return failed(request, { code: 'AUDIT_UNAVAILABLE', message: 'Buckle could not write its audit log during this call, so it stopped; retry once the owner repairs the audit storage', retryable: true })
 }
 
 const SUPERSEDED = { code: 'REQUEST_SUPERSEDED', message: 'A newer call with the same requestId joined this approval wait and carries it on; this call did not run', retryable: false }
@@ -443,6 +486,7 @@ async function executeWithTimeout(input: {
   request: InvokeRequest
   sessionId: string
   consumed: GrantSubject[]
+  auditUses: UseAuditor
   signal?: AbortSignal
   execute: (context: ToolContext) => Promise<JsonValue>
 }): Promise<JsonValue> {
@@ -463,7 +507,7 @@ async function executeWithTimeout(input: {
           grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
         })
         if (outcome.kind !== 'allow') return false
-        await auditDangerousUses({ ...input, allowedBy: outcome.allowedBy })
+        await input.auditUses(outcome.allowedBy)
         return true
       },
       judgeNetwork: url => judgeNetwork({ ...input, url }),
@@ -473,8 +517,13 @@ async function executeWithTimeout(input: {
   }
 }
 
-/** One network effect through the same rules the call cleared, with the grants it cleared with. */
-function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; consumed: GrantSubject[]; url: URL }): NetworkVerdict {
+/**
+ * One network effect through the same rules the call cleared, with the grants it cleared with. A
+ * host a person approved, or the dangerously-allow switch let through, is `granted`: the fetch skips
+ * its reserved-range check for it. A switch use is audited before the hop, and a use that cannot be
+ * recorded refuses it (review M3 of B20-B22).
+ */
+async function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; consumed: GrantSubject[]; auditUses: UseAuditor; url: URL }): Promise<NetworkVerdict> {
   const outcome = input.options.permissions.evaluate({
     tool: input.request.tool,
     effects: [{ kind: 'network', url: input.url }],
@@ -482,11 +531,9 @@ function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; 
   })
   if (outcome.kind === 'deny') return { kind: 'refused', reason: outcome.denial.reason }
   if (outcome.kind === 'ask') return { kind: 'refused', reason: outcome.asks.map(item => item.reason).join('; ') }
-  // A tool judges its own requests as it makes them, so this use is audited without holding it.
-  if (dangerousUses(outcome.allowedBy).length > 0) {
-    void auditDangerousUses({ ...input, allowedBy: outcome.allowedBy }).catch((error: unknown) => { logger.error('Could not record a dangerously allowed request', { tool: input.request.tool, error }) })
-  }
-  return outcome.allowedBy.some(key => key.startsWith('network_egress:')) ? { kind: 'granted' } : { kind: 'allowed' }
+  await input.auditUses(outcome.allowedBy)
+  const granted = outcome.allowedBy.some(key => key.startsWith('network_egress:')) || dangerousUses(outcome.allowedBy).some(use => use.rule === 'network_egress')
+  return granted ? { kind: 'granted' } : { kind: 'allowed' }
 }
 
 // Names the limit and nothing the caller sent.

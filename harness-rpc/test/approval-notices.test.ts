@@ -90,7 +90,6 @@ function service(input: { graceMs: number | null; interaction?: Interaction }) {
 
 describe('why a call stopped waiting while its ask stays pending', () => {
   it.each([
-    ['no_wait', { graceMs: 0 }],
     ['no_approver', { graceMs: 60_000, interaction: NO_INTERACTION }],
     ['wait_elapsed', { graceMs: 100 }],
   ] as const)('says %s', async (reason, input) => {
@@ -137,8 +136,8 @@ describe('why a call stopped waiting while its ask stays pending', () => {
 describe('an ask that expires unanswered', () => {
   it('is told once, by the sweep at its expiry', async () => {
     vi.useFakeTimers()
-    const { ask, sent, notices, registry } = service({ graceMs: 0 })
-    const [asked] = (await ask()).approvals
+    const { ask, sent, notices, registry } = service({ graceMs: 1 })
+    const [asked] = (await ask({ wait: { mode: 'none' } })).approvals
     sent.splice(0)
     await vi.advanceTimersByTimeAsync(10 * 60_000 + 1_100)
     await notices.settle()

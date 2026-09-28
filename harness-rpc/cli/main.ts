@@ -91,6 +91,15 @@ async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig
   })
 }
 
+/** The commands that run no tool. Any other command resolves to one: `call`, and every `<group> <verb>`. */
+const OWNER_COMMANDS: readonly string[] = Object.freeze(['tools', 'manifest', 'skills', 'approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'log', 'plugin', 'policy'])
+
+/** Whether a command runs a tool on the node's root, so a project outside that root is warned (owner decision D5, review M5 of B20-B22). */
+export function runsTool(argv: readonly string[]): boolean {
+  const [command] = argv
+  return command !== undefined && !OWNER_COMMANDS.includes(command)
+}
+
 async function runAuditedCommand(input: CommandContext): Promise<CliResult> {
   const { runtime, command } = input
   try {
@@ -113,6 +122,7 @@ interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager;
 
 function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliResult> {
   const { runtime, command, rest } = input
+  if (runsTool([command])) return command === 'call' ? callByName(runtime, rest) : callByCommand(runtime, command, rest)
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
   if (command === 'skills') return printSkills(runtime, rest)
@@ -126,8 +136,7 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
   if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
   if (command === 'policy') return policyCommand(runtime, rest, input.workspaces)
-  if (command === 'call') return callByName(runtime, rest)
-  return callByCommand(runtime, command, rest)
+  throw new Error(`No handler for the owner command ${command}`)
 }
 
 function printVersion(): CliResult {
