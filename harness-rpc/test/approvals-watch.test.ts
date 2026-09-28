@@ -31,7 +31,7 @@ function registryOf(config: BuckleConfig): ApprovalRegistry {
 
 /** The approval service a `buckle approvals --watch` process answers through, over the same state files. */
 function serviceOf(config: BuckleConfig) {
-  return createApprovalService({ registry: registryOf(config), workspaceId: 'default', graceMs: config.approvalTimeoutMs, interaction: async () => undefined })
+  return createApprovalService({ registry: registryOf(config), workspaceId: 'default', serverId: 'test-node', graceMs: config.approvalTimeoutMs, interaction: async () => undefined })
 }
 
 async function issue(registry: ApprovalRegistry): Promise<string> {

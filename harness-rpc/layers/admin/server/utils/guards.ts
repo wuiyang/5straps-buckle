@@ -1,6 +1,7 @@
 import type { H3Event } from 'h3'
 import type { Guard } from '@5straps/runtime/nitro'
-import { isSignedRequest, type SignedRequestPurpose } from '@5straps/protocol/signed-request'
+import { isSignedRequest, type SignedRequestPayload, type SignedRequestPurpose } from '@5straps/protocol/signed-request'
+import type { SetupSessions } from '../../../../common/services/access/setup-sessions.js'
 import { recordRefusal, recordTransportRefusal, tolerantLog, nodeActions } from '../../../common/server/utils/audit.js'
 import { readBody, SETUP_BODY_LIMIT } from '../../../common/server/utils/body.js'
 import { notFound } from '../../../common/server/utils/errors.js'
@@ -8,17 +9,21 @@ import { authorization, checkCredential, isMutation, type RefusalAudit } from '.
 import { useServices } from '../../../common/server/utils/services.js'
 import { NODE_WORKSPACE, targetId } from '../../../common/server/utils/target.js'
 
-/** What an admin route does: reads (every GET), changes (workspaces, policy, grants, history, workbenches), or answers an approval. */
-export type AdminAccess = 'inspection' | 'setup' | 'approval'
+/**
+ * What an admin route does: reads (every GET), changes (workspaces, policy, grants, history,
+ * workbenches), answers an approval, or opens a setup session for a person's key.
+ */
+export type AdminAccess = 'inspection' | 'setup' | 'approval' | 'session'
 type Credential = 'admin' | SignedRequestPurpose
 
 /**
  * The credentials each admin guard accepts (plan section C, temporary administration boundary): the
- * addressed workspace's admin credential on all three, and on setup and approval a request an
- * enrolled client key signed for that purpose (owner ruling H4 of 2026-09-28, B23). Inspection stays
- * on the admin credential. No agent or workbench credential passes any of them.
+ * addressed workspace's admin credential, and on setup and approval a request an enrolled client key
+ * signed for that purpose (owner ruling H4 of 2026-09-28). A signed setup change names the key's open
+ * setup session, which the request refreshes; the request that opens one names none (B24).
+ * Inspection stays on the admin credential. No agent or workbench credential passes any of them.
  */
-const ACCEPTS: Readonly<Record<AdminAccess, readonly Credential[]>> = { inspection: ['admin'], setup: ['admin', 'buckle-setup'], approval: ['admin', 'buckle-approval'] }
+const ACCEPTS: Readonly<Record<AdminAccess, readonly Credential[]>> = { inspection: ['admin'], setup: ['admin', 'buckle-setup'], approval: ['admin', 'buckle-approval'], session: ['admin', 'buckle-setup'] }
 
 /** A per-workspace setup route's refusal, as the setup face audited it before the move. */
 export const SETUP_REFUSED: RefusalAudit = {
@@ -49,7 +54,7 @@ export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target:
     const purpose = ACCEPTS[access].find((credential): credential is SignedRequestPurpose => credential !== 'admin')
     const actor = await checkCredential(event, {
       verify: () => (isSignedRequest(authorization(event))
-        ? purpose ? verifySigned(event, { purpose, workspaceId }) : null
+        ? purpose ? verifySigned(event, { access, purpose, workspaceId }) : null
         : workspaces.authenticateAdmin(workspaceId, authorization(event)) ? `admin:${workspaceId}` : null),
       refusal,
     })
@@ -61,14 +66,29 @@ export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target:
  * A request an enrolled client key signed for this purpose, workspace, method, path and exact body.
  * A refusal is a bare 401 to the caller; its reason is audited on the node's log for the owner.
  */
-async function verifySigned(event: H3Event, input: { purpose: SignedRequestPurpose; workspaceId: string }): Promise<string | null> {
-  const verdict = await (await useServices(event).getRequestVerifier()).verify({
+async function verifySigned(event: H3Event, input: { access: AdminAccess; purpose: SignedRequestPurpose; workspaceId: string }): Promise<string | null> {
+  const services = useServices(event)
+  const verdict = await (await services.getRequestVerifier()).verify({
     authorization: authorization(event), purpose: input.purpose, workspaceId: input.workspaceId,
     method: event.req.method, path: `${event.url.pathname}${event.url.search}`, body: await readBody(event, SETUP_BODY_LIMIT),
   })
-  if (verdict.ok) return `key:${verdict.payload.keyId}`
-  await recordRefusal(tolerantLog(event, await nodeActions(event)), { tool: 'setup_signed_request_refused', workspaceId: NODE_WORKSPACE, sessionId: 'http-untrusted', status: 401, detail: verdict.reason })
+  const refused = verdict.ok ? await sessionRefusal({ access: input.access, payload: verdict.payload, workspaceId: input.workspaceId, sessions: await services.getSetupSessions() }) : verdict.reason
+  if (!refused && verdict.ok) return `key:${verdict.payload.keyId}`
+  await recordRefusal(tolerantLog(event, await nodeActions(event)), { tool: 'setup_signed_request_refused', workspaceId: NODE_WORKSPACE, sessionId: 'http-untrusted', status: 401, detail: refused ?? 'refused' })
   return null
+}
+
+/**
+ * B24: a signed setup change names an open setup session of its key and workspace, and is the
+ * activity that refreshes it; the request that opens a session names none. Only a request that
+ * verified, unreplayed, gets here, so neither a forged nor a replayed request refreshes anything.
+ */
+async function sessionRefusal(input: { access: AdminAccess; payload: SignedRequestPayload; workspaceId: string; sessions: SetupSessions }): Promise<string | null> {
+  if (input.access === 'session') return input.payload.session === undefined ? null : 'session_not_expected'
+  if (input.access !== 'setup') return null
+  if (input.payload.session === undefined) return 'session_required'
+  const session = await input.sessions.touch({ id: input.payload.session, keyId: input.payload.keyId, workspaceId: input.workspaceId })
+  return session ? null : 'session_closed'
 }
 
 export const requireInspection = (refusal: RefusalAudit = SETUP_REFUSED): Guard => requireAdmin('inspection', refusal)

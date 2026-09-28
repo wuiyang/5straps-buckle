@@ -83,7 +83,7 @@ function service(input: { graceMs: number | null; interaction?: Interaction }) {
   const sent: ApprovalNotice[] = []
   const notices = createApprovalNotices(async batch => { sent.push(...batch) })
   const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, input.graceMs, { onExpired: requests => notices.expired(requests) })
-  const approvals = createApprovalService({ registry, workspaceId: 'default', graceMs: input.graceMs, interaction: fixedInteraction(input.interaction ?? headlessGrace), notices })
+  const approvals = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: fixedInteraction(input.interaction ?? headlessGrace), notices })
   const ask = (overrides: Partial<ApprovalAskInput> = {}) => approvals.request({ sessionId: 's', requestId: `r-${Math.random()}`, tool: 'fs_write', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...overrides })
   return { registry, approvals, sent, ask, notices }
 }

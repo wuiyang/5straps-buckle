@@ -181,7 +181,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
   const approvalService = createApprovalService({
-    registry: approvals, workspaceId, graceMs: config.approvalTimeoutMs,
+    registry: approvals, workspaceId, serverId: config.serverId, graceMs: config.approvalTimeoutMs,
     interaction: input.interaction ?? (async () => undefined),
     announce: webhook ? createWebhookNotifier(webhook) : undefined,
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,

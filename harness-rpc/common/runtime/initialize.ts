@@ -55,4 +55,6 @@ async function startCommon(input: { config: BuckleConfig; services: BuckleServic
   await services.getWorkspaceRuntime()
   await services.getWorkspaces()
   await services.getRequestVerifier()
+  await services.getSetupSessions()
+  await services.getNodeSigner()
 }

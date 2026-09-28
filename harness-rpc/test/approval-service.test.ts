@@ -50,7 +50,7 @@ function scriptedTerminal(choices: string[]): { requestCli: RequestCli; asked: s
 describe('the approval service, the single answerer', () => {
   it('headless: issues the ask, returns its pending id at once, and approves nothing', async () => {
     const { registry, grants } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 15_000, interaction: fixedInteraction(NO_INTERACTION) })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 15_000, interaction: fixedInteraction(NO_INTERACTION) })
 
     const result = await service.request(call())
 
@@ -81,7 +81,7 @@ describe('the approval service, the single answerer', () => {
   it('records each terminal answer for the token its question asked about', async () => {
     const { registry, grants } = queue()
     const terminal = scriptedTerminal(['once', 'session'])
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 5_000, interaction: fixedInteraction({ hold: 'grace', requestCli: terminal.requestCli }) })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 5_000, interaction: fixedInteraction({ hold: 'grace', requestCli: terminal.requestCli }) })
 
     const result = await service.request(call({ asks: [ask('/outside/a.md'), ask('/outside/b.md')] }))
 
@@ -96,7 +96,7 @@ describe('the approval service, the single answerer', () => {
     const { registry } = queue()
     const [other] = (await registry.ask({ tool: 'fs_write', sessionId: 'chat-2', asks: [ask('/outside/other.md')] })).requests
     const terminal = scriptedTerminal([other!.token])
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 5_000, interaction: fixedInteraction({ hold: 'grace', requestCli: terminal.requestCli }) })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 5_000, interaction: fixedInteraction({ hold: 'grace', requestCli: terminal.requestCli }) })
 
     const result = await service.request(call({ asks: [ask('/outside/a.md'), ask('/outside/b.md')] }))
 
@@ -115,7 +115,7 @@ describe('the approval service, the single answerer', () => {
     const requestCli = createHookRequestCli({ hasListener: () => true, dispatch: async (_request, respond) => {
       respond({ status: 'answered', requestId: `approval:default:${victim!.token}`, answer: { choice: 'session' } })
     } })
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 200, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 200, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
 
     const result = await service.request(call())
 
@@ -125,7 +125,7 @@ describe('the approval service, the single answerer', () => {
 
   it('joins a re-sent call with the same requestId, session and actor to the same asks, and refuses different ones', async () => {
     const { registry } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
     const none = { wait: { mode: 'none' } } as const
 
     const [first, again] = await Promise.all([service.request(call(none)), service.request(call(none))])
@@ -140,7 +140,7 @@ describe('the approval service, the single answerer', () => {
   it('wakes the waiter at once for an answer given in this process', async () => {
     const { registry } = queue()
     // A poll this slow proves the wake-up does not come from polling.
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace), pollMs: 60_000 })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction(headlessGrace), pollMs: 60_000 })
     const waiting = service.request(call())
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
     const started = performance.now()
@@ -153,7 +153,7 @@ describe('the approval service, the single answerer', () => {
 
   it('notices an answer another process wrote within the poll interval', async () => {
     const { root, registry } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace), pollMs: 50 })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction(headlessGrace), pollMs: 50 })
     const waiting = service.request(call())
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
 
@@ -166,7 +166,7 @@ describe('the approval service, the single answerer', () => {
 
   it('cancels the asks when the caller cancels inside the wait, but not once a joined caller carries them', async () => {
     const { registry } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
     const leaving = new AbortController()
     const first = service.request(call({ signal: leaving.signal, isCancel: () => true }))
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
@@ -189,7 +189,7 @@ describe('the approval service, the single answerer', () => {
 
   it('keeps the asks pending when the caller\'s transport drops inside the wait, and a re-send with the same requestId joins them (owner decision D4)', async () => {
     const { registry } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
     const dropped = new AbortController()
     const first = service.request(call({ signal: dropped.signal }))
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
@@ -207,7 +207,7 @@ describe('the approval service, the single answerer', () => {
 
   it('reads only an explicit cancel as one: without a way to tell, an abort is a dropped transport', async () => {
     const { registry } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction(headlessGrace) })
     const dropped = new AbortController()
     const waiting = service.request(call({ signal: dropped.signal, isCancel: reason => reason === 'client cancelled' }))
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
@@ -221,7 +221,7 @@ describe('the approval service, the single answerer', () => {
     const { registry } = queue()
     let withdrawn = false
     const requestCli: RequestCli = (request, options) => new Promise(resolve => options?.signal?.addEventListener('abort', () => { withdrawn = true; resolve({ status: 'cancelled', requestId: request.id, reason: 'closed' }) }))
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: null, interaction: fixedInteraction({ requestCli, hold: 'grace' }) })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: null, interaction: fixedInteraction({ requestCli, hold: 'grace' }) })
     const waiting = service.request(call())
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
 
@@ -250,7 +250,7 @@ describe('how long a gated call is held', () => {
 describe('an interaction bound to nothing', () => {
   it('reaches nobody and holds no call, whatever the node\'s own wait, and leaves the ask pending', async () => {
     const { registry } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: async () => undefined })
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: async () => undefined })
 
     const started = performance.now()
     expect(await service.request(call())).toMatchObject({ settled: false })

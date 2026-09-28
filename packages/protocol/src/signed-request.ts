@@ -17,6 +17,8 @@ export const SIGNED_REQUEST_SCHEME = '5straps-Signed'
 export const SIGNED_REQUEST_MAX_TTL_MS = 60_000
 /** How far the signer's clock may be off the verifier's, either way. */
 export const SIGNED_REQUEST_SKEW_MS = 30_000
+/** A setup session closes after this long without a signed request from its key: an inactivity limit, not an absolute one (approval-proofs.md, Setup activity). */
+export const SETUP_SESSION_IDLE_MS = 10 * 60_000
 
 const PUBLIC_KEY_PREFIX = 'ed25519:'
 const NONCE_BYTES = 16
@@ -24,11 +26,14 @@ const SIGNATURE_BYTES = 64
 const MAX_HEADER_LENGTH = 8_192
 /** Each signature is made over its own context, so one kind of signature never verifies as another. */
 const REQUEST_CONTEXT = '5straps/signed-request/v1\0'
+const CHALLENGE_CONTEXT = '5straps/approval-challenge/v1\0'
 
 /** An enrolled key's name and fingerprint: `SHA256:` and the base64url sha256 of its raw public key. */
 export const KeyIdSchema = z.string().regex(/^SHA256:[A-Za-z0-9_-]{43}$/)
 /** A public key as it is shown and enrolled: `ed25519:` and its 32 raw bytes in base64url. */
 export const PublicKeyTextSchema = z.string().regex(/^ed25519:[A-Za-z0-9_-]{43}$/)
+/** A setup session's id: not a secret, since only a fresh request its own key signed uses it. */
+export const SetupSessionIdSchema = z.string().regex(/^[A-Za-z0-9_-]{22}$/)
 
 /** What the request is for: a setup change, or an approval decision. A signature for one never serves the other. */
 export const SignedRequestPurposeSchema = z.enum(['buckle-setup', 'buckle-approval'])
@@ -48,6 +53,8 @@ export const SignedRequestPayloadSchema = z.object({
   issuedAt: z.number().int().nonnegative(),
   expiresAt: z.number().int().nonnegative(),
   keyId: KeyIdSchema,
+  /** The setup session a setup change belongs to; absent on the request that opens one, and on approvals. */
+  session: SetupSessionIdSchema.optional(),
 }).strict()
 export type SignedRequestPayload = z.infer<typeof SignedRequestPayloadSchema>
 
@@ -124,6 +131,7 @@ export function signRequest(input: {
   body: Uint8Array | string
   now?: number
   ttlMs?: number
+  session?: string
 }): string {
   const issuedAt = input.now ?? Date.now()
   const payload: SignedRequestPayload = SignedRequestPayloadSchema.parse({
@@ -131,6 +139,7 @@ export function signRequest(input: {
     method: input.method.toUpperCase(), path: input.path, bodySha256: bodyDigest(input.body),
     nonce: randomBytes(NONCE_BYTES).toString('base64url'), issuedAt,
     expiresAt: issuedAt + Math.min(input.ttlMs ?? SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_MAX_TTL_MS), keyId: input.key.keyId,
+    ...(input.session === undefined ? {} : { session: input.session }),
   })
   const bytes = Buffer.from(JSON.stringify(payload), 'utf8')
   const signature = signBytes({ context: REQUEST_CONTEXT, bytes, key: input.key.privateKey })
@@ -176,6 +185,58 @@ export function withinWindow(payload: { issuedAt: number; expiresAt: number }, n
     && payload.expiresAt - payload.issuedAt <= SIGNED_REQUEST_MAX_TTL_MS
     && payload.issuedAt - SIGNED_REQUEST_SKEW_MS <= now
     && now <= payload.expiresAt + SIGNED_REQUEST_SKEW_MS
+}
+
+/**
+ * What a pending ask is, as the node signs it (approval-proofs.md, Signed request): a person's client
+ * verifies the node's signature, shows the raw action from this payload and nothing a relay wrote, and
+ * approves or denies it by its digest. Built by the node from its durable queue, so the same ask
+ * always signs the same bytes.
+ */
+export const ApprovalChallengeSchema = z.object({
+  v: z.literal(SIGNED_REQUEST_VERSION),
+  purpose: z.literal('buckle-approval-challenge'),
+  node: z.string().min(1).max(200),
+  workspace: z.string().min(1).max(64),
+  token: z.string().min(1).max(200),
+  /** The call's requestId, hashed as the node joins re-sends on it. */
+  requestId: z.string().min(1).max(200).nullable(),
+  sessionId: z.string().max(200),
+  actor: z.string().max(200).nullable(),
+  tool: z.string().min(1),
+  rule: z.string().min(1),
+  subject: z.string().min(1),
+  reason: z.string().min(1),
+  offeredScopes: z.array(z.enum(['once', 'session', 'always'])).min(1),
+  /** The tool and its arguments, hashed; a changed call is a different challenge. */
+  callDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  expiresAt: z.string(),
+}).strict()
+export type ApprovalChallenge = z.infer<typeof ApprovalChallengeSchema>
+
+/** The challenge's exact bytes and their sha256, which a decision names. */
+export function challengeBytes(challenge: ApprovalChallenge): { bytes: Buffer; digest: string } {
+  const bytes = Buffer.from(JSON.stringify(ApprovalChallengeSchema.parse(challenge)), 'utf8')
+  return { bytes, digest: bodyDigest(bytes) }
+}
+
+/** `<challenge>.<signature>`, both base64url: the node's signature over the challenge's exact bytes. */
+export function signChallenge(input: { challenge: ApprovalChallenge; key: KeyObject }): { signed: string; digest: string } {
+  const { bytes, digest } = challengeBytes(input.challenge)
+  return { signed: `${bytes.toString('base64url')}.${signBytes({ context: CHALLENGE_CONTEXT, bytes, key: input.key }).toString('base64url')}`, digest }
+}
+
+/** The challenge a node signed, verified with the node's pinned public key, and its digest; null when it does not verify. */
+export function readChallenge(input: { signed: string; nodeKey: KeyObject }): { challenge: ApprovalChallenge; digest: string } | null {
+  const [encoded, signature, ...rest] = input.signed.split('.')
+  if (!encoded || !signature || rest.length > 0) return null
+  const bytes = Buffer.from(encoded, 'base64url')
+  if (!verifyBytes({ context: CHALLENGE_CONTEXT, bytes, signature: Buffer.from(signature, 'base64url'), key: input.nodeKey })) return null
+  try {
+    return { challenge: ApprovalChallengeSchema.parse(JSON.parse(bytes.toString('utf8'))), digest: bodyDigest(bytes) }
+  } catch {
+    return null
+  }
 }
 
 function readSignedRequest(authorization: string | undefined): { payload: SignedRequestPayload; bytes: Buffer; signature: Buffer } | null {

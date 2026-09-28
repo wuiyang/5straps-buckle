@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { generateSigningKey, isSignedRequest, keyIdOf, publicKeyFrom, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, signingKeyFromPem, signRequest, verifySignedRequest, type SignedRequestPurpose, type SignedRequestRefusal } from '../src/signed-request.js'
+import { challengeBytes, generateSigningKey, isSignedRequest, keyIdOf, publicKeyFrom, readChallenge, signChallenge, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, signingKeyFromPem, signRequest, verifySignedRequest, type ApprovalChallenge, type SignedRequestPurpose, type SignedRequestRefusal } from '../src/signed-request.js'
 
 // Owner ruling H4 of 2026-09-28 and approval-proofs.md, Protocol gates: key substitution, altered
 // body, changed arguments, wrong target, replay, cross-purpose reuse, expiry and revocation.
@@ -93,5 +93,32 @@ describe('a signed request', () => {
     for (const header of ['5straps-Signed', '5straps-Signed a.b.c', '5straps-Signed !!.??', `5straps-Signed ${Buffer.from('not json').toString('base64url')}.AAAA`]) expect(verifier()(header)).toBe('malformed')
     expect(isSignedRequest('Bearer 5straps-Signed')).toBe(false)
     expect(() => publicKeyFrom('ed25519:short')).toThrow('32 bytes')
+  })
+})
+
+describe('an approval challenge the node signs (B24)', () => {
+  const node = generateSigningKey()
+  const challenge: ApprovalChallenge = {
+    v: 1, purpose: 'buckle-approval-challenge', node: 'node-1', workspace: 'default', token: 'token-1', requestId: 'a'.repeat(64), sessionId: 'chat-1',
+    actor: 'agent:node', tool: 'shell_exec', rule: 'destructive_command', subject: 'rm -rf build', reason: 'Deletes files', offeredScopes: ['once', 'session'],
+    callDigest: 'b'.repeat(64), expiresAt: '2026-09-29T10:00:00.000Z',
+  }
+
+  it('verifies with the node\'s key, gives back the raw action and the digest a decision names, and is the same bytes every time', () => {
+    const signed = signChallenge({ challenge, key: signingKeyFromPem(node.privateKeyPem).privateKey })
+    expect(readChallenge({ signed: signed.signed, nodeKey: publicKeyFrom(node.publicKey) })).toEqual({ challenge, digest: signed.digest })
+    expect(signChallenge({ challenge, key: signingKeyFromPem(node.privateKeyPem).privateKey })).toEqual(signed)
+    expect(challengeBytes(challenge).digest).toBe(signed.digest)
+  })
+
+  it('does not verify under another key, altered, or as a signed request of the same bytes', () => {
+    const signed = signChallenge({ challenge, key: signingKeyFromPem(node.privateKeyPem).privateKey }).signed
+    expect(readChallenge({ signed, nodeKey: publicKeyFrom(owner.publicKey) })).toBeNull()
+    const [encoded, signature] = signed.split('.')
+    const altered = Buffer.from(JSON.stringify({ ...challenge, subject: 'ls' })).toString('base64url')
+    expect(readChallenge({ signed: `${altered}.${signature}`, nodeKey: publicKeyFrom(node.publicKey) })).toBeNull()
+    // Signatures are made under separate contexts: a challenge signature is no request signature.
+    const asRequest = verifySignedRequest({ authorization: `5straps-Signed ${encoded}.${signature}`, body: Buffer.alloc(0), now, expected: { purpose: 'buckle-approval', ...route }, publicKeyFor: () => publicKeyFrom(node.publicKey), claim: () => true })
+    expect(asRequest).toMatchObject({ ok: false })
   })
 })

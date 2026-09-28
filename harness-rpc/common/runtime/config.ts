@@ -206,6 +206,16 @@ export function requestNoncesPath(config: Pick<BuckleConfig, 'stateDirectory' | 
   return join(config.nodeStateDirectory ?? config.stateDirectory, 'request-nonces.json')
 }
 
+/** The node's own signing key, which signs what it shows a person's client (B24). */
+export function nodeKeyPath(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string {
+  return join(config.nodeStateDirectory ?? config.stateDirectory, 'node-signing-key.pem')
+}
+
+/** The setup sessions persons' keys opened on this node (B24). */
+export function setupSessionsPath(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string {
+  return join(config.nodeStateDirectory ?? config.stateDirectory, 'setup-sessions.json')
+}
+
 /** The dangerously-allow switch, beside the policy and never inside it (review H1 of B20-B22). */
 export function dangerouslyAllowPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
   return join(config.stateDirectory, 'dangerously-allow.json')

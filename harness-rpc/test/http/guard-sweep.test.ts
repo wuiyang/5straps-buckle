@@ -62,7 +62,7 @@ function concretePaths(): Map<string, Set<string>> {
     .replace(/(\/v1\/workbenches\/):workbenchId/, `$1${GRANT.id}`)
     .replace(/:workbenchId|:terminalId/g, () => randomUUID())
     .replace(/:workspaceId/g, 'ghost')
-    .replace(/:(?:skillId|grantId|checkpointId|tokenId)/g, 'nope')
+    .replace(/:(?:skillId|grantId|checkpointId|tokenId|sessionId)/g, 'nope')
     .replace(/\*\*$/, 'sweep-probe')
   const served = new Map<string, Set<string>>()
   for (const route of buckle.routes()) {

@@ -1,5 +1,6 @@
 import { useScopeSafe, type CliOutcome, type CliRequest, type CliWait } from '@5straps/runtime'
-import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw } from '@5straps/protocol'
+import { challengeBytes, SIGNED_REQUEST_VERSION, type ApprovalChallenge } from '@5straps/protocol/signed-request'
 import { requestIdKey } from '../invocation/executions.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
@@ -9,7 +10,7 @@ import type { PermissionDecision } from '../../domain/permission/decision.js'
 import { logger } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import type { ApprovalAuthority, ApprovalRegistry, Resolution } from './approval-registry.js'
+import type { ApprovalAuthority, ApprovalRegistry, PendingAsk, Resolution } from './approval-registry.js'
 import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -40,6 +41,8 @@ export interface ApprovalAskInput {
    */
   isCancel?: (reason: unknown) => boolean
   wait?: ApprovalWait
+  /** The call's tool and arguments, hashed; the node's signed challenge for each ask names it. */
+  callDigest?: string
 }
 
 /**
@@ -60,6 +63,8 @@ export interface ApprovalAnswer {
   authority: ApprovalAuthority
   /** `BUCKLE-D18`: a host pattern, which only `buckle approve --host` passes. */
   widenTo?: string
+  /** The digest of the challenge a person's key decided on: it must be the ask's own (B24). */
+  challenge?: string
 }
 
 /** What a decision from Rings came to; the setup face answers 401, 400, 409 or 200 from it. */
@@ -84,6 +89,11 @@ export interface ApprovalService {
    * A decision in a request an enrolled key signed (`signedBy`) is plain: its signature is the proof.
    */
   decideSealed(input: { body: unknown; signedBy?: string }): Promise<SealedDecisionResult>
+  /**
+   * What each waiting ask is, as the node signs it for a person's client (owner ruling H4 of
+   * 2026-09-28): built from the durable queue, so one ask always gives the same challenge.
+   */
+  challenges(): Array<{ token: string; challenge: ApprovalChallenge }>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
   /**
@@ -104,6 +114,8 @@ export interface ApprovalService {
 export interface ApprovalServiceOptions {
   registry: ApprovalRegistry
   workspaceId: string
+  /** The node's serverId, which each challenge names. */
+  serverId: string
   /** `BUCKLE_APPROVAL_TIMEOUT_MS`: how long a `grace` hold lasts when the caller sends no wait, in positive ms; null holds it until answered. */
   graceMs: number | null
   /** The current operation's interaction; an unbound operation asks nobody. */
@@ -183,7 +195,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const scope = useScopeSafe()
       const actor = scope?.context.actor
       const key = joinKey({ ...input, actor })
-      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(actor === undefined ? {} : { actor }) })
+      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(actor === undefined ? {} : { actor }), ...(input.callDigest === undefined ? {} : { callDigest: input.callDigest }) })
       const { requests: approvals, answered } = issued
       // Joined to asks all answered, one of them denied: nothing to wait for, and the caller refuses.
       if (issued.joined && approvals.length === 0) return { settled: true, approvals, answered }
@@ -221,7 +233,11 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
 
     async answer(input) {
-      const result = await options.registry.resolve(input.decision, input.authority, input.widenTo === undefined ? {} : { widenTo: input.widenTo })
+      const { challenge } = input
+      const result = await options.registry.resolve(input.decision, input.authority, {
+        ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
+        ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => challengeBytes(challengeOf(ask)).digest === challenge }),
+      })
       if (!result.ok) return result
       if (!result.repeated) notices.answered(input.decision)
       wake(input.decision.token)
@@ -229,13 +245,23 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
 
     async decideSealed(input) {
-      const opened = input.signedBy ? { ok: true as const, body: input.body } : await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
+      if (input.signedBy) {
+        // B24: a person's key decides on the challenge the node signed, named by its digest, and on nothing else.
+        const signed = SignedApprovalDecisionSchema.safeParse(input.body)
+        if (!signed.success) return { status: 'invalid' }
+        const { challenge, ...decision } = signed.data
+        const result = await service.answer({ decision, authority: 'admin', challenge })
+        return result.ok ? { status: 'answered' } : { status: 'rejected', reason: result.reason }
+      }
+      const opened = await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
       if (!opened.ok) return { status: 'refused', reason: opened.reason }
       const parsed = ApprovalDecisionSchema.safeParse(opened.body)
       if (!parsed.success) return { status: 'invalid' }
       const result = await service.answer({ decision: parsed.data, authority: 'admin' })
       return result.ok ? { status: 'answered' } : { status: 'rejected', reason: result.reason }
     },
+
+    challenges: () => options.registry.waiting().map(ask => ({ token: ask.request.token, challenge: challengeOf(ask) })),
 
     withdraw: tokens => withdraw(tokens),
 
@@ -258,6 +284,17 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       await Promise.allSettled([...waiting])
       await notices.settle()
     },
+  }
+
+  /** The challenge for one ask: every field from the durable queue, so the same ask always signs the same bytes. */
+  function challengeOf(ask: PendingAsk): ApprovalChallenge {
+    const { request } = ask
+    return {
+      v: SIGNED_REQUEST_VERSION, purpose: 'buckle-approval-challenge', node: options.serverId, workspace: options.workspaceId,
+      token: request.token, requestId: ask.requestId ?? null, sessionId: ask.sessionId, actor: ask.actor ?? null,
+      tool: request.tool, rule: request.rule, subject: request.subject, reason: request.reason, offeredScopes: request.offeredScopes,
+      callDigest: ask.callDigest ?? null, expiresAt: request.expiresAt,
+    }
   }
 
   function skip(input: { approvals: ApprovalRequest[]; answered: string[]; reason: ApprovalSkipReason }): ApprovalWaitResult {

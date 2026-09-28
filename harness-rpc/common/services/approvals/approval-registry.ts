@@ -21,7 +21,8 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 // requestId and actor let a re-sent call join the ask it already made (ruling 5 of 2026-09-28); an
 // answered entry keeps them, so a call re-sent after part of its asks were answered still joins.
 const joinKey = { requestId: z.string().optional(), actor: z.string().optional() }
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey })
+// callDigest: the tool and arguments that asked, hashed, which the node's signed challenge names.
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, callDigest: z.string().optional() })
 const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
   sessionId: z.string(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(),
@@ -38,6 +39,8 @@ const fileSchema = z.object({
 })
 type State = z.infer<typeof fileSchema>
 type OnceEntry = z.infer<typeof onceSchema>
+/** An ask waiting in the queue, with the call it came from. */
+export type PendingAsk = Omit<z.infer<typeof pendingSchema>, 'workspace'>
 
 /**
  * Whose answer a decision carries. `BUCKLE-D14` keeps a persisted approval on the admin
@@ -75,6 +78,8 @@ export interface AskInput {
   actor?: string
   /** How long the call may be held beyond the ten minutes an ask stays answerable (null: no deadline); the registry's own when absent. */
   waitMs?: number | null
+  /** The call's tool and arguments, hashed (requestFingerprint). */
+  callDigest?: string
 }
 
 /**
@@ -85,6 +90,8 @@ export interface AskInput {
  */
 export interface ResolveOptions {
   widenTo?: string
+  /** Checked against the ask under the queue's lock: a decision a person's key signed must name the ask's own challenge. */
+  expect?: (ask: PendingAsk) => boolean
 }
 
 /**
@@ -134,6 +141,8 @@ export interface ApprovalRegistry {
   /** Drops the asks that expired unanswered, telling `onExpired` about them. Every update does this too. */
   sweep(): Promise<void>
   pending(): ApprovalRequest[]
+  /** The asks still waiting, each with the call it came from. */
+  waiting(): PendingAsk[]
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
 }
@@ -159,7 +168,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   }
 
   const registry: ApprovalRegistry = {
-    ask({ tool, sessionId, asks, requestId, actor, waitMs: lifetime = waitMs }) {
+    ask({ tool, sessionId, asks, requestId, actor, callDigest, waitMs: lifetime = waitMs }) {
       return update(state => {
         const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks } })
         if (joined) return joined
@@ -168,7 +177,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: item.reason,
           tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),
         }))
-        state.pending.push(...requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }) })))
+        state.pending.push(...requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callDigest === undefined ? {} : { callDigest }) })))
         return { requests, joined: false, answered: [] }
       })
     },
@@ -191,6 +200,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         }
         const approval = state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token)
         if (!approval) return { ok: false, reason: 'Approval token is unknown or expired' }
+        if (options.expect && !options.expect(approval)) return { ok: false, reason: 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows' }
         if (decision.approved && !approval.request.offeredScopes.includes(decision.scope)) {
           return { ok: false, reason: `Scope ${decision.scope} is not offered for this approval` }
         }
@@ -263,7 +273,11 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 
     sweep: () => update(() => undefined),
 
-    pending: () => store.read().pending.filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now()).map(entry => entry.request),
+    pending: () => registry.waiting().map(entry => entry.request),
+
+    waiting: () => store.read().pending
+      .filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now())
+      .map(({ workspace: _workspace, ...entry }) => entry),
   }
   return registry
 }

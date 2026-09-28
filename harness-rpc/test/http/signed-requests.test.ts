@@ -33,13 +33,21 @@ async function node(extra: Record<string, string> = {}): Promise<BuckleHttp & { 
   return Object.assign(started, { workspace, root })
 }
 
-interface Signing { key?: typeof owner; purpose?: SignedRequestPurpose; method?: string; path?: string; body?: string; workspace?: string; node?: string; at?: number }
+interface Signing { key?: typeof owner; purpose?: SignedRequestPurpose; method?: string; path?: string; body?: string; workspace?: string; node?: string; at?: number; session?: string }
 
 function sign(buckle: BuckleHttp, input: Signing = {}): string {
   return signRequest({
     key: signingKeyFromPem((input.key ?? owner).privateKeyPem), purpose: input.purpose ?? 'buckle-setup', node: input.node ?? buckle.config.serverId,
     workspace: input.workspace ?? 'default', method: input.method ?? 'PUT', path: input.path ?? '/setup/policy', body: input.body ?? policy, now: input.at ?? Date.now(),
+    ...(input.session ? { session: input.session } : {}),
   })
+}
+
+/** Opens a setup session for the owner's key (B24): signed setup changes name it. */
+async function openSession(buckle: BuckleHttp): Promise<string> {
+  const response = await send(buckle, sign(buckle, { method: 'POST', path: '/setup/sessions', body: '' }), { method: 'POST', path: '/setup/sessions', body: '' })
+  expect(response.status).toBe(201)
+  return (await response.json() as { session: { id: string } }).session.id
 }
 
 function send(buckle: BuckleHttp, authorization: string, input: { method?: string; path?: string; body?: string } = {}): Promise<Response> {
@@ -54,7 +62,7 @@ function refusals(buckle: BuckleHttp): Array<string | undefined> {
 describe('a request the enrolled key signed (B23)', () => {
   it('opens the setup guard as that key, and the admin credential still does', async () => {
     const buckle = await node()
-    const signed = await send(buckle, sign(buckle))
+    const signed = await send(buckle, sign(buckle, { session: await openSession(buckle) }))
     expect(signed.status).toBe(200)
     expect(buckle.runtime.policy.stored()?.commands.deny).toEqual(['rm *'])
     expect((await buckle.request('/setup/policy', { method: 'DELETE', headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(200)
@@ -66,10 +74,14 @@ describe('a request the enrolled key signed (B23)', () => {
     const buckle = await node({ BUCKLE_RINGS_APPROVAL_KEY: mintApprovalKey() })
     const asked = await buckle.runtime.invoke({ sessionId: 's', request: { requestId: 'signed-ask', tool: 'fs_write', args: { path: join(buckle.root, 'outside.md'), content: 'x' }, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
     if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
-    const decision = JSON.stringify({ token: asked.approvals[0]!.token, approved: false, scope: 'once' })
+    const token = asked.approvals[0]!.token
     const path = '/workspaces/default/setup/approvals'
     // With a key paired, Rings' admin credential carries a decision sealed; plain, it is refused.
-    expect((await buckle.request(path, { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: decision })).status).toBe(401)
+    expect((await buckle.request(path, { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify({ token, approved: false, scope: 'once' }) })).status).toBe(401)
+    // A signed decision names the challenge the node signed for the ask (B24).
+    const challenges = '/workspaces/default/setup/approvals/challenges'
+    const listed = await (await send(buckle, sign(buckle, { purpose: 'buckle-approval', method: 'GET', path: challenges, body: '' }), { method: 'GET', path: challenges, body: '' })).json() as { challenges: Array<{ token: string; digest: string }> }
+    const decision = JSON.stringify({ token, approved: false, scope: 'once', challenge: listed.challenges.find(item => item.token === token)!.digest })
     const answered = await send(buckle, sign(buckle, { purpose: 'buckle-approval', method: 'POST', path, body: decision }), { method: 'POST', path, body: decision })
     expect(answered.status).toBe(200)
     expect(buckle.runtime.approvals.pending()).toEqual([])
@@ -103,7 +115,7 @@ describe('a request the enrolled key signed (B23)', () => {
 
   it('refuses a replay, an approval signature on the setup guard and a setup signature on the approval guard, and a key substituted into the payload', async () => {
     const buckle = await node()
-    const once = sign(buckle)
+    const once = sign(buckle, { session: await openSession(buckle) })
     expect((await send(buckle, once)).status).toBe(200)
     expect((await send(buckle, once)).status).toBe(401)
     const decision = JSON.stringify({ token: 'x', approved: true, scope: 'once' })
@@ -119,15 +131,16 @@ describe('a request the enrolled key signed (B23)', () => {
 
   it('refuses a key once the owner revokes it, at once and for good', async () => {
     const buckle = await node()
-    expect((await send(buckle, sign(buckle))).status).toBe(200)
+    const session = await openSession(buckle)
+    expect((await send(buckle, sign(buckle, { session }))).status).toBe(200)
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     expect((await keysCommand({ config: buckle.config, argv: ['revoke', owner.keyId] })).exitCode).toBe(0)
-    expect((await send(buckle, sign(buckle))).status).toBe(401)
+    expect((await send(buckle, sign(buckle, { session }))).status).toBe(401)
     // Enrolling the same key again does not undo the revocation.
     expect((await keysCommand({ config: buckle.config, argv: ['enroll', owner.publicKey] })).exitCode).toBe(1)
     expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('was revoked')
-    expect((await send(buckle, sign(buckle))).status).toBe(401)
+    expect((await send(buckle, sign(buckle, { session }))).status).toBe(401)
     expect(refusals(buckle)).toEqual(['unknown_key', 'unknown_key'])
   })
 
@@ -149,9 +162,14 @@ describe('a request the enrolled key signed (B23)', () => {
     const publicKey = /Public key: +(ed25519:\S+)/.exec(printed)![1]!
     expect((await keysCommand({ config: buckle.config, argv: ['enroll', publicKey, '--label', 'device'] })).exitCode).toBe(0)
     const body = JSON.stringify({ version: 1, network: { allow: ['example.com'] } })
-    expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body], environment)).exitCode).toBe(0)
+    printed = ''
+    expect((await clientCommand(['session', 'open', url], environment)).exitCode).toBe(0)
+    const session = printed.trim()
+    expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body, '--session', session], environment)).exitCode).toBe(0)
     expect(buckle.runtime.policy.stored()?.network.allow).toEqual(['example.com'])
     // The node names itself on /health; a pinned --node that is not this node is refused.
-    expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body, '--node', 'another-node'], environment)).exitCode).toBe(1)
+    expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body, '--node', 'another-node', '--session', session], environment)).exitCode).toBe(1)
+    expect((await clientCommand(['session', 'close', url, session], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body, '--session', session], environment)).exitCode).toBe(1)
   })
 })

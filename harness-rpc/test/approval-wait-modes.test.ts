@@ -25,7 +25,7 @@ afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync
 async function fixture(timeoutMs: number | null) {
   const root = directory()
   const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, timeoutMs)
-  const service = createApprovalService({ registry: approvals, workspaceId: 'default', graceMs: timeoutMs, interaction: fixedInteraction() })
+  const service = createApprovalService({ registry: approvals, workspaceId: 'default', serverId: 'test-node', graceMs: timeoutMs, interaction: fixedInteraction() })
   const ask: Ask = { kind: 'ask', rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }
   const request = (asks: Ask[] = [ask]) => service.request({ sessionId: 'test', requestId: `request-${asks.length}`, tool: 'fs_write', asks })
   return { approvals, service, request }

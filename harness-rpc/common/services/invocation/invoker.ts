@@ -416,7 +416,7 @@ async function clearPermissions(input: {
   // its policy skips); an entry point may add its own, and the one that holds less wins.
   const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
   // Only the caller's own signal reaches the wait: shutdown settles waits through the service's close.
-  const waited = await options.approvalService.request({ sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait })
+  const waited = await options.approvalService.request({ sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait, callDigest: input.key.fingerprint })
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
   const approvals = waited.approvals
   const asked = (approvals.length > 0 ? approvals : outcome.asks).map(approval => `${approval.rule}:${approval.subject}`)

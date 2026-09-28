@@ -103,6 +103,13 @@ export const ApprovalDecisionSchema = z.object({
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>
 
 /**
+ * A decision a person's enrolled key signs (owner ruling H4 of 2026-09-28): it names the digest of
+ * the challenge the node signed for the ask, so it answers exactly the action the person was shown.
+ */
+export const SignedApprovalDecisionSchema = ApprovalDecisionSchema.extend({ challenge: z.string().regex(/^[a-f0-9]{64}$/) })
+export type SignedApprovalDecision = z.infer<typeof SignedApprovalDecisionSchema>
+
+/**
  * Withdraws one call's asks still waiting (owner decision D6 of 2026-09-29), as an explicit cancel
  * does: named by one of its ask tokens, or by the requestId and session the call was sent with. Each
  * withdrawn ask is told `cancelled`. Withdrawing never approves anything.

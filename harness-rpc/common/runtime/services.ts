@@ -4,9 +4,11 @@ import { createSetupViews, type SetupViews } from '../services/setup/setup-views
 import { createWorkspaceManager, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
 import { createRuntime, type BuckleRuntime } from '../services/workspaces/workspace-runtime.js'
 import { createRequestVerifier, type RequestVerifier } from '../services/access/signed-requests.js'
+import { createNodeSigner, type NodeSigner } from '../services/access/node-signer.js'
+import { createSetupSessions, type SetupSessions } from '../services/access/setup-sessions.js'
 import { createFileClientKeys } from '../adapters/keys/file-client-keys.js'
 import { openFileNonceStore } from '../adapters/approval/file-nonce-store.js'
-import { clientKeysPath, requestNoncesPath, type BuckleConfig } from './config.js'
+import { clientKeysPath, nodeKeyPath, requestNoncesPath, setupSessionsPath, type BuckleConfig } from './config.js'
 
 // Typed accessors over the runtime owner's registry (nitro/runtime.md, Lifetimes).
 export interface BuckleServices {
@@ -22,6 +24,10 @@ export interface BuckleServices {
   getSetupViews(): SetupViews
   /** Verifies the requests an enrolled client key signed, for the setup and approval guards (owner ruling H4). */
   getRequestVerifier(): Promise<RequestVerifier>
+  /** The setup sessions persons' keys opened (B24). */
+  getSetupSessions(): Promise<SetupSessions>
+  /** The node's own signing key, for the approval challenges it shows (B24). */
+  getNodeSigner(): Promise<NodeSigner>
 }
 
 export interface NodeIdentity {
@@ -32,6 +38,8 @@ export interface BuckleServiceDefinitions {
   workspaceRuntime: SingletonDefinition<BuckleRuntime>
   workspaces: SingletonDefinition<WorkspaceManager>
   requestVerifier: SingletonDefinition<RequestVerifier>
+  setupSessions: SingletonDefinition<SetupSessions>
+  nodeSigner: SingletonDefinition<NodeSigner>
   interaction: ScopedDefinition<InteractionPort>
 }
 
@@ -89,7 +97,12 @@ export function defineBuckleServices(input: { config: BuckleConfig; interaction:
       serverId: input.config.serverId,
     }),
   })
-  return { workspaceRuntime, workspaces, requestVerifier, interaction: InteractionService }
+  const setupSessions = defineSingleton<SetupSessions>({
+    name: 'SetupSessions',
+    create: async () => createSetupSessions({ filePath: setupSessionsPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs }),
+  })
+  const nodeSigner = defineSingleton<NodeSigner>({ name: 'NodeSigner', create: async () => createNodeSigner(nodeKeyPath(input.config)) })
+  return { workspaceRuntime, workspaces, requestVerifier, setupSessions, nodeSigner, interaction: InteractionService }
 }
 
 export function serviceList(definitions: BuckleServiceDefinitions): AnyServiceDefinition[] {
@@ -107,6 +120,8 @@ export function createServiceAccessors(input: { owner: RuntimeOwner; definitions
     nodeIdentity: () => identity,
     getSetupViews: () => setupViews,
     getRequestVerifier: () => registry.useSingleton(input.definitions.requestVerifier),
+    getSetupSessions: () => registry.useSingleton(input.definitions.setupSessions),
+    getNodeSigner: () => registry.useSingleton(input.definitions.nodeSigner),
   }
 }
 
