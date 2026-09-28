@@ -275,8 +275,9 @@ BUCKLE_WORKSPACE_ROOT=${input.root}
 # BUCKLE_STATE_DIR=
 ${input.mount ? `BUCKLE_WORKSPACE_MOUNT=${input.mount}` : '# BUCKLE_WORKSPACE_MOUNT=/workspace'}
 BUCKLE_SANDBOX=auto
-# Milliseconds to wait for approval: 60000 = one minute; forever = no wait deadline.
-# 0 returns approval instructions immediately. Restart serve after changing this.
+# Milliseconds a call waits for approval when its caller sends no wait of its own: 60000 = one
+# minute; 0 = until someone answers. Rings sends its own wait with each call, which overrides this.
+# Restart serve after changing this.
 # BUCKLE_APPROVAL_TIMEOUT_MS=15000
 ${renderChoices(input.choices)}
 

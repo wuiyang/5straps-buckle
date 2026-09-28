@@ -229,12 +229,18 @@ function parseSandboxMode(value: string | undefined): BuckleConfig['sandboxMode'
 }
 
 /** Unlike the other durations, zero is meaningful here: it turns the grace period off. */
+/**
+ * BUCKLE_APPROVAL_TIMEOUT_MS: how long Buckle holds a gated call for an answer when the caller sends no
+ * wait of its own, in milliseconds; 0 (or `forever`) holds it until someone answers, with no deadline.
+ * A caller's hint overrides it either way (InvokeContext.approvalWait, owner ruling of 2026-09-28).
+ * Returns null for no deadline.
+ */
 export function parseApprovalTimeout(value: string | undefined, fallback: number): number | null {
   if (value === undefined || value === '') return fallback
   if (value === 'forever') return null
   const parsed = /^\d+$/.test(value) ? Number(value) : NaN
   if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 2_147_483_647) throw new Error(`Invalid BUCKLE_APPROVAL_TIMEOUT_MS: ${value}`)
-  return parsed
+  return parsed === 0 ? null : parsed
 }
 
 function parseForgeApiUrl(value: string | undefined): string {

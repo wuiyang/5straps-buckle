@@ -107,12 +107,11 @@ describe('the grace period before a gated call gives up', () => {
     expect(await waitingService({ registry: stubQueue([approval('t1')]).registry, graceMs: 600 })()).toMatchObject({ settled: false })
   })
 
-  it('refuses at once when the grace period is turned off, asking nobody', async () => {
+  it('returns at once when the hold is 0, and still asks the terminal (owner ruling of 2026-09-28)', async () => {
     const queue = stubQueue([approval('t1')])
     const requestCli = vi.fn(nobody)
     expect(await waitingService({ registry: queue.registry, graceMs: 0, requestCli })()).toMatchObject({ settled: false })
-    expect(queue.pending).not.toHaveBeenCalled()
-    expect(requestCli).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(requestCli).toHaveBeenCalledTimes(1))
   })
 
   it('waits for every token, not just the first one answered', async () => {

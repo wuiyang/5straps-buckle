@@ -27,7 +27,7 @@ async function workspace(node: WorkspacePolicy, child: WorkspacePolicy = policy(
   const root = mkdtempSync(join(tmpdir(), 'buckle-ceiling-'))
   roots.push(root)
   for (const directory of ['default', 'child']) mkdirSync(join(root, directory))
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
   config.policy = node
   const runtime = await createRuntime({ config })
   const manager = createWorkspaceManager({ config, runtime })

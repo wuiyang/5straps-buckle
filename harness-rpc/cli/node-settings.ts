@@ -62,8 +62,8 @@ export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd
     case 'approval-wait': {
       try {
         const parsed = parseApprovalTimeout(raw, 15_000)
-        return { ok: true, value: parsed === null ? 'forever' : String(parsed) }
-      } catch { return refuse('Approval wait must be milliseconds (0 to 2147483647) or forever') }
+        return { ok: true, value: String(parsed ?? 0) }
+      } catch { return refuse('Approval wait must be milliseconds, 1 to 2147483647, or 0 to wait until someone answers') }
     }
     case 'packs': {
       const ids = list(raw)

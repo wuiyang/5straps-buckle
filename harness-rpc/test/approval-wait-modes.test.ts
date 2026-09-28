@@ -31,10 +31,11 @@ async function fixture(timeoutMs: number | null) {
 it.each(['-1', '60000ms', 'Infinity', '2147483648', '1.5'])('rejects invalid wait %s', value => {
   expect(() => parseApprovalTimeout(value, 15_000)).toThrow()
 })
-it('accepts a minute, forever and immediate fallback', () => {
+it('accepts a minute, and 0 or forever for a wait with no deadline', () => {
   expect(parseApprovalTimeout('60000', 15_000)).toBe(60_000)
   expect(parseApprovalTimeout('forever', 15_000)).toBeNull()
-  expect(parseApprovalTimeout('0', 15_000)).toBe(0)
+  // Owner ruling of 2026-09-28: 0 holds a call until someone answers.
+  expect(parseApprovalTimeout('0', 15_000)).toBeNull()
 })
 it('holds for one minute, then leaves the question answerable', async () => {
   vi.useFakeTimers()

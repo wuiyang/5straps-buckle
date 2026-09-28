@@ -25,7 +25,7 @@ function node(environment: Record<string, string> = {}): BuckleConfig {
 const write = (path: string, approvalWait?: ApprovalWait) => ({ requestId: `write-${path}`, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [], ...(approvalWait ? { context: { approvalWait } } : {}) })
 
 describe('the approval wait hint in InvokeContext', () => {
-  it('shortens the node\'s own wait', async () => {
+  it('overrides the node\'s own wait when it is shorter', async () => {
     const runtime = await createRuntime({ config: node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' }), interaction: fixedInteraction() })
     let started = performance.now()
     expect(await runtime.invoke({ sessionId: 's', request: write('one/a.md', { mode: 'finite', ms: 150 }) })).toMatchObject({ outcome: 'approval_required' })
@@ -37,11 +37,15 @@ describe('the approval wait hint in InvokeContext', () => {
     await runtime.history.close()
   })
 
-  it('never lengthens it: the shorter of the hint and the node\'s grace period wins', async () => {
-    const runtime = await createRuntime({ config: node({ BUCKLE_APPROVAL_TIMEOUT_MS: '200' }), interaction: fixedInteraction() })
+  it('overrides it when it is longer too: the caller owns the run, so its wait wins (owner ruling of 2026-09-28)', async () => {
+    const runtime = await createRuntime({ config: node({ BUCKLE_APPROVAL_TIMEOUT_MS: '50' }), interaction: fixedInteraction() })
     const started = performance.now()
-    expect(await runtime.invoke({ sessionId: 's', request: write('one/a.md', { mode: 'finite', ms: 60_000 }) })).toMatchObject({ outcome: 'approval_required' })
+    expect(await runtime.invoke({ sessionId: 's', request: write('one/a.md', { mode: 'finite', ms: 600 }) })).toMatchObject({ outcome: 'approval_required' })
+    expect(performance.now() - started).toBeGreaterThanOrEqual(580)
     expect(performance.now() - started).toBeLessThan(5_000)
+    // The ask stays answerable at least as long as the caller was held.
+    const [pending] = runtime.approvalService.pending()
+    expect(Date.parse(pending!.expiresAt) - Date.now()).toBeGreaterThan(10 * 60_000 - 1_000)
     await runtime.history.close()
   })
 

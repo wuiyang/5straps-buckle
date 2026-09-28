@@ -175,15 +175,17 @@ describe('the question a hinted call still puts to the terminal (review L3)', ()
     await runtime.history.close()
   })
 
-  it('still asks nobody when the node itself holds no call (grace period 0)', async () => {
+  it('asks the terminal the same whatever the hint says: the hint sets only how long the caller is held (owner ruling of 2026-09-28)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-join-nowait-'))
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
     const requestCli = vi.fn<RequestCli>(async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' }))
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 0, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
+    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 15_000, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
 
-    await service.request({ sessionId: 's', requestId: 'r', tool: 'fs_write', asks: [outside(1)], wait: { mode: 'none' } })
-
-    expect(requestCli).not.toHaveBeenCalled()
+    for (const [requestId, wait] of [['none', { mode: 'none' }], ['short', { mode: 'finite', ms: 1 }]] as const) {
+      expect(await service.request({ sessionId: 's', requestId, tool: 'fs_write', asks: [outside(requestId.length)], wait })).toMatchObject({ settled: false })
+    }
+    await vi.waitFor(() => expect(requestCli).toHaveBeenCalledTimes(2))
+    await service.close()
   })
 })
 

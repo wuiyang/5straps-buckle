@@ -109,7 +109,7 @@ function nodeEnvironment() {
   return { ...environment, BUCKLE_ENV_FILE: join(root, 'no-environment-file'), BUCKLE_HOST: '127.0.0.1',
     BUCKLE_PORT: String(port ?? 4320), BUCKLE_SERVER_ID: 'package-smoke', BUCKLE_WORKSPACE_ROOT: workspace,
     BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false',
-    BUCKLE_AUTH_TOKEN: agentToken, BUCKLE_ADMIN_TOKEN: adminToken, BUCKLE_APPROVAL_TIMEOUT_MS: '0' }
+    BUCKLE_AUTH_TOKEN: agentToken, BUCKLE_ADMIN_TOKEN: adminToken, BUCKLE_APPROVAL_TIMEOUT_MS: '1' }
 }
 
 function cli(args) {

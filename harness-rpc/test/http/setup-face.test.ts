@@ -17,7 +17,7 @@ const nodes: BuckleHttp[] = []
 
 // A gated call over HTTP answers approval_required at once (grace period 0).
 function environment(extra: Record<string, string> = {}): Record<string, string> {
-  return { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_STATE_DIR: stateDirectory, BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '0', ...extra }
+  return { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_STATE_DIR: stateDirectory, BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...extra }
 }
 
 async function node(extra: Record<string, string> = {}): Promise<BuckleHttp> {

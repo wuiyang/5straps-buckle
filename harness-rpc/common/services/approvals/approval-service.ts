@@ -86,7 +86,7 @@ export interface ApprovalService {
 export interface ApprovalServiceOptions {
   registry: ApprovalRegistry
   workspaceId: string
-  /** `BUCKLE_APPROVAL_TIMEOUT_MS`: null holds a call until its request expires, 0 not at all. */
+  /** `BUCKLE_APPROVAL_TIMEOUT_MS`: how long a `grace` hold lasts when the caller sends no wait; null holds it until answered. */
   graceMs: number | null
   /** The current operation's interaction; an unbound operation asks nobody. */
   interaction: InteractionSource
@@ -164,7 +164,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const scope = useScopeSafe()
       const actor = scope?.context.actor
       const key = joinKey({ ...input, actor })
-      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, ...(actor === undefined ? {} : { actor }) })
+      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(actor === undefined ? {} : { actor }) })
       const { requests: approvals, answered } = issued
       const tokens = approvals.map(approval => approval.token)
       if (!issued.joined) {
@@ -175,9 +175,9 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       await cancelIfLeft({ key, tokens, signal: input.signal })
       if (closing.signal.aborted) return skip({ approvals, answered, reason: 'shutdown' })
       const holdMs = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
-      // The hint shortens the caller's wait and never who is asked: a node that keeps asking asks now
-      // too (review L3). A node whose own grace period is 0 asks nobody, as before.
-      const keepAsking = interaction.hold === 'grace' && options.graceMs !== 0
+      // The hint sets how long the caller is held and never who is asked: a `grace` entry point asks
+      // its terminal whatever the hint says, and keeps asking after the caller returns (owner ruling).
+      const keepAsking = interaction.hold === 'grace'
       if (holdMs === 0 && !keepAsking) return skip({ approvals, answered, reason: input.wait?.mode === 'none' ? 'caller_declined_wait' : 'no_wait' })
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
@@ -187,7 +187,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       for (const earlier of ask.participants) earlier.abort()
       if (holdMs === 0) {
         if (ask.participants.size === 0) release({ ask, keepAsking: true })
-        return skip({ approvals, answered, reason: 'caller_declined_wait' })
+        return skip({ approvals, answered, reason: input.wait?.mode === 'none' ? 'caller_declined_wait' : 'no_wait' })
       }
       const participant = new AbortController()
       ask.participants.add(participant)
@@ -441,12 +441,21 @@ export function shorterWait(left: ApprovalWait | undefined, right: ApprovalWait 
   return { mode: 'finite', ms: Math.min(left.ms, right.ms) }
 }
 
-/** The entry point's own hold, shortened by the caller's hint and never lengthened by it. */
+/**
+ * How long the caller is held: its hint when it sends one, shorter or longer than the entry point's
+ * own hold, and the entry point's own otherwise (`grace`: BUCKLE_APPROVAL_TIMEOUT_MS; `prompt`: while
+ * the terminal asks). Owner ruling of 2026-09-28: the caller (Rings) owns the run's state, so its
+ * wait overrides Buckle's; a standalone caller sends none and gets Buckle's own.
+ */
 export function holdFor(input: { hold: ApprovalHold; graceMs: number | null; hint?: ApprovalWait }): number | null {
-  const own = input.hold === 'grace' ? input.graceMs : null
-  if (!input.hint) return own
-  if (input.hint.mode === 'none') return 0
-  return own === null ? input.hint.ms : Math.min(own, input.hint.ms)
+  if (input.hint) return input.hint.mode === 'none' ? 0 : input.hint.ms
+  return input.hold === 'grace' ? input.graceMs : null
+}
+
+/** How long an issued ask stays answerable beyond its ten minutes: at least as long as the node's own hold, and the caller's when it holds longer. */
+function askLifetime(graceMs: number | null, hint: ApprovalWait | undefined): number | null {
+  if (graceMs === null) return null
+  return hint?.mode === 'finite' ? Math.max(graceMs, hint.ms) : graceMs
 }
 
 async function announce(notify: ApprovalServiceOptions['announce'], requests: ApprovalRequest[]): Promise<void> {

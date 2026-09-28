@@ -18,7 +18,7 @@ const nodes: BuckleHttp[] = []
 /** A node on this test's directories; configure sets what no environment variable carries. */
 async function node(configure?: (config: BuckleConfig) => void): Promise<BuckleHttp> {
   const started = await createBuckleHttp({
-    environment: { BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_SETUP, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '0' },
+    environment: { BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_SETUP, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1' },
     ...(configure ? { configure } : {}),
   })
   nodes.push(started)

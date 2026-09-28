@@ -28,7 +28,7 @@ async function node(input: { key?: string; state?: string; graceMs?: number } = 
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-sealed-ws-')),
     BUCKLE_ALLOW_SHELL: 'false',
     // A call over HTTP is held this long, so a decision posted meanwhile can free it.
-    BUCKLE_APPROVAL_TIMEOUT_MS: String(input.graceMs ?? 0),
+    BUCKLE_APPROVAL_TIMEOUT_MS: String(input.graceMs ?? 1),
     ...(input.key ? { BUCKLE_RINGS_APPROVAL_KEY: input.key } : {}),
   } })
   nodes.push(app)

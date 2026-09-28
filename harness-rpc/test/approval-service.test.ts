@@ -12,7 +12,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { loadConfig } from '../common/runtime/config.js'
 import { ApprovalConflictError, createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, holdFor, questionFor, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
-import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
+import { NO_INTERACTION } from '../common/services/approvals/interaction.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { initializeCommon } from '../common/runtime/initialize.js'
 import { createMcpServer } from '../mcp/server.js'
@@ -203,27 +203,28 @@ describe('the approval service, the single answerer', () => {
 })
 
 describe('how long a gated call is held', () => {
-  it("takes the entry point's own hold, which a caller's hint only shortens", () => {
+  it("takes the caller's hint over the entry point's own hold, shorter or longer (owner ruling of 2026-09-28)", () => {
     expect(holdFor({ hold: 'grace', graceMs: 15_000 })).toBe(15_000)
+    expect(holdFor({ hold: 'grace', graceMs: null })).toBeNull()
     expect(holdFor({ hold: 'grace', graceMs: 15_000, hint: { mode: 'finite', ms: 50 } })).toBe(50)
-    expect(holdFor({ hold: 'grace', graceMs: 50, hint: { mode: 'finite', ms: 60_000 } })).toBe(50)
+    expect(holdFor({ hold: 'grace', graceMs: 50, hint: { mode: 'finite', ms: 60_000 } })).toBe(60_000)
     expect(holdFor({ hold: 'grace', graceMs: null, hint: { mode: 'finite', ms: 60_000 } })).toBe(60_000)
     expect(holdFor({ hold: 'grace', graceMs: null, hint: { mode: 'none' } })).toBe(0)
-    // A CLI command holds while its terminal asks; the hint bounds that too.
+    // A CLI command holds while its terminal asks; a hint sets that too.
     expect(holdFor({ hold: 'prompt', graceMs: 15_000 })).toBeNull()
     expect(holdFor({ hold: 'prompt', graceMs: 15_000, hint: { mode: 'finite', ms: 50 } })).toBe(50)
   })
 })
 
 describe('an interaction bound to nothing', () => {
-  it('asks nobody and holds no call', async () => {
+  it('reaches nobody and holds no call, whatever the node\'s own wait, and leaves the ask pending', async () => {
     const { registry } = queue()
-    const requestCli = vi.fn<RequestCli>(NO_INTERACTION.requestCli)
-    const interaction: Interaction = { requestCli, hold: 'grace' }
-    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 0, interaction: fixedInteraction(interaction) })
+    const service = createApprovalService({ registry, workspaceId: 'default', graceMs: 60_000, interaction: async () => undefined })
 
+    const started = performance.now()
     expect(await service.request(call())).toMatchObject({ settled: false })
-    expect(requestCli).not.toHaveBeenCalled()
+    expect(performance.now() - started).toBeLessThan(5_000)
+    expect(registry.pending()).toHaveLength(1)
   })
 })
 

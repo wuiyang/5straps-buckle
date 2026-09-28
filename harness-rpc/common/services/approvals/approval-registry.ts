@@ -73,6 +73,8 @@ export interface AskInput {
   /** The caller's requestId and actor: the same pair with the same asks joins the waiting ask. */
   requestId?: string
   actor?: string
+  /** How long the call may be held beyond the ten minutes an ask stays answerable (null: no deadline); the registry's own when absent. */
+  waitMs?: number | null
 }
 
 /**
@@ -146,14 +148,14 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   }
 
   const registry: ApprovalRegistry = {
-    ask({ tool, sessionId, asks, requestId, actor }) {
+    ask({ tool, sessionId, asks, requestId, actor, waitMs: lifetime = waitMs }) {
       return update(state => {
         const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks } })
         if (joined) return joined
         assertRoomFor({ state, workspace, sessionId, asked: asks.length })
         const requests = asks.map(item => ({
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: item.reason,
-          tool, offeredScopes: item.offeredScopes, expiresAt: waitMs === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + waitMs).toISOString(),
+          tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),
         }))
         state.pending.push(...requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }) })))
         return { requests, joined: false, answered: [] }

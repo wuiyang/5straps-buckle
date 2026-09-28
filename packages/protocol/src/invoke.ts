@@ -3,8 +3,11 @@ import { ApprovalRequestSchema } from './approval.js'
 import { JsonObjectSchema, JsonValueSchema } from './json.js'
 
 /**
- * How long the caller will wait for a person to answer an approval. It can only shorten the node's
- * own wait: the node takes the shorter of the two, and `none` returns the pending asks at once.
+ * How long the caller will wait for a person to answer an approval. It overrides the node's own wait
+ * (BUCKLE_APPROVAL_TIMEOUT_MS), shorter or longer: `none` returns the pending asks at once, `finite`
+ * holds the call that long. It never changes who is asked: the node asks its terminal and every other
+ * answer path the same, and the asks stay pending until answered or expired. Rings sends it because
+ * Rings owns the run's state (owner ruling, 2026-09-28).
  */
 export const ApprovalWaitSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('none') }),

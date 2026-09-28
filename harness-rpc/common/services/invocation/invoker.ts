@@ -309,7 +309,8 @@ async function clearPermissions(input: {
   }
 
   // Every answer, from any route, is recorded by the service; this call only learns whether all came in.
-  // The caller's hint travels in the request (Rings sends none when its policy skips); the face may add its own.
+  // The caller's hint travels in the request and overrides the node's own wait (Rings sends none when
+  // its policy skips); an entry point may add its own, and the one that holds less wins.
   const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
   const waited = await options.approvalService.request({ sessionId, requestId: request.requestId.slice(0, MAX_LOGGED_ID), tool: request.tool, asks: outcome.asks, signal: input.signal, wait })
   const { approvals } = waited
