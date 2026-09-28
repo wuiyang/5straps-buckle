@@ -42,6 +42,7 @@ const holders = new Map<string, () => Promise<void>>()
  */
 export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHttp> {
   const build = inject('buckleBuild')
+  if (!build) throw new Error('buckleBuild was not provided: the root tests must run through `pnpm test:integration` (vitest run --config vitest.integration.config.ts), not a bare vitest invocation')
   const entryPath = input.headless ? build.entries.headless : input.instance === 2 ? build.entries.second : build.entries.full
   await holders.get(entryPath)?.()
   const config = loadConfig(input.environment)
