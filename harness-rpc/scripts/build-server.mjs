@@ -1,6 +1,9 @@
 // Builds the Nitro app (layers, custom entry, error handler) into .output, or --out-dir <dir>.
 // --no-admin leaves the admin layer out, so that build serves no /setup route.
 // The build cache goes under node_modules/.cache (or --build-dir), never into the source tree.
+// It also writes .output/bundled-packages.json: package@version for every module the bundle took from
+// node_modules, which `pnpm audit --prod` cannot see (plan section G; scripts/release/audit-bundled.mjs).
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { build, copyPublicAssets, createNitro, prepare } from 'nitro/builder'
@@ -22,10 +25,41 @@ const nitro = await createNitro({
   buildDir: resolve(values['build-dir'] ?? join(rootDir, 'node_modules', '.cache', 'nitro')),
   output: { dir: outDir },
 })
+const bundled = new Set()
+nitro.hooks.hook('rollup:before', (_nitro, config) => { config.plugins.push(recordBundledPackages(bundled)) })
 try {
   await prepare(nitro)
   await copyPublicAssets(nitro)
   await build(nitro)
 } finally {
   await nitro.close()
+}
+writeFileSync(join(outDir, 'bundled-packages.json'), `${JSON.stringify([...bundled].sort(), null, 2)}\n`)
+
+/** Collects the package of every bundled module that came from node_modules. */
+function recordBundledPackages(found) {
+  return {
+    name: 'buckle:bundled-packages',
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (output.type !== 'chunk') continue
+        for (const id of output.moduleIds) {
+          const identified = packageOf(id)
+          if (identified) found.add(identified)
+        }
+      }
+    },
+  }
+}
+
+/** name@version of the package a module id sits in: the directory after the last node_modules/, read from its package.json. */
+function packageOf(id) {
+  const path = id.replace(/^\0/, '').split('?')[0]
+  const marker = '/node_modules/'
+  const at = path.lastIndexOf(marker)
+  if (at < 0) return null
+  const [scope, name] = path.slice(at + marker.length).split('/')
+  const packageName = scope.startsWith('@') ? `${scope}/${name}` : scope
+  const manifest = JSON.parse(readFileSync(join(path.slice(0, at + marker.length), packageName, 'package.json'), 'utf8'))
+  return `${manifest.name}@${manifest.version}`
 }

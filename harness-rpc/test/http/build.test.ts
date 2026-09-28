@@ -135,6 +135,16 @@ describe('the built server (.output)', () => {
     for (const output of Object.values(build.outputs)) expect(readFileSync(join(output, 'server', 'index.mjs'), 'utf8')).not.toContain('["~middleware"]')
   })
 
+  it('records every package it bundled from node_modules, and none of the externals, in bundled-packages.json (B21)', () => {
+    for (const output of Object.values(build.outputs)) {
+      const bundled = JSON.parse(readFileSync(join(output, 'bundled-packages.json'), 'utf8')) as string[]
+      expect(bundled).toEqual([...bundled].sort())
+      expect(bundled).toEqual(expect.arrayContaining([expect.stringMatching(/^nitro@\d/), expect.stringMatching(/^srvx@\d/)]))
+      expect(bundled.filter(item => /^(?:@5straps\/|@modelcontextprotocol\/|zod@|h3@)/.test(item))).toEqual([])
+      expect(bundled.every(item => /^(?:@[^/@]+\/)?[^/@]+@\d[^@]*$/.test(item))).toBe(true)
+    }
+  })
+
   it('bundles no admin route into the build without the admin layer', () => {
     const routesOf = (output: string) => files(join(output, 'server', '_routes')).map(path => relative(join(output, 'server', '_routes'), path))
     expect(routesOf(build.outputs.full).filter(path => path.startsWith('setup/'))).not.toEqual([])

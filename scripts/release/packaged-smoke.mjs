@@ -36,7 +36,10 @@ try {
   await startService()
   await checkApprovalAndAudit()
   await checkBackupAndRestore()
-  process.stdout.write('Packaged Buckle passed: install, built server, CLI, HTTP authorization, approval/retry, audit, backup/restart and conflict-checked restore.\n')
+  await checkCleanStop()
+  await checkSetupWithoutAdminToken()
+  await checkMcpStdio()
+  process.stdout.write('Packaged Buckle passed: install, built server, CLI, HTTP authorization, approval/retry, audit, backup/restart, conflict-checked restore, SIGTERM clean close, no /setup without an admin token, and MCP over stdio.\n')
 } catch (error) {
   process.stderr.write(`Packaged Buckle smoke failed: ${error instanceof Error ? error.message : String(error)}\n`)
   process.exitCode = 1
@@ -89,6 +92,10 @@ function assertBuiltServer(output) {
     assert.deepEqual(BUNDLED_ELSEWHERE.filter(marker => text.includes(marker)), [], `${path} bundles common or runtime code`)
   }
   assert.match(readFileSync(join(output, 'server', '_routes', 'health', 'ready.mjs'), 'utf8'), /from "@5straps\/runtime\/nitro"/, 'Route chunks must import @5straps/runtime bare')
+  // What the bundle took from node_modules ships with it, for scripts/release/audit-bundled.mjs and anyone auditing the package.
+  const bundled = JSON.parse(readFileSync(join(output, 'bundled-packages.json'), 'utf8'))
+  assert(bundled.some(item => item.startsWith('nitro@')), 'bundled-packages.json does not list nitro')
+  assert.deepEqual(bundled.filter(item => /^(?:@5straps\/|@modelcontextprotocol\/|zod@|h3@)/.test(item)), [], 'An external package was bundled')
 }
 
 function walk(directory) {
@@ -105,11 +112,11 @@ function assertExecutableBin(path) {
   assert.equal(readFileSync(path, 'utf8').split('\n', 1)[0], '#!/usr/bin/env node', `${path} lacks the node shebang`)
 }
 
-function nodeEnvironment() {
+function nodeEnvironment({ admin = true } = {}) {
   return { ...environment, BUCKLE_ENV_FILE: join(root, 'no-environment-file'), BUCKLE_HOST: '127.0.0.1',
     BUCKLE_PORT: String(port ?? 4320), BUCKLE_SERVER_ID: 'package-smoke', BUCKLE_WORKSPACE_ROOT: workspace,
     BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false',
-    BUCKLE_AUTH_TOKEN: agentToken, BUCKLE_ADMIN_TOKEN: adminToken, BUCKLE_APPROVAL_TIMEOUT_MS: '1' }
+    BUCKLE_AUTH_TOKEN: agentToken, ...(admin ? { BUCKLE_ADMIN_TOKEN: adminToken } : {}), BUCKLE_APPROVAL_TIMEOUT_MS: '1' }
 }
 
 function cli(args) {
@@ -125,10 +132,10 @@ async function freePort() {
   return address.port
 }
 
-async function startService() {
+async function startService(options = {}) {
   serviceOutput = ''
   serviceLog = ''
-  service = spawn(process.execPath, [entry, 'serve'], { cwd: workspace, env: nodeEnvironment(), stdio: ['ignore', 'pipe', 'pipe'] })
+  service = spawn(process.execPath, [entry, 'serve'], { cwd: workspace, env: nodeEnvironment(options), stdio: ['ignore', 'pipe', 'pipe'] })
   let startupError
   service.on('error', error => { startupError = error })
   for (const stream of [service.stdout, service.stderr]) stream.on('data', chunk => { serviceLog += chunk; serviceOutput = (serviceOutput + chunk).slice(-4000) })
@@ -220,4 +227,64 @@ async function checkBackupAndRestore() {
   writeFileSync(join(workspace, 'demo.txt'), 'after')
   await request(`/setup/history/${encodeURIComponent(checkpoint.id)}/restore`, { body: {} })
   assert.equal(readFileSync(join(workspace, 'demo.txt'), 'utf8'), 'before')
+}
+
+/** SIGTERM closes stage by stage and exits 0, with no close step reporting an error (B19). */
+async function checkCleanStop() {
+  const child = service
+  service = undefined
+  const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))
+  child.kill('SIGTERM')
+  const result = await Promise.race([closed, delay(30_000).then(() => null)])
+  if (!result) {
+    child.kill('SIGKILL')
+    throw new Error(`Buckle did not exit within 30 s of SIGTERM: ${serviceOutput}`)
+  }
+  assert.deepEqual(result, { code: 0, signal: null }, `Buckle did not exit 0 on SIGTERM: ${serviceOutput}`)
+  assert(serviceLog.includes('"5straps Buckle stopped"'), 'Buckle stopped without its last close line')
+  assert(!serviceLog.includes('"Buckle closed with errors"'), `A close step failed: ${serviceOutput}`)
+}
+
+/** A node started without BUCKLE_ADMIN_TOKEN has no owner's face: /setup answers 404 to every caller. */
+async function checkSetupWithoutAdminToken() {
+  await startService({ admin: false })
+  for (const token of [adminToken, agentToken, undefined]) {
+    const response = await fetch(`http://127.0.0.1:${port}/setup/status`, { headers: token ? { authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(10_000) })
+    await response.body?.cancel()
+    assert.equal(response.status, 404, 'A node without an admin token must serve no /setup')
+  }
+  assert.equal((await fetch(`http://127.0.0.1:${port}/v1/manifest`, { headers: { authorization: `Bearer ${agentToken}` }, signal: AbortSignal.timeout(10_000) })).status, 200)
+  await checkCleanStop()
+}
+
+/** `buckle mcp` over stdio: initialize and tools/list answer on stdout, which carries protocol lines only, and closing stdin ends it with exit 0. */
+async function checkMcpStdio() {
+  const child = spawn(process.execPath, [entry, 'mcp'], { cwd: workspace, env: nodeEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', chunk => { stdout += chunk })
+  child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000) })
+  const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })))
+  const protocolVersion = '2026-07-28'
+  const meta = { 'io.modelcontextprotocol/protocolVersion': protocolVersion, 'io.modelcontextprotocol/clientCapabilities': {} }
+  child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion, capabilities: {}, clientInfo: { name: 'package-smoke', version: '0' } } })}\n`)
+  child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: { _meta: meta } })}\n`)
+  // Complete lines only: the last piece may still be arriving.
+  const lines = () => stdout.split('\n').slice(0, -1).filter(Boolean).map(line => JSON.parse(line))
+  const deadline = Date.now() + 20_000
+  while (lines().filter(message => message.id === 1 || message.id === 2).length < 2) {
+    if (Date.now() > deadline || child.exitCode !== null) throw new Error(`buckle mcp did not answer initialize and tools/list: ${stderr}`)
+    await delay(50)
+  }
+  const [initialized, listed] = [1, 2].map(id => lines().find(message => message.id === id))
+  assert(initialized.result?.serverInfo?.name, `initialize answered without server info: ${JSON.stringify(initialized)}`)
+  assert(listed.result?.tools?.some(tool => tool.name === 'fs_write'), 'tools/list does not list fs_write')
+  assert(lines().every(message => message.jsonrpc === '2.0'), 'stdout carried something other than MCP messages')
+  child.stdin.end()
+  const result = await Promise.race([closed, delay(30_000).then(() => null)])
+  if (!result) {
+    child.kill('SIGKILL')
+    throw new Error('buckle mcp did not exit within 30 s of its client closing stdin')
+  }
+  assert.deepEqual(result, { code: 0, signal: null }, `buckle mcp did not exit 0: ${stderr}`)
 }

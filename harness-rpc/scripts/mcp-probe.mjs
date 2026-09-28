@@ -59,8 +59,8 @@ async function probe(run) {
       BUCKLE_WORKSPACE_ROOT: workspace,
       BUCKLE_STATE_DIR: state,
       BUCKLE_PACKS: 'fs',
-      // Zero means a gated call is answered at once instead of held open for a person.
-      BUCKLE_APPROVAL_TIMEOUT_MS: '0',
+      // One millisecond answers a gated call at once instead of holding it for a person (0 would wait until answered).
+      BUCKLE_APPROVAL_TIMEOUT_MS: '1',
     },
   })
 
