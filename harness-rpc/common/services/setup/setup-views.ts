@@ -47,6 +47,8 @@ export function createSetupViews(): SetupViews {
         packs: manifest.packs,
         policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },
         reporting: runtime.reporter.configured,
+        // Unavailable while the audit log refuses writes: tool calls are refused until it is repaired (B19).
+        audit: runtime.auditHealth.available ? 'available' : 'unavailable',
         approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',
         // Read as inspection reads: nothing is owned or recovered to answer it (review L4 of B15-B17).
         activeWork: runtime.inspectActiveWork(),

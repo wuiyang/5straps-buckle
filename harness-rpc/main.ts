@@ -130,7 +130,7 @@ async function closeProcess(input: { common: BuckleCommon; logging: LoggerRoot }
   })
   input.logging.logger.info('5straps Buckle stopped')
   await input.logging.close()
-  // Subsystems without a close step yet (language servers, terminals, browser sessions) may still hold handles.
+  // Every subsystem Buckle starts has a close step; a handle a plugin or a child left open must not keep the process alive.
   process.exit()
 }
 

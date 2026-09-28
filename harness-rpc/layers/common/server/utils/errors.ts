@@ -7,7 +7,7 @@ import type { ServiceFailure } from '../../../../common/types/service-failure.js
 // Checked against the common constants at compile time; the layers take common code as types only.
 const REGISTRY_UNREADABLE: typeof WORKSPACE_REGISTRY_UNREADABLE = 'WORKSPACE_REGISTRY_UNREADABLE'
 const STATE_BUSY_TEXT: typeof STATE_BUSY_MESSAGE = 'Buckle state is busy in another process; retry shortly'
-const AGENT_READABLE = Object.freeze<Record<(typeof AGENT_READABLE_CODES)[number], true>>({ WORKSPACE_REFUSED: true, WORKBENCH_REFUSED: true })
+const AGENT_READABLE = Object.freeze<Record<(typeof AGENT_READABLE_CODES)[number], true>>({ WORKSPACE_REFUSED: true, WORKBENCH_REFUSED: true, AUDIT_UNAVAILABLE: true })
 
 /** A common error that carries its code and HTTP status (common/types/service-failure.ts). */
 export function isServiceFailure(error: unknown): error is ServiceFailure {

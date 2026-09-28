@@ -2,7 +2,7 @@ import type { ServiceFailure } from '../types/service-failure.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from './state-busy.js'
 
 /** Codes whose messages never name a path or a state file, so an agent may read them as they are. */
-export const AGENT_READABLE_CODES = ['WORKSPACE_REFUSED', 'WORKBENCH_REFUSED'] as const
+export const AGENT_READABLE_CODES = ['WORKSPACE_REFUSED', 'WORKBENCH_REFUSED', 'AUDIT_UNAVAILABLE'] as const
 
 /** What a failure that escaped the invoker tells an agent when nothing more specific applies. */
 export const TOOL_CALL_FAILED = 'Tool invocation failed'

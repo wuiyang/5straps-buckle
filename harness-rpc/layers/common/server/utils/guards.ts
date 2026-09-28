@@ -1,7 +1,7 @@
 import { getRouterParam, type H3Event } from 'h3'
 import type { Guard } from '@5straps/runtime/nitro'
 import type { ActionLog } from '../../../../common/types/ports/action-log.js'
-import { nodeActions, recordRefusal, recordTransportRefusal } from './audit.js'
+import { nodeActions, recordRefusal, recordTransportRefusal, tolerantLog } from './audit.js'
 import { beforeCredential, hasCode, isRegistryFailure, unauthorized } from './errors.js'
 import { useServices } from './services.js'
 import { NODE_WORKSPACE, namedWorkspace, targetId } from './target.js'
@@ -95,7 +95,8 @@ export function workbenchTransportTool(event: H3Event): string {
 
 async function audit(event: H3Event, refusal: RefusalAudit | undefined, input: { status: number; registryReadable: boolean }): Promise<void> {
   if (!refusal) return
-  const actions = await nodeActions(event)
+  // A refusal stands whether or not its entry can be written (B19).
+  const actions = tolerantLog(event, await nodeActions(event))
   if (!namedWorkspace(event)) return refusal.node({ event, actions, status: input.status })
   const workspaceId = targetId(event)
   const known = input.registryReadable && await knownWorkspace(event, workspaceId)

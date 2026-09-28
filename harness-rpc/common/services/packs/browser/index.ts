@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { createJsonFileStore } from '../../../adapters/json-file-store.js'
+import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
 import type { Pack } from '../../../domain/pack.js'
@@ -61,12 +61,15 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
   const allowedDomains = browserAllowedDomains(options.approvedLists)
   const flag = 'value' in allowedDomains ? allowedDomains.value : null
+  // The browser daemons this pack started and has not closed, which outlive single calls.
+  const opened = new Set<string>()
   return {
     id: PACK_ID,
     version: '1.0.0',
     skills: [loadPackSkill(PACK_ID)],
     // Fixed text: the manifest carrying it is read with the agent token, and the configured path is the owner's.
     unavailableReason: options.available ? null : BROWSER_UNAVAILABLE,
+    close: () => closeSessions({ options, sessions, opened }),
     tools: [
       defineTool(PACK_ID, {
         name: 'browser_command',
@@ -114,8 +117,13 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           if (result.exitCode !== 0) {
             throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
           }
-          if (input.command === 'close') await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key] })
-          else await sessions.update(state => { state.allowedDomains[key] = flag })
+          if (input.command === 'close') {
+            opened.delete(session)
+            await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key] })
+          } else {
+            opened.add(session)
+            await sessions.update(state => { state.allowedDomains[key] = flag })
+          }
           const relaunched = input.command !== 'close' && previous !== undefined && previous !== flag
           if (relaunched) logger.warn('Browser relaunched because its allowed domains changed', { previous: previous ?? 'none', current: flag ?? 'none' })
           return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated, ...(relaunched ? { notice: RELAUNCH_NOTICE } : {}) }
@@ -123,6 +131,38 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
       }),
     ],
   }
+}
+
+/** How long shutdown waits for one browser daemon to close. */
+const CLOSE_TIMEOUT_MS = 5_000
+
+/**
+ * At shutdown: closes each browser this pack started, as the close command would, and forgets its
+ * session, so no daemon outlives the node by its idle timeout. A daemon that will not close is left
+ * to that timeout, with a warning.
+ */
+async function closeSessions(input: { options: BrowserPackOptions; sessions: JsonFileStore<z.infer<typeof SessionsSchema>>; opened: Set<string> }): Promise<void> {
+  const closing = [...input.opened]
+  input.opened.clear()
+  for (const session of closing) {
+    const result = await input.options.runProcess({
+      command: input.options.agentBrowserCommand,
+      args: ['close', '--session', session, '--json'],
+      cwd: input.options.sessionDirectory,
+      timeoutMs: CLOSE_TIMEOUT_MS,
+      environment: buildChildEnvironment({ parent: process.env, extra: {} }),
+      signal: AbortSignal.timeout(CLOSE_TIMEOUT_MS),
+    }).catch((error: unknown) => ({ exitCode: null, error }))
+    if (result.exitCode !== 0) logger.warn('A browser session did not close at shutdown; its idle timeout ends it', { exitCode: result.exitCode })
+  }
+  if (closing.length === 0) return
+  await input.sessions.update((state) => {
+    for (const [key, session] of Object.entries(state.sessions)) {
+      if (!closing.includes(session)) continue
+      delete state.sessions[key]
+      delete state.allowedDomains[key]
+    }
+  })
 }
 
 const loggedLoosened = new Set<string>()

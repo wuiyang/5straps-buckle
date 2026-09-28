@@ -3,6 +3,7 @@ import type { SetupViews } from '../../../../common/services/setup/setup-views.j
 import type { ManagedWorkspace, WorkspaceManager } from '../../../../common/services/workspaces/workspace-manager.js'
 import type { ActionLog } from '../../../../common/types/ports/action-log.js'
 import { withTransportAudit } from '../../../common/server/utils/audit.js'
+import { isMutation } from '../../../common/server/utils/guards.js'
 import { readJson, SETUP_BODY_LIMIT } from '../../../common/server/utils/body.js'
 import { mapFailures } from '../../../common/server/utils/errors.js'
 import { defineOperationHandler } from '../../../common/server/utils/operation.js'
@@ -35,7 +36,7 @@ export function defineSetupHandler(definition: { access: AdminAccess | ((event: 
       const workspace = await useSetupTarget(event, { setup: !definition.active })
       const resource = typeof definition.resource === 'function' ? definition.resource(event) : definition.resource
       const call: SetupCall = { event, workspace, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams) }
-      return withSetupAudit(event, { actions: workspace.runtime.actions, workspaceId: workspace.runtime.workspaceId, resource }, () => mapFailures(() => definition.handler(call)))
+      return mapFailures(() => withSetupAudit(event, { actions: workspace.runtime.actions, workspaceId: workspace.runtime.workspaceId, resource }, async () => definition.handler(call)))
     },
   })
 }
@@ -68,7 +69,7 @@ export function defineRegistryHandler(definition: { access: AdminAccess; handler
       const services = useServices(event)
       const { actions } = await services.getWorkspaceRuntime()
       const call: RegistryCall = { event, workspaces: await services.getWorkspaces(), views: services.getSetupViews(), actions, body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams) }
-      return withTransportAudit(actions, { tool: registryTransportTool(event), workspaceId: NODE_WORKSPACE }, () => mapFailures(() => definition.handler(call)))
+      return mapFailures(() => withTransportAudit(event, actions, { tool: registryTransportTool(event), workspaceId: NODE_WORKSPACE, required: isMutation(event) }, async () => definition.handler(call)))
     },
   })
 }

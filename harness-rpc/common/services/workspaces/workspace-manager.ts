@@ -252,7 +252,8 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           policy: { ...workspace.policy, mount: '/workspace' },
           nodePolicy: structuredClone(input.config.policy),
         }
-        pending = createRuntime({ config, workspaceId: id, ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
+        // One audit health per process: a registered workspace's log failing makes the node unready too.
+        pending = createRuntime({ config, workspaceId: id, auditHealth: input.runtime.auditHealth, ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
         runtimes.set(id, pending)
         void pending.catch(() => { runtimes.delete(id) })
       }

@@ -1,6 +1,11 @@
 import type { H3Event } from 'h3'
+import type { AUDIT_UNAVAILABLE } from '../../../../common/adapters/action-log/file-action-log.js'
 import type { ActionLog, ActionLogEntry } from '../../../../common/types/ports/action-log.js'
+import { hasCode } from './errors.js'
 import { useServices } from './services.js'
+
+// Checked against the common constant at compile time; the layers take common code as types only.
+const AUDIT_UNAVAILABLE_CODE: typeof AUDIT_UNAVAILABLE = 'AUDIT_UNAVAILABLE'
 
 type Outcome = ActionLogEntry['outcome']
 
@@ -30,21 +35,39 @@ export async function recordRefusal(actions: ActionLog, input: { tool: string; w
 }
 
 /**
- * Transport status beside tool completion (an attempt, then the result with the HTTP status), for
- * faces whose request is not itself one tool call. The attempt is durable before the work runs.
+ * The log for an entry the answer does not depend on: a refusal, which stands anyway, an owner's read,
+ * and the result of work already done. When the audit storage will not take it, the owner's log
+ * records that and readiness reports it (B19), and the answer still goes out. Nothing an agent can
+ * run goes through this: a tool call's attempt, and any change's, must be written first.
  */
-export async function withTransportAudit<T>(actions: ActionLog, input: { tool: string; workspaceId: string }, run: () => Promise<T>): Promise<T> {
+export function tolerantLog(event: H3Event, actions: ActionLog): ActionLog {
+  return {
+    ...actions,
+    record: entry => actions.record(entry).catch((error: unknown) => {
+      if (!hasCode(error, AUDIT_UNAVAILABLE_CODE)) throw error
+      event.context.logger?.error('Answering without an audit entry the storage would not take', { tool: entry.tool, event: entry.event ?? 'result' })
+    }),
+  }
+}
+
+/**
+ * Transport status beside tool completion (an attempt, then the result with the HTTP status), for
+ * faces whose request is not itself one tool call. A change's attempt is durable before the work runs;
+ * a read's, and every result, are written if the storage takes them (tolerantLog).
+ */
+export async function withTransportAudit<T>(event: H3Event, actions: ActionLog, input: { tool: string; workspaceId: string; required: boolean }, run: () => Promise<T>): Promise<T> {
   const entry = transportEntry(input)
   const started = performance.now()
-  await actions.record({ ...entry, event: 'attempt', outcome: 'started' })
+  const tolerant = tolerantLog(event, actions)
+  await (input.required ? actions : tolerant).record({ ...entry, event: 'attempt', outcome: 'started' })
   let result: T
   try {
     result = await run()
   } catch (error) {
-    await actions.record(transportResult(entry, statusOf(error), started))
+    await tolerant.record(transportResult(entry, statusOf(error), started))
     throw error
   }
-  await actions.record(transportResult(entry, statusOf(result), started))
+  await tolerant.record(transportResult(entry, statusOf(result), started))
   return result
 }
 

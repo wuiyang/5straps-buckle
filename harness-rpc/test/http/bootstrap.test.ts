@@ -164,12 +164,21 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
       { stage: 'waiters', name: 'terminal questions' },
       { stage: 'waiters', name: 'approval waits' },
       { stage: 'waiters', name: 'registered workspace approval waits' },
+      // B19: running tool calls, PTY terminals, language servers, browser sessions and action reports.
+      { stage: 'jobs', name: 'tool calls' },
+      { stage: 'jobs', name: 'registered workspace tool calls' },
+      { stage: 'streams', name: 'workbench terminals' },
+      { stage: 'streams', name: 'language servers and browser sessions' },
+      { stage: 'streams', name: 'registered workspace workbench terminals' },
+      { stage: 'streams', name: 'registered workspace language servers and browser sessions' },
       { stage: 'streams', name: 'http server connections' },
       { stage: 'locks', name: 'workbench ownership' },
-      { stage: 'locks', name: 'registered workspace workbenches' },
+      { stage: 'locks', name: 'registered workspace workbench ownership' },
       { stage: 'services', name: 'service registry' },
       { stage: 'databases', name: 'workspace history' },
       { stage: 'databases', name: 'registered workspace history' },
+      { stage: 'sinks', name: 'action reports' },
+      { stage: 'sinks', name: 'registered workspace action reports' },
       { stage: 'sinks', name: 'logger' },
     ]))
     const order = stageOrder(steps)
@@ -211,6 +220,58 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     expect(pendingTokens()).toEqual([token])
     expect(closeSteps(buckle.lines())).toContainEqual({ stage: 'waiters', name: 'approval waits' })
     expect(existsSync(join(node.workspace, 'held.md'))).toBe(false)
+  }, 60_000)
+
+  it('cancels a running shell on SIGTERM: the call answers, the process is gone, and Buckle exits 0 without waiting out its close bound (B19)', async () => {
+    const marker = `${31 + Math.random()}`.slice(0, 12)
+    const node = await prepareNode({ BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell', BUCKLE_ADMIN_TOKEN: 'bootstrap-admin-token', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const buckle = serve(node)
+    await buckle.waitForLine(line => line.message === '5straps Buckle listening')
+    const running = () => execFileSync('ps', ['-eo', 'args'], { encoding: 'utf8' }).split('\n').some(line => line.trim() === `sleep ${marker}`)
+    const waiting = fetch(`http://127.0.0.1:${node.port}/v1/invoke`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-agent-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId: 'long-shell', tool: 'shell_exec', args: { command: 'sleep', args: [marker] } }) })
+    // The shell asks to write in the workspace; the owner answers through the setup face.
+    const pending = () => existsSync(join(node.state, 'approvals.json')) ? (JSON.parse(readFileSync(join(node.state, 'approvals.json'), 'utf8')) as { pending: Array<{ request: { token: string } }> }).pending.map(entry => entry.request.token) : []
+    await expect.poll(pending, { timeout: 20_000 }).toHaveLength(1)
+    const answered = await fetch(`http://127.0.0.1:${node.port}/setup/approvals`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-admin-token', 'content-type': 'application/json' }, body: JSON.stringify({ token: pending()[0], approved: true, scope: 'once' }) })
+    expect(answered.status).toBe(200)
+    await expect.poll(running, { timeout: 20_000 }).toBe(true)
+
+    const stopping = performance.now()
+    buckle.child.kill('SIGTERM')
+
+    expect(await (await waiting).json()).toMatchObject({ requestId: 'long-shell' })
+    expect(await buckle.exited).toEqual({ code: 0, signal: null })
+    expect(performance.now() - stopping).toBeLessThan(8_000)
+    expect(running()).toBe(false)
+    expect(closeSteps(buckle.lines())).toContainEqual({ stage: 'jobs', name: 'tool calls' })
+  }, 60_000)
+
+  it('logs one path-free completion line per request, refused and unrouted ones included (B19)', async () => {
+    const node = await prepareNode({ BUCKLE_PACKS: 'fs' })
+    const buckle = serve(node)
+    await buckle.waitForLine(line => line.message === '5straps Buckle listening')
+    const url = (path: string) => `http://127.0.0.1:${node.port}${path}`
+    const agent = { authorization: 'Bearer bootstrap-agent-token', 'x-request-id': 'caller-7' }
+    expect((await fetch(url('/v1/skills/zq81-agent-chosen'), { headers: agent })).status).toBe(404)
+    expect((await fetch(url('/v1/manifest'), { headers: { authorization: 'Bearer zq81-wrong-token' } })).status).toBe(401)
+    expect((await fetch(url('/zq81-nowhere'))).status).toBe(404)
+    expect((await fetch(url('/v1/manifest'), { headers: agent })).status).toBe(200)
+
+    buckle.child.kill('SIGTERM')
+    expect(await buckle.exited).toEqual({ code: 0, signal: null })
+    const finished = buckle.lines().filter(line => line.message === 'request finished').map(line => line.fields ?? {})
+    expect(finished).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: 'GET', route: '/v1/skills/:skillId', status: 404, actor: 'agent:node', workspaceId: 'default', clientRequestId: 'caller-7' }),
+      expect.objectContaining({ method: 'GET', route: '/v1/manifest', status: 401 }),
+      expect.objectContaining({ method: 'GET', route: null, status: 404 }),
+      expect.objectContaining({ method: 'GET', route: '/v1/manifest', status: 200, actor: 'agent:node' }),
+    ]))
+    for (const fields of finished) {
+      expect(fields).toMatchObject({ durationMs: expect.any(Number), correlationId: expect.stringMatching(/^[\da-f-]{36}$/) })
+    }
+    const text = JSON.stringify(finished)
+    for (const secret of ['zq81', 'bootstrap-agent-token', node.state]) expect(text).not.toContain(secret)
   }, 60_000)
 
   it('stops with exit 0, without serving, when SIGTERM arrives during the startup window', async () => {

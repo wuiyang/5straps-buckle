@@ -9,6 +9,8 @@ export interface Pack {
   skills: LoadedSkill[]
   /** Set when the pack loaded but cannot run here, so operators see why its tools are absent. */
   unavailableReason: string | null
+  /** Ends what the pack keeps running between calls (language servers, browser sessions), at shutdown. */
+  close?(): void | Promise<void>
 }
 
 export function packDescriptor(pack: Pack): PackDescriptor {

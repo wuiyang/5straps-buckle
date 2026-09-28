@@ -31,16 +31,32 @@ export interface BuckleServiceDefinitions {
 
 type OnClose = (stage: CloseStage, name: string, closer: Closer) => void
 
-// Open approval waits settle at 'waiters', keeping their asks; each workspace's ownership lock goes in
-// 'locks' and its history database in 'databases', after the services that use them (runtime.md, Lifecycle).
+/**
+ * What each workspace runtime closes at shutdown, stage by stage (runtime.md, Lifecycle; B19): open
+ * approval waits settle at 'waiters', keeping their asks; tool calls still running (a shell among
+ * them) are cancelled at 'jobs' and answer before connections close; PTY terminals, language servers
+ * and browser sessions end at 'streams'; the ownership lock goes at 'locks' and the history database
+ * at 'databases', after the services that use them; queued action reports flush at 'sinks', before
+ * the logger.
+ */
+function closeWithOwner(input: { onClose: OnClose; registered: boolean; runtimes: () => Promise<BuckleRuntime[]> }): void {
+  const each = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => { for (const runtime of await input.runtimes()) await step(runtime) }
+  const named = (name: string) => (input.registered ? `registered workspace ${name.replace(/^workspace /, '')}` : name)
+  input.onClose('waiters', named('approval waits'), each(runtime => runtime.approvalService.close()))
+  input.onClose('jobs', named('tool calls'), each(runtime => runtime.cancelInvocations()))
+  input.onClose('streams', named('workbench terminals'), each(runtime => runtime.workbenches.stopTerminals()))
+  input.onClose('streams', named('language servers and browser sessions'), each(runtime => runtime.closeSessions()))
+  input.onClose('locks', named('workbench ownership'), each(runtime => runtime.workbenches.close()))
+  input.onClose('databases', named('workspace history'), each(runtime => runtime.history.close()))
+  input.onClose('sinks', named('action reports'), each(runtime => runtime.reporter.flush()))
+}
+
 export function defineBuckleServices(input: { config: BuckleConfig; interaction: InteractionSource; onClose: OnClose }): BuckleServiceDefinitions {
   const workspaceRuntime = defineSingleton<BuckleRuntime>({
     name: 'WorkspaceRuntime',
     create: async () => {
       const runtime = await createRuntime({ config: input.config, interaction: input.interaction })
-      input.onClose('waiters', 'approval waits', () => runtime.approvalService.close())
-      input.onClose('locks', 'workbench ownership', () => runtime.workbenches.close())
-      input.onClose('databases', 'workspace history', () => runtime.history.close())
+      closeWithOwner({ onClose: input.onClose, registered: false, runtimes: async () => [runtime] })
       return runtime
     },
   })
@@ -49,9 +65,7 @@ export function defineBuckleServices(input: { config: BuckleConfig; interaction:
     dependencies: [workspaceRuntime],
     create: async ({ get }) => {
       const manager = createWorkspaceManager({ config: input.config, runtime: await get(workspaceRuntime), interaction: input.interaction })
-      input.onClose('waiters', 'registered workspace approval waits', async () => { for (const child of await manager.opened()) await child.approvalService.close() })
-      input.onClose('locks', 'registered workspace workbenches', async () => { for (const child of await manager.opened()) await child.workbenches.close() })
-      input.onClose('databases', 'registered workspace history', async () => { for (const child of await manager.opened()) await child.history.close() })
+      closeWithOwner({ onClose: input.onClose, registered: true, runtimes: () => manager.opened() })
       return manager
     },
   })

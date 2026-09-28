@@ -1,6 +1,6 @@
 import type { H3Event } from 'h3'
 import type { ActionLog, ActionLogEntry } from '../../../../common/types/ports/action-log.js'
-import { statusOf } from '../../../common/server/utils/audit.js'
+import { statusOf, tolerantLog } from '../../../common/server/utils/audit.js'
 import { isMutation } from '../../../common/server/utils/guards.js'
 
 /** The resources the setup face names in its audit entries; any other path is `unknown`. */
@@ -14,7 +14,9 @@ export function resourceOf(event: H3Event): string {
 
 /**
  * The admin audit wrapper: `setup_<method>_<resource>` on the workspace's own log, an attempt before a
- * change and a result with the HTTP status after every request, in the workspace-admin session.
+ * change and a result with the HTTP status after every request, in the workspace-admin session. A
+ * change's attempt must be written; a read's result and any result after the work are written if the
+ * storage takes them, so the owner can still inspect a node whose audit log fails (B19).
  */
 export async function withSetupAudit<T>(event: H3Event, input: { actions: ActionLog; workspaceId: string; resource: string }, run: () => Promise<T>): Promise<T> {
   const auditId = crypto.randomUUID()
@@ -22,15 +24,16 @@ export async function withSetupAudit<T>(event: H3Event, input: { actions: Action
   const entry: ActionLogEntry = { auditId, workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId, sessionId: 'workspace-admin',
     tool: `setup_${event.req.method.toLowerCase()}_${input.resource}`, outcome: 'started', durationMs: 0, effects: [], args: {} }
   if (isMutation(event)) await input.actions.record({ ...entry, event: 'attempt' })
+  const results = tolerantLog(event, input.actions)
   const result = (status: number): ActionLogEntry => ({ ...entry, event: 'result', outcome: status >= 200 && status < 300 ? 'ok' : 'error', durationMs: Math.round(performance.now() - started), detail: `HTTP ${status}` })
   let value: T
   try {
     value = await run()
   } catch (error) {
-    await input.actions.record(result(statusOf(error)))
+    await results.record(result(statusOf(error)))
     throw error
   }
-  await input.actions.record(result(statusOf(value)))
+  await results.record(result(statusOf(value)))
   return value
 }
 

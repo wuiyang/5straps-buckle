@@ -2,7 +2,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { AuditUnavailableError, createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { createAuditHealth } from '../common/services/audit/audit-health.js'
 import { summarizeEffect } from '../common/domain/effect.js'
 import { collectPrefixed } from '../common/domain/environment.js'
 import { redactArguments } from '../common/domain/redact.js'
@@ -163,10 +164,17 @@ describe('durable audit pages', () => {
     expect(log.page({ limit: 10 }).entries.map(item => item.requestId)).toEqual(['r3', 'r1'])
   })
 
-  it('refuses recording when durable storage is unavailable', async () => {
+  it('refuses recording when durable storage is unavailable, as a 503 failure that names no path, and reports it until a write succeeds again', async () => {
     const file = logPath()
     writeFileSync(file, 'not a directory')
-    await expect(createFileActionLog(join(file, 'actions.jsonl')).record(entry())).rejects.toThrow('Audit storage unavailable')
+    const health = createAuditHealth()
+    const refused = createFileActionLog(join(file, 'actions.jsonl'), { health }).record(entry())
+    await expect(refused).rejects.toBeInstanceOf(AuditUnavailableError)
+    await expect(refused).rejects.toMatchObject({ code: 'AUDIT_UNAVAILABLE', status: 503 })
+    await expect(refused).rejects.not.toThrow(file)
+    expect(health.available).toBe(false)
+    await createFileActionLog(logPath(), { health }).record(entry())
+    expect(health.available).toBe(true)
   })
 })
 

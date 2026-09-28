@@ -251,6 +251,10 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
         if (!CLOSED.has(record.status) && record.status !== 'apply_uncertain') { record.status = 'interrupted'; record.reviewId = null; record.revision++; save(record) }
       }
     },
+    /** Shutdown's PTY terminals step: stops every terminal this process runs; ownership stays until close(). */
+    async stopTerminals() {
+      for (const record of records.values()) await terminals.stopAll(record)
+    },
     /** Stops terminals and releases workbench ownership. */
     async close() {
       for (const record of records.values()) await terminals.stopAll(record)

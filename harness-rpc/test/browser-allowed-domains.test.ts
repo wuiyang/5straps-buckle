@@ -117,6 +117,21 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     return output !== null && typeof output === 'object' && !Array.isArray(output) && typeof output.notice === 'string' ? output.notice : null
   }
 
+  it('closes the browsers it started when the node shuts down, and forgets their sessions (B19)', async () => {
+    const { runtime, calls } = await fixture(['*.example.test'])
+    expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
+    const session = sessionOf(calls()[0])
+
+    await runtime.closeSessions()
+
+    expect(calls().at(-1)).toEqual(['close', '--session', session, '--json'])
+    // A later call starts a fresh session instead of the one shutdown closed.
+    await browse(runtime, { command: 'open', args: ['https://app.example.test'] })
+    expect(sessionOf(calls().at(-1))).not.toBe(session)
+    await runtime.closeSessions()
+    expect(calls().filter(call => call[0] === 'close')).toHaveLength(2)
+  })
+
   it('launches the browser with the approved list as its allowed domains', async () => {
     const { runtime, calls } = await fixture(['*.example.test', 'docs.test'])
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })

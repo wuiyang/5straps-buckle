@@ -5,7 +5,8 @@ import { closeSync, fsyncSync, fchmodSync, fstatSync, mkdirSync, openSync, readS
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { logger } from '../../runtime/log.js'
-import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
+import type { ActionLog, ActionLogEntry, AuditHealth } from '../../types/ports/action-log.js'
+import type { ServiceFailure } from '../../types/service-failure.js'
 
 const PROCESS_INSTANCE_ID = randomUUID()
 const MAX_PAGE_BYTES = 1_048_576
@@ -15,7 +16,22 @@ const entrySchema = z.object({
   durationMs: z.number(), effects: z.array(z.string()), args: z.json(), event: z.enum(['attempt', 'result']).optional(),
 }).passthrough()
 
-export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number } = {}): ActionLog {
+/** The code a transport tells an audit log that will not take a required write by. */
+export const AUDIT_UNAVAILABLE = 'AUDIT_UNAVAILABLE'
+
+/**
+ * The audit log would not take a write: what must be audited does not run (HTTP 503) and readiness
+ * reports it. The message names no path; the owner's log has the file and the cause.
+ */
+export class AuditUnavailableError extends Error implements ServiceFailure {
+  readonly code = AUDIT_UNAVAILABLE
+  readonly status = 503
+  constructor(options?: ErrorOptions) {
+    super('Buckle cannot write its audit log, so it refuses what it would have to record; the owner has to repair the audit storage', options)
+  }
+}
+
+export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth } = {}): ActionLog {
   const pending = createPendingAudit({ filePath, processInstanceId: PROCESS_INSTANCE_ID, record: entry => log.record(entry), lockDeadlineMs: options.lockDeadlineMs })
   const log: ActionLog = {
     recoverInterrupted: () => pending.recover(),
@@ -41,12 +57,14 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
           }
         } finally { closeSync(descriptor) }
         await pending.track(entry, offset)
+        options.health?.succeeded()
       } catch (error) {
-        logger.error('Could not durably write the action log', { filePath })
+        logger.error('Could not durably write the action log', { filePath, error })
         // Another process held the pending-audit state past the wait: temporary, so the caller is told
-        // to retry, as for any busy state (review L3 of B15-B17).
+        // to retry, as for any busy state (review L3 of B15-B17), and the storage is not unhealthy.
         if (error instanceof StateBusyError) throw error
-        throw new Error('Audit storage unavailable; tool execution cannot continue', { cause: error })
+        options.health?.failed()
+        throw new AuditUnavailableError({ cause: error })
       }
     },
     read(limit) { return log.page({ limit: Math.min(limit, 200) }).entries.reverse() },

@@ -31,8 +31,8 @@ export function defineWorkbenchHandler(operation: (call: WorkbenchCall) => Promi
       const { runtime } = await useTarget(event)
       const param = (name: string) => getRouterParam(event, name, { decode: true }) ?? ''
       const call: WorkbenchCall = { event, workbenches: runtime.workbenches, workbenchId: param('workbenchId'), param, body: schema => readWorkbenchBody(event, schema) }
-      const answer = () => mapAgentFailures(() => workbenchAnswer(event, () => operation(call)))
-      return isMutation(event) ? withTransportAudit(runtime.actions, { tool: workbenchTransportTool(event), workspaceId: runtime.workspaceId }, answer) : answer()
+      const answer = () => workbenchAnswer(event, () => operation(call))
+      return mapAgentFailures(() => isMutation(event) ? withTransportAudit(event, runtime.actions, { tool: workbenchTransportTool(event), workspaceId: runtime.workspaceId, required: true }, answer) : answer())
     },
   })
 }

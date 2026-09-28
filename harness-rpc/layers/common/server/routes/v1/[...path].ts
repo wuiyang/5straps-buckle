@@ -1,3 +1,4 @@
+import { tolerantLog } from '../../utils/audit.js'
 import { notFound } from '../../utils/errors.js'
 import { requireAgent } from '../../utils/guards.js'
 import { INVOKE_REFUSED, isInvokePath, recordInvokeRefusal } from '../../utils/invoke.js'
@@ -12,7 +13,7 @@ export default defineOperationHandler({
   handler: async (event) => {
     if (isInvokePath(event)) {
       const { runtime } = await useTarget(event)
-      await recordInvokeRefusal(runtime.actions, runtime.workspaceId, 404)
+      await recordInvokeRefusal(tolerantLog(event, runtime.actions), runtime.workspaceId, 404)
     }
     throw notFound()
   },

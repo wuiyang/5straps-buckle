@@ -152,6 +152,25 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
   })
 })
 
+describe('shutdown\'s tool calls step (B19)', () => {
+  it('cancels a running call, which answers before the step ends, and refuses later calls without running them', async () => {
+    const { runtime } = await node()
+    const runs = watchRuns(runtime, 'fs_read', { hold: true })
+    const running = runtime.invoke({ sessionId: 'chat-1', request: read('running') })
+    await vi.waitFor(() => expect(runs.runs()).toBe(1))
+    let answered = false
+    void running.then(() => { answered = true })
+
+    await runtime.cancelInvocations()
+
+    expect(answered).toBe(true)
+    expect(await running).toMatchObject({ outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN', retryable: false } })
+    expect(await runtime.invoke({ sessionId: 'chat-1', request: read('late') })).toMatchObject({ outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN' } })
+    expect(runs.runs()).toBe(1)
+    expect(results(runtime, 'late')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'BUCKLE_SHUTTING_DOWN' })])
+  })
+})
+
 describe('the execution store', () => {
   const response = (requestId: string, output: unknown = 'done'): InvokeResponse => ({ requestId, outcome: 'ok', output: output as never, meta: { durationMs: 1, truncated: false } })
   const key = (requestId: string, fingerprint = 'same call') => ({ sessionId: 's', requestId, fingerprint })

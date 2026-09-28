@@ -43,7 +43,7 @@ import type { PermissionRule } from '../../domain/permission/decision.js'
 import { workspaceStateKey } from '../../domain/workspace-key.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
 import { loadRootSkill } from '../packs/pack-skill.js'
-import type { ActionLog } from '../../types/ports/action-log.js'
+import type { ActionLog, AuditHealth } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
@@ -52,7 +52,9 @@ import type { InteractionSource } from '../approvals/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
 import { createApprovalNotices } from '../approvals/approval-notices.js'
 import { createExecutions } from '../invocation/executions.js'
-import { createInvoker, type InvokeInput } from '../invocation/invoker.js'
+import { createInvoker, InvocationsClosedError, type InvokeInput } from '../invocation/invoker.js'
+import { createAuditHealth } from '../audit/audit-health.js'
+import { logger } from '../../runtime/log.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 
 /**
@@ -94,9 +96,18 @@ export interface BuckleRuntime {
   history: ChangeHistory
   shellWorkspaces: ReturnType<typeof createShellWorkspaceRecovery>
   actions: ActionLog
+  /** Whether the audit log takes its writes; shared by the node's workspaces, read by readiness. */
+  readonly auditHealth: AuditHealth
   plugins: PluginRegistry
   reporter: Reporter
   invoke(input: InvokeInput): Promise<InvokeResponse>
+  /**
+   * Shutdown's in-flight tool calls step (B19): cancels every call still running here, a shell among
+   * them, and waits for each to answer. Calls that arrive later are refused the same way.
+   */
+  cancelInvocations(): Promise<void>
+  /** Shutdown's language servers and browser sessions step: each pack closes what it opened. */
+  closeSessions(): Promise<void>
   reload(): Promise<void>
   onToolsChanged(listener: () => void): void
 }
@@ -108,6 +119,8 @@ interface RuntimeInput {
   interaction?: InteractionSource
   /** Where refusals are announced. Defaults to the configured webhook, or to nothing. */
   reporter?: Reporter
+  /** The process's audit health, shared with the node's other workspaces; a fresh one when absent. */
+  auditHealth?: AuditHealth
 }
 
 export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime> {
@@ -142,7 +155,8 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
   const notices = createApprovalNotices(webhook ? createApprovalNoticeSender(webhook) : undefined)
   const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, { lockDeadlineMs, onExpired: requests => notices.expired(requests) })
-  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs })
+  const auditHealth = input.auditHealth ?? createAuditHealth()
+  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth })
   await actions.recoverInterrupted()
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
@@ -173,6 +187,9 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
 
   let activeInvocations = 0
   const executions = createExecutions()
+  // Every call running here, so shutdown can cancel them and wait for each to answer.
+  const inFlight = new Set<Promise<unknown>>()
+  const stopping = new AbortController()
   const workbenches = createWorkbenchManager({
     directory: join(config.stateDirectory, 'workbenches', workspaceStateKey(config.cwd)),
     sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
@@ -206,6 +223,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const runtime: BuckleRuntime = {
     workspaceId,
     workbenches,
+    auditHealth,
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     inspectActiveWork: () => activeInvocations > 0 || workbenches.inspectActive() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: registry.capabilities().filter(tool => toolDenial(tool.name) === null) }),
@@ -249,24 +267,40 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
 
     async invoke(call) {
       activeInvocations++
-      try { return await createInvoker({
-      registry,
-      permissions,
-      approvals,
-      approvalService,
-      executions,
-      grants,
-      actions,
-      history,
-      historyRoots: [realpathSync(config.cwd), ...config.scratchRoots.map(root => { let existing = root; while (!existsSync(existing)) existing = dirname(existing); return realpathSync(existing) })],
-      reporter,
-      paths,
-      serverId: config.serverId,
-      workspaceId,
-      defaultTimeoutMs: config.defaultTimeoutMs,
-      maxTimeoutMs: config.maxTimeoutMs,
-      toolDenial,
-    }).invoke(call) } finally { activeInvocations-- }
+      const signal = call.signal ? AbortSignal.any([call.signal, stopping.signal]) : stopping.signal
+      const running = createInvoker({
+        registry,
+        permissions,
+        approvals,
+        approvalService,
+        executions,
+        grants,
+        actions,
+        history,
+        historyRoots: [realpathSync(config.cwd), ...config.scratchRoots.map(root => { let existing = root; while (!existsSync(existing)) existing = dirname(existing); return realpathSync(existing) })],
+        reporter,
+        paths,
+        serverId: config.serverId,
+        workspaceId,
+        defaultTimeoutMs: config.defaultTimeoutMs,
+        maxTimeoutMs: config.maxTimeoutMs,
+        toolDenial,
+      }).invoke({ ...call, signal })
+      inFlight.add(running)
+      try { return await running } finally {
+        inFlight.delete(running)
+        activeInvocations--
+      }
+    },
+
+    async cancelInvocations() {
+      stopping.abort(new InvocationsClosedError())
+      await Promise.allSettled([...inFlight])
+    },
+
+    async closeSessions() {
+      const results = await Promise.allSettled(packs.map(async pack => pack.close?.()))
+      for (const result of results) if (result.status === 'rejected') logger.warn('A pack could not close what it opened', { error: result.reason })
     },
 
     async reload() {

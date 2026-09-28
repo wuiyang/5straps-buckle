@@ -22,6 +22,11 @@ import { ApprovalConflictError, ApprovalLimitError, subjectsByRule, type Approva
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
 import { requestFingerprint, REQUEST_ID_REUSED, type Earlier, type Execution, type ExecutionKey, type Executions } from './executions.js'
 
+/** Why a call's signal fired when its runtime shut down (B19): not the caller leaving. */
+export class InvocationsClosedError extends Error {
+  constructor() { super('Buckle is shutting down') }
+}
+
 /** The audit log's bound on caller-chosen ids; the stored join key is held to it too (review L4). */
 const MAX_LOGGED_ID = 200
 /**
@@ -423,6 +428,7 @@ function sessionIdTooLong(request: InvokeRequest): InvokeResponse {
 }
 
 function shapeError(error: unknown, tool: string): { code: string; message: string; retryable: boolean } {
+  if (error instanceof InvocationsClosedError) return { code: 'BUCKLE_SHUTTING_DOWN', message: 'Buckle shut down during this call and cancelled it; if it had started, its effects are unknown', retryable: false }
   if (error instanceof ToolInputError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof ToolExecutionError) return { code: error.code, message: error.message, retryable: error.retryable }
   if (error instanceof ApprovalConflictError) return { code: 'APPROVAL_CONFLICT', message: error.message, retryable: false }

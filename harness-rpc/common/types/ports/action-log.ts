@@ -35,3 +35,14 @@ export interface ActionLog {
   read(limit: number): ActionLogEntry[]
   page(input: { limit: number; before?: number }): { entries: ActionLogEntry[]; nextCursor: string | null }
 }
+
+/**
+ * Whether the audit log takes its writes, for readiness and the owner's status (B19). One per process,
+ * shared by every workspace's log: the last write decides, so a repaired storage is ready again at its
+ * next write.
+ */
+export interface AuditHealth {
+  readonly available: boolean
+  succeeded(): void
+  failed(): void
+}

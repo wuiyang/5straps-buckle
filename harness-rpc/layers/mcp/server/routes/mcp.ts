@@ -20,10 +20,10 @@ export default defineOperationHandler({
   handler: async (event) => {
     const workspace = await useTarget(event)
     const { config, runtime } = workspace
-    return withTransportAudit(runtime.actions, { tool: transportTool(event), workspaceId: runtime.workspaceId }, async () => {
+    return mapAgentFailures(() => withTransportAudit(event, runtime.actions, { tool: transportTool(event), workspaceId: runtime.workspaceId, required: isMutation(event) }, async () => {
       const request = await bufferedRequest(event, config.maxRequestBytes)
-      return mapAgentFailures(() => useServices(event).getMcpHandlers().fetch(workspace, request))
-    })
+      return useServices(event).getMcpHandlers().fetch(workspace, request)
+    }))
   },
 })
 
