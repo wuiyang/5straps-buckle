@@ -54,4 +54,5 @@ async function startCommon(input: { config: BuckleConfig; services: BuckleServic
   assertOwnerOnlyDirectory(input.config.stateDirectory)
   await services.getWorkspaceRuntime()
   await services.getWorkspaces()
+  await services.getRequestVerifier()
 }

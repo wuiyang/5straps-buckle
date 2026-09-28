@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import type { Logger, LoggerRoot, RequestCli } from '@5straps/runtime'
 import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand, runsTool } from './cli/main.js'
 import { setupCli } from './cli/setup.js'
+import { clientCommand } from './cli/client.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { loadConfig, type BuckleConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile, meetOutsideRoot, namesItsNode, outsideRootNotice } from './common/runtime/environment.js'
@@ -14,7 +15,7 @@ import { serveHttp } from './server/serve.js'
 import { builtEntryPath, setupServer } from './server/setup-server.js'
 
 export type Mode =
-  | { kind: 'init' | 'settings' | 'cli'; argv: string[] }
+  | { kind: 'init' | 'settings' | 'client' | 'cli'; argv: string[] }
   | { kind: 'serve' | 'mcp' }
 
 type ServiceKind = 'serve' | 'mcp'
@@ -29,7 +30,7 @@ interface Shutdown {
 
 export function selectMode(argv: readonly string[]): Mode {
   const [command, ...rest] = argv
-  if (command === 'init' || command === 'settings') return { kind: command, argv: rest }
+  if (command === 'init' || command === 'settings' || command === 'client') return { kind: command, argv: rest }
   if (command === 'serve' || command === 'mcp') return { kind: command }
   return { kind: 'cli', argv: [...argv] }
 }
@@ -52,6 +53,8 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<numb
   // Before the file is loaded, so `settings show` can tell the file's values from the shell's.
   if (mode.kind === 'init') return (await runInitCommand(mode.argv)).exitCode
   if (mode.kind === 'settings') return (await runSettingsCommand(mode.argv)).exitCode
+  // A person's device, which needs no node: its own key and the node it signs for.
+  if (mode.kind === 'client') return (await clientCommand(mode.argv)).exitCode
   // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
   const answered = answerWithoutConfiguration(mode.argv)
   if (answered) return answered.exitCode

@@ -17,6 +17,7 @@ import { logger } from '../common/runtime/log.js'
 import { setupCli } from './setup.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, repairStoredPolicy } from './policy.js'
+import { keysCommand } from './keys.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
 import { isStateBusy } from '../common/services/state-busy.js'
 import { watchApprovals } from './approvals-watch.js'
@@ -92,7 +93,7 @@ async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig
 }
 
 /** The commands that run no tool. Any other command resolves to one: `call`, and every `<group> <verb>`. */
-const OWNER_COMMANDS: readonly string[] = Object.freeze(['tools', 'manifest', 'skills', 'approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'log', 'plugin', 'policy'])
+const OWNER_COMMANDS: readonly string[] = Object.freeze(['tools', 'manifest', 'skills', 'approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'log', 'plugin', 'policy', 'keys'])
 
 /** Whether a command runs a tool on the node's root, so a project outside that root is warned (owner decision D5, review M5 of B20-B22). */
 export function runsTool(argv: readonly string[]): boolean {
@@ -103,7 +104,7 @@ export function runsTool(argv: readonly string[]): boolean {
 async function runAuditedCommand(input: CommandContext): Promise<CliResult> {
   const { runtime, command } = input
   try {
-    if (['approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy'].includes(command)) {
+    if (['approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy', 'keys'].includes(command)) {
       // A check that answers denied or asks has still succeeded; only bad input failed.
       const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0
       return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail,
@@ -136,6 +137,7 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
   if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
   if (command === 'policy') return policyCommand(runtime, rest, input.workspaces)
+  if (command === 'keys') return keysCommand({ config: input.config, argv: rest })
   throw new Error(`No handler for the owner command ${command}`)
 }
 
@@ -172,6 +174,8 @@ function printUsage(): CliResult {
   buckle policy show | allow-command | deny-command | allow-url | mount | ...
   buckle policy deny-tool <tool> | allow-tool <tool>   Refuse a tool outright, or lift that
   buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
+  buckle keys enroll <public-key> | list | revoke <key-id>  Client keys trusted for signed setup and approvals
+  buckle client keygen | key | request <METHOD> <url>     This device's signing key, and a signed request with it
 
   buckle --version                   Print the version
 `)

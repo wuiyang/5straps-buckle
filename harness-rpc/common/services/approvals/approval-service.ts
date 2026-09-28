@@ -81,8 +81,9 @@ export interface ApprovalService {
   /**
    * `RINGS-D20`: opens a decision envelope under the nonce store's lock (the claim stays a synchronous
    * view of the locked state), then answers with the admin authority the setup face was opened with.
+   * A decision in a request an enrolled key signed (`signedBy`) is plain: its signature is the proof.
    */
-  decideSealed(input: { body: unknown }): Promise<SealedDecisionResult>
+  decideSealed(input: { body: unknown; signedBy?: string }): Promise<SealedDecisionResult>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
   /**
@@ -228,7 +229,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
 
     async decideSealed(input) {
-      const opened = await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
+      const opened = input.signedBy ? { ok: true as const, body: input.body } : await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
       if (!opened.ok) return { status: 'refused', reason: opened.reason }
       const parsed = ApprovalDecisionSchema.safeParse(opened.body)
       if (!parsed.success) return { status: 'invalid' }

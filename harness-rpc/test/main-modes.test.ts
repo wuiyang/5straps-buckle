@@ -40,6 +40,7 @@ describe('selectMode', () => {
   it.each([
     [['init', '--yes'], { kind: 'init', argv: ['--yes'] }],
     [['settings', 'set', 'shell', 'off'], { kind: 'settings', argv: ['set', 'shell', 'off'] }],
+    [['client', 'keygen'], { kind: 'client', argv: ['keygen'] }],
     [['serve'], { kind: 'serve' }],
     [['mcp'], { kind: 'mcp' }],
     [[], { kind: 'cli', argv: [] }],

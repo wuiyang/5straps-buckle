@@ -3,13 +3,14 @@ import { recordRefusal, tolerantLog } from '../../../../common/server/utils/audi
 import { defineSetupHandler } from '../../utils/setup.js'
 
 // The approval guard: a decision, plain or in the envelope Rings seals, answered through the approval
-// service as the owner. A refused envelope is audited with its reason and never its body.
+// service as the owner. A refused envelope is audited with its reason and never its body. A request
+// an enrolled key signed carries its decision plain: the signature over its exact body is the proof.
 export default defineSetupHandler({
   access: 'approval',
   resource: 'approvals',
-  handler: async ({ event, workspace, body }) => {
+  handler: async ({ event, actor, workspace, body }) => {
     const { runtime } = workspace
-    const decided = await runtime.approvalService.decideSealed({ body: (await body()) ?? null })
+    const decided = await runtime.approvalService.decideSealed({ body: (await body()) ?? null, signedBy: actor.startsWith('key:') ? actor : undefined })
     if (decided.status === 'refused') {
       await recordRefusal(tolerantLog(event, runtime.actions), { tool: 'setup_approval_envelope_refused', workspaceId: runtime.workspaceId, sessionId: 'workspace-admin', status: 401, detail: decided.reason })
       event.context.logger?.warn('Refused an approval decision envelope', { reason: decided.reason, workspaceId: runtime.workspaceId })

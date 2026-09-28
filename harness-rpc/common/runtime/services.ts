@@ -3,7 +3,10 @@ import { InteractionService, NO_INTERACTION, type InteractionPort, type Interact
 import { createSetupViews, type SetupViews } from '../services/setup/setup-views.js'
 import { createWorkspaceManager, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
 import { createRuntime, type BuckleRuntime } from '../services/workspaces/workspace-runtime.js'
-import type { BuckleConfig } from './config.js'
+import { createRequestVerifier, type RequestVerifier } from '../services/access/signed-requests.js'
+import { createFileClientKeys } from '../adapters/keys/file-client-keys.js'
+import { openFileNonceStore } from '../adapters/approval/file-nonce-store.js'
+import { clientKeysPath, requestNoncesPath, type BuckleConfig } from './config.js'
 
 // Typed accessors over the runtime owner's registry (nitro/runtime.md, Lifetimes).
 export interface BuckleServices {
@@ -17,6 +20,8 @@ export interface BuckleServices {
   nodeIdentity(): NodeIdentity
   /** What the owner's setup face reads and parses; stateless. */
   getSetupViews(): SetupViews
+  /** Verifies the requests an enrolled client key signed, for the setup and approval guards (owner ruling H4). */
+  getRequestVerifier(): Promise<RequestVerifier>
 }
 
 export interface NodeIdentity {
@@ -26,6 +31,7 @@ export interface NodeIdentity {
 export interface BuckleServiceDefinitions {
   workspaceRuntime: SingletonDefinition<BuckleRuntime>
   workspaces: SingletonDefinition<WorkspaceManager>
+  requestVerifier: SingletonDefinition<RequestVerifier>
   interaction: ScopedDefinition<InteractionPort>
 }
 
@@ -75,7 +81,15 @@ export function defineBuckleServices(input: { config: BuckleConfig; interaction:
       return manager
     },
   })
-  return { workspaceRuntime, workspaces, interaction: InteractionService }
+  const requestVerifier = defineSingleton<RequestVerifier>({
+    name: 'RequestVerifier',
+    create: async () => createRequestVerifier({
+      keys: createFileClientKeys({ filePath: clientKeysPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs }),
+      nonces: await openFileNonceStore({ filePath: requestNoncesPath(input.config) }),
+      serverId: input.config.serverId,
+    }),
+  })
+  return { workspaceRuntime, workspaces, requestVerifier, interaction: InteractionService }
 }
 
 export function serviceList(definitions: BuckleServiceDefinitions): AnyServiceDefinition[] {
@@ -92,6 +106,7 @@ export function createServiceAccessors(input: { owner: RuntimeOwner; definitions
     getInteraction: scope => registry.useScoped(input.definitions.interaction, scope),
     nodeIdentity: () => identity,
     getSetupViews: () => setupViews,
+    getRequestVerifier: () => registry.useSingleton(input.definitions.requestVerifier),
   }
 }
 

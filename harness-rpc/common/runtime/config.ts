@@ -196,6 +196,16 @@ export function policyPath(config: BuckleConfig): string {
   return join(config.stateDirectory, 'policy.json')
 }
 
+/** The client keys the owner enrolled on this node (owner ruling H4 of 2026-09-28): one list per node, beside its registry. */
+export function clientKeysPath(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string {
+  return join(config.nodeStateDirectory ?? config.stateDirectory, 'client-keys.json')
+}
+
+/** The nonces of signed requests this node verified, so none lands twice inside its window. */
+export function requestNoncesPath(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string {
+  return join(config.nodeStateDirectory ?? config.stateDirectory, 'request-nonces.json')
+}
+
 /** The dangerously-allow switch, beside the policy and never inside it (review H1 of B20-B22). */
 export function dangerouslyAllowPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
   return join(config.stateDirectory, 'dangerously-allow.json')
