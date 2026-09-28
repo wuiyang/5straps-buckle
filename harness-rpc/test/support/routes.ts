@@ -1,6 +1,6 @@
 import { readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
-import { PACKAGE_ROOT } from './sources.js'
+import { PACKAGE_ROOT, SCAN_EXTENSION } from './sources.js'
 
 export interface ServedRoute { method: string; path: string }
 
@@ -13,12 +13,12 @@ const SUFFIX = /\.(?<method>connect|delete|get|head|options|patch|post|put|trace
 export function layerRoutes(layers: readonly string[] = ['common', 'mcp', 'admin']): ServedRoute[] {
   return layers.flatMap((layer) => {
     const base = join(PACKAGE_ROOT, 'layers', layer, 'server', 'routes')
-    return files(base).map(file => routeOf(relative(base, file).split(sep).join('/')))
+    return files(base).filter(file => SCAN_EXTENSION.test(file)).map(file => routeOf(relative(base, file).split(sep).join('/')))
   })
 }
 
 function routeOf(file: string): ServedRoute {
-  const bare = file.replace(/\.ts$/, '')
+  const bare = file.replace(SCAN_EXTENSION, '')
   const method = SUFFIX.exec(bare)?.groups?.method?.toUpperCase() ?? 'ALL'
   const path = `/${bare.replace(SUFFIX, '').replace(/\[\.\.\.[^\]]+\]/g, '**').replace(/\[([^\]]+)\]/g, ':$1').replace(/\/index$/, '')}`
   return { method, path }

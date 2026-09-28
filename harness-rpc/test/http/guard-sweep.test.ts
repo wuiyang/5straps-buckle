@@ -18,6 +18,8 @@ const GRANT = { id: randomUUID(), token: 'sweep-node-workbench-grant-fixture-onl
 const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const
 const CREDENTIALS = { none: undefined, 'node agent': NODE_AGENT, 'child agent': CHILD_AGENT, 'node admin': NODE_ADMIN, 'child admin': CHILD_ADMIN, 'workbench grant': GRANT.token } as const
 const OPEN_PATHS = ['/health', '/health/ready']
+/** Paths no route file claims (review L10 of B20-B22): only the router's own 404 may answer them. */
+const OFF_TABLE = ['/', '/debug', '/api/debug', '/v2/invoke', '/_nitro/tasks', '/setupx/status', '/healthz', '/health/ready/x', '/mcp/extra', '/workspaces']
 type Credential = keyof typeof CREDENTIALS
 type Face = 'setup' | 'agent' | 'workbench'
 type Workspace = 'node' | 'child'
@@ -33,6 +35,7 @@ interface Probe { path: string; method: string; credential: Credential; status: 
 
 let buckle: BuckleHttp
 let probes: Probe[]
+let offTable: Probe[]
 
 beforeAll(async () => {
   const { root, environment } = nodeEnvironment('buckle-sweep-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_PACKS: 'fs' })
@@ -41,7 +44,8 @@ beforeAll(async () => {
   const registered = await buckle.request('/setup/workspaces', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify({ id: 'child', name: 'child', root: join(root, 'child'), authToken: CHILD_AGENT, adminToken: CHILD_ADMIN }) })
   expect(registered.status).toBe(201)
   expect((await buckle.request('/setup/workbenches', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify(GRANT) })).status).toBe(200)
-  probes = await sweep()
+  probes = await sweep(concretePaths())
+  offTable = await sweep(new Map(OFF_TABLE.map(path => [path, new Set<string>()])))
 }, 240_000)
 afterAll(async () => { await buckle?.close() })
 
@@ -73,9 +77,9 @@ function serves(methods: Set<string>, method: string): boolean {
   return methods.has('ALL') || methods.has(method) || method === 'HEAD' && methods.has('GET')
 }
 
-async function sweep(): Promise<Probe[]> {
+async function sweep(paths: Map<string, Set<string>>): Promise<Probe[]> {
   const results: Probe[] = []
-  for (const [path, methods] of concretePaths()) {
+  for (const [path, methods] of paths) {
     for (const method of METHODS) {
       for (const [credential, token] of Object.entries(CREDENTIALS) as Array<[Credential, string | undefined]>) {
         const before = newestAudit()
@@ -169,6 +173,13 @@ describe('the guard sweep over every route, method and credential', () => {
     const foreignGrant = probes.filter(probe => isWorkbench(probe.path) && probe.path.startsWith('/workspaces/child/') && succeeded(probe))
     expect(foreignGrant.map(describeProbe)).toEqual([])
     expect(probes.some(probe => isWorkbench(probe.path) && probe.credential === 'workbench grant' && succeeded(probe))).toBe(true)
+  })
+
+  it('answers 404 to every method and credential on a path outside the route table, and serves nothing there (review L10 of B20-B22)', () => {
+    const patterns = buckle.routes().map(route => new RegExp(`^${route.path.replace(/:\w+/g, '[^/]+').replace(/\*\*$/, '.*')}$`))
+    expect(OFF_TABLE.filter(path => patterns.some(pattern => pattern.test(path)))).toEqual([])
+    expect(offTable.length).toBe(OFF_TABLE.length * METHODS.length * Object.keys(CREDENTIALS).length)
+    expect(offTable.filter(probe => probe.status !== 404).map(describeProbe)).toEqual([])
   })
 
   it('audits every refusal of a /setup path', () => {

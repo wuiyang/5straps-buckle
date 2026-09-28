@@ -128,11 +128,28 @@ describe('the built server (.output)', () => {
     expect((await full.request('/workspaces/default/setup/status', { headers: admin })).status).toBe(200)
   })
 
-  it('compiles exactly the layers\' file routes, and no middleware, into the router (review M3 of B18-B19)', () => {
+  it('compiles exactly the layers\' file routes, and no middleware, into the router: every handler entry parsed, meta or not (review M3 of B18-B19, M6 of B20-B22)', () => {
     const table = (routes: Array<{ method: string; path: string }>) => routes.map(route => `${route.method} ${route.path}`).sort()
     expect(table(compiledRoutes(build.outputs.full))).toEqual(table(layerRoutes()))
     expect(table(compiledRoutes(build.outputs.headless))).toEqual(table(layerRoutes(['common', 'mcp'])))
-    for (const output of Object.values(build.outputs)) expect(readFileSync(join(output, 'server', 'index.mjs'), 'utf8')).not.toContain('["~middleware"]')
+    for (const output of Object.values(build.outputs)) {
+      const router = compiledRouter(output)
+      expect(router.match(/\bhandler:/g)?.length, output).toBe(compiledRoutes(output).length)
+      expect(router, output).not.toContain('multiHandler(')
+      expect(readFileSync(join(output, 'server', 'index.mjs'), 'utf8')).not.toContain('["~middleware"]')
+    }
+    // Positive control: an entry Nitro writes with meta between method and handler is parsed.
+    expect(parseRoutes('{\n route: "/x/**:rest",\n method: "get",\n meta: {"openAPI":{"tags":["a,b"]}},\n handler: _lazy_1\n}')).toEqual([{ method: 'GET', path: '/x/**' }])
+  })
+
+  it('compiles exactly the three listed plugins into the app, and nothing else as a plugin (review M6 of B20-B22)', () => {
+    for (const output of Object.values(build.outputs)) {
+      const entry = readFileSync(join(output, 'server', 'index.mjs'), 'utf8')
+      const regions = [...new Set([...entry.matchAll(/^\/\/#region (\S*\/plugins\/\S+)$/gm)].map(match => match[1]!))].sort()
+      expect(regions, output).toEqual(['layers/common/server/plugins/10.context.ts', 'layers/common/server/plugins/20.head.ts', 'layers/common/server/plugins/30.request-log.ts'])
+      expect(topLevelEntries(compiledPlugins(entry)), output).toBe(3)
+    }
+    expect(topLevelEntries('\n\ta,\n\tf((x) => { g("],"); }, [1, 2]),\n\t`${"]"}`\n')).toBe(3)
   })
 
   it('records every package it bundled from node_modules, and none of the externals, in bundled-packages.json (B21)', () => {
@@ -154,9 +171,74 @@ describe('the built server (.output)', () => {
   })
 })
 
-/** The router Nitro compiles into the entry: each handler's route and method ('ALL' when it has none), catch-alls as `**`. */
-function compiledRoutes(output: string): Array<{ method: string; path: string }> {
+/** The router Nitro compiles into the entry: the `findRoute` function, up to its closing line. */
+function compiledRouter(output: string): string {
   const entry = readFileSync(join(output, 'server', 'index.mjs'), 'utf8')
-  const routes = [...entry.matchAll(/\{\s*route: "([^"]+)",(?:\s*method: "(\w+)",)?\s*handler:/g)]
+  const start = entry.indexOf('const findRoute = ')
+  const end = entry.indexOf('\n})();', start)
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+  return entry.slice(start, end)
+}
+
+/** Each handler's route and method ('ALL' when it has none), catch-alls as `**`. */
+function compiledRoutes(output: string): Array<{ method: string; path: string }> {
+  return parseRoutes(compiledRouter(output))
+}
+
+/** Nitro writes each entry as route, then method and meta when set, then handler (serializeHandler in nitro's build). */
+function parseRoutes(router: string): Array<{ method: string; path: string }> {
+  const routes = [...router.matchAll(/\{\s*route: "([^"]+)",(?:\s*method: "(\w+)",)?(?:\s*meta: [\s\S]*?,)?\s*handler:/g)]
   return routes.map(match => ({ method: (match[2] ?? 'all').toUpperCase(), path: match[1]!.replace(/\*\*:\w+/g, '**') }))
+}
+
+/** The body of the compiled `plugins` array, the list the app runs at start. */
+function compiledPlugins(entry: string): string {
+  const start = entry.indexOf('const plugins = [')
+  expect(start).toBeGreaterThan(-1)
+  const open = start + 'const plugins = ['.length
+  return entry.slice(open, open + closingIndex(entry.slice(open)))
+}
+
+/** The index of the bracket closing an array whose opening bracket came just before `text`. */
+function closingIndex(text: string): number {
+  let depth = 1
+  for (let index = 0; index < text.length; index++) {
+    const skipped = skipLiteral(text, index)
+    if (skipped !== index) { index = skipped - 1; continue }
+    const char = text[index]
+    if (char === '[' || char === '{' || char === '(') depth++
+    if (char === ']' || char === '}' || char === ')') depth--
+    if (depth === 0) return index
+  }
+  throw new Error('The compiled plugins array has no closing bracket')
+}
+
+/** How many comma-separated entries sit at the top level of an array body. */
+function topLevelEntries(body: string): number {
+  let depth = 0
+  let entries = body.trim() === '' ? 0 : 1
+  for (let index = 0; index < body.length; index++) {
+    const skipped = skipLiteral(body, index)
+    if (skipped !== index) { index = skipped - 1; continue }
+    const char = body[index]
+    if (char === '[' || char === '{' || char === '(') depth++
+    if (char === ']' || char === '}' || char === ')') depth--
+    if (char === ',' && depth === 0 && body.slice(index + 1).trim() !== '') entries++
+  }
+  return entries
+}
+
+/** The index just past a string, template or comment starting at `index`, or `index` itself when none starts there. */
+function skipLiteral(text: string, index: number): number {
+  const char = text[index]
+  if (text.startsWith('//', index)) return text.indexOf('\n', index) === -1 ? text.length : text.indexOf('\n', index)
+  if (text.startsWith('/*', index)) return text.indexOf('*/', index + 2) + 2
+  if (char !== '"' && char !== "'" && char !== '`') return index
+  for (let cursor = index + 1; cursor < text.length; cursor++) {
+    if (text[cursor] === '\\') { cursor++; continue }
+    if (char === '`' && text.startsWith('${', cursor)) { cursor += closingIndex(text.slice(cursor + 2)) + 2; continue }
+    if (text[cursor] === char) return cursor + 1
+  }
+  throw new Error('Unterminated literal in the compiled plugins array')
 }

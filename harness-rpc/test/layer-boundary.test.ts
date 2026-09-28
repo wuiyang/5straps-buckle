@@ -1,7 +1,8 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { PACKAGE_ROOT, sourceFiles } from './support/sources.js'
+import { pathToFileURL } from 'node:url'
+import { describe, expect, it, vi } from 'vitest'
+import { PACKAGE_ROOT, SCAN_EXTENSION, sourceFiles } from './support/sources.js'
 
 // Plan section B, copying Foundation check F54. What Nitro bundles into .output (the layers' server
 // code, the custom entry and the error handler) takes values from these packages only, and common
@@ -89,28 +90,56 @@ describe('the layer boundary', () => {
     expect(MUTABLE.test('const LIMIT = 1_024')).toBe(false)
   })
 
-  it('serves handlers from server/routes only: no api, middleware, tasks or modules directory in a layer, and only the listed plugins; guards and audit run inside each handler (layers.md, Security boundaries; review M3 of B18-B19)', () => {
+  it('serves handlers from server/routes only: no api, middleware, tasks or modules directory in a layer, and only the listed plugins; guards and audit run inside each handler (layers.md, Security boundaries; review M3 of B18-B19, M6 of B20-B22)', () => {
     // Nitro scans api/ (under /api), middleware/, plugins/, tasks/ and modules/ in every scan dir besides routes/.
     const layers = readdirSync(join(PACKAGE_ROOT, 'layers'))
     expect(layers.sort()).toEqual(['admin', 'common', 'mcp'])
     const scanned = layers.flatMap(layer => readdirSync(join(PACKAGE_ROOT, 'layers', layer, 'server')).map(entry => `${layer}/${entry}`))
     expect(scanned.filter(entry => !SERVER_ENTRIES.includes(entry.split('/')[1]!))).toEqual([])
-    const plugins = sourceFiles('layers').map(file => relative(PACKAGE_ROOT, file)).filter(file => /^layers\/\w+\/server\/plugins\//.test(file))
+    // Every source Nitro would scan, by its own extensions, sits in one of those folders.
+    const sources = sourceFiles('layers').map(file => relative(PACKAGE_ROOT, file)).filter(file => file.split('/')[2] === 'server')
+    expect(sources.length).toBeGreaterThan(80)
+    expect(sources.filter(file => !SERVER_ENTRIES.includes(file.split('/')[3]!))).toEqual([])
+    // Any file at all in a plugins folder counts, whatever its extension: only the three listed ones may be there.
+    const plugins = layers.flatMap(layer => filesUnder(join('layers', layer, 'server', 'plugins')))
     expect(plugins.sort()).toEqual(PLUGINS)
+    expect(SCAN_EXTENSION.test('x.tsx') && SCAN_EXTENSION.test('x.cts') && SCAN_EXTENSION.test('x.cjs') && SCAN_EXTENSION.test('x.jsx')).toBe(true)
   })
 
-  it('registers no handler, route rule, plugin or module through a nitro.config.ts, and scans each layer\'s own server directory only (review M3 of B18-B19)', () => {
-    const configs = ['nitro.config.ts', ...readdirSync(join(PACKAGE_ROOT, 'layers')).map(layer => `layers/${layer}/nitro.config.ts`)]
-    for (const config of configs) {
-      const text = withoutComments(readFileSync(join(PACKAGE_ROOT, config), 'utf8'))
-      expect([...text.matchAll(CONFIG_HANDLER_KEYS)].map(match => match[1]), config).toEqual([])
-      if (config === 'nitro.config.ts') expect(text, config).toMatch(/\bserverDir: false,/)
-      else expect(text, config).toMatch(/defineConfig\(\{ scanDirs: \[fileURLToPath\(new URL\('\.\/server', import\.meta\.url\)\)\] \}\)/)
+  it('registers no handler, route rule, plugin or module through Nitro config: each config, as Nitro loads it, holds exactly its allowed keys, and no other config source exists (review M3 of B18-B19, M6 of B20-B22)', async () => {
+    // c12 also reads nitro.config.* in any supported extension, .config/nitro.*, and .nitrorc beside each config.
+    for (const directory of ['.', ...readdirSync(join(PACKAGE_ROOT, 'layers')).map(layer => `layers/${layer}`)]) {
+      const sources = readdirSync(join(PACKAGE_ROOT, directory)).filter(name => /^(?:nitro\.config\.|\.nitrorc|\.config$)/.test(name))
+      expect(sources, directory).toEqual(['nitro.config.ts'])
     }
-    // Positive controls: each spelling a config could register a handler with is caught.
-    for (const key of ['handlers', 'devHandlers', 'routes', 'routeRules', 'plugins', 'modules', 'tasks', 'scheduledTasks', 'apiDir', 'routesDir', 'scanDirs']) {
-      expect([...`defineConfig({ ${key}: [] })`.matchAll(CONFIG_HANDLER_KEYS)].length, key).toBe(key === 'scanDirs' ? 0 : 1)
+    const root = await configAt('nitro.config.ts')
+    expect(Reflect.ownKeys(root).sort()).toEqual(['entry', 'errorHandler', 'extends', 'preset', 'rolldownConfig', 'serverDir', 'serverEntry'])
+    expect(root).toStrictEqual({
+      preset: 'node_middleware',
+      entry: './server/entry.ts',
+      serverEntry: false,
+      serverDir: false,
+      errorHandler: './server/error.ts',
+      extends: ['./layers/common', './layers/mcp', './layers/admin'],
+      rolldownConfig: { external: [/^@5straps\//, /^@modelcontextprotocol\//, /^zod(\/|$)/, /^h3(\/|$)/] },
+    })
+    expect(Reflect.ownKeys(root.rolldownConfig as object)).toEqual(['external'])
+    for (const layer of readdirSync(join(PACKAGE_ROOT, 'layers'))) {
+      const config = await configAt(`layers/${layer}/nitro.config.ts`)
+      expect(Reflect.ownKeys(config), layer).toEqual(['scanDirs'])
+      expect(config, layer).toStrictEqual({ scanDirs: [join(PACKAGE_ROOT, 'layers', layer, 'server')] })
     }
+  })
+
+  it('leaves h3 and Nitro internals to two files: only 20.head.ts reaches the app\'s ~findRoute (or any ~ member, or nitroApp.h3), and only server/entry.ts imports nitro/app (review L10 of B20-B22)', () => {
+    const sources = sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers').map(file => relative(PACKAGE_ROOT, file))
+    const touching = (pattern: RegExp) => sources.filter(file => pattern.test(withoutComments(readFileSync(join(PACKAGE_ROOT, file), 'utf8')))).sort()
+    expect(touching(/['"`]~[A-Za-z]|\.h3\b/)).toEqual(['layers/common/server/plugins/20.head.ts'])
+    const head = withoutComments(readFileSync(join(PACKAGE_ROOT, 'layers/common/server/plugins/20.head.ts'), 'utf8'))
+    expect([...new Set(head.match(/~[A-Za-z]\w*/g))]).toEqual(['~findRoute'])
+    const internals = sources.flatMap(importsOf).filter(item => !item.typeOnly && /^(?:nitro\/|#nitro|h3\/)/.test(item.specifier))
+    expect(internals).toEqual([{ file: 'server/entry.ts', specifier: 'nitro/app', typeOnly: false }])
+    expect(readFileSync(join(PACKAGE_ROOT, 'server/entry.ts'), 'utf8')).toMatch(/^import \{ useNitroApp \} from 'nitro\/app'$/m)
   })
 
   it('has no Hono anywhere in Buckle: no import in any source, script or test, and no dependency (B18 cut-over)', () => {
@@ -152,13 +181,27 @@ const OPEN_ROUTES = ['layers/common/server/routes/health.get.ts', 'layers/common
 /** What a layer's server directory may hold: Nitro scans only routes/ and plugins/ of these. */
 const SERVER_ENTRIES = ['routes', 'plugins', 'utils', 'types']
 const PLUGINS = ['layers/common/server/plugins/10.context.ts', 'layers/common/server/plugins/20.head.ts', 'layers/common/server/plugins/30.request-log.ts']
-/** nitro.config.ts keys that add a handler, a redirect or proxy, a plugin, a module or a task, or move a scanned directory. */
-const CONFIG_HANDLER_KEYS = /\b(handlers|devHandlers|routes|routeRules|plugins|modules|tasks|scheduledTasks|apiDir|routesDir|apiBaseURL)\s*:/g
 const GUARDED_BUILDER = /^export default define(Operation|Workbench|Setup|Registry)Handler\(/m
 const RE_EXPORT = /^(?:\s*\/\/[^\n]*\n)*\s*export \{ default \} from '([^']+)'\s*$/
 
 function withoutComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+}
+
+/** Every file under a package-relative directory, any extension, package-relative; none when it is absent. */
+function filesUnder(directory: string): string[] {
+  if (!existsSync(join(PACKAGE_ROOT, directory))) return []
+  return readdirSync(join(PACKAGE_ROOT, directory), { recursive: true, encoding: 'utf8' })
+    .map(path => join(directory, path))
+    .filter(path => statSync(join(PACKAGE_ROOT, path)).isFile())
+}
+
+/** A Nitro config as Nitro loads it: the module's default export, fresh from disk. */
+async function configAt(file: string): Promise<Record<string | symbol, unknown>> {
+  vi.resetModules()
+  const config = (await import(pathToFileURL(join(PACKAGE_ROOT, file)).href) as { default: unknown }).default
+  expect(typeof config, file).toBe('object')
+  return config as Record<string | symbol, unknown>
 }
 
 function routeFiles(): string[] {
