@@ -1,24 +1,26 @@
 import { request as httpRequest } from 'node:http'
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
 // Review L4 of B13-B14: the body paths of a moved route through the production listener on node:http,
-// not only the in-process Request: a chunked body past the limit, and a body streamed in pieces.
+// not only the in-process Request: a chunked body past the limit, and a body streamed in pieces. Since
+// B18 the listener is the built entry's middleware (srvx's node adapter), the one serve uses, so a
+// client that hangs up is seen through its request signal (condition of the B15-B17 review for B18).
 
 const TOKEN = 'wire-agent-token'
 const LIMIT = 4_096
 const nodes: BuckleHttp[] = []
 afterEach(async () => { for (const node of nodes.splice(0)) await node.close() })
 
-async function listening(): Promise<{ url: string; workspace: string }> {
-  const { workspace, environment } = nodeEnvironment('buckle-wire-', { BUCKLE_AUTH_TOKEN: TOKEN, BUCKLE_PACKS: 'fs', BUCKLE_MAX_REQUEST_BYTES: String(LIMIT) })
+async function listening(extra: Record<string, string> = {}): Promise<{ url: string; workspace: string; root: string; buckle: BuckleHttp }> {
+  const { root, workspace, environment } = nodeEnvironment('buckle-wire-', { BUCKLE_AUTH_TOKEN: TOKEN, BUCKLE_PACKS: 'fs', BUCKLE_MAX_REQUEST_BYTES: String(LIMIT), ...extra })
   const buckle = await createBuckleHttp({ environment })
   nodes.push(buckle)
-  return { url: await buckle.listen(), workspace }
+  return { url: await buckle.listen(), workspace, root, buckle }
 }
 
 interface Reply { status: number; contentType: string | undefined; body: string }
@@ -74,5 +76,22 @@ describe('/v1/invoke over node:http', () => {
       expect(reply.status).toBe(200)
       expect(JSON.parse(reply.body)).toMatchObject({ outcome: 'ok', output: { content: 'streamed through' } })
     }
+  })
+})
+
+describe('a client that hangs up over node:http', () => {
+  it('cancels the ask it left waiting for approval, and nothing runs', async () => {
+    const { url, root, buckle } = await listening({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const body = JSON.stringify({ requestId: 'wire-hang-up', tool: 'fs_write', args: { path: join(root, 'outside.md'), content: 'x' } })
+    const request = httpRequest(new URL('/v1/invoke', url), { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) } })
+    request.on('error', () => undefined)
+    request.end(body)
+    await vi.waitFor(() => expect(buckle.runtime.approvals.pending()).toHaveLength(1), { timeout: 10_000 })
+
+    request.destroy()
+
+    await vi.waitFor(() => expect(buckle.runtime.approvals.pending()).toEqual([]), { timeout: 10_000 })
+    await vi.waitFor(() => expect(buckle.runtime.actions.read(20)).toContainEqual(expect.objectContaining({ tool: 'fs_write', event: 'result', requestId: 'wire-hang-up' })), { timeout: 10_000 })
+    expect(existsSync(join(root, 'outside.md'))).toBe(false)
   })
 })

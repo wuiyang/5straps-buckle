@@ -1,4 +1,3 @@
-import { getRequestListener } from '@hono/node-server'
 import type { RequestCli } from '@5straps/runtime'
 import { inject } from 'vitest'
 import type { NitroApp } from 'nitro/types'
@@ -9,11 +8,10 @@ import { initializeCommon, type BuckleCommon } from '../../common/runtime/initia
 import { logger } from '../../common/runtime/log.js'
 import type { BuckleServices } from '../../common/runtime/services.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
-import { createDispatcher } from '../../server/hono/dispatch.js'
 import { createHttpServer, setupServer } from '../../server/setup-server.js'
 import { layerRoutes, type ServedRoute } from './routes.js'
 
-/** A node as serve composes it, answering in process through the same dispatcher. */
+/** A node as serve composes it, answering in process through its Nitro app, or on node:http through the built middleware serve uses. */
 export interface BuckleHttp {
   readonly config: BuckleConfig
   readonly common: BuckleCommon
@@ -24,7 +22,7 @@ export interface BuckleHttp {
   readonly requestCli: RequestCli
   /** A path is taken relative to the node; a Request or full URL keeps its own origin, as fetch would send it. */
   request(input: string | Request, init?: RequestInit): Promise<Response>
-  /** The same node behind the production node:http listener on a free port, for wire-level tests; closes with the node. */
+  /** The same node behind serve's node:http listener (the built entry's middleware) on a free port, for wire-level tests; closes with the node. */
   listen(): Promise<string>
   /** Every route the node serves: the built layers' file routes. */
   routes(): ServedRoute[]
@@ -62,7 +60,6 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   const server = await setupServer({ common, logger, requestCli: cli.requestCli, entryPath })
   common.bindRequester(server.requestCli)
-  const dispatcher = createDispatcher({ nitroApp: server.nitroApp })
   let closing: Promise<void> | undefined
   const close = () => (closing ??= common.owner.close().finally(() => {
     server.release()
@@ -73,10 +70,10 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   const runtime = await common.services.getWorkspaceRuntime()
   return {
     config, common, runtime, services: common.services, nitroApp: server.nitroApp, requestCli: server.requestCli,
-    request: async (request, init) => dispatcher.fetch(request instanceof Request ? new Request(request, init) : new Request(new URL(request, 'http://127.0.0.1'), init)),
-    // As serve listens (server/hono/serve.ts): the node adapter's Request, its lazy body and socket-bound signal.
+    request: async (request, init) => server.nitroApp.fetch(request instanceof Request ? new Request(request, init) : new Request(new URL(request, 'http://127.0.0.1'), init)),
+    // As serve listens (server/serve.ts): the built entry's middleware, with srvx's lazy body and socket-bound signal.
     listen: async () => {
-      const http = createHttpServer({ common, listener: getRequestListener(request => dispatcher.fetch(request)) })
+      const http = createHttpServer({ common, listener: server.middleware })
       const address = await http.listen({ host: '127.0.0.1', port: 0 })
       return `http://127.0.0.1:${address.port}`
     },

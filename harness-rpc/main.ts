@@ -10,7 +10,7 @@ import { loadEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
 import { serveMcpStdio } from './mcp/stdio.js'
-import { serveHttp } from './server/hono/serve.js'
+import { serveHttp } from './server/serve.js'
 import { builtEntryPath, setupServer } from './server/setup-server.js'
 
 export type Mode =

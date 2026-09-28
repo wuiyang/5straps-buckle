@@ -9,11 +9,11 @@ import type { BuckleRuntime } from '../../common/services/workspaces/workspace-r
 import { createBuckleHttp } from '../support/buckle-http.js'
 
 // Pins the edge responses through the Nitro move (Buckle phase plan, B2), on the served surface:
-// the harness answers through serve's dispatcher. The commits that move a route flip the matching
-// expectation on purpose and list the flip in their message. B13: /health is Nitro's. B15: /v1/**,
-// /workspaces/[id]/(health|v1/**) and every path outside the MCP and setup faces are Nitro's. B16:
-// /mcp and /workspaces/[id]/mcp are Nitro's. B17: /setup/** and /workspaces/[id]/setup/** are Nitro's,
-// so every path is.
+// the harness answers through the built Nitro app serve listens with. The commits that move a route
+// flip the matching expectation on purpose and list the flip in their message. B13: /health is
+// Nitro's. B15: /v1/**, /workspaces/[id]/(health|v1/**) and every path outside the MCP and setup faces
+// are Nitro's. B16: /mcp and /workspaces/[id]/mcp are Nitro's. B17: /setup/** and
+// /workspaces/[id]/setup/** are Nitro's, so every path is. B18 removed Hono and the dispatcher.
 
 const NODE_AGENT = 'node-agent-characterisation-only'
 const NODE_ADMIN = 'node-admin-characterisation-only'

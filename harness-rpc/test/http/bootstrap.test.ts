@@ -253,7 +253,8 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
       socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`)
       await expect.poll(() => reply.split('\r\n')[0]).toMatch(/^HTTP\/1\.1 \d{3}/)
       socket.destroy()
-      expect(reply.split('\r\n')[0]).toBe(path === '/health' ? 'HTTP/1.1 200 OK' : 'HTTP/1.1 401 Unauthorized')
+      // B18 flip: srvx writes the Response's own status text, which is empty, so the reason phrase is too (RFC 9112 makes it optional).
+      expect(reply.split('\r\n')[0]).toMatch(path === '/health' ? /^HTTP\/1\.1 200( |$)/ : /^HTTP\/1\.1 401( |$)/)
     }
     expect((await fetch(`http://127.0.0.1:${node.port}/health/ready`)).status).toBe(200)
   }, 60_000)

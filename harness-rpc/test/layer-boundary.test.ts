@@ -53,7 +53,7 @@ describe('the layer boundary', () => {
     expect(LAYER_PACKAGES.test('srvx')).toBe(false)
   })
 
-  it('takes common code as types only, and nothing from cli, mcp or the Hono faces', () => {
+  it('takes common code as types only, and nothing from cli, mcp or the server setup', () => {
     const relatives = bundledSources().flatMap(importsOf).filter(item => item.specifier.startsWith('.'))
     const outside = relatives.filter(item => !/^(?:layers|server\/(?:entry|error|built-entry))/.test(target(item)))
     expect(outside.length).toBeGreaterThan(0)
@@ -93,6 +93,16 @@ describe('the layer boundary', () => {
     const layers = readdirSync(join(PACKAGE_ROOT, 'layers'))
     expect(layers.sort()).toEqual(['admin', 'common', 'mcp'])
     expect(layers.filter(layer => existsSync(join(PACKAGE_ROOT, 'layers', layer, 'server', 'middleware')))).toEqual([])
+  })
+
+  it('has no Hono anywhere in Buckle: no import in any source, script or test, and no dependency (B18 cut-over)', () => {
+    const imports = sourceFiles('main.ts', 'nitro.config.ts', 'common', 'cli', 'mcp', 'server', 'layers', 'scripts', 'test').flatMap(importsOf)
+    expect(imports.length).toBeGreaterThan(500)
+    expect(imports.filter(item => /^(?:hono|@hono\/)/.test(item.specifier))).toEqual([])
+    const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8')) as Record<string, Record<string, string> | undefined>
+    const dependencies = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'].flatMap(field => Object.keys(manifest[field] ?? {}))
+    expect(dependencies.filter(name => /^(?:hono|@hono\/)/.test(name))).toEqual([])
+    expect(existsSync(join(PACKAGE_ROOT, 'server', 'hono'))).toBe(false)
   })
 
   it('guards every route: a one-line re-export of a guarded route, or one of the four guarded handler builders; only the health routes are open (review M2 of B15-B17)', () => {

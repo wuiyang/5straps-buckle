@@ -16,7 +16,7 @@ const entry = vi.hoisted(() => ({
 vi.mock('../common/runtime/environment.js', () => ({ loadEnvironmentFile: entry.loadEnvironmentFile }))
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
 vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runCli: entry.runCli, answerWithoutConfiguration: () => null }))
-vi.mock('../server/hono/serve.js', () => ({ serveHttp: entry.serveHttp }))
+vi.mock('../server/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, builtEntryPath: () => '/built/.output/server/index.mjs' }))
 vi.mock('../mcp/stdio.js', () => ({ serveMcpStdio: entry.serveMcpStdio }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))

@@ -15,7 +15,7 @@ function environment(): Record<string, string> {
 }
 
 describe('health on the Nitro layer', () => {
-  it('leaves /health open and answers /health/ready through the dispatcher, as serve does', async () => {
+  it('leaves /health open and answers /health/ready', async () => {
     const node = await createBuckleHttp({ environment: environment() })
     nodes.push(node)
     const health = await node.request('/health')
