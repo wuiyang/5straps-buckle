@@ -47,7 +47,7 @@
   "scripts": {
     "prepack": "pnpm run build",
     "build": "node scripts/build.mjs && node scripts/build-server.mjs",
-    "dev": "tsx watch --env-file-if-exists=../.env main.ts serve",
+    "dev": "node scripts/dev.mjs",
     "start": "node dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
