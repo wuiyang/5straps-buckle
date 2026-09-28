@@ -1,6 +1,4 @@
 import { browseDirectories, DirectoryQuerySchema } from '../../common/services/setup/directory-browser.js'
-import { createMcpHandler } from '@modelcontextprotocol/server'
-import { createMcpServer } from '../../mcp/server.js'
 import { auditHttpRequest } from './audit.js'
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
@@ -11,7 +9,6 @@ import type { BuckleRuntime } from '../../common/services/workspaces/workspace-r
 import { createWorkspaceManager, type WorkspaceManager, WorkspaceError, WorkspaceRegistrationSchema, WorkspacePatchSchema, WorkspaceRegistryError, WorkspaceTokenInputSchema } from '../../common/services/workspaces/workspace-manager.js'
 import { matchesTokenSource } from '../../common/services/access/tokens.js'
 import { requireBearerToken } from './auth.js'
-import { allowPostOnly } from './mcp-allow.js'
 import { createSetupApp } from './setup-app.js'
 import { logger } from '../../common/runtime/log.js'
 import { stateBusyResponse } from './state-busy.js'
@@ -84,10 +81,10 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
 
   // Before authentication a caller learns nothing about the registry beyond that it needs repair.
   const auditRejected = async (input: { id: string; known: boolean; path: string; status: 401 | 503 }) => {
-    if (input.path !== '/mcp' && !input.path.startsWith('/setup/')) return
+    if (!input.path.startsWith('/setup/')) return
     const auditId = randomUUID()
     await nodeRuntime.actions.record({ auditId, event: 'result', workspaceId: input.known ? input.id : 'unresolved',
-      at: new Date().toISOString(), requestId: auditId, sessionId: 'http-untrusted', tool: input.path === '/mcp' ? 'workspace_mcp_auth_rejected' : 'workspace_setup_auth_rejected',
+      at: new Date().toISOString(), requestId: auditId, sessionId: 'http-untrusted', tool: 'workspace_setup_auth_rejected',
       outcome: 'denied', durationMs: 0, effects: [], args: {}, detail: `HTTP ${input.status}`,
     })
   }
@@ -96,14 +93,14 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     return Response.json({ error: 'Workspace registry needs owner repair' }, { status: 503 })
   }
 
-  // Only /workspaces/[id]/mcp and /workspaces/[id]/setup/** reach here (server/hono/dispatch.ts); the
-  // common layer serves the rest of a workspace's paths.
+  // Only /workspaces/[id]/setup/** reaches here (server/hono/dispatch.ts); the common and MCP layers
+  // serve the rest of a workspace's paths.
   app.all('/workspaces/:id/*', async context => {
     const id = context.req.param('id')
     const path = context.req.path.slice(`/workspaces/${id}`.length)
     try {
       const known = manager.known(id)
-      const credential = path.startsWith('/setup/') ? manager.adminToken(id) : () => manager.agentTokens(id)
+      const credential = manager.adminToken(id)
       if (!credential || !matchesTokenSource(context.req.header('authorization'), credential)) {
         await auditRejected({ id, known, path, status: 401 })
         return context.json({ error: 'Unauthorized' }, 401)
@@ -116,7 +113,6 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
     const { config, runtime } = await manager.resolve(id, { setup: path.startsWith('/setup/') })
     let face = faces.get(id)
     if (!face) {
-      const agentTokens = () => manager.agentTokens(id)
       face = new Hono()
       face.onError((error, context) => {
         const busy = stateBusyResponse(error, context)
@@ -124,12 +120,6 @@ export function createWorkspaceApp(input: { config: BuckleConfig; runtime: Buckl
         logger.error('Unhandled Buckle request error', { message: error.message, path: context.req.path })
         return context.json({ error: 'Internal Buckle error' }, 500)
       })
-      const mcpHandler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, version: runtime.manifest().version }))
-      face.use('/mcp', auditHttpRequest({ actions: runtime.actions, workspaceId: runtime.workspaceId, face: 'http_mcp' }))
-      face.use('/mcp', bodyLimit({ maxSize: config.maxRequestBytes }))
-      face.use('/mcp', requireBearerToken(agentTokens))
-      face.all('/mcp', async context => allowPostOnly(await mcpHandler.fetch(context.req.raw)))
-      runtime.onToolsChanged(() => mcpHandler.notify.toolsChanged())
       if (config.adminToken) face.route('/setup', createSetupApp({ config, runtime, adminToken: config.adminToken }))
       faces.set(id, face)
     }

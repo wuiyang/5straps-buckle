@@ -21,6 +21,12 @@ export interface McpServerOptions {
   version: string
   trustedApprovalResponses?: boolean
   callScope?: ToolCallScope
+  /**
+   * Re-register the tools when the runtime's tool list changes. A long-lived server (stdio) does; a
+   * server the HTTP handler builds for one request does not, or every request would leave a listener
+   * on the runtime for good.
+   */
+  followToolChanges?: boolean
 }
 
 /**
@@ -32,11 +38,13 @@ export function createMcpServer(input: McpServerOptions): McpServer {
   let registrations = registerTools(server, input)
   registerSkills(server, input.runtime)
 
-  input.runtime.onToolsChanged(() => {
-    for (const registration of registrations) registration.remove()
-    registrations = registerTools(server, input)
-    logger.info('MCP tool list refreshed')
-  })
+  if (input.followToolChanges !== false) {
+    input.runtime.onToolsChanged(() => {
+      for (const registration of registrations) registration.remove()
+      registrations = registerTools(server, input)
+      logger.info('MCP tool list refreshed')
+    })
+  }
 
   return server
 }

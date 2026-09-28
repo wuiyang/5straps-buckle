@@ -11,7 +11,8 @@ import { createBuckleHttp } from '../support/buckle-http.js'
 // Pins the edge responses through the Nitro move (Buckle phase plan, B2), on the served surface:
 // the harness answers through serve's dispatcher. The commits that move a route flip the matching
 // expectation on purpose and list the flip in their message. B13: /health is Nitro's. B15: /v1/**,
-// /workspaces/[id]/(health|v1/**) and every path outside the MCP and setup faces are Nitro's.
+// /workspaces/[id]/(health|v1/**) and every path outside the MCP and setup faces are Nitro's. B16:
+// /mcp and /workspaces/[id]/mcp are Nitro's.
 
 const NODE_AGENT = 'node-agent-characterisation-only'
 const NODE_ADMIN = 'node-admin-characterisation-only'
@@ -87,8 +88,9 @@ describe('413 on every face (content-length and chunked)', () => {
   const tooLarge = { status: 413, contentType: 'application/json', body: { error: 'Request body is too large' } }
   const faces = [
     { face: '/v1/invoke', token: NODE_AGENT, limit: MAX_REQUEST_BYTES, expected: tooLarge },
-    { face: '/mcp', token: NODE_AGENT, limit: MAX_REQUEST_BYTES, expected: { status: 413, contentType: 'text/plain', body: 'Payload Too Large' } },
-    { face: '/workspaces/one/mcp', token: ONE_AGENT, limit: MAX_REQUEST_BYTES, expected: { status: 500, contentType: 'application/json', body: { error: 'Internal Buckle error' } } },
+    // B16 flips: text 413 'Payload Too Large' and the workspace twin's JSON 500 became the JSON 413.
+    { face: '/mcp', token: NODE_AGENT, limit: MAX_REQUEST_BYTES, expected: tooLarge },
+    { face: '/workspaces/one/mcp', token: ONE_AGENT, limit: MAX_REQUEST_BYTES, expected: tooLarge },
     // B15 flip: 422 became the JSON 413, and the grant is checked before the body (it was after).
     { face: '/v1/workbenches/:grant/invoke', token: ':grant', limit: WORKBENCH_BODY_LIMIT, expected: tooLarge },
     { face: '/setup/workspaces', token: NODE_ADMIN, limit: SETUP_BODY_LIMIT, expected: { status: 500, contentType: 'application/json', body: { error: 'Workspace request failed; inspect local owner logs' } } },

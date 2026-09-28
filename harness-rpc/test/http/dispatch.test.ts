@@ -41,7 +41,7 @@ describe('the canonical path', () => {
 })
 
 describe('which router answers', () => {
-  // B15: Hono keeps only the MCP and setup faces, at node level and under /workspaces/[id]/.
+  // B16: Hono keeps only the setup face, at node level and under /workspaces/[id]/.
   const rows: Array<{ path: string; router: 'nitro' | 'hono'; status: number; json: boolean }> = [
     { path: '/health', router: 'nitro', status: 200, json: true },
     { path: '/health/', router: 'nitro', status: 200, json: true },
@@ -59,10 +59,10 @@ describe('which router answers', () => {
     { path: '/v1//manifest', router: 'nitro', status: 401, json: true },
     { path: '/workspaces/one/%761/invoke', router: 'nitro', status: 401, json: true },
     { path: '/workspaces/one/nope', router: 'nitro', status: 401, json: true },
-    { path: '/mcp', router: 'hono', status: 401, json: true },
-    { path: '/%6dcp', router: 'hono', status: 401, json: true },
-    { path: '/workspaces/one/mcp', router: 'hono', status: 401, json: true },
-    { path: '/workspaces/one/%6dcp/', router: 'hono', status: 401, json: true },
+    { path: '/mcp', router: 'nitro', status: 401, json: true },
+    { path: '/%6dcp', router: 'nitro', status: 401, json: true },
+    { path: '/workspaces/one/mcp', router: 'nitro', status: 401, json: true },
+    { path: '/workspaces/one/%6dcp/', router: 'nitro', status: 401, json: true },
     { path: '/workspaces/one/setup/status', router: 'hono', status: 401, json: true },
     { path: '/health/../setup', router: 'hono', status: 404, json: false },
     { path: '/health/%2e%2e/setup', router: 'hono', status: 404, json: false },

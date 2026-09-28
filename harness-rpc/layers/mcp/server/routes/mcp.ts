@@ -1,0 +1,40 @@
+import type { H3Event } from 'h3'
+import { recordTransportRefusal, withTransportAudit } from '../../../common/server/utils/audit.js'
+import { readBody } from '../../../common/server/utils/body.js'
+import { isMutation, requireAgent, type RefusalAudit } from '../../../common/server/utils/guards.js'
+import { defineOperationHandler } from '../../../common/server/utils/operation.js'
+import { useServices } from '../../../common/server/utils/services.js'
+import { NODE_WORKSPACE, useTarget } from '../../../common/server/utils/target.js'
+
+/** At node level the transport audit took in the credential check; under a workspace the node's log names the face. */
+const MCP_REFUSED: RefusalAudit = {
+  node: ({ event, actions, status }) => recordTransportRefusal(actions, { tool: transportTool(event), workspaceId: NODE_WORKSPACE, status }),
+  named: 'workspace_mcp_auth_rejected',
+}
+
+// Transport adapter only: the agent guard, the body limit, then the SDK over a buffered request, with
+// the protocol in mcp/ (plan section B, route mapping). Tool calls run in this request's operation.
+export default defineOperationHandler({
+  guards: [requireAgent(MCP_REFUSED)],
+  handler: async (event) => {
+    const workspace = await useTarget(event)
+    const { config, runtime } = workspace
+    return withTransportAudit(runtime.actions, { tool: transportTool(event), workspaceId: runtime.workspaceId }, async () => {
+      const request = await bufferedRequest(event, config.maxRequestBytes)
+      return useServices(event).getMcpHandlers().fetch(workspace, request)
+    })
+  },
+})
+
+function transportTool(event: H3Event): string {
+  return `http_mcp_${event.req.method.toLowerCase()}`
+}
+
+async function bufferedRequest(event: H3Event, limit: number): Promise<Request> {
+  // The SDK gets the body buffered, so the wire's length or chunked encoding would be wrong for it.
+  const headers = new Headers(event.req.headers)
+  headers.delete('content-length')
+  headers.delete('transfer-encoding')
+  const body = isMutation(event) ? await readBody(event, limit) : undefined
+  return new Request(event.req.url, { method: event.req.method, headers, signal: event.req.signal, ...(body ? { body } : {}) })
+}

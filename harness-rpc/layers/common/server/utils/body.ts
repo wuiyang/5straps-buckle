@@ -13,7 +13,7 @@ export function bodyTooLarge(): HTTPError {
  * The whole request body, refused with 413 once it passes the limit: at once for a declared length,
  * and while it streams for a chunked one, so nothing past the limit is held in memory.
  */
-export async function readBody(event: H3Event, limit: number): Promise<Uint8Array> {
+export async function readBody(event: H3Event, limit: number): Promise<Uint8Array<ArrayBuffer>> {
   const declared = event.req.headers.get('content-length')
   if (declared !== null && Number(declared) > limit) throw bodyTooLarge()
   const stream = event.req.body

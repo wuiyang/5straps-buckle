@@ -24,7 +24,7 @@ async function started(): Promise<BuckleCommon> {
 /** An H3 app whose requests carry the context the Buckle context plugin attaches from main's host. */
 function app(common: BuckleCommon | null): H3 {
   const h3 = new H3()
-  if (common) h3.use((event) => { event.context.runtime = common.owner; event.context.services = common.services })
+  if (common) h3.use((event) => { event.context.runtime = common.owner; event.context.services = { ...common.services, getMcpHandlers: () => { throw new Error('No MCP face in this app') } } })
   return h3
 }
 

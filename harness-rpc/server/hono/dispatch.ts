@@ -5,13 +5,13 @@ import type { BuckleCommon } from '../../common/runtime/initialize.js'
 import { notReadyResponse, operationScopes, type ScopeEnv } from './operation-scope.js'
 
 /**
- * Temporary, B13 to B17 (Buckle phase plan, section F): the faces still on Hono until their layer
- * moves, MCP (B16) and the owner's setup face (B17), at node level and under /workspaces/[id]/. Every
- * other path is the Nitro layers', so each route has exactly one implementation at every commit.
- * B18 deletes this file with Hono.
+ * Temporary, B13 to B17 (Buckle phase plan, section F): the face still on Hono until its layer moves,
+ * the owner's setup face (B17), at node level and under /workspaces/[id]/. Every other path is the
+ * Nitro layers', so each route has exactly one implementation at every commit. B18 deletes this file
+ * with Hono.
  */
 function honoFace(face: readonly string[]): boolean {
-  return (face.length === 1 && face[0] === 'mcp') || face[0] === 'setup'
+  return face[0] === 'setup'
 }
 
 // Escapes of characters a path segment may carry as they are: h3 decodes exactly these before it
