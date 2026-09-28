@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -41,7 +42,7 @@ async function runtimeWith(environment: Record<string, string> = {}): Promise<Bu
 
 function fetchLocal(runtime: BuckleRuntime, path = '/', approvalTokens: string[] = []): Promise<InvokeResponse> {
   return runtime.invoke({
-    request: { requestId: 'fetch', tool: 'web_fetch', args: { url: `http://127.0.0.1:${port}${path}` }, approvalTokens },
+    request: { requestId: `fetch-${randomUUID()}`, tool: 'web_fetch', args: { url: `http://127.0.0.1:${port}${path}` }, approvalTokens },
     sessionId: 'fetcher',
   })
 }
@@ -83,7 +84,7 @@ describe('web_fetch and the approvals the owner gave', () => {
 
 describe('web_fetch and an approval widened to a host pattern (BUCKLE-D18)', () => {
   function fetchUrl(runtime: BuckleRuntime, url: string): Promise<InvokeResponse> {
-    return runtime.invoke({ request: { requestId: 'fetch', tool: 'web_fetch', args: { url }, approvalTokens: [] }, sessionId: 'fetcher' })
+    return runtime.invoke({ request: { requestId: `fetch-${randomUUID()}`, tool: 'web_fetch', args: { url }, approvalTokens: [] }, sessionId: 'fetcher' })
   }
 
   it('reaches the host that asked under the pattern, and checks every redirect hop against it', async () => {

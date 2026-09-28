@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -105,7 +106,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
   }
 
   function browse(runtime: BuckleRuntime, args: JsonObject, approvalTokens: string[] = []): Promise<InvokeResponse> {
-    return runtime.invoke({ request: { requestId: 'browse', tool: 'browser_command', args, approvalTokens }, sessionId: 'browsing-agent' })
+    return runtime.invoke({ request: { requestId: `browse-${randomUUID()}`, tool: 'browser_command', args, approvalTokens }, sessionId: 'browsing-agent' })
   }
 
   const flagOf = (call: string[] | undefined) => call && call.includes('--allowed-domains') ? call[call.indexOf('--allowed-domains') + 1] : null

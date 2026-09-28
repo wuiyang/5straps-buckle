@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -38,7 +39,7 @@ async function workspace(node: WorkspacePolicy, child: WorkspacePolicy = policy(
 async function effect(runtime: BuckleRuntime, value: ToolEffect) {
   const execute = vi.fn(async () => 'executed')
   const prepare = vi.spyOn(runtime.registry().get('fs_read'), 'prepare').mockReturnValue({ effects: [value], execute })
-  const result = await runtime.invoke({ request: { requestId: 'ceiling-test', approvalTokens: [], tool: 'fs_read', args: { path: '/workspace/file.txt' } }, sessionId: 'ceiling-session' })
+  const result = await runtime.invoke({ request: { requestId: `ceiling-${randomUUID()}`, approvalTokens: [], tool: 'fs_read', args: { path: '/workspace/file.txt' } }, sessionId: 'ceiling-session' })
   prepare.mockRestore()
   return { result, execute }
 }
@@ -88,7 +89,7 @@ describe('immutable installation policy on child workspaces', () => {
     const runtime = await workspace(policy({ network: ['https://node.test/safe'] }), policy({ network: ['https://node.test', 'https://other.test'] }))
     const fetchMock = vi.fn(async () => new Response('', { status: 302, headers: { location: 'https://node.test/outside' } }))
     vi.stubGlobal('fetch', fetchMock)
-    const invoke = (url: string) => runtime.invoke({ request: { requestId: 'fetch-test', approvalTokens: [], tool: 'web_fetch', args: { url } }, sessionId: 'network-session' })
+    const invoke = (url: string) => runtime.invoke({ request: { requestId: `fetch-${randomUUID()}`, approvalTokens: [], tool: 'web_fetch', args: { url } }, sessionId: 'network-session' })
     expect((await invoke('https://other.test')).outcome).toBe('error')
     expect(fetchMock).not.toHaveBeenCalled()
     expect(await invoke('https://node.test/safe')).toMatchObject({ outcome: 'error', error: { code: 'EGRESS_BLOCKED' } })

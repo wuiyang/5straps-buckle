@@ -51,6 +51,7 @@ import { createApprovalService, type ApprovalService } from '../approvals/approv
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
 import { createApprovalNotices } from '../approvals/approval-notices.js'
+import { createExecutions } from '../invocation/executions.js'
 import { createInvoker, type InvokeInput } from '../invocation/invoker.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 
@@ -171,6 +172,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
+  const executions = createExecutions()
   const workbenches = createWorkbenchManager({
     directory: join(config.stateDirectory, 'workbenches', workspaceStateKey(config.cwd)),
     sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
@@ -252,6 +254,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
       permissions,
       approvals,
       approvalService,
+      executions,
       grants,
       actions,
       history,

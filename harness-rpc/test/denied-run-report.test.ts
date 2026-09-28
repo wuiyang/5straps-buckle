@@ -11,8 +11,11 @@ let runtime: BuckleRuntime
 let reports: DeniedRunReport[]
 let recorded: ActionReport[]
 let workspace: string
+// Each call names its own requestId: a re-used one replays the first run (execution dedupe).
+let calls: number
 
 beforeEach(async () => {
+  calls = 0
   workspace = mkdtempSync(join(tmpdir(), 'buckle-report-ws-'))
   writeFileSync(join(workspace, 'a.txt'), 'a')
   reports = []
@@ -34,7 +37,7 @@ beforeEach(async () => {
 })
 
 async function invoke(tool: string, args: Record<string, unknown>) {
-  return runtime.invoke({ request: { requestId: 'req-1', tool, args: args as Record<string, never>, approvalTokens: [] }, sessionId: 'chat-9' })
+  return runtime.invoke({ request: { requestId: `req-${++calls}`, tool, args: args as Record<string, never>, approvalTokens: [] }, sessionId: 'chat-9' })
 }
 
 describe('a refused call', () => {

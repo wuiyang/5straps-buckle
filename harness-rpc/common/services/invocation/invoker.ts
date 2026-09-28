@@ -1,5 +1,6 @@
 import { deniedSubjects } from '../../adapters/grant-store/file-grant-store.js'
 import { randomUUID } from 'node:crypto'
+import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { ChangeHistory } from '../history/journal.js'
@@ -19,6 +20,7 @@ import { resolveEffects } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ApprovalConflictError, ApprovalLimitError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
+import { requestFingerprint, REQUEST_ID_REUSED, type Earlier, type Execution, type ExecutionKey, type Executions } from './executions.js'
 
 /** The audit log's bound on caller-chosen ids; the stored join key is held to it too (review L4). */
 const MAX_LOGGED_ID = 200
@@ -34,6 +36,8 @@ export interface InvokerOptions {
   approvals: ApprovalRegistry
   /** Issues asks and waits for their answers; the one place a verdict is recorded. */
   approvalService: ApprovalService
+  /** The workspace's calls that run now or ran lately, so a re-send never runs one twice. */
+  executions: Executions
   grants: GrantStore
   history?: ChangeHistory
   historyRoots?: string[]
@@ -85,11 +89,22 @@ export function createInvoker(options: InvokerOptions): Invoker {
       })
       let effects: ResolvedEffect[] = []
       let gate: GateOutcome = { response: null, asked: [], approvedBy: [] }
+      // A re-send is the same call when it comes from the same session and actor (review M2 of B13-B14).
+      const key = executionKey({ request, sessionId })
+      let execution: Execution | undefined
+      let replayed = false
+      const answerEarlier = (earlier: Earlier): Promise<InvokeResponse> | InvokeResponse => {
+        if (earlier.kind === 'reused') return failed(request, REUSED)
+        replayed = true
+        return untilAborted(earlier.response, signal)
+      }
 
       const response = await (async (): Promise<InvokeResponse> => {
         try {
           signal?.throwIfAborted()
           if (sessionId.length > MAX_SESSION_ID) return sessionIdTooLong(request)
+          const earlier = options.executions.earlier(key)
+          if (earlier) return await answerEarlier(earlier)
           const reason = options.toolDenial?.(request.tool)
           if (reason) {
             const response = denied(request, reason)
@@ -103,7 +118,14 @@ export function createInvoker(options: InvokerOptions): Invoker {
           signal?.throwIfAborted()
           if (gate.response) return gate.response
 
-          const execute = () => executeWithTimeout({ options, request, sessionId, signal, consumed: gate.consumed ?? [], execute: prepared.execute })
+          // Cleared: this call becomes the key's one execution, unless a re-send of it got there first.
+          const claim = options.executions.claim(key)
+          if (claim.kind !== 'owner') return await answerEarlier(claim)
+          const owned = execution = claim.execution
+          const execute = () => {
+            owned.started()
+            return executeWithTimeout({ options, request, sessionId, signal, consumed: gate.consumed ?? [], execute: prepared.execute })
+          }
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
@@ -120,6 +142,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
           return { requestId: request.requestId, outcome: 'error', error: shapeError(error, request.tool) }
         }
       })()
+      // Settled before the result is recorded: the tool ran whether or not the record can be written.
+      execution?.settle({ response, auditId, callerLeft: signal?.aborted === true })
 
       const entry = buildEntry({
         request,
@@ -128,6 +152,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         gate,
         response,
         durationMs: Math.round(performance.now() - startedAt),
+        replayed,
       })
       await options.actions.record({ ...entry, auditId, event: 'result', workspaceId: options.workspaceId ?? 'default',
         ...auditContext(request),
@@ -148,8 +173,11 @@ function buildEntry(input: {
   gate: GateOutcome
   response: InvokeResponse
   durationMs: number
+  /** Answered with an earlier run's outcome: nothing ran for this attempt. */
+  replayed: boolean
 }): ActionLogEntry {
   const { request, response, gate } = input
+  const detail = input.replayed ? REPLAYED : describeDetail(response)
   return {
     at: new Date().toISOString(),
     requestId: request.requestId.slice(0, MAX_LOGGED_ID),
@@ -161,8 +189,28 @@ function buildEntry(input: {
     args: redactAuditArguments(request.args),
     ...(gate.asked.length > 0 ? { asked: gate.asked.map(value => value.split(':')[0] ?? 'permission') } : {}),
     ...(gate.approvedBy.length > 0 ? { approvedBy: gate.approvedBy.map(value => value.split(':')[0] ?? 'permission') } : {}),
-    ...(describeDetail(response) ? { detail: describeDetail(response) } : {}),
+    ...(detail ? { detail } : {}),
   }
+}
+
+/** The detail of an attempt answered with an earlier run's outcome, so every replay is in the audit log. */
+const REPLAYED = 'REPLAYED'
+
+/** The approval join's key (approval-service.ts): the session, the actor the guard set, and the requestId as the log bounds it. */
+function executionKey(input: { request: InvokeRequest; sessionId: string }): ExecutionKey {
+  const actor = useScopeSafe()?.context.actor
+  return { sessionId: input.sessionId, requestId: input.request.requestId.slice(0, MAX_LOGGED_ID), fingerprint: requestFingerprint(input.request), ...(actor === undefined ? {} : { actor }) }
+}
+
+/** An earlier run's outcome, unless this caller leaves first: then the wait ends as any cancelled call does. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work
+  signal.throwIfAborted()
+  return new Promise<T>((resolve, reject) => {
+    const leave = () => reject(signal.reason)
+    signal.addEventListener('abort', leave, { once: true })
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', leave))
+  })
 }
 
 /**
@@ -294,6 +342,7 @@ async function clearPermissions(input: {
 
 const SUPERSEDED = { code: 'REQUEST_SUPERSEDED', message: 'A newer call with the same requestId joined this approval wait and carries it on; this call did not run', retryable: false }
 const UNANSWERED = { code: 'APPROVAL_UNANSWERED', message: 'The approval this call waited for expired, was withdrawn or was spent by another call; send the call again to ask again', retryable: true }
+const REUSED = { code: REQUEST_ID_REUSED, message: 'This requestId already names a different call from this session; send a new requestId', retryable: false }
 
 function failed(request: InvokeRequest, error: { code: string; message: string; retryable: boolean }): InvokeResponse {
   return { requestId: request.requestId, outcome: 'error', error }
