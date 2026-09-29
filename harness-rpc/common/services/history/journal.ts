@@ -131,7 +131,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     assertSnapshotMatches({ current, expected: after, target: record.before, paths, operation: 'Restore' })
     const restore = await begin({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore', roots: record.roots, excluded: record.excluded }, record.id)
     try {
-      await section(connection => applySnapshot({ target: record.before, current, paths, content: hash => readObject(connection, hash) }))
+      await section(connection => applySnapshot({ target: record.before, current, paths, content: hash => readObject(connection, hash), roots: record.roots }))
     } finally { await finish(restore) }
     return summary(restore)
   }
@@ -151,7 +151,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         const current = await section(connection => capture(connection, details.roots, details.excluded))
         assertSnapshotMatches({ current, expected, target, paths, operation: 'Promotion' })
         const record = await begin(details)
-        try { onCheckpoint?.(); applySnapshot({ target, current, paths, content }) }
+        try { onCheckpoint?.(); applySnapshot({ target, current, paths, content, roots: details.roots }) }
         finally { await finish(record) }
         return summary(record)
       })

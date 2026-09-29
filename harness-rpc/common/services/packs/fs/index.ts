@@ -46,7 +46,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem'],
       input: schemas.writeInput,
       effects: input => [{ kind: 'write_path', path: input.path }],
-      run: input => writeFileEntry(input, context),
+      run: (input, toolContext) => writeFileEntry(input, { ...context, authorizeWrite: toolContext.authorizeWrite }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_write_batch',
@@ -55,7 +55,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem', 'batch'],
       input: schemas.writeBatchInput,
       effects: input => input.files.map(file => ({ kind: 'write_path' as const, path: file.path })),
-      run: async input => ({ files: await Promise.all(input.files.map(file => writeFileEntry(file, context))) }),
+      run: async (input, toolContext) => ({ files: await Promise.all(input.files.map(file => writeFileEntry(file, { ...context, authorizeWrite: toolContext.authorizeWrite }))) }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_patch',
@@ -64,7 +64,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem'],
       input: schemas.patchInput,
       effects: input => [{ kind: 'write_path', path: input.path }, { kind: 'read_path', path: input.path }],
-      run: input => patchFile(input, context),
+      run: (input, toolContext) => patchFile(input, { ...context, authorizeWrite: toolContext.authorizeWrite }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_list',

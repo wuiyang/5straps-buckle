@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { z } from 'zod'
-import { isInsideAny } from '../../domain/paths.js'
+import { openBeneath, openRealDirectory, type PinnedDirectory } from '../../adapters/beneath.js'
+import { isInside, isInsideAny } from '../../domain/paths.js'
 
 export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink']), mode: z.number(), hash: z.string().optional(), target: z.string().optional() })
 export const snapshotSchema = z.record(z.string(), entrySchema)
@@ -53,43 +54,94 @@ export function sameEntry(left: Entry | undefined, right: Entry | undefined): bo
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
-export function applySnapshot(input: { target: Snapshot; current: Snapshot; paths: string[]; content: (hash: string) => Buffer }): void {
-  // Children leave before parents. Never recursively delete untracked contents.
-  for (const path of [...input.paths].sort((a, b) => b.length - a.length)) {
-    const current = input.current[path]
-    const target = input.target[path]
-    if (current && (!target || target.kind !== current.kind || current.kind === 'symlink')) {
-      if (current.kind === 'directory') rmdirSync(path)
-      else rmSync(path)
+/**
+ * Makes `paths` match `target`. Every entry is made beneath its parent directory opened from the real
+ * root down without following a link, and files are written to a fresh name and renamed into place,
+ * so a link swapped into the tree after the checkpoint check is refused instead of followed (review H1
+ * of B23-B25). `roots` are the directories the snapshots were taken from; every path is inside one.
+ */
+export function applySnapshot(input: { target: Snapshot; current: Snapshot; paths: string[]; content: (hash: string) => Buffer; roots: string[] }): void {
+  const directories = createDirectoryCache(input.roots)
+  try {
+    // Children leave before parents. Never recursively delete untracked contents.
+    for (const path of [...input.paths].sort((a, b) => b.length - a.length)) {
+      const current = input.current[path]
+      const target = input.target[path]
+      if (current && (!target || target.kind !== current.kind || current.kind === 'symlink')) {
+        const { directory, name } = directories.parentOf(path, false)
+        if (current.kind === 'directory') rmdirSync(directory.child(name))
+        else rmSync(directory.child(name))
+      }
     }
-  }
-  for (const path of [...input.paths].sort((a, b) => a.length - b.length)) {
-    const entry = input.target[path]
-    if (!entry) continue
-    if (entry.kind === 'directory') {
-      mkdirSync(path, { recursive: true, mode: 0o700 })
-      chmodSync(path, entry.mode | 0o700)
+    // A directory removed above may be made again below: nothing opened before stands in for it.
+    directories.close()
+    for (const path of [...input.paths].sort((a, b) => a.length - b.length)) {
+      const entry = input.target[path]
+      if (!entry) continue
+      const { directory, name } = directories.parentOf(path, true)
+      if (entry.kind === 'directory') {
+        try { mkdirSync(directory.child(name), { mode: 0o700 }) } catch (error) { if (!isExisting(error)) throw error }
+        changeMode(directory, name, entry.mode | 0o700, path)
+      }
+      else if (entry.kind === 'symlink') symlinkSync(entry.target!, directory.child(name))
+      else writeRestoredFile({ directory, name, path, content: input.content(entry.hash!), mode: entry.mode })
     }
-    else if (entry.kind === 'symlink') symlinkSync(entry.target!, path)
-    else {
-      mkdirSync(dirname(path), { recursive: true })
-      writeRestoredFile({ path, content: input.content(entry.hash!), mode: entry.mode })
+    for (const path of [...input.paths].sort((a, b) => b.length - a.length)) {
+      const entry = input.target[path]
+      if (entry?.kind !== 'directory') continue
+      const { directory, name } = directories.parentOf(path, false)
+      changeMode(directory, name, entry.mode, path)
     }
-    if (entry.kind === 'file') chmodSync(path, entry.mode)
-  }
-  for (const path of [...input.paths].sort((a, b) => b.length - a.length)) {
-    const entry = input.target[path]
-    if (entry?.kind === 'directory') chmodSync(path, entry.mode)
+  } finally { directories.close() }
+}
+
+/** How many opened parent directories one apply keeps; snapshots list siblings together, so few are needed. */
+const OPEN_DIRECTORIES = 64
+
+function createDirectoryCache(roots: string[]) {
+  const open = new Map<string, PinnedDirectory>()
+  const realRoots = new Map<string, string>()
+  const closeAll = () => { for (const directory of open.values()) directory.close(); open.clear() }
+  return {
+    /** The pinned parent of a snapshot path, reached from its root's real path. */
+    parentOf(path: string, create: boolean): { directory: PinnedDirectory; name: string } {
+      const root = roots.find(candidate => isInside(candidate, path))
+      if (!root) throw new Error('A checkpoint path is outside the roots it was taken from')
+      const anchor = path === root ? dirname(root) : root
+      if (!realRoots.has(anchor)) realRoots.set(anchor, realpathSync(anchor))
+      const parent = join(realRoots.get(anchor)!, relative(anchor, dirname(path)))
+      let directory = open.get(parent)
+      if (!directory) {
+        if (open.size >= OPEN_DIRECTORIES) closeAll()
+        directory = openRealDirectory(parent, { create })
+        open.set(parent, directory)
+      }
+      return { directory, name: basename(path) }
+    },
+    close: closeAll,
   }
 }
 
-function writeRestoredFile(input: { path: string; content: Buffer; mode: number }): void {
-  const temporary = `${input.path}.buckle-restore-${randomUUID()}`
-  const descriptor = openSync(temporary, 'wx', input.mode)
+function changeMode(directory: PinnedDirectory, name: string, mode: number, shown: string): void {
+  const descriptor = openBeneath(directory, name, constants.O_RDONLY, shown)
+  try { fchmodSync(descriptor, mode) } finally { closeSync(descriptor) }
+}
+
+function writeRestoredFile(input: { directory: PinnedDirectory; name: string; path: string; content: Buffer; mode: number }): void {
+  const temporary = `${input.name}.buckle-restore-${randomUUID()}`
+  // Reserved before the cleanup below owns the name, so a name already taken is never removed.
+  const descriptor = openBeneath(input.directory, temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, input.path, input.mode)
   try {
-    try { writeFileSync(descriptor, input.content) } finally { closeSync(descriptor) }
-    renameSync(temporary, input.path)
-  } finally { rmSync(temporary, { force: true }) }
+    try {
+      writeFileSync(descriptor, input.content)
+      fchmodSync(descriptor, input.mode)
+    } finally { closeSync(descriptor) }
+    renameSync(input.directory.child(temporary), input.directory.child(input.name))
+  } finally { rmSync(input.directory.child(temporary), { force: true }) }
+}
+
+function isExisting(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'EEXIST'
 }
 
 export function isMissing(error: unknown): boolean {

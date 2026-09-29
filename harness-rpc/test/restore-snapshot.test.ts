@@ -17,7 +17,7 @@ it('does not remove an existing file when reserving a restore temporary fails', 
   const temporary = `${path}.buckle-restore-collision-fixture`
   writeFileSync(path, 'current')
   writeFileSync(temporary, 'owner-file')
-  expect(() => applySnapshot({ current: { [path]: { kind: 'file', mode: 0o600, hash: 'current' } }, target: { [path]: { kind: 'file', mode: 0o600, hash: 'before' } }, paths: [path], content: () => Buffer.from('before') })).toThrow('EEXIST')
+  expect(() => applySnapshot({ current: { [path]: { kind: 'file', mode: 0o600, hash: 'current' } }, target: { [path]: { kind: 'file', mode: 0o600, hash: 'before' } }, paths: [path], content: () => Buffer.from('before'), roots: [root] })).toThrow('EEXIST')
   expect(readFileSync(path, 'utf8')).toBe('current')
   expect(readFileSync(temporary, 'utf8')).toBe('owner-file')
 })

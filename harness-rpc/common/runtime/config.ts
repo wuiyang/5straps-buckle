@@ -1,6 +1,7 @@
 import { parseSandboxMounts, type SandboxMount } from '../domain/sandbox-mounts.js'
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
 import { isInside } from '../domain/paths.js'
@@ -159,9 +160,23 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
   }
 }
 
-/** Node configuration and all workspace maps are owner-only, never tool-accessible. */
+/**
+ * Node configuration and all workspace maps are owner-only, never tool-accessible. Effects are judged
+ * at their real paths, so each root is named by its real path too (a symlinked home, macOS /var).
+ */
 export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string[] {
-  return [...new Set([join(homedir(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory])]
+  const named = [join(homedir(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory]
+  return [...new Set([...named, ...named.map(realPathOf)])]
+}
+
+/** The real path of a directory, or of its nearest existing ancestor with the rest appended. */
+function realPathOf(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    const parent = dirname(path)
+    return parent === path ? path : join(realPathOf(parent), basename(path))
+  }
 }
 
 /** Where grants, approvals and the action log live, read without loading the rest of the config. */

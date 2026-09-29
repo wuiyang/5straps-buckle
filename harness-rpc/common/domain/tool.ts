@@ -10,6 +10,8 @@ export interface ToolContext {
   timeoutMs: number
   signal: AbortSignal
   authorizeRead?: (path: string) => Promise<boolean>
+  /** Whether a real path is one the call's permission check judged as a write; a writer refuses any other. */
+  authorizeWrite?: (target: string) => boolean
   /**
    * The permission rules' verdict on reaching a URL mid-call, with this session's grants and the
    * approvals this call consumed, so a fetch honours what the owner approved without a copy of

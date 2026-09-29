@@ -8,7 +8,7 @@ import { isInsideAny, isInside } from '../../domain/paths.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { ToolExecutionError } from '../../domain/tool.js'
 import { logger } from '../../runtime/log.js'
-import { applySnapshot, changedPaths, snapshot, snapshotSchema, type Snapshot } from '../history/snapshot.js'
+import { applySnapshot, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from '../history/snapshot.js'
 import type { ChangeHistory, HistoryInput } from '../history/journal.js'
 
 export interface IsolatedShellOptions {
@@ -51,7 +51,7 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     record('preparing')
     const before = snapshot({ roots: [input.sourceRoot], excluded: input.excluded, maxBytes: input.isolation.maxBytes, save })
     const copied = relocate(before, input.sourceRoot, copyRoot)
-    applySnapshot({ current: {}, target: copied, paths: Object.keys(copied), content })
+    applySnapshot({ current: {}, target: copied, paths: Object.keys(copied), content, roots: [copyRoot] })
     writeFileSync(join(directory, 'before.json'), JSON.stringify(before), { mode: 0o600 })
     record('running')
     started = true
@@ -90,8 +90,53 @@ function assertPublishable(input: { before: Snapshot; after: Snapshot; sourceRoo
     const entry = input.after[path]
     if (!isInsideAny(input.writableRoots, path) || isInsideAny(input.excluded, path)) throw new Error('A shell change is outside its approved writable roots')
     if (sensitivePathReason(path) || entry?.kind === 'directory' && sensitivePathReason(join(path, 'entry'))) throw new Error('Credential paths cannot be published from a shell')
-    if (entry?.kind === 'symlink' && !isInside(input.sourceRoot, resolve(dirname(path), entry.target!))) throw new Error('A new symbolic link leaves the workspace')
   }
+  assertLinksStayInside(input)
+}
+
+/** How many links one lookup may pass through, as Linux allows (SYMLOOP_MAX). */
+const MAX_LINKS = 40
+
+/**
+ * A new link, or an old one whose landing a change moved, must land inside the workspace once every
+ * link it passes through is followed as the kernel would, from where each really points (review H1 of
+ * B23-B25: `a/up -> ..` then `a/x -> up/../../outside` looked inside to a lexical check).
+ */
+function assertLinksStayInside(input: { before: Snapshot; after: Snapshot; sourceRoot: string }): void {
+  for (const [path, entry] of Object.entries(input.after)) {
+    if (entry.kind !== 'symlink') continue
+    const landing = linkLanding(input.after, input.sourceRoot, path)
+    if (landing !== null) continue
+    if (!sameEntry(input.before[path], entry) || linkLanding(input.before, input.sourceRoot, path) !== null) throw new Error('A new symbolic link leaves the workspace')
+  }
+}
+
+/** Where a link in a snapshot lands, or null when it leaves the root, loops, or cannot be told. */
+function linkLanding(tree: Snapshot, root: string, link: string): string | null {
+  return follow({ tree, root, from: dirname(link), target: tree[link]?.target ?? '', budget: { links: 1 } })
+}
+
+function follow(input: { tree: Snapshot; root: string; from: string; target: string; budget: { links: number } }): string | null {
+  const { tree, root, target, budget } = input
+  let current = input.from
+  let parts = target.split('/')
+  if (target.startsWith('/')) {
+    if (!target.startsWith(`${root}/`) && target !== root) return null
+    current = root
+    parts = target.slice(root.length).split('/')
+  }
+  for (const part of parts) {
+    if (part === '' || part === '.') continue
+    current = part === '..' ? dirname(current) : join(current, part)
+    if (!isInside(root, current)) return null
+    const entry = tree[current]
+    if (entry?.kind !== 'symlink') continue
+    if (++budget.links > MAX_LINKS) return null
+    const landed = follow({ tree, root, from: dirname(current), target: entry.target ?? '', budget })
+    if (landed === null) return null
+    current = landed
+  }
+  return current
 }
 
 function removePrivateWorkspace(directory: string): void {

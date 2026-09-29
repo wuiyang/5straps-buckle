@@ -10,6 +10,7 @@ import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { logger } from '../../../runtime/log.js'
+import { resolveTarget } from '../../invocation/real-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
@@ -95,7 +96,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           const filePaths = new Set(browserEffects(input.command, input.args).flatMap(effect => effect.kind === 'read_path' || effect.kind === 'write_path' ? [effect.path] : []))
           if (['screenshot', 'pdf', 'download', 'upload'].includes(input.command) && !filePaths.size) throw new ToolInputError('Browser file operations require an explicit path')
           const targets = navigationTargets(input.command, input.args)
-          const passed = input.args.map((argument, index) => targets.get(index) ?? (filePaths.has(argument) ? options.paths.resolve(argument) : realPath(argument, options.paths)))
+          // A file argument is passed as its judged target, every link followed, so the browser writes where the rules looked (review H1 of B23-B25).
+          const passed = input.args.map((argument, index) => targets.get(index) ?? (filePaths.has(argument) ? resolveTarget(options.paths.resolve(argument)) : realPath(argument, options.paths)))
           const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
           const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
           const { session, previous } = await sessions.update(state => ({ session: state.sessions[key] ??= `buckle-${randomUUID()}`, previous: state.allowedDomains[key] }))

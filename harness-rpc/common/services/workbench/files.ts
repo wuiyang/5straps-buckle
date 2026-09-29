@@ -87,7 +87,7 @@ export function createWorkbenchFiles(options: WorkbenchFileOptions) {
       const before = snapshot({ roots: [options.sourceRoot], excluded: excluded(), maxBytes: options.maxBytes, save: (hash, content) => saveObject(id, hash, content) })
       if (!before[options.sourceRoot]) throw new WorkbenchError('Workspace root is not readable', 403)
       const copied = Object.fromEntries(Object.entries(before).map(([path, entry]) => [join(root(id), relative(options.sourceRoot, path)), entry]))
-      applySnapshot({ current: {}, target: copied, paths: Object.keys(copied), content: hash => readFileSync(objectPath(id, hash)) })
+      applySnapshot({ current: {}, target: copied, paths: Object.keys(copied), content: hash => readFileSync(objectPath(id, hash)), roots: [root(id)] })
       writeWorkbenchJson(join(options.directory, id, 'base.json'), before)
     },
     async invoke(id: string, chatId: string, tool: string, args: JsonObject): Promise<JsonValue> {

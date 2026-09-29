@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto'
 import { isUtf8 } from 'node:buffer'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { lstat, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, matchesGlob, relative } from 'node:path'
+import { constants, ftruncateSync, readFileSync, writeSync } from 'node:fs'
+import { lstat, readdir, readFile, stat } from 'node:fs/promises'
+import { basename, join, matchesGlob, relative } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
+import { withFileBeneath } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { ToolInputError } from '../../../domain/tool.js'
+import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
 import { isIgnoredDirectory } from './ignore.js'
 import type * as schemas from './schemas.js'
 
@@ -16,6 +18,7 @@ const MAX_TREE_ENTRIES = 5_000
 export interface FsContext {
   paths: PathView
   authorizeRead?: (path: string) => Promise<boolean>
+  authorizeWrite?: (target: string) => boolean
 }
 
 export async function readFileEntry(
@@ -59,15 +62,22 @@ export async function writeFileEntry(
   const path = context.paths.resolve(input.path)
   const content = Buffer.from(input.content, input.encoding)
   if (content.byteLength > MAX_FILE_BYTES) throw new ToolInputError(`Content exceeds ${MAX_FILE_BYTES} bytes`)
-  if (input.createParents) await mkdir(dirname(path), { recursive: true })
+  const target = writeTarget(path, context)
+  const createParents = input.createParents === true
   if (input.expectedHash) {
-    // Keep Buckle's comparison and write in one event-loop turn; host editors remain independent.
-    let previous: Buffer
-    try { previous = readFileSync(path) } catch { throw new ToolInputError('File changed or is unavailable. Reload before saving.') }
-    if (createHash('sha256').update(previous).digest('hex') !== input.expectedHash) throw new ToolInputError('File changed since it was opened. Reload before saving.')
-    writeFileSync(path, content)
+    // Buckle's comparison and write share one descriptor and one event-loop turn; host editors remain independent.
+    const expected = input.expectedHash
+    try {
+      withFileBeneath(target, { flags: constants.O_RDWR, createParents }, (descriptor) => {
+        if (createHash('sha256').update(readFileSync(descriptor)).digest('hex') !== expected) throw new ToolInputError('File changed since it was opened. Reload before saving.')
+        replaceContent(descriptor, content)
+      })
+    } catch (error) {
+      if (isMissingPathError(error)) throw new ToolInputError('File changed or is unavailable. Reload before saving.')
+      throw error
+    }
   } else {
-    await writeFile(path, content)
+    withFileBeneath(target, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC, createParents }, descriptor => writeAll(descriptor, content))
   }
   return { path: context.paths.display(path), size: content.byteLength, hash: createHash('sha256').update(content).digest('hex') }
 }
@@ -77,22 +87,48 @@ export async function patchFile(
   context: FsContext,
 ): Promise<JsonValue> {
   const path = context.paths.resolve(input.path)
-  let content = await readFile(path, 'utf8')
-  const replacements: number[] = []
+  const target = writeTarget(path, context)
+  return withFileBeneath(target, { flags: constants.O_RDWR }, (descriptor) => {
+    let content = readFileSync(descriptor, 'utf8')
+    const replacements: number[] = []
 
-  for (const edit of input.edits) {
-    const count = countOccurrences(content, edit.oldText)
-    if (count === 0) throw new ToolInputError('Patch text was not found')
-    if (!edit.replaceAll && count !== 1) {
-      throw new ToolInputError(`Patch text matched ${count} times; set replaceAll or add surrounding context`)
+    for (const edit of input.edits) {
+      const count = countOccurrences(content, edit.oldText)
+      if (count === 0) throw new ToolInputError('Patch text was not found')
+      if (!edit.replaceAll && count !== 1) {
+        throw new ToolInputError(`Patch text matched ${count} times; set replaceAll or add surrounding context`)
+      }
+      content = edit.replaceAll ? content.split(edit.oldText).join(edit.newText) : content.replace(edit.oldText, edit.newText)
+      replacements.push(edit.replaceAll ? count : 1)
     }
-    content = edit.replaceAll ? content.split(edit.oldText).join(edit.newText) : content.replace(edit.oldText, edit.newText)
-    replacements.push(edit.replaceAll ? count : 1)
-  }
 
-  if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw new ToolInputError(`Patched file exceeds ${MAX_FILE_BYTES} bytes`)
-  await writeFile(path, content, 'utf8')
-  return { path: context.paths.display(path), replacements, size: Buffer.byteLength(content) }
+    if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw new ToolInputError(`Patched file exceeds ${MAX_FILE_BYTES} bytes`)
+    replaceContent(descriptor, Buffer.from(content, 'utf8'))
+    return { path: context.paths.display(path), replacements, size: Buffer.byteLength(content) }
+  })
+}
+
+/**
+ * Where a write lands: the named path with every link followed, dangling ones included, which is what
+ * the permission rules judged (resolve-effects.ts). When the call carries its judged targets, a path
+ * that resolves anywhere else now (a link swapped in while the call waited) is refused.
+ */
+function writeTarget(path: string, context: FsContext): string {
+  const target = resolveTarget(path)
+  if (context.authorizeWrite && !context.authorizeWrite(target)) {
+    throw new ToolInputError(`${context.paths.display(path)} now resolves to a place its permission check did not see; send the call again`, { code: 'PERMISSION_DENIED' })
+  }
+  return target
+}
+
+function replaceContent(descriptor: number, content: Buffer): void {
+  ftruncateSync(descriptor, 0)
+  writeAll(descriptor, content)
+}
+
+function writeAll(descriptor: number, content: Buffer): void {
+  let offset = 0
+  while (offset < content.byteLength) offset += writeSync(descriptor, content, offset, content.byteLength - offset, offset)
 }
 
 export async function listTree(

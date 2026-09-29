@@ -192,3 +192,46 @@ describe('a browser command reaching for a local file', () => {
     }).kind).toBe('allow')
   })
 })
+
+describe('a dangling link (review H1 and H2 of B23-B25)', () => {
+  let root: string
+  const view = () => createPathView({ root: join(root, 'workspace'), mount: null })
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'buckle-dangling-'))
+    await mkdir(join(root, 'workspace', 'a'), { recursive: true })
+    await mkdir(join(root, 'outside'), { recursive: true })
+    // A relative link to a file that does not exist yet.
+    await symlink('../outside/absent.txt', join(root, 'workspace', 'notes.txt'))
+    // A chain: a/up -> .. is the workspace, so up/../outside climbs from there. Read as text it stays in a/.
+    await symlink('..', join(root, 'workspace', 'a', 'up'))
+    await symlink('up/../outside/chained.txt', join(root, 'workspace', 'a', 'x'))
+    // A link through a dangling directory link to a file beneath it.
+    await symlink('../outside/new-directory', join(root, 'workspace', 'later'))
+    await symlink('loop-b', join(root, 'workspace', 'loop-a'))
+    await symlink('loop-a', join(root, 'workspace', 'loop-b'))
+  })
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it('is judged where it lands, not by its own path, and its ask names the real directory', async () => {
+    const [effect] = await resolveEffects({ effects: [{ kind: 'write_path', path: 'notes.txt' }], paths: view() })
+    expect(effect).toEqual({ kind: 'write_path', path: join(root, 'outside', 'absent.txt'), directory: join(root, 'outside') })
+  })
+
+  it('follows a chain of links from where each really points', async () => {
+    const [effect] = await resolveEffects({ effects: [{ kind: 'write_path', path: 'a/x' }], paths: view() })
+    expect(effect?.kind === 'write_path' && effect.path).toBe(join(root, 'outside', 'chained.txt'))
+  })
+
+  it('follows a dangling link in a parent, so a file created beneath it is judged outside', async () => {
+    const [effect] = await resolveEffects({ effects: [{ kind: 'write_path', path: 'later/file.txt' }], paths: view() })
+    expect(effect?.kind === 'write_path' && effect.path).toBe(join(root, 'outside', 'new-directory', 'file.txt'))
+  })
+
+  it('refuses a loop rather than judging it', async () => {
+    await expect(resolveEffects({ effects: [{ kind: 'write_path', path: 'loop-a' }], paths: view() })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+})

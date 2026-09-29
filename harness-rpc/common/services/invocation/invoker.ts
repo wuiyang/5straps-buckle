@@ -150,7 +150,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const execute = () => {
             owned.started()
             ran = true
-            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], auditUses, execute: prepared.execute })
+            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute })
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
@@ -486,10 +486,13 @@ async function executeWithTimeout(input: {
   request: InvokeRequest
   sessionId: string
   consumed: GrantSubject[]
+  /** What the permission check judged; a writer may reach only the write targets among them. */
+  effects: ResolvedEffect[]
   auditUses: UseAuditor
   signal?: AbortSignal
   execute: (context: ToolContext) => Promise<JsonValue>
 }): Promise<JsonValue> {
+  const judgedWrites = new Set(input.effects.flatMap(effect => effect.kind === 'write_path' ? [effect.path] : []))
   const timeoutMs = Math.min(input.request.timeoutMs ?? input.options.defaultTimeoutMs, input.options.maxTimeoutMs)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -510,6 +513,7 @@ async function executeWithTimeout(input: {
         await input.auditUses(outcome.allowedBy)
         return true
       },
+      authorizeWrite: target => judgedWrites.has(target),
       judgeNetwork: url => judgeNetwork({ ...input, url }),
     })
   } finally {

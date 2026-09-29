@@ -122,6 +122,41 @@ describe('isolated shell publication', () => {
     expect(existsSync(join(sourceRoot, 'escape'))).toBe(false)
   })
 
+  // Review H1 of B23-B25: a link is checked where it lands once every link it passes is followed.
+  it('rejects a chained link that a lexical check reads as inside the workspace', async () => {
+    const { sourceRoot, input } = await fixture()
+    await expect(runIsolatedShell({ ...input, execute: async copy => {
+      mkdirSync(join(copy, 'a'))
+      symlinkSync('..', join(copy, 'a', 'up'))
+      // up is the workspace, so up/../state leaves it for Buckle's state directory; as text it names a/state.
+      symlinkSync('up/../state/dangerously-allow.json', join(copy, 'a', 'x'))
+    } })).rejects.toThrow('owner review')
+    expect(existsSync(join(sourceRoot, 'a'))).toBe(false)
+  })
+
+  it('publishes a chained link that lands inside the workspace', async () => {
+    const { sourceRoot, input } = await fixture()
+    writeFileSync(join(sourceRoot, 'file'), 'kept')
+    await runIsolatedShell({ ...input, execute: async copy => {
+      mkdirSync(join(copy, 'a'))
+      symlinkSync('..', join(copy, 'a', 'up'))
+      symlinkSync('up/file', join(copy, 'a', 'y'))
+    } })
+    expect(readFileSync(join(sourceRoot, 'a', 'y'), 'utf8')).toBe('kept')
+  })
+
+  it('rejects a new link that moves an existing link out of the workspace', async () => {
+    const { sourceRoot, input } = await fixture()
+    mkdirSync(join(sourceRoot, 'a', 'inner'), { recursive: true })
+    symlinkSync('a/inner/../file', join(sourceRoot, 'y'))
+    await expect(runIsolatedShell({ ...input, execute: async copy => {
+      rmSync(join(copy, 'a', 'inner'), { recursive: true })
+      // Inside on its own; through it, y now climbs to the parent of the workspace.
+      symlinkSync('..', join(copy, 'a', 'inner'))
+    } })).rejects.toThrow('owner review')
+    expect(existsSync(join(sourceRoot, 'a', 'inner'))).toBe(true)
+  })
+
   it('retains changes when execution fails before a final process result', async () => {
     const { sourceRoot, input, history } = await fixture()
     await expect(runIsolatedShell({ ...input, execute: async copy => { writeFileSync(join(copy, 'partial'), 'agent'); throw new Error('process interrupted') } })).rejects.toThrow('owner review')
