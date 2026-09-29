@@ -1,6 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { generateSigningKey } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clientCommand, clientDirectory, CLIENT_KEY_FILE, loadClientKey } from '../cli/client.js'
@@ -8,7 +8,9 @@ import { keysCommand } from '../cli/keys.js'
 import { runCli } from '../cli/main.js'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFileClientKeys } from '../common/adapters/keys/file-client-keys.js'
-import { actionsPath, clientKeysPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { actionsPath, clientKeysPath, loadConfig, nodeKeyPath, requestNoncesPath, type BuckleConfig } from '../common/runtime/config.js'
+import { initializeCommon } from '../common/runtime/initialize.js'
+import { loadNodeKey } from '../common/adapters/keys/file-node-key.js'
 
 // B23, owner ruling H4 of 2026-09-28: the SSH model. A person's device keeps its Ed25519 private key
 // owner-only (`buckle client`); the owner enrolls the public half on the node (`buckle keys`), locally.
@@ -166,5 +168,49 @@ describe('a key\'s scope (owner decision D10)', () => {
     await keys.enroll({ publicKey: onDefault.publicKey, label: '', purpose: 'setup', workspace: 'default' })
     expect(verdict(onDefault, 'buckle-setup', 'default')).toBe('ok')
     expect(verdict(onDefault, 'buckle-setup', 'default', true)).toBe('out_of_scope')
+  })
+})
+
+describe('a small-order key (review L3 of B23-B25)', () => {
+  const identity = `ed25519:${Buffer.from('01'.padEnd(64, '0'), 'hex').toString('base64url')}`
+  const orderEight = `ed25519:${Buffer.from('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05', 'hex').toString('base64url')}`
+
+  it('is never enrolled, and never pinned as a node key', async () => {
+    const config = node()
+    const output = capture()
+    for (const key of [identity, orderEight]) {
+      expect((await keysCommand({ config, argv: ['enroll', key, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(1)
+      expect(output.stderr).toContain('A small-order Ed25519 public key proves nothing')
+      expect((await clientCommand(['trust', 'http://127.0.0.1:4320', 'node-1', key], { BUCKLE_CLIENT_DIR: join(scratch(), 'device') })).exitCode).toBe(1)
+      expect(output.stderr).toContain('Not pinned: A small-order Ed25519 public key proves nothing')
+    }
+    expect(createFileClientKeys({ filePath: clientKeysPath(config) }).list()).toEqual([])
+  })
+})
+
+describe('the node\'s own key and the admin-only state (review L11 of B23-B25)', () => {
+  it('is made only where the admin HTTP layer runs: never by a CLI command, MCP, or a serve with the flag off', async () => {
+    for (const [role, flag, made] of [['cli', 'true', false], ['mcp', 'true', false], ['server', 'false', false], ['server', 'true', true]] as const) {
+      const root = scratch()
+      mkdirSync(join(root, 'workspace'))
+      mkdirSync(join(root, 'state'), { mode: 0o700 })
+      const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: flag })
+      const common = initializeCommon({ config, role })
+      await common.start()
+      try {
+        for (const file of [nodeKeyPath(config), requestNoncesPath(config)]) expect({ role, flag, file: basename(file), exists: existsSync(file) }).toEqual({ role, flag, file: basename(file), exists: made })
+      } finally { await common.owner.close() }
+    }
+  })
+
+  it('writes the key whole or not at all, keeps a key another process made first, and names the file when it holds no key', () => {
+    const root = scratch()
+    const file = join(root, 'node-signing-key.pem')
+    const first = loadNodeKey(file)
+    expect(loadNodeKey(file).keyId).toBe(first.keyId)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect(readdirSync(root)).toEqual(['node-signing-key.pem'])
+    writeFileSync(file, '', { mode: 0o600 })
+    expect(() => loadNodeKey(file)).toThrow(`${file} does not hold this node's Ed25519 signing key`)
   })
 })

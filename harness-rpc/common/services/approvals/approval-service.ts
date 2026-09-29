@@ -10,7 +10,7 @@ import type { PermissionDecision } from '../../domain/permission/decision.js'
 import { logger } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import type { ApprovalAuthority, ApprovalRegistry, PendingAsk, Resolution } from './approval-registry.js'
+import type { ApprovalAuthority, ApprovalRegistry, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -103,9 +103,9 @@ export interface ApprovalService {
   /**
    * The setup face's explicit cancel for one call (owner decision D6): withdraws its asks still
    * waiting, tells the webhook they were cancelled, and wakes the callers and questions waiting on
-   * them. Returns the withdrawn tokens; none when nothing of that call waits.
+   * them; drops its answered `once` approvals no call spent. Returns both lists of tokens.
    */
-  withdrawCall(selector: ApprovalWithdraw): Promise<string[]>
+  withdrawCall(selector: ApprovalWithdraw): Promise<CallWithdrawal>
   /** The requests still waiting in this workspace's queue. */
   pending(): ApprovalRequest[]
   /**
@@ -113,6 +113,11 @@ export interface ApprovalService {
    * notices still in flight; the asks stay in the durable queue.
    */
   close(): Promise<void>
+}
+
+/** A withdrawal, with its selector as the registry keeps it (a requestId hashed) for the audit entry (review L14 of B23-B25). */
+export interface CallWithdrawal extends GroupWithdrawal {
+  selector: { token: string } | { requestId: string; sessionId: string }
 }
 
 export interface ApprovalServiceOptions {
@@ -272,11 +277,12 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     async withdrawCall(selector) {
       // The registry keeps a call's requestId hashed, as the invoker joins it.
-      const withdrawn = await options.registry.cancelGroup('token' in selector ? selector : { requestId: requestIdKey(selector.requestId), sessionId: selector.sessionId })
-      notices.cancelled(withdrawn)
-      for (const token of withdrawn) wake(token)
-      if (withdrawn.length > 0) logger.info('Withdrew a call\'s approval asks through the setup face', { withdrawn: withdrawn.length, workspaceId: options.workspaceId })
-      return withdrawn
+      const hashed = 'token' in selector ? { token: selector.token } : { requestId: requestIdKey(selector.requestId), sessionId: selector.sessionId }
+      const result = await options.registry.cancelGroup(hashed)
+      notices.cancelled(result.withdrawn)
+      for (const token of result.withdrawn) wake(token)
+      if (result.withdrawn.length > 0 || result.dropped.length > 0) logger.info('Withdrew a call\'s approvals through the setup face', { withdrawn: result.withdrawn.length, dropped: result.dropped.length, workspaceId: options.workspaceId })
+      return { ...result, selector: hashed }
     },
 
     pending: () => options.registry.pending(),

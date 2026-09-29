@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { generateSigningKey, signingKeyFromPem, signRequest, type SignedRequestPurpose } from '@5straps/protocol/signed-request'
+import { keysCommand } from '../../cli/keys.js'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
@@ -37,6 +39,14 @@ interface Probe { path: string; method: string; credential: Credential; status: 
 let buckle: BuckleHttp
 let probes: Probe[]
 let offTable: Probe[]
+let signedProbes: SignedProbe[]
+let internalsBefore: Internals
+
+/** A person's enrolled key, node-wide for both purposes, and one nobody enrolled. */
+const enrolled = generateSigningKey()
+const stranger = generateSigningKey()
+type Signer = 'setup in session' | 'setup without session' | 'approval' | 'stranger setup' | 'stranger approval'
+interface SignedProbe { path: string; method: string; signer: Signer; status: number; served: boolean }
 
 beforeAll(async () => {
   const { root, environment } = nodeEnvironment('buckle-sweep-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_PACKS: 'fs' })
@@ -45,9 +55,11 @@ beforeAll(async () => {
   const registered = await buckle.request('/setup/workspaces', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify({ id: 'child', name: 'child', root: join(root, 'child'), authToken: CHILD_AGENT, adminToken: CHILD_ADMIN }) })
   expect(registered.status).toBe(201)
   expect((await buckle.request('/setup/workbenches', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify(GRANT) })).status).toBe(200)
+  internalsBefore = internals()
   probes = await sweep(concretePaths())
   offTable = await sweep(new Map(OFF_TABLE.map(path => [path, new Set<string>()])))
-}, 240_000)
+  signedProbes = await signedSweep()
+}, 360_000)
 afterAll(async () => { await buckle?.close() })
 
 function bearer(token: string | undefined): Record<string, string> {
@@ -91,6 +103,63 @@ async function sweep(paths: Map<string, Set<string>>): Promise<Probe[]> {
     }
   }
   return results
+}
+
+/**
+ * The admin paths again under signed requests (review L8 of B23-B25): a node-wide key enrolled for both
+ * purposes, as a setup request naming its open session on that workspace, one naming none, and an
+ * approval request; and a key nobody enrolled. Each request is signed for its own method, path and
+ * body, so only the scope and the route's kind of access decide.
+ */
+async function signedSweep(): Promise<SignedProbe[]> {
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+  expect((await keysCommand({ config: buckle.config, argv: ['enroll', enrolled.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(0)
+  vi.restoreAllMocks()
+  const nodeKey = (await buckle.services.getNodeSigner()).keyId
+  const sign = (input: { key: typeof enrolled; purpose: SignedRequestPurpose; workspace: string; method: string; path: string; session?: string }) => signRequest({
+    key: signingKeyFromPem(input.key.privateKeyPem), purpose: input.purpose, node: buckle.config.serverId, nodeKey, workspace: input.workspace,
+    method: input.method, path: input.path, body: '', ...(input.session ? { session: input.session } : {}),
+  })
+  const sessions = new Map<string, string>()
+  for (const workspace of ['default', 'child']) {
+    const path = workspace === 'default' ? '/setup/sessions' : `/workspaces/${workspace}/setup/sessions`
+    const opened = await buckle.request(path, { method: 'POST', headers: { authorization: sign({ key: enrolled, purpose: 'buckle-setup', workspace, method: 'POST', path }) } })
+    expect(opened.status).toBe(201)
+    sessions.set(workspace, (await opened.json() as { session: { id: string } }).session.id)
+  }
+  const results: SignedProbe[] = []
+  for (const [path, methods] of concretePaths()) {
+    if (!isSetup(path)) continue
+    const workspace = path.startsWith('/workspaces/child/') ? 'child' : 'default'
+    for (const method of METHODS) {
+      const signers: Array<[Signer, string]> = [
+        ['setup in session', sign({ key: enrolled, purpose: 'buckle-setup', workspace, method, path, session: sessions.get(workspace)! })],
+        ['setup without session', sign({ key: enrolled, purpose: 'buckle-setup', workspace, method, path })],
+        ['approval', sign({ key: enrolled, purpose: 'buckle-approval', workspace, method, path })],
+        ['stranger setup', sign({ key: stranger, purpose: 'buckle-setup', workspace, method, path, session: sessions.get(workspace)! })],
+        ['stranger approval', sign({ key: stranger, purpose: 'buckle-approval', workspace, method, path })],
+      ]
+      for (const [signer, authorization] of signers) {
+        const response = await buckle.request(path, { method, headers: { authorization } })
+        await response.body?.cancel()
+        results.push({ path, method, signer, status: response.status, served: serves(methods, method) })
+      }
+    }
+  }
+  return results
+}
+
+/** What a route could patch at runtime: the h3 app's own functions and tables, and every hook, by identity (review L7 of B23-B25). */
+type Internals = { app: Record<string, unknown>; routes: number; middleware: number; hooks: Record<string, unknown[]> }
+function internals(): Internals {
+  const app = buckle.nitroApp.h3 as unknown as Record<string, unknown>
+  const hooks = (buckle.nitroApp.hooks as unknown as { _hooks?: Record<string, unknown[]> })._hooks ?? {}
+  return {
+    app: Object.fromEntries(Object.entries(app).filter(([, value]) => typeof value === 'function')),
+    routes: (app['~routes'] as unknown[]).length,
+    middleware: (app['~middleware'] as unknown[]).length,
+    hooks: Object.fromEntries(Object.entries(hooks).map(([name, list]) => [name, [...list]])),
+  }
 }
 
 // Every refusal before authentication is recorded on the node's log, the twins' included.
@@ -183,6 +252,40 @@ describe('the guard sweep over every route, method and credential', () => {
     expect(offTable.filter(probe => probe.status !== 404).map(describeProbe)).toEqual([])
   })
 
+  it('leaves the app\'s handler, dispatch, route and middleware tables and every hook as they were after the whole sweep (review L7 of B23-B25)', () => {
+    const after = internals()
+    expect(Object.keys(internalsBefore.app)).toEqual(expect.arrayContaining(['fetch', 'handler']))
+    expect(Object.keys(after.app).sort()).toEqual(Object.keys(internalsBefore.app).sort())
+    for (const [name, value] of Object.entries(internalsBefore.app)) expect(after.app[name], name).toBe(value)
+    expect({ routes: after.routes, middleware: after.middleware }).toEqual({ routes: internalsBefore.routes, middleware: internalsBefore.middleware })
+    expect(Object.keys(after.hooks).sort()).toEqual(Object.keys(internalsBefore.hooks).sort())
+    for (const [name, list] of Object.entries(internalsBefore.hooks)) {
+      expect(after.hooks[name]!.length, name).toBe(list.length)
+      list.forEach((hook, index) => expect(after.hooks[name]![index], name).toBe(hook))
+    }
+  })
+
+  it('admits a signed request only for its purpose: setup naming an open session on a change, approval on the approval routes, a session open without one; a key nobody enrolled nowhere (review L8 of B23-B25)', () => {
+    expect(new Set(signedProbes.map(probe => probe.path)).size).toBeGreaterThan(50)
+    // The guard answers a bare 401; anything else means the request got past it.
+    const admitted = signedProbes.filter(probe => probe.status !== 401)
+    const approvalAccess = (probe: SignedProbe) => (probe.method === 'POST' && /\/setup\/approvals(?:\/withdraw)?$/.test(probe.path)) || (['GET', 'HEAD'].includes(probe.method) && /\/setup\/approvals\/challenges$/.test(probe.path))
+    const sessionOpen = (probe: SignedProbe) => probe.method === 'POST' && /\/setup\/sessions$/.test(probe.path)
+    const change = (probe: SignedProbe) => !['GET', 'HEAD'].includes(probe.method)
+    const wrong = admitted.filter((probe) => {
+      switch (probe.signer) {
+        case 'approval': return !approvalAccess(probe)
+        case 'setup without session': return !sessionOpen(probe)
+        case 'setup in session': return !change(probe) || approvalAccess(probe) || sessionOpen(probe)
+        default: return true
+      }
+    })
+    expect(wrong.map(probe => `${probe.method} ${probe.path} as ${probe.signer}: ${probe.status}`)).toEqual([])
+    expect(admitted.filter(probe => probe.signer === 'setup in session').length).toBeGreaterThan(100)
+    expect(admitted.filter(probe => probe.signer === 'approval').length).toBeGreaterThan(5)
+    expect(signedProbes.filter(probe => probe.signer.startsWith('stranger')).length).toBeGreaterThan(500)
+  })
+
   it('audits every refusal of a /setup path', () => {
     const unaudited = probes.filter(probe => isSetup(probe.path) && [401, 403].includes(probe.status) && !probe.audited)
     expect(unaudited.map(describeProbe)).toEqual([])
@@ -195,6 +298,7 @@ describe('the admin layer with its experimental flag off (owner decision D8)', (
     const { root, environment } = nodeEnvironment('buckle-sweep-off-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_PACKS: 'fs' })
     // A second copy of the build, so the swept node above keeps its app.
     const off = await createBuckleHttp({ environment, instance: 2 })
+    let closing: Promise<void> | undefined
     try {
       mkdirSync(join(root, 'child'))
       await (await off.services.getWorkspaces()).register({ id: 'child', name: 'child', root: join(root, 'child'), authToken: CHILD_AGENT, adminToken: CHILD_ADMIN, policy: emptyWorkspacePolicy() })
@@ -218,8 +322,19 @@ describe('the admin layer with its experimental flag off (owner decision D8)', (
       expect(off.runtime.actions.read(1)[0]?.auditId).toBe(before)
       // The agent's face still serves.
       expect((await off.request('/v1/manifest', { headers: bearer(NODE_AGENT) })).status).toBe(200)
+      // A closing node answers an admin path as an unmatched one too, not 503 (review L9 of B23-B25).
+      const held = Promise.withResolvers<void>()
+      off.common.owner.onClose('waiters', 'held by the sweep', () => held.promise)
+      closing = off.close()
+      const during = await off.request('/setup/status', { headers: bearer(NODE_ADMIN) })
+      const unmatchedDuring = await off.request('/sweep-off-table', { headers: bearer(NODE_ADMIN) })
+      const got = { status: during.status, type: during.headers.get('content-type'), body: await during.text() }
+      expect((await off.request('/health/ready')).status).toBe(503)
+      held.resolve()
+      expect(got).toEqual({ status: unmatchedDuring.status, type: unmatchedDuring.headers.get('content-type'), body: await unmatchedDuring.text() })
+      expect(got.status).toBe(404)
     } finally {
-      await off.close()
+      await (closing ?? off.close())
     }
   }, 120_000)
 })

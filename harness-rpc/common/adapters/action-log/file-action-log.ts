@@ -31,31 +31,18 @@ export class AuditUnavailableError extends Error implements ServiceFailure {
   }
 }
 
-export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string } = {}): ActionLog {
+export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string; serving?: () => boolean } = {}): ActionLog {
   const pending = createPendingAudit({ filePath, processInstanceId: PROCESS_INSTANCE_ID, record: entry => log.record(entry), lockDeadlineMs: options.lockDeadlineMs })
   const log: ActionLog = {
     recoverInterrupted: () => pending.recover(),
     async record(entry) {
       try {
-        mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
-        let offset = 0
-        const descriptor = openSync(filePath, 'a+', 0o600)
-        try {
-          fchmodSync(descriptor, 0o600)
-          const size = fstatSync(descriptor).size
-          offset = size
-          const tail = Buffer.alloc(1)
-          if (size > 0) readSync(descriptor, tail, 0, 1, size - 1)
-          const prefix = size > 0 && tail[0] !== 10 ? '\n' : ''
+        const offset = appendSynced(filePath, (size, tail) => {
+          const prefix = size > 0 && tail !== 10 ? '\n' : ''
           const data = Buffer.from(`${prefix}${JSON.stringify(entry)}\n`)
           if (data.length > 65_536) throw new Error('Audit entry exceeds the size limit')
-          if (writeSync(descriptor, data) !== data.length) throw new Error('Incomplete audit write')
-          fsyncSync(descriptor)
-          if (process.platform !== 'win32') {
-            const directory = openSync(dirname(filePath), 'r')
-            try { fsyncSync(directory) } finally { closeSync(directory) }
-          }
-        } finally { closeSync(descriptor) }
+          return data
+        })
         await pending.track(entry, offset)
         options.health?.succeeded(filePath)
       } catch (error) {
@@ -63,7 +50,9 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
         // Another process held the pending-audit state past the wait: temporary, so the caller is told
         // to retry, as for any busy state (review L3 of B15-B17), and the storage is not unhealthy.
         if (error instanceof StateBusyError) throw error
-        options.health?.failed(filePath, { probe: () => probe(filePath, pending), workspaceId: options.workspaceId ?? 'default' })
+        // A disabled or retired workspace serves no call, so its log does not hold the node's readiness,
+        // even when the owner reads it (review L12 of B23-B25).
+        if (options.serving?.() !== false) options.health?.failed(filePath, { probe: () => probe(filePath, pending), workspaceId: options.workspaceId ?? 'default' })
         throw new AuditUnavailableError({ cause: error })
       }
     },
@@ -109,14 +98,37 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
 }
 
 /**
+ * The one way the log is opened and written: created owner-only, read for its last byte, appended to
+ * with what `data` makes of its size and last byte (nothing for a probe), then synced with its
+ * directory. Returns the size before the append.
+ */
+function appendSynced(filePath: string, data: (size: number, tail: number | undefined) => Buffer): number {
+  mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
+  const descriptor = openSync(filePath, 'a+', 0o600)
+  try {
+    fchmodSync(descriptor, 0o600)
+    const size = fstatSync(descriptor).size
+    const tail = Buffer.alloc(1)
+    if (size > 0) readSync(descriptor, tail, 0, 1, size - 1)
+    const bytes = data(size, size > 0 ? tail[0] : undefined)
+    if (bytes.length > 0 && writeSync(descriptor, bytes) !== bytes.length) throw new Error('Incomplete audit write')
+    fsyncSync(descriptor)
+    if (process.platform !== 'win32') {
+      const directory = openSync(dirname(filePath), 'r')
+      try { fsyncSync(directory) } finally { closeSync(directory) }
+    }
+    return size
+  } finally { closeSync(descriptor) }
+}
+
+/**
  * Whether the log takes writes again, without writing an entry, testing what `record` needs (review
- * M4 of B20-B22): the file opens for append and syncs, one byte beside it is written and synced (a
- * full disk fails here), and the pending store that tracks each attempt reads and writes under its lock.
+ * M4 of B20-B22): the file opens and syncs through record's own path (read access and the directory
+ * sync included, review L13 of B23-B25), one byte beside it is written and synced (a full disk fails
+ * here), and the pending store that tracks each attempt reads and writes under its lock.
  */
 async function probe(filePath: string, pending: { probe(): Promise<void> }): Promise<void> {
-  mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
-  const descriptor = openSync(filePath, 'a', 0o600)
-  try { fsyncSync(descriptor) } finally { closeSync(descriptor) }
+  appendSynced(filePath, () => Buffer.alloc(0))
   const sidecar = `${filePath}.probe`
   const byte = openSync(sidecar, 'w', 0o600)
   try {

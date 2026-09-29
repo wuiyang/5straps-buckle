@@ -42,6 +42,15 @@ export function registryTransportTool(event: H3Event): string {
 }
 
 /**
+ * The experimental flag (owner decision D8), checked before readiness: with it off, an admin route
+ * answers the router's 404 while the node starts and closes too, never a 503 that shows the route
+ * is there (review L9 of B23-B25).
+ */
+export const requireAdminHttp: Guard = (event) => {
+  if (!useServices(event).adminHttp()) throw notFound()
+}
+
+/**
  * The guard for one kind of admin access to the addressed workspace, or to the one `target` names.
  * The whole layer is experimental (owner decision D8): until BUCKLE_EXPERIMENTAL_ADMIN_HTTP is on,
  * every route of it answers the router's 404 before anything is read or audited, admin credential or

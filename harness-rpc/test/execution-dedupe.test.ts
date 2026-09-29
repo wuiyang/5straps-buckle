@@ -9,6 +9,7 @@ import { createExecutionBudget, createExecutions, EXECUTION_LIMIT, EXECUTION_TTL
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { ToolExecutionError } from '../common/domain/tool.js'
 import { AuditUnavailableError } from '../common/adapters/action-log/file-action-log.js'
+import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
 // Review M2 of B13-B14 (plan corrections): a re-send never runs a call twice, beyond the approval wait
@@ -329,8 +330,9 @@ describe('the execution store', () => {
   })
 })
 
-describe('a call stopped by an audit failure while its tool runs (review L1 of B20-B22)', () => {
-  it('settles its execution, so a re-send with the same requestId runs once the audit takes writes again instead of waiting forever', async () => {
+describe('a call stopped by Buckle\'s own storage while its tool runs (review L1 of B20-B22, L4 of B23-B25)', () => {
+  /** fs_read whose tool reads a path the switch lets through while it runs, as a tree walk does; each run counted. */
+  async function walking() {
     const { runtime, workspace } = await node()
     mkdirSync(join(workspace, 'private'))
     writeFileSync(join(workspace, 'private', 'notes.md'), 'private')
@@ -338,12 +340,16 @@ describe('a call stopped by an audit failure while its tool runs (review L1 of B
     await runtime.policy.setDangerouslyAllow(true)
     const registered = runtime.registry().get('fs_read')
     const prepare = registered.prepare.bind(registered)
-    let runs = 0
-    // The tool reads a path the switch lets through while it runs, as a tree walk does.
+    const counter = { runs: 0 }
     vi.spyOn(registered, 'prepare').mockImplementation(args => ({ ...prepare(args), execute: async (context) => {
-      runs += 1
+      counter.runs += 1
       return await context.authorizeRead!(join(workspace, 'private', 'notes.md'))
     } }))
+    return { runtime, counter }
+  }
+
+  it('settles an audit failure after the tool ran as done, not retryable: a re-send is answered without running the tool again, and a new requestId runs it', async () => {
+    const { runtime, counter } = await walking()
     const record = runtime.actions.record.bind(runtime.actions)
     let broken = true
     vi.spyOn(runtime.actions, 'record').mockImplementation(async entry => {
@@ -353,8 +359,24 @@ describe('a call stopped by an audit failure while its tool runs (review L1 of B
     await expect(runtime.invoke({ sessionId: 'chat-1', request: read('mid-call-audit') })).rejects.toBeInstanceOf(AuditUnavailableError)
     broken = false
     const again = await Promise.race([runtime.invoke({ sessionId: 'chat-1', request: read('mid-call-audit') }), new Promise(resolve => setTimeout(() => resolve('still waiting'), 5_000))])
-    expect(again).toMatchObject({ outcome: 'ok', output: true })
-    expect(runs).toBe(2)
+    expect(again).toMatchObject({ outcome: 'error', error: { code: 'AUDIT_UNAVAILABLE', retryable: false } })
+    expect(counter.runs).toBe(1)
+    expect(await runtime.invoke({ sessionId: 'chat-1', request: read('after-repair') })).toMatchObject({ outcome: 'ok', output: true })
+    expect(counter.runs).toBe(2)
+  })
+
+  it('answers busy state after the tool ran as done, not retryable, and a re-send never runs it again', async () => {
+    const { runtime, counter } = await walking()
+    const record = runtime.actions.record.bind(runtime.actions)
+    vi.spyOn(runtime.actions, 'record').mockImplementation(async entry => {
+      if (entry.tool === 'policy_dangerously_allowed') throw new StateBusyError('fixture: another process holds the pending-audit state')
+      return record(entry)
+    })
+    const first = await runtime.invoke({ sessionId: 'chat-1', request: read('mid-call-busy') })
+    expect(first).toMatchObject({ outcome: 'error', error: { code: 'STATE_BUSY', retryable: false } })
+    const again = await runtime.invoke({ sessionId: 'chat-1', request: read('mid-call-busy') })
+    expect(again).toMatchObject({ outcome: 'error', error: { code: 'STATE_BUSY', retryable: false } })
+    expect(counter.runs).toBe(1)
   })
 })
 

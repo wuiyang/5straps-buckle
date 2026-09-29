@@ -11,7 +11,7 @@ import type { PermissionEngine, PermissionOutcome } from '../../domain/permissio
 import type { GrantLookup } from '../../domain/permission/decision.js'
 import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
-import { AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
+import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
 import { ToolExecutionError, ToolInputError, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
@@ -172,12 +172,16 @@ export function createInvoker(options: InvokerOptions): Invoker {
           if (error instanceof AuditUnavailableError) throw error
           // A tool killed by the shutdown answers as the shutdown, not with what its process left (review L8 of B20-B22).
           const cause = options.shutdown?.aborted ? options.shutdown.reason : error
-          return { requestId: request.requestId, outcome: 'error', error: shapeError(cause, request.tool) }
+          const shaped = shapeError(cause, request.tool)
+          // Busy state after the tool ran is not a retry: the call happened (review L4 of B23-B25).
+          return { requestId: request.requestId, outcome: 'error', error: ran && shaped.code === 'STATE_BUSY' ? ranUnrecorded('STATE_BUSY') : shaped }
         }
       })() } finally {
         // Settled whatever happened, before the result is recorded, so a re-send never waits on a call
-        // that stopped (review L1 of B20-B22); an audit failure answers it as a retryable 503 would.
-        if (held.claim?.kind === 'owner') held.claim.execution.settle({ response: answered ?? auditFailed(request), auditId, callerLeft: signal?.aborted === true })
+        // that stopped (review L1 of B20-B22). An audit failure before the tool ran answers as a
+        // retryable 503 would; once it ran, never retryable, so the same requestId never runs it again
+        // (review L4 of B23-B25; nitro/coordination.md: reconnection must not execute a request twice).
+        if (held.claim?.kind === 'owner') held.claim.execution.settle({ response: answered ?? (ran ? failed(request, ranUnrecorded(AUDIT_UNAVAILABLE)) : auditFailed(request)), auditId, callerLeft: signal?.aborted === true })
       }
       const response = answered
 
@@ -442,6 +446,10 @@ async function clearPermissions(input: {
   }
   const rechecked = await evaluate([...request.approvalTokens, ...tokens])
   if (rechecked.kind === 'allow') return cleared(rechecked, asked)
+  // A re-send of this call spent the answer and ran, or runs, while this one waited: it answers this
+  // one too, rather than telling the caller nobody answered (review L6 of B23-B25).
+  const ranMeanwhile = options.executions.earlier(input.key)
+  if (ranMeanwhile) return { response: null, asked, approvedBy: [...new Set(approvedBy)], earlier: ranMeanwhile }
   // Nobody denied it: the asks expired, were withdrawn, or another call spent the `once`. Only a
   // recorded denial is reported as one (review M1).
   return { response: failed(request, UNANSWERED), asked, approvedBy: [...new Set(approvedBy)] }
@@ -450,6 +458,11 @@ async function clearPermissions(input: {
 /** How a re-send of a call stopped by an audit failure is answered: retryable, so it runs once the storage is repaired. */
 function auditFailed(request: InvokeRequest): InvokeResponse {
   return failed(request, { code: 'AUDIT_UNAVAILABLE', message: 'Buckle could not write its audit log during this call, so it stopped; retry once the owner repairs the audit storage', retryable: true })
+}
+
+/** A call whose tool ran but whose record Buckle could not write: it counts as run, effects unknown, never run again under its requestId. */
+function ranUnrecorded(code: string): { code: string; message: string; retryable: boolean } {
+  return { code, message: 'This call ran, but Buckle could not record it, so its effects are unknown; it is not run again under this requestId: check the workspace, then send a new requestId once the owner repairs the audit storage', retryable: false }
 }
 
 const SUPERSEDED = { code: 'REQUEST_SUPERSEDED', message: 'A newer call with the same requestId joined this approval wait and carries it on; this call did not run', retryable: false }

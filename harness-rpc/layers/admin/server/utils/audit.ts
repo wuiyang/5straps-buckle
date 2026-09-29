@@ -1,4 +1,5 @@
 import type { H3Event } from 'h3'
+import type { JsonValue } from '@5straps/protocol'
 import type { ActionLog, ActionLogEntry } from '../../../../common/types/ports/action-log.js'
 import { statusOf, tolerantLog } from '../../../common/server/utils/audit.js'
 import { isMutation } from '../../../common/server/utils/guards.js'
@@ -19,7 +20,7 @@ export function resourceOf(event: H3Event): string {
  * change's attempt must be written; a read's result and any result after the work are written if the
  * storage takes them, so the owner can still inspect a node whose audit log fails (B19).
  */
-export async function withSetupAudit<T>(event: H3Event, input: { actions: ActionLog; workspaceId: string; resource: string; actorId: string }, run: () => Promise<T>): Promise<T> {
+export async function withSetupAudit<T>(event: H3Event, input: { actions: ActionLog; workspaceId: string; resource: string; actorId: string; args?: () => Record<string, JsonValue> }, run: () => Promise<T>): Promise<T> {
   const auditId = crypto.randomUUID()
   const started = performance.now()
   // actorId names who the guard let in: admin:<workspace>, or key:<fingerprint> for a signed request (review H4 of B23-B25).
@@ -27,7 +28,8 @@ export async function withSetupAudit<T>(event: H3Event, input: { actions: Action
     tool: `setup_${event.req.method.toLowerCase()}_${input.resource}`, outcome: 'started', durationMs: 0, effects: [], args: {}, ...(input.actorId ? { actorId: input.actorId } : {}) }
   if (isMutation(event)) await input.actions.record({ ...entry, event: 'attempt' })
   const results = tolerantLog(event, input.actions)
-  const result = (status: number): ActionLogEntry => ({ ...entry, event: 'result', outcome: status >= 200 && status < 300 ? 'ok' : 'error', durationMs: Math.round(performance.now() - started), detail: `HTTP ${status}` })
+  // What the route said it did, on its result (review L14 of B23-B25): never a value the caller sent unless the route names it.
+  const result = (status: number): ActionLogEntry => ({ ...entry, event: 'result', outcome: status >= 200 && status < 300 ? 'ok' : 'error', durationMs: Math.round(performance.now() - started), detail: `HTTP ${status}`, args: input.args?.() ?? {} })
   let value: T
   try {
     value = await run()

@@ -44,7 +44,7 @@ export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY }) {
   if (branch === 'HEAD') return { ok: false, message: `HEAD ${sha} is detached: release from a branch that origin holds` }
   const pushed = tryRun(run, 'git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`])
   if (pushed !== sha) {
-    return { ok: false, message: `HEAD ${sha} is not what origin/${branch} holds${pushed ? ` (${pushed})` : ''}: push it, fetch, and let CI run on it before releasing` }
+    return { ok: false, message: `HEAD ${sha} is not what origin/${branch} holds${pushed ? ` (${pushed})` : ''} in this clone: fetch first (git fetch origin; this check compares with the local origin/${branch} and never fetches), then push it and let CI run on it before releasing` }
   }
   const slug = repository || repositoryOf(run('git', ['remote', 'get-url', 'origin']))
   const response = JSON.parse(run('gh', ['api', `repos/${slug}/commits/${sha}/check-runs?per_page=100`]))

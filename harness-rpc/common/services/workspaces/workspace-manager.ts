@@ -108,6 +108,15 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
     } catch (error) { return { selectable: false, reason: error instanceof WorkspaceError ? error.message : 'Directory is unavailable' } }
   }
   /** No credential ever names two workspaces, and none repeats one the node itself holds. */
+  /** Whether a registered workspace serves calls now: enabled and not retired. An unreadable registry counts it as serving, so a failure still shows. */
+  function serving(id: string): boolean {
+    try {
+      const workspace = store.read().workspaces.find(item => item.id === id)
+      return workspace !== undefined && workspace.enabled && !workspace.retiredAt
+    } catch {
+      return true
+    }
+  }
   function assertCredentialIsNew(state: { workspaces: StoredWorkspace[] }, credential: string): void {
     const held = [input.config.authToken, input.config.adminToken, ...state.workspaces.flatMap(workspace => [workspace.adminToken, ...workspace.tokens.map(entry => entry.token)])].filter(Boolean)
     if (held.includes(credential)) throw new WorkspaceError('That credential is already in use on this node', 409)
@@ -265,7 +274,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
         // One audit health per process: a registered workspace's log failing makes the node unready too.
         pending = createRuntime({ config, workspaceId: id, auditHealth: input.runtime.auditHealth, executionBudget: input.runtime.executionBudget,
           // The node's own switch is the ceiling this workspace's switch needs too (policy.md: ceilings must all permit).
-          nodeDangerouslyAllowed: () => input.runtime.policy.dangerouslyAllow().on, ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
+          nodeDangerouslyAllowed: () => input.runtime.policy.dangerouslyAllow().on, serving: () => serving(id), ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
         runtimes.set(id, pending)
         void pending.catch(() => { runtimes.delete(id) })
       }

@@ -247,3 +247,21 @@ describe('ordering inside a request and at close (review L5)', () => {
     expect(await waiting).toMatchObject({ settled: false })
   })
 })
+
+describe('a waiting caller whose re-send ran while it waited (review L6 of B23-B25)', () => {
+  it('answers with that run, never APPROVAL_UNANSWERED, when the answer came from another process', async () => {
+    const { runtime } = await node()
+    const request = single('out-of-process-1')
+    const first = runtime.invoke({ sessionId: 'chat-1', request })
+    await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
+    // Another process (buckle approve) answers: the registry records it, and this process sees it only at its next poll.
+    expect((await runtime.approvals.resolve({ token: runtime.approvalService.pending()[0]!.token, approved: true, scope: 'once' }))).toMatchObject({ ok: true })
+    // The caller's re-send arrives first, spends the answer and runs.
+    const again = await runtime.invoke({ sessionId: 'chat-1', request })
+    expect(again).toMatchObject({ outcome: 'ok' })
+    expect(await first).toMatchObject({ outcome: 'ok' })
+    expect(readFileSync(join(runtime.paths().root, 'one', 'a.md'), 'utf8')).toBe('a')
+    // It ran once; the waiting caller was answered with that run.
+    expect(results(runtime, 'out-of-process-1').filter(entry => entry.outcome === 'ok' && entry.detail === undefined)).toHaveLength(1)
+  })
+})

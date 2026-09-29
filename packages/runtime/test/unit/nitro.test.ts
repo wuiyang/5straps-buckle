@@ -110,6 +110,19 @@ describe('Nitro host bridge and context plugin', () => {
     expect(captured).toEqual([new Error('request hook exploded')])
   })
 
+  it('runs preflight guards before readiness, so a route switched off answers as absent while the runtime starts or closes', async () => {
+    const counter = { calls: 0 }
+    const off: Guard = () => { throw HTTPError.status(404, 'Not Found') }
+    const gated = defineGuardedHandler({ preflight: [off], guards: [], handler: () => { counter.calls += 1; return {} } })
+    const open = defineGuardedHandler({ preflight: [() => undefined], guards: [], handler: () => { counter.calls += 1; return {} } })
+    const { nitroApp } = createTestNitroApp({ plugins: [defineContextPlugin()], routes: (app) => { app.get('/gated', gated); app.get('/open', open) } })
+    // Bound but never started: readiness refuses.
+    bindHost(nitroApp, { owner: createRuntimeOwner({ services: [operation] }), services: {}, logger: logger.logger })
+    expect((await nitroApp.fetch(new Request('http://local/gated'))).status).toBe(404)
+    expect((await nitroApp.fetch(new Request('http://local/open'))).status).toBe(503)
+    expect(counter.calls).toBe(0)
+  })
+
   it('M8 responds while hung background work is still draining', async () => {
     let requestScope: { state: string } | undefined
     const hung = defineGuardedHandler({ guards: [], handler: (_, scope) => {

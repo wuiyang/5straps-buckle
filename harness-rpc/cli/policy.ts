@@ -126,7 +126,7 @@ async function dangerouslyAllow(input: { runtime: BuckleRuntime; workspaces: Wor
   const now = target.policy.dangerouslyAllow()
   if (!now.on) process.stdout.write(`Dangerously allow is off for workspace ${target.workspaceId}: asks wait for a person again.\n`)
   else {
-    process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceId}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). Every ask about a path inside it, and every command, host and process ask, is allowed without a person, sensitive files and file writes included. Paths outside it still ask. Each use is audited as policy_dangerously_allowed; deny rules and the node's own policy still refuse.\n`)
+    process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceId}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited as policy_dangerously_allowed; deny rules and the node's own policy still refuse.\n`)
     if (now.allowedByNode === false) process.stdout.write('It has no effect until the node\'s own switch is on too: buckle policy dangerously-allow on\n')
   }
   return { exitCode: 0, detail: `dangerously-allow ${state}${values.workspace ? ` ${values.workspace}` : ''}` }
@@ -285,9 +285,15 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   return { exitCode: 0 }
 }
 
+/**
+ * What the switch covers, said the same way wherever it is shown (review L15 of B23-B25; owner decision
+ * D7): asks about paths inside the boundary, and every ask that names no path, wherever it points.
+ */
+const DANGEROUSLY_ALLOW_COVERS = 'Every ask about a path inside it, and every command, host and process ask, is allowed without a person, sensitive files and file writes included. Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
+
 function describeDangerously(state: { on: boolean; allowedByNode: boolean | null; effective: boolean; boundTo: string }): string {
   if (!state.on) return 'off'
-  return state.effective ? `ON, ${DANGEROUSLY_ALLOW_SCOPE} (${state.boundTo}): every ask there is allowed without a person, and each use is audited` : 'on, without effect: the node\'s own switch is off'
+  return state.effective ? `ON, ${DANGEROUSLY_ALLOW_SCOPE} (${state.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited.` : 'on, without effect: the node\'s own switch is off'
 }
 
 function print(value: unknown): CliResult {

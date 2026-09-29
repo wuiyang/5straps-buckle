@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { AuditUnavailableError, createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createAuditHealth } from '../common/services/audit/audit-health.js'
@@ -228,6 +228,49 @@ describe('durable audit pages', () => {
     expect(health.available).toBe(true)
     expect(health.failingWorkspaces()).toEqual([])
     await log.record(entry({ requestId: 'again', auditId: 'a3', event: 'attempt' }))
+  })
+
+  it('probes the way it records: a write-only log, or a directory it cannot read, keeps failing on every recheck (review L13 of B23-B25)', async () => {
+    // Root reads anything, so the modes below would not refuse it.
+    if (process.getuid?.() === 0) return
+    for (const breakIt of [(path: string) => chmodSync(path, 0o200), (path: string) => chmodSync(dirname(path), 0o300)]) {
+      const path = logPath()
+      let now = 0
+      const health = createAuditHealth({ now: () => now, probeIntervalMs: 1 })
+      const log = createFileActionLog(path, { health, workspaceId: 'default' })
+      await log.record(entry({ requestId: 'fine', auditId: 'l13-a', event: 'attempt' }))
+      breakIt(path)
+      try {
+        await expect(log.record(entry({ requestId: 'refused', auditId: 'l13-b', event: 'attempt' }))).rejects.toBeInstanceOf(AuditUnavailableError)
+        for (const at of [5, 10]) {
+          now = at
+          await health.recheck()
+          expect(health.failing(path)).toBe(true)
+        }
+      } finally {
+        chmodSync(dirname(path), 0o700)
+        chmodSync(path, 0o600)
+      }
+      now = 20
+      await health.recheck()
+      expect(health.available).toBe(true)
+    }
+  })
+
+  it('never lets a workspace that serves no call mark the node unready, even when its log is written to (review L12 of B23-B25)', async () => {
+    const file = logPath()
+    writeFileSync(file, 'not a directory')
+    const health = createAuditHealth()
+    const broken = join(file, 'actions.jsonl')
+    let serving = true
+    const log = createFileActionLog(broken, { health, workspaceId: 'child', serving: () => serving })
+    await expect(log.record(entry())).rejects.toBeInstanceOf(AuditUnavailableError)
+    expect(health.failingWorkspaces()).toEqual(['child'])
+    serving = false
+    health.forget(broken)
+    // An owner's read of the retired workspace writes to its log; that failure does not count.
+    await expect(log.record(entry())).rejects.toBeInstanceOf(AuditUnavailableError)
+    expect(health.available).toBe(true)
   })
 
   it('forgets a log whose workspace no longer serves calls (review L5 of B20-B22)', async () => {

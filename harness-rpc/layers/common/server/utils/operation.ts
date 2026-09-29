@@ -8,8 +8,9 @@ import { useServices } from './services.js'
  * HTTP hold bound, so a gated call is held for the grace period while any route may answer. The
  * requester stays the process's (common/services/approvals/interaction.ts); only the hold is scoped.
  */
-export function defineOperationHandler<T>(definition: { guards: readonly Guard[]; handler: (event: H3Event, scope: OperationScope) => T | Promise<T> }) {
+export function defineOperationHandler<T>(definition: { preflight?: readonly Guard[]; guards: readonly Guard[]; handler: (event: H3Event, scope: OperationScope) => T | Promise<T> }) {
   return defineGuardedHandler({
+    ...(definition.preflight ? { preflight: definition.preflight } : {}),
     guards: definition.guards,
     handler: async (event, scope) => {
       (await useServices(event).getInteraction(scope)).bind('grace')

@@ -52,6 +52,8 @@ describe('the CI requirement before publishing', () => {
   it.each([
     ['a branch origin does not hold', { onOrigin: false }, 'is not what origin/master holds'],
     ['a HEAD behind or ahead of origin/master, even one on another origin branch', { originAt: OTHER }, `is not what origin/master holds (${OTHER})`],
+    // The refusal says to fetch first: the check reads the local origin ref and never fetches (unverified item of the B23-B25 review).
+    ['a local origin/master that may be stale', { originAt: OTHER }, 'fetch first (git fetch origin'],
     ['a dirty working tree', { dirty: true }, 'uncommitted changes'],
     ['a detached HEAD', { detached: true }, 'is detached'],
   ] as const)('refuses %s, before asking GitHub anything', (_, input, reason) => {

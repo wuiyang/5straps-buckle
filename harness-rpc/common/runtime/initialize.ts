@@ -42,19 +42,22 @@ export function initializeCommon(input: InitializeCommonInput): BuckleCommon {
       if (requester) throw new Error('This process already has its requester bound')
       requester = requestCli
     },
-    start: () => owner.start(() => startCommon({ config: input.config, services })),
+    start: () => owner.start(() => startCommon({ config: input.config, services, role: input.role })),
   }
 }
 
 // Opening the workspace runtime recovers interrupted audit and loads policy, packs and history.
-// Every singleton is built here, never first inside a file lock or a request.
-async function startCommon(input: { config: BuckleConfig; services: BuckleServices }): Promise<void> {
+// Every singleton the process uses is built here, never first inside a file lock or a request.
+async function startCommon(input: { config: BuckleConfig; services: BuckleServices; role: RuntimeRole }): Promise<void> {
   const { services } = input
   // workspaces.json there holds workspace credentials (ruling 7).
   assertOwnerOnlyDirectory(input.config.stateDirectory)
   await services.getWorkspaceRuntime()
   await services.getWorkspaces()
+  // Only the admin HTTP layer uses the node key, the seen nonces and the setup sessions, so only a
+  // serve with it switched on makes or reads their files; a CLI command or MCP never does (review L11 of B23-B25).
+  if (input.role !== 'server' || !input.config.experimentalAdminHttp) return
+  await services.getNodeSigner()
   await services.getRequestVerifier()
   await services.getSetupSessions()
-  await services.getNodeSigner()
 }

@@ -1,4 +1,4 @@
-import { KeyIdSchema, keyIdOf, publicKeyFrom, PublicKeyTextSchema, type EnrolledKeyLookup } from '@5straps/protocol/signed-request'
+import { KeyIdSchema, keyIdOf, publicKeyFrom, PublicKeyTextSchema, SmallOrderKeyError, type EnrolledKeyLookup } from '@5straps/protocol/signed-request'
 import { z } from 'zod'
 import { NODE_SCOPE, type ClientKeys, type EnrolledKey, type KeyUse } from '../../types/ports/client-keys.js'
 import { createJsonFileStore } from '../json-file-store.js'
@@ -33,7 +33,8 @@ export function createFileClientKeys(input: { filePath: string; lockDeadlineMs?:
       let keyId: string
       try {
         keyId = keyIdOf(publicKey.trim())
-      } catch {
+      } catch (error) {
+        if (error instanceof SmallOrderKeyError) throw new ClientKeyError(error.message)
         throw new ClientKeyError('Not an Ed25519 public key: pass the line `buckle client key` prints, ed25519: followed by 43 characters')
       }
       return store.update((state): EnrolledKey => {
@@ -66,7 +67,14 @@ export function createFileClientKeys(input: { filePath: string; lockDeadlineMs?:
         return { refused: 'unknown_key' }
       }
       if (!key) return { refused: 'unknown_key' }
-      return covers(key, use) ? { key: publicKeyFrom(key.publicKey) } : { refused: 'out_of_scope' }
+      if (!covers(key, use)) return { refused: 'out_of_scope' }
+      try {
+        return { key: publicKeyFrom(key.publicKey) }
+      } catch (error) {
+        // A small-order key enrolled before they were refused trusts nobody.
+        logger.error('An enrolled client key cannot verify anything', { keyId, error })
+        return { refused: 'unknown_key' }
+      }
     },
   }
 }

@@ -140,6 +140,8 @@ describe('the layer boundary', () => {
     const internals = sources.flatMap(importsOf).filter(item => !item.typeOnly && /^(?:nitro\/|#nitro|h3\/)/.test(item.specifier))
     expect(internals).toEqual([{ file: 'server/entry.ts', specifier: 'nitro/app', typeOnly: false }])
     expect(readFileSync(join(PACKAGE_ROOT, 'server/entry.ts'), 'utf8')).toMatch(/^import \{ useNitroApp \} from 'nitro\/app'$/m)
+    // Review L7 of B23-B25: an event reaches the app, or the matched route's handler, through neither.
+    expect(touching(/\bevent\.app\b|\.app\s*\.\s*handler\b|matchedRoute\s*\??\.\s*handler\b|\[\s*['"`]handler['"`]\s*\]/)).toEqual([])
   })
 
   it('has no Hono anywhere in Buckle: no import in any source, script or test, and no dependency (B18 cut-over)', () => {
@@ -163,9 +165,11 @@ describe('the layer boundary', () => {
 
   it('gives each guarded builder its credential guard, run inside the handler after readiness', () => {
     const utils = (file: string) => readFileSync(join(PACKAGE_ROOT, file), 'utf8')
-    expect(utils('layers/common/server/utils/operation.ts')).toMatch(/return defineGuardedHandler\(\{\s*guards: definition\.guards,/)
+    expect(utils('layers/common/server/utils/operation.ts')).toMatch(/return defineGuardedHandler\(\{\s*\.\.\.\(definition\.preflight \? \{ preflight: definition\.preflight \} : \{\}\),\s*guards: definition\.guards,/)
     expect(utils('layers/common/server/utils/workbench.ts')).toMatch(/defineOperationHandler\(\{\s*guards: \[requireWorkbench\],/)
     expect(utils('layers/admin/server/utils/setup.ts').match(/guards: \[[^\]]*requireAdmin\(/g)).toHaveLength(2)
+    // The experimental flag answers before readiness on both admin builders (review L9 of B23-B25).
+    expect(utils('layers/admin/server/utils/setup.ts').match(/preflight: \[requireAdminHttp\],/g)).toHaveLength(2)
   })
 
   it('names the workspace parameter [id] only as routes/workspaces/[id]/, so the registry routes stay node-admin only (review L5 of B15-B17)', () => {

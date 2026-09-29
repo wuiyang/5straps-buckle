@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CliRequest } from '@5straps/runtime'
+import { requestIdKey } from '../../common/services/invocation/executions.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCli } from '../../cli/main.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
@@ -101,6 +102,22 @@ describe('lifecycle notices on the approval webhook', () => {
   })
 })
 
+describe('a withdraw of a call already answered (review L1 of B23-B25)', () => {
+  it('drops its answered once, so no other call writes where it was approved', async () => {
+    const buckle = await node({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'approval-http-admin-token' })
+    const admin = { authorization: 'Bearer approval-http-admin-token', 'content-type': 'application/json' }
+    const asked = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'answered-1', tool: 'fs_write', args: { path: 'answered.md', content: 'x' }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { approvals: Array<{ token: string }> }
+    const token = asked.approvals[0]!.token
+    expect((await buckle.request('/setup/approvals', { method: 'POST', headers: admin, body: JSON.stringify({ token, approved: true, scope: 'once' }) })).status).toBe(200)
+    // Rings cancels the run: the token form finds the answered group and drops its once.
+    const withdrawn = await (await buckle.request('/setup/approvals/withdraw', { method: 'POST', headers: admin, body: JSON.stringify({ token }) })).json()
+    expect(withdrawn).toEqual({ withdrawn: [], dropped: [token] })
+    expect(buckle.runtime.approvals.unspent('rings-chat')).toEqual([])
+    const other = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'answered-2', tool: 'fs_write', args: { path: 'other.md', content: 'y' }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { outcome: string }
+    expect(other.outcome).toBe('approval_required')
+  })
+})
+
 describe('the setup face withdraws one call\'s asks (owner decision D6, review M1 of B20-B22)', () => {
   it('by requestId and session, or by a token of its group, telling each cancelled, ending a waiting caller, and never touching another call', async () => {
     const webhook = await captureWebhook()
@@ -129,7 +146,7 @@ describe('the setup face withdraws one call\'s asks (owner decision D6, review M
       const three = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'run-3', tool: 'fs_write_batch', args: { files: [{ path: 'three/a.md', content: 'x' }, { path: 'three/b/c.md', content: 'y' }] }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { approvals: Array<{ token: string }> }
       const byToken = await withdraw({ token: three.approvals[0]!.token }, '/workspaces/default/setup/approvals/withdraw')
       expect((await byToken.json() as { withdrawn: string[] }).withdrawn.sort()).toEqual(three.approvals.map(request => request.token).sort())
-      expect(await (await withdraw({ token: three.approvals[0]!.token })).json()).toEqual({ withdrawn: [] })
+      expect(await (await withdraw({ token: three.approvals[0]!.token })).json()).toEqual({ withdrawn: [], dropped: [] })
       expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual(kept.approvals.map(request => request.token))
 
       expect((await withdraw({ requestId: 'run-1' })).status).toBe(400)
@@ -137,7 +154,12 @@ describe('the setup face withdraws one call\'s asks (owner decision D6, review M
       await buckle.runtime.approvalService.close()
       const cancelled = webhook.notices.filter(notice => notice.event === 'cancelled').map(notice => notice.token).sort()
       expect(cancelled).toEqual([...withdrawn, ...three.approvals.map(request => request.token)].sort())
-      expect(buckle.runtime.actions.read(50).filter(entry => entry.tool === 'setup_post_approvals-withdraw' && entry.event === 'result').map(entry => entry.detail)).toEqual(['HTTP 200', 'HTTP 200', 'HTTP 200', 'HTTP 400', 'HTTP 400'])
+      const audited = buckle.runtime.actions.read(50).filter(entry => entry.tool === 'setup_post_approvals-withdraw' && entry.event === 'result')
+      expect(audited.map(entry => entry.detail)).toEqual(['HTTP 200', 'HTTP 200', 'HTTP 200', 'HTTP 400', 'HTTP 400'])
+      // Each withdraw names what it withdrew, under the selector as the node keeps it: a requestId hashed (review L14 of B23-B25).
+      expect(audited[0]!.args).toEqual({ selector: { requestId: requestIdKey('run-1'), sessionId: 'rings-chat' }, withdrawn, dropped: [] })
+      expect(audited[1]!.args).toEqual({ selector: { token: three.approvals[0]!.token }, withdrawn: expect.arrayContaining(three.approvals.map(request => request.token)), dropped: [] })
+      expect(JSON.stringify(audited)).not.toContain('"run-1"')
     } finally {
       await webhook.close()
     }

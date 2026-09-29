@@ -111,6 +111,21 @@ describe('an audit log that will not take writes', () => {
 
     expect((await buckle.request('/setup/workspaces/child', { method: 'DELETE', headers: headers(ADMIN) })).status).toBe(204)
     expect((await buckle.request('/health/ready')).status).toBe(200)
+    // The owner reads the retired workspace, which writes to its broken log: readiness stays (review L12 of B23-B25).
+    const read = await buckle.request('/workspaces/child/setup/status', { headers: headers(child.adminToken) })
+    expect(read.status).toBe(200)
+    expect((await buckle.request('/health/ready')).status).toBe(200)
+  })
+
+  it('answers a re-send of a call an audit failure stopped with 503, as the call itself was (review L5 of B23-B25)', async () => {
+    const { environment } = nodeEnvironment('buckle-audit-resend-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_PACKS: 'fs' })
+    const buckle = await createBuckleHttp({ environment })
+    nodes.push(buckle)
+    const stopped = { requestId: 'stopped-1', outcome: 'error' as const, error: { code: 'AUDIT_UNAVAILABLE', message: 'fixture', retryable: false } }
+    vi.spyOn(buckle.runtime, 'invoke').mockResolvedValue(stopped)
+    const response = await buckle.request('/v1/invoke', { method: 'POST', headers: headers(AGENT), body: JSON.stringify({ requestId: 'stopped-1', tool: 'fs_list', args: { path: '.' } }) })
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ error: { code: 'AUDIT_UNAVAILABLE' } })
   })
 
   it('lets the owner inspect the node, refuses the owner\'s changes, and still answers refusals', async () => {

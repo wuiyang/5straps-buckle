@@ -155,10 +155,11 @@ export interface ApprovalRegistry {
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
   cancel(tokens: string[]): Promise<string[]>
   /**
-   * Withdraws one call's asks still waiting: the group of the ask a token names (its requestId,
-   * session and actor), or every ask waiting under a hashed requestId and session. Returns them.
+   * Withdraws one call: the group of the ask a token names (its requestId, session and actor), waiting
+   * or answered, or every ask under a hashed requestId and session. Its asks still waiting are
+   * withdrawn, and its answered `once` approvals no call spent yet are dropped (review L1 of B23-B25).
    */
-  cancelGroup(selector: { token: string } | { requestId: string; sessionId: string }): Promise<string[]>
+  cancelGroup(selector: { token: string } | { requestId: string; sessionId: string }): Promise<GroupWithdrawal>
   /** Drops the asks that expired unanswered, telling `onExpired` about them. Every update does this too. */
   sweep(): Promise<void>
   pending(): ApprovalRequest[]
@@ -166,6 +167,12 @@ export interface ApprovalRegistry {
   waiting(): PendingAsk[]
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
+}
+
+/** What withdrawing one call did: the asks it withdrew, and the answered `once` approvals it dropped. */
+export interface GroupWithdrawal {
+  withdrawn: string[]
+  dropped: string[]
 }
 
 export interface ApprovalRegistryOptions {
@@ -286,16 +293,25 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     },
 
     cancelGroup(selector) {
-      return update((state) => {
-        const mine = state.pending.filter(entry => entry.workspace === workspace)
-        const named = 'token' in selector ? mine.find(entry => entry.request.token === selector.token) : undefined
+      return update((state): GroupWithdrawal => {
+        const pending = state.pending.filter(entry => entry.workspace === workspace)
+        const resolved = state.resolved.filter(entry => entry.workspace === workspace)
+        type Member = { token: string; requestId?: string; sessionId?: string; actor?: string }
+        const members: Member[] = [
+          ...pending.map(entry => ({ token: entry.request.token, requestId: entry.requestId, sessionId: entry.sessionId, actor: entry.actor })),
+          ...resolved.map(entry => ({ token: entry.decision.token, requestId: entry.requestId, sessionId: entry.sessionId, actor: entry.actor })),
+        ]
+        // A token names its group whether its ask still waits or was answered.
+        const named = 'token' in selector ? members.find(member => member.token === selector.token) : undefined
         const inGroup = 'token' in selector
-          ? (entry: State['pending'][number]) => entry === named || (named?.requestId !== undefined && entry.requestId === named.requestId && entry.sessionId === named.sessionId && entry.actor === named.actor)
-          : (entry: State['pending'][number]) => entry.requestId === selector.requestId && entry.sessionId === selector.sessionId
-        const withdrawn = mine.filter(inGroup).map(entry => entry.request.token)
-        state.pending = state.pending.filter(entry => entry.workspace !== workspace || !withdrawn.includes(entry.request.token))
-        state.once = state.once.filter(entry => entry.workspace !== workspace || !withdrawn.includes(entry.token))
-        return withdrawn
+          ? (member: Member) => member === named || (named?.requestId !== undefined && member.requestId === named.requestId && member.sessionId === named.sessionId && member.actor === named.actor)
+          : (member: Member) => member.requestId === selector.requestId && member.sessionId === selector.sessionId
+        const group = new Set(members.filter(inGroup).map(member => member.token))
+        const withdrawn = pending.map(entry => entry.request.token).filter(token => group.has(token))
+        const dropped = state.once.filter(entry => entry.workspace === workspace && group.has(entry.token)).map(entry => entry.token)
+        state.pending = state.pending.filter(entry => entry.workspace !== workspace || !group.has(entry.request.token))
+        state.once = state.once.filter(entry => entry.workspace !== workspace || !group.has(entry.token))
+        return { withdrawn, dropped }
       })
     },
 

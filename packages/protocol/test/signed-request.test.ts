@@ -1,5 +1,6 @@
+import { createPublicKey, verify } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { callDigestOf, canonicalJson, challengeBytes, generateSigningKey, isSignedRequest, keyIdOf, publicKeyFrom, readChallenge, signChallenge, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, signingKeyFromPem, signRequest, verifySignedRequest, type ApprovalChallenge, type SignedRequestPurpose, type SignedRequestRefusal } from '../src/signed-request.js'
+import { callDigestOf, isSmallOrderPoint, SmallOrderKeyError, canonicalJson, challengeBytes, generateSigningKey, isSignedRequest, keyIdOf, publicKeyFrom, readChallenge, signChallenge, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, signingKeyFromPem, signRequest, verifySignedRequest, type ApprovalChallenge, type SignedRequestPurpose, type SignedRequestRefusal } from '../src/signed-request.js'
 
 // Owner ruling H4 of 2026-09-28 and approval-proofs.md, Protocol gates: key substitution, altered
 // body, changed arguments, wrong target, replay, cross-purpose reuse, expiry and revocation.
@@ -139,5 +140,38 @@ describe('an approval challenge the node signs (B24)', () => {
     // Signatures are made under separate contexts: a challenge signature is no request signature.
     const asRequest = verifySignedRequest({ authorization: `5straps-Signed ${encoded}.${signature}`, body: Buffer.alloc(0), now, expected: { purpose: 'buckle-approval', ...route }, publicKeyFor: () => ({ key: publicKeyFrom(node.publicKey) }), claim: () => true })
     expect(asRequest).toMatchObject({ ok: false })
+  })
+})
+
+describe('a small-order public key (review L3 of B23-B25)', () => {
+  // The eight small-order points as canonical encodings, and two non-canonical ones for the same points.
+  const encodings = [
+    '0100000000000000000000000000000000000000000000000000000000000000',
+    'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+    '0000000000000000000000000000000000000000000000000000000000000000',
+    '0000000000000000000000000000000000000000000000000000000000000080',
+    '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+    '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85',
+    'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+    'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa',
+    'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+    'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  ]
+
+  it('is refused as a key for every one of them, and never for a real key', () => {
+    for (const hex of encodings) {
+      const text = `ed25519:${Buffer.from(hex, 'hex').toString('base64url')}`
+      expect(isSmallOrderPoint(Buffer.from(hex, 'hex'))).toBe(true)
+      expect(() => publicKeyFrom(text)).toThrow(SmallOrderKeyError)
+      expect(() => keyIdOf(text)).toThrow(SmallOrderKeyError)
+    }
+    for (let index = 0; index < 50; index++) expect(() => publicKeyFrom(generateSigningKey().publicKey)).not.toThrow()
+  })
+
+  it('would let a forged signature verify: identity R and zero S under the identity key', () => {
+    const identity = Buffer.from(encodings[0]!, 'hex')
+    const forged = Buffer.concat([identity, Buffer.alloc(32)])
+    const key = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: identity.toString('base64url') }, format: 'jwk' })
+    expect(verify(null, Buffer.from('anything'), key, forged)).toBe(true)
   })
 })

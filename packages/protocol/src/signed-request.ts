@@ -104,10 +104,36 @@ export function publicKeyText(key: KeyObject): string {
   return `${PUBLIC_KEY_PREFIX}${jwk.x}`
 }
 
-/** The key object for an enrolled public key. Throws when the text is not an Ed25519 public key. */
+/** The key object for an enrolled public key. Throws when the text is not an Ed25519 public key, or names a small-order point. */
 export function publicKeyFrom(text: string): KeyObject {
   if (!PublicKeyTextSchema.safeParse(text).success) throw new Error('A public key is ed25519: followed by 32 bytes in base64url')
-  return createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: text.slice(PUBLIC_KEY_PREFIX.length) }, format: 'jwk' })
+  const x = text.slice(PUBLIC_KEY_PREFIX.length)
+  if (isSmallOrderPoint(Buffer.from(x, 'base64url'))) throw new SmallOrderKeyError()
+  return createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x }, format: 'jwk' })
+}
+
+/**
+ * A public key on one of Ed25519's eight small-order points (review L3 of B23-B25): a signature by
+ * nobody verifies under it (the identity point with R the identity and S zero), so it proves nothing.
+ */
+export class SmallOrderKeyError extends Error {
+  constructor() { super('A small-order Ed25519 public key proves nothing, since signatures verify under it without a private key; generate a real key') }
+}
+
+const FIELD_PRIME = 2n ** 255n - 19n
+/** y of the order-8 points; the other order-8 y is FIELD_PRIME minus it. */
+const ORDER_EIGHT_Y = 0x05fc536d880238b13933c6d305acdfd5f098eff289f4c345b027b2c28f95e826n
+
+/**
+ * Whether an encoded point is in the torsion subgroup: its y (the low 255 bits, reduced, so a
+ * non-canonical encoding counts too) is 1 or -1 (orders 1 and 2), 0 (order 4) or +-ORDER_EIGHT_Y (order 8).
+ */
+export function isSmallOrderPoint(encoded: Uint8Array): boolean {
+  if (encoded.length !== 32) return false
+  const bytes = Buffer.from(encoded)
+  bytes[31]! &= 0x7f
+  const y = BigInt(`0x${Buffer.from(bytes).reverse().toString('hex')}`) % FIELD_PRIME
+  return y === 0n || y === 1n || y === FIELD_PRIME - 1n || y === ORDER_EIGHT_Y || y === FIELD_PRIME - ORDER_EIGHT_Y
 }
 
 export function keyIdOf(publicKey: string): string {
@@ -173,14 +199,33 @@ export function isSignedRequest(authorization: string | undefined): boolean {
  * out-of-scope or mismatched request never spends a genuine nonce. `claim` answers false for a nonce
  * already seen, and keeps it until `keepUntil`.
  */
-export function verifySignedRequest(input: {
+export function verifySignedRequest(input: SignedRequestCheck & {
+  claim: (input: { keyId: string; nonce: string; keepUntil: number }) => boolean
+}): SignedRequestVerdict {
+  const checked = checkSignedRequest(input)
+  if (!checked.ok) return checked
+  return input.claim(nonceClaim(checked.payload)) ? checked : { ok: false, reason: 'replayed', claimedKeyId: checked.payload.keyId }
+}
+
+/** What a verifier checks a signed request against. */
+export interface SignedRequestCheck {
   authorization: string | undefined
   expected: { purpose: SignedRequestPurpose; node: string; nodeKey: string; workspace: string; method: string; path: string }
   body: Uint8Array
   now: number
   publicKeyFor: (payload: SignedRequestPayload) => EnrolledKeyLookup
-  claim: (input: { keyId: string; nonce: string; keepUntil: number }) => boolean
-}): SignedRequestVerdict {
+}
+
+/** The nonce a verified request spends, and how long it is kept: past the request's life and the skew. */
+export function nonceClaim(payload: SignedRequestPayload): { keyId: string; nonce: string; keepUntil: number } {
+  return { keyId: payload.keyId, nonce: payload.nonce, keepUntil: payload.expiresAt + SIGNED_REQUEST_SKEW_MS }
+}
+
+/**
+ * Every check but the nonce, which needs no lock (review L10 of B23-B25): a verifier runs this first
+ * and takes its nonce store's lock only to claim the nonce of a request that passed.
+ */
+export function checkSignedRequest(input: SignedRequestCheck): SignedRequestVerdict {
   const read = readSignedRequest(input.authorization)
   if (!read) return { ok: false, reason: 'malformed' }
   const { payload, bytes, signature } = read
@@ -193,7 +238,6 @@ export function verifySignedRequest(input: {
   if ('refused' in enrolled) return refuse(enrolled.refused)
   if (!verifyBytes({ context: REQUEST_CONTEXT, bytes, signature, key: enrolled.key })) return refuse('bad_signature')
   if (bodyDigest(input.body) !== payload.bodySha256) return refuse('body_mismatch')
-  if (!input.claim({ keyId: payload.keyId, nonce: payload.nonce, keepUntil: payload.expiresAt + SIGNED_REQUEST_SKEW_MS })) return refuse('replayed')
   return { ok: true, payload }
 }
 

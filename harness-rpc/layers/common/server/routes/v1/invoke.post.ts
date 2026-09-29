@@ -19,7 +19,8 @@ const ANONYMOUS_SESSION_ID = 'rpc'
  * session id past its cap is a bad request; a node shutting down or state busy in another process is
  * unavailable (review L7 of B18-B19). Other refusals are 422.
  */
-const ERROR_STATUS: Readonly<Record<string, number>> = { APPROVAL_CONFLICT: 409, REQUEST_ID_REUSED: 409, REQUEST_ALREADY_EXECUTED: 409, APPROVAL_LIMIT: 429, SESSION_ID_TOO_LONG: 400, BUCKLE_SHUTTING_DOWN: 503, STATE_BUSY: 503 }
+// AUDIT_UNAVAILABLE: a re-send joined to a call an audit failure stopped answers as that call did (review L5 of B23-B25).
+const ERROR_STATUS: Readonly<Record<string, number>> = { APPROVAL_CONFLICT: 409, REQUEST_ID_REUSED: 409, REQUEST_ALREADY_EXECUTED: 409, APPROVAL_LIMIT: 429, SESSION_ID_TOO_LONG: 400, BUCKLE_SHUTTING_DOWN: 503, STATE_BUSY: 503, AUDIT_UNAVAILABLE: 503 }
 
 export default defineOperationHandler({
   guards: [requireAgent(INVOKE_REFUSED)],

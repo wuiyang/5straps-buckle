@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
-import { callDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, type ApprovalChallenge, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
+import { callDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SmallOrderKeyError, type ApprovalChallenge, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 
 export interface CliResult {
   exitCode: number
@@ -164,7 +164,8 @@ function trust(argv: string[], environment: NodeJS.ProcessEnv): CliResult {
   const origin = originOf(node)
   try {
     publicKeyFrom(publicKey)
-  } catch {
+  } catch (error) {
+    if (error instanceof SmallOrderKeyError) throw new ClientError(`Not pinned: ${error.message}`)
     throw new ClientError('Not a node key: pass the Public key line `buckle keys node` prints on the node itself')
   }
   const file = join(clientDirectory(environment), TRUSTED_NODES_FILE)

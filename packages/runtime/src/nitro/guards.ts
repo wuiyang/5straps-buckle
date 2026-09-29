@@ -10,6 +10,12 @@ export type GuardResult = Omit<OperationContextInput, 'correlationId' | 'attribu
 export type Guard = (event: H3Event) => void | GuardResult | Promise<void | GuardResult>
 
 export interface GuardedHandlerDefinition<T> {
+  /**
+   * Guards that run before readiness, for a route that answers as if it were absent whatever state
+   * the runtime is in (a feature switched off): they decide from the request and the host alone and
+   * add no identity.
+   */
+  preflight?: readonly Guard[]
   guards: readonly Guard[]
   handler: (event: H3Event, scope: OperationScope) => T | Promise<T>
   // Disposes the scope when a streamed body goes unread this long (default DEFAULT_BODY_IDLE_TIMEOUT_MS).
@@ -36,7 +42,7 @@ export const requireReady: Guard = (event) => {
 // Guards run inside the handler itself, after any hooks or middleware, so a failed hook cannot skip them.
 export function defineGuardedHandler<T>(definition: GuardedHandlerDefinition<T>): EventHandlerWithFetch<EventHandlerRequest, Promise<T | Response>> {
   return defineHandler(async (event) => {
-    const identity = await runGuards(event, [requireReady, ...definition.guards])
+    const identity = await runGuards(event, [...definition.preflight ?? [], requireReady, ...definition.guards])
     const runtime = event.context.runtime as RuntimeOwner
     const clientRequestId = suppliedRequestId(event)
     const context = { ...identity, correlationId: randomUUID(), ...(clientRequestId ? { clientRequestId } : {}) }

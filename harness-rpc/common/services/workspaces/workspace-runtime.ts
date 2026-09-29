@@ -141,6 +141,8 @@ interface RuntimeInput {
   executionBudget?: ExecutionBudget
   /** For a registered workspace: whether the node's own dangerously-allow switch is on, the ceiling it needs too. */
   nodeDangerouslyAllowed?: () => boolean
+  /** For a registered workspace: whether it serves calls now (enabled, not retired); its log's failures count toward readiness only then. */
+  serving?: () => boolean
 }
 
 export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime> {
@@ -176,7 +178,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const notices = createApprovalNotices(webhook ? createApprovalNoticeSender(webhook) : undefined)
   const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, { lockDeadlineMs, onExpired: requests => notices.expired(requests) })
   const auditHealth = input.auditHealth ?? createAuditHealth()
-  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId: input.workspaceId ?? 'default' })
+  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId: input.workspaceId ?? 'default', ...(input.serving ? { serving: input.serving } : {}) })
   await actions.recoverInterrupted()
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
