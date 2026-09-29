@@ -38,6 +38,10 @@ const JWT_CANDIDATE = /\beyJ(?=([\w-]*))\1(\.[\w-]+\.[\w-]+)?/g
 // Long base64-like runs. The slash is included so it cannot split an AWS or base64 secret; redactOpaqueRun keeps paths readable.
 const OPAQUE_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/g
 const OPAQUE_MIN_LENGTH = 40
+// A public key fingerprint (`SHA256:` and 43 base64url characters, as ssh and Buckle's enrolled keys name
+// them) identifies a key and holds nothing secret, so the audit can say which device signed.
+const KEY_FINGERPRINT_PREFIX = 'SHA256:'
+const KEY_FINGERPRINT = /^[A-Za-z0-9_-]{43}$/
 // Readable pieces between '/', '_' and '-': lowercase or hex, all caps, or camel words with trailing digits (myApp2, UserCard).
 const WORD_PIECE = /^(?:[a-z0-9]*|[A-Z0-9]+|[a-z]*[0-9]*(?:[A-Z][a-z]+[0-9]*)+)$/
 const PIECE_SEPARATOR = /[/_-]/
@@ -105,7 +109,11 @@ function redactSecrets(text: string): string {
   return redactUrls(text)
     .replace(JWT_CANDIDATE, (match: string, header: string, rest: string | undefined) => (header && rest ? REDACTED : match))
     .replace(SECRET_VALUE, (match: string, offset: number, whole: string) => (isGitSha({ match, before: whole.slice(Math.max(0, offset - SHA_CONTEXT_CHARS), offset) }) ? match : REDACTED))
-    .replace(OPAQUE_RUN, redactOpaqueRun)
+    .replace(OPAQUE_RUN, (run: string, offset: number, whole: string) => (isKeyFingerprint({ run, before: whole.slice(Math.max(0, offset - KEY_FINGERPRINT_PREFIX.length), offset) }) ? run : redactOpaqueRun(run)))
+}
+
+function isKeyFingerprint({ run, before }: { run: string; before: string }): boolean {
+  return before === KEY_FINGERPRINT_PREFIX && KEY_FINGERPRINT.test(run)
 }
 
 function isGitSha({ match, before }: { match: string; before: string }): boolean {

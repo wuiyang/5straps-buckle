@@ -68,7 +68,7 @@ export function createSetupSessions(input: { filePath: string; now?: () => numbe
     open: ({ keyId, workspaceId }) => update((sessions, at) => {
       const mine = sessions.filter(session => session.closedAt === null && session.keyId === keyId && session.workspaceId === workspaceId).sort((left, right) => left.lastActivityAt - right.lastActivityAt)
       for (const oldest of mine.slice(0, Math.max(0, mine.length - OPEN_PER_KEY + 1))) close(oldest, at, 'replaced')
-      const session: Session = { id: randomBytes(16).toString('base64url'), keyId, workspaceId, openedAt: at, lastActivityAt: at, closedAt: null, closedBecause: null }
+      const session: Session = { id: sessionId(), keyId, workspaceId, openedAt: at, lastActivityAt: at, closedAt: null, closedBecause: null }
       sessions.push(session)
       return view(session)
     }),
@@ -106,5 +106,13 @@ function view(session: Session): SetupSessionView {
     id: session.id, workspaceId: session.workspaceId, keyId: session.keyId,
     openedAt: new Date(session.openedAt).toISOString(), lastActivityAt: new Date(session.lastActivityAt).toISOString(),
     idleExpiresAt: new Date(session.lastActivityAt + SETUP_SESSION_IDLE_MS).toISOString(),
+  }
+}
+
+/** 16 random bytes in base64url that never start with '-', which a command line would read as an option. */
+function sessionId(): string {
+  for (;;) {
+    const id = randomBytes(16).toString('base64url')
+    if (!id.startsWith('-')) return id
   }
 }

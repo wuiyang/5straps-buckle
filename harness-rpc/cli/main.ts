@@ -174,7 +174,8 @@ function printUsage(): CliResult {
   buckle policy show | allow-command | deny-command | allow-url | mount | ...
   buckle policy deny-tool <tool> | allow-tool <tool>   Refuse a tool outright, or lift that
   buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
-  buckle keys enroll <public-key> | list | revoke <key-id>  Client keys trusted for signed setup and approvals
+  buckle keys enroll <public-key> --purpose <p> --workspace <w> | list | revoke <key-id>
+                                   Client keys trusted for signed setup and approvals, by scope
   buckle client keygen | key | request <METHOD> <url>     This device's signing key, and a signed request with it
 
   buckle --version                   Print the version

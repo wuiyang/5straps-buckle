@@ -1,12 +1,14 @@
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify, type KeyObject } from 'node:crypto'
 import { z } from 'zod'
+import { JsonValueSchema, type JsonValue } from './json.js'
 
 /**
  * Proof of possession for Buckle's setup and approval routes (owner ruling H4 of 2026-09-28): the
  * person's client holds an Ed25519 private key, Buckle enrolls its public key locally, and each
  * request is signed as it is sent. The signature covers the exact payload bytes; the payload binds
- * the purpose and version, the node and workspace, the method and path, a sha256 of the exact body,
- * a nonce, when it was issued and when it expires, and the key. A relay carries the Authorization
+ * the purpose and version, the node (its serverId and the fingerprint of its own signing key) and
+ * workspace, the method and path, a sha256 of the exact body, a nonce, when it was issued and when it
+ * expires, and the key. A relay carries the Authorization
  * header and the body as they are and never holds a private key. Imported by path
  * (`@5straps/protocol/signed-request`) because it needs node:crypto.
  */
@@ -44,6 +46,11 @@ export const SignedRequestPayloadSchema = z.object({
   purpose: SignedRequestPurposeSchema,
   /** The Buckle node's serverId. */
   node: z.string().min(1).max(200),
+  /**
+   * The fingerprint of the node's own signing key, as the person's device pinned it (owner decision
+   * D11): two nodes that share a serverId never take each other's requests.
+   */
+  nodeKey: KeyIdSchema,
   workspace: z.string().min(1).max(64),
   method: z.string().regex(/^[A-Z]{1,16}$/),
   /** The path and query as requested. */
@@ -58,10 +65,17 @@ export const SignedRequestPayloadSchema = z.object({
 }).strict()
 export type SignedRequestPayload = z.infer<typeof SignedRequestPayloadSchema>
 
-/** Why a signed request was refused. The verifier's owner logs it; the caller is told only 401. */
-export type SignedRequestRefusal = 'malformed' | 'wrong_purpose' | 'wrong_target' | 'expired' | 'unknown_key' | 'bad_signature' | 'body_mismatch' | 'replayed'
+/**
+ * Why a signed request was refused. The verifier's owner logs it; the caller is told only 401.
+ * `out_of_scope`: the key is enrolled, but for another purpose or workspace (owner decision D10).
+ */
+export type SignedRequestRefusal = 'malformed' | 'wrong_purpose' | 'wrong_target' | 'expired' | 'unknown_key' | 'out_of_scope' | 'bad_signature' | 'body_mismatch' | 'replayed'
 
-export type SignedRequestVerdict = { ok: true; payload: SignedRequestPayload } | { ok: false; reason: SignedRequestRefusal }
+/** A refusal names the key the payload claims when it could be read, for the owner's audit: claimed, never proven. */
+export type SignedRequestVerdict = { ok: true; payload: SignedRequestPayload } | { ok: false; reason: SignedRequestRefusal; claimedKeyId?: string }
+
+/** The key an enrolled id verifies with, or why that id may not sign this request. */
+export type EnrolledKeyLookup = { key: KeyObject } | { refused: 'unknown_key' | 'out_of_scope' }
 
 /** A private key and the name its public half is enrolled under. */
 export interface SigningKey {
@@ -125,6 +139,8 @@ export function signRequest(input: {
   key: SigningKey
   purpose: SignedRequestPurpose
   node: string
+  /** The pinned node key's fingerprint (keyIdOf its public key). */
+  nodeKey: string
   workspace: string
   method: string
   path: string
@@ -135,7 +151,7 @@ export function signRequest(input: {
 }): string {
   const issuedAt = input.now ?? Date.now()
   const payload: SignedRequestPayload = SignedRequestPayloadSchema.parse({
-    v: SIGNED_REQUEST_VERSION, purpose: input.purpose, node: input.node, workspace: input.workspace,
+    v: SIGNED_REQUEST_VERSION, purpose: input.purpose, node: input.node, nodeKey: input.nodeKey, workspace: input.workspace,
     method: input.method.toUpperCase(), path: input.path, bodySha256: bodyDigest(input.body),
     nonce: randomBytes(NONCE_BYTES).toString('base64url'), issuedAt,
     expiresAt: issuedAt + Math.min(input.ttlMs ?? SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_MAX_TTL_MS), keyId: input.key.keyId,
@@ -153,29 +169,31 @@ export function isSignedRequest(authorization: string | undefined): boolean {
 
 /**
  * Verifies one signed request against what the verifier received. Cheap checks come first; the key's
- * signature before the body; the nonce is claimed last, so a forged or mismatched request never
- * spends a genuine nonce. `claim` answers false for a nonce already seen, and keeps it until `keepUntil`.
+ * enrollment and scope, then its signature, before the body; the nonce is claimed last, so a forged,
+ * out-of-scope or mismatched request never spends a genuine nonce. `claim` answers false for a nonce
+ * already seen, and keeps it until `keepUntil`.
  */
 export function verifySignedRequest(input: {
   authorization: string | undefined
-  expected: { purpose: SignedRequestPurpose; node: string; workspace: string; method: string; path: string }
+  expected: { purpose: SignedRequestPurpose; node: string; nodeKey: string; workspace: string; method: string; path: string }
   body: Uint8Array
   now: number
-  publicKeyFor: (keyId: string) => KeyObject | null
+  publicKeyFor: (payload: SignedRequestPayload) => EnrolledKeyLookup
   claim: (input: { keyId: string; nonce: string; keepUntil: number }) => boolean
 }): SignedRequestVerdict {
   const read = readSignedRequest(input.authorization)
   if (!read) return { ok: false, reason: 'malformed' }
   const { payload, bytes, signature } = read
+  const refuse = (reason: SignedRequestRefusal): SignedRequestVerdict => ({ ok: false, reason, claimedKeyId: payload.keyId })
   const { expected } = input
-  if (payload.purpose !== expected.purpose) return { ok: false, reason: 'wrong_purpose' }
-  if (payload.node !== expected.node || payload.workspace !== expected.workspace || payload.method !== expected.method.toUpperCase() || payload.path !== expected.path) return { ok: false, reason: 'wrong_target' }
-  if (!withinWindow(payload, input.now)) return { ok: false, reason: 'expired' }
-  const key = input.publicKeyFor(payload.keyId)
-  if (!key) return { ok: false, reason: 'unknown_key' }
-  if (!verifyBytes({ context: REQUEST_CONTEXT, bytes, signature, key })) return { ok: false, reason: 'bad_signature' }
-  if (bodyDigest(input.body) !== payload.bodySha256) return { ok: false, reason: 'body_mismatch' }
-  if (!input.claim({ keyId: payload.keyId, nonce: payload.nonce, keepUntil: payload.expiresAt + SIGNED_REQUEST_SKEW_MS })) return { ok: false, reason: 'replayed' }
+  if (payload.purpose !== expected.purpose) return refuse('wrong_purpose')
+  if (payload.node !== expected.node || payload.nodeKey !== expected.nodeKey || payload.workspace !== expected.workspace || payload.method !== expected.method.toUpperCase() || payload.path !== expected.path) return refuse('wrong_target')
+  if (!withinWindow(payload, input.now)) return refuse('expired')
+  const enrolled = input.publicKeyFor(payload)
+  if ('refused' in enrolled) return refuse(enrolled.refused)
+  if (!verifyBytes({ context: REQUEST_CONTEXT, bytes, signature, key: enrolled.key })) return refuse('bad_signature')
+  if (bodyDigest(input.body) !== payload.bodySha256) return refuse('body_mismatch')
+  if (!input.claim({ keyId: payload.keyId, nonce: payload.nonce, keepUntil: payload.expiresAt + SIGNED_REQUEST_SKEW_MS })) return refuse('replayed')
   return { ok: true, payload }
 }
 
@@ -188,10 +206,32 @@ export function withinWindow(payload: { issuedAt: number; expiresAt: number }, n
 }
 
 /**
+ * JSON with every object's keys in order, so the same value always gives the same text on the node
+ * and on a person's device.
+ */
+export function canonicalJson(value: JsonValue): string {
+  return JSON.stringify(sortKeys(value))
+}
+
+function sortKeys(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return value.map(sortKeys)
+  if (value === null || typeof value !== 'object') return value
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, sortKeys(value[key]!)]))
+}
+
+/**
+ * The digest of a call as a challenge shows it: its tool and its arguments as shown (owner decision
+ * D9). A person's client recomputes it from the challenge and signs nothing when it differs.
+ */
+export function callDigestOf(input: { tool: string; arguments: JsonValue }): string {
+  return bodyDigest(canonicalJson([input.tool, input.arguments]))
+}
+
+/**
  * What a pending ask is, as the node signs it (approval-proofs.md, Signed request): a person's client
- * verifies the node's signature, shows the raw action from this payload and nothing a relay wrote, and
- * approves or denies it by its digest. Built by the node from its durable queue, so the same ask
- * always signs the same bytes.
+ * verifies the node's signature, recomputes the call's digest from the arguments it carries, shows
+ * the raw action from this payload and nothing a relay wrote, and approves or denies it by its
+ * digest. Built by the node from its durable queue, so the same ask always signs the same bytes.
  */
 export const ApprovalChallengeSchema = z.object({
   v: z.literal(SIGNED_REQUEST_VERSION),
@@ -208,7 +248,15 @@ export const ApprovalChallengeSchema = z.object({
   subject: z.string().min(1),
   reason: z.string().min(1),
   offeredScopes: z.array(z.enum(['once', 'session', 'always'])).min(1),
-  /** The tool and its arguments, hashed; a changed call is a different challenge. */
+  /**
+   * The call's arguments as the node shows them (owner decision D9): canonical, with values under
+   * credential-named keys redacted and very long strings cut to a head, their length and their sha256.
+   * Null for an ask recorded without its call.
+   */
+  arguments: JsonValueSchema.nullable(),
+  /** The directory relative paths in the arguments resolve against, as the agent names it. */
+  cwd: z.string().max(4_096).nullable(),
+  /** callDigestOf(tool, arguments); a changed call is a different challenge. */
   callDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
   expiresAt: z.string(),
 }).strict()

@@ -29,11 +29,14 @@ export async function nodeActions(event: H3Event): Promise<ActionLog> {
   return (await useServices(event).getWorkspaceRuntime()).actions
 }
 
-/** One refusal: which face refused whom with what status, and nothing the caller sent. */
-export async function recordRefusal(actions: ActionLog, input: { tool: string; workspaceId: string; sessionId: string; status: number; outcome?: Outcome; detail?: string }): Promise<void> {
+/**
+ * One refusal: which face refused whom with what status, and nothing the caller sent but what `args`
+ * names (a signed request's claimed key fingerprint, which is public).
+ */
+export async function recordRefusal(actions: ActionLog, input: { tool: string; workspaceId: string; sessionId: string; status: number; outcome?: Outcome; detail?: string; args?: Record<string, string> }): Promise<void> {
   const auditId = crypto.randomUUID()
   await actions.record({ auditId, event: 'result', workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId, sessionId: input.sessionId,
-    tool: input.tool, outcome: input.outcome ?? outcomeOf(input.status), durationMs: 0, effects: [], args: {}, ...(input.detail === undefined ? {} : { detail: input.detail }) })
+    tool: input.tool, outcome: input.outcome ?? outcomeOf(input.status), durationMs: 0, effects: [], args: input.args ?? {}, ...(input.detail === undefined ? {} : { detail: input.detail }) })
 }
 
 /**
@@ -58,7 +61,7 @@ export function tolerantLog(event: H3Event, actions: ActionLog): ActionLog {
  * faces whose request is not itself one tool call. A change's attempt is durable before the work runs;
  * a read's, and every result, are written if the storage takes them (tolerantLog).
  */
-export async function withTransportAudit<T>(event: H3Event, actions: ActionLog, input: { tool: string; workspaceId: string; required: boolean }, run: () => Promise<T>): Promise<T> {
+export async function withTransportAudit<T>(event: H3Event, actions: ActionLog, input: { tool: string; workspaceId: string; required: boolean; actorId?: string }, run: () => Promise<T>): Promise<T> {
   const entry = transportEntry(input)
   const started = performance.now()
   const tolerant = tolerantLog(event, actions)
@@ -81,9 +84,9 @@ export async function recordTransportRefusal(actions: ActionLog, input: { tool: 
   await actions.record(transportResult(entry, input.status, performance.now()))
 }
 
-function transportEntry(input: { tool: string; workspaceId: string }): ActionLogEntry {
+function transportEntry(input: { tool: string; workspaceId: string; actorId?: string }): ActionLogEntry {
   const auditId = crypto.randomUUID()
-  return { auditId, workspaceId: input.workspaceId, requestId: auditId, sessionId: 'http-transport', at: new Date().toISOString(), tool: input.tool, outcome: 'started', effects: [], args: {}, durationMs: 0 }
+  return { auditId, workspaceId: input.workspaceId, requestId: auditId, sessionId: 'http-transport', at: new Date().toISOString(), tool: input.tool, outcome: 'started', effects: [], args: {}, durationMs: 0, ...(input.actorId ? { actorId: input.actorId } : {}) }
 }
 
 function transportResult(entry: ActionLogEntry, status: number, started: number): ActionLogEntry {

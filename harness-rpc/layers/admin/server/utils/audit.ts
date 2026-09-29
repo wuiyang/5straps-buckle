@@ -14,15 +14,17 @@ export function resourceOf(event: H3Event): string {
 
 /**
  * The admin audit wrapper: `setup_<method>_<resource>` on the workspace's own log, an attempt before a
- * change and a result with the HTTP status after every request, in the workspace-admin session. A
+ * change and a result with the HTTP status after every request, in the workspace-admin session, naming
+ * the actor. A
  * change's attempt must be written; a read's result and any result after the work are written if the
  * storage takes them, so the owner can still inspect a node whose audit log fails (B19).
  */
-export async function withSetupAudit<T>(event: H3Event, input: { actions: ActionLog; workspaceId: string; resource: string }, run: () => Promise<T>): Promise<T> {
+export async function withSetupAudit<T>(event: H3Event, input: { actions: ActionLog; workspaceId: string; resource: string; actorId: string }, run: () => Promise<T>): Promise<T> {
   const auditId = crypto.randomUUID()
   const started = performance.now()
+  // actorId names who the guard let in: admin:<workspace>, or key:<fingerprint> for a signed request (review H4 of B23-B25).
   const entry: ActionLogEntry = { auditId, workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId, sessionId: 'workspace-admin',
-    tool: `setup_${event.req.method.toLowerCase()}_${input.resource}`, outcome: 'started', durationMs: 0, effects: [], args: {} }
+    tool: `setup_${event.req.method.toLowerCase()}_${input.resource}`, outcome: 'started', durationMs: 0, effects: [], args: {}, ...(input.actorId ? { actorId: input.actorId } : {}) }
   if (isMutation(event)) await input.actions.record({ ...entry, event: 'attempt' })
   const results = tolerantLog(event, input.actions)
   const result = (status: number): ActionLogEntry => ({ ...entry, event: 'result', outcome: status >= 200 && status < 300 ? 'ok' : 'error', durationMs: Math.round(performance.now() - started), detail: `HTTP ${status}` })

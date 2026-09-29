@@ -9,7 +9,7 @@ import { type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantLookup } from '../../domain/permission/decision.js'
-import { redactAuditArguments } from '../../domain/redact.js'
+import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import { AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
@@ -20,7 +20,7 @@ import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
 import { resolveEffects } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
-import { ApprovalConflictError, ApprovalLimitError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
+import { ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
 import { requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
 
@@ -381,7 +381,7 @@ async function clearPermissions(input: {
   const approvedBy: string[] = []
   let consumed: GrantSubject[] = []
   const evaluate = (tokens: string[]) => options.approvals.evaluate({
-    tokens, sessionId, tool: request.tool,
+    tokens, sessionId, tool: request.tool, fingerprint: input.key.fingerprint,
     check: subjects => {
       // The registry's last check carries the approvals the call uses, a superset of earlier ones.
       consumed = subjects
@@ -416,7 +416,10 @@ async function clearPermissions(input: {
   // its policy skips); an entry point may add its own, and the one that holds less wins.
   const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
   // Only the caller's own signal reaches the wait: shutdown settles waits through the service's close.
-  const waited = await options.approvalService.request({ sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait, callDigest: input.key.fingerprint })
+  const waited = await options.approvalService.request({
+    sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
+    fingerprint: input.key.fingerprint, call: { arguments: reviewableArguments(request.args), cwd: options.paths.displayRoot },
+  })
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
   const approvals = waited.approvals
   const asked = (approvals.length > 0 ? approvals : outcome.asks).map(approval => `${approval.rule}:${approval.subject}`)
@@ -550,6 +553,7 @@ function shapeError(error: unknown, tool: string): { code: string; message: stri
   if (error instanceof ToolInputError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof ToolExecutionError) return { code: error.code, message: error.message, retryable: error.retryable }
   if (error instanceof ApprovalConflictError) return { code: 'APPROVAL_CONFLICT', message: error.message, retryable: false }
+  if (error instanceof RequestIdReusedError) return { code: REQUEST_ID_REUSED, message: error.message, retryable: false }
   if (error instanceof ApprovalLimitError) return { code: 'APPROVAL_LIMIT', message: error.message, retryable: true }
   if (isStateBusy(error)) {
     logger.warn('Tool invocation found Buckle state busy', { tool, message: error.message })

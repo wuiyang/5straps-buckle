@@ -49,7 +49,8 @@ export function registryTransportTool(event: H3Event): string {
  * mounted. The actor is admin:<workspace> for the admin credential and key:<fingerprint> for a signed
  * request.
  */
-export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target: (event: H3Event) => string = targetId): Guard {
+export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target: (event: H3Event) => string = targetId, options: { registry?: boolean } = {}): Guard {
+  const registry = options.registry === true
   return async (event) => {
     if (!useServices(event).adminHttp()) throw notFound()
     const workspaceId = target(event)
@@ -58,7 +59,7 @@ export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target:
     const purpose = ACCEPTS[access].find((credential): credential is SignedRequestPurpose => credential !== 'admin')
     const actor = await checkCredential(event, {
       verify: () => (isSignedRequest(authorization(event))
-        ? purpose ? verifySigned(event, { access, purpose, workspaceId }) : null
+        ? purpose ? verifySigned(event, { access, purpose, workspaceId, registry }) : null
         : workspaces.authenticateAdmin(workspaceId, authorization(event)) ? `admin:${workspaceId}` : null),
       refusal,
     })
@@ -67,18 +68,23 @@ export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target:
 }
 
 /**
- * A request an enrolled client key signed for this purpose, workspace, method, path and exact body.
- * A refusal is a bare 401 to the caller; its reason is audited on the node's log for the owner.
+ * A request an enrolled client key signed for this purpose, node, workspace, method, path and exact
+ * body, with a key whose scope covers it. A refusal is a bare 401 to the caller; its reason, and the
+ * key the payload claims when it could be read, are audited on the node's log for the owner.
  */
-async function verifySigned(event: H3Event, input: { access: AdminAccess; purpose: SignedRequestPurpose; workspaceId: string }): Promise<string | null> {
+async function verifySigned(event: H3Event, input: { access: AdminAccess; purpose: SignedRequestPurpose; workspaceId: string; registry: boolean }): Promise<string | null> {
   const services = useServices(event)
   const verdict = await (await services.getRequestVerifier()).verify({
-    authorization: authorization(event), purpose: input.purpose, workspaceId: input.workspaceId,
+    authorization: authorization(event), purpose: input.purpose, workspaceId: input.workspaceId, registry: input.registry,
     method: event.req.method, path: `${event.url.pathname}${event.url.search}`, body: await readBody(event, SETUP_BODY_LIMIT),
   })
   const refused = verdict.ok ? await sessionRefusal({ access: input.access, payload: verdict.payload, workspaceId: input.workspaceId, sessions: await services.getSetupSessions() }) : verdict.reason
   if (!refused && verdict.ok) return `key:${verdict.payload.keyId}`
-  await recordRefusal(tolerantLog(event, await nodeActions(event)), { tool: 'setup_signed_request_refused', workspaceId: NODE_WORKSPACE, sessionId: 'http-untrusted', status: 401, detail: refused ?? 'refused' })
+  const claimedKeyId = verdict.ok ? verdict.payload.keyId : verdict.claimedKeyId
+  await recordRefusal(tolerantLog(event, await nodeActions(event)), {
+    tool: 'setup_signed_request_refused', workspaceId: NODE_WORKSPACE, sessionId: 'http-untrusted', status: 401, detail: refused ?? 'refused',
+    ...(claimedKeyId === undefined ? {} : { args: { claimedKeyId } }),
+  })
   return null
 }
 

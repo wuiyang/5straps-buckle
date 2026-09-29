@@ -247,9 +247,12 @@ async function checkCleanStop() {
   assert(!serviceLog.includes('"Buckle closed with errors"'), `A close step failed: ${serviceOutput}`)
 }
 
-/** A node started without BUCKLE_ADMIN_TOKEN has no owner's face: /setup answers 404 to every caller. */
+/**
+ * A node started without BUCKLE_ADMIN_TOKEN has no owner's face: /setup answers 404 to every caller,
+ * with the experimental admin flag on, so the token check is what answers (review M4 of B23-B25).
+ */
 async function checkSetupWithoutAdminToken() {
-  await startService({ admin: false })
+  await startService({ admin: false, adminHttp: true })
   for (const token of [adminToken, agentToken, undefined]) {
     const response = await fetch(`http://127.0.0.1:${port}/setup/status`, { headers: token ? { authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(10_000) })
     await response.body?.cancel()

@@ -12,6 +12,8 @@ export interface GrantStore {
     scope: GrantScope
     denied?: boolean
     pattern?: boolean
+    /** key:<fingerprint> when a person's enrolled key signed the decision that made it. */
+    decidedBy?: string
   }): Promise<GrantRecord>
   list(): GrantRecord[]
   revoke(id: string): Promise<boolean>

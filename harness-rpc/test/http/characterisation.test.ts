@@ -28,13 +28,13 @@ const MCP_HEADERS = { 'content-type': 'application/json', accept: 'application/j
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
 
-async function node(options: { admin?: boolean } = {}) {
+async function node(options: { admin?: boolean; adminHttp?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-edges-'))
   for (const folder of ['default', 'one']) mkdirSync(join(root, folder))
   mkdirSync(join(root, 'state'), { mode: 0o700 })
   const buckle = await createBuckleHttp({ environment: {
     BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT,
-    ...(options.admin === false ? {} : { BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: NODE_ADMIN }), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_MAX_REQUEST_BYTES: String(MAX_REQUEST_BYTES),
+    ...(options.admin === false ? {} : { BUCKLE_ADMIN_TOKEN: NODE_ADMIN }), ...(options.adminHttp === false ? {} : { BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true' }), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_MAX_REQUEST_BYTES: String(MAX_REQUEST_BYTES),
   } })
   const { config, runtime } = buckle
   cleanups.push(() => buckle.close())
@@ -212,9 +212,10 @@ describe('unknown /setup paths', () => {
   })
 
   // B17 flips: the text 404 became the JSON 404, and /workspaces/default/setup/** answers it too
-  // (it was 401): the node's workspace has no admin credential to check.
+  // (it was 401): the node's workspace has no admin credential to check. With the experimental flag
+  // on, so this is the no-token check and not the flag's (review M4 of B23-B25).
   it('answers every /setup path 404 without an admin token, and audits nothing', async () => {
-    const buckle = await node({ admin: false })
+    const buckle = await node({ admin: false, adminHttp: true })
     const notFound = { status: 404, contentType: 'application/json', body: { error: 'Not Found' } }
     for (const path of ['/setup/status', '/setup/workspaces', '/setup/x', '/workspaces/default/setup/status']) {
       expect(await shape(await buckle.request(path, { headers: bearer(NODE_AGENT) })), path).toEqual(notFound)

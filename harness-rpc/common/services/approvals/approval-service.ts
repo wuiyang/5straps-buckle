@@ -1,6 +1,6 @@
 import { useScopeSafe, type CliOutcome, type CliRequest, type CliWait } from '@5straps/runtime'
-import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw } from '@5straps/protocol'
-import { challengeBytes, SIGNED_REQUEST_VERSION, type ApprovalChallenge } from '@5straps/protocol/signed-request'
+import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw, type JsonValue } from '@5straps/protocol'
+import { callDigestOf, challengeBytes, SIGNED_REQUEST_VERSION, type ApprovalChallenge } from '@5straps/protocol/signed-request'
 import { requestIdKey } from '../invocation/executions.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
@@ -41,8 +41,10 @@ export interface ApprovalAskInput {
    */
   isCancel?: (reason: unknown) => boolean
   wait?: ApprovalWait
-  /** The call's tool and arguments, hashed; the node's signed challenge for each ask names it. */
-  callDigest?: string
+  /** The call's tool and whole arguments, hashed (requestFingerprint): a re-send joins only with the same one. */
+  fingerprint?: string
+  /** The call as the node's signed challenge shows it (owner decision D9): redacted arguments and their directory. */
+  call?: { arguments: JsonValue; cwd: string }
 }
 
 /**
@@ -65,6 +67,8 @@ export interface ApprovalAnswer {
   widenTo?: string
   /** The digest of the challenge a person's key decided on: it must be the ask's own (B24). */
   challenge?: string
+  /** key:<fingerprint> for a decision a person's enrolled key signed; recorded with it and its grant. */
+  decidedBy?: string
 }
 
 /** What a decision from Rings came to; the setup face answers 401, 400, 409 or 200 from it. */
@@ -195,7 +199,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const scope = useScopeSafe()
       const actor = scope?.context.actor
       const key = joinKey({ ...input, actor })
-      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(actor === undefined ? {} : { actor }), ...(input.callDigest === undefined ? {} : { callDigest: input.callDigest }) })
+      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }) })
       const { requests: approvals, answered } = issued
       // Joined to asks all answered, one of them denied: nothing to wait for, and the caller refuses.
       if (issued.joined && approvals.length === 0) return { settled: true, approvals, answered }
@@ -237,6 +241,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const result = await options.registry.resolve(input.decision, input.authority, {
         ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
         ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => challengeBytes(challengeOf(ask)).digest === challenge }),
+        ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
       })
       if (!result.ok) return result
       if (!result.repeated) notices.answered(input.decision)
@@ -250,7 +255,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         const signed = SignedApprovalDecisionSchema.safeParse(input.body)
         if (!signed.success) return { status: 'invalid' }
         const { challenge, ...decision } = signed.data
-        const result = await service.answer({ decision, authority: 'admin', challenge })
+        const result = await service.answer({ decision, authority: 'admin', challenge, decidedBy: input.signedBy })
         return result.ok ? { status: 'answered' } : { status: 'rejected', reason: result.reason }
       }
       const opened = await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
@@ -286,14 +291,18 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
   }
 
-  /** The challenge for one ask: every field from the durable queue, so the same ask always signs the same bytes. */
+  /**
+   * The challenge for one ask: every field from the durable queue, so the same ask always signs the same
+   * bytes. It carries the call as shown, and its digest, which a person's client recomputes (D9).
+   */
   function challengeOf(ask: PendingAsk): ApprovalChallenge {
-    const { request } = ask
+    const { request, call } = ask
     return {
       v: SIGNED_REQUEST_VERSION, purpose: 'buckle-approval-challenge', node: options.serverId, workspace: options.workspaceId,
       token: request.token, requestId: ask.requestId ?? null, sessionId: ask.sessionId, actor: ask.actor ?? null,
       tool: request.tool, rule: request.rule, subject: request.subject, reason: request.reason, offeredScopes: request.offeredScopes,
-      callDigest: ask.callDigest ?? null, expiresAt: request.expiresAt,
+      arguments: call?.arguments ?? null, cwd: call?.cwd ?? null,
+      callDigest: call ? callDigestOf({ tool: request.tool, arguments: call.arguments }) : null, expiresAt: request.expiresAt,
     }
   }
 

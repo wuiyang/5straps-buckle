@@ -3,32 +3,39 @@ import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
-import { generateSigningKey, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, type ApprovalChallenge, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
+import { callDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, type ApprovalChallenge, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 
 export interface CliResult {
   exitCode: number
 }
 
 export const CLIENT_KEY_FILE = 'client-key.pem'
-/** The node keys this device pinned, by serverId, as ssh's known_hosts. */
+/**
+ * The nodes this device pinned, as ssh's known_hosts: by the URL the person types (its origin), the
+ * node's serverId and its signing key (owner decision D11). A request is signed only for a pinned node.
+ */
 export const TRUSTED_NODES_FILE = 'trusted-nodes.json'
-const TrustedNodesSchema = z.object({ version: z.literal(1), nodes: z.record(z.string(), PublicKeyTextSchema) })
+const PinSchema = z.object({ serverId: z.string().min(1).max(200), publicKey: PublicKeyTextSchema })
+const TrustedNodesSchema = z.object({ version: z.literal(2), nodes: z.record(z.string(), PinSchema) })
+type Pin = z.infer<typeof PinSchema>
 
 const USAGE = `Usage:
   buckle client keygen [--force]      Make this device's signing key; prints the public key to enroll
   buckle client key                   Print this device's public key and its fingerprint
   buckle client request <METHOD> <url> [--body <json>] [--purpose setup|approval] [--node <server-id>] [--session <id>]
-                                      Send one request to a node's setup face, signed with this device's key
+                                      Send one request to a pinned node's setup face, signed with this device's key;
+                                      --node, when given, must name the node pinned for the URL
   buckle client session open <node-url> [--workspace <id>]
   buckle client session close <node-url> <session-id> [--workspace <id>]
                                       A setup session: signed setup changes name it with --session
-  buckle client trust <server-id> <node-public-key>
-                                      Pin a node's key, as \`buckle keys node\` prints it on that node
+  buckle client trust <node-url> <server-id> <node-public-key>
+                                      Pin the node at that URL, as \`buckle keys node\` prints it on that node
   buckle client approvals <node-url> [--workspace <id>]
   buckle client approve <node-url> <token> [--deny] [--scope once|session|always] [--workspace <id>]
                                       Show what an ask is, as the pinned node signed it, and decide on exactly that
 
-The key lives in BUCKLE_CLIENT_DIR (an absolute path), ~/.5straps/client by default, owner-only.`
+The key and the pinned nodes live in BUCKLE_CLIENT_DIR (an absolute path), ~/.5straps/client by default, owner-only.
+A request is signed only for the node pinned for the URL typed, never for what the URL says it is.`
 
 /**
  * The person's side of proof of possession (owner ruling H4 of 2026-09-28): this device keeps its
@@ -93,7 +100,7 @@ function showKey(environment: NodeJS.ProcessEnv): CliResult {
 }
 
 function describe(key: { publicKey: string; keyId: string }): string {
-  return `Public key:  ${key.publicKey}\nFingerprint: ${key.keyId}\nOn the node: buckle keys enroll ${key.publicKey} --label <this device>\n`
+  return `Public key:  ${key.publicKey}\nFingerprint: ${key.keyId}\nOn the node: buckle keys enroll ${key.publicKey} --purpose setup|approval|both --workspace <id>|node --label <this device>\n`
 }
 
 async function request(argv: string[], environment: NodeJS.ProcessEnv): Promise<CliResult> {
@@ -105,12 +112,18 @@ async function request(argv: string[], environment: NodeJS.ProcessEnv): Promise<
   return report(response, await response.text())
 }
 
-/** Sends one request, signed with this device's key for the node, workspace, method, path and exact body. */
+/**
+ * Sends one request, signed with this device's key for the node pinned for the URL (its serverId and
+ * its key's fingerprint), the workspace, method, path and exact body. An unpinned URL, or a --node
+ * that is not the pinned one, signs nothing.
+ */
 async function send(input: { environment: NodeJS.ProcessEnv; method: string; url: URL; body: string; purpose: SignedRequestPurpose; node?: string; session?: string }): Promise<Response> {
   const method = input.method.toUpperCase()
   const workspace = decodeURIComponent(/^\/workspaces\/([^/]+)\//.exec(input.url.pathname)?.[1] ?? 'default')
+  const pin = pinFor(input.environment, input.url)
+  if (input.node !== undefined && input.node !== pin.serverId) throw new ClientError(`--node names ${input.node}, but ${input.url.origin} is pinned as ${pin.serverId}; nothing was signed`)
   const authorization = signRequest({
-    key: loadClientKey(input.environment), purpose: input.purpose, node: input.node ?? await serverIdOf(input.url), workspace,
+    key: loadClientKey(input.environment), purpose: input.purpose, node: pin.serverId, nodeKey: keyIdOf(pin.publicKey), workspace,
     method, path: `${input.url.pathname}${input.url.search}`, body: input.body, ...(input.session ? { session: input.session } : {}),
   })
   return fetch(input.url, { method, headers: { authorization, ...(input.body ? { 'content-type': 'application/json' } : {}) }, ...(input.body ? { body: input.body } : {}), signal: AbortSignal.timeout(30_000) })
@@ -146,8 +159,9 @@ async function session(argv: string[], environment: NodeJS.ProcessEnv): Promise<
 }
 
 function trust(argv: string[], environment: NodeJS.ProcessEnv): CliResult {
-  const [serverId, publicKey] = argv
-  if (!serverId || !publicKey || argv.length !== 2) throw new ClientError(USAGE)
+  const [node, serverId, publicKey] = argv
+  if (!node || !serverId || !publicKey || argv.length !== 3) throw new ClientError(USAGE)
+  const origin = originOf(node)
   try {
     publicKeyFrom(publicKey)
   } catch {
@@ -155,46 +169,80 @@ function trust(argv: string[], environment: NodeJS.ProcessEnv): CliResult {
   }
   const file = join(clientDirectory(environment), TRUSTED_NODES_FILE)
   const trusted = trustedNodes(environment)
-  trusted.nodes[serverId] = publicKey
+  trusted.nodes[origin] = { serverId, publicKey }
   mkdirSync(clientDirectory(environment), { recursive: true, mode: 0o700 })
   const temporary = `${file}.${process.pid}.tmp`
   writeFileSync(temporary, `${JSON.stringify(trusted, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
   renameSync(temporary, file)
-  process.stdout.write(`Pinned ${serverId}'s key; challenges from it are shown only when that key signed them.\n`)
+  process.stdout.write(`Pinned ${origin} as ${serverId} (${keyIdOf(publicKey)}); requests to it are signed for that node only, and its challenges are shown only when that key signed them.\n`)
   return { exitCode: 0 }
 }
 
 function trustedNodes(environment: NodeJS.ProcessEnv): z.infer<typeof TrustedNodesSchema> {
   const file = join(clientDirectory(environment), TRUSTED_NODES_FILE)
-  if (!existsSync(file)) return { version: 1, nodes: {} }
-  return TrustedNodesSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
+  if (!existsSync(file)) return { version: 2, nodes: {} }
+  const parsed = TrustedNodesSchema.safeParse(JSON.parse(readFileSync(file, 'utf8')))
+  if (!parsed.success) throw new ClientError(`${file} is not a pin list this client reads (pins are now kept by node URL); move it aside and pin each node again with buckle client trust <node-url> <server-id> <node-public-key>`)
+  return parsed.data
 }
 
-/** The node's waiting asks, each verified with the key pinned for it; one that does not verify is never shown. */
-async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node: string; workspace: string | undefined }): Promise<{ serverId: string; challenges: Array<{ token: string; challenge: ApprovalChallenge; digest: string }> }> {
+/** The node pinned for a URL's origin; never what the URL itself says it is (owner decision D11). */
+function pinFor(environment: NodeJS.ProcessEnv, url: URL): Pin {
+  const pin = trustedNodes(environment).nodes[url.origin]
+  if (!pin) throw new ClientError(`${url.origin} is not pinned on this device: run buckle keys node on that node, then buckle client trust ${url.origin} <its server id> <its public key>`)
+  return pin
+}
+
+function originOf(node: string): string {
+  try {
+    return new URL(node).origin
+  } catch {
+    throw new ClientError(`Not a node URL: ${node}`)
+  }
+}
+
+interface VerifiedChallenge {
+  token: string
+  challenge: ApprovalChallenge
+  digest: string
+  /** Whether the call digest recomputes from the arguments the challenge shows (owner decision D9). */
+  consistent: boolean
+}
+
+/** The node's waiting asks, each verified with the key pinned for the URL; one that does not verify is never shown. */
+async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node: string; workspace: string | undefined }): Promise<{ pin: Pin; origin: string; challenges: VerifiedChallenge[] }> {
   const url = setupUrl(input.node, input.workspace, 'approvals/challenges')
-  const serverId = await serverIdOf(url)
-  const pinned = trustedNodes(input.environment).nodes[serverId]
-  if (!pinned) throw new ClientError(`${serverId} is not pinned on this device: run buckle keys node on it, then buckle client trust ${serverId} <its public key>`)
-  const response = await send({ environment: input.environment, method: 'GET', url, body: '', purpose: 'buckle-approval', node: serverId })
+  const pin = pinFor(input.environment, url)
+  const response = await send({ environment: input.environment, method: 'GET', url, body: '', purpose: 'buckle-approval' })
   if (!response.ok) throw new ClientError(`The node answered HTTP ${response.status}`)
   const body = await response.json() as { challenges?: Array<{ token: string; signed: string }> }
-  const nodeKey = publicKeyFrom(pinned)
+  const nodeKey = publicKeyFrom(pin.publicKey)
   const challenges = (body.challenges ?? []).flatMap((item) => {
     const read = readChallenge({ signed: item.signed, nodeKey })
-    return read && read.challenge.node === serverId && read.challenge.token === item.token ? [{ token: item.token, ...read }] : []
+    if (!read || read.challenge.node !== pin.serverId || read.challenge.token !== item.token) return []
+    return [{ token: item.token, ...read, consistent: recomputes(read.challenge) }]
   })
-  return { serverId, challenges }
+  return { pin, origin: url.origin, challenges }
+}
+
+/** The call digest recomputed from the arguments shown; a challenge without them shows no action to decide on. */
+function recomputes(challenge: ApprovalChallenge): boolean {
+  return challenge.arguments !== null && challenge.callDigest === callDigestOf({ tool: challenge.tool, arguments: challenge.arguments })
 }
 
 /** The raw action from the verified challenge, and nothing a relay described. */
-function describeChallenge(challenge: ApprovalChallenge): string {
+function describeChallenge(item: VerifiedChallenge): string {
+  const { challenge } = item
+  const shown = challenge.arguments === null ? ['  arguments: not recorded'] : ['  arguments:', ...JSON.stringify(challenge.arguments, null, 2).split('\n').map(line => `    ${line}`)]
   return [
     `${challenge.token}  ${challenge.tool} asks ${challenge.rule}`,
     `  subject:  ${challenge.subject}`,
     `  reason:   ${challenge.reason}`,
+    `  in:       ${challenge.cwd ?? 'not recorded'}`,
+    ...shown,
     `  scopes:   ${challenge.offeredScopes.join(', ')}; expires ${challenge.expiresAt}`,
     `  call:     ${challenge.callDigest ?? 'not recorded'}; workspace ${challenge.workspace}, session ${challenge.sessionId}`,
+    ...(item.consistent ? [] : ['  WARNING: the arguments shown do not match the call digest; approve refuses this ask']),
   ].join('\n')
 }
 
@@ -203,7 +251,7 @@ async function approvals(argv: string[], environment: NodeJS.ProcessEnv): Promis
   const [node] = positionals
   if (!node || positionals.length !== 1) throw new ClientError(USAGE)
   const { challenges } = await verifiedChallenges({ environment, node, workspace: values.workspace })
-  process.stdout.write(challenges.length === 0 ? 'Nothing is waiting for approval.\n' : `${challenges.map(item => describeChallenge(item.challenge)).join('\n')}\n`)
+  process.stdout.write(challenges.length === 0 ? 'Nothing is waiting for approval.\n' : `${challenges.map(describeChallenge).join('\n')}\n`)
   return { exitCode: 0 }
 }
 
@@ -213,12 +261,13 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv): Promise<
   if (!node || !token || positionals.length !== 2) throw new ClientError(USAGE)
   const scope = values.scope ?? 'once'
   if (scope !== 'once' && scope !== 'session' && scope !== 'always') throw new ClientError('--scope takes once, session or always')
-  const { serverId, challenges } = await verifiedChallenges({ environment, node, workspace: values.workspace })
+  const { pin, origin, challenges } = await verifiedChallenges({ environment, node, workspace: values.workspace })
   const found = challenges.find(item => item.token === token)
-  if (!found) throw new ClientError(`No waiting ask ${token} that ${serverId}'s pinned key signed`)
-  process.stdout.write(`${describeChallenge(found.challenge)}\n`)
+  if (!found) throw new ClientError(`No waiting ask ${token} that ${pin.serverId}'s pinned key signed`)
+  process.stdout.write(`Node:  ${pin.serverId}  ${keyIdOf(pin.publicKey)}  at ${origin}\n${describeChallenge(found)}\n`)
+  if (!found.consistent) throw new ClientError(`The arguments ${pin.serverId} shows for ${token} do not recompute to its call digest; nothing was signed`)
   const body = JSON.stringify({ token, approved: !values.deny, scope, challenge: found.digest })
-  const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'approvals'), body, purpose: 'buckle-approval', node: serverId })
+  const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'approvals'), body, purpose: 'buckle-approval', node: pin.serverId })
   return report(response, await response.text())
 }
 
@@ -228,14 +277,6 @@ function purposeOf(named: string | undefined, pathname: string): SignedRequestPu
   if (named === 'approval') return 'buckle-approval'
   if (named !== undefined) throw new ClientError('--purpose takes setup or approval')
   return /\/setup\/approvals(?:\/|$)/.test(pathname) ? 'buckle-approval' : 'buckle-setup'
-}
-
-/** The node's serverId from its open liveness route; pass --node to pin it instead. */
-async function serverIdOf(url: URL): Promise<string> {
-  const response = await fetch(new URL('/health', url.origin), { signal: AbortSignal.timeout(10_000) })
-  const health = await response.json().catch(() => null) as { serverId?: unknown } | null
-  if (typeof health?.serverId !== 'string') throw new ClientError(`${url.origin}/health named no serverId; pass --node <server-id>`)
-  return health.serverId
 }
 
 function fail(message: string): CliResult {

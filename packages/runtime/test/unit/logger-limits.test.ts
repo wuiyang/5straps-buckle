@@ -137,6 +137,22 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     expect(readable.map(redactText)).toEqual(readable)
   })
 
+  // Review H4 of B23-B25: the process log names the key that signed a setup change or an approval.
+  it('keeps a public key fingerprint readable after SHA256:, and still redacts the same run anywhere else', async () => {
+    const fingerprint = 'SHA256:q3Xz_9-kLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsT'
+    expect(fingerprint.length).toBe(7 + 43)
+    const event = await logOnce({ actor: `key:${fingerprint}` }, { message: `Approved by key:${fingerprint}` })
+    expect(event.fields).toEqual({ actor: `key:${fingerprint}` })
+    expect(event.message).toBe(`Approved by key:${fingerprint}`)
+    const run = fingerprint.slice(7)
+    expect(redactText(`secret ${run}`)).toBe('secret [redacted]')
+    expect(redactText(`SHA256:${run}extra`)).toBe('SHA256:[redacted]')
+    expect(redactText(`SHA1:${run}`)).toBe('SHA1:[redacted]')
+    // Random secrets still go, whatever precedes them, unless they are exactly a fingerprint after SHA256:.
+    const survivors = randomKeys(2_000).filter(key => redactText(`token ${key}`).includes(key))
+    expect(survivors.length).toBe(0)
+  })
+
   it('keeps absolute and relative paths and stack frames readable', async () => {
     const relative = 'packages/runtime/test/fixture/layers/common/server/routes/v1/database/baked'
     const frame = 'at runRequestInScope (file:///home/user/projects/buckle/packages/runtime/src/nitro/guards.ts:125:29)'

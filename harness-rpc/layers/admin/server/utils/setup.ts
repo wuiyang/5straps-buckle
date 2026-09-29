@@ -38,7 +38,7 @@ export function defineSetupHandler(definition: { access: AdminAccess | ((event: 
       const workspace = await useSetupTarget(event, { setup: !definition.active })
       const resource = typeof definition.resource === 'function' ? definition.resource(event) : definition.resource
       const call: SetupCall = { event, actor: scope.context.actor ?? '', workspace, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams) }
-      return mapFailures(() => withSetupAudit(event, { actions: workspace.runtime.actions, workspaceId: workspace.runtime.workspaceId, resource }, async () => definition.handler(call)))
+      return mapFailures(() => withSetupAudit(event, { actions: workspace.runtime.actions, workspaceId: workspace.runtime.workspaceId, resource, actorId: call.actor }, async () => definition.handler(call)))
     },
   })
 }
@@ -66,12 +66,14 @@ interface RegistryCall {
  */
 export function defineRegistryHandler(definition: { access: AdminAccess; handler: (call: RegistryCall) => unknown }) {
   return defineOperationHandler({
-    guards: [requireAdmin(definition.access, REGISTRY_REFUSED, () => NODE_WORKSPACE)],
-    handler: async (event) => {
+    // A signed change to the registry needs a node-scoped key (owner decision D10).
+    guards: [requireAdmin(definition.access, REGISTRY_REFUSED, () => NODE_WORKSPACE, { registry: true })],
+    handler: async (event, scope) => {
       const services = useServices(event)
       const { actions } = await services.getWorkspaceRuntime()
       const call: RegistryCall = { event, workspaces: await services.getWorkspaces(), views: services.getSetupViews(), actions, body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams) }
-      return mapFailures(() => withTransportAudit(event, actions, { tool: registryTransportTool(event), workspaceId: NODE_WORKSPACE, required: isMutation(event) }, async () => definition.handler(call)))
+      const actorId = scope.context.actor ?? ''
+      return mapFailures(() => withTransportAudit(event, actions, { tool: registryTransportTool(event), workspaceId: NODE_WORKSPACE, required: isMutation(event), actorId }, async () => definition.handler(call)))
     },
   })
 }

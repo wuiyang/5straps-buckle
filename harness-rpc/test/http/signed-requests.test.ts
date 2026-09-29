@@ -1,4 +1,5 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
 import { mintApprovalKey } from '@5straps/protocol/envelope'
 import { generateSigningKey, signingKeyFromPem, signRequest, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, type SignedRequestPurpose } from '@5straps/protocol/signed-request'
@@ -17,34 +18,41 @@ import { nodeEnvironment } from '../support/node-environment.js'
 const AGENT = 'signed-requests-agent-token'
 const ADMIN = 'signed-requests-admin-token'
 const nodes: BuckleHttp[] = []
-afterEach(async () => { vi.restoreAllMocks(); for (const node of nodes.splice(0)) await node.close() })
+const relays: Server[] = []
+afterEach(async () => {
+  vi.restoreAllMocks()
+  for (const relay of relays.splice(0)) await new Promise(resolve => relay.close(resolve))
+  for (const node of nodes.splice(0)) await node.close()
+})
 
 const owner = generateSigningKey()
 const stranger = generateSigningKey()
 const policy = JSON.stringify({ version: 1, commands: { allow: [], deny: ['rm *'] }, network: { allow: [] }, mount: null, updatedAt: null })
 
-async function node(extra: Record<string, string> = {}): Promise<BuckleHttp & { workspace: string; root: string }> {
+type Node = BuckleHttp & { workspace: string; root: string; nodeKey: string }
+
+async function node(extra: Record<string, string> = {}, options: { instance?: 1 | 2; enroll?: boolean } = {}): Promise<Node> {
   const { root, workspace, environment } = nodeEnvironment('buckle-signed-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs', ...extra })
-  const started = await createBuckleHttp({ environment })
+  const started = await createBuckleHttp({ environment, ...(options.instance ? { instance: options.instance } : {}) })
   nodes.push(started)
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-  expect((await keysCommand({ config: started.config, argv: ['enroll', owner.publicKey, '--label', 'owner laptop'] })).exitCode).toBe(0)
+  if (options.enroll !== false) expect((await keysCommand({ config: started.config, argv: ['enroll', owner.publicKey, '--label', 'owner laptop', '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(0)
   vi.mocked(process.stdout.write).mockRestore()
-  return Object.assign(started, { workspace, root })
+  return Object.assign(started, { workspace, root, nodeKey: (await started.services.getNodeSigner()).keyId })
 }
 
-interface Signing { key?: typeof owner; purpose?: SignedRequestPurpose; method?: string; path?: string; body?: string; workspace?: string; node?: string; at?: number; session?: string }
+interface Signing { key?: typeof owner; purpose?: SignedRequestPurpose; method?: string; path?: string; body?: string; workspace?: string; node?: string; nodeKey?: string; at?: number; session?: string }
 
-function sign(buckle: BuckleHttp, input: Signing = {}): string {
+function sign(buckle: Node, input: Signing = {}): string {
   return signRequest({
-    key: signingKeyFromPem((input.key ?? owner).privateKeyPem), purpose: input.purpose ?? 'buckle-setup', node: input.node ?? buckle.config.serverId,
+    key: signingKeyFromPem((input.key ?? owner).privateKeyPem), purpose: input.purpose ?? 'buckle-setup', node: input.node ?? buckle.config.serverId, nodeKey: input.nodeKey ?? buckle.nodeKey,
     workspace: input.workspace ?? 'default', method: input.method ?? 'PUT', path: input.path ?? '/setup/policy', body: input.body ?? policy, now: input.at ?? Date.now(),
     ...(input.session ? { session: input.session } : {}),
   })
 }
 
 /** Opens a setup session for the owner's key (B24): signed setup changes name it. */
-async function openSession(buckle: BuckleHttp): Promise<string> {
+async function openSession(buckle: Node): Promise<string> {
   const response = await send(buckle, sign(buckle, { method: 'POST', path: '/setup/sessions', body: '' }), { method: 'POST', path: '/setup/sessions', body: '' })
   expect(response.status).toBe(201)
   return (await response.json() as { session: { id: string } }).session.id
@@ -95,6 +103,7 @@ describe('a request the enrolled key signed (B23)', () => {
       ['body_mismatch', sign(buckle), { body: JSON.stringify({ ...JSON.parse(policy) as object, network: { allow: ['*'] } }) }],
       ['wrong_target', sign(buckle, { workspace: 'child' }), {}],
       ['wrong_target', sign(buckle, { node: 'another-node' }), {}],
+      ['wrong_target', sign(buckle, { nodeKey: generateSigningKey().keyId }), {}],
       ['wrong_target', sign(buckle, { path: '/workspaces/default/setup/policy' }), {}],
       ['wrong_target', sign(buckle, { method: 'POST' }), {}],
       ['wrong_purpose', sign(buckle, { purpose: 'buckle-approval' }), {}],
@@ -110,6 +119,9 @@ describe('a request the enrolled key signed (B23)', () => {
       expect(await response.json()).toEqual({ error: 'Unauthorized' })
     }
     expect(refusals(buckle)).toEqual(cases.map(([reason]) => reason))
+    // Each refusal names the key its payload claims, when one could be read (review H4 of B23-B25).
+    const claimed = buckle.runtime.actions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => (entry.args as { claimedKeyId?: string }).claimedKeyId)
+    expect(claimed).toEqual([...cases.slice(0, -2).map(() => owner.keyId), stranger.keyId, undefined])
     expect(buckle.runtime.policy.stored()).toBeNull()
   })
 
@@ -138,7 +150,7 @@ describe('a request the enrolled key signed (B23)', () => {
     expect((await keysCommand({ config: buckle.config, argv: ['revoke', owner.keyId] })).exitCode).toBe(0)
     expect((await send(buckle, sign(buckle, { session }))).status).toBe(401)
     // Enrolling the same key again does not undo the revocation.
-    expect((await keysCommand({ config: buckle.config, argv: ['enroll', owner.publicKey] })).exitCode).toBe(1)
+    expect((await keysCommand({ config: buckle.config, argv: ['enroll', owner.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(1)
     expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('was revoked')
     expect((await send(buckle, sign(buckle, { session }))).status).toBe(401)
     expect(refusals(buckle)).toEqual(['unknown_key', 'unknown_key'])
@@ -160,16 +172,150 @@ describe('a request the enrolled key signed (B23)', () => {
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     expect((await clientCommand(['keygen'], environment)).exitCode).toBe(0)
     const publicKey = /Public key: +(ed25519:\S+)/.exec(printed)![1]!
-    expect((await keysCommand({ config: buckle.config, argv: ['enroll', publicKey, '--label', 'device'] })).exitCode).toBe(0)
+    expect((await keysCommand({ config: buckle.config, argv: ['enroll', publicKey, '--label', 'device', '--purpose', 'setup', '--workspace', 'default'] })).exitCode).toBe(0)
     const body = JSON.stringify({ version: 1, network: { allow: ['example.com'] } })
+    // Nothing is signed for a node this device has not pinned under the URL typed (owner decision D11).
+    expect((await clientCommand(['session', 'open', url], environment)).exitCode).toBe(1)
+    printed = ''
+    await keysCommand({ config: buckle.config, argv: ['node'] })
+    const nodeKey = /Public key: +(ed25519:\S+)/.exec(printed)![1]!
+    expect((await clientCommand(['trust', url, buckle.config.serverId, nodeKey], environment)).exitCode).toBe(0)
     printed = ''
     expect((await clientCommand(['session', 'open', url], environment)).exitCode).toBe(0)
     const session = printed.trim()
     expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body, '--session', session], environment)).exitCode).toBe(0)
     expect(buckle.runtime.policy.stored()?.network.allow).toEqual(['example.com'])
-    // The node names itself on /health; a pinned --node that is not this node is refused.
+    // A --node that is not the node pinned for this URL signs nothing.
     expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body, '--node', 'another-node', '--session', session], environment)).exitCode).toBe(1)
     expect((await clientCommand(['session', 'close', url, session], environment)).exitCode).toBe(0)
     expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body, '--session', session], environment)).exitCode).toBe(1)
+  })
+})
+
+/** The key's session on a workspace, opened with a request it signed; the status when it is refused. */
+async function sessionOn(buckle: Node, key: typeof owner, workspace: string): Promise<string | number> {
+  const path = workspace === 'default' ? '/setup/sessions' : `/workspaces/${workspace}/setup/sessions`
+  const response = await send(buckle, sign(buckle, { key, workspace, method: 'POST', path, body: '' }), { method: 'POST', path, body: '' })
+  return response.status === 201 ? (await response.json() as { session: { id: string } }).session.id : response.status
+}
+
+describe('a key\'s scope over three children (owner decision D10)', () => {
+  it('signs only its purpose on its own workspace, and only a node-scoped setup key changes the registry', async () => {
+    const buckle = await node({}, { enroll: false })
+    const workspaces = await buckle.services.getWorkspaces()
+    for (const id of ['child-a', 'child-b', 'child-c']) {
+      const root = join(buckle.root, id)
+      mkdirSync(root)
+      await workspaces.register({ id, name: id, root, authToken: `${id}-agent-token-for-signed-scope`, adminToken: `${id}-admin-token-for-signed-scope`, policy: { version: 1, commands: { allow: [], deny: [] }, network: { allow: [] }, mount: '/workspace', updatedAt: null } })
+    }
+    const setupOnA = generateSigningKey(), approvalOnB = generateSigningKey(), setupOnDefault = generateSigningKey(), setupOnNode = generateSigningKey()
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    for (const [key, purpose, workspace] of [[setupOnA, 'setup', 'child-a'], [approvalOnB, 'approval', 'child-b'], [setupOnDefault, 'setup', 'default'], [setupOnNode, 'setup', 'node']] as const) {
+      expect((await keysCommand({ config: buckle.config, argv: ['enroll', key.publicKey, '--purpose', purpose, '--workspace', workspace] })).exitCode).toBe(0)
+    }
+    expect(typeof await sessionOn(buckle, setupOnA, 'child-a')).toBe('string')
+    expect(await sessionOn(buckle, setupOnA, 'child-b')).toBe(401)
+    expect(await sessionOn(buckle, setupOnA, 'default')).toBe(401)
+    expect(await sessionOn(buckle, approvalOnB, 'child-b')).toBe(401)
+    const approvals = '/workspaces/child-b/setup/approvals/challenges'
+    expect((await send(buckle, sign(buckle, { key: approvalOnB, purpose: 'buckle-approval', workspace: 'child-b', method: 'GET', path: approvals, body: '' }), { method: 'GET', path: approvals, body: '' })).status).toBe(200)
+    const approvalsOnC = '/workspaces/child-c/setup/approvals/challenges'
+    expect((await send(buckle, sign(buckle, { key: approvalOnB, purpose: 'buckle-approval', workspace: 'child-c', method: 'GET', path: approvalsOnC, body: '' }), { method: 'GET', path: approvalsOnC, body: '' })).status).toBe(401)
+
+    // The registry: a key on the default workspace alone is refused; a node-scoped setup key is let in.
+    const rename = JSON.stringify({ name: 'Renamed' })
+    const registryPath = '/setup/workspaces/child-c'
+    const onDefault = await sessionOn(buckle, setupOnDefault, 'default')
+    expect((await send(buckle, sign(buckle, { key: setupOnDefault, method: 'PATCH', path: registryPath, body: rename, session: String(onDefault) }), { method: 'PATCH', path: registryPath, body: rename })).status).toBe(401)
+    const onNode = await sessionOn(buckle, setupOnNode, 'default')
+    const renamed = await send(buckle, sign(buckle, { key: setupOnNode, method: 'PATCH', path: registryPath, body: rename, session: String(onNode) }), { method: 'PATCH', path: registryPath, body: rename })
+    expect(renamed.status).toBe(200)
+    expect(refusals(buckle)).toEqual(['out_of_scope', 'out_of_scope', 'out_of_scope', 'out_of_scope', 'out_of_scope'])
+    // The registry change names the key that made it (review H4 of B23-B25).
+    expect(buckle.runtime.actions.read(200).filter(entry => entry.tool === 'http_workspace_registry_patch' && entry.event === 'result' && entry.outcome === 'ok').map(entry => entry.actorId)).toEqual([`key:${setupOnNode.keyId}`])
+  })
+})
+
+describe('the node a request is signed for (owner decision D11)', () => {
+  it('refuses a request signed for another node that shares its serverId', async () => {
+    const first = await node()
+    const second = await node({}, { instance: 2 })
+    expect(first.config.serverId).toBe(second.config.serverId)
+    expect(first.nodeKey).not.toBe(second.nodeKey)
+    const forFirst = sign(first, { method: 'POST', path: '/setup/sessions', body: '' })
+    expect((await send(second, forFirst, { method: 'POST', path: '/setup/sessions', body: '' })).status).toBe(401)
+    expect(refusals(second)).toEqual(['wrong_target'])
+    expect((await send(first, forFirst, { method: 'POST', path: '/setup/sessions', body: '' })).status).toBe(201)
+  })
+
+  it('never signs for what a relay\'s /health says: unpinned it signs nothing, pinned as another node the node refuses it', async () => {
+    const buckle = await node()
+    const target = await buckle.listen()
+    // Relay X answers /health with the node's serverId and forwards everything else to it.
+    const relay = createServer(async (request, response) => {
+      if (request.url === '/health') { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify({ status: 'ok', serverId: buckle.config.serverId })); return }
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(chunk as Buffer)
+      const forwarded = await fetch(`${target}${request.url}`, { method: request.method, headers: Object.fromEntries(Object.entries(request.headers).filter(([name]) => !['host', 'connection', 'content-length'].includes(name)).map(([name, value]) => [name, String(value)])), ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) })
+      response.statusCode = forwarded.status
+      response.end(Buffer.from(await forwarded.arrayBuffer()))
+    })
+    relays.push(relay)
+    await new Promise<void>(resolve => relay.listen(0, '127.0.0.1', resolve))
+    const relayUrl = `http://127.0.0.1:${(relay.address() as { port: number }).port}`
+    const environment = { BUCKLE_CLIENT_DIR: join(mkdtempSync(join(buckle.root, 'client-')), 'device') }
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    expect((await clientCommand(['keygen'], environment)).exitCode).toBe(0)
+    writeFileSync(join(environment.BUCKLE_CLIENT_DIR, 'client-key.pem'), owner.privateKeyPem, { mode: 0o600 })
+
+    expect((await clientCommand(['session', 'open', relayUrl], environment)).exitCode).toBe(1)
+    expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('is not pinned on this device')
+    expect(refusals(buckle)).toEqual([])
+    // The person pinned X as the node it really is; the node behind it refuses what X relays.
+    expect((await clientCommand(['trust', relayUrl, 'relay-x', generateSigningKey().publicKey], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['session', 'open', relayUrl], environment)).exitCode).toBe(1)
+    const body = JSON.stringify({ version: 1, network: { allow: ['meant-for-x.example'] } })
+    expect((await clientCommand(['request', 'PUT', `${relayUrl}/setup/policy`, '--body', body, '--session', 'AAAAAAAAAAAAAAAAAAAAAA'], environment)).exitCode).toBe(1)
+    expect(buckle.runtime.policy.stored()).toBeNull()
+    expect(refusals(buckle)).toEqual(['wrong_target', 'wrong_target'])
+  })
+})
+
+describe('who signed, in the audit (review H4 of B23-B25)', () => {
+  it('names the key on a session open, a policy change, a challenge read and a decision, and on the decision\'s grant', async () => {
+    const buckle = await node()
+    const actor = `key:${owner.keyId}`
+    const session = await openSession(buckle)
+    expect((await send(buckle, sign(buckle, { session }))).status).toBe(200)
+    const asked = await buckle.runtime.invoke({ sessionId: 's', request: { requestId: 'attributed-ask', tool: 'fs_write', args: { path: join(buckle.root, 'outside.md'), content: 'x' }, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
+    if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
+    const token = asked.approvals[0]!.token
+    const challenges = '/setup/approvals/challenges'
+    const listed = await (await send(buckle, sign(buckle, { purpose: 'buckle-approval', method: 'GET', path: challenges, body: '' }), { method: 'GET', path: challenges, body: '' })).json() as { challenges: Array<{ token: string; digest: string }> }
+    const decision = JSON.stringify({ token, approved: true, scope: 'session', challenge: listed.challenges[0]!.digest })
+    expect((await send(buckle, sign(buckle, { purpose: 'buckle-approval', method: 'POST', path: '/setup/approvals', body: decision }), { method: 'POST', path: '/setup/approvals', body: decision })).status).toBe(200)
+
+    const attributed = (tool: string) => buckle.runtime.actions.read(200).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.actorId])
+    expect(attributed('setup_post_sessions')).toEqual([['attempt', actor], ['result', actor]])
+    expect(attributed('setup_put_policy')).toEqual([['attempt', actor], ['result', actor]])
+    expect(attributed('setup_get_approvals-challenges')).toEqual([['result', actor]])
+    expect(attributed('setup_post_approvals')).toEqual([['attempt', actor], ['result', actor]])
+    expect(buckle.runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session', decidedBy: actor })])
+    // The admin credential is named too.
+    expect((await buckle.request('/setup/policy', { method: 'DELETE', headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(200)
+    expect(attributed('setup_delete_policy')).toEqual([['attempt', 'admin:default'], ['result', 'admin:default']])
+  })
+})
+
+describe('a node with no BUCKLE_ADMIN_TOKEN and the flag on (review M4 of B23-B25)', () => {
+  it('answers a signed request 404, as when the face is not there, and audits nothing', async () => {
+    const buckle = await node({ BUCKLE_ADMIN_TOKEN: '' })
+    const before = buckle.runtime.actions.read(500).length
+    const response = await send(buckle, sign(buckle, { method: 'POST', path: '/setup/sessions', body: '' }), { method: 'POST', path: '/setup/sessions', body: '' })
+    expect(response.status).toBe(404)
+    expect((await send(buckle, sign(buckle))).status).toBe(404)
+    expect(buckle.runtime.actions.read(500).length).toBe(before)
+    expect((await buckle.services.getSetupSessions()).list()).toEqual([])
   })
 })

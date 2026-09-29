@@ -24,6 +24,7 @@ async function node(extra: Record<string, string>): Promise<BuckleHttp & { works
 const headers = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }
 
 describe('the approval service over HTTP', () => {
+  // Review H3 of B23-B25: a re-send with other arguments is another call under a reused requestId.
   it('answers a conflicting re-send with 409, and a same re-send with the same tokens', async () => {
     const buckle = await node({})
     // A write asks for its directory, so the conflicting call writes in another one.
@@ -38,7 +39,7 @@ describe('the approval service over HTTP', () => {
     expect(first.outcome).toBe('approval_required')
     expect(again.approvals.map(request => request.token)).toEqual(first.approvals.map(request => request.token))
     expect(conflict.status).toBe(409)
-    expect(await conflict.json()).toMatchObject({ outcome: 'error', error: { code: 'APPROVAL_CONFLICT', retryable: false } })
+    expect(await conflict.json()).toMatchObject({ outcome: 'error', error: { code: 'REQUEST_ID_REUSED', retryable: false } })
   })
 
   it('asks the process requester from /v1/invoke and from an MCP tool call alike, under the agent actor', async () => {

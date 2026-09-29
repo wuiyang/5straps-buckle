@@ -11,6 +11,8 @@ import { nodeEnvironment } from '../support/node-environment.js'
 
 const ADMIN = 'setup-sessions-admin-token'
 const nodes: BuckleHttp[] = []
+/** Each node's signing key fingerprint, which a request names (owner decision D11). */
+const nodeKeys = new Map<BuckleHttp, string>()
 afterEach(async () => { vi.restoreAllMocks(); for (const node of nodes.splice(0)) await node.close() })
 
 const owner = generateSigningKey()
@@ -23,8 +25,9 @@ async function node(): Promise<BuckleHttp> {
   const started = await createBuckleHttp({ environment })
   nodes.push(started)
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-  for (const key of [owner, colleague]) expect((await keysCommand({ config: started.config, argv: ['enroll', key.publicKey] })).exitCode).toBe(0)
+  for (const key of [owner, colleague]) expect((await keysCommand({ config: started.config, argv: ['enroll', key.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(0)
   vi.mocked(process.stdout.write).mockRestore()
+  nodeKeys.set(started, (await started.services.getNodeSigner()).keyId)
   return started
 }
 
@@ -34,7 +37,7 @@ function signed(buckle: BuckleHttp, call: Call = {}): { authorization: string; c
   const method = call.method ?? 'PUT'
   const path = call.path ?? '/setup/policy'
   const body = call.body ?? policy
-  const authorization = signRequest({ key: signingKeyFromPem((call.key ?? owner).privateKeyPem), purpose: call.purpose ?? 'buckle-setup', node: buckle.config.serverId, workspace: 'default', method, path, body, ...(call.session ? { session: call.session } : {}) })
+  const authorization = signRequest({ key: signingKeyFromPem((call.key ?? owner).privateKeyPem), purpose: call.purpose ?? 'buckle-setup', node: buckle.config.serverId, nodeKey: nodeKeys.get(buckle)!, workspace: 'default', method, path, body, ...(call.session ? { session: call.session } : {}) })
   return { authorization, call: { method, path, body } }
 }
 

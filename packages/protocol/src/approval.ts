@@ -54,6 +54,8 @@ export const GrantRecordSchema = z.object({
    * --host`, per `BUCKLE-D18`. Only this flag makes a subject a pattern, never its spelling.
    */
   pattern: z.literal(true).optional(),
+  /** Who decided it when a person's enrolled key signed the decision: `key:<fingerprint>` (keys-provisioning.md). */
+  decidedBy: z.string().min(1).max(200).optional(),
   sessionId: z.string().nullable(),
   createdAt: z.iso.datetime(),
   expiresAt: z.iso.datetime().nullable(),

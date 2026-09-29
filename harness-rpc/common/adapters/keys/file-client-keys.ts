@@ -1,6 +1,6 @@
-import { KeyIdSchema, keyIdOf, publicKeyFrom, PublicKeyTextSchema } from '@5straps/protocol/signed-request'
+import { KeyIdSchema, keyIdOf, publicKeyFrom, PublicKeyTextSchema, type EnrolledKeyLookup } from '@5straps/protocol/signed-request'
 import { z } from 'zod'
-import type { ClientKeys, EnrolledKey } from '../../types/ports/client-keys.js'
+import { NODE_SCOPE, type ClientKeys, type EnrolledKey, type KeyUse } from '../../types/ports/client-keys.js'
 import { createJsonFileStore } from '../json-file-store.js'
 import { logger } from '../../runtime/log.js'
 
@@ -10,6 +10,8 @@ const fileSchema = z.object({
     keyId: KeyIdSchema,
     publicKey: PublicKeyTextSchema,
     label: z.string().max(120),
+    purpose: z.enum(['setup', 'approval', 'both']),
+    workspace: z.string().min(1).max(64),
     enrolledAt: z.iso.datetime(),
     revokedAt: z.iso.datetime().nullable(),
   }).strict()),
@@ -27,7 +29,7 @@ export function createFileClientKeys(input: { filePath: string; lockDeadlineMs?:
   const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, keys: [] }, lockDeadlineMs: input.lockDeadlineMs })
   return {
     list: () => store.read().keys,
-    enroll({ publicKey, label }) {
+    enroll({ publicKey, label, purpose, workspace }) {
       let keyId: string
       try {
         keyId = keyIdOf(publicKey.trim())
@@ -37,8 +39,11 @@ export function createFileClientKeys(input: { filePath: string; lockDeadlineMs?:
       return store.update((state): EnrolledKey => {
         const existing = state.keys.find(key => key.keyId === keyId)
         if (existing?.revokedAt) throw new ClientKeyError(`Key ${keyId} was revoked; generate a new key with buckle client keygen and enroll that`)
+        if (existing && (existing.purpose !== purpose || existing.workspace !== workspace)) {
+          throw new ClientKeyError(`Key ${keyId} is already enrolled for ${describeScope(existing)}; a scope is fixed at enrollment, so revoke it and enroll a new key for another one`)
+        }
         if (existing) return existing
-        const enrolled = { keyId, publicKey: publicKey.trim(), label: label.trim(), enrolledAt: new Date().toISOString(), revokedAt: null }
+        const enrolled = { keyId, publicKey: publicKey.trim(), label: label.trim(), purpose, workspace, enrolledAt: new Date().toISOString(), revokedAt: null }
         state.keys.push(enrolled)
         return enrolled
       })
@@ -51,15 +56,34 @@ export function createFileClientKeys(input: { filePath: string; lockDeadlineMs?:
         return true
       })
     },
-    publicKeyFor(keyId) {
+    publicKeyFor(keyId, use): EnrolledKeyLookup {
+      let key: EnrolledKey | undefined
       try {
-        const key = store.read().keys.find(item => item.keyId === keyId && item.revokedAt === null)
-        return key ? publicKeyFrom(key.publicKey) : null
+        key = store.read().keys.find(item => item.keyId === keyId && item.revokedAt === null)
       } catch (error) {
         // An unreadable list trusts nobody; the owner's log says why.
         logger.error('Could not read the enrolled client keys', { error })
-        return null
+        return { refused: 'unknown_key' }
       }
+      if (!key) return { refused: 'unknown_key' }
+      return covers(key, use) ? { key: publicKeyFrom(key.publicKey) } : { refused: 'out_of_scope' }
     },
   }
+}
+
+/**
+ * Whether a key's scope covers one use (owner decision D10): its purpose, and its workspace or the
+ * node. A change to the node's workspace registry needs a node-scoped key.
+ */
+function covers(key: EnrolledKey, use: KeyUse): boolean {
+  const purpose = use.purpose === 'buckle-setup' ? 'setup' : 'approval'
+  if (key.purpose !== 'both' && key.purpose !== purpose) return false
+  if (key.workspace === NODE_SCOPE) return true
+  return !use.registry && key.workspace === use.workspace
+}
+
+/** A key's scope as `buckle keys list` and its refusals name it. */
+export function describeScope(key: Pick<EnrolledKey, 'purpose' | 'workspace'>): string {
+  const purpose = key.purpose === 'both' ? 'setup and approval' : key.purpose
+  return `${purpose} on ${key.workspace === NODE_SCOPE ? 'the whole node' : `workspace ${key.workspace}`}`
 }

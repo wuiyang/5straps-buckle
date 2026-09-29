@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, type ApprovalDecision, type ApprovalRequest, type GrantSubject, type PermissionRuleId } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
 import { createJsonFileStore } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
@@ -21,15 +21,21 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 // requestId and actor let a re-sent call join the ask it already made (ruling 5 of 2026-09-28); an
 // answered entry keeps them, so a call re-sent after part of its asks were answered still joins.
 const joinKey = { requestId: z.string().optional(), actor: z.string().optional() }
-// callDigest: the tool and arguments that asked, hashed, which the node's signed challenge names.
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, callDigest: z.string().optional() })
+// fingerprint: the tool and its whole arguments that asked, hashed (requestFingerprint); a re-send joins
+// only with the same one, and a once a person's key proved is spent only by it (review H3 of B23-B25).
+const fingerprint = { fingerprint: z.string().optional() }
+// call: the arguments as the node's signed challenge shows them, and the directory they resolve against (owner decision D9).
+const callSchema = z.object({ arguments: JsonValueSchema, cwd: z.string() })
+// decidedBy: key:<fingerprint> when a person's enrolled key signed the decision (review H4 of B23-B25).
+const decidedBy = { decidedBy: z.string().optional() }
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, call: callSchema.optional() })
 const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
-  sessionId: z.string(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(),
+  sessionId: z.string(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(), ...fingerprint, ...decidedBy,
 })
 const resolvedSchema = z.object({
   workspace: z.string(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string(),
-  request: ApprovalRequestSchema.optional(), sessionId: z.string().optional(), ...joinKey,
+  request: ApprovalRequestSchema.optional(), sessionId: z.string().optional(), ...joinKey, ...fingerprint, ...decidedBy,
 })
 const fileSchema = z.object({
   version: z.literal(1),
@@ -66,6 +72,12 @@ function assertRoomFor(input: { state: State; workspace: string; sessionId: stri
 /** A call re-sent under the same requestId asked for something else: HTTP 409. */
 export class ApprovalConflictError extends Error {}
 
+/**
+ * A call re-sent under the requestId of an ask still waiting (or denied) carries other arguments: it is
+ * another call, refused as REQUEST_ID_REUSED (HTTP 409), and never joins the ask a person sees (review H3 of B23-B25).
+ */
+export class RequestIdReusedError extends Error {}
+
 /** The session or the workspace already has its cap of asks waiting: retryable once some are answered or expire. */
 export class ApprovalLimitError extends Error {}
 
@@ -78,8 +90,10 @@ export interface AskInput {
   actor?: string
   /** How long the call may be held beyond the ten minutes an ask stays answerable (null: no deadline); the registry's own when absent. */
   waitMs?: number | null
-  /** The call's tool and arguments, hashed (requestFingerprint). */
-  callDigest?: string
+  /** The call's tool and whole arguments, hashed (requestFingerprint). */
+  fingerprint?: string
+  /** The call as a challenge shows it: its redacted arguments and the directory they resolve against. */
+  call?: { arguments: JsonValue; cwd: string }
 }
 
 /**
@@ -90,8 +104,13 @@ export interface AskInput {
  */
 export interface ResolveOptions {
   widenTo?: string
-  /** Checked against the ask under the queue's lock: a decision a person's key signed must name the ask's own challenge. */
+  /**
+   * Checked against the ask under the queue's lock: a decision a person's key signed must name the
+   * ask's own challenge. Such a proven `once` is then spent only by a call with the ask's fingerprint.
+   */
   expect?: (ask: PendingAsk) => boolean
+  /** Who decided, recorded with the decision and its grant: key:<fingerprint> for a person's key. */
+  decidedBy?: string
 }
 
 /**
@@ -127,6 +146,8 @@ export interface ApprovalRegistry {
    */
   evaluate(input: {
     tokens: string[]; sessionId: string; tool: string
+    /** The call's fingerprint: a `once` a person's key proved is spent only by the call it was asked for. */
+    fingerprint?: string
     check: (subjects: GrantSubject[]) => PermissionOutcome
     admit?: () => boolean
   }): Promise<PermissionOutcome>
@@ -168,16 +189,16 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   }
 
   const registry: ApprovalRegistry = {
-    ask({ tool, sessionId, asks, requestId, actor, callDigest, waitMs: lifetime = waitMs }) {
+    ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs }) {
       return update(state => {
-        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks } })
+        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint } })
         if (joined) return joined
         assertRoomFor({ state, workspace, sessionId, asked: asks.length })
         const requests = asks.map(item => ({
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: item.reason,
           tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),
         }))
-        state.pending.push(...requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callDigest === undefined ? {} : { callDigest }) })))
+        state.pending.push(...requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(call === undefined ? {} : { call }) })))
         return { requests, joined: false, answered: [] }
       })
     },
@@ -206,6 +227,9 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         }
         const { rule, subject, tool } = approval.request
         const { requestId, actor } = approval
+        const decider = options.decidedBy === undefined ? {} : { decidedBy: options.decidedBy }
+        // A decision a person's key proved on the ask's challenge covers that call and no other.
+        const bound = options.expect && approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
         if (rule === 'sensitive_path' && decision.approved && decision.scope !== 'once') return { ok: false, reason: 'Sensitive files can only be allowed once' }
         if (!decision.approved && decision.scope !== 'once' && rule !== 'sensitive_path') return { ok: false, reason: 'Persistent denials are supported only for sensitive files' }
         const expiresAt = new Date(Date.now() + PENDING_TTL_MS).toISOString()
@@ -214,21 +238,25 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           if (refusal) return { ok: false, reason: refusal }
         }
         if (decision.approved) {
-          if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }) })
-          else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}) })
+          if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider })
+          else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}), ...decider })
           // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
           logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo ? { widened: true } : {}) })
         }
-        if (!decision.approved && decision.scope !== 'once') await grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true })
+        if (!decision.approved && decision.scope !== 'once') await grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true, ...decider })
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
-        state.resolved.push({ workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }) })
+        state.resolved.push({
+          workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId,
+          ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(approval.fingerprint === undefined ? {} : { fingerprint: approval.fingerprint }), ...decider,
+        })
         return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject } } : { ok: true }
       })
     },
 
-    evaluate({ tokens, sessionId, tool, check, admit }) {
+    evaluate({ tokens, sessionId, tool, fingerprint: callFingerprint, check, admit }) {
       return update(state => {
-        const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool)
+        // A proven once names the call it was asked for; any other call, token or not, cannot spend it (review H3 of B23-B25).
+        const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool && (entry.fingerprint === undefined || entry.fingerprint === callFingerprint))
         const usable = bound.filter(entry => tokens.includes(entry.token))
         const used = [...usable, ...unclaimedReliedOn({ usable, unclaimed: bound.filter(entry => !tokens.includes(entry.token)), check })]
         // The last check is the one the caller acts on, so it sees only the approvals this call uses.
@@ -292,13 +320,17 @@ interface JoinKey { requestId: string; sessionId: string; actor: string | undefi
  * grant; anything else is a different call reusing the id. A group answered with approvals alone is
  * not joined: its call ran (a re-send replays it) or asks afresh.
  */
-function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[] } }): AskResult | null {
+function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[]; fingerprint?: string } }): AskResult | null {
   const { key } = input
   const inGroup = (entry: { workspace: string; sessionId?: string; requestId?: string; actor?: string }) =>
     entry.workspace === input.workspace && entry.requestId === key.requestId && entry.sessionId === key.sessionId && entry.actor === key.actor
-  const waiting = input.state.pending.filter(inGroup).map(entry => entry.request)
+  const pending = input.state.pending.filter(inGroup)
+  const waiting = pending.map(entry => entry.request)
   const resolved = input.state.resolved.filter(inGroup)
   if (waiting.length === 0 && !resolved.some(entry => !entry.decision.approved)) return null
+  // The ask a person sees names the call that made it: other arguments under its requestId are another call.
+  const recorded = [...pending, ...resolved].flatMap(entry => entry.fingerprint === undefined ? [] : [entry.fingerprint])
+  if (recorded.some(value => value !== input.call.fingerprint)) throw new RequestIdReusedError(`Request ${key.requestId} already names a different call waiting for approval; send a new requestId`)
   const answered = resolved.flatMap(entry => entry.request ? [entry.request] : [])
   if (!sameGroup({ waiting, answered, call: input.call })) throw new ApprovalConflictError(`Request ${key.requestId} is already waiting for approval of different asks`)
   return { requests: waiting, joined: true, answered: answered.map(request => request.token) }

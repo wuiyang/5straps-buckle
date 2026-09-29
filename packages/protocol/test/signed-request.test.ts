@@ -1,27 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import { challengeBytes, generateSigningKey, isSignedRequest, keyIdOf, publicKeyFrom, readChallenge, signChallenge, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, signingKeyFromPem, signRequest, verifySignedRequest, type ApprovalChallenge, type SignedRequestPurpose, type SignedRequestRefusal } from '../src/signed-request.js'
+import { callDigestOf, canonicalJson, challengeBytes, generateSigningKey, isSignedRequest, keyIdOf, publicKeyFrom, readChallenge, signChallenge, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, signingKeyFromPem, signRequest, verifySignedRequest, type ApprovalChallenge, type SignedRequestPurpose, type SignedRequestRefusal } from '../src/signed-request.js'
 
 // Owner ruling H4 of 2026-09-28 and approval-proofs.md, Protocol gates: key substitution, altered
 // body, changed arguments, wrong target, replay, cross-purpose reuse, expiry and revocation.
 
 const owner = generateSigningKey()
 const other = generateSigningKey()
+const nodeKey = generateSigningKey().keyId
 const now = 1_800_000_000_000
-const route = { node: 'node-1', workspace: 'default', method: 'PUT', path: '/setup/policy' }
+const route = { node: 'node-1', nodeKey, workspace: 'default', method: 'PUT', path: '/setup/policy' }
 const body = JSON.stringify({ version: 1, commands: { allow: [], deny: ['rm *'] } })
 
 function signed(input: { key?: typeof owner; purpose?: SignedRequestPurpose; at?: number; ttlMs?: number; body?: string; route?: Partial<typeof route> } = {}): string {
   return signRequest({ key: signingKeyFromPem((input.key ?? owner).privateKeyPem), purpose: input.purpose ?? 'buckle-setup', ...route, ...input.route, body: input.body ?? body, now: input.at ?? now, ...(input.ttlMs ? { ttlMs: input.ttlMs } : {}) })
 }
 
-function verifier(input: { enrolled?: string[] } = {}) {
+function verifier(input: { enrolled?: string[]; outOfScope?: string[] } = {}) {
   const enrolled = new Map((input.enrolled ?? [owner.publicKey]).map(key => [keyIdOf(key), publicKeyFrom(key)]))
   const seen = new Set<string>()
   return (authorization: string, options: { purpose?: SignedRequestPurpose; at?: number; body?: string; route?: Partial<typeof route> } = {}): SignedRequestRefusal | 'ok' => {
     const verdict = verifySignedRequest({
       authorization, body: Buffer.from(options.body ?? body), now: options.at ?? now,
       expected: { purpose: options.purpose ?? 'buckle-setup', ...route, ...options.route },
-      publicKeyFor: keyId => enrolled.get(keyId) ?? null,
+      publicKeyFor: ({ keyId }) => {
+        if (input.outOfScope?.includes(keyId)) return { refused: 'out_of_scope' }
+        const key = enrolled.get(keyId)
+        return key ? { key } : { refused: 'unknown_key' }
+      },
       claim: ({ keyId, nonce }) => {
         if (seen.has(`${keyId}:${nonce}`)) return false
         seen.add(`${keyId}:${nonce}`)
@@ -39,7 +44,7 @@ describe('a signed request', () => {
     expect(verifier()(header)).toBe('ok')
     expect(header).not.toContain(owner.privateKeyPem.split('\n')[1]!.slice(0, 20))
     const payload = JSON.parse(Buffer.from(header.split(' ')[1]!.split('.')[0]!, 'base64url').toString('utf8')) as Record<string, unknown>
-    expect(Object.keys(payload).sort()).toEqual(['bodySha256', 'expiresAt', 'issuedAt', 'keyId', 'method', 'node', 'nonce', 'path', 'purpose', 'v', 'workspace'])
+    expect(Object.keys(payload).sort()).toEqual(['bodySha256', 'expiresAt', 'issuedAt', 'keyId', 'method', 'node', 'nodeKey', 'nonce', 'path', 'purpose', 'v', 'workspace'])
     expect(payload.keyId).toBe(owner.keyId)
     expect(owner.keyId).toMatch(/^SHA256:[A-Za-z0-9_-]{43}$/)
   })
@@ -56,10 +61,16 @@ describe('a signed request', () => {
     expect(verifier()(signed(), { body: '' })).toBe('body_mismatch')
   })
 
-  it('refuses a request signed for another node, workspace, method or path', () => {
-    for (const changed of [{ node: 'node-2' }, { workspace: 'child' }, { method: 'DELETE' }, { path: '/workspaces/child/setup/policy' }]) {
+  it('refuses a request signed for another node, another node key under the same serverId, workspace, method or path', () => {
+    for (const changed of [{ node: 'node-2' }, { nodeKey: generateSigningKey().keyId }, { workspace: 'child' }, { method: 'DELETE' }, { path: '/workspaces/child/setup/policy' }]) {
       expect(verifier()(signed(), { route: changed })).toBe('wrong_target')
     }
+  })
+
+  it('refuses a key enrolled for another purpose or workspace before its signature is checked, and names the claimed key', () => {
+    expect(verifier({ outOfScope: [owner.keyId] })(signed())).toBe('out_of_scope')
+    const verdict = verifySignedRequest({ authorization: signed({ key: other }), body: Buffer.from(body), now, expected: { purpose: 'buckle-setup', ...route }, publicKeyFor: () => ({ refused: 'unknown_key' }), claim: () => true })
+    expect(verdict).toEqual({ ok: false, reason: 'unknown_key', claimedKeyId: other.keyId })
   })
 
   it('refuses reuse across purposes: a setup request on the approval route and an approval on the setup route', () => {
@@ -101,8 +112,16 @@ describe('an approval challenge the node signs (B24)', () => {
   const challenge: ApprovalChallenge = {
     v: 1, purpose: 'buckle-approval-challenge', node: 'node-1', workspace: 'default', token: 'token-1', requestId: 'a'.repeat(64), sessionId: 'chat-1',
     actor: 'agent:node', tool: 'shell_exec', rule: 'destructive_command', subject: 'rm -rf build', reason: 'Deletes files', offeredScopes: ['once', 'session'],
-    callDigest: 'b'.repeat(64), expiresAt: '2026-09-29T10:00:00.000Z',
+    arguments: { args: ['-rf', 'build'], command: 'rm' }, cwd: '/workspace', callDigest: callDigestOf({ tool: 'shell_exec', arguments: { command: 'rm', args: ['-rf', 'build'] } }), expiresAt: '2026-09-29T10:00:00.000Z',
   }
+
+  it('carries a call digest a person\'s device recomputes from the arguments it shows, whatever order their keys came in', () => {
+    expect(callDigestOf({ tool: challenge.tool, arguments: challenge.arguments! })).toBe(challenge.callDigest)
+    expect(canonicalJson({ b: 1, a: { d: [2, { f: 1, e: 0 }], c: null } })).toBe('{"a":{"c":null,"d":[2,{"e":0,"f":1}]},"b":1}')
+    // A changed argument is a different call.
+    expect(callDigestOf({ tool: challenge.tool, arguments: { command: 'rm', args: ['-rf', '/'] } })).not.toBe(challenge.callDigest)
+    expect(callDigestOf({ tool: 'script_run', arguments: challenge.arguments! })).not.toBe(challenge.callDigest)
+  })
 
   it('verifies with the node\'s key, gives back the raw action and the digest a decision names, and is the same bytes every time', () => {
     const signed = signChallenge({ challenge, key: signingKeyFromPem(node.privateKeyPem).privateKey })
@@ -118,7 +137,7 @@ describe('an approval challenge the node signs (B24)', () => {
     const altered = Buffer.from(JSON.stringify({ ...challenge, subject: 'ls' })).toString('base64url')
     expect(readChallenge({ signed: `${altered}.${signature}`, nodeKey: publicKeyFrom(node.publicKey) })).toBeNull()
     // Signatures are made under separate contexts: a challenge signature is no request signature.
-    const asRequest = verifySignedRequest({ authorization: `5straps-Signed ${encoded}.${signature}`, body: Buffer.alloc(0), now, expected: { purpose: 'buckle-approval', ...route }, publicKeyFor: () => publicKeyFrom(node.publicKey), claim: () => true })
+    const asRequest = verifySignedRequest({ authorization: `5straps-Signed ${encoded}.${signature}`, body: Buffer.alloc(0), now, expected: { purpose: 'buckle-approval', ...route }, publicKeyFor: () => ({ key: publicKeyFrom(node.publicKey) }), claim: () => true })
     expect(asRequest).toMatchObject({ ok: false })
   })
 })

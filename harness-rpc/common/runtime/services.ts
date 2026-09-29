@@ -91,20 +91,22 @@ export function defineBuckleServices(input: { config: BuckleConfig; interaction:
       return manager
     },
   })
+  const nodeSigner = defineSingleton<NodeSigner>({ name: 'NodeSigner', create: async () => createNodeSigner(nodeKeyPath(input.config)) })
   const requestVerifier = defineSingleton<RequestVerifier>({
     name: 'RequestVerifier',
-    create: async () => createRequestVerifier({
+    dependencies: [nodeSigner],
+    create: async ({ get }) => createRequestVerifier({
       keys: createFileClientKeys({ filePath: clientKeysPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs }),
       nonces: await openFileNonceStore({ filePath: requestNoncesPath(input.config) }),
       serverId: input.config.serverId,
+      nodeKeyId: (await get(nodeSigner)).keyId,
     }),
   })
   const setupSessions = defineSingleton<SetupSessions>({
     name: 'SetupSessions',
     create: async () => createSetupSessions({ filePath: setupSessionsPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs }),
   })
-  const nodeSigner = defineSingleton<NodeSigner>({ name: 'NodeSigner', create: async () => createNodeSigner(nodeKeyPath(input.config)) })
-  return { workspaceRuntime, workspaces, requestVerifier, setupSessions, nodeSigner, interaction: InteractionService }
+  return { workspaceRuntime, workspaces, nodeSigner, requestVerifier, setupSessions, interaction: InteractionService }
 }
 
 export function serviceList(definitions: BuckleServiceDefinitions): AnyServiceDefinition[] {
