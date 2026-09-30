@@ -1,6 +1,8 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CliRequest } from '@5straps/runtime'
+import { generateSigningKey, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest } from '@5straps/protocol/signed-request'
+import { keysCommand } from '../../cli/keys.js'
 import { requestIdKey } from '../../common/services/invocation/executions.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCli } from '../../cli/main.js'
@@ -108,7 +110,24 @@ describe('a withdraw of a call already answered (review L1 of B23-B25)', () => {
     const admin = { authorization: 'Bearer approval-http-admin-token', 'content-type': 'application/json' }
     const asked = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'answered-1', tool: 'fs_write', args: { path: 'answered.md', content: 'x' }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { approvals: Array<{ token: string }> }
     const token = asked.approvals[0]!.token
-    expect((await buckle.request('/setup/approvals', { method: 'POST', headers: admin, body: JSON.stringify({ token, approved: true, scope: 'once' }) })).status).toBe(200)
+    expect((await buckle.request('/setup/approvals', { method: 'POST', headers: admin, body: JSON.stringify({ token, approved: true, scope: 'once' }) })).status).toBe(409)
+    expect(buckle.runtime.approvals.unspent('rings-chat')).toEqual([])
+    const owner = generateSigningKey()
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    try { expect((await keysCommand({ config: buckle.config, argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0) }
+    finally { output.mockRestore() }
+    const identity = await buckle.services.getNodeSigner()
+    const authorization = (method: string, path: string, body: string) => signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: buckle.config.serverId, nodeKey: identity.keyId, workspace: 'default', method, path, body })
+    const path = '/setup/approvals/challenges'
+    const listed = await buckle.request(path, { headers: { authorization: authorization('GET', path, '') } })
+    expect(listed.status).toBe(200)
+    const item = ((await listed.json()) as { challenges: Array<{ token: string; signed: string; digest: string }> }).challenges.find(item => item.token === token)!
+    const verified = readChallenge({ signed: item.signed, nodeKey: publicKeyFrom(identity.publicKey) })!
+    expect(verified.digest).toBe(item.digest)
+    expect(verified.challenge).toMatchObject({ token, tool: 'fs_write', arguments: { path: 'answered.md', content: 'x' }, cwd: buckle.config.cwd })
+    const body = JSON.stringify({ token, approved: true, scope: 'once', challenge: verified.digest })
+    expect((await buckle.request('/setup/approvals', { method: 'POST', headers: { ...admin, authorization: authorization('POST', '/setup/approvals', body) }, body })).status).toBe(200)
+    expect(buckle.runtime.approvals.unspent('rings-chat')).toHaveLength(1)
     // Rings cancels the run: the token form finds the answered group and drops its once.
     const withdrawn = await (await buckle.request('/setup/approvals/withdraw', { method: 'POST', headers: admin, body: JSON.stringify({ token }) })).json()
     expect(withdrawn).toEqual({ withdrawn: [], dropped: [token] })
@@ -178,4 +197,3 @@ describe('the setup face withdraws one call\'s asks (owner decision D6, review M
     }
   })
 })
-

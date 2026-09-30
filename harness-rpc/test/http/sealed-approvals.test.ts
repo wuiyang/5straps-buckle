@@ -4,10 +4,12 @@ import { join } from 'node:path'
 import { approvalKey, mintApprovalKey, open, seal, createMemoryNonceStore, SEALED_REPORT_PATHS, ENVELOPE_WINDOW_MS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalRequest } from '@5straps/protocol'
+import { challengeBytes, generateSigningKey, signRequest, signingKeyFromPem } from '@5straps/protocol/signed-request'
 import { createWebhookNotifier } from '../../common/adapters/approval/webhook-notifier.js'
 import { createWebhookReporter } from '../../common/adapters/report/webhook-reporter.js'
 import { loadConfig } from '../../common/runtime/config.js'
 import { settingsCommand } from '../../cli/settings.js'
+import { keysCommand } from '../../cli/keys.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const ADMIN = { authorization: 'Bearer admin-token-fixture', 'content-type': 'application/json' }
@@ -39,14 +41,29 @@ async function node(input: { key?: string; state?: string; graceMs?: number } = 
   return { state, config, runtime, app, ask, decide, refusals }
 }
 
-function sealedDecision(key: ApprovalKey, token: string, now?: number) {
-  return seal(key, { method: 'POST', path: '/setup/approvals', body: { token, approved: true, scope: 'once' }, ...(now === undefined ? {} : { now }) })
+function sealedDecision(key: ApprovalKey, token: string, now?: number, approved = true) {
+  return seal(key, { method: 'POST', path: '/setup/approvals', body: { token, approved, scope: 'once' }, ...(now === undefined ? {} : { now }) })
+}
+
+async function deviceApproval(app: BuckleHttp, token: string): Promise<Response> {
+  const owner = generateSigningKey()
+  const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+  try { expect((await keysCommand({ config: app.config, argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0) }
+  finally { output.mockRestore() }
+  const challenge = app.runtime.approvalService.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
+  const body = JSON.stringify({ token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest })
+  const authorization = signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: app.config.serverId, nodeKey: (await app.services.getNodeSigner()).keyId, workspace: 'default', method: 'POST', path: '/setup/approvals', body })
+  return app.request('/setup/approvals', { method: 'POST', headers: { authorization, 'content-type': 'application/json' }, body })
 }
 
 describe('sealed approval decisions on the setup face', () => {
-  it('accepts a plain decision while the node holds no key, and reports that a re-pair is required', async () => {
-    const { app, ask, decide } = await node()
-    expect((await decide({ token: (await ask()).token, approved: true, scope: 'once' })).status).toBe(200)
+  it('refuses unsigned approval even without a paired key, permits denial, and reports re-pair required', async () => {
+    const { app, runtime, ask, decide } = await node()
+    const token = (await ask()).token
+    expect((await decide({ token, approved: true, scope: 'once' })).status).toBe(409)
+    expect(runtime.approvals.unspent('s1')).toEqual([])
+    expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
+    expect((await decide({ token, approved: false, scope: 'once' })).status).toBe(200)
     const status = await (await app.request('/setup/status', { headers: ADMIN })).json() as { approvalEnvelope: string }
     expect(status.approvalEnvelope).toBe('re-pair required')
   })
@@ -61,7 +78,7 @@ describe('sealed approval decisions on the setup face', () => {
     }
     const rejected = await decide(body(true))
     expect(rejected.status).toBe(409)
-    expect(await rejected.json()).toMatchObject({ error: expect.stringContaining('cannot be approved') })
+    expect(await rejected.json()).toMatchObject({ error: expect.stringContaining('enrolled device key') })
     expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
     expect(runtime.approvals.unspent('s1')).toEqual([])
     expect((await decide(body(false))).status).toBe(200)
@@ -81,12 +98,12 @@ describe('sealed approval decisions on the setup face', () => {
     expect(JSON.stringify(refusals())).not.toContain(token)
   })
 
-  it('opens a sealed decision once and refuses its replay, even after a restart inside the window', async () => {
+  it('opens a sealed denial once and refuses its replay, even after a restart inside the window', async () => {
     const encoded = mintApprovalKey()
     const key = approvalKey(encoded)
     const first = await node({ key: encoded })
     const token = (await first.ask()).token
-    const envelope = sealedDecision(key, token)
+    const envelope = sealedDecision(key, token, undefined, false)
 
     expect((await first.decide(envelope)).status).toBe(200)
     expect(first.runtime.approvals.pending()).toEqual([])
@@ -98,6 +115,19 @@ describe('sealed approval decisions on the setup face', () => {
     expect(await replay.json()).toEqual({ error: 'Approval decision refused: replayed' })
     expect(restarted.refusals().map(entry => entry.detail)).toEqual(expect.arrayContaining(['replayed']))
     expect(readFileSync(join(first.state, 'approval-nonces.json'), 'utf8')).not.toContain(encoded)
+  })
+
+  it('rejects a valid paired sealed approval without resolving the pending ask or granting authority', async () => {
+    const encoded = mintApprovalKey()
+    const { runtime, ask, decide } = await node({ key: encoded })
+    const token = (await ask()).token
+    const envelope = sealedDecision(approvalKey(encoded), token)
+    expect((await decide(envelope)).status).toBe(409)
+    expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
+    expect(runtime.approvals.unspent('s1')).toEqual([])
+    expect(runtime.grants.list()).toEqual([])
+    expect((await decide(envelope)).status).toBe(401)
+    expect((await decide(sealedDecision(approvalKey(encoded), token, undefined, false))).status).toBe(200)
   })
 
   it('prunes nonces whose timestamp has left the window when the store loads', async () => {
@@ -213,7 +243,7 @@ describe('buckle settings show', () => {
 })
 
 describe('a decision posted to the setup face', () => {
-  it('is answered through the approval service, as the owner, and frees the call waiting on it', async () => {
+  it('keeps a call gated after unsigned approval, then frees only the exact call through an enrolled device', async () => {
     const { app, runtime, decide } = await node({ graceMs: 60_000 })
     const answer = vi.spyOn(runtime.approvalService, 'answer')
     const outside = mkdtempSync(join(tmpdir(), 'buckle-sealed-outside-'))
@@ -222,9 +252,12 @@ describe('a decision posted to the setup face', () => {
     await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
     const token = runtime.approvals.pending()[0]!.token
 
-    expect((await decide({ token, approved: true, scope: 'once' })).status).toBe(200)
+    expect((await decide({ token, approved: true, scope: 'once' })).status).toBe(409)
+    expect(answer).not.toHaveBeenCalled()
+    expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
+    expect((await deviceApproval(app, token)).status).toBe(200)
 
-    expect(answer).toHaveBeenCalledWith({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ decision: { token, approved: true, scope: 'once' }, authority: 'admin', challenge: expect.any(String), decidedBy: expect.stringMatching(/^key:SHA256:/), consumeNotAfter: expect.any(Number) }))
     expect(await waiting).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(outside, 'note.md'), 'utf8')).toBe('freed')
   })

@@ -3,9 +3,10 @@ import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -40,7 +41,7 @@ try {
   await checkSetupWithoutAdminToken()
   await checkSetupWithFlagOff()
   await checkMcpStdio()
-  process.stdout.write('Packaged Buckle passed: install, built server, CLI, HTTP authorization, approval/retry, audit, backup/restart, conflict-checked restore, SIGTERM clean close, no /setup without an admin token, no /setup with the experimental admin flag off, and MCP over stdio.\n')
+  process.stdout.write('Packaged Buckle passed: install, built server, CLI, HTTP authorization, unsigned approval refusal, pinned independent signed approval/retry, audit, backup/restart, conflict-checked restore, SIGTERM clean close, no /setup without an admin token, no /setup with the experimental admin flag off, and MCP over stdio.\n')
 } catch (error) {
   process.stderr.write(`Packaged Buckle smoke failed: ${error instanceof Error ? error.message : String(error)}\n`)
   process.exitCode = 1
@@ -194,8 +195,11 @@ async function checkApprovalAndAudit() {
   assert.equal(pending.approvals.length, blocked.approvals.length)
   const commandQueue = JSON.parse(cli(['approvals', '--json']))
   assert(Array.isArray(commandQueue) && commandQueue.length > 0)
+  const client = await prepareApprovalClient()
   for (const approval of blocked.approvals) {
-    await request('/setup/approvals', { body: { token: approval.token, approved: true, scope: 'once' } })
+    await request('/setup/approvals', { body: { token: approval.token, approved: true, scope: 'once' }, status: 409 })
+    assert.equal(readFileSync(join(workspace, 'demo.txt'), 'utf8'), 'before')
+    await approveVerifiedAction({ client, approval, invocation })
   }
   const completed = await request('/v1/invoke', { token: agentToken, body: { ...invocation,
     requestId: `smoke-${++sequence}`, approvalTokens: blocked.approvals.map(approval => approval.token) } })
@@ -204,6 +208,46 @@ async function checkApprovalAndAudit() {
   const audit = await request('/setup/audit')
   assert(audit.entries.some(entry => entry.tool === 'fs_write' && entry.outcome === 'ok'))
   assert.match(cli(['log', '--json']), /fs_write/)
+}
+
+async function prepareApprovalClient() {
+  const publicKey = /Public key: +(ed25519:\S+)/.exec(cli(['client', 'keygen']))?.[1]
+  assert(publicKey, 'The packaged device client did not generate a public key')
+  cli(['keys', 'enroll', publicKey, '--purpose', 'approval', '--workspace', 'default'])
+  const nodePublicKey = /Public key: +(ed25519:\S+)/.exec(cli(['keys', 'node']))?.[1]
+  assert(nodePublicKey, 'The local node CLI did not expose its public identity')
+  const url = `http://127.0.0.1:${port}`
+  cli(['client', 'trust', url, 'package-smoke', nodePublicKey])
+  const installed = createRequire(join(installation, 'package.json'))
+  const protocol = await import(pathToFileURL(installed.resolve('@5straps/protocol/signed-request')).href)
+  return { url, nodePublicKey, protocol }
+}
+
+async function approveVerifiedAction({ client, approval, invocation }) {
+  const { url, nodePublicKey, protocol } = client
+  const listing = JSON.parse(cli(['client', 'request', 'GET', `${url}/setup/approvals/challenges`]))
+  const item = listing.challenges.find(candidate => candidate.token === approval.token)
+  assert(item?.signed, 'The packaged node did not sign the requested challenge')
+  const verified = protocol.readChallenge({ signed: item.signed, nodeKey: protocol.publicKeyFrom(nodePublicKey) })
+  assert(verified, 'The challenge failed verification against the locally pinned node')
+  assert.equal(verified.digest, item.digest)
+  assert.equal(verified.challenge.token, approval.token)
+  assert.equal(verified.challenge.node, 'package-smoke')
+  assert.equal(verified.challenge.workspace, 'default')
+  assert.equal(verified.challenge.sessionId, invocation.context.sessionId)
+  assert.equal(verified.challenge.tool, invocation.tool)
+  assert.deepEqual(verified.challenge.arguments, invocation.args)
+  assert.equal(verified.challenge.cwd, workspace)
+  assert.equal(verified.challenge.callDigest, protocol.callDigestOf({ tool: invocation.tool, arguments: invocation.args }))
+  assert(verified.challenge.description?.includes('demo.txt'))
+  assert.deepEqual(verified.challenge.effects, [`write ${join(workspace, 'demo.txt')}`])
+  const displayed = cli(['client', 'approvals', url])
+  assert(displayed.includes(approval.token) && displayed.includes('demo.txt') && displayed.includes('after') && displayed.includes(workspace), 'The packaged client did not show the complete verified action')
+  assert.throws(() => cli(['client', 'approve', url, approval.token]), error => error.status === 1 && String(error.stderr).includes('person at a terminal'), 'A piped packaged client must never approve without confirmation')
+  assert(JSON.parse(cli(['approvals', '--json'])).some(candidate => candidate.token === approval.token), 'Non-terminal refusal removed the pending ask')
+  const body = JSON.stringify({ token: approval.token, approved: true, scope: 'once', challenge: verified.digest })
+  const decided = JSON.parse(cli(['client', 'request', 'POST', `${url}/setup/approvals`, '--body', body]))
+  assert.equal(decided.resolved, true)
 }
 
 async function checkBackupAndRestore() {

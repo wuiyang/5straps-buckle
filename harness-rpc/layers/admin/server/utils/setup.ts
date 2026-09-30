@@ -10,12 +10,13 @@ import { defineOperationHandler } from '../../../common/server/utils/operation.j
 import { useServices } from '../../../common/server/utils/services.js'
 import { NODE_WORKSPACE, targetId } from '../../../common/server/utils/target.js'
 import { withRegistryAudit, withSetupAudit } from './audit.js'
-import { REGISTRY_REFUSED, registryTransportTool, requireAdmin, requireAdminHttp, requireNodeAdminCredential, SETUP_REFUSED, type AdminAccess } from './guards.js'
+import { approvalProofDeadline, REGISTRY_REFUSED, registryTransportTool, requireAdmin, requireAdminHttp, requireNodeAdminCredential, SETUP_REFUSED, type AdminAccess } from './guards.js'
 
 interface SetupCall {
   event: H3Event
   /** Who the guard let in: admin:<workspace>, or key:<fingerprint> for a signed request. */
   actor: string
+  proofDeadline?: number
   workspace: ManagedWorkspace
   views: SetupViews
   /** The request body as JSON, read up to 64 KiB (413 past it); undefined when it is not JSON. */
@@ -41,7 +42,7 @@ export function defineSetupHandler(definition: { access: AdminAccess | ((event: 
       const workspace = await useSetupTarget(event, { setup: !definition.active })
       const resource = typeof definition.resource === 'function' ? definition.resource(event) : definition.resource
       const audited: Record<string, JsonValue> = {}
-      const call: SetupCall = { event, actor: scope.context.actor ?? '', workspace, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(audited, args) } }
+      const call: SetupCall = { event, actor: scope.context.actor ?? '', proofDeadline: approvalProofDeadline(event), workspace, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(audited, args) } }
       return mapFailures(() => withSetupAudit(event, { actions: workspace.runtime.actions, workspaceId: workspace.runtime.workspaceId, resource, actorId: call.actor, args: () => audited }, async () => definition.handler(call)))
     },
   })

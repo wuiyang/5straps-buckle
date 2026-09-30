@@ -85,14 +85,6 @@ const ROUTES: Array<[string, { paired: boolean }, (setup: Setup, token: string) 
     expect((await runCli({ argv: ['approve', token, '--scope', 'once'], config: setup.config, confirm: async () => true })).exitCode).toBe(0)
     vi.mocked(process.stdout.write).mockRestore()
   }],
-  ['the admin bearer', { paired: false }, async (setup, token) => {
-    // What POST /setup/approvals runs for a request the admin credential carried.
-    expect((await setup.runtime.approvalService.decideSealed({ body: { token, approved: true, scope: 'once' } })).status).toBe('answered')
-  }],
-  ['a sealed envelope', { paired: true }, async (setup, token) => {
-    const body = seal(approvalKey(setup.key), { method: 'POST', path: '/setup/approvals', body: { token, approved: true, scope: 'once' } })
-    expect((await setup.runtime.approvalService.decideSealed({ body })).status).toBe('answered')
-  }],
 ]
 
 /** Once the decision is in the queue: the ask left the pending set. */
@@ -161,7 +153,28 @@ describe('a once decided through MCP elicitation', () => {
   })
 })
 
-describe.each([['the admin bearer', false], ['a sealed envelope', true]] as const)('incomplete calls cannot be approved by %s', (_, paired) => {
+describe.each([['the admin bearer', false], ['a sealed envelope', true]] as const)('unsigned decisions from %s', (_, paired) => {
+  it('refuses every approving scope for a complete call, permits denial, and never writes the action', async () => {
+    const setup = await node({ paired })
+    try {
+      const token = await asked(setup, approved('unsigned-complete'))
+      const decide = (approved: boolean, scope: 'once' | 'session' | 'always') => {
+        const decision = { token, approved, scope }
+        const body = paired ? seal(approvalKey(setup.key), { method: 'POST', path: '/setup/approvals', body: decision }) : decision
+        return setup.runtime.approvalService.decideSealed({ body })
+      }
+      for (const scope of ['once', 'session', 'always'] as const) {
+        expect(await decide(true, scope)).toMatchObject({ status: 'rejected', reason: expect.stringContaining('enrolled device key') })
+        expect(setup.runtime.approvals.pending().map(item => item.token)).toContain(token)
+        expect(setup.runtime.approvals.unspent(SESSION)).toEqual([])
+        expect(setup.runtime.grants.list()).toEqual([])
+      }
+      expect(existsSync(join(setup.workspace, 'one', 'notes.md'))).toBe(false)
+      expect((await decide(false, 'once')).status).toBe('answered')
+      expect(setup.runtime.approvals.pending()).toEqual([])
+      expect(existsSync(join(setup.workspace, 'one', 'notes.md'))).toBe(false)
+    } finally { await stop(setup) }
+  })
   it.each(['no-call', 'incomplete', 'missing-file', 'unreadable-file'] as const)('refuses once and session grants for %s, and still permits denial', async (state) => {
     const setup = await node({ paired })
     try {
@@ -180,7 +193,7 @@ describe.each([['the admin bearer', false], ['a sealed envelope', true]] as cons
         return setup.runtime.approvalService.decideSealed({ body })
       }
       for (const scope of ['once', 'session'] as const) {
-        expect(await decide(true, scope)).toMatchObject({ status: 'rejected', reason: expect.stringContaining('cannot be approved') })
+        expect(await decide(true, scope)).toMatchObject({ status: 'rejected', reason: expect.stringContaining('enrolled device key') })
         expect(setup.runtime.approvals.pending().map(item => item.token)).toContain(token)
         expect(setup.runtime.approvals.unspent(SESSION)).toEqual([])
         expect(setup.runtime.grants.list()).toEqual([])

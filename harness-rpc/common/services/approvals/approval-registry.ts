@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
-import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
 import { createJsonFileStore } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
@@ -11,6 +11,10 @@ import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js
 import { redactShownText } from '../../domain/redact.js'
 import { RECORDED_BEFORE_NOTE } from '../../domain/approval-instruction.js'
 import { logger } from '../../runtime/log.js'
+
+export const APPROVAL_OUTBOX_COUNT_MAX = 4096
+export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
+export const APPROVAL_OUTBOX_RETENTION_MS = 24 * 60 * 60 * 1000
 
 const PENDING_TTL_MS = 10 * 60_000
 /** How long after a failed background prune an ordinary call tries it again. */
@@ -65,7 +69,7 @@ const decidedBy = { decidedBy: z.string().optional() }
 // the budgets once per group; `complete` repeats the call's own mark. An ask recorded before this build keeps its
 // call inline, in `call`.
 const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), bytes: z.number().int().nonnegative(), complete: z.literal(true).optional() })
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, call: callSchema.optional(), callFile: callFileSchema.optional() })
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional() })
 const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
   sessionId: z.string(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(), ...fingerprint, ...decidedBy,
@@ -74,11 +78,15 @@ const resolvedSchema = z.object({
   workspace: z.string(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string(),
   request: ApprovalRequestSchema.optional(), sessionId: z.string().optional(), ...joinKey, ...fingerprint, ...decidedBy,
 })
+const deliverySchema = z.object({ id: z.string().uuid(), workspace: z.string(), notice: ApprovalNoticeSchema, expiresAt: z.iso.datetime() })
+export type ApprovalDelivery = Omit<z.infer<typeof deliverySchema>, 'workspace'>
+
 const fileSchema = z.object({
   version: z.literal(1),
   pending: z.array(pendingSchema),
   once: z.array(onceSchema),
   resolved: z.array(resolvedSchema),
+  outbox: z.array(deliverySchema).default([]),
 })
 type State = z.infer<typeof fileSchema>
 type OnceEntry = z.infer<typeof onceSchema>
@@ -278,6 +286,8 @@ export interface ResolveOptions {
   expect?: (ask: PendingAsk) => boolean
   /** Who decided, recorded with the decision and its grant: key:<fingerprint> for a person's key. */
   decidedBy?: string
+  /** Authenticated device proof deadline; the body never supplies it. */
+  consumeNotAfter?: number
 }
 
 /**
@@ -338,6 +348,9 @@ export interface ApprovalRegistry {
    * stopped leaves them, and does nothing otherwise; read without the lock (review L1 of the slice 5 re-review).
    */
   sweepIfDue(): Promise<void>
+  pendingDeliveries(): ApprovalDelivery[]
+  acknowledgeDeliveries(ids: string[]): Promise<void>
+  enqueueSkippedNotices(notices: ApprovalNotice[]): Promise<void>
   pending(): ApprovalRequest[]
   /** The asks still waiting, each with the call it came from: each group's call file read once and shared by its asks. */
   waiting(): PendingAsk[]
@@ -364,12 +377,15 @@ export interface GroupWithdrawal {
 
 export interface ApprovalRegistryOptions {
   lockDeadlineMs?: number
+  durableNotices?: boolean
+  onNoticeQueued?: () => void
   /** Told of this workspace's asks that expired unanswered, by whichever update drops them first. */
   onExpired?: (requests: ApprovalRequest[]) => void
 }
 
 export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath, waitMs: number | null = 0, options: ApprovalRegistryOptions = {}): ApprovalRegistry {
-  const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [] }, lockDeadlineMs: options.lockDeadlineMs })
+  const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [], outbox: [] }, lockDeadlineMs: options.lockDeadlineMs })
+  const durableNotices = options.durableNotices === true
   const calls = createCallFiles(join(dirname(filePath), CALLS_DIRECTORY))
   // When the earliest waiting ask this process last saw expires: an ordinary call past it prunes, so an expired
   // ask's entry, its call file and its expiry notice never wait for the next approval event (review L1 of the
@@ -397,7 +413,11 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     let released: string[] = []
     const result = await store.update(async (state) => {
       const before = namedCalls(state)
-      expired = prune(state).filter(entry => entry.workspace === workspace).map(entry => entry.request)
+      const expiredEntries = prune(state)
+      expired = expiredEntries.filter(entry => entry.workspace === workspace).map(entry => entry.request)
+      for (const entry of expiredEntries) {
+        if (entry.notify || (options.durableNotices && entry.workspace === workspace)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'expired', at: new Date().toISOString() })
+      }
       const value = await change(state)
       const after = namedCalls(state)
       released = [...before].filter(id => !after.has(id))
@@ -407,6 +427,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     queueVersion = undefined
     calls.remove(released)
     if (expired.length > 0) options.onExpired?.(expired)
+    if (options.durableNotices && read().outbox.some(entry => entry.workspace === workspace)) options.onNoticeQueued?.()
     return result
   }
 
@@ -462,7 +483,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactShownText(item.reason),
           tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),
         }))
-        const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }) }))
+        const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }) }))
+        assertDeliveryRoom(state, entries)
         // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
         if (call === undefined) assertBytesFor({ waiting: state.pending.filter(entry => entry.workspace === workspace), group: entries, callBytes: 0 })
         state.pending.push(...(call === undefined ? entries : recordCall({ state, group: entries, call })))
@@ -505,11 +527,22 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const bound = approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
         if (rule === 'sensitive_path' && decision.approved && decision.scope !== 'once') return { ok: false, reason: 'Sensitive files can only be allowed once' }
         if (!decision.approved && decision.scope !== 'once' && rule !== 'sensitive_path') return { ok: false, reason: 'Persistent denials are supported only for sensitive files' }
-        const expiresAt = new Date(Date.now() + PENDING_TTL_MS).toISOString()
+        const now = Date.now()
+        if (decision.approved && decision.scope === 'once' && options.consumeNotAfter !== undefined && (!Number.isFinite(options.consumeNotAfter) || options.consumeNotAfter <= now)) return { ok: false, reason: 'Signed approval expired before tool admission; sign a fresh decision over the current challenge' }
+        const expiresAt = new Date(Math.min(now + PENDING_TTL_MS, decision.approved && decision.scope === 'once' ? options.consumeNotAfter ?? Infinity : Infinity)).toISOString()
         if (widenedTo) {
           const refusal = patternRefusal({ rule, subject, pattern: widenedTo })
           if (refusal) return { ok: false, reason: refusal }
         }
+        state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
+        state.resolved.push({
+          workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId,
+          ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(approval.fingerprint === undefined ? {} : { fingerprint: approval.fingerprint }), ...decider,
+        })
+        if (approval.notify || durableNotices) enqueueOutcome(state, workspace, {
+          token: decision.token, event: decision.approved ? 'answered' : 'denied', at: new Date(now).toISOString(), scope: decision.scope,
+          ...(decision.approved && decision.scope === 'once' && options.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(options.consumeNotAfter).toISOString() } : {}),
+        })
         if (decision.approved) {
           if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider })
           else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}), ...decider })
@@ -517,11 +550,6 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo ? { widened: true } : {}) })
         }
         if (!decision.approved && decision.scope !== 'once') await grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true, ...decider })
-        state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
-        state.resolved.push({
-          workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId,
-          ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(approval.fingerprint === undefined ? {} : { fingerprint: approval.fingerprint }), ...decider,
-        })
         const answered = { rule, subject }
         return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject }, asked: answered } : { ok: true, asked: answered }
       })
@@ -540,11 +568,17 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       }
       return update(state => {
         // A once names the call it was asked for; any other call, token or not, cannot spend it (review H3 of B23-B25, item 1).
-        const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool && (entry.fingerprint === undefined || entry.fingerprint === callFingerprint))
+        const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool && Date.parse(entry.expiresAt) > Date.now() && (entry.fingerprint === undefined || entry.fingerprint === callFingerprint))
         const usable = bound.filter(entry => tokens.includes(entry.token))
-        const used = [...usable, ...unclaimedReliedOn({ usable, unclaimed: bound.filter(entry => !tokens.includes(entry.token)), check })]
+        let used = [...usable, ...unclaimedReliedOn({ usable, unclaimed: bound.filter(entry => !tokens.includes(entry.token)), check })]
         // The last check is the one the caller acts on, so it sees only the approvals this call uses.
-        const outcome = check(used.map(entry => entry.subject))
+        let outcome = check(used.map(entry => entry.subject))
+        while (outcome.kind === 'allow') {
+          const live = used.filter(entry => Date.parse(entry.expiresAt) > Date.now())
+          if (live.length === used.length) break
+          used = live
+          outcome = check(used.map(entry => entry.subject))
+        }
         // Keep partial approvals until every gate clears; consume under the same process lock.
         if (outcome.kind === 'allow' && (admit?.() ?? true)) {
           const consumed = new Set(used.map(entry => entry.token))
@@ -563,9 +597,11 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 
     cancel(tokens) {
       return update(state => {
-        const withdrawn = state.pending.filter(entry => entry.workspace === workspace && tokens.includes(entry.request.token)).map(entry => entry.request.token)
+        const selected = state.pending.filter(entry => entry.workspace === workspace && tokens.includes(entry.request.token))
+        const withdrawn = selected.map(entry => entry.request.token)
         state.pending = state.pending.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.request.token))
         state.once = state.once.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.token))
+        for (const entry of selected) if (entry.notify || durableNotices) enqueueOutcome(state, workspace, { token: entry.request.token, event: 'cancelled', at: new Date().toISOString() })
         return withdrawn
       })
     },
@@ -592,6 +628,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const dropped = state.once.filter(entry => entry.workspace === workspace && group.has(entry.token)).map(entry => entry.token)
         state.pending = state.pending.filter(entry => entry.workspace !== workspace || !group.has(entry.request.token))
         state.once = state.once.filter(entry => entry.workspace !== workspace || !group.has(entry.token))
+        for (const entry of pending.filter(entry => group.has(entry.request.token))) if (entry.notify || durableNotices) enqueueOutcome(state, workspace, { token: entry.request.token, event: 'cancelled', at: new Date().toISOString() })
         return { withdrawn, dropped }
       })
     },
@@ -602,6 +639,25 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     async sweepIfDue() {
       const state = read()
       if (Date.now() >= nextExpiry || calls.unnamed(namedCalls(state))) await registry.sweep()
+    },
+
+    pendingDeliveries: () => read().outbox.filter(entry => entry.workspace === workspace && Date.parse(entry.expiresAt) > Date.now()).map(({ workspace: _workspace, ...entry }) => entry),
+
+    acknowledgeDeliveries(ids) {
+      const accepted = new Set(ids)
+      return update(state => { state.outbox = state.outbox.filter(entry => entry.workspace !== workspace || !accepted.has(entry.id)) })
+    },
+
+    enqueueSkippedNotices(notices) {
+      if (!durableNotices || notices.length === 0) return Promise.resolve()
+      return update(state => {
+        for (const value of notices) {
+          const notice = ApprovalNoticeSchema.parse(value)
+          if (notice.event !== 'skipped') throw new Error('Only registry transitions enqueue terminal approval outcomes')
+          if (!state.pending.some(entry => entry.workspace === workspace && entry.request.token === notice.token)) continue
+          enqueueOutcome(state, workspace, notice)
+        }
+      })
     },
 
     pending: () => read().pending
@@ -636,7 +692,7 @@ function withCallFrom({ workspace: _workspace, callFile, call, ...entry }: Pendi
 
 /** When the earliest ask waiting in the file expires, any workspace's: every update prunes them all. */
 function earliestExpiry(state: State): number {
-  return Math.min(...state.pending.map(entry => Date.parse(entry.request.expiresAt)))
+  return Math.min(...state.pending.map(entry => Date.parse(entry.request.expiresAt)), ...state.outbox.map(entry => Date.parse(entry.expiresAt)))
 }
 
 interface JoinKey { requestId: string; sessionId: string; actor: string | undefined }
@@ -756,11 +812,36 @@ function patternRefusal(input: { rule: PermissionRuleId; subject: string; patter
 /** Drops everything past its expiry, returning the asks that expired unanswered. */
 function prune(state: State): State['pending'] {
   const now = Date.now()
+  state.outbox = state.outbox.filter(entry => Date.parse(entry.expiresAt) > now)
   const expired = state.pending.filter(entry => Date.parse(entry.request.expiresAt) <= now)
   state.pending = state.pending.filter(entry => Date.parse(entry.request.expiresAt) > now)
   state.once = state.once.filter(entry => Date.parse(entry.expiresAt) > now)
   state.resolved = state.resolved.filter(entry => Date.parse(entry.expiresAt) > now)
   return expired
+}
+
+function assertDeliveryRoom(state: State, additional: readonly PendingEntry[] = []): void {
+  const pending = [...state.pending, ...additional].filter(entry => entry.notify)
+  const reserved = pending.flatMap(entry => {
+    const reservation = {
+    id: '00000000-0000-4000-8000-000000000000', workspace: entry.workspace, expiresAt: '9999-12-31T23:59:59.999Z',
+    notice: { token: entry.request.token, event: 'cancelled', at: '9999-12-31T23:59:59.999Z', scope: 'session', reason: 'caller_declined_wait', consumeNotAfter: '9999-12-31T23:59:59.999Z' },
+    }
+    // Reserve the skipped wait notice too, until it already occupies its own slot.
+    return state.outbox.some(item => item.workspace === entry.workspace && item.notice.token === entry.request.token) ? [reservation] : [reservation, reservation]
+  })
+  if (state.outbox.length + reserved.length > APPROVAL_OUTBOX_COUNT_MAX
+    || Buffer.byteLength(JSON.stringify([...state.outbox, ...reserved])) > APPROVAL_OUTBOX_BYTES_MAX) {
+    throw new ApprovalLimitError('Approval outcome delivery is full; restore the webhook receiver before asking for more approvals')
+  }
+}
+
+function enqueueOutcome(state: State, workspace: string, notice: ApprovalNotice): void {
+  const previous = state.outbox.find(entry => entry.workspace === workspace && entry.notice.token === notice.token)
+  if (previous && (previous.notice.event !== 'skipped' || notice.event === 'skipped')) return
+  state.outbox = state.outbox.filter(entry => entry !== previous)
+  state.outbox.push({ id: randomUUID(), workspace, notice, expiresAt: new Date(Date.now() + APPROVAL_OUTBOX_RETENTION_MS).toISOString() })
+  assertDeliveryRoom(state)
 }
 
 export function subjectsByRule(subjects: GrantSubject[], rule: PermissionRuleId): string[] {

@@ -8,9 +8,9 @@ import { defineSetupHandler } from '../../utils/setup.js'
 export default defineSetupHandler({
   access: 'approval',
   resource: 'approvals',
-  handler: async ({ event, actor, workspace, body, audit }) => {
+  handler: async ({ event, actor, proofDeadline, workspace, body, audit }) => {
     const { runtime } = workspace
-    const decided = await runtime.approvalService.decideSealed({ body: (await body()) ?? null, signedBy: actor.startsWith('key:') ? actor : undefined })
+    const decided = await runtime.approvalService.decideSealed({ body: (await body()) ?? null, signedBy: actor.startsWith('key:') ? actor : undefined, proofDeadline })
     // What an opened decision said, beside the actor that signed or carried it (keys-provisioning.md: every
     // approval and denial is logged with key identity and scope; review item 6 of the proof-of-possession fixes).
     if (decided.status === 'answered' || decided.status === 'rejected') audit({ ...decided.decided })

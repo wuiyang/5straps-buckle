@@ -16,6 +16,12 @@ import { NODE_WORKSPACE, targetId } from '../../../common/server/utils/target.js
 export type AdminAccess = 'inspection' | 'setup' | 'approval' | 'session'
 type Credential = 'admin' | SignedRequestPurpose
 
+const verifiedProofDeadlines = new WeakMap<H3Event, number>()
+
+export function approvalProofDeadline(event: H3Event): number | undefined {
+  return verifiedProofDeadlines.get(event)
+}
+
 /**
  * The credentials each admin guard accepts (plan section C, temporary administration boundary): the
  * addressed workspace's admin credential, and on setup and approval a request an enrolled client key
@@ -98,7 +104,10 @@ async function verifySigned(event: H3Event, input: { access: AdminAccess; purpos
     method: event.req.method, path: `${event.url.pathname}${event.url.search}`, body: await readBody(event, SETUP_BODY_LIMIT),
   })
   const refused = verdict.ok ? await sessionRefusal({ access: input.access, payload: verdict.payload, workspaceId: input.workspaceId, sessions: await services.getSetupSessions() }) : verdict.reason
-  if (!refused && verdict.ok) return `key:${verdict.payload.keyId}`
+  if (!refused && verdict.ok) {
+    if (input.purpose === 'buckle-approval') verifiedProofDeadlines.set(event, verdict.payload.expiresAt)
+    return `key:${verdict.payload.keyId}`
+  }
   const claimedKeyId = verdict.ok ? verdict.payload.keyId : verdict.claimedKeyId
   await recordRefusal(tolerantLog(event, await nodeActions(event)), {
     tool: 'setup_signed_request_refused', workspaceId: NODE_WORKSPACE, sessionId: 'http-untrusted', status: 401, detail: refused ?? 'refused',

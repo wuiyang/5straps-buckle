@@ -25,7 +25,7 @@ async function fixture() {
 const headers = (token: string) => ({ authorization: `Bearer ${token}`, 'content-type': 'application/json' })
 
 describe('owner approval authority', () => {
-  it('refuses agent decisions and accepts only the setup credential', async () => {
+  it('refuses agent decisions and reusable admin approval authority while permitting admin denial', async () => {
     const { runtime, app, config } = await fixture()
     const [approval] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 'read-session', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/synthetic', reason: 'outside', offeredScopes: ['session'] }], call: { arguments: { path: '/synthetic/fixture.txt' }, cwd: config.cwd, description: 'Read fixture.txt', effects: ['read /synthetic/fixture.txt'], complete: true } })).requests
     const body = JSON.stringify({ token: approval!.token, approved: true, scope: 'session' })
@@ -36,8 +36,11 @@ describe('owner approval authority', () => {
       expect((await app.request(path, { method, headers: headers('agent-token'), ...(method === 'GET' ? {} : { body }) })).status).toBe(401)
     }
     expect(runtime.grants.activeSubjects({ sessionId: 'read-session', rule: 'read_scope' })).toEqual([])
-    expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('owner-token'), body })).status).toBe(200)
-    expect(runtime.grants.activeSubjects({ sessionId: 'read-session', rule: 'read_scope' })).toEqual(['/synthetic'])
+    expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('owner-token'), body })).status).toBe(409)
+    expect(runtime.grants.activeSubjects({ sessionId: 'read-session', rule: 'read_scope' })).toEqual([])
+    expect(runtime.approvals.pending().map(request => request.token)).toContain(approval!.token)
+    expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('owner-token'), body: JSON.stringify({ token: approval!.token, approved: false, scope: 'once' }) })).status).toBe(200)
+    expect(runtime.approvals.pending()).toEqual([])
   })
 
   it('does not expose standing grants to the agent credential', async () => {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { CLOSE_STAGES } from '@5straps/runtime'
+import { generateSigningKey, keyIdOf, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest } from '@5straps/protocol/signed-request'
 import { afterAll, describe, expect, inject, it } from 'vitest'
 import { firstResponse, freePort, spawnBuckle, waitForStatus, type BuckleProcess, type LogLine } from '../support/buckle-process.js'
 
@@ -228,15 +229,32 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
   it('cancels a running shell on SIGTERM: the call answers BUCKLE_SHUTTING_DOWN with 503, the process is gone, and Buckle exits 0 with no close step running out its bound (B19)', async () => {
     const marker = `${31 + Math.random()}`.slice(0, 12)
     const node = await prepareNode({ BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'bootstrap-admin-token', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const owner = generateSigningKey()
+    const cli = (args: string[]) => execFileSync(process.execPath, [entry, ...args], { cwd: node.workspace, env: node.env, encoding: 'utf8' })
+    expect(cli(['keys', 'enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'])).toContain(owner.keyId)
+    const nodePublicKey = /Public key: +(ed25519:\S+)/.exec(cli(['keys', 'node']))![1]!
+    const authorization = (method: string, path: string, body: string) => signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: 'local-dev', nodeKey: keyIdOf(nodePublicKey), workspace: 'default', method, path, body })
     const buckle = serve(node)
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
     const running = () => execFileSync('ps', ['-eo', 'args'], { encoding: 'utf8' }).split('\n').some(line => line.trim() === `sleep ${marker}`)
     const waiting = fetch(`http://127.0.0.1:${node.port}/v1/invoke`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-agent-token', 'content-type': 'application/json' },
       body: JSON.stringify({ requestId: 'long-shell', tool: 'shell_exec', args: { command: 'sleep', args: [marker] } }) })
-    // The shell asks to write in the workspace; the owner answers through the setup face.
+    // The shell stays held until an enrolled device verifies and signs its exact action.
     const pending = () => existsSync(join(node.state, 'approvals.json')) ? (JSON.parse(readFileSync(join(node.state, 'approvals.json'), 'utf8')) as { pending: Array<{ request: { token: string } }> }).pending.map(entry => entry.request.token) : []
     await expect.poll(pending, { timeout: 20_000 }).toHaveLength(1)
-    const answered = await fetch(`http://127.0.0.1:${node.port}/setup/approvals`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-admin-token', 'content-type': 'application/json' }, body: JSON.stringify({ token: pending()[0], approved: true, scope: 'once' }) })
+    const token = pending()[0]!
+    const unsigned = await fetch(`http://127.0.0.1:${node.port}/setup/approvals`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-admin-token', 'content-type': 'application/json' }, body: JSON.stringify({ token, approved: true, scope: 'once' }) })
+    expect(unsigned.status).toBe(409)
+    expect(running()).toBe(false)
+    const path = '/setup/approvals/challenges'
+    const listed = await fetch(`http://127.0.0.1:${node.port}${path}`, { headers: { authorization: authorization('GET', path, '') } })
+    expect(listed.status).toBe(200)
+    const item = ((await listed.json()) as { challenges: Array<{ token: string; signed: string; digest: string }> }).challenges.find(item => item.token === token)!
+    const verified = readChallenge({ signed: item.signed, nodeKey: publicKeyFrom(nodePublicKey) })!
+    expect(verified.digest).toBe(item.digest)
+    expect(verified.challenge).toMatchObject({ token, tool: 'shell_exec', arguments: { command: 'sleep', args: [marker] }, cwd: node.workspace })
+    const body = JSON.stringify({ token, approved: true, scope: 'once', challenge: verified.digest })
+    const answered = await fetch(`http://127.0.0.1:${node.port}/setup/approvals`, { method: 'POST', headers: { authorization: authorization('POST', '/setup/approvals', body), 'content-type': 'application/json' }, body })
     expect(answered.status).toBe(200)
     await expect.poll(running, { timeout: 20_000 }).toBe(true)
 

@@ -52,7 +52,7 @@ import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/appr
 import { createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
-import { createApprovalNotices } from '../approvals/approval-notices.js'
+import { createApprovalNotices, type ApprovalNotices } from '../approvals/approval-notices.js'
 import { createExecutionBudget, createExecutions, type ExecutionBudget } from '../invocation/executions.js'
 import { createInvoker, InvocationsClosedError, type InvokeInput } from '../invocation/invoker.js'
 import { createAuditHealth } from '../audit/audit-health.js'
@@ -151,16 +151,17 @@ export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime>
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
   const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? 'default'}` })
+  let closeApprovals: (() => Promise<void>) | undefined
   try {
-    return await assembleRuntime({ ...input, ceiling, history })
+    return await assembleRuntime({ ...input, ceiling, history, onApprovalCleanup: close => { closeApprovals = close } })
   } catch (error) {
     // No close step owns the connection until the runtime exists (runtime.md: clean up after partial initialization).
-    await history.close()
+    try { await closeApprovals?.() } finally { await history.close() }
     throw error
   }
 }
 
-async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy | null; history: ChangeHistory }): Promise<BuckleRuntime> {
+async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy | null; history: ChangeHistory; onApprovalCleanup: (close: () => Promise<void>) => void }): Promise<BuckleRuntime> {
   const { config, ceiling, history } = input
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
@@ -175,8 +176,15 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const workspaceId = input.workspaceId ?? 'default'
   // Every notification names its workspace, whose `buckle approve --workspace` answers it.
   const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
-  const notices = createApprovalNotices(webhook ? createApprovalNoticeSender(webhook) : undefined)
-  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, { lockDeadlineMs, onExpired: requests => notices.expired(requests) })
+  let notices: ApprovalNotices | undefined
+  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, {
+    lockDeadlineMs, durableNotices: webhook !== null,
+    onExpired: requests => notices?.expired(requests),
+    onNoticeQueued: () => { void notices?.flush() },
+  })
+  notices = createApprovalNotices(webhook ? createApprovalNoticeSender(webhook) : undefined, webhook ? { registry: approvals } : {})
+  const noticeOwner = notices
+  input.onApprovalCleanup(() => noticeOwner.settle())
   const auditHealth = input.auditHealth ?? createAuditHealth()
   const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId: input.workspaceId ?? 'default', ...(input.serving ? { serving: input.serving } : {}) })
   await actions.recoverInterrupted()
@@ -188,6 +196,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     announce: webhook ? createWebhookNotifier(webhook) : undefined,
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
   })
+  input.onApprovalCleanup(() => approvalService.close())
   const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd, lockDeadlineMs })
   const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: config.cwd, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken

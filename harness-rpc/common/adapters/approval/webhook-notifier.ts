@@ -39,7 +39,7 @@ export function createWebhookNotifier(options: WebhookNotifierOptions) {
 
 /**
  * Posts lifecycle notices for announced asks to the same URL, sealed for the same path. A Rings
- * that does not take them yet answers 4xx; that is said once, since nothing on the node depends on it.
+ * that refuses them leaves the durable notice pending for another attempt.
  */
 export function createApprovalNoticeSender(options: WebhookNotifierOptions) {
   let refusalLogged = false
@@ -49,6 +49,7 @@ export function createApprovalNoticeSender(options: WebhookNotifierOptions) {
     if (refusalLogged) logger.debug('Approval webhook refused a lifecycle notice', { status: response.status })
     else logger.warn('Approval webhook refused a lifecycle notice; further refusals are logged at debug', { status: response.status })
     refusalLogged = true
+    throw new Error(`Approval lifecycle webhook returned HTTP ${response.status}`)
   }
 }
 

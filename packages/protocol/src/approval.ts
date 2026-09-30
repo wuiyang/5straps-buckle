@@ -83,6 +83,8 @@ export const ApprovalNoticeSchema = z.object({
   at: z.iso.datetime(),
   /** The recorded scope, on answered and denied. */
   scope: GrantScopeSchema.optional(),
+  /** The authenticated signed-once deadline; delivery does not restart it. */
+  consumeNotAfter: z.iso.datetime().optional(),
   /** Why the call stopped waiting, on skipped. */
   reason: ApprovalSkipReasonSchema.optional(),
 })

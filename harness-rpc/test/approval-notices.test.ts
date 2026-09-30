@@ -55,7 +55,7 @@ describe('the approval wait hint in InvokeContext', () => {
 // Lifecycle notices whichever route answered, the setup face among them: test/http/approval-http.test.ts.
 
 describe('the siblings of a denied ask', () => {
-  it('are withdrawn through the service, so the webhook hears they were cancelled (review L1)', async () => {
+  it('are withdrawn through the service, retaining cancellation if shutdown ends its current delivery (review L1)', async () => {
     const webhook = await captureWebhook()
     try {
       const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url, BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
@@ -70,7 +70,8 @@ describe('the siblings of a denied ask', () => {
       await runtime.approvalService.close()
 
       expect(runtime.approvalService.pending()).toEqual([])
-      expect(webhook.notices.filter(notice => notice.event !== 'skipped').map(notice => [notice.token, notice.event])).toEqual([[denied!.token, 'denied'], [sibling!.token, 'cancelled']])
+      const outcomes = [...webhook.notices, ...runtime.approvals.pendingDeliveries().map(entry => entry.notice)]
+      expect(outcomes.filter(notice => notice.event !== 'skipped').map(notice => [notice.token, notice.event])).toEqual([[denied!.token, 'denied'], [sibling!.token, 'cancelled']])
       await runtime.history.close()
     } finally {
       await webhook.close()

@@ -76,6 +76,7 @@ export interface ApprovalAnswer {
   challenge?: string
   /** key:<fingerprint> for a decision a person's enrolled key signed; recorded with it and its grant. */
   decidedBy?: string
+  consumeNotAfter?: number
 }
 
 /**
@@ -115,7 +116,7 @@ export interface ApprovalService {
    * view of the locked state), then answers with the admin authority the setup face was opened with.
    * A decision in a request an enrolled key signed (`signedBy`) is plain: its signature is the proof.
    */
-  decideSealed(input: { body: unknown; signedBy?: string }): Promise<SealedDecisionResult>
+  decideSealed(input: { body: unknown; signedBy?: string; proofDeadline?: number }): Promise<SealedDecisionResult>
   /**
    * The challenges and each large whole call once, by its signed full-content reference. The device verifies
    * that reference and the tool/arguments digest before showing the shared directory, summary and effects.
@@ -289,9 +290,10 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
         ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => { const shown = challengeOf(ask, createCallShapes()); return shown !== null && challengeBytes(shown).digest === challenge } }),
         ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
+        ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
       })
       if (!result.ok) return result
-      if (!result.repeated) notices.answered(input.decision)
+      if (!result.repeated) notices.answered({ ...input.decision, ...(input.decision.approved && input.decision.scope === 'once' && input.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(input.consumeNotAfter).toISOString() } : {}) })
       wake(input.decision.token)
       return result
     },
@@ -302,13 +304,15 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         const signed = SignedApprovalDecisionSchema.safeParse(input.body)
         if (!signed.success) return { status: 'invalid' }
         const { challenge, ...decision } = signed.data
-        const result = await service.answer({ decision, authority: 'admin', challenge, decidedBy: input.signedBy })
+        if (decision.approved && decision.scope === 'once' && input.proofDeadline === undefined) return { status: 'invalid' }
+        const result = await service.answer({ decision, authority: 'admin', challenge, decidedBy: input.signedBy, consumeNotAfter: input.proofDeadline })
         return settledDecision({ decision, challenge, result })
       }
       const opened = await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
       if (!opened.ok) return { status: 'refused', reason: opened.reason }
       const parsed = ApprovalDecisionSchema.safeParse(opened.body)
       if (!parsed.success) return { status: 'invalid' }
+      if (parsed.data.approved) return settledDecision({ decision: parsed.data, result: { ok: false, reason: 'Approval requires an enrolled device key: review and confirm with buckle client approve' } })
       const result = await service.answer({ decision: parsed.data, authority: 'admin' })
       return settledDecision({ decision: parsed.data, result })
     },

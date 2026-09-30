@@ -68,6 +68,69 @@ function decide(buckle: Node, body: object, at?: number): { send: () => Promise<
 }
 
 describe('an approval decision a person\'s key proves (B24)', () => {
+  it.each(['session', 'always'] as const)('allows an enrolled device to create the offered %s grant without reusable admin approval authority', async (scope) => {
+    const buckle = await node()
+    const token = await ask(buckle, write(buckle.root, `signed-${scope}`))
+    const [item] = (await challenges(buckle)).challenges
+    const unsigned = { token, approved: true, scope }
+    expect((await buckle.request('/setup/approvals', { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify(unsigned) })).status).toBe(409)
+    expect(buckle.runtime.grants.list()).toEqual([])
+    expect((await decide(buckle, { ...unsigned, challenge: item!.digest }).send()).status).toBe(200)
+    expect(buckle.runtime.grants.activeSubjects({ sessionId: 'chat-1', rule: 'write_scope' })).toContain(buckle.root)
+  })
+
+  it.each([0, 1])('refuses signed once at or after its deadline even while transport skew accepts the proof, late by %sms', async (lateBy) => {
+    const buckle = await node()
+    const token = await ask(buckle, write(buckle.root, 'strict-proof-expiry'))
+    const [item] = (await challenges(buckle)).challenges
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    const response = await decide(buckle, { token, approved: true, scope: 'once', challenge: item!.digest }, now - SIGNED_REQUEST_MAX_TTL_MS - lateBy).send()
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('expired') })
+    expect(buckle.runtime.approvals.pending().map(request => request.token)).toContain(token)
+    expect(buckle.runtime.approvals.unspent('chat-1')).toEqual([])
+  })
+
+  it.each([SIGNED_REQUEST_SKEW_MS, SIGNED_REQUEST_SKEW_MS + 1])('bounds future proof issuance at the configured clock skew, ahead by %sms', async (ahead) => {
+    const now = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(now)
+    const buckle = await node()
+    const token = await ask(buckle, write(buckle.root, 'future-proof'))
+    const [item] = (await challenges(buckle)).challenges
+    const response = await decide(buckle, { token, approved: true, scope: 'once', challenge: item!.digest }, now + ahead).send()
+    expect(response.status).toBe(ahead === SIGNED_REQUEST_SKEW_MS ? 200 : 401)
+    if (ahead === SIGNED_REQUEST_SKEW_MS) {
+      const stored = JSON.parse(readFileSync(join(buckle.config.stateDirectory, 'approvals.json'), 'utf8')) as { once: Array<{ expiresAt: string }> }
+      expect(Date.parse(stored.once[0]!.expiresAt)).toBe(now + ahead + SIGNED_REQUEST_MAX_TTL_MS)
+    } else {
+      expect(buckle.runtime.approvals.pending().map(request => request.token)).toContain(token)
+      expect(buckle.runtime.approvals.unspent('chat-1')).toEqual([])
+    }
+  })
+
+  it('does not renew a signed once with an identical later proof or let reusable admin authority repeat it', async () => {
+    const buckle = await node()
+    const request = write(buckle.root, 'proof-no-renewal')
+    const token = await ask(buckle, request)
+    const [item] = (await challenges(buckle)).challenges
+    let now = Date.now()
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const issuedAt = now
+    const body = { token, approved: true, scope: 'once', challenge: item!.digest }
+    expect((await decide(buckle, body).send()).status).toBe(200)
+    now += 30_000
+    expect((await decide(buckle, body).send()).status).toBe(200)
+    const unsigned = await buckle.request('/setup/approvals', { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify({ token, approved: true, scope: 'once' }) })
+    expect(unsigned.status).toBe(409)
+    const stored = JSON.parse(readFileSync(join(buckle.config.stateDirectory, 'approvals.json'), 'utf8')) as { once: Array<{ token: string; expiresAt: string }> }
+    expect(stored.once).toHaveLength(1)
+    expect(Date.parse(stored.once[0]!.expiresAt)).toBe(issuedAt + SIGNED_REQUEST_MAX_TTL_MS)
+    now = issuedAt + SIGNED_REQUEST_MAX_TTL_MS
+    expect(await buckle.runtime.invoke({ sessionId: 'chat-1', request: { ...request, approvalTokens: [token] } })).toMatchObject({ outcome: 'approval_required' })
+    expect(existsSync(join(buckle.root, 'outside.md'))).toBe(false)
+  })
+
   it('shows each waiting ask as the node signed it, raw, and answers exactly the ask whose challenge it names', async () => {
     const buckle = await node()
     const request = write(buckle.root, 'proof-1')
