@@ -3,6 +3,8 @@ import { defineSetupHandler } from '../../../utils/setup.js'
 
 /** What the listing says in place of a challenge the node could not sign; it names no field and no value. */
 const UNSIGNABLE = 'The node could not sign this ask\'s challenge, so no device can decide it; answer it at the node (buckle approve) or withdraw the call'
+/** What it says for an ask recorded before this build, whose whole call the node never kept (owner decision D17). */
+const RECORDED_BEFORE = 'recorded before this build: decide at the node or re-send'
 
 // The approval guard: each waiting ask as the node signs it (B24; approval-proofs.md, Signed
 // request). A person's client verifies the node's signature with the node key it pinned, shows the
@@ -17,6 +19,7 @@ export default defineSetupHandler({
     return {
       node: { keyId: signer.keyId, publicKey: signer.publicKey },
       challenges: workspace.runtime.approvalService.challenges().map(({ token, challenge }) => {
+        if (challenge === null) return { token, error: RECORDED_BEFORE }
         try {
           return { token, ...signer.signChallenge(challenge) }
         } catch (error) {

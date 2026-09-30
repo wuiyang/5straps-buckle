@@ -6,6 +6,7 @@ import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
+import { redactShownText } from '../../domain/redact.js'
 import { logger } from '../../runtime/log.js'
 
 const PENDING_TTL_MS = 10 * 60_000
@@ -16,6 +17,14 @@ const PENDING_TTL_MS = 10 * 60_000
 export const MAX_PENDING_PER_SESSION = 50
 /** Asks the whole workspace may keep waiting at once, so fresh session ids cannot evade the per-session cap (review L2 of B13-B14). */
 export const MAX_PENDING_PER_WORKSPACE = 500
+/**
+ * The most one ask may hold, its request and its whole call as shown (owner decision D17): a call over it is
+ * refused before anything is asked, never shown in part. The node's request budget (BUCKLE_MAX_REQUEST_BYTES,
+ * 1 MiB unless the owner raises it) keeps every call sent over HTTP well inside it.
+ */
+export const MAX_ASK_BYTES = 16 * 1_024 * 1_024
+/** What every waiting ask in approvals.json may hold together, so the file and a challenge listing stay bounded. */
+export const MAX_PENDING_BYTES = 64 * 1_024 * 1_024
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 // requestId and actor let a re-sent call join the ask it already made (ruling 5 of 2026-09-28); an
@@ -25,10 +34,14 @@ const joinKey = { requestId: z.string().optional(), actor: z.string().optional()
 // only with the same one, and a once decided on its ask is spent only by it, whichever route decided it
 // (review H3 of B23-B25; review item 1 of the proof-of-possession fixes).
 const fingerprint = { fingerprint: z.string().optional() }
-// call: the arguments as the node's signed challenge shows them, whether any of them is cut, the directory
-// they resolve against, and what the call does in the node's words (owner decision D9). An ask recorded
-// before the last two existed counts as cut and undescribed, so no client signs it unflagged.
-const callSchema = z.object({ arguments: JsonValueSchema, truncated: z.boolean().default(true), cwd: z.string(), description: z.string().nullable().default(null) })
+// call: the whole call as the node's signed challenge shows it (owner decisions D9 and D17): its redacted
+// arguments, the directory they resolve against, what it does in the node's words and the effects the rules
+// judged. `complete` marks a call recorded whole; an ask recorded before this build (with `truncated`, and
+// perhaps cut arguments) has none, so no device decides it: it is decided at the node, or joined by a re-send.
+const callSchema = z.object({
+  arguments: JsonValueSchema, cwd: z.string(), description: z.string().nullable().default(null),
+  effects: z.array(z.string()).optional(), complete: z.literal(true).optional(), truncated: z.boolean().optional(),
+})
 // decidedBy: key:<fingerprint> when a person's enrolled key signed the decision (review H4 of B23-B25).
 const decidedBy = { decidedBy: z.string().optional() }
 const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, call: callSchema.optional() })
@@ -72,6 +85,25 @@ function assertRoomFor(input: { state: State; workspace: string; sessionId: stri
   }
 }
 
+/**
+ * The whole call each ask records must fit one challenge, and every waiting ask together the queue's
+ * budget: one too large is refused for good, a full queue until asks are answered or withdrawn.
+ */
+function assertBytesFor(input: { state: State; entries: State['pending'] }): void {
+  const sizes = input.entries.map(entry => Buffer.byteLength(JSON.stringify(entry)))
+  const largest = Math.max(0, ...sizes)
+  if (largest > MAX_ASK_BYTES) {
+    logger.warn('Approval refused: the call is larger than an approval shows whole', { bytes: largest, limit: MAX_ASK_BYTES })
+    throw new ActionTooLargeError(`This call needs approval, and its arguments come to ${largest} bytes as an approval shows them, over the ${MAX_ASK_BYTES} bytes a person is shown whole; nothing was asked or run. Send a smaller call: split a batch, or write a long script to a file first`)
+  }
+  const waiting = input.state.pending.reduce((sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry)), 0)
+  const asked = sizes.reduce((sum, size) => sum + size, 0)
+  if (waiting + asked > MAX_PENDING_BYTES) {
+    logger.warn('Approval refused: the approvals waiting hold too much', { waiting, asked, limit: MAX_PENDING_BYTES })
+    throw new ApprovalLimitError(`The approvals waiting on this node already hold ${waiting} bytes; ask again once some are answered or withdrawn (limit ${MAX_PENDING_BYTES})`)
+  }
+}
+
 /** A call re-sent under the same requestId asked for something else: HTTP 409. */
 export class ApprovalConflictError extends Error {}
 
@@ -84,6 +116,11 @@ export class RequestIdReusedError extends Error {}
 /** The session or the workspace already has its cap of asks waiting: retryable once some are answered or expire. */
 export class ApprovalLimitError extends Error {}
 
+/** One ask would hold more than MAX_ASK_BYTES: refused whole before anything is asked, never shown in part (owner decision D17). */
+export class ActionTooLargeError extends Error {
+  readonly code = 'ACTION_TOO_LARGE'
+}
+
 export interface AskInput {
   tool: string
   sessionId: string
@@ -95,7 +132,7 @@ export interface AskInput {
   waitMs?: number | null
   /** The call's tool and whole arguments, hashed (requestFingerprint). */
   fingerprint?: string
-  /** The call as a challenge shows it: its redacted arguments, whether they are cut, their directory and the node's description. */
+  /** The whole call as a challenge shows it: its redacted arguments, their directory, the node's description and the judged effects. */
   call?: AskedCall
 }
 
@@ -217,14 +254,18 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   const registry: ApprovalRegistry = {
     ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs }) {
       return update(state => {
-        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint } })
+        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) } })
         if (joined) return joined
         assertRoomFor({ state, workspace, sessionId, asked: asks.length })
+        // Every field a person or a relay reads is redacted as the shown arguments are (owner decision D17);
+        // a subject is already what its rule asks under, which holds no credential the display redacts.
         const requests = asks.map(item => ({
-          token: randomUUID(), rule: item.rule, subject: item.subject, reason: item.reason,
+          token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactShownText(item.reason),
           tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),
         }))
-        state.pending.push(...requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(call === undefined ? {} : { call }) })))
+        const entries = requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(call === undefined ? {} : { call }) }))
+        assertBytesFor({ state, entries })
+        state.pending.push(...entries)
         return { requests, joined: false, answered: [] }
       })
     },
@@ -362,7 +403,7 @@ interface JoinKey { requestId: string; sessionId: string; actor: string | undefi
  * grant; anything else is a different call reusing the id. A group answered with approvals alone is
  * not joined: its call ran (a re-send replays it) or asks afresh.
  */
-function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[]; fingerprint?: string } }): AskResult | null {
+function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[]; fingerprint?: string; recorded?: AskedCall } }): AskResult | null {
   const { key } = input
   const inGroup = (entry: { workspace: string; sessionId?: string; requestId?: string; actor?: string }) =>
     entry.workspace === input.workspace && entry.requestId === key.requestId && entry.sessionId === key.sessionId && entry.actor === key.actor
@@ -375,6 +416,10 @@ function joinWaiting(input: { state: State; workspace: string; key: JoinKey; cal
   if (recorded.some(value => value !== input.call.fingerprint)) throw new RequestIdReusedError(`Request ${key.requestId} already names a different call waiting for approval; send a new requestId`)
   const answered = resolved.flatMap(entry => entry.request ? [entry.request] : [])
   if (!sameGroup({ waiting, answered, call: input.call })) throw new ApprovalConflictError(`Request ${key.requestId} is already waiting for approval of different asks`)
+  // An ask recorded before this build names the same call (its fingerprint matched): the re-send records it
+  // whole, so a person's device can decide it (owner decision D17).
+  const { recorded: whole } = input.call
+  if (whole?.complete) for (const entry of pending) if (!entry.call?.complete && entry.fingerprint !== undefined && entry.fingerprint === input.call.fingerprint) entry.call = whole
   return { requests: waiting, joined: true, answered: answered.map(request => request.token) }
 }
 

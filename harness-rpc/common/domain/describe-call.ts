@@ -1,5 +1,6 @@
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { printable } from './approval-instruction.js'
+import { shownCommand } from './argv.js'
 import { redactShownText } from './redact.js'
 
 /** Longest fact a description quotes whole: a command, a URL, a pattern; paths get more room. */
@@ -9,18 +10,15 @@ const PATH_LENGTH = 1_024
 const LISTED_PATHS = 5
 /**
  * The longest description, suffix included: below the 4,096 characters a signed challenge holds, so a
- * batch of long paths is cut and flagged rather than failing every challenge (review M3 of the second
- * proof-of-possession re-review).
+ * batch of long paths is cut rather than failing every challenge (review M3 of the second
+ * proof-of-possession re-review). The description is a summary beside the whole arguments (owner
+ * decisions D9 and D17), never in place of them, so a cut one says so in its own words and sets no flag.
  */
 export const MAX_DESCRIPTION_LENGTH = 4_000
 /** What a cut description keeps, leaving room for the suffix that counts what was cut. */
-const KEPT_DESCRIPTION_LENGTH = 3_900
-
-/** What a call does in Buckle's words, and whether any fact in it, or the whole, was cut to fit. */
-export interface CallDescription {
-  text: string
-  truncated: boolean
-}
+const KEPT_DESCRIPTION_LENGTH = 3_880
+/** What a description with a cut fact ends with: the arguments a person reads below it are whole. */
+export const SUMMARY_CUT = '[summary cut; the arguments below are complete]'
 
 /**
  * What a call does, in words Buckle writes for the person who approves it (owner decision D9): built
@@ -30,10 +28,10 @@ export interface CallDescription {
  * (redactShownText), quoted as a JSON string, so no byte an agent sent can close its quote and pose as
  * Buckle's words, and escaped by printable(), so what a terminal shows is what the arguments hold
  * (review M2 and L6 of the second re-review). A fact or a description cut to fit says how long it was,
- * outside any quote, and sets `truncated`. It rides inside the node-signed challenge, where a relay
- * that rewrites it breaks the signature.
+ * outside any quote, and that the arguments shown with it are complete. It rides inside the node-signed
+ * challenge, where a relay that rewrites it breaks the signature.
  */
-export function describeCall(input: { tool: string; args: JsonObject; cwd: string }): CallDescription {
+export function describeCall(input: { tool: string; args: JsonObject; cwd: string }): string {
   const cut = { truncated: false }
   const facts = factsOf(cut)
   return capped(`${describeAction(input.tool, input.args, facts)} in ${facts.fact(input.cwd, PATH_LENGTH)}`, cut)
@@ -61,11 +59,11 @@ function describeAction(tool: string, args: JsonObject, facts: Facts): string {
     case 'fs_list': return `List ${path()}`
     case 'fs_find_names': return `Find names matching ${fact(text(args.pattern) ?? '')} under ${path()}`
     case 'fs_search_content': return `Search file contents for ${fact(text(args.pattern) ?? '')} under ${path()}`
-    case 'shell_exec': return `Run ${fact([text(args.command) ?? '', ...strings(args.args)].join(' '))}${shellExtras(args, facts)}`
+    case 'shell_exec': return `Run ${fact(shownCommand(text(args.command) ?? '', strings(args.args)))}${shellExtras(args, facts)}`
     case 'script_run': return `Run a ${fact(text(args.runtime) ?? 'shell')} script of ${bytes(args.script)}${shellExtras(args, facts)}`
     case 'web_fetch': return `Send ${fact(text(args.method) ?? 'GET')} to ${fact(text(args.url) ?? '')}${args.body === undefined ? '' : ` with a body of ${bytes(args.body)}`}${names(' with headers', args.headers)}`
     case 'web_search': return `Search the web for ${fact(text(args.query) ?? '')}`
-    case 'browser_command': return `Run the browser command ${fact([text(args.command) ?? '', ...strings(args.args)].join(' '))}`
+    case 'browser_command': return `Run the browser command ${fact(shownCommand(text(args.command) ?? '', strings(args.args)))}`
     case 'git_commit': return `Commit ${count(strings(args.paths).length, 'path')} in ${path('repo')}: ${paths(strings(args.paths))}`
     case 'git_push': return `Push branch ${fact(text(args.branch) ?? '')} of ${path('repo')}${args.force === true ? ', forced' : ''}${args.setUpstream === true ? ', setting its upstream' : ''}`
     case 'pr_open': return `Open a pull request from ${fact(text(args.head) ?? '')} into ${fact(text(args.base) ?? '')} for ${path('repo')}`
@@ -112,12 +110,14 @@ function quote(value: string): string {
 
 /**
  * A description over MAX_DESCRIPTION_LENGTH, cut to KEPT_DESCRIPTION_LENGTH with a closing quote where the
- * cut fell inside one, and a suffix that counts what was kept; a cut description is a cut challenge.
+ * cut fell inside one, and a suffix that counts what was kept; one with a cut fact ends with SUMMARY_CUT.
+ * Either says in its own words that the arguments shown beside it are the whole call (owner decision D17).
  */
-function capped(text: string, cut: { truncated: boolean }): CallDescription {
-  if (text.length <= MAX_DESCRIPTION_LENGTH) return { text, truncated: cut.truncated }
+function capped(text: string, cut: { truncated: boolean }): string {
+  const summary = cut.truncated ? `${text} ${SUMMARY_CUT}` : text
+  if (summary.length <= MAX_DESCRIPTION_LENGTH) return summary
   const kept = closeQuote(wholeCharacters(text, KEPT_DESCRIPTION_LENGTH))
-  return { text: `${kept} [description cut: ${KEPT_DESCRIPTION_LENGTH} of ${text.length} characters shown]`, truncated: true }
+  return `${kept} [summary cut: ${KEPT_DESCRIPTION_LENGTH} of ${text.length} characters shown; the arguments below are complete]`
 }
 
 /** Text cut inside a quoted fact, closed: a dangling escape dropped, then the quote closed, so the suffix reads as Buckle's. */

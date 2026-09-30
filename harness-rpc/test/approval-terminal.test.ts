@@ -11,7 +11,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
-import { describeQuestion } from '../cli/terminal-consumer.js'
+import { createTerminalConsumer, describeQuestion } from '../cli/terminal-consumer.js'
 import type { ApprovalHold } from '../common/services/approvals/interaction.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { runsNativeTerminal } from './support/native-terminal.js'
@@ -409,5 +409,27 @@ describe('what an agent chose, on the owner\'s terminal (review M3)', () => {
       expect(shown).not.toMatch(control)
       expect(shown).toContain('subject: rm -rf ~\\u001b[1A')
     }
+  })
+})
+
+// Owner decision D17: the node's own terminal is an approver too, so it shows the whole action a question
+// is about, as a person's device does: nothing cut, nothing paged.
+describe('a terminal question shows the whole action (owner decision D17)', () => {
+  it('prints the node, workspace, effects and every argument through the question\'s details, a size line first past 64 KiB', async () => {
+    const script = Array.from({ length: 2_000 }, (_, index) => `echo line-${index} ${'z'.repeat(40)}`).join('\n')
+    const call = { arguments: { args: ['-c', script], command: 'sh' }, cwd: '/workspace', description: 'Run "sh -c ..." in "/workspace"', effects: ['exec sh -c ...', 'write /workspace'], complete: true as const }
+    const request = questionFor({ approval: { ...approval('t-full'), rule: 'destructive_command', subject: 'sh -c ...  # argv sha256 00' }, workspaceId: 'default', node: 'node-1', context: { correlationId: 'c-full', sessionId: 's', call } })
+    const terminal = silentTerminal()
+    const stop = new AbortController()
+    const asked = createTerminalConsumer({ input: terminal.input, output: terminal.output, onInterrupt: () => {} }).prompt(request, { signal: stop.signal })
+    await vi.waitFor(() => expect(terminal.shown()).toContain('  arguments:'))
+    stop.abort()
+    await asked.catch(() => undefined)
+    const lines = terminal.shown().split('\n')
+    const size = lines.findIndex(line => /^ {2}size: {5}\d+ bytes of arguments, every one shown below$/.test(line))
+    expect(size).toBeGreaterThan(-1)
+    expect(size).toBeLessThan(lines.findIndex(line => line.startsWith('  node:')))
+    for (const expected of ['  node:     node-1', '  workspace: default', '  in:       /workspace', '  effects:  exec sh -c ...', '            write /workspace']) expect(lines).toContain(expected)
+    expect(terminal.shown()).toContain(JSON.stringify(script))
   })
 })

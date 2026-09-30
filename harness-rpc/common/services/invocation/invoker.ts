@@ -5,7 +5,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 import type { ChangeHistory } from '../history/journal.js'
 import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
-import { type ResolvedEffect } from '../../domain/effect.js'
+import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantLookup } from '../../domain/permission/decision.js'
@@ -21,7 +21,7 @@ import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
 import { resolveEffects, resolveHostRead } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
-import { ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
+import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
 import { requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
 
@@ -477,12 +477,12 @@ async function clearPermissions(input: {
   const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
   // Only the caller's own signal reaches the wait: shutdown settles waits through the service's close.
   const cwd = options.paths.displayRoot
-  const shown = reviewableArguments(request.args)
-  const described = describeCall({ tool: request.tool, args: request.args, cwd })
+  // The whole call as a person decides on it (owner decision D17): every argument, the directory, the node's
+  // summary and the effects the rules judged, redacted and never cut. One too large is refused whole.
+  const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd }), effects: effects.map(summarizeEffect), complete: true as const }
   const waited = await options.approvalService.request({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
-    // A cut description is a cut challenge: the person's client refuses it without --accept-truncated (review M3 of the second re-review).
-    fingerprint: input.key.fingerprint, call: { arguments: shown.arguments, truncated: shown.truncated || described.truncated, cwd, description: described.text },
+    fingerprint: input.key.fingerprint, call,
   })
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
   const approvals = waited.approvals
@@ -631,6 +631,7 @@ function shapeError(error: unknown, tool: string): { code: string; message: stri
   if (error instanceof ApprovalConflictError) return { code: 'APPROVAL_CONFLICT', message: error.message, retryable: false }
   if (error instanceof RequestIdReusedError) return { code: REQUEST_ID_REUSED, message: error.message, retryable: false }
   if (error instanceof ApprovalLimitError) return { code: 'APPROVAL_LIMIT', message: error.message, retryable: true }
+  if (error instanceof ActionTooLargeError) return { code: error.code, message: error.message, retryable: false }
   if (isStateBusy(error)) {
     logger.warn('Tool invocation found Buckle state busy', { tool, message: error.message })
     return { code: 'STATE_BUSY', message: STATE_BUSY_MESSAGE, retryable: true }

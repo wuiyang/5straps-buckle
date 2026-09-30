@@ -1,5 +1,5 @@
 import type { ParsedArgv } from '../../argv.js'
-import { argvSignature, hasFlag, parseArgv, shellStatements, statementWords, SHELL_COMMANDS } from '../../argv.js'
+import { commandSubject, hasFlag, parseArgv, shellStatements, statementWords, SHELL_COMMANDS } from '../../argv.js'
 import type { CommandGlob } from '../../command-glob.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
@@ -33,7 +33,9 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       const reason = classifyArgv(argv) ?? classifyShellScript(argv) ?? classifyAdded({ added, argv, words })
       if (!reason) return null
 
-      const subject = argvSignature(argv, effect.args)
+      // The shown command and its lossless identity (owner decision D17): never joined, never cut, no
+      // credential the display redacts; a grant made before this form matches nothing.
+      const subject = commandSubject(effect.command, effect.args)
       if (grants.subjectsFor('destructive_command').includes(subject)) return allowedVia('destructive_command', subject)
       // No 'always': a standing grant for a destructive signature defeats the gate.
       return ask('destructive_command', subject, reason, ['once', 'session'])

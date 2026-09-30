@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
-import { printable } from '../common/domain/approval-instruction.js'
+import { describeAction, printable } from '../common/domain/approval-instruction.js'
 import { callDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SmallOrderKeyError, type ApprovalChallenge, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 
 export interface CliResult {
@@ -32,9 +32,8 @@ const USAGE = `Usage:
   buckle client trust <node-url> <server-id> <node-public-key>
                                       Pin the node at that URL, as \`buckle keys node\` prints it on that node
   buckle client approvals <node-url> [--workspace <id>]
-  buckle client approve <node-url> <token> [--deny] [--scope once|session|always] [--workspace <id>] [--accept-truncated]
-                                      Show what an ask is, as the pinned node signed it, and decide on exactly that;
-                                      an ask whose arguments the node had to cut is signed only with --accept-truncated
+  buckle client approve <node-url> <token> [--deny] [--scope once|session|always] [--workspace <id>]
+                                      Show the whole action an ask is, as the pinned node signed it, and decide on exactly that
 
 The key and the pinned nodes live in BUCKLE_CLIENT_DIR (an absolute path), ~/.5straps/client by default, owner-only.
 A request is signed only for the node pinned for the URL typed, never for what the URL says it is.`
@@ -249,24 +248,21 @@ function recomputes(challenge: ApprovalChallenge): boolean {
 }
 
 /**
- * The node's description, then the raw action, from the verified challenge and nothing a relay
- * described. Every field is agent-influenced, so each passes through printable(), and the arguments
- * are printed as JSON with every unprintable character escaped: nothing in a challenge can move the
- * cursor, reorder a line or hide text before a person signs (review item 2 of the proof-of-possession fixes).
+ * The whole action from the verified challenge and nothing a relay described (owner decisions D9 and D17):
+ * the node and workspace, the node's summary, rule, subject, reason, directory, every judged effect and the
+ * complete arguments, with a size line first when they are large. Every field is agent-influenced, so each
+ * passes through printable(), and the arguments are printed as JSON with every unprintable character
+ * escaped: nothing in a challenge can move the cursor, reorder a line or hide text before a person signs
+ * (review item 2 of the proof-of-possession fixes). Nothing is cut or paged.
  */
 function describeChallenge(item: VerifiedChallenge): string {
   const { challenge } = item
-  const shown = challenge.arguments === null ? ['  arguments: not recorded'] : ['  arguments:', ...JSON.stringify(challenge.arguments, null, 2).split('\n').map(line => `    ${printable(line)}`)]
   return [
     `${printable(challenge.token)}  ${printable(challenge.tool)} asks ${printable(challenge.rule)}`,
-    `  does:     ${challenge.description === null ? 'not described' : printable(challenge.description)}`,
-    `  subject:  ${printable(challenge.subject)}`,
-    `  reason:   ${printable(challenge.reason)}`,
-    `  in:       ${challenge.cwd === null ? 'not recorded' : printable(challenge.cwd)}`,
-    ...shown,
+    ...describeAction({ ...challenge, node: challenge.node, workspace: challenge.workspace, effects: challenge.effects ?? null }),
     `  scopes:   ${challenge.offeredScopes.join(', ')}; expires ${printable(challenge.expiresAt)}`,
-    `  call:     ${challenge.callDigest ?? 'not recorded'}; workspace ${printable(challenge.workspace)}, session ${printable(challenge.sessionId)}`,
-    ...(challenge.truncated ? [`  WARNING: the node cut part of this call's arguments or description to fit (a string shown as its head, length and sha256, the whole call as its size and sha256, or a fact or the description cut with its length named); approve refuses it without --accept-truncated`] : []),
+    `  call:     ${challenge.callDigest ?? 'not recorded'}; session ${printable(challenge.sessionId)}`,
+    ...(challenge.truncated ? [`  WARNING: a node built before full display cut this call's arguments or summary; approve refuses it: decide it at the node, or update the node and re-send the call`] : []),
     ...(item.consistent ? [] : ['  WARNING: the arguments shown do not match the call digest; approve refuses this ask']),
   ].join('\n')
 }
@@ -282,7 +278,7 @@ async function approvals(argv: string[], environment: NodeJS.ProcessEnv): Promis
 }
 
 async function approve(argv: string[], environment: NodeJS.ProcessEnv): Promise<CliResult> {
-  const { values, positionals } = parseArgs({ args: argv, options: { workspace: { type: 'string' }, deny: { type: 'boolean' }, scope: { type: 'string' }, 'accept-truncated': { type: 'boolean' } }, allowPositionals: true })
+  const { values, positionals } = parseArgs({ args: argv, options: { workspace: { type: 'string' }, deny: { type: 'boolean' }, scope: { type: 'string' } }, allowPositionals: true })
   const [node, token] = positionals
   if (!node || !token || positionals.length !== 2) throw new ClientError(USAGE)
   const scope = values.scope ?? 'once'
@@ -294,8 +290,8 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv): Promise<
   if (!found) throw new ClientError(`No waiting ask ${printable(token)} that ${printable(pin.serverId)}'s pinned key signed`)
   process.stdout.write(`Node:  ${printable(pin.serverId)}  ${keyIdOf(pin.publicKey)}  at ${printable(origin)}\n${describeChallenge(found)}\n`)
   if (!found.consistent) throw new ClientError(`The arguments ${printable(pin.serverId)} shows for ${printable(token)} do not recompute to its call digest; nothing was signed`)
-  // D9: the raw action must be seen whole; a cut one is signed only when the person says so (review item 7).
-  if (found.challenge.truncated && values['accept-truncated'] !== true) throw new ClientError(`${printable(pin.serverId)} could show ${printable(token)} only in part, so nothing was signed; review the call another way, then pass --accept-truncated to decide on it as shown`)
+  // D17: the whole action is shown or nothing is signed; there is no override for a cut one.
+  if (found.challenge.truncated === true) throw new ClientError(`${printable(pin.serverId)} showed ${printable(token)} only in part (a node built before full display), so nothing was signed; decide it at the node, or update the node and re-send the call`)
   const body = JSON.stringify({ token, approved: !values.deny, scope, challenge: found.digest })
   const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'approvals'), body, purpose: 'buckle-approval', node: pin.serverId })
   return report(response, await response.text())

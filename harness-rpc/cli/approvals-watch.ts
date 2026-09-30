@@ -8,6 +8,7 @@ import { approveCommand } from '../common/domain/approval-instruction.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
+import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
 
 /**
  * The node has no push channel for approvals: a request is a row in the state directory's
@@ -27,7 +28,8 @@ const SCOPE_KEYS: Array<{ key: string; scope: GrantScope; label: string }> = [
 ]
 
 export interface ApprovalWatchOptions {
-  approvals: Pick<ApprovalService, 'pending' | 'answer'>
+  /** The asks waiting, each with the whole call it came from, and the answer path `buckle approve` uses. */
+  approvals: Pick<ApprovalService, 'waiting' | 'answer'>
   /** Each answer is audited on its own, as the `buckle approve` it stands in for. */
   actions: ActionLog
   workspaceId: string
@@ -84,7 +86,7 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
     while (!stopped.signal.aborted) {
       const pending = readPending(options)
       if (!pending.ok) return unreachable(options, pending.message)
-      const next = pending.requests.find(request => !seen.has(request.token))
+      const next = pending.asks.find(ask => !seen.has(ask.request.token))
       if (!next) {
         await pause(wait, stopped.signal)
         wait = Math.min(wait * 2, poll.idle)
@@ -97,8 +99,8 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
         if (await awaitEnter(readline, options.output, stopped.signal)) continue
         break
       }
-      seen.add(next.token)
-      afterDrop = await askOne({ ...options, readline, keys, request: next, stopped: stopped.signal, recheckMs: poll.first }) === 'dropped'
+      seen.add(next.request.token)
+      afterDrop = await askOne({ ...options, readline, keys, request: next.request, call: next.call, stopped: stopped.signal, recheckMs: poll.first }) === 'dropped'
     }
     return { exitCode: 0 }
   } finally {
@@ -125,16 +127,17 @@ async function awaitEnter(readline: Interface, output: Writable, stopped: AbortS
 
 type Ending = 'answered' | 'skipped' | 'dropped' | 'stopped'
 
-async function askOne(context: ApprovalWatchOptions & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; stopped: AbortSignal; recheckMs: number }): Promise<Ending> {
-  const { request, output } = context
+async function askOne(context: ApprovalWatchOptions & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; call: PendingAsk['call']; stopped: AbortSignal; recheckMs: number }): Promise<Ending> {
+  const { request, call, output } = context
   const offered = SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope))
   const prompt = `  ${[...offered.map(entry => `${entry.key}) ${request.rule === 'sensitive_path' && entry.scope === 'once' ? 'allow once' : entry.label}`), 'd) deny', ...(request.rule === 'sensitive_path' ? ['ds) deny this session', 'da) always deny'] : []), 'n) skip'].join('  ')} > `
-  output.write(`${describeQuestion({ ...request, workspaceId: context.workspaceId })}  token: ${request.token}\n`)
+  // The whole action (owner decision D17); an ask recorded before this build shows its request alone.
+  output.write(`${describeQuestion({ ...request, workspaceId: context.workspaceId, ...(call?.complete ? { call } : {}) })}  token: ${request.token}\n`)
 
   const dropped = new AbortController()
   const watcher = setInterval(() => {
     const pending = readPending(context)
-    if (pending.ok && !pending.requests.some(entry => entry.token === request.token)) dropped.abort()
+    if (pending.ok && !pending.asks.some(entry => entry.request.token === request.token)) dropped.abort()
   }, context.recheckMs)
   const remaining = remainingMs(request.expiresAt)
   // Node timers run on the cached loop time, so this can fire a moment before the wall clock passes expiresAt.
@@ -193,9 +196,9 @@ async function record(context: ApprovalWatchOptions, decision: ApprovalDecision)
   context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token} in workspace ${context.workspaceId} (scope: ${decision.scope}).\n`)
 }
 
-function readPending(options: Pick<ApprovalWatchOptions, 'approvals'>): { ok: true; requests: ApprovalRequest[] } | { ok: false; message: string } {
+function readPending(options: Pick<ApprovalWatchOptions, 'approvals'>): { ok: true; asks: PendingAsk[] } | { ok: false; message: string } {
   try {
-    return { ok: true, requests: options.approvals.pending() }
+    return { ok: true, asks: options.approvals.waiting() }
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : 'Unknown error' }
   }

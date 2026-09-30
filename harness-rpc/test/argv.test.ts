@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvSignature, hasFlag, parseArgv } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, hasFlag, parseArgv, shownCommand } from '../common/domain/argv.js'
 
 describe('parseArgv', () => {
   it('expands clustered short flags', () => {
@@ -37,10 +37,39 @@ describe('hasFlag', () => {
   })
 })
 
-describe('argvSignature', () => {
-  it('keeps the literal command line so a narrow grant stays narrow', () => {
-    const args = ['-rf', 'build']
-    expect(argvSignature(parseArgv('rm', args), args)).toBe('rm -rf build')
-    expect(argvSignature(parseArgv('rm', ['-rf', '/']), ['-rf', '/'])).toBe('rm -rf /')
+// Owner decision D17 and the GPT review of c71dee5 (session command identity): the grant subject joined the
+// words with spaces and cut them at 300 characters, so `rm -f 'a b'` and `rm -f a b` shared one grant.
+describe('a command\'s identity and display (owner decision D17)', () => {
+  it('shows the command whole, each word quoted as a shell needs it, so its boundaries show', () => {
+    expect(shownCommand('rm', ['-rf', 'build'])).toBe('rm -rf build')
+    expect(shownCommand('rm', ['-f', 'a b'])).toBe("rm -f 'a b'")
+    expect(shownCommand('rm', ['-f', 'a', 'b'])).toBe('rm -f a b')
+    expect(shownCommand('echo', ['', "it's", '$HOME', 'a;b', '*', '--x=1'])).toBe(`echo '' 'it'\\''s' '$HOME' 'a;b' '*' --x=1`)
+    expect(shownCommand('A=1', [])).toBe("'A=1'")
+  })
+
+  it('keeps argument boundaries apart: two lists that join to the same text have different subjects', () => {
+    expect(argvIdentity('rm', ['-f', 'a b'])).not.toBe(argvIdentity('rm', ['-f', 'a', 'b']))
+    expect(commandSubject('rm', ['-f', 'a b'])).not.toBe(commandSubject('rm', ['-f', 'a', 'b']))
+    expect(commandSubject('rm', ['-f', 'a b'])).toMatch(/^rm -f 'a b'  # argv sha256 [a-f0-9]{64}$/)
+  })
+
+  it('keeps commands that differ after character 300 apart, and shows both whole', () => {
+    const head = 'x'.repeat(400)
+    const left = commandSubject('rm', ['-f', `${head}-left`])
+    const right = commandSubject('rm', ['-f', `${head}-right`])
+    expect(left).not.toBe(right)
+    expect(left).toContain(`${head}-left`)
+    expect(right).toContain(`${head}-right`)
+  })
+
+  it('redacts a credential in the display but keeps two different credentials apart', () => {
+    const first = commandSubject('git', ['push', '--force', 'https://bot:tok-first@github.com/org/repo.git', 'main'])
+    const second = commandSubject('git', ['push', '--force', 'https://bot:tok-second@github.com/org/repo.git', 'main'])
+    expect(first).not.toBe(second)
+    for (const subject of [first, second]) {
+      expect(subject).not.toMatch(/tok-(first|second)/)
+      expect(subject).toMatch(/^git push --force 'https:\/\/\[redacted\]@github.com\/org\/repo.git' main  # argv sha256 [a-f0-9]{64}$/)
+    }
   })
 })

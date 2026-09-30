@@ -1,4 +1,4 @@
-import type { ApprovalRequest, GrantScope } from '@5straps/protocol'
+import type { ApprovalRequest, GrantScope, JsonValue } from '@5straps/protocol'
 import { describeExpiry } from './approval-deadline.js'
 
 /** The node's own workspace, whose requests the plain command already answers. */
@@ -54,5 +54,44 @@ export function describeApprovalRequest(input: { request: ApprovalRequest; works
     `${describeExpiry(request.expiresAt)}`,
     ...(input.nodeName || input.workspaceId ? [`waiting on ${[input.nodeName ? `node ${input.nodeName}` : null, input.workspaceId ? `workspace ${input.workspaceId}` : null].filter(Boolean).join(', ')}`] : []),
     `approve with: ${approveCommand(input)}`,
+  ]
+}
+
+/** Arguments past this size get a line naming their size before anything else, so a person knows how much follows. */
+export const LARGE_ACTION_BYTES = 64 * 1_024
+
+/** An action as a person decides on it: the whole call and where it runs (owner decision D17). */
+export interface ShownAction {
+  node?: string
+  workspace?: string
+  rule: string
+  subject: string
+  reason: string
+  description: string | null
+  cwd: string | null
+  effects: readonly string[] | null
+  arguments: JsonValue | null
+}
+
+/**
+ * The lines every approver shows for one action (owner decision D17): a size line first when the arguments
+ * pass LARGE_ACTION_BYTES, then the node and workspace, the node's summary, the rule, subject and reason, the
+ * directory, every judged effect and the whole arguments as indented JSON. Nothing is cut or paged; every
+ * line passes through printable(), since the agent chose most of it.
+ */
+export function describeAction(action: ShownAction): string[] {
+  const shown = action.arguments === null ? null : JSON.stringify(action.arguments, null, 2)
+  const bytes = shown === null ? 0 : Buffer.byteLength(shown)
+  return [
+    ...(bytes > LARGE_ACTION_BYTES ? [`  size:     ${bytes} bytes of arguments, every one shown below`] : []),
+    ...(action.node === undefined ? [] : [`  node:     ${printable(action.node)}`]),
+    ...(action.workspace === undefined ? [] : [`  workspace: ${printable(action.workspace)}`]),
+    `  does:     ${action.description === null ? 'not described' : printable(action.description)}`,
+    `  rule:     ${printable(action.rule)}`,
+    `  subject:  ${printable(action.subject)}`,
+    `  reason:   ${printable(action.reason)}`,
+    `  in:       ${action.cwd === null ? 'not recorded' : printable(action.cwd)}`,
+    ...(action.effects === null ? ['  effects:  not recorded'] : action.effects.length === 0 ? ['  effects:  none'] : action.effects.map((effect, index) => `${index === 0 ? '  effects:  ' : '            '}${printable(effect)}`)),
+    ...(shown === null ? ['  arguments: not recorded'] : ['  arguments:', ...shown.split('\n').map(line => `    ${printable(line)}`)]),
   ]
 }

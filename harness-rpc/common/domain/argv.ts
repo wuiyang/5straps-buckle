@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto'
+import { redactShownText } from './redact.js'
+
 /** Interpreters whose positional is a script body rather than an argument list. */
 export const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'])
 
@@ -51,16 +54,40 @@ export function hasFlag(argv: ParsedArgv, short: string | null, ...long: string[
   return long.some(name => argv.longFlags.has(name))
 }
 
-const MAX_SIGNATURE_LENGTH = 300
+/**
+ * A command's identity for a grant (owner decision D17): the sha256 of the canonical JSON array
+ * `[command, ...args]`, every word whole. Two argument lists that join to the same text, `-f 'a b'`
+ * and `-f a b`, or that share a long prefix, have different identities; nothing is cut or joined.
+ */
+export function argvIdentity(command: string, args: readonly string[]): string {
+  return createHash('sha256').update(JSON.stringify([command, ...args])).digest('hex')
+}
 
 /**
- * The literal command line, used both as the grant subject and as the text a person reads
- * before approving. Matching the exact line is deliberate: approving `rm -rf build` must not
- * also approve `rm -rf /`.
+ * A command as a person reads it: each word redacted as the shown arguments are (redactShownText), then
+ * quoted as a POSIX shell would need it, so its boundaries show (`rm -f 'a b'` is not `rm -f a b`).
+ * Display only: the grant matches on argvIdentity.
  */
-export function argvSignature(argv: ParsedArgv, args: string[]): string {
-  const signature = [argv.command, ...args].join(' ')
-  return signature.length > MAX_SIGNATURE_LENGTH ? `${signature.slice(0, MAX_SIGNATURE_LENGTH)}…` : signature
+export function shownCommand(command: string, args: readonly string[]): string {
+  return [command, ...args].map((word, index) => shellQuote(redactShownText(word), index === 0)).join(' ')
+}
+
+/**
+ * The subject a destructive command is asked and granted under: the shown command, then its identity as
+ * a shell comment. It never holds a credential the display redacts, and two commands share it only when
+ * their words are the same, so a session grant covers exactly the command a person approved.
+ */
+export function commandSubject(command: string, args: readonly string[]): string {
+  return `${shownCommand(command, args)}  # argv sha256 ${argvIdentity(command, args)}`
+}
+
+/** Words a POSIX shell reads as themselves; `=` only after the command word, where it cannot read as an assignment. */
+const PLAIN_WORD = /^[A-Za-z0-9_@%+:,./-]+$/
+const PLAIN_ARGUMENT = /^[A-Za-z0-9_@%+=:,./-]+$/
+
+function shellQuote(word: string, first: boolean): string {
+  if ((first ? PLAIN_WORD : PLAIN_ARGUMENT).test(word)) return word
+  return `'${word.replaceAll("'", `'\\''`)}'`
 }
 
 /** `bash -c "..."` and its equivalents, whose script body hides the real command from a word glob. */

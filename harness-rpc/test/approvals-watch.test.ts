@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -58,7 +58,7 @@ function keyboardTerminal() {
 /** An action log of its own, for a watch whose audit the test does not read. */
 const scratchLog = () => createFileActionLog(join(mkdtempSync(join(tmpdir(), 'buckle-watch-log-')), 'actions.jsonl'))
 
-function watch(approvals: Pick<ApprovalService, 'pending' | 'answer'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
+function watch(approvals: Pick<ApprovalService, 'waiting' | 'answer'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
   const done = watchApprovals({ approvals, actions, workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
   return { terminal, done }
 }
@@ -93,6 +93,9 @@ describe('buckle approvals --watch', () => {
     await vi.waitFor(() => expect(terminal.shown()).toContain('fs_write needs approval'))
     await prompted(terminal)
     expect(terminal.shown()).toContain('o) once  s) session  always) always  d) deny  n) skip')
+    // The whole action the ask came from, as a person's device shows it (owner decision D17).
+    expect(terminal.shown()).toContain(`  effects:  write ${join(realpathSync(outside), 'note.md')}`)
+    expect(terminal.shown()).toContain('    "content": "hello",')
     terminal.type('s\r')
 
     expect(await call).toMatchObject({ outcome: 'ok' })
@@ -158,7 +161,7 @@ describe('buckle approvals --watch', () => {
       offeredScopes: ['once'], expiresAt: new Date(Date.now() + 300).toISOString(),
     }
     const answer = vi.fn()
-    const { terminal, done } = watch({ pending: () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now()), answer })
+    const { terminal, done } = watch({ waiting: () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now()).map(request => ({ request, sessionId: 'chat-1' })), answer })
 
     await vi.waitFor(() => expect(terminal.shown()).toContain('expiring expired; dropped.'))
     terminal.type('o\r')

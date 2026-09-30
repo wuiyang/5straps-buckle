@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
-import { approveCommand, printable } from '../common/domain/approval-instruction.js'
+import { approveCommand, describeAction, printable } from '../common/domain/approval-instruction.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { CheckpointSummary } from '../common/services/history/journal.js'
@@ -272,20 +272,27 @@ async function approvals(input: CommandInput): Promise<CliResult> {
   if (values.watch && values.json) return fail('--watch asks in the terminal, so it takes no --json')
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
   if (values.watch) return watch(runtime, input.runtime)
-  const pending = runtime.approvalService.pending()
-  if (values.json) return print(pending.map(request => ({ ...request, workspaceId: runtime.workspaceId, approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }) })))
-  if (pending.length === 0) {
+  const waiting = runtime.approvalService.waiting()
+  // The whole call each ask came from (owner decision D17), redacted and never cut; an ask recorded before this build has none.
+  const callOf = (call: (typeof waiting)[number]['call']) => call?.complete ? { call: { arguments: call.arguments, cwd: call.cwd, description: call.description, effects: call.effects ?? [] } } : {}
+  if (values.json) return print(waiting.map(({ request, call }) => ({ ...request, workspaceId: runtime.workspaceId, approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }), ...callOf(call) })))
+  if (waiting.length === 0) {
     process.stdout.write(`Nothing is waiting for a decision in workspace ${runtime.workspaceId}.\n`)
     return { exitCode: 0 }
   }
 
-  for (const request of pending) {
+  for (const { request, call } of waiting) {
     process.stdout.write(`${request.token}  ${printable(request.tool)}\n`)
     process.stdout.write(`    ${request.rule}: ${printable(request.subject)}\n`)
     process.stdout.write(`    ${printable(request.reason)}\n`)
     process.stdout.write(`    scopes: ${request.offeredScopes.join(' | ')}\n`)
     process.stdout.write(`    ${describeExpiry(request.expiresAt)}\n`)
     process.stdout.write(`    ${approveCommand({ request, workspaceId: runtime.workspaceId })}\n`)
+    const shown = callOf(call).call
+    const action = shown
+      ? describeAction({ node: input.config.serverId, workspace: runtime.workspaceId, rule: request.rule, subject: request.subject, reason: request.reason, ...shown })
+      : ['  recorded before this build: its whole call was not kept; decide it here with buckle approve, or re-send the call']
+    process.stdout.write(`${action.map(line => `  ${line}`).join('\n')}\n`)
   }
   return { exitCode: 0 }
 }

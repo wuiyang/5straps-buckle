@@ -79,12 +79,13 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     const verified = readChallenge({ signed: item!.signed, nodeKey: publicKeyFrom(signer.publicKey) })
     expect(verified?.digest).toBe(item!.digest)
     // The call as shown, and its digest, which a person's device recomputes from it (owner decision D9).
-    const shown = reviewableArguments(request.args).arguments
+    const shown = reviewableArguments(request.args)
     expect(verified?.challenge).toMatchObject({
       node: buckle.config.serverId, workspace: 'default', token, tool: 'fs_write', rule: 'write_scope', sessionId: 'chat-1', arguments: shown, cwd: buckle.config.cwd, callDigest: callDigestOf({ tool: 'fs_write', arguments: shown }),
-      // What the call does, in the node's words, inside the signed bytes (owner decision D9).
-      truncated: false, description: `Write 7 bytes to ${JSON.stringify(join(buckle.root, 'outside.md'))} in ${JSON.stringify(buckle.config.cwd)}`,
+      // What the call does, in the node's words, inside the signed bytes (owner decision D9), and what the rules judged it to touch (D17).
+      description: `Write 7 bytes to ${JSON.stringify(join(buckle.root, 'outside.md'))} in ${JSON.stringify(buckle.config.cwd)}`, effects: [`write ${join(buckle.root, 'outside.md')}`],
     })
+    expect(verified?.challenge).not.toHaveProperty('truncated')
     // Signed once, the same challenge every time.
     expect((await challenges(buckle)).challenges).toEqual(listed.challenges)
 
@@ -212,44 +213,74 @@ describe('an approval decision a person\'s key proves (B24)', () => {
 describe('a challenge listing with an ask too long to describe whole', () => {
   const longPaths = (root: string) => Array.from({ length: 5 }, (_, index) => join(root, ...Array.from({ length: 4 }, () => 'd'.repeat(200)), `file-${index}.md`))
 
-  it('signs a batch of five long outside paths with its description cut and flagged, and every other ask stays decidable', async () => {
+  it('signs a batch of five long outside paths whole, its summary cut in its own words, and every other ask stays decidable', async () => {
     const buckle = await node()
-    const batch = await ask(buckle, { requestId: 'long-batch', tool: 'fs_read_batch', args: { paths: longPaths(buckle.root) }, approvalTokens: [], context: { approvalWait: { mode: 'none' } } })
+    const paths = longPaths(buckle.root)
+    const batch = await ask(buckle, { requestId: 'long-batch', tool: 'fs_read_batch', args: { paths }, approvalTokens: [], context: { approvalWait: { mode: 'none' } } })
     const other = await ask(buckle, write(buckle.root, 'other-ask'))
     const listed = await challenges(buckle)
     const nodeKey = publicKeyFrom((await buckle.services.getNodeSigner()).publicKey)
     const item = (token: string) => listed.challenges.find(entry => entry.token === token)!
     const verified = readChallenge({ signed: item(batch).signed, nodeKey })!
-    expect(verified.challenge).toMatchObject({ tool: 'fs_read_batch', truncated: true, description: expect.stringMatching(/^Read 5 files: ".*" \[description cut: 3900 of \d+ characters shown\]$/) })
+    expect(verified.challenge).toMatchObject({ tool: 'fs_read_batch', arguments: { paths }, description: expect.stringMatching(/^Read 5 files: ".*" \[summary cut: 3880 of \d+ characters shown; the arguments below are complete\]$/) })
+    expect(verified.challenge).not.toHaveProperty('truncated')
     expect(verified.challenge.description!.length).toBeLessThanOrEqual(4_000)
     expect((await decide(buckle, { token: other, approved: true, scope: 'once', challenge: item(other).digest }).send()).status).toBe(200)
   })
 
-  it('lists an ask the node cannot sign as an error for its token, and signs, shows and decides the others', async () => {
+  it('lists an ask recorded before this build, and one the node cannot sign, as errors for their tokens, and signs, shows and decides the others', async () => {
     const buckle = await node()
     const other = await ask(buckle, write(buckle.root, 'other-ask'))
-    // An ask recorded before descriptions were capped: its description is longer than a challenge holds.
-    const legacy = await buckle.runtime.approvalService.request({
+    // An ask recorded before this build: its arguments may have been cut, so no device decides it (owner decision D17).
+    const recordedBefore = await buckle.runtime.approvalService.request({
       sessionId: 'chat-1', requestId: 'legacy-ask', tool: 'fs_read', wait: { mode: 'none' },
       asks: [{ kind: 'ask', rule: 'read_scope', subject: join(buckle.root, 'legacy'), reason: 'Reading outside the sandbox', offeredScopes: ['once'] }],
-      call: { arguments: { path: join(buckle.root, 'legacy', 'a.md') }, truncated: false, cwd: buckle.config.cwd, description: 'x'.repeat(5_000) },
+      call: { arguments: { path: join(buckle.root, 'legacy', 'a.md') }, truncated: false, cwd: buckle.config.cwd, description: 'Read a.md' },
     })
-    const unsignable = legacy.approvals[0]!.token
+    // A whole call whose description is longer than a challenge holds, which only a damaged queue can carry.
+    const damaged = await buckle.runtime.approvalService.request({
+      sessionId: 'chat-1', requestId: 'damaged-ask', tool: 'fs_read', wait: { mode: 'none' },
+      asks: [{ kind: 'ask', rule: 'read_scope', subject: join(buckle.root, 'damaged'), reason: 'Reading outside the sandbox', offeredScopes: ['once'] }],
+      call: { arguments: { path: join(buckle.root, 'damaged', 'a.md') }, cwd: buckle.config.cwd, description: 'x'.repeat(5_000), effects: [], complete: true },
+    })
+    const legacy = recordedBefore.approvals[0]!.token
+    const unsignable = damaged.approvals[0]!.token
     const listed = await challenges(buckle)
+    expect(listed.challenges.find(entry => entry.token === legacy)).toEqual({ token: legacy, error: 'recorded before this build: decide at the node or re-send' })
     expect(listed.challenges.find(entry => entry.token === unsignable)).toEqual({ token: unsignable, error: expect.stringContaining('could not sign') })
     expect(listed.challenges.find(entry => entry.token === other)?.signed).toEqual(expect.any(String))
 
-    // A person's device lists both, refuses to sign the one the node could not, and decides the other.
+    // A person's device lists all three, refuses to sign the two the node did not, and decides the other.
     const url = await buckle.listen()
     const environment = await pinnedDevice(buckle, url)
     const output = capture()
     expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
+    expect(output.stdout).toContain(`${legacy}  not signed by the node: recorded before this build: decide at the node or re-send`)
     expect(output.stdout).toContain(`${unsignable}  not signed by the node:`)
     expect(output.stdout).toContain(`${other}  fs_write asks write_scope`)
-    expect((await clientCommand(['approve', url, unsignable], environment)).exitCode).toBe(1)
-    expect(output.stderr).toContain('nothing was signed')
+    for (const token of [legacy, unsignable]) {
+      output.stderr = ''
+      expect((await clientCommand(['approve', url, token], environment)).exitCode).toBe(1)
+      expect(output.stderr).toContain('nothing was signed')
+    }
     expect((await clientCommand(['approve', url, other], environment)).exitCode).toBe(0)
-    expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual([unsignable])
+    expect(buckle.runtime.approvals.pending().map(request => request.token).sort()).toEqual([legacy, unsignable].sort())
+  })
+
+  it('records the whole call when a re-send joins an ask recorded before this build, so a device can then decide it', async () => {
+    const buckle = await node()
+    const request = { ...write(buckle.root, 'legacy-join'), context: { approvalWait: { mode: 'none' as const } } }
+    const token = await ask(buckle, request)
+    // Rewrite the queue as a build before D17 left it: the call cut and flagged, no effects, no mark.
+    const file = join(buckle.config.stateDirectory, 'approvals.json')
+    const state = JSON.parse(readFileSync(file, 'utf8')) as { pending: Array<{ call: Record<string, unknown> }> }
+    state.pending[0]!.call = { arguments: { content: 'writ... [7 characters, sha256 00]', path: join(buckle.root, 'outside.md') }, truncated: true, cwd: buckle.config.cwd, description: null }
+    writeFileSync(file, JSON.stringify(state))
+    expect((await challenges(buckle)).challenges).toEqual([{ token, error: 'recorded before this build: decide at the node or re-send' }])
+    expect((await buckle.runtime.invoke({ sessionId: 'chat-1', request })).outcome).toBe('approval_required')
+    const [item] = (await challenges(buckle)).challenges
+    const verified = readChallenge({ signed: item!.signed, nodeKey: publicKeyFrom((await buckle.services.getNodeSigner()).publicKey) })!
+    expect(verified.challenge).toMatchObject({ token, arguments: { content: 'written', path: join(buckle.root, 'outside.md') } })
   })
 })
 
@@ -335,19 +366,36 @@ describe('a device that recomputes the call digest (owner decision D9)', () => {
     expect(device.decisions).toHaveLength(1)
   })
 
-  // Review item 7 of the proof-of-possession fixes: D9 asks for the raw action, so a call the node could
-  // show only in part is flagged, and a person's device signs it only when told to.
-  it('flags a challenge whose arguments the node cut, and signs it only with --accept-truncated', async () => {
+  // Owner decision D17 supersedes review item 7's override: a challenge that says it was cut (only a node
+  // built before full display sends one) is shown with a warning and never signed, and no flag signs it.
+  it('refuses a challenge an older node says it cut, and has no override', async () => {
     const args = { path: '/workspace/run.sh', content: 'echo hello... [1152 characters, sha256 0ba46a]' }
     const challenge = fakeChallenge({ arguments: args, callDigest: callDigestOf({ tool: 'fs_write', arguments: args }), truncated: true })
     const device = await fakeNodeDevice(challenge)
     expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
-    expect(device.output.stdout).toContain('WARNING: the node cut part of this call\'s arguments')
+    expect(device.output.stdout).toContain('WARNING: a node built before full display cut this call\'s arguments')
     expect((await clientCommand(['approve', device.url, challenge.token], device.environment)).exitCode).toBe(1)
-    expect(device.output.stderr).toContain('only in part, so nothing was signed')
+    expect(device.output.stderr).toContain('only in part (a node built before full display), so nothing was signed')
+    await expect(clientCommand(['approve', device.url, challenge.token, '--accept-truncated'], device.environment)).rejects.toThrow(/accept-truncated/)
     expect(device.decisions).toEqual([])
-    expect((await clientCommand(['approve', device.url, challenge.token, '--accept-truncated'], device.environment)).exitCode).toBe(0)
-    expect(device.decisions).toHaveLength(1)
+  })
+
+  it('prints the whole action: node, workspace, rule, subject, directory, every effect and the arguments, a size line first past 64 KiB', async () => {
+    const script = Array.from({ length: 2_000 }, (_, index) => `echo line-${index} ${'z'.repeat(40)}`).join('\n')
+    const args = { command: 'sh', args: ['-c', script] }
+    const challenge = fakeChallenge({
+      tool: 'shell_exec', rule: 'destructive_command', subject: "sh -c '...'  # argv sha256 00", arguments: args, callDigest: callDigestOf({ tool: 'shell_exec', arguments: args }),
+      effects: ['exec sh -c <script>', 'write /workspace'],
+    })
+    const device = await fakeNodeDevice(challenge)
+    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    const lines = device.output.stdout.split('\n')
+    expect(lines[1]).toMatch(/^ {2}size: {5}\d+ bytes of arguments, every one shown below$/)
+    for (const expected of ['  node:     fake-node', '  workspace: default', '  rule:     destructive_command', '  in:       /workspace', '  effects:  exec sh -c <script>', '            write /workspace']) expect(lines).toContain(expected)
+    // Every line of the script, as JSON, and nothing cut.
+    expect(device.output.stdout).toContain(`line-1999 ${'z'.repeat(40)}`)
+    expect(device.output.stdout).toContain(JSON.stringify(script).slice(0, 200))
+    expect(device.output.stdout).not.toMatch(/sha256 [a-f0-9]{64}\]|characters shown/)
   })
 })
 

@@ -4,6 +4,7 @@ import type { ResolvedEffect } from '../common/domain/effect.js'
 import type { GrantLookup } from '../common/domain/permission/decision.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
+import { commandSubject } from '../common/domain/argv.js'
 import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
 import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
 import { createProcessProbeRule } from '../common/domain/permission/rules/process-probe-rule.js'
@@ -236,9 +237,16 @@ describe('what the engine reports as the reason for allowing a call', () => {
 
   it('names the grant that unlocked a destructive command', () => {
     const effect: ResolvedEffect = { kind: 'exec', command: 'rm', args: ['-rf', 'build'] }
-    const outcome = evaluate([effect], { destructive_command: ['rm -rf build'] })
+    const subject = commandSubject('rm', ['-rf', 'build'])
+    const outcome = evaluate([effect], { destructive_command: [subject] })
     expect(outcome.kind).toBe('allow')
-    expect(outcome).toHaveProperty('allowedBy', ['destructive_command:rm -rf build'])
+    expect(outcome).toHaveProperty('allowedBy', [`destructive_command:${subject}`])
+  })
+
+  // Owner decision D17: a grant recorded under the joined words of a build before it matches nothing.
+  it('asks again under a destructive grant written in the joined form of an earlier build', () => {
+    const effect: ResolvedEffect = { kind: 'exec', command: 'rm', args: ['-rf', 'build'] }
+    expect(evaluate([effect], { destructive_command: ['rm -rf build'] }).kind).toBe('ask')
   })
 
   it('names every grant involved when one call leans on more than one', () => {

@@ -44,7 +44,7 @@ export interface ApprovalAskInput {
   wait?: ApprovalWait
   /** The call's tool and whole arguments, hashed (requestFingerprint): a re-send joins only with the same one. */
   fingerprint?: string
-  /** The call as the node's signed challenge shows it (owner decision D9): redacted arguments, whether they are cut, their directory and the node's description. */
+  /** The whole call as the node's signed challenge shows it (owner decisions D9 and D17): redacted arguments, their directory, the node's description and the judged effects. */
   call?: AskedCall
 }
 
@@ -112,9 +112,11 @@ export interface ApprovalService {
   decideSealed(input: { body: unknown; signedBy?: string }): Promise<SealedDecisionResult>
   /**
    * What each waiting ask is, as the node signs it for a person's client (owner ruling H4 of
-   * 2026-09-28): built from the durable queue, so one ask always gives the same challenge.
+   * 2026-09-28): built from the durable queue, so one ask always gives the same challenge. An ask
+   * recorded before this build carries no whole call, so it has no challenge (null) and no device
+   * decides it (owner decision D17).
    */
-  challenges(): Array<{ token: string; challenge: ApprovalChallenge }>
+  challenges(): Array<{ token: string; challenge: ApprovalChallenge | null }>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
   /**
@@ -125,6 +127,8 @@ export interface ApprovalService {
   withdrawCall(selector: ApprovalWithdraw): Promise<CallWithdrawal>
   /** The requests still waiting in this workspace's queue. */
   pending(): ApprovalRequest[]
+  /** The asks still waiting, each with the whole call it came from, for a terminal that shows them. */
+  waiting(): PendingAsk[]
   /**
    * Settles every open wait as still pending and ends its questions, then waits for the lifecycle
    * notices still in flight; the asks stay in the durable queue.
@@ -186,6 +190,8 @@ interface QuestionContext {
   correlationId: string
   actor?: string
   sessionId: string
+  /** The whole call the asks came from, shown with each question (owner decision D17). */
+  call?: AskedCall
 }
 
 /**
@@ -242,7 +248,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
       const context = { correlationId: scope?.context.correlationId ?? input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId }
-      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, interaction, context }))
+      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, interaction, context: { ...context, ...(input.call === undefined ? {} : { call: input.call }) } }))
       // The newest joined caller carries the wait; every earlier one ends without running (review M1).
       // A re-send whose own transport already dropped carries nothing on, so the earlier one keeps it.
       if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
@@ -262,7 +268,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const { challenge } = input
       const result = await options.registry.resolve(input.decision, input.authority, {
         ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
-        ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => challengeBytes(challengeOf(ask)).digest === challenge }),
+        ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => { const shown = challengeOf(ask); return shown !== null && challengeBytes(shown).digest === challenge } }),
         ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
       })
       if (!result.ok) return result
@@ -304,6 +310,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     pending: () => options.registry.pending(),
 
+    waiting: () => options.registry.waiting(),
+
     async close() {
       closing.abort()
       for (const ask of [...live]) ask.stop.abort()
@@ -316,18 +324,18 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
   /**
    * The challenge for one ask: every field from the durable queue, so the same ask always signs the same
-   * bytes. It carries the call as shown, and its digest, which a person's client recomputes (D9).
+   * bytes. It carries the whole call as shown (its arguments, directory, description and effects) and its
+   * digest, which a person's client recomputes (D9, D17). An ask recorded before this build has none.
    */
-  function challengeOf(ask: PendingAsk): ApprovalChallenge {
+  function challengeOf(ask: PendingAsk): ApprovalChallenge | null {
     const { request, call } = ask
+    if (!call?.complete) return null
     return {
       v: SIGNED_REQUEST_VERSION, purpose: 'buckle-approval-challenge', node: options.serverId, workspace: options.workspaceId,
       token: request.token, requestId: ask.requestId ?? null, sessionId: ask.sessionId, actor: ask.actor ?? null,
       tool: request.tool, rule: request.rule, subject: request.subject, reason: request.reason, offeredScopes: request.offeredScopes,
-      arguments: call?.arguments ?? null, cwd: call?.cwd ?? null,
-      callDigest: call ? callDigestOf({ tool: request.tool, arguments: call.arguments }) : null,
-      // A challenge without its call shows nothing to decide on; the client refuses it as it does a cut one.
-      truncated: call?.truncated ?? true, description: call?.description ?? null, expiresAt: request.expiresAt,
+      arguments: call.arguments, cwd: call.cwd, callDigest: callDigestOf({ tool: request.tool, arguments: call.arguments }),
+      description: call.description, effects: call.effects ?? [], expiresAt: request.expiresAt,
     }
   }
 
@@ -421,7 +429,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       ask.questions.set(approval.token, question)
       let outcome: CliOutcome
       try {
-        outcome = await input.interaction.requestCli(questionFor({ approval, workspaceId: options.workspaceId, context: input.context }), { signal: AbortSignal.any([ask.stop.signal, question.signal]) })
+        outcome = await input.interaction.requestCli(questionFor({ approval, workspaceId: options.workspaceId, node: options.serverId, context: input.context }), { signal: AbortSignal.any([ask.stop.signal, question.signal]) })
       } finally {
         ask.questions.delete(approval.token)
       }
@@ -591,9 +599,13 @@ async function announce(notify: ApprovalServiceOptions['announce'], requests: Ap
   }
 }
 
-/** The question the terminal shows: what the call wants and the command that answers it elsewhere. */
-export function questionFor(input: { approval: ApprovalRequest; workspaceId: string; context: QuestionContext }): CliRequest {
+/**
+ * The question the terminal shows: what the call wants, the whole call it came from (owner decision D17)
+ * and the command that answers it elsewhere.
+ */
+export function questionFor(input: { approval: ApprovalRequest; workspaceId: string; node?: string; context: QuestionContext }): CliRequest {
   const { approval, workspaceId, context } = input
+  const { call } = context
   return {
     id: `approval:${workspaceId}:${approval.token}`,
     kind: APPROVAL_REQUEST_KIND,
@@ -607,6 +619,8 @@ export function questionFor(input: { approval: ApprovalRequest; workspaceId: str
         tool: approval.tool, rule: approval.rule, subject: approval.subject, reason: approval.reason,
         scopes: approval.offeredScopes.join(','), expiresAt: approval.expiresAt, workspace: workspaceId,
         approve: approveCommand({ request: approval, workspaceId }),
+        ...(input.node === undefined ? {} : { node: input.node }),
+        ...(call === undefined ? {} : { arguments: JSON.stringify(call.arguments), cwd: call.cwd, ...(call.description === null ? {} : { description: call.description }), ...(call.effects === undefined ? {} : { effects: JSON.stringify(call.effects) }) }),
       },
     },
     wait: questionWait(approval.expiresAt),

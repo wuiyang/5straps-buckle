@@ -1,10 +1,10 @@
 import { createInterface } from 'node:readline/promises'
 import type { Readable, Writable } from 'node:stream'
 import type { CliConsumer, CliRequest } from '@5straps/runtime'
-import { PermissionRuleIdSchema, GrantScopeSchema, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
+import { JsonValueSchema, PermissionRuleIdSchema, GrantScopeSchema, type GrantScope, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
 import { z } from 'zod'
 import { describeExpiry, remainingMs } from '../common/domain/approval-deadline.js'
-import { printable } from '../common/domain/approval-instruction.js'
+import { describeAction, printable } from '../common/domain/approval-instruction.js'
 import type { ApprovalChoice } from '../common/services/approvals/approval-service.js'
 import { APPROVAL_REQUEST_KIND } from '../common/services/approvals/interaction.js'
 import { QUIET_MS, discardTypedLine, watchKeys } from './terminal-keys.js'
@@ -30,12 +30,27 @@ export interface ApprovalQuestion {
   expiresAt: string
   /** Named only when the question comes from a registered workspace. */
   workspaceId?: string
+  /** The node that asks, when the question names it. */
+  node?: string
+  /** The whole call the ask came from (owner decision D17); absent for an ask recorded without it. */
+  call?: { arguments: JsonValue; cwd: string; description: string | null; effects?: readonly string[] }
 }
+
+/** A JSON text a question carries in one detail, since details hold strings. */
+const jsonText = <T extends z.ZodType>(schema: T) => z.string().transform((value, context) => {
+  try {
+    return JSON.parse(value) as unknown
+  } catch {
+    context.addIssue({ code: 'custom', message: 'not JSON' })
+    return z.NEVER
+  }
+}).pipe(schema)
 
 const QuestionDetailsSchema = z.object({
   tool: z.string(), rule: PermissionRuleIdSchema, subject: z.string(), reason: z.string(),
   scopes: z.string().transform(value => value.split(',')).pipe(z.array(GrantScopeSchema).min(1)),
-  expiresAt: z.string(), workspace: z.string().optional(),
+  expiresAt: z.string(), workspace: z.string().optional(), node: z.string().optional(),
+  arguments: jsonText(JsonValueSchema).optional(), cwd: z.string().optional(), description: z.string().optional(), effects: jsonText(z.array(z.string())).optional(),
 })
 
 /**
@@ -98,18 +113,30 @@ export function createTerminalConsumer(options: TerminalOptions = {}): CliConsum
 }
 
 /**
- * What a terminal question shows, shared with `buckle approvals --watch` so both read alike. The
- * agent chose the tool call, so its text is shown with control characters escaped.
+ * What a terminal question shows, shared with `buckle approvals --watch` so both read alike: the ask,
+ * then the whole action it came from (owner decision D17), nothing cut or paged. The agent chose the
+ * tool call, so its text is shown with control characters escaped.
  */
 export function describeQuestion(question: ApprovalQuestion): string {
   const workspace = question.workspaceId && question.workspaceId !== 'default' ? `  workspace: ${printable(question.workspaceId)}\n` : ''
-  return `\n${printable(question.tool)} needs approval\n  ${printable(question.reason)}\n  subject: ${printable(question.subject)}\n${workspace}  ${describeExpiry(question.expiresAt)}\n`
+  const head = `\n${printable(question.tool)} needs approval\n  ${printable(question.reason)}\n  subject: ${printable(question.subject)}\n${workspace}  ${describeExpiry(question.expiresAt)}\n`
+  const { call } = question
+  if (!call) return head
+  const action = describeAction({
+    ...(question.node === undefined ? {} : { node: question.node }), workspace: question.workspaceId ?? 'default', rule: question.rule, subject: question.subject, reason: question.reason,
+    description: call.description, cwd: call.cwd, effects: call.effects ?? null, arguments: call.arguments,
+  })
+  return `${head}${action.join('\n')}\n`
 }
 
 function approvalQuestion(request: CliRequest): ApprovalQuestion {
   if (request.kind !== APPROVAL_REQUEST_KIND) throw new Error(`The terminal answers approval questions only, not ${request.kind}`)
   const details = QuestionDetailsSchema.parse(request.action.details)
-  return { tool: details.tool, rule: details.rule, subject: details.subject, reason: details.reason, offeredScopes: details.scopes, expiresAt: details.expiresAt, ...(details.workspace ? { workspaceId: details.workspace } : {}) }
+  const call = details.arguments === undefined || details.cwd === undefined ? undefined : { arguments: details.arguments, cwd: details.cwd, description: details.description ?? null, ...(details.effects === undefined ? {} : { effects: details.effects }) }
+  return {
+    tool: details.tool, rule: details.rule, subject: details.subject, reason: details.reason, offeredScopes: details.scopes, expiresAt: details.expiresAt,
+    ...(details.workspace ? { workspaceId: details.workspace } : {}), ...(details.node ? { node: details.node } : {}), ...(call ? { call } : {}),
+  }
 }
 
 function scopeChoices(question: ApprovalQuestion): string {

@@ -299,9 +299,9 @@ export const ApprovalChallengeSchema = z.object({
   reason: z.string().min(1),
   offeredScopes: z.array(z.enum(['once', 'session', 'always'])).min(1),
   /**
-   * The call's arguments as the node shows them (owner decision D9): canonical, with values under
-   * credential-named keys redacted and very long strings cut to a head, their length and their sha256.
-   * Null for an ask recorded without its call.
+   * The call's whole arguments as the node shows them (owner decisions D9 and D17): canonical, with values
+   * under credential-named keys and URL credentials redacted, and nothing cut. A call too large to show
+   * whole is refused before it is asked. Null only from a node built before D17.
    */
   arguments: JsonValueSchema.nullable(),
   /** The directory relative paths in the arguments resolve against, as the agent names it. */
@@ -309,17 +309,24 @@ export const ApprovalChallengeSchema = z.object({
   /** callDigestOf(tool, arguments); a changed call is a different challenge. */
   callDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
   /**
-   * Whether `arguments` leaves out part of the call: a string cut to its head, length and sha256, or the
-   * whole call replaced by its size and sha256. A person's client refuses to sign one unless told to.
+   * Set only by a node built before owner decision D17, when it cut the arguments or the description to fit;
+   * a node of this build never cuts, and a person's client refuses a challenge that says it did.
    */
-  truncated: z.boolean(),
+  truncated: z.boolean().optional(),
   /**
    * What the call does, in words the node wrote from the judged tool, subject, working directory and
    * argument facts (a path, a size, a command), never from text the agent chose to describe it (owner
-   * decision D9). Inside the signed bytes, so a relay that changes it breaks the signature. Null for an
-   * ask recorded without its call.
+   * decision D9). A summary beside the whole arguments, never in place of them: a cut one says so in its
+   * own words. Inside the signed bytes, so a relay that changes it breaks the signature. Null for an ask
+   * recorded without its call.
    */
   description: z.string().max(4_096).nullable(),
+  /**
+   * What the rules judged the call to touch, one line each (`read <path>`, `write <path>`, `network <url>`,
+   * `exec <command>`, `process probe`), redacted as the arguments are (owner decision D17). Absent from a
+   * node built before it.
+   */
+  effects: z.array(z.string()).optional(),
   expiresAt: z.string(),
 }).strict()
 export type ApprovalChallenge = z.infer<typeof ApprovalChallengeSchema>
