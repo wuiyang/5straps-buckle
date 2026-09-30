@@ -211,20 +211,9 @@ const PLUGINS = ['layers/common/server/plugins/10.context.ts', 'layers/common/se
 const GUARDED_BUILDER = /^export default define(Operation|Workbench|Setup|Registry)Handler\(/m
 const RE_EXPORT = /^(?:\s*\/\/[^\n]*\n)*\s*export \{ default \} from '([^']+)'\s*$/
 
-/**
- * The writes a source makes to something named `app` or `matchedRoute` (as a name, or as a quoted index such as
- * `event.context['matchedRoute']`), or through a prototype (`.prototype`, `__proto__`, `getPrototypeOf(...)` with
- * one level of nested parentheses), that these regular expressions read:
- * - a member or index assignment at any depth, plain or compound, the target parenthesised or not;
- * - `++` or `--` on such a member, before or after it;
- * - an object or array destructuring assignment that names either;
- * - a `for (... of|in ...)` whose loop target is such a member;
- * - Object.assign, defineProperty, defineProperties or setPrototypeOf, or Reflect.set, defineProperty or
- *   setPrototypeOf, with either, a member of either or a prototype as the target.
- * A write through an alias, a computed name or deeper nesting is not read here; the run-time lock in 20.head.ts
- * throws for those, and guard-sweep compares the app before and after every request (review L11 of the second
- * proof-of-possession re-review, review L8).
- */
+// Flags direct member/index writes, simple destructuring and loop targets, and the Object/Reflect mutations below.
+// Complete parenthesised targets, nested array destructuring, TypeScript assertions and aliases can escape this scan.
+// 20.head.ts locks app config, methods, lists and matched route data; h3 dispatcher fields remain mutable.
 function appWrites(text: string): string[] {
   const target = String.raw`(?:\b(?:app|matchedRoute)\b|\[\s*['"\`](?:app|matchedRoute)['"\`]\s*\])`
   const prototype = String.raw`(?:\.\s*prototype\b|\b__proto__\b|\bgetPrototypeOf\s*\((?:[^()]|\([^()]*\))*\))`
