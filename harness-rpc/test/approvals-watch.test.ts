@@ -36,7 +36,7 @@ function serviceOf(config: BuckleConfig) {
 
 async function issue(registry: ApprovalRegistry): Promise<string> {
   const [request] = (await registry.ask({
-    tool: 'fs_write', sessionId: 'chat-1',
+    tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
     asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
   return request!.token
@@ -74,7 +74,7 @@ async function prompted(terminal: ReturnType<typeof keyboardTerminal>, times = 1
 /** A private address web_fetch asks about, which offers the persisted scope too. */
 async function issuePrivate(registry: ApprovalRegistry, subject: string): Promise<string> {
   const [request] = (await registry.ask({
-    tool: 'web_fetch', sessionId: 'chat-1',
+    tool: 'web_fetch', sessionId: 'chat-1', call: { arguments: { url: `http://${subject}/` }, cwd: '/workspace', description: null, effects: [`network http://${subject}/`], complete: true },
     asks: [{ kind: 'ask', rule: 'network_egress', subject, reason: `${subject} is private`, offeredScopes: ['once', 'session', 'always'] }],
   })).requests
   return request!.token
@@ -378,7 +378,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
 it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file warning choices and persists %s denial', async (key, scope) => {
   const config = node()
   const registry = registryOf(config)
-  await registry.ask({ tool: 'fs_read', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
+  await registry.ask({ tool: 'fs_read', sessionId: 'chat-1', call: { arguments: { path: '/workspace/.env.local' }, cwd: '/workspace', description: null, effects: ['read /workspace/.env.local'], complete: true }, asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
   const { terminal, done } = watch(serviceOf(config))
   try {
     await prompted(terminal)
@@ -390,5 +390,29 @@ it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file w
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(0))
     const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
     expect(grants.list()).toContainEqual(expect.objectContaining({ denied: true, scope, subject: '/workspace/.env.local' }))
+  } finally { terminal.type('\x03'); await done }
+})
+
+// Review L9: an ask recorded before this build has no whole call, so --watch showed its request fields alone,
+// unmarked, and let any key approve it. It now says so and offers denials alone (owner decision D17).
+it('marks an ask recorded before this build, grants nothing for an approving key, and denies it with d', async () => {
+  const config = node()
+  const registry = registryOf(config)
+  const [request] = (await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/old.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }] })).requests
+  const { terminal, done } = watch(serviceOf(config))
+  try {
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/d\) deny {2}n\) skip > /), { timeout: 3_000 })
+    expect(terminal.shown()).toContain('recorded before this build')
+    expect(terminal.shown()).not.toContain('o) once')
+    for (const [index, keys] of ['o\r', 's\r'].entries()) {
+      terminal.type(keys)
+      await vi.waitFor(() => expect(count(terminal.shown(), /Nothing granted/g)).toBe(index + 1))
+    }
+    expect(grantsOf(config)).toEqual([])
+    expect(registry.pending().map(entry => entry.token)).toEqual([request!.token])
+    terminal.type('d\r')
+    await vi.waitFor(() => expect(registry.pending()).toEqual([]))
+    expect(terminal.shown()).toContain(`Denied ${request!.token}`)
+    expect(grantsOf(config)).toEqual([])
   } finally { terminal.type('\x03'); await done }
 })

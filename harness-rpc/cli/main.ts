@@ -7,7 +7,8 @@ import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
-import { approveCommand, describeAction, printable } from '../common/domain/approval-instruction.js'
+import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, printable, RECORDED_BEFORE_NOTE } from '../common/domain/approval-instruction.js'
+import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { CheckpointSummary } from '../common/services/history/journal.js'
@@ -26,6 +27,7 @@ import { workspaceRegistryCommand } from './workspace.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
 import { BUCKLE_VERSION } from '../common/runtime/version.js'
+import { confirmAtTerminal } from './terminal-consumer.js'
 
 export interface CliResult {
   exitCode: number
@@ -50,10 +52,17 @@ export function answerWithoutConfiguration(argv: string[]): CliResult | null {
   return null
 }
 
-export async function runCli(input: { argv: string[]; config: BuckleConfig }): Promise<CliResult> {
+/**
+ * Asks the person at this process's terminal to confirm one decision, after the whole action was shown
+ * (owner decision D17); null where the process has no terminal, so nothing can be confirmed.
+ */
+export type Confirm = (prompt: string) => Promise<boolean>
+
+export async function runCli(input: { argv: string[]; config: BuckleConfig; confirm?: Confirm | null }): Promise<CliResult> {
   const answered = answerWithoutConfiguration(input.argv)
   if (answered) return answered
   const [command = '', ...rest] = input.argv
+  const confirm = input.confirm !== undefined ? input.confirm : process.stdin.isTTY ? (prompt: string) => confirmAtTerminal(prompt) : null
 
   // One command is one process owner: its common runtime closes when the command ends.
   const common = initializeCommon({ config: input.config, role: 'cli' })
@@ -62,7 +71,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   common.bindRequester(cli.requestCli)
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   try {
-    return await runCliCommand({ common, config: input.config, command, rest })
+    return await runCliCommand({ common, config: input.config, command, rest, confirm })
   } catch (error) {
     if (isStateBusy(error)) return fail(error.message)
     throw error
@@ -73,7 +82,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig }): P
   }
 }
 
-async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig; command: string; rest: string[] }): Promise<CliResult> {
+async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig; command: string; rest: string[]; confirm: Confirm | null }): Promise<CliResult> {
   const { common, command, rest } = input
   try {
     await common.start()
@@ -88,7 +97,7 @@ async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig
   const scope = common.owner.registry.createScope({ context: { actor: 'local-owner' } })
   return withOperationScope(scope, async () => {
     (await common.services.getInteraction(scope)).bind('prompt')
-    return runAuditedCommand({ runtime, workspaces, config: input.config, command, rest })
+    return runAuditedCommand({ runtime, workspaces, config: input.config, command, rest, confirm: input.confirm })
   })
 }
 
@@ -119,7 +128,7 @@ async function runAuditedCommand(input: CommandContext): Promise<CliResult> {
   }
 }
 
-interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: BuckleConfig; command: string; rest: string[] }
+interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: BuckleConfig; command: string; rest: string[]; confirm: Confirm | null }
 
 function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliResult> {
   const { runtime, command, rest } = input
@@ -127,7 +136,7 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
   if (command === 'skills') return printSkills(runtime, rest)
-  if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, workspaces: input.workspaces, argv: rest }))
+  if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, workspaces: input.workspaces, argv: rest, confirm: input.confirm }))
   if (command === 'approvals') return reportWorkspaceErrors(() => approvals({ config: input.config, runtime, workspaces: input.workspaces, argv: rest }))
   if (command === 'check-url') return checkUrlCommand({ argv: rest, allowedHosts: input.config.allowedHosts, runtimeFor: workspace => runtimeForWorkspace({ runtime, workspaces: input.workspaces, workspace }) })
   if (command === 'grants') return grants(runtime, rest)
@@ -163,6 +172,7 @@ function printUsage(): CliResult {
   buckle approvals [--json] [--workspace <id>]   Requests waiting for a decision
   buckle approvals --watch [--workspace <id>]    Ask about each request as it arrives
   buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <id>]
+                                   Shows the whole action, then approves only once you confirm at a terminal
   buckle check-url <url|host> [--session <id>] [--workspace <id>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
   buckle grants list | revoke <id>
   buckle workspace list | add <id> --root <dir>
@@ -287,11 +297,12 @@ async function approvals(input: CommandInput): Promise<CliResult> {
     process.stdout.write(`    ${printable(request.reason)}\n`)
     process.stdout.write(`    scopes: ${request.offeredScopes.join(' | ')}\n`)
     process.stdout.write(`    ${describeExpiry(request.expiresAt)}\n`)
-    process.stdout.write(`    ${approveCommand({ request, workspaceId: runtime.workspaceId })}\n`)
     const shown = callOf(call).call
+    // An ask recorded before this build is denied or re-sent, never approved (owner decision D17).
+    process.stdout.write(`    ${shown ? approveCommand({ request, workspaceId: runtime.workspaceId }) : denyCommand({ request, workspaceId: runtime.workspaceId })}\n`)
     const action = shown
       ? describeAction({ node: input.config.serverId, workspace: runtime.workspaceId, rule: request.rule, subject: request.subject, reason: request.reason, ...shown })
-      : ['  recorded before this build: its whole call was not kept; decide it here with buckle approve, or re-send the call']
+      : [`  ${RECORDED_BEFORE_NOTE}`]
     process.stdout.write(`${action.map(line => `  ${line}`).join('\n')}\n`)
   }
   return { exitCode: 0 }
@@ -314,7 +325,13 @@ async function watch(runtime: BuckleRuntime, node: BuckleRuntime): Promise<CliRe
   }
 }
 
-async function approve(input: CommandInput): Promise<CliResult> {
+/**
+ * Decides one ask at the node. Owner decision D17: the whole action is printed first, as `buckle approvals`
+ * shows it, and an approval is recorded only after the person at a terminal confirms it. Without a terminal
+ * nothing is approved (a denial still is), and an ask recorded before this build, whose whole call was never
+ * kept, can only be denied (review H2).
+ */
+async function approve(input: CommandInput & { confirm: Confirm | null }): Promise<CliResult> {
   const { positionals, values } = parseArgs({
     args: input.argv,
     options: { scope: { type: 'string' }, deny: { type: 'boolean' }, workspace: { type: 'string' }, host: { type: 'string' } },
@@ -327,6 +344,18 @@ async function approve(input: CommandInput): Promise<CliResult> {
   if (!scope.success) return fail(`Invalid scope: ${values.scope}`)
 
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
+  const ask = runtime.approvalService.waiting().find(entry => entry.request.token === token)
+  if (ask) process.stdout.write(`${token}\n${describeWaitingAsk({ ask, node: input.config.serverId, workspaceId: runtime.workspaceId }).join('\n')}\n`)
+  // A token no longer waiting reaches the queue as it is: it can repeat the decision already recorded, and decide nothing new.
+  if (values.deny !== true && ask) {
+    if (!ask.call?.complete) return fail(`Not approved: ${printable(token)} was ${RECORDED_BEFORE_NOTE}. Deny it with ${denyCommand({ request: ask.request, workspaceId: runtime.workspaceId })}`)
+    if (!input.confirm) return fail(`Not approved: buckle approve records an approval only after a person at a terminal confirms the action above, and this process has none. Answer it in buckle approvals --watch${runtime.workspaceId === 'default' ? '' : ` --workspace ${runtime.workspaceId}`}, or run buckle approve in a terminal; --deny works anywhere`)
+    const widened = values.host === undefined ? '' : ` for ${printable(values.host)}`
+    if (!await input.confirm(`Approve ${token} (${scope.data})${widened} in workspace ${runtime.workspaceId}? Type yes to approve; anything else leaves it waiting.\n`)) {
+      process.stdout.write(`Nothing decided; ${token} is still waiting in workspace ${runtime.workspaceId}\n`)
+      return { exitCode: 1 }
+    }
+  }
   // `BUCKLE-D18`: `--host` widens a network approval to a pattern, under the owner's authority alone.
   const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data }, authority: 'admin', ...(values.host === undefined ? {} : { widenTo: values.host }) })
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceId}`)
@@ -418,15 +447,21 @@ async function invoke(runtime: BuckleRuntime, tool: string, args: unknown): Prom
   return reportResponse({ response, workspaceId: runtime.workspaceId })
 }
 
+/** One waiting ask as `buckle approve` shows it before deciding: the ask, then its whole action (owner decision D17). */
+function describeWaitingAsk(input: { ask: PendingAsk; node: string; workspaceId: string }): string[] {
+  const { request, call } = input.ask
+  return describeAsk({ ...request, workspaceId: input.workspaceId, node: input.node, ...(call?.complete ? { call } : {}) })
+}
+
 function reportResponse(input: { response: InvokeResponse; workspaceId: string }): CliResult {
   const { response } = input
   if (response.outcome === 'ok') return print(response.output)
 
   if (response.outcome === 'approval_required') {
+    // Leads with buckle approvals, which shows the whole action, and names buckle approve after it (owner decision D17).
     for (const approval of response.approvals) {
-      process.stderr.write(
-        `Approval required: ${printable(approval.reason)}\n  subject: ${printable(approval.subject)}\n  ${describeExpiry(approval.expiresAt)}\n  ${approveCommand({ request: approval, workspaceId: input.workspaceId })}\n`,
-      )
+      const [first, ...rest] = describeApprovalRequest({ request: approval, workspaceId: input.workspaceId })
+      process.stderr.write(`Approval required: ${first}\n${rest.map(line => `  ${line}\n`).join('')}`)
     }
     return { exitCode: 3 }
   }

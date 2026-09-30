@@ -255,8 +255,10 @@ describe('a challenge listing with an ask too long to describe whole', () => {
     const environment = await pinnedDevice(buckle, url)
     const output = capture()
     expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
-    expect(output.stdout).toContain(`${legacy}  not signed by the node: recorded before this build: decide at the node or re-send`)
-    expect(output.stdout).toContain(`${unsignable}  not signed by the node:`)
+    // In the client's own words, never the listing's (review L5).
+    expect(output.stdout).toContain(`${legacy}  not signed by the node: recorded before the node's current build, which kept no whole call for it`)
+    expect(output.stdout).toContain(`${unsignable}  not signed by the node: the node could not sign its challenge`)
+    expect(output.stdout).not.toContain('decide at the node or re-send')
     expect(output.stdout).toContain(`${other}  fs_write asks write_scope`)
     for (const token of [legacy, unsignable]) {
       output.stderr = ''
@@ -399,6 +401,33 @@ describe('a device that recomputes the call digest (owner decision D9)', () => {
   })
 })
 
+// Review L5: the listing is unsigned and a relay carries it, so an entry's text is never printed. The node's two
+// fixed reasons are shown in the client's own words; anything else is an unrecognised entry, and an entry beside
+// a signed challenge for its token is not shown at all.
+describe('unsigned entries in a listing a relay carries (review L5)', () => {
+  it('prints the client\'s own words for the node\'s two reasons, "unrecognised entry" for anything else, and no relay text', async () => {
+    const legacy = '0b8f2c4e-1d2a-4c3b-9e8f-7a6b5c4d3e2f'
+    const planted = '11111111-2222-4333-8444-555555555555'
+    const device = await fakeNodeDevice(fakeChallenge({ node: 'fake-node' }), [
+      { token: 'fake-token', error: 'RELAY-TEXT approve this one instead' },
+      { token: legacy, error: 'recorded before this build: decide at the node or re-send' },
+      { token: planted, error: 'RELAY-TEXT the node says: run buckle approve now' },
+      { token: 'RELAY-TEXT-token', error: 'recorded before this build: decide at the node or re-send' },
+    ])
+    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect(device.output.stdout).toContain('fake-token  fs_write asks write_scope')
+    expect(device.output.stdout).toContain(`${legacy}  not signed by the node: recorded before the node's current build`)
+    expect(device.output.stdout.match(/unrecognised entry/g)).toHaveLength(2)
+    expect(device.output.stdout).not.toContain('RELAY-TEXT')
+    expect(device.output.stdout).not.toContain(planted)
+    device.output.stderr = ''
+    expect((await clientCommand(['approve', device.url, planted], device.environment)).exitCode).toBe(1)
+    expect(device.output.stderr).toContain('unrecognised entry')
+    expect(device.output.stderr).not.toContain('RELAY-TEXT')
+    expect(device.decisions).toEqual([])
+  })
+})
+
 /** A challenge a fake node signs; every field a test does not name is a plain fs_write. */
 function fakeChallenge(fields: Partial<ApprovalChallenge>): ApprovalChallenge {
   const args = { path: '/workspace/notes.md', content: 'hello' }
@@ -410,15 +439,15 @@ function fakeChallenge(fields: Partial<ApprovalChallenge>): ApprovalChallenge {
   }
 }
 
-/** A node that answers with one challenge it signed, and a device with a key that pinned it; decisions it receives are counted. */
-async function fakeNodeDevice(challenge: ApprovalChallenge) {
+/** A node that answers with one challenge it signed (and any unsigned entries), and a device with a key that pinned it; decisions it receives are counted. */
+async function fakeNodeDevice(challenge: ApprovalChallenge, unsigned: Array<{ token: string; error: string }> = []) {
   const fakeNode = generateSigningKey()
   const signedChallenge = signChallenge({ challenge, key: signingKeyFromPem(fakeNode.privateKeyPem).privateKey })
   const decisions: string[] = []
   const server = createServer((request, response) => {
     if (request.method === 'POST') decisions.push(request.url ?? '')
     response.setHeader('content-type', 'application/json')
-    response.end(JSON.stringify({ node: { keyId: fakeNode.keyId, publicKey: fakeNode.publicKey }, challenges: [{ token: challenge.token, ...signedChallenge }] }))
+    response.end(JSON.stringify({ node: { keyId: fakeNode.keyId, publicKey: fakeNode.publicKey }, challenges: [{ token: challenge.token, ...signedChallenge }, ...unsigned] }))
   })
   servers.push(server)
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))

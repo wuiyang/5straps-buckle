@@ -85,8 +85,8 @@ describe('lifecycle notices on the approval webhook', () => {
         return response.approvals[0]!.token
       }))
 
-      // `buckle approve` is another process's view of the same state; the setup face is this one's.
-      expect((await runCli({ argv: ['approve', first!, '--scope', 'session'], config: buckle.config })).exitCode).toBe(0)
+      // `buckle approve` is another process's view of the same state, confirmed at its terminal (owner decision D17); the setup face is this one's.
+      expect((await runCli({ argv: ['approve', first!, '--scope', 'session'], config: buckle.config, confirm: async () => true })).exitCode).toBe(0)
       expect((await buckle.request('/setup/approvals', { method: 'POST', headers: { authorization: 'Bearer approval-http-admin-token', 'content-type': 'application/json' }, body: JSON.stringify({ token: second, approved: false, scope: 'once' }) })).status).toBe(200)
       await buckle.runtime.approvalService.close()
 

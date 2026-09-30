@@ -30,9 +30,12 @@ function approval(token: string, expiresInMs = 60_000): ApprovalRequest {
   }
 }
 
+/** The whole call an ask recorded, which every question of this build carries (owner decision D17). */
+const recordedCall = { arguments: { path: '/shots/a.png' }, cwd: '/workspace', description: 'Read "/shots/a.png"', effects: ['read /shots/a.png'], complete: true as const }
+
 /** The question the approval service puts to the terminal for one request. */
 function question(token: string, expiresInMs = 60_000): CliRequest {
-  return questionFor({ approval: approval(token, expiresInMs), workspaceId: 'default', context: { correlationId: `c-${token}`, sessionId: 's' } })
+  return questionFor({ approval: approval(token, expiresInMs), workspaceId: 'default', context: { correlationId: `c-${token}`, sessionId: 's', call: recordedCall } })
 }
 
 /** A terminal nobody answers: the streams are open, and no keystroke ever arrives. */
@@ -81,7 +84,7 @@ const nobody: RequestCli = async request => ({ status: 'unavailable', requestId:
 
 function waitingService(input: { registry: ApprovalRegistry; graceMs: number | null; requestCli?: RequestCli; hold?: ApprovalHold; announce?: (requests: ApprovalRequest[]) => Promise<void> }) {
   const service = createApprovalService({ registry: input.registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: async () => ({ requestCli: input.requestCli ?? nobody, hold: input.hold ?? 'grace' }), ...(input.announce ? { announce: input.announce } : {}) })
-  return (tokens = 1, wait?: ApprovalWait) => service.request({ sessionId: 's', requestId: 'r', tool: 'fs_read', asks: Array.from({ length: tokens }, () => ({ kind: 'ask' as const, rule: 'read_scope' as const, subject: '/shots', reason: 'outside the sandbox', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })), ...(wait ? { wait } : {}) })
+  return (tokens = 1, wait?: ApprovalWait) => service.request({ sessionId: 's', requestId: 'r', tool: 'fs_read', call: recordedCall, asks: Array.from({ length: tokens }, () => ({ kind: 'ask' as const, rule: 'read_scope' as const, subject: '/shots', reason: 'outside the sandbox', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })), ...(wait ? { wait } : {}) })
 }
 
 /** A question held on screen until the test answers it, recording whether it was withdrawn. */
@@ -308,6 +311,17 @@ describe('keys meant for another terminal question', () => {
     await prompted(terminal, 1)
 
     terminal.input.write('\r')
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
+  })
+
+  it('shows a question without its whole call as recorded before this build, and lets no key approve it (owner decision D17)', async () => {
+    const terminal = keyboardTerminal()
+    const cli = setupCli({ terminal })
+    const asked = cli.requestCli(questionFor({ approval: approval('pre-build', 600_000), workspaceId: 'default', context: { correlationId: 'c-pre', sessionId: 's' } }))
+    await prompted(terminal, 1)
+    expect(terminal.shown()).toContain('recorded before this build')
+    expect(terminal.shown()).not.toContain('allow once')
+    terminal.input.write('1\r')
     expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
   })
 

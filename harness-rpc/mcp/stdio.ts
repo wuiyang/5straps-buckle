@@ -18,7 +18,7 @@ export async function serveMcpStdio(input: { config: BuckleConfig; common: Buckl
     actions: runtime.actions, workspaceId: runtime.workspaceId, isKnownTool: name => runtime.registry().has(name),
   })
   const callScope = stdioCallScope(common)
-  const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel }), { transport })
+  const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel }), { transport })
   common.owner.onClose('accept', 'mcp stdio', () => stdio.close())
   input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, tools: runtime.registry().capabilities().length })
 }

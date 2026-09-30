@@ -28,12 +28,16 @@ in. A gated call returns `approval_required` and exits with code 3:
 ```
 Approval required: /etc/hostname is outside the sandbox
   subject: /etc
-  buckle approve 21bff0bf-... --scope session
+  expires in 9m 59s (...)
+  waiting on workspace default
+  see the whole action with: buckle approvals
+  then approve with: buckle approve 21bff0bf-... --scope session (it shows the action again and asks to confirm)
 ```
 
 When you see this, relay it to the person you are working with. Tell them what you were trying
-to do and why, then give them the command, or tell them they can answer it in
-`buckle approvals --watch` on the Buckle machine. Reaching for a different tool, a shell one-liner, or
+to do and why, then ask them to read the whole action in `buckle approvals` (or answer it in
+`buckle approvals --watch`) on the Buckle machine. `buckle approve` shows the action again and
+approves only once they confirm it at a terminal. Reaching for a different tool, a shell one-liner, or
 a rephrased path hits the same gate, because the gate is on the effect rather than the wording.
 
 Scopes are `once`, `session`, and `always`. Some gates deliberately do not offer `always`.

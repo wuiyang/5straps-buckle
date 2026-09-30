@@ -28,7 +28,7 @@ async function pendingRequest(config: BuckleConfig): Promise<string> {
     config.cwd,
   )
   const [request] = (await registry.ask({
-    tool: 'fs_write', sessionId: 'chat-1',
+    tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
     asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
   return request!.token
@@ -38,7 +38,8 @@ async function capture(input: { argv: string[]; config: BuckleConfig }): Promise
   let stdout = ''
   const write = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { stdout += String(chunk); return true })
   try {
-    const result = await runCli(input)
+    // A person at a terminal who confirms each approval after reading the action (owner decision D17).
+    const result = await runCli({ confirm: async () => true, ...input })
     return { exitCode: result.exitCode, stdout }
   } finally { write.mockRestore() }
 }
@@ -137,7 +138,7 @@ function registry(config: BuckleConfig) {
 /** A private host a web_fetch asked about, waiting on the node. */
 async function networkRequest(config: BuckleConfig, subject = 'app.localhost:3000'): Promise<string> {
   const [request] = (await registry(config).ask({
-    tool: 'web_fetch', sessionId: 'chat-1',
+    tool: 'web_fetch', sessionId: 'chat-1', call: { arguments: { url: `http://${subject}/` }, cwd: '/workspace', description: `Fetch "http://${subject}/"`, effects: [`network http://${subject}/`], complete: true },
     asks: [{ kind: 'ask', rule: 'network_egress', subject, reason: 'resolves to this machine', offeredScopes: ['once', 'session', 'always'] }],
   })).requests
   return request!.token
@@ -314,5 +315,113 @@ describe('a * in a URL host never becomes a pattern grant (BUCKLE-D18)', () => {
     for (const url of ['http://app.localhost:3000/', 'http://localhost:3000/', 'http://x.y.localhost:3000/', 'http://localhost/']) {
       expect(evaluate(config, url)).toMatchObject({ kind: 'ask' })
     }
+  })
+})
+
+// Owner decision D17 and review H2: `buckle approve` decided as admin with nothing shown, and every relayed
+// instruction sent the person to it. It now prints the whole action first and approves only after a person at
+// a terminal confirms; a denial needs neither, and an ask recorded before this build is denied, never approved.
+describe('buckle approve shows the whole action before it decides (owner decision D17, review H2)', () => {
+  /** An ask as a build before D17 left it: the request without its whole call. */
+  async function preBuildRequest(config: BuckleConfig): Promise<string> {
+    const [request] = (await registry(config).ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/old.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }] })).requests
+    return request!.token
+  }
+  const pendingTokens = (config: BuckleConfig) => registry(config).pending().map(request => request.token)
+
+  it('prints the action, then waits for the person at the terminal before approving', async () => {
+    const config = node()
+    const token = await pendingRequest(config)
+    let shownBeforeConfirm = ''
+    let stdout = ''
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { stdout += String(chunk); return true })
+    let prompt = ''
+    try {
+      const result = await runCli({ argv: ['approve', token, '--scope', 'session'], config, confirm: async (asked) => { prompt = asked; shownBeforeConfirm = stdout; return true } })
+      expect(result.exitCode).toBe(0)
+    } finally { write.mockRestore() }
+    for (const line of ['fs_write needs approval', `  node:     ${config.serverId}`, '  in:       /workspace', '  effects:  write /outside/report.md', '      "path": "/outside/report.md",', '      "content": "x"']) {
+      expect(shownBeforeConfirm).toContain(line)
+    }
+    expect(prompt).toContain(`Approve ${token} (session)`)
+    expect(stdout).toContain(`Approved ${token} in workspace default`)
+    expect(pendingTokens(config)).toEqual([])
+    expect(grantStore(config).list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: '/outside/report.md', scope: 'session' })])
+  })
+
+  it('leaves the ask waiting when the person does not confirm', async () => {
+    const config = node()
+    const again = await pendingRequest(config)
+    let stdout = ''
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { stdout += String(chunk); return true })
+    try {
+      expect((await runCli({ argv: ['approve', again], config, confirm: async () => false })).exitCode).toBe(1)
+    } finally { write.mockRestore() }
+    expect(stdout).toContain(`Nothing decided; ${again} is still waiting`)
+    expect(pendingTokens(config)).toEqual([again])
+  })
+
+  it('refuses to approve without a terminal, saying where to answer instead, and records nothing', async () => {
+    const config = node()
+    const token = await pendingRequest(config)
+    let stderr = ''
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const error = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true })
+    try {
+      expect((await runCli({ argv: ['approve', token, '--scope', 'session'], config, confirm: null })).exitCode).toBe(1)
+    } finally { out.mockRestore(); error.mockRestore() }
+    expect(stderr).toContain('Not approved')
+    expect(stderr).toContain('buckle approvals --watch')
+    expect(pendingTokens(config)).toEqual([token])
+    expect(grantStore(config).list()).toEqual([])
+  })
+
+  it('still denies without a terminal', async () => {
+    const config = node()
+    const token = await pendingRequest(config)
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    try {
+      expect((await runCli({ argv: ['approve', token, '--deny'], config, confirm: null })).exitCode).toBe(0)
+    } finally { out.mockRestore() }
+    expect(pendingTokens(config)).toEqual([])
+    expect(createFileActionLog(actionsPath(config)).read(10).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')).toMatchObject({ outcome: 'ok' })
+  })
+
+  it('refuses to approve an ask recorded before this build, even at a terminal, and denies it with --deny', async () => {
+    const config = node()
+    const token = await preBuildRequest(config)
+    const confirm = vi.fn(async () => true)
+    const refused = await captureAll({ argv: ['approve', token, '--scope', 'session'], config })
+    expect(refused.exitCode).toBe(1)
+    expect(refused.stderr).toContain('recorded before this build')
+    expect(refused.stderr).toContain(`buckle approve ${token} --deny`)
+    expect((await runCli({ argv: ['approve', token], config, confirm })).exitCode).toBe(1)
+    expect(confirm).not.toHaveBeenCalled()
+    expect(pendingTokens(config)).toEqual([token])
+    expect((await captureAll({ argv: ['approve', token, '--deny'], config })).exitCode).toBe(0)
+    expect(pendingTokens(config)).toEqual([])
+    expect(grantStore(config).list()).toEqual([])
+  })
+
+  it('lists an ask recorded before this build with the note and the command that denies it', async () => {
+    const config = node()
+    const token = await preBuildRequest(config)
+    const listed = await capture({ argv: ['approvals'], config })
+    expect(listed.stdout).toContain('recorded before this build')
+    expect(listed.stdout).toContain(`buckle approve ${token} --deny`)
+    expect(listed.stdout).not.toContain(`buckle approve ${token} --scope`)
+  })
+
+  it('leads the exit-3 text of a gated call with buckle approvals, and names buckle approve after it', async () => {
+    const config = node()
+    const outside = mkdtempSync(join(tmpdir(), 'buckle-cli-approvals-outside-'))
+    let stderr = ''
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const error = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true })
+    try {
+      expect((await runCli({ argv: ['call', 'fs_write', '--json', JSON.stringify({ path: join(outside, 'a.md'), content: 'x' })], config, confirm: null })).exitCode).toBe(3)
+    } finally { out.mockRestore(); error.mockRestore() }
+    expect(stderr).toContain('see the whole action with: buckle approvals')
+    expect(stderr.indexOf('buckle approvals')).toBeLessThan(stderr.indexOf('buckle approve '))
   })
 })

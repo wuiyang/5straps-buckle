@@ -1,4 +1,4 @@
-import type { ApprovalRequest, GrantScope, JsonValue } from '@5straps/protocol'
+import type { ApprovalRequest, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
 import { describeExpiry } from './approval-deadline.js'
 
 /** The node's own workspace, whose requests the plain command already answers. */
@@ -40,11 +40,26 @@ export function approveCommand(input: { request: ApprovalRequest; workspaceId?: 
   return `buckle approve ${input.request.token} --scope ${preferredScope(input.request.offeredScopes)}${workspace}`
 }
 
+/** The command that denies one request: the only decision an ask recorded before this build takes (owner decision D17). */
+export function denyCommand(input: { request: ApprovalRequest; workspaceId?: string }): string {
+  const workspace = input.workspaceId && input.workspaceId !== DEFAULT_WORKSPACE ? ` --workspace ${input.workspaceId}` : ''
+  return `buckle approve ${input.request.token} --deny${workspace}`
+}
+
+/**
+ * The command that shows every waiting ask's whole action (owner decision D17): what a relayed instruction
+ * sends a person to first, before any command that decides.
+ */
+export function reviewCommand(input: { workspaceId?: string }): string {
+  return `buckle approvals${input.workspaceId && input.workspaceId !== DEFAULT_WORKSPACE ? ` --workspace ${input.workspaceId}` : ''}`
+}
+
 /**
  * What a person is told about a request that is waiting: what it wants, where it is waiting, how
- * long it stays answerable, and the command that answers it. One home, because the same lines go
- * to an MCP client's user, a terminal and an approval webhook, and an instruction that named
- * neither the node nor the workspace was not actionable on a node serving several.
+ * long it stays answerable, the command that shows its whole action, and only then the command that
+ * answers it (owner decision D17: a relayed line never stands in for the action). One home, because the
+ * same lines go to an MCP client's user, a terminal and an approval webhook, and an instruction that
+ * named neither the node nor the workspace was not actionable on a node serving several.
  */
 export function describeApprovalRequest(input: { request: ApprovalRequest; workspaceId?: string; nodeName?: string }): string[] {
   const { request } = input
@@ -53,9 +68,16 @@ export function describeApprovalRequest(input: { request: ApprovalRequest; works
     `subject: ${printable(request.subject)}`,
     `${describeExpiry(request.expiresAt)}`,
     ...(input.nodeName || input.workspaceId ? [`waiting on ${[input.nodeName ? `node ${input.nodeName}` : null, input.workspaceId ? `workspace ${input.workspaceId}` : null].filter(Boolean).join(', ')}`] : []),
-    `approve with: ${approveCommand(input)}`,
+    `see the whole action with: ${reviewCommand(input)}`,
+    `then approve with: ${approveCommand(input)} (it shows the action again and asks to confirm)`,
   ]
 }
+
+/**
+ * What every route says of an ask recorded before this build: its whole call was never kept, so it is shown
+ * in part and nobody approves it; it can be denied, or the call re-sent to ask again (owner decision D17).
+ */
+export const RECORDED_BEFORE_NOTE = 'recorded before this build: its whole call was not kept, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
 
 /** Arguments past this size get a line naming their size before anything else, so a person knows how much follows. */
 export const LARGE_ACTION_BYTES = 64 * 1_024
@@ -71,6 +93,48 @@ export interface ShownAction {
   cwd: string | null
   effects: readonly string[] | null
   arguments: JsonValue | null
+}
+
+/** A call as an approver shows it: the one the ask recorded whole (owner decision D17). */
+export interface ShownCall {
+  arguments: JsonValue
+  cwd: string
+  description: string | null
+  effects?: readonly string[]
+}
+
+/** One waiting ask as an approver shows it: the request, and the whole call it recorded when there is one. */
+export interface ShownAsk {
+  tool: string
+  rule: PermissionRuleId
+  subject: string
+  reason: string
+  expiresAt: string
+  /** Named only when the ask comes from a registered workspace. */
+  workspaceId?: string
+  node?: string
+  /** Absent for an ask recorded before this build: it is shown with RECORDED_BEFORE_NOTE and never approved. */
+  call?: ShownCall
+}
+
+/**
+ * What every route that decides shows before a decision, so the serve terminal, `buckle approvals --watch`,
+ * `buckle approve` and MCP elicitation read alike (owner decision D17): the ask, then its whole action.
+ */
+export function describeAsk(ask: ShownAsk): string[] {
+  const head = [
+    `${printable(ask.tool)} needs approval`,
+    `  ${printable(ask.reason)}`,
+    `  subject: ${printable(ask.subject)}`,
+    ...(ask.workspaceId && ask.workspaceId !== DEFAULT_WORKSPACE ? [`  workspace: ${printable(ask.workspaceId)}`] : []),
+    `  ${describeExpiry(ask.expiresAt)}`,
+  ]
+  const { call } = ask
+  if (!call) return [...head, `  ${RECORDED_BEFORE_NOTE}`]
+  return [...head, ...describeAction({
+    ...(ask.node === undefined ? {} : { node: ask.node }), workspace: ask.workspaceId ?? DEFAULT_WORKSPACE, rule: ask.rule, subject: ask.subject, reason: ask.reason,
+    description: call.description, cwd: call.cwd, effects: call.effects ?? null, arguments: call.arguments,
+  })]
 }
 
 /**

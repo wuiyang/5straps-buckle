@@ -1,10 +1,10 @@
 import { createInterface } from 'node:readline/promises'
 import type { Readable, Writable } from 'node:stream'
 import type { CliConsumer, CliRequest } from '@5straps/runtime'
-import { JsonValueSchema, PermissionRuleIdSchema, GrantScopeSchema, type GrantScope, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
+import { JsonValueSchema, PermissionRuleIdSchema, GrantScopeSchema, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
 import { z } from 'zod'
-import { describeExpiry, remainingMs } from '../common/domain/approval-deadline.js'
-import { describeAction, printable } from '../common/domain/approval-instruction.js'
+import { remainingMs } from '../common/domain/approval-deadline.js'
+import { describeAsk, type ShownAsk } from '../common/domain/approval-instruction.js'
 import type { ApprovalChoice } from '../common/services/approvals/approval-service.js'
 import { APPROVAL_REQUEST_KIND } from '../common/services/approvals/interaction.js'
 import { QUIET_MS, discardTypedLine, watchKeys } from './terminal-keys.js'
@@ -20,20 +20,13 @@ export interface TerminalOptions {
   onInterrupt?: () => void
 }
 
-/** What a question shows; an approval request carries every field, so `buckle approvals --watch` shares it. */
-export interface ApprovalQuestion {
-  tool: string
+/**
+ * What a question shows; an approval request carries every field, so `buckle approvals --watch` shares it.
+ * Without `call` (an ask recorded before this build) it is shown with the note and offers denials only.
+ */
+export interface ApprovalQuestion extends ShownAsk {
   rule: PermissionRuleId
-  subject: string
-  reason: string
   offeredScopes: GrantScope[]
-  expiresAt: string
-  /** Named only when the question comes from a registered workspace. */
-  workspaceId?: string
-  /** The node that asks, when the question names it. */
-  node?: string
-  /** The whole call the ask came from (owner decision D17); absent for an ask recorded without it. */
-  call?: { arguments: JsonValue; cwd: string; description: string | null; effects?: readonly string[] }
 }
 
 /** A JSON text a question carries in one detail, since details hold strings. */
@@ -102,7 +95,7 @@ export function createTerminalConsumer(options: TerminalOptions = {}): CliConsum
         await keys.quiet(QUIET_MS, cancelled)
         cancelled.throwIfAborted()
         discardTypedLine(readline)
-        const answer = (await readline.question(`  ${scopeChoices(question)}  ${denyChoices(question)} > `, { signal: cancelled })).trim().toLowerCase()
+        const answer = (await readline.question(`  ${question.call ? `${scopeChoices(question)}  ` : ''}${denyChoices(question)} > `, { signal: cancelled })).trim().toLowerCase()
         return { status: 'answered', answer: { choice: choiceFor(question, answer) } }
       } finally {
         keys.stop()
@@ -114,19 +107,11 @@ export function createTerminalConsumer(options: TerminalOptions = {}): CliConsum
 
 /**
  * What a terminal question shows, shared with `buckle approvals --watch` so both read alike: the ask,
- * then the whole action it came from (owner decision D17), nothing cut or paged. The agent chose the
- * tool call, so its text is shown with control characters escaped.
+ * then the whole action it came from (owner decision D17), nothing cut or paged, or the note for an ask
+ * recorded before this build. The agent chose the tool call, so its text is shown with control characters escaped.
  */
 export function describeQuestion(question: ApprovalQuestion): string {
-  const workspace = question.workspaceId && question.workspaceId !== 'default' ? `  workspace: ${printable(question.workspaceId)}\n` : ''
-  const head = `\n${printable(question.tool)} needs approval\n  ${printable(question.reason)}\n  subject: ${printable(question.subject)}\n${workspace}  ${describeExpiry(question.expiresAt)}\n`
-  const { call } = question
-  if (!call) return head
-  const action = describeAction({
-    ...(question.node === undefined ? {} : { node: question.node }), workspace: question.workspaceId ?? 'default', rule: question.rule, subject: question.subject, reason: question.reason,
-    description: call.description, cwd: call.cwd, effects: call.effects ?? null, arguments: call.arguments,
-  })
-  return `${head}${action.join('\n')}\n`
+  return `\n${describeAsk(question).join('\n')}\n`
 }
 
 function approvalQuestion(request: CliRequest): ApprovalQuestion {
@@ -147,10 +132,11 @@ function denyChoices(question: ApprovalQuestion): string {
   return question.rule === 'sensitive_path' ? 'n) deny  ds) deny this session  da) always deny' : 'n) deny'
 }
 
-/** Enter and anything unrecognised deny once; a number picks an offered scope. */
+/** Enter and anything unrecognised deny once; a number picks an offered scope, where the whole action was shown. */
 function choiceFor(question: ApprovalQuestion, answer: string): ApprovalChoice {
   if (question.rule === 'sensitive_path' && answer === 'ds') return 'deny_session'
   if (question.rule === 'sensitive_path' && answer === 'da') return 'deny_always'
+  if (!question.call) return 'deny'
   return question.offeredScopes[Number.parseInt(answer, 10) - 1] ?? 'deny'
 }
 
@@ -158,4 +144,31 @@ function scopeLabel(scope: GrantScope): string {
   if (scope === 'once') return 'allow once'
   if (scope === 'session') return 'allow this session'
   return 'always allow'
+}
+
+/**
+ * One yes-or-no at this process's terminal, for `buckle approve` after it showed the whole action (owner
+ * decision D17): the word yes confirms; anything else, Enter or Ctrl-C declines. As a question does, it
+ * takes keys only once the keyboard has been still with it on screen, and throws away a line typed before.
+ */
+export async function confirmAtTerminal(prompt: string, options: Pick<TerminalOptions, 'input' | 'output'> = {}): Promise<boolean> {
+  const input = options.input ?? process.stdin
+  const output = options.output ?? process.stderr
+  const readline = createInterface({ input, output, historySize: 0 })
+  const keys = watchKeys(input)
+  const closed = new AbortController()
+  readline.on('SIGINT', () => closed.abort())
+  readline.on('close', () => closed.abort())
+  try {
+    output.write(prompt)
+    await keys.quiet(QUIET_MS, closed.signal)
+    closed.signal.throwIfAborted()
+    discardTypedLine(readline)
+    return (await readline.question('  > ', { signal: closed.signal })).trim().toLowerCase() === 'yes'
+  } catch {
+    return false
+  } finally {
+    keys.stop()
+    readline.close()
+  }
 }

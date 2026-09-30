@@ -1,7 +1,7 @@
 import type { ApprovalNotice, ApprovalRequest } from '@5straps/protocol'
 import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { sealForRings } from '../../services/approvals/approval-envelope.js'
-import { approveCommand } from '../../domain/approval-instruction.js'
+import { approveCommand, reviewCommand } from '../../domain/approval-instruction.js'
 import { logger } from '../../runtime/log.js'
 
 const NOTIFY_TIMEOUT_MS = 5_000
@@ -62,6 +62,10 @@ function postSealed(options: WebhookNotifierOptions, body: { approvals: unknown[
   })
 }
 
+/**
+ * One ask as a relay is told of it. `reviewCommand` comes before `approveCommand`: a person reads the whole
+ * action with `buckle approvals` first, and `buckle approve` shows it again before it decides (owner decision D17).
+ */
 function describe(request: ApprovalRequest, workspaceId: string) {
   return {
     token: request.token,
@@ -72,6 +76,7 @@ function describe(request: ApprovalRequest, workspaceId: string) {
     expiresAt: request.expiresAt,
     offeredScopes: request.offeredScopes,
     workspaceId,
+    reviewCommand: reviewCommand({ workspaceId }),
     approveCommand: approveCommand({ request, workspaceId }),
   }
 }

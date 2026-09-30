@@ -54,6 +54,14 @@ describe('what the approval webhook carries', () => {
     expect(approvals[0]).toMatchObject({ workspaceId: 'photos', approveCommand: 'buckle approve tok-1 --scope session --workspace photos' })
   })
 
+  it('leads with buckle approvals, which shows the whole action, and names buckle approve after it (owner decision D17)', async () => {
+    await createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'photos' })([request])
+    const approvals = received.at(-1)?.body.approvals as Array<Record<string, unknown>>
+    expect(approvals[0]?.reviewCommand).toBe('buckle approvals --workspace photos')
+    const keys = Object.keys(approvals[0]!)
+    expect(keys.indexOf('reviewCommand')).toBeLessThan(keys.indexOf('approveCommand'))
+  })
+
   it('sends no credential when the node has none configured', async () => {
     await createWebhookNotifier({ url, serverId: 'laptop', workspaceId: 'default' })([request])
     expect(received.at(-1)?.authorization).toBeUndefined()

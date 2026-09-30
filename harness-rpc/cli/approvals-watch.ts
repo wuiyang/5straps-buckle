@@ -129,10 +129,12 @@ type Ending = 'answered' | 'skipped' | 'dropped' | 'stopped'
 
 async function askOne(context: ApprovalWatchOptions & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; call: PendingAsk['call']; stopped: AbortSignal; recheckMs: number }): Promise<Ending> {
   const { request, call, output } = context
-  const offered = SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope))
+  // The whole action (owner decision D17). An ask recorded before this build shows its request and the note,
+  // and offers denials only: nobody approves an action they were not shown whole (review L9).
+  const shown = call?.complete ? call : undefined
+  const offered = shown ? SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope)) : []
   const prompt = `  ${[...offered.map(entry => `${entry.key}) ${request.rule === 'sensitive_path' && entry.scope === 'once' ? 'allow once' : entry.label}`), 'd) deny', ...(request.rule === 'sensitive_path' ? ['ds) deny this session', 'da) always deny'] : []), 'n) skip'].join('  ')} > `
-  // The whole action (owner decision D17); an ask recorded before this build shows its request alone.
-  output.write(`${describeQuestion({ ...request, workspaceId: context.workspaceId, ...(call?.complete ? { call } : {}) })}  token: ${request.token}\n`)
+  output.write(`${describeQuestion({ ...request, workspaceId: context.workspaceId, ...(shown ? { call: shown } : {}) })}  token: ${request.token}\n`)
 
   const dropped = new AbortController()
   const watcher = setInterval(() => {
@@ -167,7 +169,7 @@ async function askOne(context: ApprovalWatchOptions & { readline: Interface; key
         await record(context, decision)
         return 'answered'
       }
-      output.write(`  Nothing granted. Type ${offered.map(entry => entry.key).join(', ')}, d or n.\n`)
+      output.write(`  Nothing granted. Type ${[...offered.map(entry => entry.key), 'd'].join(', ')} or n.\n`)
     }
   } finally {
     clearInterval(watcher)

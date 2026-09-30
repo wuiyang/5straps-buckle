@@ -82,7 +82,7 @@ const ROUTES: Array<[string, { paired: boolean }, (setup: Setup, token: string) 
   ['buckle approve', { paired: false }, async (setup, token) => {
     // Another process's view of the same state, as `buckle approve` in a second terminal is.
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    expect((await runCli({ argv: ['approve', token, '--scope', 'once'], config: setup.config })).exitCode).toBe(0)
+    expect((await runCli({ argv: ['approve', token, '--scope', 'once'], config: setup.config, confirm: async () => true })).exitCode).toBe(0)
     vi.mocked(process.stdout.write).mockRestore()
   }],
   ['the admin bearer', { paired: false }, async (setup, token) => {

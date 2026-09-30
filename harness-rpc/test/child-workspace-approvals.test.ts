@@ -37,7 +37,7 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
 
 async function pendingIn(runtime: BuckleRuntime): Promise<string> {
   const [request] = (await runtime.approvals.ask({
-    tool: 'fs_write', sessionId: 'chat-1',
+    tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
     asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
   return request!.token
@@ -48,7 +48,8 @@ async function capture(input: { argv: string[]; config: BuckleConfig }): Promise
   const out = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { stdout += String(chunk); return true })
   const error = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true })
   try {
-    const result = await runCli(input)
+    // A person at a terminal who confirms each approval after reading the action (owner decision D17).
+    const result = await runCli({ confirm: async () => true, ...input })
     return { exitCode: result.exitCode, stdout, stderr }
   } finally { out.mockRestore(); error.mockRestore() }
 }

@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
-import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
+import { describeApprovalRequest, describeAsk, reviewCommand } from '../common/domain/approval-instruction.js'
 import { logger } from '../common/runtime/log.js'
 import { agentFailureMessage } from '../common/services/agent-failure.js'
-import type { ApprovalAuthority } from '../common/services/approvals/approval-registry.js'
+import type { ApprovalAuthority, PendingAsk } from '../common/services/approvals/approval-registry.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 interface ApprovalAnswer extends Record<string, unknown> {
@@ -19,6 +19,8 @@ export type ToolCallScope = <T>(run: () => Promise<T>, context: { sessionId: str
 export interface McpServerOptions {
   runtime: BuckleRuntime
   serverName: string
+  /** The node's serverId, which an elicited action names as the node's terminal names it. */
+  serverId?: string
   version: string
   trustedApprovalResponses?: boolean
   callScope?: ToolCallScope
@@ -95,7 +97,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
 
           if (response.outcome === 'approval_required') {
             return elicits
-              ? askForApproval(response.approvals)
+              ? askForApproval({ approvals: response.approvals, waiting: runtime.approvalService.waiting(), workspaceId: runtime.workspaceId, ...(options.serverId === undefined ? {} : { node: options.serverId }) })
               : relayApproval({ approvals: response.approvals, workspaceId: runtime.workspaceId, nodeName: serverName })
           }
           return toCallToolResult(response)
@@ -119,14 +121,14 @@ function relayApproval(input: { approvals: ApprovalRequest[]; workspaceId: strin
     const [first, ...rest] = describeApprovalRequest({ request, workspaceId: input.workspaceId, nodeName: input.nodeName })
     return [`- ${first}`, ...rest.map(line => `  ${line}`)].join('\n')
   })
-  const workspace = input.workspaceId === 'default' ? '' : ` --workspace ${input.workspaceId}`
+  const review = reviewCommand({ workspaceId: input.workspaceId })
   return {
     isError: true,
     content: [{
       type: 'text' as const,
       text: [
-        'This call needs approval from the person you are working with. Ask them to run the listed',
-        `command, or to answer it in \`buckle approvals --watch${workspace}\`, then retry.`,
+        `This call needs approval from the person you are working with. Ask them to read the whole action in \`${review}\``,
+        `or answer it in \`${review} --watch\`; the listed approve command shows the action again and asks them to confirm. Then retry.`,
         '',
         ...lines,
       ].join('\n'),
@@ -170,28 +172,62 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-function askForApproval(approvals: ApprovalRequest[]) {
-  const inputRequests = Object.fromEntries(approvals.map(approval => [
-    approval.token,
-    inputRequired.elicit({
-      message: `${printable(approval.tool)}: ${printable(approval.reason)}\nSubject: ${printable(approval.subject)}`,
-      requestedSchema: {
-        type: 'object',
-        properties: approval.rule === 'sensitive_path' ? {
-          action: { type: 'string', enum: ['allow_once', 'deny', 'deny_session', 'always_deny'], description: 'Allow once, Deny, Deny this session, Always deny' },
-        } : {
-          approve: { type: 'boolean', description: 'Allow this operation' },
-          scope: {
-            type: 'string',
-            enum: approval.offeredScopes,
-            description: 'once, this session, or always for this subject',
-          },
-        },
-        required: [approval.rule === 'sensitive_path' ? 'action' : 'approve'],
-      },
-    }),
-  ]))
+/**
+ * One form per ask, whose message is the whole action as the node's terminal shows it (owner decision D17):
+ * the ask, then every argument, the directory, the effects and the node's summary from the call the ask
+ * recorded. An ask recorded before this build has no whole call: its form says so and offers denials only.
+ */
+function askForApproval(input: { approvals: ApprovalRequest[]; waiting: PendingAsk[]; workspaceId: string; node?: string }) {
+  const inputRequests = Object.fromEntries(input.approvals.map(approval => {
+    const call = recordedCall(input.waiting, approval.token)
+    const message = describeAsk({ ...approval, workspaceId: input.workspaceId, ...(input.node === undefined ? {} : { node: input.node }), ...(call ? { call } : {}) }).join('\n')
+    return [approval.token, call ? approvalForm({ approval, message }) : denialForm({ approval, message })]
+  }))
   return inputRequired({ inputRequests })
+}
+
+/** The whole call an ask recorded, or undefined for one recorded before this build. */
+function recordedCall(waiting: PendingAsk[], token: string): NonNullable<PendingAsk['call']> | undefined {
+  const call = waiting.find(ask => ask.request.token === token)?.call
+  return call?.complete ? call : undefined
+}
+
+function approvalForm(input: { approval: ApprovalRequest; message: string }) {
+  const { approval } = input
+  return inputRequired.elicit({
+    message: input.message,
+    requestedSchema: {
+      type: 'object',
+      properties: approval.rule === 'sensitive_path' ? {
+        action: { type: 'string', enum: ['allow_once', 'deny', 'deny_session', 'always_deny'], description: 'Allow once, Deny, Deny this session, Always deny' },
+      } : {
+        approve: { type: 'boolean', description: 'Allow this operation' },
+        scope: {
+          type: 'string',
+          enum: approval.offeredScopes,
+          description: 'once, this session, or always for this subject',
+        },
+      },
+      required: [approval.rule === 'sensitive_path' ? 'action' : 'approve'],
+    },
+  })
+}
+
+/** An ask nobody was shown whole: it may be denied here, never approved. */
+function denialForm(input: { approval: ApprovalRequest; message: string }) {
+  const sensitive = input.approval.rule === 'sensitive_path'
+  return inputRequired.elicit({
+    message: input.message,
+    requestedSchema: {
+      type: 'object',
+      properties: {
+        action: sensitive
+          ? { type: 'string', enum: ['deny', 'deny_session', 'always_deny'], description: 'Deny, Deny this session, Always deny' }
+          : { type: 'string', enum: ['deny'], description: 'Deny' },
+      },
+      required: ['action'],
+    },
+  })
 }
 
 /** Reads elicitation answers keyed by approval token and turns each into a grant. */
@@ -202,15 +238,22 @@ async function resolveAnswers(input: {
 }): Promise<string[]> {
   if (!input.responses) return []
 
+  const waiting = input.runtime.approvalService.waiting()
   const tokens: string[] = []
   for (const token of Object.keys(input.responses)) {
     const answer = acceptedContent<ApprovalAnswer>(input.responses, token)
     if (!answer) continue
 
+    const approved = answer.action ? answer.action === 'allow_once' : answer.approve === true
+    // Owner decision D17: an ask whose whole call was never kept was never shown whole, so no answer approves it.
+    if (approved && waiting.some(ask => ask.request.token === token) && !recordedCall(waiting, token)) {
+      logger.warn('Elicited approval refused: the ask was recorded before this build, so its whole action was never shown')
+      continue
+    }
     // Ruling 3 of 2026-09-25: an answer from the owner's own stdio host counts as a person's.
     const result = await input.runtime.approvalService.answer({ decision: {
       token,
-      approved: answer.action ? answer.action === 'allow_once' : answer.approve === true,
+      approved,
       scope: answer.action === 'deny_session' ? 'session' : answer.action === 'always_deny' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once',
     }, authority: input.authority })
     if (result.ok) tokens.push(token)

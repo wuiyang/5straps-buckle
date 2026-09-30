@@ -233,13 +233,30 @@ async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node:
     if (!read || read.challenge.node !== pin.serverId || read.challenge.token !== item.token) return []
     return [{ token: item.token, ...read, consistent: recomputes(read.challenge) }]
   })
-  const unsigned = listed.flatMap(item => typeof item.signed !== 'string' && typeof item.token === 'string' && typeof item.error === 'string' ? [{ token: item.token, error: item.error }] : [])
+  // An entry beside a verified challenge for the same token says nothing the challenge does not.
+  const verified = new Set(challenges.map(item => item.token))
+  const unsigned = listed.flatMap(item => typeof item.signed !== 'string' && typeof item.token === 'string' && typeof item.error === 'string' && !verified.has(item.token) ? [{ token: item.token, error: item.error }] : [])
   return { pin, origin: url.origin, challenges, unsigned }
 }
 
-/** An ask listed without a challenge: its token and the node's reason, unverified, so escaped like every field. */
+/**
+ * The two fixed reasons the node lists in place of a challenge (layers/admin/server/routes/setup/approvals/
+ * challenges.get.ts), each with this client's own wording. The listing is unsigned and a relay carries it, so
+ * nothing it says is printed: a reason not among these reads "unrecognised entry" (review L5).
+ */
+const UNSIGNED_REASONS: ReadonlyMap<string, string> = new Map([
+  ['recorded before this build: decide at the node or re-send', 'recorded before the node\'s current build, which kept no whole call for it, so no device decides it; deny it at the node, or have the agent re-send the call'],
+  ['The node could not sign this ask\'s challenge, so no device can decide it; answer it at the node (buckle approve) or withdraw the call', 'the node could not sign its challenge, so no device decides it; decide it at the node, where buckle approve shows the action first, or withdraw the call'],
+])
+
+/** A token as the node issues them; any other token in an unsigned entry is not printed. */
+const NODE_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** An ask listed without a challenge, in this client's words alone: its token when it has a node's shape, and the node's reason as this client knows it. */
 function describeUnsigned(item: UnsignedAsk): string {
-  return `${printable(item.token)}  not signed by the node: ${printable(item.error)}`
+  const reason = UNSIGNED_REASONS.get(item.error)
+  if (!reason || !NODE_TOKEN.test(item.token)) return 'unrecognised entry: not signed by the node, and not shown'
+  return `${item.token}  not signed by the node: ${reason}`
 }
 
 /** The call digest recomputed from the arguments shown; a challenge without them shows no action to decide on. */
