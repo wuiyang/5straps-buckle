@@ -8,6 +8,7 @@ import { keysCommand } from '../cli/keys.js'
 import { runCli } from '../cli/main.js'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFileClientKeys } from '../common/adapters/keys/file-client-keys.js'
+import { WorkspaceRegistrationSchema } from '../common/services/workspaces/workspace-manager.js'
 import { actionsPath, clientKeysPath, loadConfig, nodeKeyPath, requestNoncesPath, type BuckleConfig } from '../common/runtime/config.js'
 import { initializeCommon } from '../common/runtime/initialize.js'
 import { loadNodeKey } from '../common/adapters/keys/file-node-key.js'
@@ -171,6 +172,20 @@ describe('a key\'s scope (owner decision D10)', () => {
     await keys.enroll({ publicKey: onDefault.publicKey, label: '', purpose: 'setup', workspace: 'default' })
     expect(verdict(onDefault, 'buckle-setup', 'default')).toBe('ok')
     expect(verdict(onDefault, 'buckle-setup', 'default', true)).toBe('out_of_scope')
+  })
+})
+
+// Review items 9 and 22 of the proof-of-possession fixes: `--workspace node` scopes a key to the whole node,
+// so a workspace named node would let a key meant for it change every workspace and the registry.
+describe('the workspace id node', () => {
+  it('is reserved, as default is: registration refuses it by name', () => {
+    const registration = { name: 'Node', root: '/srv/node', authToken: 'node-agent-token-fixture-1', adminToken: 'node-admin-token-fixture-1' }
+    for (const id of ['node', 'default']) {
+      const parsed = WorkspaceRegistrationSchema.safeParse({ ...registration, id })
+      expect(parsed.success).toBe(false)
+      expect(JSON.stringify(parsed.error?.issues)).toContain(`${id} is reserved`)
+    }
+    expect(WorkspaceRegistrationSchema.safeParse({ ...registration, id: 'nodes' }).success).toBe(true)
   })
 })
 

@@ -51,11 +51,15 @@ interface SignedProbe { path: string; method: string; signer: Signer; status: nu
 beforeAll(async () => {
   const { root, environment } = nodeEnvironment('buckle-sweep-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_PACKS: 'fs' })
   buckle = await createBuckleHttp({ environment })
+  // Before any request, so a wrapper something installs on its first call is not in the baseline (review item 21).
+  // h3 builds its own dispatcher on the first handler() call: one on a path outside the table runs no route,
+  // util or request hook, so the baseline holds h3's dispatcher and nothing else.
+  ;(buckle.nitroApp.h3 as unknown as { handler: (event: unknown) => unknown }).handler({ req: { method: 'GET' }, url: new URL('/sweep-baseline', 'http://127.0.0.1'), context: {} })
+  internalsBefore = internals()
   mkdirSync(join(root, 'child'))
   const registered = await buckle.request('/setup/workspaces', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify({ id: 'child', name: 'child', root: join(root, 'child'), authToken: CHILD_AGENT, adminToken: CHILD_ADMIN }) })
   expect(registered.status).toBe(201)
   expect((await buckle.request('/setup/workbenches', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify(GRANT) })).status).toBe(200)
-  internalsBefore = internals()
   probes = await sweep(concretePaths())
   offTable = await sweep(new Map(OFF_TABLE.map(path => [path, new Set<string>()])))
   signedProbes = await signedSweep()
@@ -149,17 +153,37 @@ async function signedSweep(): Promise<SignedProbe[]> {
   return results
 }
 
-/** What a route could patch at runtime: the h3 app's own functions and tables, and every hook, by identity (review L7 of B23-B25). */
-type Internals = { app: Record<string, unknown>; routes: number; middleware: number; hooks: Record<string, unknown[]> }
+/**
+ * What a route could patch at runtime, by identity (review L7 of B23-B25, item 21 of the proof-of-possession
+ * fixes): the h3 app's own functions, every hook, and each route the router matches for every path and
+ * method of the table, its data object and its handler. The compiled router answers from module data, so
+ * route tables on the app stay empty and prove nothing; this asks the router itself.
+ */
+type Internals = { app: Record<string, unknown>; hooks: Record<string, unknown[]>; routes: Map<string, { data: object; handler: unknown }> }
 function internals(): Internals {
   const app = buckle.nitroApp.h3 as unknown as Record<string, unknown>
   const hooks = (buckle.nitroApp.hooks as unknown as { _hooks?: Record<string, unknown[]> })._hooks ?? {}
   return {
     app: Object.fromEntries(Object.entries(app).filter(([, value]) => typeof value === 'function')),
-    routes: (app['~routes'] as unknown[]).length,
-    middleware: (app['~middleware'] as unknown[]).length,
     hooks: Object.fromEntries(Object.entries(hooks).map(([name, list]) => [name, [...list]])),
+    routes: matchedRoutes(),
   }
+}
+
+/** The paths the route snapshot asks about, filled once, since concretePaths() fills some parameters at random. */
+let snapshotPaths: string[] | undefined
+
+/** The route the router answers each path and method with. */
+function matchedRoutes(): Map<string, { data: object; handler: unknown }> {
+  const findRoute = (buckle.nitroApp.h3 as unknown as { '~findRoute': (event: unknown) => { data: { handler: unknown } } | undefined })['~findRoute']
+  const matched = new Map<string, { data: object; handler: unknown }>()
+  for (const path of snapshotPaths ??= [...concretePaths().keys(), ...OFF_TABLE]) {
+    for (const method of METHODS) {
+      const match = findRoute({ req: { method }, url: new URL(path, 'http://127.0.0.1'), context: {} })
+      if (match) matched.set(`${method} ${path}`, { data: match.data, handler: match.data.handler })
+    }
+  }
+  return matched
 }
 
 // Every refusal before authentication is recorded on the node's log, the twins' included.
@@ -252,17 +276,30 @@ describe('the guard sweep over every route, method and credential', () => {
     expect(offTable.filter(probe => probe.status !== 404).map(describeProbe)).toEqual([])
   })
 
-  it('leaves the app\'s handler, dispatch, route and middleware tables and every hook as they were after the whole sweep (review L7 of B23-B25)', () => {
+  it('leaves the app\'s handler and dispatch, every route the router matches and every hook as they were before the first request (review L7 of B23-B25, item 21)', () => {
     const after = internals()
-    expect(Object.keys(internalsBefore.app)).toEqual(expect.arrayContaining(['fetch', 'handler']))
+    expect(Object.keys(internalsBefore.app)).toEqual(expect.arrayContaining(['fetch', 'handler', '~dispatch', '~findRoute']))
     expect(Object.keys(after.app).sort()).toEqual(Object.keys(internalsBefore.app).sort())
     for (const [name, value] of Object.entries(internalsBefore.app)) expect(after.app[name], name).toBe(value)
-    expect({ routes: after.routes, middleware: after.middleware }).toEqual({ routes: internalsBefore.routes, middleware: internalsBefore.middleware })
+    expect(internalsBefore.routes.size).toBeGreaterThan(500)
+    expect([...after.routes.keys()]).toEqual([...internalsBefore.routes.keys()])
+    const moved = [...internalsBefore.routes].filter(([key, route]) => after.routes.get(key)?.data !== route.data || after.routes.get(key)?.handler !== route.handler).map(([key]) => key)
+    expect(moved).toEqual([])
+    expect(Object.keys(internalsBefore.hooks).length).toBeGreaterThan(0)
     expect(Object.keys(after.hooks).sort()).toEqual(Object.keys(internalsBefore.hooks).sort())
     for (const [name, list] of Object.entries(internalsBefore.hooks)) {
       expect(after.hooks[name]!.length, name).toBe(list.length)
       list.forEach((hook, index) => expect(after.hooks[name]![index], name).toBe(hook))
     }
+  })
+
+  it('refuses to swap a matched route\'s handler in place: the router hands out its data frozen (review item 21)', () => {
+    const key = 'PUT /setup/policy'
+    const route = matchedRoutes().get(key)!
+    expect(Object.isFrozen(route.data), key).toBe(true)
+    expect(() => { (route.data as { handler: unknown }).handler = () => 'swapped' }).toThrow(TypeError)
+    expect(() => Object.assign(route.data, { handler: () => 'swapped' })).toThrow(TypeError)
+    expect(matchedRoutes().get(key)!.handler).toBe(route.handler)
   })
 
   it('admits a signed request only for its purpose: setup naming an open session on a change, approval on the approval routes, a session open without one; a key nobody enrolled nowhere (review L8 of B23-B25)', () => {
@@ -339,3 +376,33 @@ describe('the admin layer with its experimental flag off (owner decision D8)', (
   }, 120_000)
 })
 
+
+describe('a node with the flag on and no BUCKLE_ADMIN_TOKEN (review item 23 of the proof-of-possession fixes)', () => {
+  it('answers its node-level admin paths as an unmatched path while it closes, as when ready, never 503', async () => {
+    const { environment } = nodeEnvironment('buckle-sweep-no-token-', { BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_PACKS: 'fs' })
+    const node = await createBuckleHttp({ environment, instance: 2 })
+    let closing: Promise<void> | undefined
+    const answer = async (response: Response) => ({ status: response.status, type: response.headers.get('content-type'), body: await response.text() })
+    const probe = () => Promise.all([
+      node.request('/setup/status', { headers: bearer(NODE_ADMIN) }),
+      node.request('/setup/policy', { method: 'PUT', headers: { ...bearer(NODE_ADMIN), 'content-type': 'application/json' }, body: '{}' }),
+      node.request('/setup/workspaces', { method: 'POST', headers: { ...bearer(NODE_ADMIN), 'content-type': 'application/json' }, body: '{}' }),
+    ].map(async response => answer(await response)))
+    try {
+      const unmatched = await answer(await node.request('/sweep-no-token-table', { headers: bearer(NODE_ADMIN) }))
+      expect(unmatched.status).toBe(404)
+      expect(await probe()).toEqual([unmatched, unmatched, unmatched])
+      const held = Promise.withResolvers<void>()
+      node.common.owner.onClose('waiters', 'held by the sweep', () => held.promise)
+      closing = node.close()
+      const during = await probe()
+      const unmatchedDuring = await answer(await node.request('/sweep-no-token-table', { headers: bearer(NODE_ADMIN) }))
+      expect((await node.request('/health/ready')).status).toBe(503)
+      held.resolve()
+      expect(during).toEqual([unmatchedDuring, unmatchedDuring, unmatchedDuring])
+      expect(unmatchedDuring.status).toBe(404)
+    } finally {
+      await (closing ?? node.close())
+    }
+  })
+})

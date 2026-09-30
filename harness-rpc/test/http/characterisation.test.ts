@@ -299,6 +299,9 @@ describe('audit tool names per face', () => {
       'workspace_mcp_auth_rejected:result:denied',
       'workspace_setup_auth_rejected:result:denied',
     ]))
+    // A registry change names the actor on its own entries, not only on the transport entry beside them (review item 19).
+    const registered = audited(buckle.runtime).filter(entry => entry.tool === 'workspace_register')
+    expect(registered.map(entry => [entry.event, entry.actorId])).toEqual([['attempt', 'admin:default'], ['result', 'admin:default']])
   })
 })
 

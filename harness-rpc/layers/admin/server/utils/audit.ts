@@ -41,11 +41,15 @@ export async function withSetupAudit<T>(event: H3Event, input: { actions: Action
   return value
 }
 
-/** An owner change to the registry: `workspace_*` on the node's log, an attempt and then its result, in the node-admin session. */
-export async function withRegistryAudit<T>(actions: ActionLog, input: { tool: string; workspaceId: string }, run: () => Promise<T>): Promise<T> {
+/**
+ * An owner change to the registry: `workspace_*` on the node's log, an attempt and then its result, in the
+ * node-admin session, each naming the actor the guard let in, so a token mint is tied to the key or
+ * credential that asked for it (review item 19 of the proof-of-possession fixes).
+ */
+export async function withRegistryAudit<T>(actions: ActionLog, input: { tool: string; workspaceId: string; actorId: string }, run: () => Promise<T>): Promise<T> {
   const auditId = crypto.randomUUID()
   const entry = (outcome: ActionLogEntry['outcome'], event: 'attempt' | 'result'): ActionLogEntry => ({ auditId, event, workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId,
-    sessionId: 'node-admin', tool: input.tool, outcome, durationMs: 0, effects: [], args: {} })
+    sessionId: 'node-admin', tool: input.tool, outcome, durationMs: 0, effects: [], args: {}, ...(input.actorId ? { actorId: input.actorId } : {}) })
   await actions.record(entry('started', 'attempt'))
   let value: T
   try {

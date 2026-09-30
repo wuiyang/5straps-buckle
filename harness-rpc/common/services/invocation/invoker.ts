@@ -171,8 +171,14 @@ export function createInvoker(options: InvokerOptions): Invoker {
             meta: { durationMs: Math.round(performance.now() - startedAt), truncated: inferTruncated(output) },
           }
         } catch (error) {
-          // A required audit entry that cannot be written stops the call, as the attempt's does.
-          if (error instanceof AuditUnavailableError) throw error
+          // A required audit entry that cannot be written stops the call, as the attempt's does. Once its
+          // tool ran, the caller is told it ran with effects unknown and not to retry, as a re-send is: a
+          // plain refusal would read as "nothing ran", and a retry under a new requestId would run it
+          // again (review item 15 of the proof-of-possession fixes).
+          if (error instanceof AuditUnavailableError) {
+            if (ran) return failed(request, ranUnrecorded(AUDIT_UNAVAILABLE))
+            throw error
+          }
           // A tool killed by the shutdown answers as the shutdown, not with what its process left (review L8 of B20-B22).
           const cause = options.shutdown?.aborted ? options.shutdown.reason : error
           const shaped = shapeError(cause, request.tool)

@@ -174,3 +174,28 @@ describe('a once approval answered after the grace period', () => {
     expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
   })
 })
+
+// Review item 16 of the proof-of-possession fixes: a call is its requestId, session and actor, and callers
+// that send no session share one, so a requestId withdraw without its actor could drop another actor's once.
+describe('a withdraw by requestId and session', () => {
+  async function twoActors() {
+    const approvals = registry()
+    const asked = async (actor: string) => ((await approvals.ask({ tool: 'fs_write', sessionId: 'rpc', requestId: 'hashed-1', actor, asks: [{ kind: 'ask', rule: 'write_scope', subject: `/outside/${actor}`, reason: 'outside', offeredScopes: ['once'] }] })).requests)[0]!.token
+    const first = await asked('agent:rings')
+    const second = await asked('agent:workbench')
+    for (const token of [first, second]) expect((await approvals.resolve({ token, approved: true, scope: 'once' }, 'admin')).ok).toBe(true)
+    return { approvals, first, second }
+  }
+
+  it('is refused when it matches more than one actor\'s call, and drops nothing', async () => {
+    const { approvals } = await twoActors()
+    await expect(approvals.cancelGroup({ requestId: 'hashed-1', sessionId: 'rpc' })).rejects.toMatchObject({ code: 'WITHDRAW_AMBIGUOUS', status: 409 })
+    expect(approvals.unspent('rpc')).toHaveLength(2)
+  })
+
+  it('with its actor, drops that actor\'s answered once and leaves the other\'s', async () => {
+    const { approvals, first } = await twoActors()
+    expect(await approvals.cancelGroup({ requestId: 'hashed-1', sessionId: 'rpc', actor: 'agent:rings' })).toEqual({ withdrawn: [], dropped: [first] })
+    expect(approvals.unspent('rpc').map(entry => entry.subject.subject)).toEqual(['/outside/agent:workbench'])
+  })
+})

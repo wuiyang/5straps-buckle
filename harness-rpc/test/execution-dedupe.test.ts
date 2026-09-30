@@ -356,7 +356,9 @@ describe('a call stopped by Buckle\'s own storage while its tool runs (review L1
       if (broken && entry.tool === 'policy_dangerously_allowed') throw new AuditUnavailableError()
       return record(entry)
     })
-    await expect(runtime.invoke({ sessionId: 'chat-1', request: read('mid-call-audit') })).rejects.toBeInstanceOf(AuditUnavailableError)
+    // The caller itself hears that the call ran, effects unknown, and not to retry (review item 15 of the proof-of-possession fixes).
+    const answered = await runtime.invoke({ sessionId: 'chat-1', request: read('mid-call-audit') })
+    expect(answered).toMatchObject({ outcome: 'error', error: { code: 'AUDIT_UNAVAILABLE', retryable: false, message: expect.stringContaining('This call ran') } })
     broken = false
     const again = await Promise.race([runtime.invoke({ sessionId: 'chat-1', request: read('mid-call-audit') }), new Promise(resolve => setTimeout(() => resolve('still waiting'), 5_000))])
     expect(again).toMatchObject({ outcome: 'error', error: { code: 'AUDIT_UNAVAILABLE', retryable: false } })

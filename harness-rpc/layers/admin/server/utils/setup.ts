@@ -2,7 +2,6 @@ import type { H3Event } from 'h3'
 import type { JsonValue } from '@5straps/protocol'
 import type { SetupViews } from '../../../../common/services/setup/setup-views.js'
 import type { ManagedWorkspace, WorkspaceManager } from '../../../../common/services/workspaces/workspace-manager.js'
-import type { ActionLog } from '../../../../common/types/ports/action-log.js'
 import { withTransportAudit } from '../../../common/server/utils/audit.js'
 import { isMutation } from '../../../common/server/utils/guards.js'
 import { readJson, SETUP_BODY_LIMIT } from '../../../common/server/utils/body.js'
@@ -10,8 +9,8 @@ import { mapFailures } from '../../../common/server/utils/errors.js'
 import { defineOperationHandler } from '../../../common/server/utils/operation.js'
 import { useServices } from '../../../common/server/utils/services.js'
 import { NODE_WORKSPACE, targetId } from '../../../common/server/utils/target.js'
-import { withSetupAudit } from './audit.js'
-import { REGISTRY_REFUSED, registryTransportTool, requireAdmin, requireAdminHttp, SETUP_REFUSED, type AdminAccess } from './guards.js'
+import { withRegistryAudit, withSetupAudit } from './audit.js'
+import { REGISTRY_REFUSED, registryTransportTool, requireAdmin, requireAdminHttp, requireNodeAdminCredential, SETUP_REFUSED, type AdminAccess } from './guards.js'
 
 interface SetupCall {
   event: H3Event
@@ -36,7 +35,7 @@ interface SetupCall {
 export function defineSetupHandler(definition: { access: AdminAccess | ((event: H3Event) => AdminAccess); resource: string | ((event: H3Event) => string); active?: boolean; handler: (call: SetupCall) => unknown }) {
   const accessOf = (event: H3Event) => (typeof definition.access === 'function' ? definition.access(event) : definition.access)
   return defineOperationHandler({
-    preflight: [requireAdminHttp],
+    preflight: [requireAdminHttp, requireNodeAdminCredential(targetId)],
     guards: [event => requireAdmin(accessOf(event), SETUP_REFUSED)(event)],
     handler: async (event, scope) => {
       const workspace = await useSetupTarget(event, { setup: !definition.active })
@@ -58,8 +57,8 @@ interface RegistryCall {
   event: H3Event
   workspaces: WorkspaceManager
   views: SetupViews
-  /** The node's own log, where registry changes are audited as workspace_*. */
-  actions: ActionLog
+  /** Runs one registry change inside its workspace_* attempt and result entries on the node's log, which name the actor. */
+  audited<T>(input: { tool: string; workspaceId: string }, run: () => Promise<T>): Promise<T>
   body(): Promise<unknown>
   query(): Record<string, string>
 }
@@ -71,14 +70,18 @@ interface RegistryCall {
  */
 export function defineRegistryHandler(definition: { access: AdminAccess; handler: (call: RegistryCall) => unknown }) {
   return defineOperationHandler({
-    preflight: [requireAdminHttp],
+    preflight: [requireAdminHttp, requireNodeAdminCredential(() => NODE_WORKSPACE)],
     // A signed change to the registry needs a node-scoped key (owner decision D10).
     guards: [requireAdmin(definition.access, REGISTRY_REFUSED, () => NODE_WORKSPACE, { registry: true })],
     handler: async (event, scope) => {
       const services = useServices(event)
       const { actions } = await services.getWorkspaceRuntime()
-      const call: RegistryCall = { event, workspaces: await services.getWorkspaces(), views: services.getSetupViews(), actions, body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams) }
       const actorId = scope.context.actor ?? ''
+      const call: RegistryCall = {
+        event, workspaces: await services.getWorkspaces(), views: services.getSetupViews(),
+        audited: (input, run) => withRegistryAudit(actions, { ...input, actorId }, run),
+        body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams),
+      }
       return mapFailures(() => withTransportAudit(event, actions, { tool: registryTransportTool(event), workspaceId: NODE_WORKSPACE, required: isMutation(event), actorId }, async () => definition.handler(call)))
     },
   })

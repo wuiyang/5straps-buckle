@@ -11,6 +11,7 @@ import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { tokenMatches } from '../access/tokens.js'
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
+import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 
 /** What a credential is compared against for a workspace id the registry does not hold: random, so nothing matches it. */
 const ABSENT_TOKEN = Object.freeze({ id: '', token: randomBytes(24).toString('base64url') })
@@ -31,7 +32,9 @@ export type WorkspaceAgentToken = z.infer<typeof AgentTokenSchema>
 export interface WorkspaceTokenDescriptor { id: string; label: string; createdAt: string }
 
 export const WorkspaceRegistrationSchema = z.object({
-  id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).refine(value => value !== 'default', 'default is reserved'),
+  id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).refine(value => value !== 'default', 'default is reserved')
+    // A key enrolled with --workspace node covers the whole node, so no workspace may share the word (review items 9 and 22).
+    .refine(value => value !== NODE_SCOPE, 'node is reserved: it names the whole node in a key\'s scope'),
   name: z.string().trim().min(1).max(120),
   root: z.string().min(1).max(4096).refine(isAbsolute, 'Workspace root must be absolute'),
   /** The workspace's first agent token. Later ones are minted with `buckle workspace token add`. */
@@ -206,10 +209,6 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       const token = workbenchGrant(authorization)
       const directory = token ? workbenchesOf(id) : null
       return directory !== null && storedGrantMatches({ directory, workbenchId, token: token! })
-    },
-    /** The node's own workspace has an admin credential only when BUCKLE_ADMIN_TOKEN is set; a registered one always has one. */
-    hasAdminCredential(id: string): boolean {
-      return manager.adminToken(id) !== null
     },
     adminToken(id: string): string | null {
       if (id === 'default') return input.config.adminToken || null

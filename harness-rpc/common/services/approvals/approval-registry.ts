@@ -165,10 +165,11 @@ export interface ApprovalRegistry {
   cancel(tokens: string[]): Promise<string[]>
   /**
    * Withdraws one call: the group of the ask a token names (its requestId, session and actor), waiting
-   * or answered, or every ask under a hashed requestId and session. Its asks still waiting are
+   * or answered, or the asks under a hashed requestId, session and actor. Its asks still waiting are
    * withdrawn, and its answered `once` approvals no call spent yet are dropped (review L1 of B23-B25).
+   * A requestId form without an actor that matches more than one actor's call is refused (review item 16).
    */
-  cancelGroup(selector: { token: string } | { requestId: string; sessionId: string }): Promise<GroupWithdrawal>
+  cancelGroup(selector: GroupSelector): Promise<GroupWithdrawal>
   /** Drops the asks that expired unanswered, telling `onExpired` about them. Every update does this too. */
   sweep(): Promise<void>
   pending(): ApprovalRequest[]
@@ -176,6 +177,15 @@ export interface ApprovalRegistry {
   waiting(): PendingAsk[]
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
+}
+
+/** One call to withdraw, with its requestId hashed as the registry keeps it. */
+export type GroupSelector = { token: string } | { requestId: string; sessionId: string; actor?: string }
+
+/** A requestId withdraw without an actor matched calls of more than one actor: HTTP 409, nothing withdrawn. */
+export class AmbiguousWithdrawError extends Error {
+  readonly code = 'WITHDRAW_AMBIGUOUS'
+  readonly status = 409
 }
 
 /** What withdrawing one call did: the asks it withdrew, and the answered `once` approvals it dropped. */
@@ -318,8 +328,11 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const named = 'token' in selector ? members.find(member => member.token === selector.token) : undefined
         const inGroup = 'token' in selector
           ? (member: Member) => member === named || (named?.requestId !== undefined && member.requestId === named.requestId && member.sessionId === named.sessionId && member.actor === named.actor)
-          : (member: Member) => member.requestId === selector.requestId && member.sessionId === selector.sessionId
-        const group = new Set(members.filter(inGroup).map(member => member.token))
+          : (member: Member) => member.requestId === selector.requestId && member.sessionId === selector.sessionId && (selector.actor === undefined || member.actor === selector.actor)
+        const matched = members.filter(inGroup)
+        // A call is its requestId, session and actor: one actor's cancel never drops another's asks or onces.
+        if (new Set(matched.map(member => member.actor)).size > 1) throw new AmbiguousWithdrawError('That requestId and session name calls of more than one actor; send the actor, or a token of the call')
+        const group = new Set(matched.map(member => member.token))
         const withdrawn = pending.map(entry => entry.request.token).filter(token => group.has(token))
         const dropped = state.once.filter(entry => entry.workspace === workspace && group.has(entry.token)).map(entry => entry.token)
         state.pending = state.pending.filter(entry => entry.workspace !== workspace || !group.has(entry.request.token))

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 import { createLogger, createOperationScope, isCredentialKey, redactText, runInScope, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
@@ -151,6 +152,24 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     // Random secrets still go, whatever precedes them, unless they are exactly a fingerprint after SHA256:.
     const survivors = randomKeys(2_000).filter(key => redactText(`token ${key}`).includes(key))
     expect(survivors.length).toBe(0)
+  })
+
+  // Review item 20 of the proof-of-possession fixes: about 1 in 28,000 random fingerprints held an sk_, pk- or
+  // hex run that an earlier pass cut before the fingerprint was recognised.
+  it('keeps every key fingerprint whole, whatever runs its 43 characters hold', async () => {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+    const fill = (length: number) => Array.from(randomBytes(length), byte => alphabet[byte % 64]).join('')
+    const crafted = ['sk_', 'sk-', 'pk_', 'pk-', 'rk_', 'ghp_', 'gho_', 'ghs_', 'xoxb-', 'eyJ'].flatMap(prefix => [
+      `${prefix}${fill(43 - prefix.length)}`, `${fill(10)}-${prefix}${fill(32 - prefix.length)}`,
+    ])
+    const hex = Array.from({ length: 20 }, () => randomBytes(22).toString('hex').slice(0, 43))
+    const random = Array.from({ length: 20_000 }, () => fill(43))
+    const altered = [...crafted, ...hex, ...random].map(body => `SHA256:${body}`).filter(fingerprint => redactText(`Approved by key:${fingerprint}.`) !== `Approved by key:${fingerprint}.`)
+    expect(altered).toEqual([])
+    const fingerprint = `SHA256:sk_${fill(40)}`
+    const event = await logOnce({ actor: `key:${fingerprint}`, token: fingerprint }, { message: `key:${fingerprint} decided` })
+    expect(event.fields).toEqual({ actor: `key:${fingerprint}`, token: '[redacted]' })
+    expect(event.message).toBe(`key:${fingerprint} decided`)
   })
 
   // One matcher for every redaction by name: Buckle's approval challenges use it too (review item 8 of the proof-of-possession fixes).

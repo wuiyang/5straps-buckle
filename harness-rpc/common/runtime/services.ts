@@ -24,6 +24,8 @@ export interface BuckleServices {
   getSetupViews(): SetupViews
   /** Whether the experimental admin HTTP layer serves at all (owner decision D8); off, its routes answer 404. */
   adminHttp(): boolean
+  /** Whether BUCKLE_ADMIN_TOKEN is set: without it the node level has no owner's face, and its admin routes answer 404. */
+  nodeAdminCredential(): boolean
   /** Verifies the requests an enrolled client key signed, for the setup and approval guards (owner ruling H4). */
   getRequestVerifier(): Promise<RequestVerifier>
   /** The setup sessions persons' keys opened (B24). */
@@ -124,6 +126,7 @@ export function createServiceAccessors(input: { owner: RuntimeOwner; definitions
     nodeIdentity: () => identity,
     getSetupViews: () => setupViews,
     adminHttp: () => input.config.experimentalAdminHttp,
+    nodeAdminCredential: () => input.config.adminToken !== '',
     getRequestVerifier: () => registry.useSingleton(input.definitions.requestVerifier),
     getSetupSessions: () => registry.useSingleton(input.definitions.setupSessions),
     getNodeSigner: () => registry.useSingleton(input.definitions.nodeSigner),

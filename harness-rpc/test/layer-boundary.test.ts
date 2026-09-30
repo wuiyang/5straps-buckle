@@ -142,6 +142,15 @@ describe('the layer boundary', () => {
     expect(readFileSync(join(PACKAGE_ROOT, 'server/entry.ts'), 'utf8')).toMatch(/^import \{ useNitroApp \} from 'nitro\/app'$/m)
     // Review L7 of B23-B25: an event reaches the app, or the matched route's handler, through neither.
     expect(touching(/\bevent\.app\b|\.app\s*\.\s*handler\b|matchedRoute\s*\??\.\s*handler\b|\[\s*['"`]handler['"`]\s*\]/)).toEqual([])
+    // Review item 21 of the proof-of-possession fixes: no source writes to the app or a matched route by any
+    // spelling (a member or index assignment, destructuring, Object.assign and its kin); the head plugin's one
+    // ~findRoute wrapper is the only write, and it is the one allowed ~ member above.
+    const writes = sources.flatMap(file => appWrites(withoutComments(readFileSync(join(PACKAGE_ROOT, file), 'utf8'))).map(write => `${file}: ${write}`))
+    expect(writes).toEqual([`layers/common/server/plugins/20.head.ts: app['~findRoute'] =`])
+    const evasions = ['const { app } = event', 'app.handler = wrapped', `app['handler'] = wrapped`, 'app.handler ??= wrapped', 'Object.assign(matchedRoute, { handler })',
+      `Object.defineProperty(event.context.matchedRoute, 'handler', {})`, 'event.context.matchedRoute.handler = wrapped', 'const { matchedRoute: route } = event.context']
+    expect(evasions.filter(evasion => appWrites(evasion).length === 0)).toEqual([])
+    expect(appWrites('if (app.handler === wrapped) run(app, matchedRoute)')).toEqual([])
   })
 
   it('has no Hono anywhere in Buckle: no import in any source, script or test, and no dependency (B18 cut-over)', () => {
@@ -168,8 +177,8 @@ describe('the layer boundary', () => {
     expect(utils('layers/common/server/utils/operation.ts')).toMatch(/return defineGuardedHandler\(\{\s*\.\.\.\(definition\.preflight \? \{ preflight: definition\.preflight \} : \{\}\),\s*guards: definition\.guards,/)
     expect(utils('layers/common/server/utils/workbench.ts')).toMatch(/defineOperationHandler\(\{\s*guards: \[requireWorkbench\],/)
     expect(utils('layers/admin/server/utils/setup.ts').match(/guards: \[[^\]]*requireAdmin\(/g)).toHaveLength(2)
-    // The experimental flag answers before readiness on both admin builders (review L9 of B23-B25).
-    expect(utils('layers/admin/server/utils/setup.ts').match(/preflight: \[requireAdminHttp\],/g)).toHaveLength(2)
+    // The experimental flag, then a node without BUCKLE_ADMIN_TOKEN, answer before readiness on both admin builders (review L9 of B23-B25, item 23).
+    expect(utils('layers/admin/server/utils/setup.ts').match(/preflight: \[requireAdminHttp, requireNodeAdminCredential\([^\]]*\)\],/g)).toHaveLength(2)
   })
 
   it('names the workspace parameter [id] only as routes/workspaces/[id]/, so the registry routes stay node-admin only (review L5 of B15-B17)', () => {
@@ -187,6 +196,22 @@ const SERVER_ENTRIES = ['routes', 'plugins', 'utils', 'types']
 const PLUGINS = ['layers/common/server/plugins/10.context.ts', 'layers/common/server/plugins/20.head.ts', 'layers/common/server/plugins/30.request-log.ts']
 const GUARDED_BUILDER = /^export default define(Operation|Workbench|Setup|Registry)Handler\(/m
 const RE_EXPORT = /^(?:\s*\/\/[^\n]*\n)*\s*export \{ default \} from '([^']+)'\s*$/
+
+/**
+ * Every write a source makes to something named `app` or `matchedRoute`: a member or index assignment
+ * (compound ones too), a destructuring that binds either name, and Object.assign, defineProperty,
+ * setPrototypeOf or Reflect.set with either as the target.
+ */
+function appWrites(text: string): string[] {
+  const target = String.raw`\b(?:app|matchedRoute)\b`
+  const patterns = [
+    new RegExp(String.raw`${target}\s*(?:\?\.|\.)\s*[\w$~]+\s*(?:[-+*/%&|^]|\?\?|&&|\|\||<<|>>>?|\*\*)?=(?![=>])`, 'g'),
+    new RegExp(String.raw`${target}\s*\[[^\]]*\]\s*(?:[-+*/%&|^]|\?\?|&&|\|\||<<|>>>?|\*\*)?=(?![=>])`, 'g'),
+    new RegExp(String.raw`\{[^{}]*${target}[^{}]*\}\s*=(?![=>])`, 'g'),
+    new RegExp(String.raw`\b(?:Object\.(?:assign|defineProperty|defineProperties|setPrototypeOf)|Reflect\.(?:set|defineProperty|setPrototypeOf))\s*\(\s*[\w$.?\[\]'"\`~]*${target}`, 'g'),
+  ]
+  return patterns.flatMap(pattern => [...text.matchAll(pattern)].map(match => match[0].replace(/\s+/g, ' ').trim()))
+}
 
 function withoutComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')

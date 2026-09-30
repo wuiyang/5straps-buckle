@@ -116,9 +116,14 @@ export type SignedApprovalDecision = z.infer<typeof SignedApprovalDecisionSchema
  * does: named by one of its ask tokens, or by the requestId and session the call was sent with. Each
  * withdrawn ask is told `cancelled`. Withdrawing never approves anything.
  */
+/**
+ * One call to withdraw: a token of its group, or its requestId and session, with the actor that made it
+ * (the credential it came in with, as `agent:<id>`). Without the actor, a requestId form that matches
+ * more than one actor's call is refused, never applied to them all (review item 16 of the proof-of-possession fixes).
+ */
 export const ApprovalWithdrawSchema = z.union([
   z.object({ token: z.string().min(1).max(200) }).strict(),
-  z.object({ requestId: z.string().min(1), sessionId: z.string().min(1).max(200) }).strict(),
+  z.object({ requestId: z.string().min(1), sessionId: z.string().min(1).max(200), actor: z.string().min(1).max(200).optional() }).strict(),
 ])
 export type ApprovalWithdraw = z.infer<typeof ApprovalWithdrawSchema>
 export interface ApprovalWithdrawResult { withdrawn: string[] }

@@ -51,11 +51,22 @@ export const requireAdminHttp: Guard = (event) => {
 }
 
 /**
+ * A node without BUCKLE_ADMIN_TOKEN has no owner's face at the node level: its admin routes answer the
+ * router's 404, as when the face was not mounted, and, known from the settings before start, answer it
+ * while the node starts and closes too, never a 503 (review item 23 of the proof-of-possession fixes).
+ */
+export function requireNodeAdminCredential(target: (event: H3Event) => string): Guard {
+  return (event) => {
+    if (target(event) === NODE_WORKSPACE && !useServices(event).nodeAdminCredential()) throw notFound()
+  }
+}
+
+/**
  * The guard for one kind of admin access to the addressed workspace, or to the one `target` names.
  * The whole layer is experimental (owner decision D8): until BUCKLE_EXPERIMENTAL_ADMIN_HTTP is on,
  * every route of it answers the router's 404 before anything is read or audited, admin credential or
- * not. A node without BUCKLE_ADMIN_TOKEN has no owner's face either: 404, as when the face was not
- * mounted. The actor is admin:<workspace> for the admin credential and key:<fingerprint> for a signed
+ * not; a node without BUCKLE_ADMIN_TOKEN answers 404 at the node level (both preflights, run before
+ * this). The actor is admin:<workspace> for the admin credential and key:<fingerprint> for a signed
  * request.
  */
 export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target: (event: H3Event) => string = targetId, options: { registry?: boolean } = {}): Guard {
@@ -64,7 +75,6 @@ export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target:
     if (!useServices(event).adminHttp()) throw notFound()
     const workspaceId = target(event)
     const workspaces = await useServices(event).getWorkspaces()
-    if (workspaceId === NODE_WORKSPACE && !workspaces.hasAdminCredential(NODE_WORKSPACE)) throw notFound()
     const purpose = ACCEPTS[access].find((credential): credential is SignedRequestPurpose => credential !== 'admin')
     const actor = await checkCredential(event, {
       verify: () => (isSignedRequest(authorization(event))

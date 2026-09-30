@@ -11,7 +11,7 @@ import type { PermissionDecision } from '../../domain/permission/decision.js'
 import { logger } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import type { ApprovalAuthority, ApprovalRegistry, AskedCall, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
+import type { ApprovalAuthority, ApprovalRegistry, AskedCall, GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -134,7 +134,7 @@ export interface ApprovalService {
 
 /** A withdrawal, with its selector as the registry keeps it (a requestId hashed) for the audit entry (review L14 of B23-B25). */
 export interface CallWithdrawal extends GroupWithdrawal {
-  selector: { token: string } | { requestId: string; sessionId: string }
+  selector: GroupSelector
 }
 
 export interface ApprovalServiceOptions {
@@ -294,7 +294,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     async withdrawCall(selector) {
       // The registry keeps a call's requestId hashed, as the invoker joins it.
-      const hashed = 'token' in selector ? { token: selector.token } : { requestId: requestIdKey(selector.requestId), sessionId: selector.sessionId }
+      const hashed = 'token' in selector ? { token: selector.token } : { requestId: requestIdKey(selector.requestId), sessionId: selector.sessionId, ...(selector.actor === undefined ? {} : { actor: selector.actor }) }
       const result = await options.registry.cancelGroup(hashed)
       notices.cancelled(result.withdrawn)
       for (const token of result.withdrawn) wake(token)
