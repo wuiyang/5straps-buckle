@@ -19,6 +19,8 @@ const MAX_FIND_DEPTH = 256
 
 export interface FsContext {
   paths: PathView
+  /** Buckle's protected roots: a hard-linked file on their device is not read (isLinkedOnStateDevice). */
+  protectedRoots?: readonly string[]
   /** Judges a host path where it lands now (ToolContext.authorizeRead). */
   authorizeRead?: (path: string) => Promise<boolean>
   authorizeReadTarget?: (target: string) => boolean
@@ -36,7 +38,7 @@ export async function readFileEntry(
 ): Promise<JsonValue> {
   const path = context.paths.resolve(input.path)
   const target = judgedTarget(path, 'read', context)
-  const { buffer, size } = withFileBeneath(target, { flags: constants.O_RDONLY, shown: input.path }, (descriptor) => {
+  const { buffer, size } = withFileBeneath(target, { flags: constants.O_RDONLY, shown: input.path, ...(context.protectedRoots ? { protectedRoots: context.protectedRoots } : {}) }, (descriptor) => {
     const info = fstatSync(descriptor)
     if (info.size > MAX_FILE_BYTES) throw new ToolInputError(`File exceeds ${MAX_FILE_BYTES} bytes`)
     return { buffer: readFileSync(descriptor), size: info.size }

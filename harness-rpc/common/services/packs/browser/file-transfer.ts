@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, mkdirSync, openSync, read, readdirSync, rmSync, statSync, write } from 'node:fs'
 import { basename, join } from 'node:path'
-import { withFileBeneath } from '../../../adapters/beneath.js'
+import { promisify } from 'node:util'
+import { withFileBeneathAsync } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { ToolInputError, type ToolContext } from '../../../domain/tool.js'
-import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
+import { isMissingPathError } from '../../invocation/real-path.js'
+import { judgedPath } from '../judged-path.js'
 
 /**
  * agent-browser opens the paths it is given with ordinary, link-following opens, so it is never handed
@@ -12,12 +14,15 @@ import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js
  * judged where it lands and swapped for a file in a private transfer directory: an upload is copied
  * there from its target, opened beneath a parent reached without following a link, and a screenshot,
  * PDF or download written there is copied to its target the same way once the command succeeds.
+ * Copies are bounded by MAX_TRANSFER_BYTES and awaited chunk by chunk, so the call's signal (its
+ * timeout, its caller, the shutdown) stops one and no copy holds the node (review L4 of the second
+ * proof-of-possession re-review).
  */
 export interface FileTransfer {
   /** What agent-browser is handed in place of one of the agent's file arguments; undefined for any other argument. */
   argument(named: string): string | undefined
   /** Copies each file agent-browser wrote to the target its permission check judged. */
-  deliver(): void
+  deliver(): Promise<void>
   /** agent-browser's output with each transfer path named as the agent named it. */
   shown(text: string): string
   close(): void
@@ -26,26 +31,34 @@ export interface FileTransfer {
 interface Transferred { named: string; target: string; staged: string; kind: 'read' | 'write' }
 
 const CHUNK_BYTES = 1_048_576
+/** The largest file a browser command takes in or hands back: 100 MiB, larger than any fs tool reads or writes. */
+export const MAX_TRANSFER_BYTES = 100 * 1_048_576
+const TRANSFER_PREFIX = 'transfer-'
+const readChunk = promisify(read)
+const writeChunk = promisify(write)
 
-export function prepareTransfer(input: {
+export async function prepareTransfer(input: {
   /** The pack's private session directory, which no tool reaches. */
   directory: string
   paths: PathView
   reads: string[]
   writes: string[]
-  context: Pick<ToolContext, 'authorizeReadTarget' | 'authorizeWrite'>
-}): FileTransfer {
-  const directory = join(input.directory, `transfer-${randomUUID()}`)
+  context: Pick<ToolContext, 'authorizeReadTarget' | 'authorizeWrite' | 'signal'>
+  /** Buckle's protected roots: an upload of a hard-linked file on their device is refused (review L3 of the second re-review). */
+  protectedRoots: readonly string[]
+}): Promise<FileTransfer> {
+  const directory = join(input.directory, `${TRANSFER_PREFIX}${randomUUID()}`)
   const files = new Map<string, Transferred>()
+  const signal = input.context.signal
   try {
     for (const [kind, names] of [['read', input.reads], ['write', input.writes]] as const) {
       for (const named of names) {
         if (files.has(named)) continue
-        const target = judgedTarget({ named, kind, paths: input.paths, context: input.context })
+        const target = judgedPath({ named, kind, paths: input.paths, context: input.context })
         const slot = join(directory, String(files.size))
         mkdirSync(slot, { recursive: true, mode: 0o700 })
         const file = { named, target, staged: join(slot, basename(target)), kind }
-        if (kind === 'read') withFileBeneath(target, { flags: constants.O_RDONLY, shown: named }, source => copyInto(source, file.staged))
+        if (kind === 'read') await withFileBeneathAsync(target, { flags: constants.O_RDONLY, shown: named, protectedRoots: input.protectedRoots }, source => copyInto({ source, staged: file.staged, named, signal }))
         files.set(named, file)
       }
     }
@@ -55,8 +68,8 @@ export function prepareTransfer(input: {
   }
   return {
     argument: named => files.get(named)?.staged,
-    deliver() {
-      for (const file of files.values()) if (file.kind === 'write') deliver(file)
+    async deliver() {
+      for (const file of files.values()) if (file.kind === 'write') await deliver(file, signal)
     },
     shown(text) {
       let shown = text
@@ -69,15 +82,24 @@ export function prepareTransfer(input: {
   }
 }
 
-function judgedTarget(input: { named: string; kind: 'read' | 'write'; paths: PathView; context: Pick<ToolContext, 'authorizeReadTarget' | 'authorizeWrite'> }): string {
-  const target = resolveTarget(input.paths.resolve(input.named))
-  const authorize = input.kind === 'read' ? input.context.authorizeReadTarget : input.context.authorizeWrite
-  if (authorize && !authorize(target)) throw new ToolInputError(`${input.named} now resolves to a place its permission check did not see; send the call again`, { code: 'PERMISSION_DENIED' })
-  return target
+/**
+ * Removes transfer directories a node that stopped mid-call left behind: those older than twice the
+ * longest a call may run, which no call can still be using, whichever process started it.
+ */
+export function sweepTransfers(input: { directory: string; staleAfterMs: number; now?: number }): void {
+  let names: string[]
+  try { names = readdirSync(input.directory) } catch { return }
+  const now = input.now ?? Date.now()
+  for (const name of names.filter(entry => entry.startsWith(TRANSFER_PREFIX))) {
+    const path = join(input.directory, name)
+    try {
+      if (now - statSync(path).mtimeMs > input.staleAfterMs) rmSync(path, { recursive: true, force: true })
+    } catch { /* Gone meanwhile, or another process sweeps it. */ }
+  }
 }
 
 /** A file agent-browser left in the transfer directory goes to its judged target; one it did not write creates nothing. */
-function deliver(file: Transferred): void {
+async function deliver(file: Transferred, signal: AbortSignal): Promise<void> {
   let source: number
   try {
     source = openSync(file.staged, constants.O_RDONLY | constants.O_NOFOLLOW)
@@ -86,20 +108,34 @@ function deliver(file: Transferred): void {
     throw error
   }
   try {
-    if (!fstatSync(source).isFile()) throw new ToolInputError(`agent-browser did not write a regular file for ${file.named}`)
-    withFileBeneath(file.target, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC, createParents: true, shown: file.named }, target => copy(source, target))
+    const info = fstatSync(source)
+    if (!info.isFile()) throw new ToolInputError(`agent-browser did not write a regular file for ${file.named}`)
+    if (info.size > MAX_TRANSFER_BYTES) throw tooLarge(file.named)
+    await withFileBeneathAsync(file.target, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC, createParents: true, shown: file.named }, target => copy({ source, target, named: file.named, signal }))
   } finally { closeSync(source) }
 }
 
-function copyInto(source: number, staged: string): void {
-  const target = openSync(staged, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-  try { copy(source, target) } finally { closeSync(target) }
+async function copyInto(input: { source: number; staged: string; named: string; signal: AbortSignal }): Promise<void> {
+  if (fstatSync(input.source).size > MAX_TRANSFER_BYTES) throw tooLarge(input.named)
+  const target = openSync(input.staged, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+  try { await copy({ ...input, target }) } finally { closeSync(target) }
 }
 
-function copy(source: number, target: number): void {
+/** Chunk by chunk, awaited, checking the call's signal before each read and the cap after it, so a file that grows is stopped too. */
+async function copy(input: { source: number; target: number; named: string; signal: AbortSignal }): Promise<void> {
   const buffer = Buffer.allocUnsafe(CHUNK_BYTES)
-  for (let read = readSync(source, buffer, 0, CHUNK_BYTES, null); read > 0; read = readSync(source, buffer, 0, CHUNK_BYTES, null)) {
+  let copied = 0
+  for (;;) {
+    input.signal.throwIfAborted()
+    const { bytesRead } = await readChunk(input.source, buffer, 0, CHUNK_BYTES, null)
+    if (bytesRead === 0) return
+    copied += bytesRead
+    if (copied > MAX_TRANSFER_BYTES) throw tooLarge(input.named)
     let written = 0
-    while (written < read) written += writeSync(target, buffer, written, read - written)
+    while (written < bytesRead) written += (await writeChunk(input.target, buffer, written, bytesRead - written)).bytesWritten
   }
+}
+
+function tooLarge(named: string): ToolInputError {
+  return new ToolInputError(`${named} is larger than the ${MAX_TRANSFER_BYTES / 1_048_576} MiB a browser command transfers, so it was not copied`)
 }

@@ -13,10 +13,12 @@ export interface FsPackOptions {
   paths: PathView
   runProcess: ProcessRunner
   hasRipgrep: boolean
+  /** Buckle's own state: a hard-linked file on its device is never read or searched (review L3 of the second re-review). */
+  protectedRoots?: readonly string[]
 }
 
 export function createFsPack(options: FsPackOptions): Pack {
-  const context = { paths: options.paths }
+  const context = { paths: options.paths, ...(options.protectedRoots ? { protectedRoots: options.protectedRoots } : {}) }
 
   const tools = [
     defineTool(PACK_ID, {
@@ -101,6 +103,7 @@ export function createFsPack(options: FsPackOptions): Pack {
         timeoutMs: toolContext.timeoutMs,
         signal: toolContext.signal,
         authorizeRead: toolContext.authorizeRead ?? (async () => false),
+        protectedRoots: options.protectedRoots ?? [],
       }),
     }))
   }

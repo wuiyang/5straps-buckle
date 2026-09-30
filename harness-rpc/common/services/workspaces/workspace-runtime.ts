@@ -420,6 +420,7 @@ async function buildPacks(input: {
     allowedHosts: input.config.allowedHosts,
     agentBrowserCommand: input.config.agentBrowserCommand,
     browserStateDirectory: input.browserStateDirectory,
+    maxTimeoutMs: input.config.maxTimeoutMs,
     browserHeaded: input.config.browserHeaded,
     enableShell: input.config.enableShell,
     allowHostGit: input.config.allowHostGit,

@@ -117,16 +117,20 @@ describe.each(ROUTES)('a once decided by %s', (_, options, decide) => {
     await stop(setup)
   })
 
-  it('S1: is never spent by another call re-sent under the waiting call\'s requestId', async () => {
+  // Review L8 of the second proof-of-possession re-review: with the asking call still waiting, it claimed the
+  // requestId first and the changed call was refused as a reuse whatever the binding, so the row could not
+  // fail. The asking call now returns at once, and the changed call carries the token itself.
+  it('S1: is never spent by another call re-sent under the asking call\'s requestId with its token', async () => {
     const setup = await node(options)
-    const waiting = invoke(setup, { ...approved('R-1'), context: {} })
-    await vi.waitFor(() => expect(setup.runtime.approvalService.pending()).toHaveLength(1))
-    const [ask] = setup.runtime.approvalService.pending()
-    await decide(setup, ask!.token)
-    const changed = await invoke(setup, { ...approved('R-1'), args: { path: 'one/notes.md', content: 'CHANGED' } })
+    const token = await asked(setup, approved('R-1'))
+    await decide(setup, token)
+    await recorded(setup, token)
+    const changed = await invoke(setup, { ...approved('R-1'), args: { path: 'one/notes.md', content: 'CHANGED' }, approvalTokens: [token] })
 
     expect(changed.outcome).not.toBe('ok')
-    expect(await waiting).toMatchObject({ outcome: 'ok' })
+    expect(existsSync(join(setup.workspace, 'one', 'notes.md'))).toBe(false)
+    // The call the person was asked about still runs on it, under its requestId.
+    expect(await invoke(setup, { ...approved('R-1'), approvalTokens: [token] })).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(setup.workspace, 'one', 'notes.md'), 'utf8')).toBe('hello')
     await stop(setup)
   })

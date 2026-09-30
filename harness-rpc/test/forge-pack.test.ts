@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { createServer as createSocketServer, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
@@ -631,5 +631,26 @@ describe('the credential', () => {
     expect(descriptor?.unavailableReason).toContain('BUCKLE_FORGE_GITHUB_TOKEN')
     expect(runtime.manifest().tools.map(tool => tool.name)).not.toContain('pr_open')
     expect(descriptor?.toolNames).toEqual(['git_commit', 'git_push', 'pr_open', 'pr_read'])
+  })
+})
+
+// Review L5 of the second proof-of-possession re-review: a forge commit approved for one repository landed in
+// another when a link was swapped during the approval wait.
+describe('a forge tool runs in the repository its permission check judged', () => {
+  it.each<[string, JsonObject, 'authorizeWrite' | 'authorizeReadTarget']>([
+    ['git_commit', { repo: 'repo', paths: ['a.txt'], message: 'approved change' }, 'authorizeWrite'],
+    ['pr_read', { repo: 'repo', number: 7 }, 'authorizeReadTarget'],
+  ])('refuses %s when the repository link was swapped after the check, and runs no git', async (name, args, judge) => {
+    const root = temporaryRoot('judged')
+    for (const directory of ['inside', 'outside']) mkdirSync(join(root, directory))
+    symlinkSync('inside', join(root, 'repo'))
+    const ran: ProcessRequest[] = []
+    const built = pack({ repository: root, runner: async (request) => { ran.push(request); return { exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false } } })
+    const tool = built.tools.find(candidate => candidate.capability.name === name)!
+    const prepared = tool.prepare(args)
+    unlinkSync(join(root, 'repo'))
+    symlinkSync('outside', join(root, 'repo'))
+    await expect(prepared.execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 5_000, signal: AbortSignal.timeout(5_000), [judge]: (target: string) => target === join(root, 'inside') })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(ran).toEqual([])
   })
 })

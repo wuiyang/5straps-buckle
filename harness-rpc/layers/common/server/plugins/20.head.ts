@@ -9,8 +9,8 @@ import { definePlugin } from 'nitro'
  * method name differs, so an admin route audits it as setup_head_<resource>.
  *
  * Every route's data (its route, method and handler) is locked as the router hands it out, before its
- * handler runs, so no code can swap a guarded handler, or add middleware in front of it, for later
- * requests: an assignment throws (review item 21 of the proof-of-possession fixes; L7 of B23-B25).
+ * handler runs, so no code can swap a guarded handler for later requests: an assignment throws (review
+ * item 21 of the proof-of-possession fixes; L7 of B23-B25). The app is locked too (lockApp).
  */
 export default definePlugin((nitroApp) => {
   const app = nitroApp.h3
@@ -27,19 +27,48 @@ export default definePlugin((nitroApp) => {
     const get = frozen(asGet(event))
     return get && get.data.method?.toUpperCase() === 'GET' ? get : frozen(event)
   }
+  lockApp(app as unknown as Record<string, unknown> & { config: object })
 })
 
 /**
- * A route without middleware is frozen whole. h3 caches a route's composed middleware on its data
- * (`~composed`), so a route with middleware keeps that one write and has its handler and middleware
- * locked instead.
+ * The app, once its router wrapper is in place, is fixed for every later request (review L11 of the
+ * second proof-of-possession re-review): its config, which holds the request, response and error
+ * hooks h3 calls, is frozen and fixed on the app; every method it runs, its own and those its classes
+ * give it, is fixed on the app itself, so a wrapper on the shared h3 prototype never reaches it; and
+ * its middleware and route lists are frozen. h3's lazy dispatcher and composed middleware are fields,
+ * not methods, and stay as h3 and Nitro set them. The prototype itself is left alone: other apps in
+ * the process share it.
+ */
+function lockApp(app: Record<string, unknown> & { config: object }): void {
+  Object.freeze(app.config)
+  Object.defineProperty(app, 'config', { writable: false, configurable: false })
+  for (const name of methodNames(app)) {
+    const own = Object.getOwnPropertyDescriptor(app, name)
+    Object.defineProperty(app, name, { value: own && 'value' in own ? own.value : app[name], writable: false, configurable: false, enumerable: own?.enumerable ?? false })
+  }
+  for (const value of Object.values(app)) if (Array.isArray(value)) Object.freeze(value)
+}
+
+/** The methods the app's classes define, nearest first; getters and the constructor are not methods. */
+function methodNames(app: object): Set<string> {
+  const names = new Set<string>()
+  for (let prototype = Object.getPrototypeOf(app) as object | null; prototype && prototype !== Object.prototype; prototype = Object.getPrototypeOf(prototype) as object | null) {
+    for (const name of Object.getOwnPropertyNames(prototype)) {
+      if (name !== 'constructor' && typeof Object.getOwnPropertyDescriptor(prototype, name)?.value === 'function') names.add(name)
+    }
+  }
+  return names
+}
+
+/**
+ * A route is frozen whole. No Buckle route carries middleware, and h3 caches a route's composed
+ * middleware on its data, which a frozen route cannot hold, so one that carries middleware is
+ * refused rather than half locked (ruling 2 of 2026-09-28: fail closed; review L12 of the second
+ * re-review). Lock it here before adding a route with middleware.
  */
 function lock(data: Record<string, unknown>): void {
-  if (!(data.middleware as unknown[] | undefined)?.length) {
-    Object.freeze(data)
-    return
-  }
-  for (const name of ['handler', 'middleware']) Object.defineProperty(data, name, { writable: false, configurable: false })
+  if ((data.middleware as unknown[] | undefined)?.length) throw new Error('A route with middleware reached Buckle\'s router, which locks only routes without it; 20.head.ts refuses to serve it')
+  Object.freeze(data)
 }
 
 // The router reads the method and the path only; the probe carries the request's own URL and context.

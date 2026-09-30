@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { ToolInputError } from '../domain/tool.js'
 
@@ -103,22 +103,73 @@ export function openDirectoryBeneath(parent: PinnedDirectory, name: string, show
   }
 }
 
+interface FileBeneath {
+  flags: number
+  createParents?: boolean
+  shown?: string
+  /**
+   * Buckle's protected roots: a read of a hard-linked file on a device that holds one of them is refused
+   * (isLinkedOnStateDevice). Absent, hard links are read as any file.
+   */
+  protectedRoots?: readonly string[]
+}
+
 /**
  * Runs `operation` on a regular file opened beneath its pinned parent, never through a link. `target`
  * must be where the permission rules judged the call would reach (resolveTarget). `shown` names the
  * file in a refusal (the target when absent); a read-only open is told it read nothing.
  */
-export function withFileBeneath<T>(target: string, input: { flags: number; createParents?: boolean; shown?: string }, operation: (descriptor: number) => T): T {
+export function withFileBeneath<T>(target: string, input: FileBeneath, operation: (descriptor: number) => T): T {
+  const file = openFileBeneath(target, input)
+  try { return operation(file.descriptor) } finally { file.close() }
+}
+
+/** withFileBeneath for an operation that awaits, such as a copy a call's signal can stop; the file stays open until it settles. */
+export async function withFileBeneathAsync<T>(target: string, input: FileBeneath, operation: (descriptor: number) => Promise<T>): Promise<T> {
+  const file = openFileBeneath(target, input)
+  try { return await operation(file.descriptor) } finally { file.close() }
+}
+
+function openFileBeneath(target: string, input: FileBeneath): { descriptor: number; close: () => void } {
   const reading = (input.flags & (constants.O_WRONLY | constants.O_RDWR)) === 0
   const refusal: Refusal = { shown: input.shown ?? target, ...(reading ? { outcome: NOT_READ } : {}) }
   const directory = openRealDirectory(dirname(target), { create: input.createParents === true, refusal })
+  let descriptor: number
   try {
-    const descriptor = openBeneath(directory, basename(target), input.flags, refusal)
-    try {
-      if (!fstatSync(descriptor).isFile()) throw new ToolInputError(`Not a regular file: ${refusal.shown}`)
-      return operation(descriptor)
-    } finally { closeSync(descriptor) }
-  } finally { directory.close() }
+    descriptor = openBeneath(directory, basename(target), input.flags, refusal)
+  } catch (error) {
+    directory.close()
+    throw error
+  }
+  const close = () => { try { closeSync(descriptor) } finally { directory.close() } }
+  try {
+    const info = fstatSync(descriptor)
+    if (!info.isFile()) throw new ToolInputError(`Not a regular file: ${refusal.shown}`)
+    if (reading && input.protectedRoots && isLinkedOnStateDevice({ info, path: target, protectedRoots: input.protectedRoots })) {
+      throw new ToolInputError(`${refusal.shown} is a hard link on the disk that holds Buckle's state, so nothing was read`, { code: 'PERMISSION_DENIED' })
+    }
+  } catch (error) {
+    close()
+    throw error
+  }
+  return { descriptor, close }
+}
+
+/**
+ * Whether a regular file is a hard link (more than one name) on a device that holds one of Buckle's
+ * protected roots, outside a node_modules tree. A hard link is the same file as whatever else names
+ * it, so a workspace name for a state file would read that state past every path check (review L3 of
+ * the second proof-of-possession re-review). pnpm links node_modules files from its store, so a path
+ * with a node_modules component stays readable; a hard link to state placed there is the residual.
+ */
+export function isLinkedOnStateDevice(input: { info: { nlink: number; dev: number }; path: string; protectedRoots: readonly string[] }): boolean {
+  if (input.info.nlink <= 1 || input.path.split('/').includes('node_modules')) return false
+  return input.protectedRoots.some(root => deviceOf(root) === input.info.dev)
+}
+
+/** A protected root that is absent, or that this process cannot stat, holds no state a link could reach through it. */
+function deviceOf(path: string): number | undefined {
+  try { return statSync(path).dev } catch { return undefined }
 }
 
 /** Opens a name beneath a pinned directory without following a link in its place. */

@@ -142,15 +142,25 @@ describe('the layer boundary', () => {
     expect(readFileSync(join(PACKAGE_ROOT, 'server/entry.ts'), 'utf8')).toMatch(/^import \{ useNitroApp \} from 'nitro\/app'$/m)
     // Review L7 of B23-B25: an event reaches the app, or the matched route's handler, through neither.
     expect(touching(/\bevent\.app\b|\.app\s*\.\s*handler\b|matchedRoute\s*\??\.\s*handler\b|\[\s*['"`]handler['"`]\s*\]/)).toEqual([])
-    // Review item 21 of the proof-of-possession fixes: no source writes to the app or a matched route by any
-    // spelling (a member or index assignment, destructuring, Object.assign and its kin); the head plugin's one
-    // ~findRoute wrapper is the only write, and it is the one allowed ~ member above.
+    // Review item 21 of the proof-of-possession fixes and L11 of the second re-review: a tripwire, not a proof.
+    // It flags the spellings below (a member or index write at any depth, destructuring, Object.assign and its
+    // kin, and any write through a prototype); a write through an alias it cannot follow is caught at run time,
+    // where 20.head.ts locks the app and its routes and guard-sweep compares them before and after every request.
+    // The head plugin's ~findRoute wrapper and its lock are the only writes, and ~findRoute the one ~ member above.
     const writes = sources.flatMap(file => appWrites(withoutComments(readFileSync(join(PACKAGE_ROOT, file), 'utf8'))).map(write => `${file}: ${write}`))
-    expect(writes).toEqual([`layers/common/server/plugins/20.head.ts: app['~findRoute'] =`])
+    expect(writes).toEqual([
+      `layers/common/server/plugins/20.head.ts: app['~findRoute'] =`,
+      'layers/common/server/plugins/20.head.ts: Object.defineProperty(app',
+      'layers/common/server/plugins/20.head.ts: Object.defineProperty(app',
+    ])
     const evasions = ['const { app } = event', 'app.handler = wrapped', `app['handler'] = wrapped`, 'app.handler ??= wrapped', 'Object.assign(matchedRoute, { handler })',
-      `Object.defineProperty(event.context.matchedRoute, 'handler', {})`, 'event.context.matchedRoute.handler = wrapped', 'const { matchedRoute: route } = event.context']
+      `Object.defineProperty(event.context.matchedRoute, 'handler', {})`, 'event.context.matchedRoute.handler = wrapped', 'const { matchedRoute: route } = event.context',
+      'app.config.onRequest = wrapped', `app.config['onRequest'] = wrapped`, 'app.config.onRequest ||= wrapped', 'Object.assign(app.config, { onRequest })',
+      `Object.getPrototypeOf(app)['~request'] = wrapped`, 'app.constructor.prototype.handler = wrapped', 'app.__proto__.fetch = wrapped', 'H3Core.prototype.fetch = wrapped',
+      `Object.defineProperty(Object.getPrototypeOf(app), 'fetch', {})`, `Reflect.set(Object.getPrototypeOf(app), 'fetch', wrapped)`]
     expect(evasions.filter(evasion => appWrites(evasion).length === 0)).toEqual([])
     expect(appWrites('if (app.handler === wrapped) run(app, matchedRoute)')).toEqual([])
+    expect(appWrites('if (Object.getPrototypeOf(app).fetch === wrapped && app.config.onRequest !== undefined) run(app.config)')).toEqual([])
   })
 
   it('has no Hono anywhere in Buckle: no import in any source, script or test, and no dependency (B18 cut-over)', () => {
@@ -198,17 +208,21 @@ const GUARDED_BUILDER = /^export default define(Operation|Workbench|Setup|Regist
 const RE_EXPORT = /^(?:\s*\/\/[^\n]*\n)*\s*export \{ default \} from '([^']+)'\s*$/
 
 /**
- * Every write a source makes to something named `app` or `matchedRoute`: a member or index assignment
- * (compound ones too), a destructuring that binds either name, and Object.assign, defineProperty,
- * setPrototypeOf or Reflect.set with either as the target.
+ * Every write a source makes to something named `app` or `matchedRoute`, or through a prototype: a member
+ * or index assignment at any depth (app.config.onRequest, compound ones too), a destructuring that binds
+ * either name, and Object.assign, defineProperty, setPrototypeOf or Reflect.set with either, a member of
+ * either or a prototype as the target (review L11 of the second proof-of-possession re-review).
  */
 function appWrites(text: string): string[] {
   const target = String.raw`\b(?:app|matchedRoute)\b`
+  const prototype = String.raw`(?:\.\s*prototype\b|\b__proto__\b|\bgetPrototypeOf\s*\([^()]*\))`
+  const members = String.raw`(?:\s*(?:\?\.|\.)\s*[\w$~]+|\s*\[[^\]]*\])`
+  const assigned = String.raw`\s*(?:[-+*/%&|^]|\?\?|&&|\|\||<<|>>>?|\*\*)?=(?![=>])`
   const patterns = [
-    new RegExp(String.raw`${target}\s*(?:\?\.|\.)\s*[\w$~]+\s*(?:[-+*/%&|^]|\?\?|&&|\|\||<<|>>>?|\*\*)?=(?![=>])`, 'g'),
-    new RegExp(String.raw`${target}\s*\[[^\]]*\]\s*(?:[-+*/%&|^]|\?\?|&&|\|\||<<|>>>?|\*\*)?=(?![=>])`, 'g'),
+    new RegExp(String.raw`${target}${members}+${assigned}`, 'g'),
+    new RegExp(String.raw`${prototype}${members}+${assigned}`, 'g'),
     new RegExp(String.raw`\{[^{}]*${target}[^{}]*\}\s*=(?![=>])`, 'g'),
-    new RegExp(String.raw`\b(?:Object\.(?:assign|defineProperty|defineProperties|setPrototypeOf)|Reflect\.(?:set|defineProperty|setPrototypeOf))\s*\(\s*[\w$.?\[\]'"\`~]*${target}`, 'g'),
+    new RegExp(String.raw`\b(?:Object\.(?:assign|defineProperty|defineProperties|setPrototypeOf)|Reflect\.(?:set|defineProperty|setPrototypeOf))\s*\(\s*[\w$.?\[\]'"\`~(]*(?:${target}|${prototype})`, 'g'),
   ]
   return patterns.flatMap(pattern => [...text.matchAll(pattern)].map(match => match[0].replace(/\s+/g, ' ').trim()))
 }

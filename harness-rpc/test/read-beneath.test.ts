@@ -1,6 +1,7 @@
-import { constants, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, constants, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { JsonValue } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LinkAppearedError, openDirectoryBeneath, openRealDirectory, withFileBeneath } from '../common/adapters/beneath.js'
 import { createPathView } from '../common/domain/path-view.js'
@@ -146,5 +147,47 @@ describe('a listing whose named root link flips during the walk (review H1 of th
     const { context } = flipping()
     const found = await findNames({ path: 'L', pattern: '**/client-keys.json', limit: 10, includeIgnored: true }, context) as { matches: string[] }
     expect(found.matches).toEqual([])
+  })
+})
+
+describe('a hard link to Buckle\'s state (review L3 of the second proof-of-possession re-review)', () => {
+  /** A stand-in for agent-browser: `upload <selector> <file>` succeeds and names the file it was handed. */
+  function stubBrowser(root: string): string {
+    const path = join(root, 'agent-browser-stub.mjs')
+    writeFileSync(path, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({ success: true, data: { file: process.argv[4] } }))\n`)
+    chmodSync(path, 0o755)
+    return path
+  }
+
+  async function linked() {
+    const { root, workspace } = fixture()
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'buckle-state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,browser', BUCKLE_AGENT_BROWSER_COMMAND: stubBrowser(root), BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+    const runtime = await createRuntime({ config })
+    // A state file with owner content, and a workspace name for the same file, as a process that can read the state could make.
+    writeFileSync(join(config.stateDirectory, 'owner-state.json'), '{"owner":"secret"}')
+    linkSync(join(config.stateDirectory, 'owner-state.json'), join(workspace, 'linked.json'))
+    const invoke = (tool: string, args: Record<string, JsonValue>) => runtime.invoke({ sessionId: 'reader', request: { requestId: `hard-link-${tool}-${Math.random()}`, tool, args, approvalTokens: [] }, approvalWait: { mode: 'none' } })
+    return { workspace, runtime, invoke }
+  }
+
+  it.each<[string, Record<string, JsonValue>]>([
+    ['fs_read', { path: 'linked.json' }],
+    ['fs_read_batch', { paths: ['linked.json'] }],
+    ['browser_command', { command: 'upload', args: ['#file', 'linked.json'] }],
+  ])('refuses %s of it, and returns none of its content', async (tool, args) => {
+    const { runtime, invoke } = await linked()
+    const result = await invoke(tool, args)
+    expect(result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('hard link on the disk that holds Buckle\'s state') } })
+    expect(JSON.stringify(result)).not.toContain('secret')
+    await runtime.history.close()
+  })
+
+  it('still reads a hard-linked file under node_modules, as pnpm links its store there', async () => {
+    const { workspace, runtime, invoke } = await linked()
+    mkdirSync(join(workspace, 'node_modules', 'left-pad'), { recursive: true })
+    writeFileSync(join(workspace, 'store-file.js'), 'module.exports = 1')
+    linkSync(join(workspace, 'store-file.js'), join(workspace, 'node_modules', 'left-pad', 'index.js'))
+    expect(await invoke('fs_read', { path: 'node_modules/left-pad/index.js' })).toMatchObject({ outcome: 'ok', output: { content: 'module.exports = 1' } })
+    await runtime.history.close()
   })
 })

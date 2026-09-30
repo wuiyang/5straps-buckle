@@ -44,6 +44,8 @@ export interface BuiltinPackOptions {
   agentBrowserCommand: string
   /** Protected browser configuration and daemon identities for this workspace. */
   browserStateDirectory: string
+  /** The longest a call may run, which bounds how long a browser transfer directory can be in use; the node's default when absent. */
+  maxTimeoutMs?: number
   browserHeaded: boolean
   allowHostGit?: boolean
   allowHostLsp?: boolean
@@ -83,7 +85,7 @@ export function unmetPackPrerequisite(id: string, options: Pick<BuiltinPackOptio
 /** The only place built-in packs are constructed. Plugins are appended by the plugin loader. */
 export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const packs: Pack[] = [
-    createFsPack({ paths: options.paths, runProcess: options.runProcess, hasRipgrep: hasExecutable('rg') }),
+    createFsPack({ paths: options.paths, runProcess: options.runProcess, hasRipgrep: hasExecutable('rg'), protectedRoots: options.hiddenPaths }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, allowedHosts: options.allowedHosts, approved: options.approvedUrls }),
     createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, hasGit: hasExecutable('git') }),
     createForgePack({
@@ -110,6 +112,8 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       headed: options.browserHeaded,
       available: hasExecutable(options.agentBrowserCommand),
       approvedLists: options.approvedLists,
+      protectedRoots: options.hiddenPaths,
+      ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
     }),
   ]
 

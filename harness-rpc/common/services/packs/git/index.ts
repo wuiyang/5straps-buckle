@@ -1,12 +1,14 @@
 import { statSync } from 'node:fs'
+import { isAbsolute, join } from 'node:path'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { defineTool, ToolExecutionError } from '../../../domain/tool.js'
+import { defineTool, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
 import { configuredFilterPrograms, ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
+import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
 
@@ -57,13 +59,11 @@ export function createGitPack(options: GitPackOptions): Pack {
     })
   }
 
-  const run = async (input: {
+  const run = async (input: Pick<ToolContext, 'timeoutMs' | 'signal' | 'authorizeReadTarget'> & {
     repo: string
     args: string[]
-    timeoutMs: number
-    signal: AbortSignal
   }): Promise<string> => {
-    const cwd = resolveRepository({ paths: options.paths, repo: input.repo })
+    const cwd = resolveRepository({ paths: options.paths, repo: input.repo, context: input })
     const isolation = isolationConfig(ensureHooksDirectory(options.stateDirectory))
     const keys = await configuredFilterPrograms({
       spawn: args => spawnGit({ cwd, args, config: isolation, timeoutMs: input.timeoutMs, signal: input.signal }),
@@ -125,7 +125,8 @@ export function createGitPack(options: GitPackOptions): Pack {
       risk: 'read',
       tags: ['git'],
       input: blameInput,
-      effects: input => [{ kind: 'read_path', path: input.path }],
+      // The repository is read too, and the file is where git finds it: under the repository (review L5 of the second re-review).
+      effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'read_path', path: isAbsolute(input.path) ? input.path : join(input.repo, input.path) }],
       run: async (input, context): Promise<JsonValue> => {
         const args = ['blame', '--line-porcelain', '--no-textconv']
         if (input.startLine) args.push('-L', `${input.startLine},${input.endLine ?? input.startLine}`)
@@ -158,11 +159,13 @@ export function createGitPack(options: GitPackOptions): Pack {
 }
 
 /**
- * A missing working directory makes `spawn` report `spawn git ENOENT`, which reads as a missing
- * git binary rather than a missing directory. Named here instead, before anything is spawned.
+ * The judged real repository git runs in (judgedPath), never the name: a link swapped between the
+ * check and the run is refused. A missing working directory makes `spawn` report `spawn git ENOENT`,
+ * which reads as a missing git binary rather than a missing directory. Named here instead, before
+ * anything is spawned.
  */
-function resolveRepository(input: { paths: PathView; repo: string }): string {
-  const cwd = input.paths.resolve(input.repo)
+function resolveRepository(input: { paths: PathView; repo: string; context: Pick<ToolContext, 'authorizeReadTarget'> }): string {
+  const cwd = judgedPath({ named: input.repo, kind: 'read', paths: input.paths, context: input.context })
   const stats = statSync(cwd, { throwIfNoEntry: false })
   if (!stats) throw new ToolExecutionError(`No such directory in this workspace: ${input.paths.display(cwd)}`, { code: 'GIT_NO_REPOSITORY' })
   if (!stats.isDirectory()) throw new ToolExecutionError(`Not a directory: ${input.paths.display(cwd)}`, { code: 'GIT_NO_REPOSITORY' })

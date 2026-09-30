@@ -159,15 +159,28 @@ async function signedSweep(): Promise<SignedProbe[]> {
  * method of the table, its data object and its handler. The compiled router answers from module data, so
  * route tables on the app stay empty and prove nothing; this asks the router itself.
  */
-type Internals = { app: Record<string, unknown>; hooks: Record<string, unknown[]>; routes: Map<string, { data: object; handler: unknown }> }
+type Internals = { app: Record<string, unknown>; config: Record<string, unknown>; methods: Record<string, unknown>; hooks: Record<string, unknown[]>; routes: Map<string, { data: object; handler: unknown }> }
 function internals(): Internals {
   const app = buckle.nitroApp.h3 as unknown as Record<string, unknown>
   const hooks = (buckle.nitroApp.hooks as unknown as { _hooks?: Record<string, unknown[]> })._hooks ?? {}
   return {
     app: Object.fromEntries(Object.entries(app).filter(([, value]) => typeof value === 'function')),
+    // Review L11 of the second re-review: the request, response and error hooks h3 calls from the app's config,
+    // and each method the app runs as it resolves it now (its own, or its classes'), so a wrapper on either shows.
+    config: Object.fromEntries(Object.entries(app.config as Record<string, unknown>).filter(([, value]) => typeof value === 'function')),
+    methods: Object.fromEntries(methodNames(app).map(name => [name, app[name]])),
     hooks: Object.fromEntries(Object.entries(hooks).map(([name, list]) => [name, [...list]])),
     routes: matchedRoutes(),
   }
+}
+
+/** Every method name the app's classes define, as the app resolves them. */
+function methodNames(app: object): string[] {
+  const names = new Set<string>()
+  for (let prototype = Object.getPrototypeOf(app) as object | null; prototype && prototype !== Object.prototype; prototype = Object.getPrototypeOf(prototype) as object | null) {
+    for (const name of Object.getOwnPropertyNames(prototype)) if (name !== 'constructor') names.add(name)
+  }
+  return [...names]
 }
 
 /** The paths the route snapshot asks about, filled once, since concretePaths() fills some parameters at random. */
@@ -281,6 +294,12 @@ describe('the guard sweep over every route, method and credential', () => {
     expect(Object.keys(internalsBefore.app)).toEqual(expect.arrayContaining(['fetch', 'handler', '~dispatch', '~findRoute']))
     expect(Object.keys(after.app).sort()).toEqual(Object.keys(internalsBefore.app).sort())
     for (const [name, value] of Object.entries(internalsBefore.app)) expect(after.app[name], name).toBe(value)
+    expect(Object.keys(internalsBefore.config)).toEqual(expect.arrayContaining(['onRequest', 'onError']))
+    expect(internalsBefore.methods).toMatchObject({ fetch: expect.any(Function), handler: expect.any(Function) })
+    for (const part of ['config', 'methods'] as const) {
+      expect(Object.keys(after[part]).sort(), part).toEqual(Object.keys(internalsBefore[part]).sort())
+      for (const [name, value] of Object.entries(internalsBefore[part])) expect(after[part][name], `${part}.${name}`).toBe(value)
+    }
     expect(internalsBefore.routes.size).toBeGreaterThan(500)
     expect([...after.routes.keys()]).toEqual([...internalsBefore.routes.keys()])
     const moved = [...internalsBefore.routes].filter(([key, route]) => after.routes.get(key)?.data !== route.data || after.routes.get(key)?.handler !== route.handler).map(([key]) => key)
@@ -300,6 +319,43 @@ describe('the guard sweep over every route, method and credential', () => {
     expect(() => { (route.data as { handler: unknown }).handler = () => 'swapped' }).toThrow(TypeError)
     expect(() => Object.assign(route.data, { handler: () => 'swapped' })).toThrow(TypeError)
     expect(matchedRoutes().get(key)!.handler).toBe(route.handler)
+  })
+
+  // Review L11 of the second proof-of-possession re-review: a wrapper on the app's config hooks or on the shared h3
+  // prototype passed every check before, while /setup/policy answered 200 with no credential.
+  it('refuses a wrapper on the app\'s request hook: its config is frozen and fixed on the app', async () => {
+    const app = buckle.nitroApp.h3 as unknown as { config: Record<string, unknown> }
+    let ran = false
+    const wrapped = () => { ran = true }
+    expect(() => { app.config.onRequest = wrapped }).toThrow(TypeError)
+    expect(() => { (app as { config: object }).config = { onRequest: wrapped } }).toThrow(TypeError)
+    const response = await buckle.request('/setup/policy', { method: 'GET' })
+    await response.body?.cancel()
+    expect(response.status).toBe(401)
+    expect(ran).toBe(false)
+  })
+
+  it('never runs a wrapper put on the shared h3 prototype: the app runs the methods it was locked with', async () => {
+    const app = buckle.nitroApp.h3 as unknown as Record<string, unknown>
+    const prototype = Object.getPrototypeOf(app) as Record<string, (...args: unknown[]) => unknown>
+    const original = prototype['~request']!
+    let ran = false
+    // A wrapper that would hand every request the node's admin credential.
+    prototype['~request'] = function (this: unknown, ...args: unknown[]) {
+      ran = true
+      const [request, ...rest] = args as [Request, ...unknown[]]
+      const headers = new Headers(request.headers)
+      headers.set('authorization', `Bearer ${NODE_ADMIN}`)
+      return original.call(this, new Request(request, { headers }), ...rest)
+    }
+    try {
+      const response = await buckle.request('/setup/policy', { method: 'GET' })
+      await response.body?.cancel()
+      expect(response.status).toBe(401)
+      expect(ran).toBe(false)
+    } finally {
+      prototype['~request'] = original
+    }
   })
 
   it('admits a signed request only for its purpose: setup naming an open session on a change, approval on the approval routes, a session open without one; a key nobody enrolled nowhere (review L8 of B23-B25)', () => {

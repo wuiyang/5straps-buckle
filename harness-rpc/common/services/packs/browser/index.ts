@@ -13,7 +13,7 @@ import { logger } from '../../../runtime/log.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
-import { prepareTransfer } from './file-transfer.js'
+import { prepareTransfer, sweepTransfers } from './file-transfer.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
@@ -52,12 +52,21 @@ export interface BrowserPackOptions {
    * brings a different list.
    */
   approvedLists: ApprovedList[]
+  /** Buckle's protected roots: an upload of a hard-linked file on their device is refused. */
+  protectedRoots?: readonly string[]
+  /** The longest a call may run; a transfer directory twice as old is left from a stopped node. */
+  maxTimeoutMs?: number
 }
+
+/** The node's own default for the longest call, when the pack is built without one. */
+const DEFAULT_MAX_TIMEOUT_MS = 300_000
 
 /** Names the setting, never its value, which can be a path outside the workspace. */
 export const BROWSER_UNAVAILABLE = 'agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it'
 
 export function createBrowserPack(options: BrowserPackOptions): Pack {
+  // A node that stopped mid-call leaves its transfer copies behind; each pack start clears them (review L4 of the second re-review).
+  sweepTransfers({ directory: options.sessionDirectory, staleAfterMs: 2 * (options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS) })
   const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: { sessions: {}, allowedDomains: {} } })
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
   const allowedDomains = browserAllowedDomains(options.approvedLists)
@@ -100,7 +109,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           if (['screenshot', 'pdf', 'download', 'upload'].includes(input.command) && reads.length + writes.length === 0) throw new ToolInputError('Browser file operations require an explicit path')
           mkdirSync(options.sessionDirectory, { recursive: true, mode: 0o700 })
           // Each file argument is judged where it lands and reaches agent-browser only through a private copy (review items 0 and 4 of the proof-of-possession fixes).
-          const transfer = prepareTransfer({ directory: options.sessionDirectory, paths: options.paths, reads, writes, context })
+          const transfer = await prepareTransfer({ directory: options.sessionDirectory, paths: options.paths, reads, writes, context, protectedRoots: options.protectedRoots ?? [] })
           try {
             const targets = navigationTargets(input.command, input.args)
             const passed = input.args.map((argument, index) => targets.get(index) ?? transfer.argument(argument) ?? realPath(argument, options.paths))
@@ -125,7 +134,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             if (result.exitCode !== 0) {
               throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
             }
-            transfer.deliver()
+            await transfer.deliver()
             if (input.command === 'close') {
               opened.delete(session)
               await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key] })

@@ -3,6 +3,7 @@ import { open, realpath, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
 import { z } from 'zod'
+import { isLinkedOnStateDevice } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { describeProcessFailure } from '../process-failure.js'
@@ -23,6 +24,8 @@ const matchSchema = z.object({
 export async function searchContent(input: {
   args: z.output<typeof schemas.searchInput>; paths: PathView; runProcess: ProcessRunner
   timeoutMs: number; signal: AbortSignal; authorizeRead: (path: string) => Promise<boolean>
+  /** A hard-linked file on the device of one of these is excluded, as fs_read refuses it. */
+  protectedRoots: readonly string[]
 }): Promise<JsonValue> {
   const root = input.paths.resolve(input.args.path)
   const environment = buildChildEnvironment({ parent: process.env, extra: {} })
@@ -44,7 +47,7 @@ export async function searchContent(input: {
       const canonical = await realpath(path)
       const held = await file.stat()
       const current = await stat(canonical)
-      if (!held.isFile() || held.size > MAX_FILE_BYTES || held.ino !== current.ino || held.dev !== current.dev || !await input.authorizeRead(canonical)) {
+      if (!held.isFile() || held.size > MAX_FILE_BYTES || held.ino !== current.ino || held.dev !== current.dev || isLinkedOnStateDevice({ info: held, path: canonical, protectedRoots: input.protectedRoots }) || !await input.authorizeRead(canonical)) {
         excludedFiles += 1
         continue
       }

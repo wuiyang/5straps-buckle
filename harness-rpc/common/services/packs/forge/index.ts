@@ -11,6 +11,7 @@ import { stripSecret } from '../../../domain/redact.js'
 import { defineTool, ToolExecutionError, ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import type { UrlMatcher } from '../../../domain/url-pattern.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
+import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
@@ -174,7 +175,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
       input: commitInput,
       effects: input => [{ kind: 'write_path', path: input.repo }],
       run: async (input, context): Promise<JsonValue> => {
-        const repository = paths.resolve(input.repo)
+        const repository = judgedPath({ named: input.repo, kind: 'write', paths, context })
         assertRepositoryPaths({ repository, named: input.paths })
         assertNoFilters({ repository, paths: input.paths })
         assertNoFilterPrograms({ repository, keys: await filterPrograms({ repository, context }) })
@@ -204,7 +205,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
           throw new ToolInputError('git_push refuses force: true by name. Rewriting a published branch is a shell_exec decision the destructive-command gate asks about.', { code: 'PERMISSION_DENIED' })
         }
         const branch = assertBranchName(input.branch)
-        const repository = paths.resolve(input.repo)
+        const repository = judgedPath({ named: input.repo, kind: 'read', paths, context })
         const remote = await resolvePushRemote({ repository, context })
         // `remote.origin.receivepack` is first-wins in git, so only the command line can reset it.
         const args = ['push', '--receive-pack=git-receive-pack', ...(input.setUpstream ? ['--set-upstream'] : []), 'origin', branch]
@@ -223,7 +224,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
       effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'network', url: forge.apiUrl }],
       run: async (input, context): Promise<JsonValue> => {
         const client = requireClient()
-        const repository = paths.resolve(input.repo)
+        const repository = judgedPath({ named: input.repo, kind: 'read', paths, context })
         const target = forgeRepository(repository)
         const pushed = await runGit({ repository, args: ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${assertBranchName(input.head)}`], context })
         if (pushed.exitCode !== 0) {
@@ -243,7 +244,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
       effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'network', url: forge.apiUrl }],
       run: async (input, context): Promise<JsonValue> => {
         const client = requireClient()
-        const target = forgeRepository(paths.resolve(input.repo))
+        const target = forgeRepository(judgedPath({ named: input.repo, kind: 'read', paths, context }))
         const request = { repository: target, number: input.number, signal: context.signal }
         const pull = await client.readPullRequest(request)
         const result: JsonObject = {
