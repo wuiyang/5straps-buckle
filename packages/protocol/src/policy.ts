@@ -122,6 +122,14 @@ export const ActionReportSchema = BuckleReportBaseSchema.omit({ serverId: true }
   asked: z.array(z.string()).default([]),
   approvedBy: z.array(z.string()).default([]),
   detail: z.string().nullable().default(null),
+  /** The enrolled keys (`key:<fingerprint>`) whose decisions the call used, as the node's own entry names them. */
+  decidedBy: z.array(z.string().max(200)).optional(),
+  /** The standing grants the call relied on, by rule and scope, each with the key that decided it; never a subject. */
+  grantUses: z.array(z.object({ rule: z.string().max(64), scope: z.enum(['session', 'always']), decidedBy: z.string().max(200).optional() })).optional(),
+  /** Who the node's transport authenticated for the call (a credential's actor on the node), with that trust. */
+  actor: z.object({ id: z.string().min(1).max(200), trust: z.literal('authenticated') }).optional(),
+  /** The requester the caller named in its context: a claim kept for correlation, never the actor. */
+  claimedActorId: z.string().max(200).optional(),
 })
 export type ActionReport = z.infer<typeof ActionReportSchema>
 

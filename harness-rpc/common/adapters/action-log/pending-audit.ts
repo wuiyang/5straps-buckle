@@ -16,6 +16,7 @@ const pendingSchema = z.object({
       auditId: z.string(), at: z.string(), requestId: z.string(), sessionId: z.string(), tool: z.string(),
       workspaceId: z.string().optional(), runId: z.string().optional(), stageId: z.string().optional(),
       chatId: z.string().optional(), projectId: z.string().optional(), actorId: z.string().optional(), agentId: z.string().optional(),
+      actorTrust: z.literal('authenticated').optional(), claimedActorId: z.string().optional(), claimedActorTrust: z.literal('claimed').optional(),
       args: z.json(), effects: z.array(z.string()), durationMs: z.number(),
     }),
   })),

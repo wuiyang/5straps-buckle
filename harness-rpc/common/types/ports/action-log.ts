@@ -16,7 +16,19 @@ export interface ActionLogEntry {
   stageId?: string
   chatId?: string
   projectId?: string
+  /**
+   * Who the entry is attributed to: on a tool call, the actor its transport authenticated (`agent:<token
+   * id>`, `workbench:<id>`, `local-owner`, `mcp-stdio`), with `actorTrust` authenticated; on a setup
+   * change, the admin credential or the key that signed it. Never what a caller claims.
+   */
   actorId?: string
+  actorTrust?: 'authenticated'
+  /**
+   * The requester a tool call's caller named in its context (`context.actorId`), kept beside the
+   * authenticated actor with trust claimed, never in its place (GPT review of c71dee5, requester attribution).
+   */
+  claimedActorId?: string
+  claimedActorTrust?: 'claimed'
   agentId?: string
   at: string
   requestId: string

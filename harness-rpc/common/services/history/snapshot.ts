@@ -5,12 +5,23 @@ import { z } from 'zod'
 import { openBeneath, openRealDirectory, type PinnedDirectory } from '../../adapters/beneath.js'
 import { isInside, isInsideAny } from '../../domain/paths.js'
 
-export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink']), mode: z.number(), hash: z.string().optional(), target: z.string().optional() })
+/**
+ * `excluded`: a hard-linked file under a node_modules directory (pnpm links its store there), recorded
+ * without its content. History never restores, removes or rewrites one, so it is left out of every
+ * change set, and a restore that would remove a directory holding one is a conflict.
+ */
+export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded']), mode: z.number(), hash: z.string().optional(), target: z.string().optional() })
 export const snapshotSchema = z.record(z.string(), entrySchema)
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type Entry = z.infer<typeof entrySchema>
 
-export function snapshot(input: { roots: string[]; excluded: string[]; maxBytes: number; save: (hash: string, content: Buffer) => void }): Snapshot {
+/**
+ * `excludeLinkedDependencies`: a history snapshot records a hard-linked file under a node_modules
+ * component as `excluded` instead of refusing the whole snapshot, so a pnpm workspace still records an
+ * unrelated write (GPT review of c71dee5, history snapshots). A hard link anywhere else is still refused,
+ * since restoring one would write through to the other names of the same file.
+ */
+export function snapshot(input: { roots: string[]; excluded: string[]; maxBytes: number; save: (hash: string, content: Buffer) => void; excludeLinkedDependencies?: boolean }): Snapshot {
   const result: Snapshot = {}
   let bytes = 0
   let count = 0
@@ -25,6 +36,10 @@ export function snapshot(input: { roots: string[]; excluded: string[]; maxBytes:
       result[path] = { kind: 'directory', mode }
       for (const name of readdirSync(path)) visit(join(path, name))
     } else if (stat.isFile()) {
+      if (stat.nlink > 1 && input.excludeLinkedDependencies && isLinkedDependency(path)) {
+        result[path] = { kind: 'excluded', mode }
+        return
+      }
       if (stat.nlink > 1) throw new Error('History cannot safely restore hard-linked files')
       bytes += stat.size
       if (bytes > input.maxBytes) throw new Error('History snapshot exceeds its configured byte limit')
@@ -46,8 +61,15 @@ export function snapshot(input: { roots: string[]; excluded: string[]; maxBytes:
   return result
 }
 
+/** The paths whose entry differs, never one excluded on either side: history leaves those as it finds them. */
 export function changedPaths(before: Snapshot, after: Snapshot): string[] {
-  return [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(path => !sameEntry(before[path], after[path])).sort()
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter(path => before[path]?.kind !== 'excluded' && after[path]?.kind !== 'excluded' && !sameEntry(before[path], after[path])).sort()
+}
+
+/** A path with a node_modules component, where pnpm hard-links files from its store. */
+function isLinkedDependency(path: string): boolean {
+  return path.split('/').includes('node_modules')
 }
 
 export function sameEntry(left: Entry | undefined, right: Entry | undefined): boolean {
@@ -84,7 +106,7 @@ export function applySnapshot(input: { target: Snapshot; current: Snapshot; path
         changeMode(directory, name, entry.mode | 0o700, path)
       }
       else if (entry.kind === 'symlink') symlinkSync(entry.target!, directory.child(name))
-      else writeRestoredFile({ directory, name, path, content: input.content(entry.hash!), mode: entry.mode })
+      else if (entry.kind === 'file') writeRestoredFile({ directory, name, path, content: input.content(entry.hash!), mode: entry.mode })
     }
     for (const path of [...input.paths].sort((a, b) => b.length - a.length)) {
       const entry = input.target[path]
@@ -157,5 +179,7 @@ export function assertSnapshotMatches(input: { current: Snapshot; expected: Snap
   }
   for (const path of input.paths) if (input.expected[path]?.kind === 'directory' && input.target[path]?.kind !== 'directory') {
     if (Object.keys(input.current).some(child => child.startsWith(`${path}/`) && !Object.hasOwn(input.expected, child))) throw new Error(`${input.operation} conflict: a directory contains newer files`)
+    // Removing it would remove a file history never captured and leaves untouched.
+    if (Object.entries(input.current).some(([child, entry]) => entry.kind === 'excluded' && child.startsWith(`${path}/`))) throw new Error(`${input.operation} conflict: a directory holds hard-linked dependency files history does not capture`)
   }
 }

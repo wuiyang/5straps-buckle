@@ -237,7 +237,22 @@ it('persists project and agent correlation without changing authorization', asyn
     requestId: 'correlated-call', tool: 'fs_read', args: { path: 'hello.txt' },
     context: { sessionId: 'session-fixture', chatId: 'chat-fixture', projectId: 'project-fixture', actorId: 'owner-fixture', agentId: 'agent-fixture' },
   }) })
-  expect(runtime.actions.read(1)[0]).toMatchObject({ chatId: 'chat-fixture', projectId: 'project-fixture', actorId: 'owner-fixture', agentId: 'agent-fixture' })
+  // GPT review of c71dee5 (requester attribution): the claimed requester sits beside the authenticated actor, never in its place.
+  expect(runtime.actions.read(1)[0]).toMatchObject({ chatId: 'chat-fixture', projectId: 'project-fixture', agentId: 'agent-fixture', actorId: expect.stringMatching(/^agent:/), actorTrust: 'authenticated', claimedActorId: 'owner-fixture', claimedActorTrust: 'claimed' })
+})
+
+it('records the authenticated agent as the actor of a call that forges another requester, and of one that names none', async () => {
+  const send = (requestId: string, context?: object) => app.request('/v1/invoke', { method: 'POST', headers: bearer(AGENT), body: JSON.stringify({ requestId, tool: 'fs_read', args: { path: 'hello.txt' }, ...(context ? { context } : {}) }) })
+  await send('forged-requester', { actorId: 'agent:someone-else' })
+  await send('no-requester')
+  const results = runtime.actions.read(20).filter(entry => entry.tool === 'fs_read' && entry.event === 'result')
+  const forged = results.find(entry => entry.requestId === 'forged-requester')!
+  const unclaimed = results.find(entry => entry.requestId === 'no-requester')!
+  expect(forged).toMatchObject({ actorTrust: 'authenticated', claimedActorId: 'agent:someone-else', claimedActorTrust: 'claimed' })
+  expect(forged.actorId).toMatch(/^agent:/)
+  expect(forged.actorId).not.toBe('agent:someone-else')
+  expect(unclaimed).toMatchObject({ actorId: forged.actorId, actorTrust: 'authenticated' })
+  expect(unclaimed).not.toHaveProperty('claimedActorId')
 })
 
 it('records MCP transport failures and setup authentication rejection without submitted secrets', async () => {

@@ -81,7 +81,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     }))
   }
   function capture(connection: DatabaseSync, roots: string[], extraExcluded: string[] = []): Snapshot {
-    return snapshot({ roots, excluded: [...excluded, ...extraExcluded], maxBytes: input.maxBytes, save(hash, content) {
+    return snapshot({ roots, excluded: [...excluded, ...extraExcluded], maxBytes: input.maxBytes, excludeLinkedDependencies: true, save(hash, content) {
       connection.prepare('INSERT OR IGNORE INTO objects(hash,content) VALUES(?,?)').run(hash, content)
       checkBudget(connection)
     } })

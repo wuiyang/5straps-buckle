@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
+import { snapshot } from '../common/services/history/snapshot.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
@@ -204,3 +205,92 @@ function openDescriptors(directory: string): string[] {
     }
   })
 }
+
+// GPT review of c71dee5 (history snapshots, P2): every history root is snapshotted before a tracked write, and a
+// hard-linked file anywhere refused the snapshot, so a pnpm node_modules blocked an unrelated fs_write.
+describe('history beside a pnpm-style hard-linked node_modules', () => {
+  /** A workspace whose node_modules holds a file hard-linked from a store outside it, as pnpm lays it out. */
+  async function linkedWorkspace() {
+    const setup = await fixture()
+    const store = join(setup.root, 'store'); mkdirSync(store)
+    writeFileSync(join(store, 'index.js'), 'module.exports = 1\n')
+    const linked = join(setup.workspace, 'node_modules', '.pnpm', 'left-pad@1.3.0', 'node_modules', 'left-pad', 'index.js')
+    mkdirSync(join(linked, '..'), { recursive: true })
+    linkSync(join(store, 'index.js'), linked)
+    return { ...setup, store, linked }
+  }
+
+  it('records and restores an unrelated write, and leaves the hard-linked file as it is', async () => {
+    const { workspace, history, details, linked } = await linkedWorkspace()
+    await history.run(details, async () => { writeFileSync(join(workspace, 'notes.md'), 'hello') })
+    const [checkpoint] = await history.list()
+    expect(checkpoint).toMatchObject({ status: 'complete', paths: [join(workspace, 'notes.md')] })
+    await history.restore(checkpoint!.id)
+    expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
+    expect(readFileSync(linked, 'utf8')).toBe('module.exports = 1\n')
+    expect(statSync(linked).nlink).toBe(2)
+  })
+
+  it('records the hard-linked file as excluded, without its content, and never restores a change to it', async () => {
+    const { workspace, history, details, linked, store } = await linkedWorkspace()
+    const saved: Buffer[] = []
+    const captured = snapshot({ roots: [workspace], excluded: [], maxBytes: 1_000_000, excludeLinkedDependencies: true, save: (_, content) => { saved.push(content) } })
+    expect(captured[linked]).toEqual({ kind: 'excluded', mode: statSync(linked).mode & 0o777 })
+    expect(saved).toEqual([])
+    await history.run(details, async () => { writeFileSync(linked, 'module.exports = 2\n'); writeFileSync(join(workspace, 'notes.md'), 'x') })
+    await history.restore((await history.list())[0]!.id)
+    // What history never captured it never rewrites, through this name or the store's.
+    expect(readFileSync(join(store, 'index.js'), 'utf8')).toBe('module.exports = 2\n')
+    expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
+  })
+
+  it('leaves a hard-linked dependency out of the change set when a call removes it, and restores the rest', async () => {
+    const { workspace, history, details, linked } = await linkedWorkspace()
+    await history.run(details, async () => { rmSync(linked); writeFileSync(join(workspace, 'notes.md'), 'x') })
+    const [checkpoint] = await history.list()
+    expect(checkpoint!.paths).toEqual([join(workspace, 'notes.md')])
+    await history.restore(checkpoint!.id)
+    expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
+    expect(existsSync(linked)).toBe(false)
+  })
+
+  it('refuses, before changing anything, a restore that would remove a directory holding a hard-linked dependency', async () => {
+    const { workspace, history, details, store } = await linkedWorkspace()
+    const added = join(workspace, 'node_modules', '.pnpm', 'is-odd@3.0.1', 'node_modules', 'is-odd')
+    await history.run(details, async () => {
+      mkdirSync(added, { recursive: true })
+      linkSync(join(store, 'index.js'), join(added, 'index.js'))
+      writeFileSync(join(workspace, 'notes.md'), 'x')
+    })
+    await expect(history.restore((await history.list())[0]!.id)).rejects.toThrow('Restore conflict: a directory holds hard-linked dependency files history does not capture')
+    expect(readFileSync(join(added, 'index.js'), 'utf8')).toBe('module.exports = 1\n')
+    expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('x')
+  })
+
+  it('still refuses a hard link outside node_modules, and a snapshot that is not history\'s', async () => {
+    const { workspace, history, details, store } = await linkedWorkspace()
+    linkSync(join(store, 'index.js'), join(workspace, 'linked-elsewhere.js'))
+    await expect(history.run(details, async () => { writeFileSync(join(workspace, 'notes.md'), 'x') })).rejects.toThrow('History cannot safely restore hard-linked files')
+    expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
+    rmSync(join(workspace, 'linked-elsewhere.js'))
+    expect(() => snapshot({ roots: [workspace], excluded: [], maxBytes: 1_000_000, save: () => {} })).toThrow('History cannot safely restore hard-linked files')
+  })
+
+  it('lets fs_write run in a workspace whose node_modules is hard-linked, and restores it', async () => {
+    const { root, workspace, linked } = await linkedWorkspace()
+    const runtime = await createRuntime({ config: loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }) })
+    try {
+      const request = { requestId: 'linked-write', tool: 'fs_write', args: { path: 'notes.md', content: 'hello' }, approvalTokens: [] as string[], context: { approvalWait: { mode: 'none' as const } } }
+      const asked = await runtime.invoke({ sessionId: 's', request })
+      if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
+      for (const approval of asked.approvals) await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, authority: 'admin' })
+      expect(await runtime.invoke({ sessionId: 's', request: { ...request, requestId: 'linked-write-2' } })).toMatchObject({ outcome: 'ok' })
+      expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('hello')
+      const [checkpoint] = await runtime.history.list()
+      expect(checkpoint).toMatchObject({ tool: 'fs_write', paths: [join(workspace, 'notes.md')] })
+      await runtime.history.restore(checkpoint!.id)
+      expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
+      expect(statSync(linked).nlink).toBe(2)
+    } finally { await runtime.approvalService.close(); await runtime.history.close() }
+  })
+})

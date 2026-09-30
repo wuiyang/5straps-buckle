@@ -212,7 +212,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
       if (ran) await options.actions.record(result).catch((error: unknown) => { logger.error('Could not record the result of a call that ran', { auditId, tool: entry.tool, outcome: entry.outcome, error }) })
       else await options.actions.record(result)
       if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
-      reportEntry({ options, entry, denial: gate.denial })
+      reportEntry({ options, entry: result, denial: gate.denial })
       return response
     },
   }
@@ -405,6 +405,12 @@ function reportEntry(input: { options: InvokerOptions; entry: ActionLogEntry; de
     asked: entry.asked ?? [],
     approvedBy: entry.approvedBy ?? [],
     detail: entry.detail ?? null,
+    // The attribution the node's own entry keeps (GPT review of c71dee5, reported audit fields): who decided,
+    // which standing grants it used, who the transport authenticated, and who the caller claims to be.
+    ...(entry.decidedBy ? { decidedBy: entry.decidedBy } : {}),
+    ...(entry.grantUses ? { grantUses: entry.grantUses } : {}),
+    ...(entry.actorId && entry.actorTrust ? { actor: { id: entry.actorId, trust: entry.actorTrust } } : {}),
+    ...(entry.claimedActorId ? { claimedActorId: entry.claimedActorId } : {}),
   })
 }
 
@@ -647,11 +653,21 @@ function inferTruncated(output: unknown): boolean {
   return typeof output === 'object' && output !== null && 'truncated' in output && output.truncated === true
 }
 
-function auditContext(request: InvokeRequest): Pick<ActionLogEntry, 'runId' | 'stageId' | 'chatId' | 'projectId' | 'actorId' | 'agentId'> {
+/**
+ * A call's attribution for its audit entries: the actor its transport authenticated (the one the execution
+ * key joins under), trust authenticated, and the requester the caller claims in its context, trust claimed,
+ * beside it and never in its place (GPT review of c71dee5, requester attribution). The run, stage, chat,
+ * project and agent are the caller's correlation fields, as it sent them.
+ */
+function auditContext(request: InvokeRequest): Pick<ActionLogEntry, 'runId' | 'stageId' | 'chatId' | 'projectId' | 'actorId' | 'actorTrust' | 'claimedActorId' | 'claimedActorTrust' | 'agentId'> {
   const context = request.context
+  const actor = useScopeSafe()?.context.actor
+  const claimed = context?.actorId?.slice(0, MAX_LOGGED_ID)
   return {
     runId: context?.runId?.slice(0, MAX_LOGGED_ID), stageId: context?.stageId?.slice(0, MAX_LOGGED_ID),
     chatId: context?.chatId?.slice(0, MAX_LOGGED_ID), projectId: context?.projectId?.slice(0, MAX_LOGGED_ID),
-    actorId: context?.actorId?.slice(0, MAX_LOGGED_ID), agentId: context?.agentId?.slice(0, MAX_LOGGED_ID),
+    agentId: context?.agentId?.slice(0, MAX_LOGGED_ID),
+    ...(actor ? { actorId: actor.slice(0, MAX_LOGGED_ID), actorTrust: 'authenticated' as const } : {}),
+    ...(claimed ? { claimedActorId: claimed, claimedActorTrust: 'claimed' as const } : {}),
   }
 }

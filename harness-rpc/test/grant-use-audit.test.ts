@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { InvokeResponse } from '@5straps/protocol'
+import { ActionReportSchema, type ActionReport, type InvokeResponse } from '@5straps/protocol'
+import { createOperationScope, runInScope } from '@5straps/runtime'
 import { afterEach, describe, expect, it } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -25,9 +26,10 @@ async function node() {
   mkdirSync(join(root, 'workspace'))
   mkdirSync(join(root, 'outside'))
   const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
-  const runtime = await createRuntime({ config })
+  const reports: ActionReport[] = []
+  const runtime = await createRuntime({ config, reporter: { configured: true, record: entry => { reports.push(entry) }, report: async () => {}, flush: async () => {} } })
   runtimes.push(runtime)
-  return { root, runtime }
+  return { root, runtime, reports }
 }
 
 function write(runtime: BuckleRuntime, requestId: string, path: string): Promise<InvokeResponse> {
@@ -61,5 +63,37 @@ describe('a call that uses a standing grant', () => {
     const entry = resultOf(runtime, 'use-2')!
     expect(entry.grantUses).toEqual([{ rule: 'write_scope', scope: 'session' }])
     expect(entry.decidedBy).toBeUndefined()
+  })
+})
+
+// GPT review of c71dee5: the caller's context.actorId was recorded as the actor (requester attribution), and the
+// report forwarded to Rings left out the deciding key and the grants a call used (reported audit fields).
+describe('who a call is attributed to, locally and in its report', () => {
+  const owner = Symbol('grant-use-audit')
+  const asAgent = <T>(actor: string, run: () => Promise<T>) => runInScope(createOperationScope({ owner, context: { actor } }), run)
+  const invoke = (runtime: BuckleRuntime, requestId: string, path: string, actorId?: string) => runtime.invoke({ sessionId: 'chat-1', request: { requestId, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [], context: { approvalWait: { mode: 'none' }, ...(actorId === undefined ? {} : { actorId }) } } })
+
+  it('keeps the authenticated actor when a caller forges another requester, beside the claim, and forwards both with the grant attribution', async () => {
+    const { root, runtime, reports } = await node()
+    const asked = await asAgent('agent:token-a', () => invoke(runtime, 'ask-3', join(root, 'outside', 'a.txt')))
+    if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
+    expect((await runtime.approvalService.answer({ decision: { token: asked.approvals[0]!.token, approved: true, scope: 'session' }, authority: 'admin', decidedBy: KEY })).ok).toBe(true)
+    expect(await asAgent('agent:token-a', () => invoke(runtime, 'forged-3', join(root, 'outside', 'b.txt'), 'agent:someone-else'))).toMatchObject({ outcome: 'ok' })
+    expect(resultOf(runtime, 'forged-3')).toMatchObject({ actorId: 'agent:token-a', actorTrust: 'authenticated', claimedActorId: 'agent:someone-else', claimedActorTrust: 'claimed' })
+    const reported = reports.find(report => report.requestId === 'forged-3' && report.outcome === 'ok')!
+    expect(reported).toMatchObject({ actor: { id: 'agent:token-a', trust: 'authenticated' }, claimedActorId: 'agent:someone-else', decidedBy: [KEY], grantUses: [{ rule: 'write_scope', scope: 'session', decidedBy: KEY }] })
+    // The fields are additive: Rings' schema reads them, and one built before them strips them.
+    expect(ActionReportSchema.parse(reported)).toMatchObject({ actor: reported.actor, decidedBy: [KEY] })
+  })
+
+  it('keeps the transport attribution of a call that names no requester, and claims nothing', async () => {
+    const { root, runtime, reports } = await node()
+    await asAgent('agent:token-b', () => invoke(runtime, 'plain-4', join(root, 'workspace', 'a.txt')))
+    const entry = resultOf(runtime, 'plain-4')!
+    expect(entry).toMatchObject({ actorId: 'agent:token-b', actorTrust: 'authenticated' })
+    expect(entry).not.toHaveProperty('claimedActorId')
+    const reported = reports.find(report => report.requestId === 'plain-4')!
+    expect(reported.actor).toEqual({ id: 'agent:token-b', trust: 'authenticated' })
+    expect(reported).not.toHaveProperty('claimedActorId')
   })
 })
