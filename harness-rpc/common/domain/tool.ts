@@ -35,6 +35,11 @@ export type NetworkVerdict = { kind: 'granted' } | { kind: 'allowed' } | { kind:
 
 export interface ToolDefinition<TInput, TJudged = undefined> {
   managesHistory?: boolean
+  /**
+   * Runs under the workspace's history write lock even where it declares no write, so no other call writes
+   * while it runs: git_push, whose launch checks read the repository config git then reads (review H3).
+   */
+  exclusive?: boolean
   name: string
   description: string
   risk: CapabilityRisk
@@ -64,6 +69,7 @@ export interface RegisteredTool {
 
 export interface PreparedCall {
   managesHistory?: boolean
+  exclusive?: boolean
   effects: ToolEffect[]
   execute(context: ToolContext): Promise<JsonValue>
 }
@@ -112,6 +118,7 @@ export function defineTool<TInput, TJudged = undefined>(pack: string, definition
       const judged = (definition.judge ? definition.judge(input) : undefined) as TJudged
       return {
         managesHistory: definition.managesHistory,
+        exclusive: definition.exclusive,
         effects: definition.effects(input, judged),
         execute: context => definition.run(input, context, judged),
       }

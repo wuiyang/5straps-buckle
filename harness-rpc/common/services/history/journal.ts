@@ -143,6 +143,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         try { return await execute() } finally { await finish(record) }
       }, signal)
     },
+    /** Runs `execute` under the workspace's execution lock with no checkpoint: it writes nothing history restores, and nothing else writes while it runs. */
+    exclusive<T>(execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+      return locked(execute, signal)
+    },
     async promote(details: HistoryInput, expected: Snapshot, target: Snapshot, content: (hash: string) => Buffer, onCheckpoint?: () => void) {
       return locked(async () => {
         const paths = changedPaths(expected, target)

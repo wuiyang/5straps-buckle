@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { createServer as createSocketServer, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createGitHubForgeClient } from '../common/adapters/forge/github.js'
 import { runProcess } from '../common/adapters/process-runner.js'
 import { loadConfig } from '../common/runtime/config.js'
@@ -15,6 +15,25 @@ import { createForgePack, type ForgePackOptions } from '../common/services/packs
 import type { ProcessRequest, ProcessResult } from '../common/types/ports/process-runner.js'
 import type { ToolContext } from '../common/domain/tool.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { resolveEffects } from '../common/services/invocation/resolve-effects.js'
+import type { PathView } from '../common/domain/path-view.js'
+import { startGitHttp, type GitHttpServer } from './support/git-http.js'
+
+/**
+ * The runtime's process runner, passed through, with a hook a test may set to act just before git is
+ * spawned for a push: where a change between the launch checks and git reading its config would land.
+ */
+const spawnHook = vi.hoisted(() => ({ beforePush: null as null | (() => Promise<void>) }))
+vi.mock('../common/adapters/process-runner.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../common/adapters/process-runner.js')>()
+  return {
+    ...actual,
+    runProcess: async (request: Parameters<typeof actual.runProcess>[0]) => {
+      if (request.command === 'git' && request.args[0] === 'push' && spawnHook.beforePush) await spawnHook.beforePush()
+      return await actual.runProcess(request)
+    },
+  }
+})
 
 const TOKEN = 'ghp-forge-pack-secret-value'
 const BASIC = Buffer.from(`x-access-token:${TOKEN}`).toString('base64')
@@ -102,10 +121,10 @@ function bareOrigin(): { origin: string; repository: string } {
   return { origin, repository }
 }
 
-function pack(input: { repository: string; token?: string; runner?: typeof runProcess; approved?: string[] }) {
+function pack(input: { repository: string; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView }) {
   const token = input.token ?? TOKEN
   const options: ForgePackOptions = {
-    paths: createPathView({ root: input.repository, mount: null }),
+    paths: input.paths ?? createPathView({ root: input.repository, mount: null }),
     runProcess: input.runner ?? runProcess,
     stateDirectory: temporaryRoot('state'),
     forge: {
@@ -121,7 +140,7 @@ function pack(input: { repository: string; token?: string; runner?: typeof runPr
   return createForgePack(options)
 }
 
-async function call(input: { repository: string; tool: string; args: JsonObject; token?: string; runner?: typeof runProcess; approved?: string[] }): Promise<JsonValue> {
+async function call(input: { repository: string; tool: string; args: JsonObject; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView }): Promise<JsonValue> {
   const built = pack(input)
   const tool = built.tools.find(candidate => candidate.capability.name === input.tool)
   if (!tool) throw new Error(`the forge pack registered no ${input.tool}`)
@@ -284,7 +303,7 @@ describe('git_push', () => {
   it('declares a write on a local remote and a network reach on an https one', () => {
     const { origin, repository } = bareOrigin()
     expect(effectsOf({ repository, tool: 'git_push', args: { branch: 'main' } }))
-      .toEqual([{ kind: 'read_path', path: '.' }, { kind: 'write_path', path: origin }])
+      .toEqual([{ kind: 'read_path', path: '.' }, { kind: 'write_path', path: origin, host: true }])
     const remote = workRepository({ origin: 'https://github.com/5straps/demo.git' })
     expect(effectsOf({ repository: remote, tool: 'git_push', args: { branch: 'main' } }))
       .toEqual([{ kind: 'read_path', path: '.' }, { kind: 'network', url: 'https://github.com' }])
@@ -483,7 +502,7 @@ describe('git_push goes to the destination its permission check judged, or nowhe
     const { origin, repository } = bareOrigin()
     committed(repository)
     const push = prepared({ repository })
-    expect(push.effects).toEqual([{ kind: 'read_path', path: '.' }, { kind: 'write_path', path: origin }])
+    expect(push.effects).toEqual([{ kind: 'read_path', path: '.' }, { kind: 'write_path', path: origin, host: true }])
     const moved = other()
     git(repository, 'remote', 'set-url', 'origin', moved)
     await expect(push.run()).rejects.toThrow(`origin resolves to ${moved}, not the ${origin} the permission rules judged`)
@@ -539,12 +558,164 @@ describe('git_push goes to the destination its permission check judged, or nowhe
     symlinkSync(origin, link)
     git(repository, 'remote', 'set-url', 'origin', link)
     const push = prepared({ repository })
-    expect(push.effects).toEqual([{ kind: 'read_path', path: '.' }, { kind: 'write_path', path: origin }])
+    expect(push.effects).toEqual([{ kind: 'read_path', path: '.' }, { kind: 'write_path', path: origin, host: true }])
     await expect(push.run({ authorizeWrite: () => false })).rejects.toThrow(/did not judge as a write/)
     expect(hasMain(origin)).toBe(false)
     expect(await push.run({ authorizeWrite: target => target === origin })).toMatchObject({ remote: origin })
     expect(hasMain(origin)).toBe(true)
   })
+})
+
+// Review H3: git reads a push argument as a remote name before it reads it as a URL, and applies every
+// insteadOf and pushInsteadOf rule matching it, so a remote named by the judged URL redirected every push, and
+// a rule written after the launch check still applied. The launch checks now read every remote name and rule
+// git reads, against the exact destination git is handed, and git_push runs under the workspace's write lock.
+describe('git_push is sent where no remote name or rewrite rule redirects it (review H3)', () => {
+  const servers: GitHttpServer[] = []
+  afterEach(async () => {
+    spawnHook.beforePush = null
+    for (const started of servers.splice(0)) await started.close()
+  })
+
+  /** A repository served over git's smart HTTP, a work repository whose origin it is, and a bare repository elsewhere. */
+  async function served(): Promise<{ server: GitHttpServer; judged: string; origin: string; repository: string; other: string }> {
+    const root = temporaryRoot('served')
+    const judged = join(root, 'repos', 'team', 'demo.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', judged])
+    const server = await startGitHttp({ projectRoot: join(root, 'repos') })
+    servers.push(server)
+    const origin = `${server.url}/team/demo.git`
+    const repository = workRepository({ origin })
+    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+    git(repository, 'add', 'kept.txt')
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '-m', 'first')
+    const other = join(root, 'other.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', other])
+    return { server, judged, origin, repository, other }
+  }
+  const hasMain = (bare: string) => { try { execFileSync('git', ['-C', bare, 'rev-parse', '--verify', 'main'], { stdio: 'pipe' }); return true } catch { return false } }
+
+  it('refuses a push while a remote is named by the judged URL, and pushes nowhere', async () => {
+    const { server, judged, origin, repository, other } = await served()
+    git(repository, 'config', `remote.${origin}.url`, other)
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, approved: [new URL(server.url).host] }))
+      .rejects.toThrow(/names a remote .*which is a URL or a path/)
+    expect([hasMain(judged), hasMain(other)]).toEqual([false, false])
+  })
+
+  it('refuses a rewrite rule matching the path git is handed, though origin as written is a link it never matches', async () => {
+    const { origin, repository } = bareOrigin()
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    const link = join(temporaryRoot('link'), 'origin-link.git')
+    symlinkSync(origin, link)
+    git(repository, 'remote', 'set-url', 'origin', link)
+    const other = join(temporaryRoot('other'), 'other.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', other])
+    git(repository, 'config', `url.${other}.pushInsteadOf`, origin)
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } })).rejects.toThrow(/insteadOf or pushInsteadOf rule rewrites/)
+    expect([hasMain(origin), hasMain(other)]).toEqual([false, false])
+  })
+
+  it('holds every write in the workspace while it runs, so a rule written between the check and the spawn waits and redirects nothing', async () => {
+    const { server, judged, origin, repository, other } = await served()
+    const state = join(temporaryRoot('lock-state'), 'state')
+    const config = loadConfig({
+      BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
+      BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl,
+      BUCKLE_NETWORK_ALLOW: new URL(server.url).host,
+    })
+    const runtime = await createRuntime({ config })
+    // The session may write .git, as a person who approved a write there once for the session allows.
+    await runtime.grants.grant({ sessionId: 'forge-session', rule: 'write_scope', subject: realpathSync(join(repository, '.git')), scope: 'session' })
+    const configPath = join(repository, '.git', 'config')
+    const rewritten = `${readFileSync(configPath, 'utf8')}[url "${other}"]\n\tpushInsteadOf = ${origin}\n`
+    let writing: Promise<unknown> | null = null
+    let landedBeforeSpawn: boolean | null = null
+    spawnHook.beforePush = async () => {
+      spawnHook.beforePush = null
+      // An agent call writing the rule after the launch checks passed: it must wait for the push.
+      writing = runtime.invoke({ sessionId: 'forge-session', request: { requestId: 'rewrite', tool: 'fs_write', args: { path: '.git/config', content: rewritten }, approvalTokens: [] } })
+      landedBeforeSpawn = await Promise.race([writing.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 600))])
+    }
+    const pushed = await runtime.invoke({ sessionId: 'forge-session', request: { requestId: 'push-1', tool: 'git_push', args: { branch: 'main' }, approvalTokens: [] } })
+    expect(pushed).toMatchObject({ outcome: 'ok', output: { remote: origin } })
+    expect(landedBeforeSpawn).toBe(false)
+    expect([hasMain(judged), hasMain(other)]).toEqual([true, false])
+    expect(await writing).toMatchObject({ outcome: 'ok' })
+    expect(readFileSync(configPath, 'utf8')).toContain('pushInsteadOf')
+    // Present at the next check, the rule is refused there.
+    expect(await runtime.invoke({ sessionId: 'forge-session', request: { requestId: 'push-2', tool: 'git_push', args: { branch: 'main' }, approvalTokens: [] } }))
+      .toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringMatching(/insteadOf or pushInsteadOf rule rewrites/) } })
+    expect(hasMain(other)).toBe(false)
+    await runtime.approvalService.close()
+    await runtime.history.close()
+  })
+})
+
+// Review M4: git is handed the judged URL without its userinfo, and isolation leaves it no helper or prompt, so
+// a push to an approved non-forge origin that authenticates with userinfo failed where it worked before.
+describe('a push to an approved https origin that names userinfo (review M4)', () => {
+  it('sends the userinfo as a Basic header scoped to the judged URL, never on argv, and shows it nowhere', async () => {
+    const root = temporaryRoot('userinfo')
+    const judged = join(root, 'repos', 'team', 'demo.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', judged])
+    const password = 'Pa55-userinfo-5ecret'
+    const server = await startGitHttp({ projectRoot: join(root, 'repos'), basic: { user: 'alice', password } })
+    try {
+      // Named as localhost, so it is not the scripted forge's host (127.0.0.1), whose token would be sent instead.
+      const host = server.url.replace('127.0.0.1', 'localhost')
+      const display = `${host}/team/demo.git`
+      const repository = workRepository({ origin: display.replace('http://', `http://alice:${password}@`) })
+      writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+      git(repository, 'add', 'kept.txt')
+      git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '-m', 'first')
+      const calls: ProcessRequest[] = []
+      const output = await call({ repository, tool: 'git_push', args: { branch: 'main' }, approved: [new URL(host).host], runner: async (request) => { calls.push(request); return await runProcess(request) } }) as JsonObject
+      expect(output).toMatchObject({ branch: 'main', remote: display, headSha: git(judged, 'rev-parse', 'main').trim() })
+      const push = calls.find(request => request.args[0] === 'push')!
+      expect(push.args).toContain(display)
+      expect(gitConfigOf(push.environment)[`http.${display}.extraheader`]).toBe(`Authorization: Basic ${Buffer.from(`alice:${password}`).toString('base64')}`)
+      expect(server.authorizations).toContain(`Basic ${Buffer.from(`alice:${password}`).toString('base64')}`)
+      expect(JSON.stringify(output)).not.toContain(password)
+      expect(JSON.stringify(calls.map(request => request.args))).not.toContain(password)
+      const effects = effectsOf({ repository, tool: 'git_push', args: { branch: 'main' } })
+      expect(JSON.stringify(effects)).not.toContain(password)
+
+      // Through a node: the result and the audit log carry no form of it either.
+      const state = join(root, 'state')
+      const runtime = await createRuntime({ config: loadConfig({
+        BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
+        BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl, BUCKLE_NETWORK_ALLOW: new URL(host).host,
+      }) })
+      git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'second')
+      const response = await runtime.invoke({ sessionId: 'forge-session', request: { requestId: 'userinfo-push', tool: 'git_push', args: { branch: 'main' }, approvalTokens: [] } })
+      expect(response).toMatchObject({ outcome: 'ok', output: { remote: display, headSha: git(judged, 'rev-parse', 'main').trim() } })
+      await runtime.approvalService.close()
+      await runtime.history.close()
+      const basic = Buffer.from(`alice:${password}`).toString('base64')
+      for (const form of [password, basic]) {
+        expect(JSON.stringify(response)).not.toContain(form)
+        expect(readFileSync(join(state, 'actions.jsonl'), 'utf8')).not.toContain(form)
+      }
+    } finally { await server.close() }
+  })
+})
+
+// Review L4: a local destination is a host path, and the agent's view took one under the mount's name for its own.
+it('judges a local push destination at its host path under a mount (review L4)', async () => {
+  const mount = temporaryRoot('mounted')
+  const workspace = join(mount, 'proj')
+  mkdirSync(workspace)
+  const origin = join(workspace, 'bare.git')
+  execFileSync('git', ['init', '--bare', '-q', '-b', 'main', origin])
+  const repository = join(workspace, 'work')
+  execFileSync('git', ['init', '-q', '-b', 'main', repository])
+  git(repository, 'remote', 'add', 'origin', origin)
+  const paths = createPathView({ root: workspace, mount })
+  const tool = pack({ repository, paths }).tools.find(candidate => candidate.capability.name === 'git_push')!
+  const effects = await resolveEffects({ effects: tool.prepare({ repo: `${mount}/work`, branch: 'main' }).effects, paths })
+  expect(effects).toContainEqual({ kind: 'write_path', path: origin, directory: origin })
+  expect(effects).not.toContainEqual(expect.objectContaining({ path: join(workspace, 'proj', 'bare.git') }))
 })
 
 /** Answers the git calls a push makes, so the environment can be inspected without a server. */
@@ -553,8 +724,8 @@ function scriptedGit(calls: ProcessRequest[], pushUrl: string): typeof runProces
     calls.push(request)
     const ok = (stdout: string): ProcessResult => ({ exitCode: 0, signal: null, stdout, stderr: '', truncated: false, timedOut: false })
     if (request.args[0] === 'config') {
-      // Exit 1 is git's answer for a key the config does not hold.
-      if (request.args.includes('remote.origin.pushurl')) return { ...ok(''), exitCode: 1 }
+      // Exit 1 is git's answer for a key the config does not hold, and for a pattern nothing matches.
+      if (request.args.includes('remote.origin.pushurl') || request.args.includes('--get-regexp')) return { ...ok(''), exitCode: 1 }
       return ok(`${pushUrl}\n`)
     }
     if (request.args[0] === 'remote') return ok(`${pushUrl}\n`)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, hasFlag, parseArgv, shownCommand } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shownCommand } from '../common/domain/argv.js'
 
 describe('parseArgv', () => {
   it('expands clustered short flags', () => {
@@ -26,6 +26,28 @@ describe('parseArgv', () => {
 
   it('reduces a path to its base command', () => {
     expect(parseArgv('/usr/bin/rm', []).command).toBe('rm')
+  })
+})
+
+// Review M6: the subcommand git runs sits after git's own options and their values.
+describe('gitInvocation', () => {
+  it.each<[string[], string | null, string[]]>([
+    [['-C', '.', 'push', '--force'], 'push', ['--force']],
+    [['-c', 'k=v', 'push', '-f'], 'push', ['-f']],
+    [['--git-dir', '.git', '--work-tree', '.', 'reset', '--hard'], 'reset', ['--hard']],
+    [['--git-dir=.git', '-p', '--bare', '--no-optional-locks', 'clean', '-fdx'], 'clean', ['-fdx']],
+    [['--namespace', 'n', '--config-env', 'k=ENV', '--exec-path=/x', 'checkout', '-f'], 'checkout', ['-f']],
+    [['-C', 'a', '--', 'push', '--force'], 'push', ['--force']],
+    [['--literal-pathspecs', '--icase-pathspecs', 'status'], 'status', []],
+    [['-C', 'only'], null, []],
+  ])('finds the subcommand of git %j', (args, subcommand, rest) => {
+    expect(gitInvocation(args)).toEqual({ subcommand, args: rest })
+  })
+
+  it('names that subcommand in parseArgv for git alone', () => {
+    expect(parseArgv('git', ['-C', '.', 'push', '--force']).subcommand).toBe('push')
+    expect(parseArgv('/usr/bin/git', ['--git-dir', '.git', 'Reset']).subcommand).toBe('reset')
+    expect(parseArgv('pnpm', ['-C', '.', 'build']).subcommand).toBe('.')
   })
 })
 

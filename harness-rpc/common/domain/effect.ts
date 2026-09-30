@@ -7,7 +7,12 @@ import { redactShownText } from './redact.js'
  */
 export type ToolEffect =
   | { kind: 'read_path'; path: string }
-  | { kind: 'write_path'; path: string }
+  /**
+   * `host`: the path is the host's own, settled by the tool (a push's local destination by its real path),
+   * so it is judged where it is and never read through the agent's view, where a mount would take a host
+   * path under its name for one of its own (review L4).
+   */
+  | { kind: 'write_path'; path: string; host?: true }
   | { kind: 'network'; url: string }
   | { kind: 'exec'; command: string; args: string[] }
   | { kind: 'process_probe' }

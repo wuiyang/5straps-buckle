@@ -18,7 +18,9 @@ export async function resolveEffects(input: { effects: ToolEffect[]; paths: Path
 
 async function resolveOne(effect: ToolEffect, paths: PathView): Promise<ResolvedEffect> {
   if (effect.kind === 'read_path' || effect.kind === 'write_path') {
-    const path = await realPathOrPlanned(paths.resolve(effect.path))
+    // A host path the tool settled is judged as resolveHostRead judges one, never through the agent's view.
+    const named = effect.kind === 'write_path' && effect.host ? effect.path : paths.resolve(effect.path)
+    const path = await realPathOrPlanned(named)
     return { kind: effect.kind, path, directory: await containingDirectory(path) }
   }
   if (effect.kind === 'network') {

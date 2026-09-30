@@ -121,10 +121,32 @@ describe('destructive commands', () => {
     expect(outcome.asks.some(ask => ask.rule === 'destructive_command')).toBe(true)
   })
 
+  // Review M6: git's own options before the subcommand hid it from the gate, so these ran on a write grant alone.
+  it.each([
+    ['git', ['-C', '.', 'push', '--force']],
+    ['git', ['-c', 'k=v', 'push', '--force']],
+    ['git', ['-C', '.', 'reset', '--hard']],
+    ['git', ['-C', '.', 'clean', '-fdx']],
+    ['git', ['-C', '.', 'checkout', '-f']],
+    ['git', ['--git-dir', '.git', 'push', '-f']],
+    ['git', ['--git-dir=.git', '--work-tree', '.', '--no-pager', '-c', 'a=b', 'push', '--force-with-lease']],
+    ['git', ['--namespace', 'n', '--config-env', 'k=ENV', '-P', 'reset', '--hard']],
+    ['git', ['-C', '.', '--', 'push', '--force']],
+  ])('gates %s %s past git\'s own options', (command, args) => {
+    const outcome = evaluate([exec(command, args)], { write_scope: ['/'] })
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind !== 'ask') return
+    expect(outcome.asks.some(ask => ask.rule === 'destructive_command')).toBe(true)
+  })
+
   it.each([
     ['pnpm', ['build']],
     ['git', ['push']],
     ['git', ['status']],
+    ['git', ['-C', '.', 'push']],
+    ['git', ['-c', 'push.default=current', 'push', 'origin', 'main']],
+    ['git', ['-C', 'force', 'status']],
+    ['git', ['push', '--', '--force']],
     ['rm', ['one-file.txt']],
     ['node', ['script.js']],
   ])('allows ordinary command %s %s', (command, args) => {

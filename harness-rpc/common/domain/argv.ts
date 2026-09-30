@@ -40,13 +40,33 @@ export function parseArgv(command: string, args: string[]): ParsedArgv {
     for (const character of argument.slice(1)) shortFlags.add(character)
   }
 
+  const base = baseCommand(command)
   return {
-    command: baseCommand(command),
+    command: base,
     shortFlags,
     longFlags,
     positionals,
-    subcommand: positionals[0]?.toLowerCase() ?? null,
+    subcommand: (base === 'git' ? gitInvocation(args).subcommand : positionals[0])?.toLowerCase() ?? null,
   }
+}
+
+/** git's own options before the subcommand that take the next word as their value (git.c, handle_options). */
+const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env', '--attr-source', '--shallow-file'])
+
+/**
+ * The subcommand git runs and the words it hands that subcommand, found as git finds them (review M6): git's
+ * own options come first (`-C <dir>`, `-c <name>=<value>`, `--git-dir <dir>`, `--work-tree <dir>`, the
+ * `--name=value` forms, and the ones with no value such as `-p`, `--no-pager` or `--bare`), and a bare `--`
+ * ends them, so the word after it is the subcommand. An unknown option is taken to have no value.
+ */
+export function gitInvocation(args: readonly string[]): { subcommand: string | null; args: string[] } {
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index]!
+    if (word === '--') return { subcommand: args[index + 1] ?? null, args: args.slice(index + 2) }
+    if (!word.startsWith('-') || word === '-') return { subcommand: word, args: args.slice(index + 1) }
+    if (GIT_OPTIONS_WITH_VALUE.has(word)) index++
+  }
+  return { subcommand: null, args: [] }
 }
 
 export function hasFlag(argv: ParsedArgv, short: string | null, ...long: string[]): boolean {

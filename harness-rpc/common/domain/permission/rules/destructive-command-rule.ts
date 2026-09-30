@@ -1,5 +1,5 @@
 import type { ParsedArgv } from '../../argv.js'
-import { commandSubject, hasFlag, parseArgv, shellStatements, statementWords, SHELL_COMMANDS } from '../../argv.js'
+import { commandSubject, gitInvocation, hasFlag, parseArgv, shellStatements, statementWords, SHELL_COMMANDS } from '../../argv.js'
 import type { CommandGlob } from '../../command-glob.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
@@ -30,7 +30,7 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       if (effect.kind !== 'exec') return null
       const argv = parseArgv(effect.command, effect.args)
       const words = [argv.command, ...effect.args]
-      const reason = classifyArgv(argv) ?? classifyShellScript(argv) ?? classifyAdded({ added, argv, words })
+      const reason = classifyArgv(argv, effect.args) ?? classifyShellScript(argv) ?? classifyAdded({ added, argv, words })
       if (!reason) return null
 
       // The shown command and its lossless identity (owner decision D17): never joined, never cut, no
@@ -43,7 +43,7 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
   }
 }
 
-function classifyArgv(argv: ParsedArgv): string | null {
+function classifyArgv(argv: ParsedArgv, args: readonly string[]): string | null {
   if (PRIVILEGE_COMMANDS.has(argv.command)) return `${argv.command} escalates privileges`
   if (DISK_COMMANDS.has(argv.command) || argv.command.startsWith('mkfs.')) return `${argv.command} destroys disk contents`
 
@@ -60,15 +60,19 @@ function classifyArgv(argv: ParsedArgv): string | null {
   if (['kill', 'pkill', 'killall'].includes(argv.command) && hasFlag(argv, '9')) return 'Sends SIGKILL'
   if (argv.positionals.some(item => item.startsWith('/dev/'))) return 'Targets a device node'
 
-  return classifyGit(argv)
+  return classifyGit(argv, args)
 }
 
-function classifyGit(argv: ParsedArgv): string | null {
+/** The subcommand and its flags as git reads them, past git's own options before it (review M6). */
+function classifyGit(argv: ParsedArgv, args: readonly string[]): string | null {
   if (argv.command !== 'git') return null
-  if (argv.subcommand === 'push' && hasFlag(argv, 'f', 'force', 'force-with-lease')) return 'Force push rewrites remote history'
-  if (argv.subcommand === 'reset' && argv.longFlags.has('hard')) return 'git reset --hard discards local work'
-  if (argv.subcommand === 'clean' && hasFlag(argv, 'f', 'force')) return 'git clean deletes untracked files'
-  if (argv.subcommand === 'checkout' && hasFlag(argv, 'f', 'force')) return 'git checkout --force discards local changes'
+  const invocation = gitInvocation(args)
+  const subcommand = invocation.subcommand?.toLowerCase()
+  const flags = parseArgv('git', invocation.args)
+  if (subcommand === 'push' && hasFlag(flags, 'f', 'force', 'force-with-lease')) return 'Force push rewrites remote history'
+  if (subcommand === 'reset' && flags.longFlags.has('hard')) return 'git reset --hard discards local work'
+  if (subcommand === 'clean' && hasFlag(flags, 'f', 'force')) return 'git clean deletes untracked files'
+  if (subcommand === 'checkout' && hasFlag(flags, 'f', 'force')) return 'git checkout --force discards local changes'
   return null
 }
 

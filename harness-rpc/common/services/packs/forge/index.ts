@@ -7,7 +7,7 @@ import type { ForgeClient, ForgeRepository } from '../../../domain/forge.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { isInside } from '../../../domain/paths.js'
-import { stripSecret } from '../../../domain/redact.js'
+import { redactShownText, stripSecret } from '../../../domain/redact.js'
 import { defineTool, ToolExecutionError, ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import type { UrlMatcher } from '../../../domain/url-pattern.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
@@ -87,7 +87,8 @@ export function createForgePack(options: ForgePackOptions): Pack {
     })
   }
 
-  const scrub = (text: string): string => credentialForms(forge.token).reduce(stripSecret, text)
+  /** Strips the forge credential in both its forms, and any other secret the call carries (a push's userinfo). */
+  const scrub = (text: string, secrets: readonly string[] = []): string => [...credentialForms(forge.token), ...secrets].reduce(stripSecret, text)
 
   /** A forge answer is text someone else wrote, so every string in it is scrubbed, not only git's. */
   const scrubJson = (value: JsonValue): JsonValue => {
@@ -97,10 +98,10 @@ export function createForgePack(options: ForgePackOptions): Pack {
     return value
   }
 
-  const gitOutput = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; context: ToolContext }): Promise<string> => {
+  const gitOutput = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; secrets?: readonly string[]; context: ToolContext }): Promise<string> => {
     const result = await runGit(input)
-    if (result.exitCode !== 0) throw new ToolExecutionError(scrub(describeProcessFailure('git', result)), { code: 'GIT_FAILED' })
-    return scrub(result.stdout)
+    if (result.exitCode !== 0) throw new ToolExecutionError(scrub(describeProcessFailure('git', result), input.secrets), { code: 'GIT_FAILED' })
+    return scrub(result.stdout, input.secrets)
   }
 
   /** Which filter programs git resolves here, asked of git so no config scope is missed. */
@@ -117,6 +118,41 @@ export function createForgePack(options: ForgePackOptions): Pack {
     if (result.exitCode === 1) return []
     if (result.exitCode !== 0) throw new ToolExecutionError(scrub(describeProcessFailure('git', result)), { code: 'GIT_FAILED' })
     return nonEmptyLines(scrub(result.stdout))
+  }
+
+  /**
+   * Every entry of every config scope git reads here that matches `pattern`, asked of git under the same
+   * isolation as the push (so an include and the worktree config count, and the hidden global and system
+   * scopes do not): `key` alone with `nameOnly`. Exit 1 is git saying nothing matches.
+   */
+  const configEntries = async (input: { repository: string; pattern: string; nameOnly?: boolean; context: ToolContext }): Promise<Array<{ key: string; value: string }>> => {
+    const result = await runGit({ repository: input.repository, args: ['config', '--null', ...(input.nameOnly ? ['--name-only'] : []), '--get-regexp', input.pattern], context: input.context })
+    if (result.exitCode === 1) return []
+    if (result.exitCode !== 0) throw new ToolExecutionError(scrub(describeProcessFailure('git config', result)), { code: 'GIT_FAILED' })
+    if (result.truncated) throw new ToolExecutionError('This repository has more git config than Buckle reads in one pass, so git_push cannot prove where git would send the push; it is refused', { code: 'GIT_ISOLATION_UNAVAILABLE' })
+    return result.stdout.split('\0').filter(Boolean).map((entry) => {
+      const newline = entry.indexOf('\n')
+      return newline === -1 ? { key: entry, value: '' } : { key: entry.slice(0, newline), value: entry.slice(newline + 1) }
+    })
+  }
+
+  /**
+   * Checked at launch, under the write lock, against the exact destination git is handed (review H3). Git
+   * reads a push argument as a remote name before it reads it as a URL or a path, and applies every
+   * url.<base>.insteadOf and pushInsteadOf whose value begins it (an empty value begins every one). So no
+   * remote may be named by a URL or a path, and no rewrite rule may match the destination.
+   */
+  const assertDestinationUnaliased = async (input: { repository: string; destination: ForgeRemote; context: ToolContext }): Promise<void> => {
+    const target = pushTarget(input.destination)
+    const names = (await configEntries({ ...input, pattern: '^remote\\.', nameOnly: true })).map(entry => remoteNameOf(entry.key))
+    const named = names.find(isUrlOrPathName)
+    if (named !== undefined) {
+      throw new ToolInputError(`this repository names a remote ${JSON.stringify(redactShownText(named))}, which is a URL or a path; git reads a push destination as a remote name first, so the push to ${input.destination.display} is refused rather than sent where that remote points. Rename or remove that remote`, { code: 'PERMISSION_DENIED' })
+    }
+    const rules = await configEntries({ ...input, pattern: '^url\\..*\\.(insteadof|pushinsteadof)$' })
+    if (rules.some(rule => target.startsWith(rule.value))) {
+      throw new ToolInputError(`an insteadOf or pushInsteadOf rule rewrites ${input.destination.display} before the push; the push is refused rather than sent to a target the permission rules never saw`, { code: 'PERMISSION_DENIED' })
+    }
   }
 
   /** What the config names, before any rewrite rule reaches it. `pushurl` replaces `url` for a push. */
@@ -204,6 +240,9 @@ export function createForgePack(options: ForgePackOptions): Pack {
       risk: 'write',
       tags: ['git', 'forge', 'network'],
       input: pushInput,
+      // Under the workspace's write lock, so no call can change the repository's config between the launch
+      // checks and git reading it (review H3).
+      exclusive: true,
       // The destination is read once, before the rules judge it, and the push goes there or nowhere.
       judge: input => judgedRemote(classifyRemote(readOriginUrl(paths.resolve(input.repo)))),
       effects: (input, destination) => [{ kind: 'read_path', path: input.repo }, remoteEffect(destination)],
@@ -214,11 +253,14 @@ export function createForgePack(options: ForgePackOptions): Pack {
         const branch = assertBranchName(input.branch)
         const repository = judgedPath({ named: input.repo, kind: 'read', paths, context })
         await assertPushTarget({ repository, pinned: destination, context })
+        await assertDestinationUnaliased({ repository, destination, context })
         assertDestinationAllowed({ remote: destination, gitHost: forge.gitHost, approved: options.approved, context })
         // To the judged destination by name, never the symbolic origin, which a config change could move
         // after the check. `remote.origin.receivepack` is first-wins in git, so only the command line resets it.
+        // A local destination is its absolute real path, which git never reads as a remote name (git refuses a
+        // remote named with a leading `/`); an https one has no such spelling, so a remote named by it is refused above.
         const refspec = `refs/heads/${branch}:refs/heads/${branch}`
-        await gitOutput({ repository, args: ['push', '--receive-pack=git-receive-pack', pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), context })
+        await gitOutput({ repository, args: ['push', '--receive-pack=git-receive-pack', pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), secrets: userinfoForms(destination), context })
         const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
         // A push to a URL moves no remote-tracking ref; origin named this destination at launch, so its ref follows.
         await gitOutput({ repository, args: ['update-ref', `refs/remotes/origin/${branch}`, headSha], context })
@@ -296,12 +338,12 @@ export function createForgePack(options: ForgePackOptions): Pack {
 
 /**
  * A push to an https remote is a network reach the egress rule must judge; a push to a
- * repository on this filesystem is a write, and is judged as one.
+ * repository on this filesystem is a write, and is judged as one, at its host path (review L4).
  */
 function remoteEffect(remote: ForgeRemote): ToolEffect {
   return remote.kind === 'https'
     ? { kind: 'network', url: remote.url.origin }
-    : { kind: 'write_path', path: remote.path }
+    : { kind: 'write_path', path: remote.path, host: true }
 }
 
 /** A destination as the rules judge it: a local repository by its real path, so a link moved later is not followed. */
@@ -340,15 +382,44 @@ function assertNoRewrite(input: { configured: PushUrl; actual: PushUrl }): void 
  * What the one git call that reaches the network is configured with. The credential is scoped to
  * the single origin URL it belongs to, so a redirect to another repository — even on the same
  * host — is served no header at all, and the proxy and TLS resets are repeated at that same scope
- * because a URL-scoped key in the repository config outranks the plain one.
+ * because a URL-scoped key in the repository config outranks the plain one. On the forge host the
+ * credential is the forge token; elsewhere it is the userinfo the approved origin names, since git is
+ * handed the URL without it and isolation leaves git no helper or prompt to ask (review M4).
  */
 function pushConfig(input: { remote: ForgeRemote; forge: ForgePackOptions['forge'] }): GitConfig[] {
   if (input.remote.kind !== 'https') return []
   // `display` is the URL without userinfo, which is the form git matches a request against.
   const scope = input.remote.display.replace(/\/+$/, '')
   const transport = transportConfig(scope)
-  if (input.remote.host !== input.forge.gitHost) return transport
-  return [...transport, { key: `http.${scope}.extraheader`, value: `Authorization: Basic ${basicCredential(input.forge.token)}` }]
+  const credential = input.remote.host === input.forge.gitHost ? basicCredential(input.forge.token) : userinfoCredential(input.remote.url)
+  if (credential === null) return transport
+  return [...transport, { key: `http.${scope}.extraheader`, value: `Authorization: Basic ${credential}` }]
+}
+
+/** The origin's own userinfo as a Basic credential, or null when it names none. */
+function userinfoCredential(url: URL): string | null {
+  if (!url.username && !url.password) return null
+  return Buffer.from(`${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`).toString('base64')
+}
+
+/** Every form of a destination's userinfo that could reach text a caller sees, so each is stripped from git's answers. */
+function userinfoForms(remote: ForgeRemote): string[] {
+  if (remote.kind !== 'https') return []
+  const credential = userinfoCredential(remote.url)
+  if (credential === null) return []
+  const user = decodeURIComponent(remote.url.username)
+  const password = decodeURIComponent(remote.url.password)
+  return [credential, `${user}:${password}`, password, remote.url.password].filter(form => form.length > 0)
+}
+
+/** `remote.<name>.<key>`: the name is everything between the first and the last dot. */
+function remoteNameOf(key: string): string {
+  return key.slice('remote.'.length, key.lastIndexOf('.'))
+}
+
+/** A remote name that reads as a URL, an scp-style address or a path (review H3). */
+function isUrlOrPathName(name: string): boolean {
+  return /[:/\\]/.test(name) || name === '.' || name === '..' || name.startsWith('~')
 }
 
 /**

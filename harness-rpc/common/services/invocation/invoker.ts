@@ -159,9 +159,11 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
+          // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
+          // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).
           const output = options.history && tracksChanges && !prepared.managesHistory
             ? await options.history.run({ sessionId, stageId: request.context?.stageId ?? request.context?.runId ?? request.requestId, tool: request.tool, roots: [...new Set(roots)] }, execute, stop)
-            : await execute()
+            : options.history && prepared.exclusive ? await options.history.exclusive(execute, stop) : await execute()
           // A tool that returns what its killed process left (a shell) ran into the shutdown all the same:
           // it answers as a tool that throws does, effects unknown (review L12 of B18-B19).
           if (options.shutdown?.aborted) throw options.shutdown.reason
