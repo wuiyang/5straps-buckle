@@ -26,7 +26,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem'],
       input: schemas.readInput,
       effects: input => [{ kind: 'read_path', path: input.path }],
-      run: input => readFileEntry(input, context),
+      run: (input, toolContext) => readFileEntry(input, { ...context, authorizeReadTarget: toolContext.authorizeReadTarget }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_read_batch',
@@ -35,8 +35,8 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem', 'batch'],
       input: schemas.readBatchInput,
       effects: input => input.paths.map(path => ({ kind: 'read_path' as const, path })),
-      run: async input => ({
-        files: await Promise.all(input.paths.map(path => readFileEntry({ path, encoding: input.encoding }, context))),
+      run: async (input, toolContext) => ({
+        files: await Promise.all(input.paths.map(path => readFileEntry({ path, encoding: input.encoding }, { ...context, authorizeReadTarget: toolContext.authorizeReadTarget }))),
       }),
     }),
     defineTool(PACK_ID, {
@@ -73,7 +73,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem'],
       input: schemas.listInput,
       effects: input => [{ kind: 'read_path', path: input.path }],
-      run: (input, toolContext) => listTree(input, { ...context, authorizeRead: toolContext.authorizeRead }),
+      run: (input, toolContext) => listTree(input, { ...context, authorizeRead: toolContext.authorizeRead, authorizeReadTarget: toolContext.authorizeReadTarget }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_find_names',
@@ -82,7 +82,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem', 'search'],
       input: schemas.findInput,
       effects: input => [{ kind: 'read_path', path: input.path }],
-      run: (input, toolContext) => findNames(input, { ...context, authorizeRead: toolContext.authorizeRead }),
+      run: (input, toolContext) => findNames(input, { ...context, authorizeRead: toolContext.authorizeRead, authorizeReadTarget: toolContext.authorizeReadTarget }),
     }),
   ]
 

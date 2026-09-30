@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonObject } from '@5straps/protocol'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -10,7 +11,7 @@ import type { ProcessRequest, ProcessResult } from '../common/types/ports/proces
 import type { ResolvedEffect } from '../common/domain/effect.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
-import { ToolInputError } from '../common/domain/tool.js'
+import { ToolInputError, type ToolContext } from '../common/domain/tool.js'
 import { compileUrlPatterns } from '../common/domain/url-pattern.js'
 
 const PROFILE = mkdtempSync('/tmp/buckle-browser-pack-')
@@ -394,5 +395,84 @@ describe('a page named without a scheme', () => {
   it('hands agent-browser the URL that was judged', async () => {
     const { args } = await run({ command: 'open', args: ['localhost:3000'] })
     expect(args.slice(0, 2)).toEqual(['open', 'https://localhost:3000/'])
+  })
+})
+
+// Review items 0 and 4 of the proof-of-possession fixes: agent-browser opens what it is handed with
+// ordinary, link-following opens, so it only ever gets a private copy; Buckle reads and writes the
+// workspace side itself, beneath a parent reached without following a link.
+describe('file arguments reach agent-browser only through a private transfer', () => {
+  function workspaceFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-browser-transfer-'))
+    const workspace = join(root, 'workspace')
+    const sessions = join(root, 'sessions')
+    mkdirSync(join(workspace, 'shots'), { recursive: true })
+    mkdirSync(join(root, 'outside'))
+    return { root, workspace, sessions, paths: createPathView({ root: workspace, mount: null }) }
+  }
+
+  async function transfer(input: { command: string; args: string[]; workspace: string; sessions: string; context?: Partial<ToolContext>; process?: (request: ProcessRequest) => ProcessResult }) {
+    const calls: ProcessRequest[] = []
+    const pack = createBrowserPack({
+      cwd: input.workspace, paths: createPathView({ root: input.workspace, mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: input.sessions,
+      headed: false, available: true, approvedLists: [],
+      runProcess: async (request) => { calls.push(request); return input.process?.(request) ?? stubResult() },
+    })
+    const execute = pack.tools[0]!.prepare({ command: input.command, args: input.args }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal, ...input.context })
+    return { calls, execute }
+  }
+
+  it('hands a screenshot a private path, writes the image to its judged target, and names the agent\'s path', async () => {
+    const { root, workspace, sessions } = workspaceFixture()
+    const target = join(workspace, 'shots', 'page.png')
+    const { calls, execute } = await transfer({ command: 'screenshot', args: ['shots/page.png'], workspace, sessions, context: { authorizeWrite: path => path === target }, process: (request) => {
+      writeFileSync(request.args[1]!, 'png bytes')
+      return stubResult({ stdout: JSON.stringify({ success: true, data: { path: request.args[1] } }) })
+    } })
+    const output = await execute
+    expect(calls[0]!.args[1]).not.toBe(target)
+    expect(calls[0]!.args[1]!.startsWith(`${sessions}/`)).toBe(true)
+    expect(readFileSync(target, 'utf8')).toBe('png bytes')
+    expect(output).toMatchObject({ result: { data: { path: 'shots/page.png' } } })
+    expect(readdirSync(sessions).filter(name => name.startsWith('transfer-'))).toEqual([])
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('copies an upload into the transfer, under its own name, before agent-browser reads it', async () => {
+    const { root, workspace, sessions } = workspaceFixture()
+    writeFileSync(join(workspace, 'report.pdf'), 'pdf bytes')
+    const seen: string[] = []
+    const { calls, execute } = await transfer({ command: 'upload', args: ['#file', 'report.pdf'], workspace, sessions, context: { authorizeReadTarget: path => path === join(workspace, 'report.pdf') }, process: (request) => {
+      seen.push(readFileSync(request.args[2]!, 'utf8'))
+      return stubResult()
+    } })
+    await execute
+    expect(calls[0]!.args[2]).toMatch(/\/transfer-[^/]+\/0\/report\.pdf$/)
+    expect(seen).toEqual(['pdf bytes'])
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('refuses a screenshot whose directory a link replaced while the browser ran, and writes nothing outside', async () => {
+    const { root, workspace, sessions } = workspaceFixture()
+    const target = join(workspace, 'shots', 'page.png')
+    const { execute } = await transfer({ command: 'screenshot', args: ['shots/page.png'], workspace, sessions, context: { authorizeWrite: path => path === target }, process: (request) => {
+      writeFileSync(request.args[1]!, 'png bytes')
+      rmSync(join(workspace, 'shots'), { recursive: true })
+      symlinkSync(join(root, 'outside'), join(workspace, 'shots'))
+      return stubResult()
+    } })
+    await expect(execute).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(readdirSync(join(root, 'outside'))).toEqual([])
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('refuses an upload whose file became a link after its check, before agent-browser runs', async () => {
+    const { root, workspace, sessions } = workspaceFixture()
+    writeFileSync(join(root, 'outside', 'secret.txt'), 'secret')
+    symlinkSync(join(root, 'outside', 'secret.txt'), join(workspace, 'report.pdf'))
+    const { calls, execute } = await transfer({ command: 'upload', args: ['#file', 'report.pdf'], workspace, sessions, context: { authorizeReadTarget: path => path === join(workspace, 'report.pdf') } })
+    await expect(execute).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(calls).toEqual([])
+    rmSync(root, { recursive: true, force: true })
   })
 })

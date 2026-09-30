@@ -10,10 +10,10 @@ import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { logger } from '../../../runtime/log.js'
-import { resolveTarget } from '../../invocation/real-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
+import { prepareTransfer } from './file-transfer.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
@@ -93,42 +93,52 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           if (refused) throw new ToolInputError(flagRefusal(refused))
 
           // Resolve file arguments against the authorized workspace, not the daemon state directory.
-          const filePaths = new Set(browserEffects(input.command, input.args).flatMap(effect => effect.kind === 'read_path' || effect.kind === 'write_path' ? [effect.path] : []))
-          if (['screenshot', 'pdf', 'download', 'upload'].includes(input.command) && !filePaths.size) throw new ToolInputError('Browser file operations require an explicit path')
-          const targets = navigationTargets(input.command, input.args)
-          // A file argument is passed as its judged target, every link followed, so the browser writes where the rules looked (review H1 of B23-B25).
-          const passed = input.args.map((argument, index) => targets.get(index) ?? (filePaths.has(argument) ? resolveTarget(options.paths.resolve(argument)) : realPath(argument, options.paths)))
-          const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
-          const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
-          const { session, previous } = await sessions.update(state => ({ session: state.sessions[key] ??= `buckle-${randomUUID()}`, previous: state.allowedDomains[key] }))
-          args.push('--config', configFile, '--session', session, '--idle-timeout', '300000')
-          if (flag !== null) args.push('--allowed-domains', flag)
-          if ('loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
-          if (options.headed && !input.args.includes('--headed')) args.push('--headed')
-
+          const fileEffects = browserEffects(input.command, input.args)
+          const filePaths = (kind: 'read_path' | 'write_path') => fileEffects.flatMap(effect => effect.kind === kind ? [effect.path] : [])
+          const reads = filePaths('read_path')
+          const writes = filePaths('write_path')
+          if (['screenshot', 'pdf', 'download', 'upload'].includes(input.command) && reads.length + writes.length === 0) throw new ToolInputError('Browser file operations require an explicit path')
           mkdirSync(options.sessionDirectory, { recursive: true, mode: 0o700 })
-          writeFileSync(configFile, '{}\n', { mode: 0o600 })
-          const result = await options.runProcess({
-            command: options.agentBrowserCommand,
-            args,
-            cwd: options.sessionDirectory,
-            timeoutMs: context.timeoutMs,
-            environment: buildChildEnvironment({ parent: process.env, extra: {} }),
-            signal: context.signal,
-          })
-          if (result.exitCode !== 0) {
-            throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
+          // Each file argument is judged where it lands and reaches agent-browser only through a private copy (review items 0 and 4 of the proof-of-possession fixes).
+          const transfer = prepareTransfer({ directory: options.sessionDirectory, paths: options.paths, reads, writes, context })
+          try {
+            const targets = navigationTargets(input.command, input.args)
+            const passed = input.args.map((argument, index) => targets.get(index) ?? transfer.argument(argument) ?? realPath(argument, options.paths))
+            const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
+            const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
+            const { session, previous } = await sessions.update(state => ({ session: state.sessions[key] ??= `buckle-${randomUUID()}`, previous: state.allowedDomains[key] }))
+            args.push('--config', configFile, '--session', session, '--idle-timeout', '300000')
+            if (flag !== null) args.push('--allowed-domains', flag)
+            if ('loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
+            if (options.headed && !input.args.includes('--headed')) args.push('--headed')
+
+            writeFileSync(configFile, '{}\n', { mode: 0o600 })
+            const ran = await options.runProcess({
+              command: options.agentBrowserCommand,
+              args,
+              cwd: options.sessionDirectory,
+              timeoutMs: context.timeoutMs,
+              environment: buildChildEnvironment({ parent: process.env, extra: {} }),
+              signal: context.signal,
+            })
+            const result = { ...ran, stdout: transfer.shown(ran.stdout), stderr: transfer.shown(ran.stderr) }
+            if (result.exitCode !== 0) {
+              throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
+            }
+            transfer.deliver()
+            if (input.command === 'close') {
+              opened.delete(session)
+              await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key] })
+            } else {
+              opened.add(session)
+              await sessions.update(state => { state.allowedDomains[key] = flag })
+            }
+            const relaunched = input.command !== 'close' && previous !== undefined && previous !== flag
+            if (relaunched) logger.warn('Browser relaunched because its allowed domains changed', { previous: previous ?? 'none', current: flag ?? 'none' })
+            return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated, ...(relaunched ? { notice: RELAUNCH_NOTICE } : {}) }
+          } finally {
+            transfer.close()
           }
-          if (input.command === 'close') {
-            opened.delete(session)
-            await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key] })
-          } else {
-            opened.add(session)
-            await sessions.update(state => { state.allowedDomains[key] = flag })
-          }
-          const relaunched = input.command !== 'close' && previous !== undefined && previous !== flag
-          if (relaunched) logger.warn('Browser relaunched because its allowed domains changed', { previous: previous ?? 'none', current: flag ?? 'none' })
-          return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated, ...(relaunched ? { notice: RELAUNCH_NOTICE } : {}) }
         },
       }),
     ],

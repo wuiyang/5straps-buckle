@@ -210,6 +210,11 @@ describe('a dangling link (review H1 and H2 of B23-B25)', () => {
     await symlink('../outside/new-directory', join(root, 'workspace', 'later'))
     await symlink('loop-b', join(root, 'workspace', 'loop-a'))
     await symlink('loop-a', join(root, 'workspace', 'loop-b'))
+    // L is a live link out of the root; `nope` does not exist, so the kernel answers ENOENT for nope/..
+    await symlink('../outside', join(root, 'workspace', 'L'))
+    await symlink('nope/../L/state.json', join(root, 'workspace', 'climbs'))
+    await symlink('plain.txt/../L/state.json', join(root, 'workspace', 'through-a-file'))
+    await writeFile(join(root, 'workspace', 'plain.txt'), 'plain')
   })
 
   afterAll(async () => {
@@ -233,5 +238,18 @@ describe('a dangling link (review H1 and H2 of B23-B25)', () => {
 
   it('refuses a loop rather than judging it', async () => {
     await expect(resolveEffects({ effects: [{ kind: 'write_path', path: 'loop-a' }], paths: view() })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+  })
+
+  // Review item 0 of the proof-of-possession fixes: read as text, nope/../L/state.json named <root>/L/state.json,
+  // inside the root, while anything that opened it followed L out of it.
+  it.each(['climbs', 'through-a-file'])('refuses %s: a `..` after a missing or non-directory component', async (name) => {
+    for (const kind of ['read_path', 'write_path'] as const) {
+      await expect(resolveEffects({ effects: [{ kind, path: name }], paths: view() })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+    }
+  })
+
+  it('never returns a path through a link it did not follow', async () => {
+    const [effect] = await resolveEffects({ effects: [{ kind: 'write_path', path: 'L/new/file.txt' }], paths: view() })
+    expect(effect?.kind === 'write_path' && effect.path).toBe(join(root, 'outside', 'new', 'file.txt'))
   })
 })

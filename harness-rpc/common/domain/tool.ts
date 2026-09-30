@@ -10,6 +10,8 @@ export interface ToolContext {
   timeoutMs: number
   signal: AbortSignal
   authorizeRead?: (path: string) => Promise<boolean>
+  /** Whether a real path is one the call's permission check judged as a read; a reader refuses any other. */
+  authorizeReadTarget?: (target: string) => boolean
   /** Whether a real path is one the call's permission check judged as a write; a writer refuses any other. */
   authorizeWrite?: (target: string) => boolean
   /**

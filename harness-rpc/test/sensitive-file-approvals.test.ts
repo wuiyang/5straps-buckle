@@ -23,6 +23,24 @@ it('exempts only .env.schema outside credential directories', () => {
   for (const name of ['.env', '.env.local', '.env.example', '.env.schema.local']) expect(sensitivePathReason(`/workspace/${name}`)).not.toBeNull()
   expect(sensitivePathReason('/workspace/.ssh/.env.schema')).not.toBeNull()
 })
+// Review item 13 of the proof-of-possession fixes: macOS's default volume ignores case, so ~/.5STRAPS is
+// Buckle's state there; compared as text it fell through to an ask outside the root.
+it.each([
+  ['/Users/owner/.5STRAPS/buckle/plugins.json'],
+  ['/Users/owner/.5straps/BUCKLE/client-keys.json'],
+  ['/USERS/OWNER/.5Straps'],
+])("denies %s as Buckle's state where the disk ignores case", (path) => {
+  const rule = createSensitivePathRule({ protectedRoots: ['/Users/owner/.5straps'], caseInsensitive: true })
+  for (const kind of ['read_path', 'write_path'] as const) {
+    expect(rule.evaluate({ tool: 'fs_write', effect: { kind, path, directory: '/Users/owner' }, grants: { subjectsFor: () => [] } })).toMatchObject({ kind: 'deny', rule: 'sensitive_path' })
+  }
+})
+it('compares protected roots exactly where the disk keeps case', () => {
+  const rule = createSensitivePathRule({ protectedRoots: ['/home/owner/.5straps'], caseInsensitive: false })
+  const judged = (path: string) => rule.evaluate({ tool: 'fs_write', effect: { kind: 'write_path', path, directory: '/home/owner' }, grants: { subjectsFor: () => [] } })
+  expect(judged('/home/owner/.5STRAPS/notes.md')).toBeNull()
+  expect(judged('/home/owner/.5straps/notes.md')).toMatchObject({ kind: 'deny' })
+})
 it.each(['session', 'always'] as const)('records a %s denial, enforces scope and supports owner revocation', async scope => {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
   const approvals = createApprovalRegistry(grants, join(root, 'approvals.json'))

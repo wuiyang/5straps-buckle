@@ -116,6 +116,12 @@ function linkLanding(tree: Snapshot, root: string, link: string): string | null 
   return follow({ tree, root, from: dirname(link), target: tree[link]?.target ?? '', budget: { links: 1 } })
 }
 
+/**
+ * A component the snapshot does not hold is an excluded path (hidden or sensitive, never copied) or one
+ * that does not exist. The disk tells which: an excluded link is not in the snapshot to follow, so it
+ * counts as leaving the root, and a `..` after a missing component cannot be told (review item 12 of
+ * the proof-of-possession fixes).
+ */
 function follow(input: { tree: Snapshot; root: string; from: string; target: string; budget: { links: number } }): string | null {
   const { tree, root, target, budget } = input
   let current = input.from
@@ -125,18 +131,34 @@ function follow(input: { tree: Snapshot; root: string; from: string; target: str
     current = root
     parts = target.slice(root.length).split('/')
   }
+  let missing = false
   for (const part of parts) {
     if (part === '' || part === '.') continue
+    if (part === '..' && missing) return null
     current = part === '..' ? dirname(current) : join(current, part)
     if (!isInside(root, current)) return null
     const entry = tree[current]
-    if (entry?.kind !== 'symlink') continue
+    if (!entry) {
+      const found = onDisk(current)
+      if (found === 'link') return null
+      missing ||= found === 'missing'
+      continue
+    }
+    if (entry.kind !== 'symlink') continue
     if (++budget.links > MAX_LINKS) return null
     const landed = follow({ tree, root, from: dirname(current), target: entry.target ?? '', budget })
     if (landed === null) return null
     current = landed
   }
   return current
+}
+
+function onDisk(path: string): 'link' | 'missing' | 'present' {
+  try {
+    return lstatSync(path).isSymbolicLink() ? 'link' : 'present'
+  } catch {
+    return 'missing'
+  }
 }
 
 function removePrivateWorkspace(directory: string): void {

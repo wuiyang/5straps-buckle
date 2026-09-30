@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto'
 import { isUtf8 } from 'node:buffer'
-import { constants, ftruncateSync, readFileSync, writeSync } from 'node:fs'
-import { lstat, readdir, readFile, stat } from 'node:fs/promises'
+import { constants, fstatSync, ftruncateSync, lstatSync, readFileSync, writeSync } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { basename, join, matchesGlob, relative } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
-import { withFileBeneath } from '../../../adapters/beneath.js'
+import { openDirectoryBeneath, openRealDirectory, withFileBeneath, type PinnedDirectory } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { ToolInputError } from '../../../domain/tool.js'
 import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
@@ -14,26 +14,35 @@ import type * as schemas from './schemas.js'
 
 const MAX_FILE_BYTES = 10 * 1_048_576
 const MAX_TREE_ENTRIES = 5_000
+/** How deep a name search descends; each level holds one open directory while the walk is beneath it. */
+const MAX_FIND_DEPTH = 256
 
 export interface FsContext {
   paths: PathView
   authorizeRead?: (path: string) => Promise<boolean>
+  authorizeReadTarget?: (target: string) => boolean
   authorizeWrite?: (target: string) => boolean
 }
 
+/**
+ * A read opens the target its permission check judged, beneath a parent reached without following a
+ * link, and never the name again, so a link swapped in after the check is refused rather than followed
+ * (filesystem-boundary.md, "File tool resolution"; review item 4 of the proof-of-possession fixes).
+ */
 export async function readFileEntry(
   input: z.output<typeof schemas.readInput>,
   context: FsContext,
 ): Promise<JsonValue> {
   const path = context.paths.resolve(input.path)
-  const info = await stat(path)
-  if (!info.isFile()) throw new ToolInputError(`Not a file: ${input.path}`)
-  if (info.size > MAX_FILE_BYTES) throw new ToolInputError(`File exceeds ${MAX_FILE_BYTES} bytes`)
-
-  const buffer = await readFile(path)
+  const target = judgedTarget(path, 'read', context)
+  const { buffer, size } = withFileBeneath(target, { flags: constants.O_RDONLY, shown: input.path }, (descriptor) => {
+    const info = fstatSync(descriptor)
+    if (info.size > MAX_FILE_BYTES) throw new ToolInputError(`File exceeds ${MAX_FILE_BYTES} bytes`)
+    return { buffer: readFileSync(descriptor), size: info.size }
+  })
   const hash = createHash('sha256').update(buffer).digest('hex')
   if (input.encoding === 'base64') {
-    return { path: context.paths.display(path), encoding: 'base64', hash, content: buffer.toString('base64'), size: info.size }
+    return { path: context.paths.display(path), encoding: 'base64', hash, content: buffer.toString('base64'), size }
   }
 
   const lines = buffer.toString('utf8').split('\n')
@@ -47,7 +56,7 @@ export async function readFileEntry(
     validUtf8: isUtf8(buffer),
     hash,
     content: slice.join('\n'),
-    size: info.size,
+    size,
     firstLine: start + 1,
     lineCount: slice.length,
     totalLines: lines.length,
@@ -62,7 +71,7 @@ export async function writeFileEntry(
   const path = context.paths.resolve(input.path)
   const content = Buffer.from(input.content, input.encoding)
   if (content.byteLength > MAX_FILE_BYTES) throw new ToolInputError(`Content exceeds ${MAX_FILE_BYTES} bytes`)
-  const target = writeTarget(path, context)
+  const target = judgedTarget(path, 'write', context)
   const createParents = input.createParents === true
   if (input.expectedHash) {
     // Buckle's comparison and write share one descriptor and one event-loop turn; host editors remain independent.
@@ -87,7 +96,7 @@ export async function patchFile(
   context: FsContext,
 ): Promise<JsonValue> {
   const path = context.paths.resolve(input.path)
-  const target = writeTarget(path, context)
+  const target = judgedTarget(path, 'write', context)
   return withFileBeneath(target, { flags: constants.O_RDWR }, (descriptor) => {
     let content = readFileSync(descriptor, 'utf8')
     const replacements: number[] = []
@@ -109,13 +118,14 @@ export async function patchFile(
 }
 
 /**
- * Where a write lands: the named path with every link followed, dangling ones included, which is what
- * the permission rules judged (resolve-effects.ts). When the call carries its judged targets, a path
- * that resolves anywhere else now (a link swapped in while the call waited) is refused.
+ * Where a read or write lands: the named path with every link followed, dangling ones included, which
+ * is what the permission rules judged (resolve-effects.ts). When the call carries its judged targets, a
+ * path that resolves anywhere else now (a link swapped in while the call waited) is refused.
  */
-function writeTarget(path: string, context: FsContext): string {
+function judgedTarget(path: string, operation: 'read' | 'write', context: FsContext): string {
   const target = resolveTarget(path)
-  if (context.authorizeWrite && !context.authorizeWrite(target)) {
+  const authorize = operation === 'read' ? context.authorizeReadTarget : context.authorizeWrite
+  if (authorize && !authorize(target)) {
     throw new ToolInputError(`${context.paths.display(path)} now resolves to a place its permission check did not see; send the call again`, { code: 'PERMISSION_DENIED' })
   }
   return target
@@ -137,7 +147,7 @@ export async function listTree(
 ): Promise<JsonValue> {
   const root = context.paths.resolve(input.path)
   const entries: JsonValue[] = []
-  await walkTree({ root, current: root, depth: input.depth, includeIgnored: input.includeIgnored, entries, authorizeRead: context.authorizeRead })
+  await withDirectoryBeneath(root, context, directory => walkTree({ root, current: root, directory, depth: input.depth, includeIgnored: input.includeIgnored, entries, authorizeRead: context.authorizeRead }))
   return { path: context.paths.display(root), entries, truncated: entries.length >= MAX_TREE_ENTRIES }
 }
 
@@ -147,20 +157,40 @@ export async function findNames(
 ): Promise<JsonValue> {
   const root = context.paths.resolve(input.path)
   const matches: string[] = []
-  await walkNames({ root, current: root, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches, authorizeRead: context.authorizeRead })
-  return { path: context.paths.display(root), matches, truncated: matches.length >= input.limit }
+  const walk = { deep: false }
+  await withDirectoryBeneath(root, context, directory => walkNames({ root, current: root, directory, depth: 0, walk, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches, authorizeRead: context.authorizeRead }))
+  return { path: context.paths.display(root), matches, truncated: matches.length >= input.limit || walk.deep }
 }
 
+/**
+ * A listing walks the judged directory from a descriptor reached without following a link, and each
+ * level below it from its parent's, so a link swapped into the tree after a check is refused rather
+ * than listed through (review item 4 of the proof-of-possession fixes). Each child is still judged
+ * on its own before it is shown.
+ */
+async function withDirectoryBeneath(root: string, context: FsContext, walk: (directory: PinnedDirectory) => Promise<void>): Promise<void> {
+  const target = judgedTarget(root, 'read', context)
+  const directory = openRealDirectory(target, { refusal: { shown: context.paths.display(root), outcome: 'it was not listed' } })
+  try { await walk(directory) } finally { directory.close() }
+}
+
+async function descend(input: { directory: PinnedDirectory; name: string; shown: string }, walk: (directory: PinnedDirectory) => Promise<void>): Promise<void> {
+  const directory = openDirectoryBeneath(input.directory, input.name, input.shown)
+  try { await walk(directory) } finally { directory.close() }
+}
+
+/** `root` and `current` are the names the agent's path gives, which children are judged and shown by; `directory` is what is read. */
 async function walkTree(input: {
   root: string
   current: string
+  directory: PinnedDirectory
   depth: number
   includeIgnored: boolean
   entries: JsonValue[]
   authorizeRead?: (path: string) => Promise<boolean>
 }): Promise<void> {
   if (input.entries.length >= MAX_TREE_ENTRIES) return
-  const children = (await readdir(input.current, { withFileTypes: true }))
+  const children = (await readdir(input.directory.self, { withFileTypes: true }))
     .sort((left, right) => left.name.localeCompare(right.name))
 
   for (const child of children) {
@@ -169,7 +199,7 @@ async function walkTree(input: {
 
     const childPath = join(input.current, child.name)
     if (input.authorizeRead && !await input.authorizeRead(childPath)) continue
-    const info = await lstat(childPath)
+    const info = lstatSync(input.directory.child(child.name))
     input.entries.push({
       path: relative(input.root, childPath),
       name: child.name,
@@ -178,7 +208,7 @@ async function walkTree(input: {
       modifiedAt: info.mtime.toISOString(),
     })
     if (child.isDirectory() && !child.isSymbolicLink() && input.depth > 0) {
-      await walkTree({ ...input, current: childPath, depth: input.depth - 1 })
+      await descend({ directory: input.directory, name: child.name, shown: relative(input.root, childPath) }, directory => walkTree({ ...input, current: childPath, directory, depth: input.depth - 1 }))
     }
   }
 }
@@ -186,6 +216,10 @@ async function walkTree(input: {
 async function walkNames(input: {
   root: string
   current: string
+  directory: PinnedDirectory
+  depth: number
+  /** Set when a level past MAX_FIND_DEPTH was left unsearched. */
+  walk: { deep: boolean }
   pattern: string
   limit: number
   includeIgnored: boolean
@@ -193,7 +227,7 @@ async function walkNames(input: {
   authorizeRead?: (path: string) => Promise<boolean>
 }): Promise<void> {
   if (input.matches.length >= input.limit) return
-  for (const child of await readdir(input.current, { withFileTypes: true })) {
+  for (const child of await readdir(input.directory.self, { withFileTypes: true })) {
     if (input.matches.length >= input.limit) return
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
 
@@ -203,7 +237,9 @@ async function walkNames(input: {
     if (matchesGlob(relativePath, input.pattern) || matchesGlob(basename(relativePath), input.pattern)) {
       input.matches.push(relativePath)
     }
-    if (child.isDirectory() && !child.isSymbolicLink()) await walkNames({ ...input, current: childPath })
+    if (!child.isDirectory() || child.isSymbolicLink()) continue
+    if (input.depth >= MAX_FIND_DEPTH) { input.walk.deep = true; continue }
+    await descend({ directory: input.directory, name: child.name, shown: relativePath }, directory => walkNames({ ...input, current: childPath, directory, depth: input.depth + 1 }))
   }
 }
 

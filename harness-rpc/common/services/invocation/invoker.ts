@@ -502,13 +502,15 @@ async function executeWithTimeout(input: {
   request: InvokeRequest
   sessionId: string
   consumed: GrantSubject[]
-  /** What the permission check judged; a writer may reach only the write targets among them. */
+  /** What the permission check judged; a reader or writer may reach only the targets among them. */
   effects: ResolvedEffect[]
   auditUses: UseAuditor
   signal?: AbortSignal
   execute: (context: ToolContext) => Promise<JsonValue>
 }): Promise<JsonValue> {
-  const judgedWrites = new Set(input.effects.flatMap(effect => effect.kind === 'write_path' ? [effect.path] : []))
+  const judged = (kind: 'read_path' | 'write_path') => new Set(input.effects.flatMap(effect => effect.kind === kind ? [effect.path] : []))
+  const judgedReads = judged('read_path')
+  const judgedWrites = judged('write_path')
   const timeoutMs = Math.min(input.request.timeoutMs ?? input.options.defaultTimeoutMs, input.options.maxTimeoutMs)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -529,6 +531,7 @@ async function executeWithTimeout(input: {
         await input.auditUses(outcome.allowedBy)
         return true
       },
+      authorizeReadTarget: target => judgedReads.has(target),
       authorizeWrite: target => judgedWrites.has(target),
       judgeNetwork: url => judgeNetwork({ ...input, url }),
     })

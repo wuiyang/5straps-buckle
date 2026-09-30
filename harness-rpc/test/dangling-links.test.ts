@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { emptyWorkspacePolicy, type InvokeResponse, type JsonValue } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { clientKeysPath, dangerouslyAllowPath, loadConfig, pluginsPath, policyPath, type BuckleConfig } from '../common/runtime/config.js'
+import { clientKeysPath, dangerouslyAllowPath, grantsPath, loadConfig, nodeKeyPath, pluginsPath, policyPath, requestNoncesPath, setupSessionsPath, type BuckleConfig } from '../common/runtime/config.js'
 import { createWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -22,6 +22,17 @@ afterEach(async () => {
 
 interface Node { root: string; workspace: string; config: BuckleConfig; runtime: BuckleRuntime; manager: WorkspaceManager; child: BuckleConfig }
 
+/**
+ * A stand-in for agent-browser that does what the real one does with a file argument: `screenshot <path>`
+ * writes the path it is handed, following any link in it.
+ */
+function stubBrowser(root: string): string {
+  const path = join(root, 'agent-browser-stub.mjs')
+  writeFileSync(path, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs'\nconst [command, file] = process.argv.slice(2)\nif (command === 'screenshot') writeFileSync(file, 'planted by the browser')\nprocess.stdout.write(JSON.stringify({ success: true, data: { path: file } }))\n`)
+  chmodSync(path, 0o755)
+  return path
+}
+
 async function node(): Promise<Node> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-dangling-'))
   roots.push(root)
@@ -29,7 +40,7 @@ async function node(): Promise<Node> {
   for (const directory of [workspace, join(root, 'child'), join(root, 'home', '.ssh'), join(root, 'elsewhere')]) mkdirSync(directory, { recursive: true })
   const config = loadConfig({
     BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false',
-    BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1',
+    BUCKLE_PACKS: 'fs,browser', BUCKLE_AGENT_BROWSER_COMMAND: stubBrowser(root), BUCKLE_APPROVAL_TIMEOUT_MS: '1',
   })
   const runtime = await createRuntime({ config })
   const manager = createWorkspaceManager({ config, runtime })
@@ -163,6 +174,55 @@ describe('a dangling link to an absent target outside the root (review H2 of B23
     expect(existsSync(plain)).toBe(false)
     expect(existsSync(credential)).toBe(false)
     expect(uses(runtime)).toEqual([])
+    await stop(setup)
+  })
+})
+
+describe('a link that climbs back out of a missing directory (review item 0 of the proof-of-possession fixes)', () => {
+  // L -> Buckle's state is live; a -> nope/../L/<file> was judged as <root>/L/<file>, inside the root, while
+  // agent-browser followed L. The kernel answers ENOENT for nope/..; Buckle refuses it.
+  const TARGETS: Array<[string, (setup: Node) => string]> = [
+    ...STATE_FILES,
+    ['grants.json', setup => grantsPath(setup.config)],
+    ['node-signing-key.pem', setup => nodeKeyPath(setup.config)],
+    ['request-nonces.json', setup => requestNoncesPath(setup.config)],
+    ['setup-sessions.json', setup => setupSessionsPath(setup.config)],
+  ]
+
+  it.each(TARGETS)('refuses fs_write, fs_patch and browser_command through a -> nope/../L/%s and changes nothing', async (_, fileOf) => {
+    const setup = await node()
+    const { runtime, workspace, config } = setup
+    const file = fileOf(setup)
+    symlinkSync(relative(workspace, config.stateDirectory), join(workspace, 'L'))
+    // Written as text: path.join would fold nope/.. away.
+    symlinkSync(`nope/../L/${relative(config.stateDirectory, file)}`, join(workspace, 'a'))
+    // With the switch on, an ask inside the root is allowed without a person: only the boundary stands.
+    await runtime.policy.setDangerouslyAllow(true)
+    const before = existsSync(file) ? readFileSync(file, 'utf8') : null
+
+    const calls: Array<[string, Record<string, JsonValue>]> = [
+      ['fs_write', { path: 'a', content: 'planted' }],
+      ['fs_patch', { path: 'a', edits: [{ oldText: '{', newText: '{"planted":true,' }] }],
+      ['browser_command', { command: 'screenshot', args: ['a'] }],
+    ]
+    for (const [tool, args] of calls) {
+      const { result } = await run(runtime, tool, args)
+      // Refused where it is judged, before any tool opens it.
+      expect({ tool, result }).toMatchObject({ tool, result: { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('climbs back out of a directory that does not exist') } } })
+      expect(existsSync(file) ? readFileSync(file, 'utf8') : null).toBe(before)
+    }
+    expect(existsSync(join(workspace, 'nope'))).toBe(false)
+    await stop(setup)
+  })
+
+  it('still creates a file beneath a missing directory when nothing climbs back out', async () => {
+    const setup = await node()
+    const { runtime, workspace } = setup
+    await runtime.policy.setDangerouslyAllow(true)
+    symlinkSync('drafts/new/note.md', join(workspace, 'b'))
+    const { result } = await run(runtime, 'fs_write', { path: 'b', content: 'kept', createParents: true })
+    expect(result).toMatchObject({ outcome: 'ok' })
+    expect(readFileSync(join(workspace, 'drafts', 'new', 'note.md'), 'utf8')).toBe('kept')
     await stop(setup)
   })
 })

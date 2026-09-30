@@ -162,7 +162,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
 
 /**
  * Node configuration and all workspace maps are owner-only, never tool-accessible. Effects are judged
- * at their real paths, so each root is named by its real path too (a symlinked home, macOS /var).
+ * at their real paths, so each root is named by its real path too (a symlinked home, macOS /var), in
+ * the case the disk stores it (realpathSync.native); the rule folds case where the disk ignores it.
  */
 export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string[] {
   const named = [join(homedir(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory]
@@ -172,7 +173,7 @@ export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' 
 /** The real path of a directory, or of its nearest existing ancestor with the rest appended. */
 function realPathOf(path: string): string {
   try {
-    return realpathSync(path)
+    return realpathSync.native(path)
   } catch {
     const parent = dirname(path)
     return parent === path ? path : join(realPathOf(parent), basename(path))

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
@@ -155,6 +155,37 @@ describe('isolated shell publication', () => {
       symlinkSync('..', join(copy, 'a', 'inner'))
     } })).rejects.toThrow('owner review')
     expect(existsSync(join(sourceRoot, 'a', 'inner'))).toBe(true)
+  })
+
+  // Review item 12 of the proof-of-possession fixes: an excluded path is not in the snapshot, so a link
+  // through an owner's excluded link out of the root was read as passing a plain directory.
+  it('rejects a new link through an excluded link that leaves the workspace', async () => {
+    const { root, sourceRoot, input } = await fixture()
+    mkdirSync(join(root, 'outside'))
+    symlinkSync(join(root, 'outside'), join(sourceRoot, '.hidden'))
+    await expect(runIsolatedShell({ ...input, excluded: [...input.excluded, join(sourceRoot, '.hidden')], execute: async copy => {
+      symlinkSync('.hidden/planted.txt', join(copy, 'x'))
+    } })).rejects.toThrow('owner review')
+    expect(existsSync(join(sourceRoot, 'x'))).toBe(false)
+  })
+
+  it('rejects a new link that climbs back out of a directory that does not exist', async () => {
+    const { sourceRoot, input } = await fixture()
+    writeFileSync(join(sourceRoot, 'file'), 'kept')
+    // The kernel answers ENOENT for nope/..; as text it named the file, and a later `nope` would decide where it lands.
+    await expect(runIsolatedShell({ ...input, execute: async copy => {
+      symlinkSync('nope/../file', join(copy, 'x'))
+    } })).rejects.toThrow('owner review')
+    expect(existsSync(join(sourceRoot, 'x'))).toBe(false)
+  })
+
+  it('still publishes a new link through an excluded plain directory', async () => {
+    const { sourceRoot, input } = await fixture()
+    mkdirSync(join(sourceRoot, '.cache'))
+    await runIsolatedShell({ ...input, excluded: [...input.excluded, join(sourceRoot, '.cache')], execute: async copy => {
+      symlinkSync('.cache/entry', join(copy, 'y'))
+    } })
+    expect(lstatSync(join(sourceRoot, 'y')).isSymbolicLink()).toBe(true)
   })
 
   it('retains changes when execution fails before a final process result', async () => {

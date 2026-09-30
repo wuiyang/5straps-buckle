@@ -1,5 +1,5 @@
 import { basename } from 'node:path'
-import { isInsideAny, segments } from '../../paths.js'
+import { comparablePath, isInsideAny, segments } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, deny } from '../decision.js'
 
@@ -49,14 +49,21 @@ export interface SensitivePathOptions {
    * open these, because a tool that read or rewrote them would be judging itself.
    */
   protectedRoots: string[]
+  /**
+   * Whether the filesystem ignores case (macOS and Windows by default): a case variant of `~/.5straps` names the
+   * same directory there, so the roots are compared folded (review item 13 of the proof-of-possession fixes).
+   */
+  caseInsensitive?: boolean
 }
 
 export function createSensitivePathRule(options: SensitivePathOptions = { protectedRoots: [] }): PermissionRule {
+  const fold = (path: string) => comparablePath(path, options.caseInsensitive)
+  const protectedRoots = options.protectedRoots.map(fold)
   return {
     id: 'sensitive_path',
     evaluate({ effect, grants }) {
       if (effect.kind !== 'read_path' && effect.kind !== 'write_path') return null
-      if (isInsideAny(options.protectedRoots, effect.path)) {
+      if (isInsideAny(protectedRoots, fold(effect.path))) {
         return deny('sensitive_path', effect.path, "Buckle's own state and policy are not reachable from a tool")
       }
       if (grants.deniedSubjectsFor?.('sensitive_path').includes(effect.path)) return deny('sensitive_path', effect.path, 'The owner denied this sensitive file')
