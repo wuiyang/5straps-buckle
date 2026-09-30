@@ -4,6 +4,8 @@ import type { ClientKeys } from '../../types/ports/client-keys.js'
 import { requestIdKey } from '../invocation/executions.js'
 
 export interface SignedRequestInput {
+  /** Opaque transport request identity; proof metadata remains private to this node verifier. */
+  requestIdentity?: object
   authorization: string | undefined
   purpose: SignedRequestPurpose
   workspaceId: string
@@ -19,6 +21,7 @@ export interface SignedRequestInput {
 /** Verifies the requests a person's client signed, for the setup and approval guards. */
 export interface RequestVerifier {
   verify(input: SignedRequestInput): Promise<SignedRequestVerdict>
+  approvalProofDeadline(request: object): number | undefined
 }
 
 /**
@@ -33,8 +36,11 @@ export interface RequestVerifier {
  */
 export function createRequestVerifier(input: { keys: ClientKeys; nonces: NonceClaims; serverId: string; nodeKeyId: string; now?: () => number }): RequestVerifier {
   const now = input.now ?? Date.now
+  const approvalProofDeadlines = new WeakMap<object, number>()
   return {
+    approvalProofDeadline: request => approvalProofDeadlines.get(request),
     async verify(request) {
+      if (request.requestIdentity) approvalProofDeadlines.delete(request.requestIdentity)
       const checked = checkSignedRequest({
         authorization: request.authorization,
         expected: { purpose: request.purpose, node: input.serverId, nodeKey: input.nodeKeyId, workspace: request.workspaceId, method: request.method, path: request.path },
@@ -50,7 +56,9 @@ export function createRequestVerifier(input: { keys: ClientKeys; nonces: NonceCl
         if (!withinWindow(checked.payload, at)) return 'expired'
         return seen.claim({ keyId, nonce: requestIdKey(nonce), ts: keepUntil, now: at }) ? 'claimed' : 'replayed'
       })
-      return claimed === 'claimed' ? checked : { ok: false, reason: claimed, claimedKeyId: keyId }
+      if (claimed !== 'claimed') return { ok: false, reason: claimed, claimedKeyId: keyId }
+      if (request.requestIdentity && request.purpose === 'buckle-approval') approvalProofDeadlines.set(request.requestIdentity, checked.payload.expiresAt)
+      return checked
     },
   }
 }
