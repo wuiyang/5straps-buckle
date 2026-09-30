@@ -37,11 +37,20 @@ describe('gitInvocation', () => {
     [['--git-dir', '.git', '--work-tree', '.', 'reset', '--hard'], 'reset', ['--hard']],
     [['--git-dir=.git', '-p', '--bare', '--no-optional-locks', 'clean', '-fdx'], 'clean', ['-fdx']],
     [['--namespace', 'n', '--config-env', 'k=ENV', '--exec-path=/x', 'checkout', '-f'], 'checkout', ['-f']],
-    [['-C', 'a', '--', 'push', '--force'], 'push', ['--force']],
     [['--literal-pathspecs', '--icase-pathspecs', 'status'], 'status', []],
     [['-C', 'only'], null, []],
   ])('finds the subcommand of git %j', (args, subcommand, rest) => {
     expect(gitInvocation(args)).toEqual({ subcommand, args: rest })
+  })
+
+  // Review L11 of the slice 5 re-review: git 2.43 answers a bare `--` there with "unknown option: --" (exit 129).
+  it.each<[string[]]>([
+    [['--', 'push', '--force']],
+    [['-C', 'a', '--', 'push', '--force']],
+    [['-c', 'k=v', '--', 'status']],
+  ])('names no subcommand for git %j, whose bare -- git refuses, and marks it', (args) => {
+    expect(gitInvocation(args)).toEqual({ subcommand: null, args: [], doubleDash: true })
+    expect(parseArgv('git', args).subcommand).toBeNull()
   })
 
   it('names that subcommand in parseArgv for git alone', () => {

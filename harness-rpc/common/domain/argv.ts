@@ -56,13 +56,15 @@ const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', 
 /**
  * The subcommand git runs and the words it hands that subcommand, found as git finds them (review M6): git's
  * own options come first (`-C <dir>`, `-c <name>=<value>`, `--git-dir <dir>`, `--work-tree <dir>`, the
- * `--name=value` forms, and the ones with no value such as `-p`, `--no-pager` or `--bare`), and a bare `--`
- * ends them, so the word after it is the subcommand. An unknown option is taken to have no value.
+ * `--name=value` forms, and the ones with no value such as `-p`, `--no-pager` or `--bare`). An unknown option is
+ * taken to have no value. Git refuses a bare `--` there ("unknown option: --", exit 129), so it names no
+ * subcommand and is marked `doubleDash`: the destructive gate asks about it rather than guess what a git that
+ * took it would run (review L11 of the slice 5 re-review).
  */
-export function gitInvocation(args: readonly string[]): { subcommand: string | null; args: string[] } {
+export function gitInvocation(args: readonly string[]): { subcommand: string | null; args: string[]; doubleDash?: true } {
   for (let index = 0; index < args.length; index++) {
     const word = args[index]!
-    if (word === '--') return { subcommand: args[index + 1] ?? null, args: args.slice(index + 2) }
+    if (word === '--') return { subcommand: null, args: [], doubleDash: true }
     if (!word.startsWith('-') || word === '-') return { subcommand: word, args: args.slice(index + 1) }
     if (GIT_OPTIONS_WITH_VALUE.has(word)) index++
   }

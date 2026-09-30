@@ -32,12 +32,17 @@ export interface ConfigListing {
  * reads this variable ahead of both, so one entry closes the whole section without enumerating
  * the commands. Git pages nothing when its output is a pipe, which is every call Buckle makes
  * today, so this is what a caller that ever hands git a terminal inherits.
+ *
+ * `GIT_NO_LAZY_FETCH` stops a partial clone fetching a missing object from its promisor remote, a transport
+ * the repository config names (review H1 of the slice 5 re-review). Git keeps it for the git it starts in the
+ * destination of a local push, which loses the config scope below.
  */
 export const ISOLATION_ENVIRONMENT: Record<string, string> = {
   GIT_TERMINAL_PROMPT: '0',
   GIT_CONFIG_NOSYSTEM: '1',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_PAGER: 'cat',
+  GIT_NO_LAZY_FETCH: '1',
   ...Object.fromEntries(PROXY_VARIABLES.map(name => [name, ''])),
 }
 
@@ -58,8 +63,8 @@ export const ISOLATION_ENVIRONMENT: Record<string, string> = {
  * - `core.sshCommand`, `core.gitProxy` — `classifyRemote` refuses an ssh or git:// origin, so
  *   neither transport is ever started, and the read-only git pack reaches no remote at all.
  * - `remote.<name>.receivepack` and `uploadpack` — git keeps the *first* value it reads, so this
- *   scope cannot reset them; `git_push` passes `--receive-pack=git-receive-pack` on the command
- *   line, which does win, and no forge tool fetches, so `uploadpack` is never consulted.
+ *   scope cannot reset them; `git_push` passes `--receive-pack` on the command line, which does
+ *   win, and no forge tool fetches, so `uploadpack` is never consulted.
  * - `https.proxy` is reset below although git reads the `http` section for https URLs too; the
  *   cost is one entry and the cost of a curl-style spelling one day being honoured is the
  *   credential.
@@ -100,6 +105,59 @@ export function isolationConfig(hooksDirectory: string): GitConfig[] {
     { key: 'diff.external', value: '' },
     { key: 'core.attributesFile', value: '/dev/null' },
   ]
+}
+
+/** Protocols a git started in a destination could reach a remote with; `protocol.allow` covers any other. */
+const TRANSPORTS = ['file', 'git', 'ssh', 'http', 'https', 'ftp', 'ftps', 'ext', 'fd']
+
+/**
+ * What the receiving git of a push to a repository on this filesystem is started with (review H1 of the slice 5
+ * re-review). Git starts `git-receive-pack` in the destination with GIT_CONFIG_COUNT and GIT_CONFIG_PARAMETERS
+ * removed, so the scope `gitConfigEnvironment` carries never reaches it, and the destination's own hooks and
+ * program keys would run on the host. The receiving git reads these from its own command line instead
+ * (`receivePackCommand`), last, so the destination's config cannot win them back, and hands them on through
+ * GIT_CONFIG_PARAMETERS to every git it starts (unpack-objects, index-pack, rev-list, gc).
+ *
+ * Everything `isolationConfig` resets, then what receive-pack itself honours:
+ * - `core.alternateRefsCommand` lists an alternate's refs; `true` lists none, so none is advertised.
+ * - `receive.autogc`, `gc.auto` and `maintenance.auto`: no gc or maintenance runs in the destination afterwards.
+ * - `receive.denyCurrentBranch=refuse`, git's default: `updateInstead` would check the pushed branch out into the
+ *   destination's worktree, running its filter programs and fsmonitor, so a push to its checked-out branch is refused.
+ * - `protocol.allow` and each built-in transport's `protocol.<name>.allow` set to never, beside GIT_NO_LAZY_FETCH in
+ *   the environment: a partial clone's lazy fetch would start a transport the destination's config names.
+ * - `gpg.<format>.program` verify a signed push's certificate; Buckle never signs one, and they are emptied anyway.
+ * - `core.sshCommand=false`: no ssh transport is allowed above; a program it names would not run either.
+ *
+ * Deliberately not reset, with the reason: `uploadpack.*` (receive-pack never runs upload-pack, and
+ * `uploadpack.packObjectsHook` is read only from the system, global and command-line scopes, the first two
+ * hidden); `filter.*` and `merge.<driver>.driver` (sections, which no single key resets: receive-pack checks
+ * nothing out once `updateInstead` is refused, and merges nothing); `receive.procReceiveRefs` (a list no later
+ * value empties: the proc-receive hook it names is out of reach with the hooks, so such a ref is refused).
+ */
+export function receivingIsolationConfig(hooksDirectory: string): GitConfig[] {
+  return [
+    ...isolationConfig(hooksDirectory),
+    { key: 'core.alternateRefsCommand', value: 'true' },
+    { key: 'receive.autogc', value: 'false' },
+    { key: 'gc.auto', value: '0' },
+    { key: 'maintenance.auto', value: 'false' },
+    { key: 'receive.denyCurrentBranch', value: 'refuse' },
+    { key: 'protocol.allow', value: 'never' },
+    ...TRANSPORTS.map(name => ({ key: `protocol.${name}.allow`, value: 'never' })),
+    { key: 'gpg.openpgp.program', value: '' },
+    { key: 'gpg.x509.program', value: '' },
+    { key: 'gpg.ssh.program', value: '' },
+    { key: 'core.sshCommand', value: 'false' },
+  ]
+}
+
+/**
+ * The `--receive-pack` a push to a repository on this filesystem names: git itself, handed the receiving
+ * isolation as `-c` options. Git runs it through a shell, so every word is single-quoted for one.
+ */
+export function receivePackCommand(hooksDirectory: string): string {
+  const words = ['git', ...receivingIsolationConfig(hooksDirectory).flatMap(entry => ['-c', `${entry.key}=${entry.value}`]), 'receive-pack']
+  return words.map(word => `'${word.replaceAll("'", `'\\''`)}'`).join(' ')
 }
 
 /**

@@ -599,8 +599,38 @@ describe('git_push is sent where no remote name or rewrite rule redirects it (re
     const { server, judged, origin, repository, other } = await served()
     git(repository, 'config', `remote.${origin}.url`, other)
     await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, approved: [new URL(server.url).host] }))
-      .rejects.toThrow(/names a remote .*which is a URL or a path/)
+      .rejects.toThrow(/names a remote .*which is shaped like a URL or names the push destination/)
     expect([hasMain(judged), hasMain(other)]).toEqual([false, false])
+  })
+
+  // Review L8 of the slice 5 re-review: any slash-named remote refused every push, though git applies a remote
+  // only when its name is the push argument itself.
+  it('pushes while an unrelated slash-named remote such as team/fork is configured', async () => {
+    const { origin, repository } = bareOrigin()
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    const fork = join(temporaryRoot('fork'), 'fork.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', fork])
+    git(repository, 'remote', 'add', 'team/fork', fork)
+    const output = await call({ repository, tool: 'git_push', args: { branch: 'main' } }) as JsonObject
+    expect(output).toMatchObject({ remote: origin, headSha: git(origin, 'rev-parse', 'main').trim() })
+    expect(hasMain(fork)).toBe(false)
+  })
+
+  it.each<[string, (target: string) => string]>([
+    ['the exact push target', target => target],
+    ['the push target with .git added', target => `${target}.git`],
+    ['the push target with a trailing slash', target => `${target}/`],
+  ])('refuses a push while a remote is named by %s, and pushes nowhere', async (_, spelling) => {
+    const root = temporaryRoot('named')
+    const origin = join(root, 'dest')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', origin])
+    const repository = workRepository({ origin })
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    const other = join(root, 'other.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', other])
+    git(repository, 'config', `remote.${spelling(origin)}.url`, other)
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } })).rejects.toThrow(/names a remote .*names the push destination/)
+    expect([hasMain(origin), hasMain(other)]).toEqual([false, false])
   })
 
   it('refuses a rewrite rule matching the path git is handed, though origin as written is a link it never matches', async () => {
@@ -649,6 +679,60 @@ describe('git_push is sent where no remote name or rewrite rule redirects it (re
     expect(hasMain(other)).toBe(false)
     await runtime.approvalService.close()
     await runtime.history.close()
+  })
+})
+
+// Review H1 of the slice 5 re-review: git starts the receiving git of a local push in the destination with the
+// isolation's GIT_CONFIG_COUNT removed, so the destination's own hooks and program keys ran on the host. The
+// receiving git now gets the isolation on its own command line.
+describe('a push to a repository on this filesystem isolates the receiving git too (review H1 of the slice 5 re-review)', () => {
+  const RECEIVE_HOOKS = ['pre-receive', 'update', 'post-receive', 'post-update', 'reference-transaction', 'pre-auto-gc']
+
+  it('lands, and runs none of the destination\'s hooks, its core.alternateRefsCommand or a gc', async () => {
+    const { origin, repository } = bareOrigin()
+    const markers = temporaryRoot('receiving-markers')
+    for (const hook of RECEIVE_HOOKS) writeFileSync(join(origin, 'hooks', hook), `#!/bin/sh\ntouch ${join(markers, hook)}\n`, { mode: 0o755 })
+    // An alternate object store, so receive-pack asks core.alternateRefsCommand for its refs.
+    const alternate = join(temporaryRoot('alternate'), 'alternate.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', alternate])
+    writeFileSync(join(origin, 'objects', 'info', 'alternates'), `${join(alternate, 'objects')}\n`)
+    git(origin, 'config', 'core.alternateRefsCommand', `touch ${join(markers, 'alternate-refs')}; true`)
+    // Enough loose objects that receive-pack's gc --auto would start, in the foreground.
+    git(origin, 'config', 'gc.auto', '1')
+    git(origin, 'config', 'gc.autoDetach', 'false')
+    mkdirSync(join(origin, 'objects', '17'))
+    for (const name of ['a'.repeat(38), 'b'.repeat(38)]) writeFileSync(join(origin, 'objects', '17', name), '')
+    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+    await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
+
+    const calls: ProcessRequest[] = []
+    const output = await call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: async (request) => { calls.push(request); return await runProcess(request) } }) as JsonObject
+    expect(git(origin, 'rev-parse', 'main').trim()).toBe(output.headSha)
+    expect(readdirSync(markers)).toEqual([])
+    const receivePack = calls.find(request => request.args[0] === 'push')?.args.find(word => word.startsWith('--receive-pack='))
+    expect(receivePack).toMatch(/'core\.hooksPath=[^']*git-hooks'/)
+    expect(receivePack).toContain("'core.alternateRefsCommand=true'")
+  })
+
+  it('refuses a push to the destination\'s checked-out branch rather than checking it out through its filters', async () => {
+    const { repository } = bareOrigin()
+    const destination = join(temporaryRoot('checked-out'), 'destination')
+    execFileSync('git', ['init', '-q', '-b', 'main', destination])
+    git(destination, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'base')
+    const marker = join(temporaryRoot('smudge-marker'), 'smudged')
+    git(destination, 'config', 'receive.denyCurrentBranch', 'updateInstead')
+    git(destination, 'config', 'filter.pwn.smudge', `sh -c 'touch ${marker}; cat'`)
+    writeFileSync(join(destination, '.git', 'info', 'attributes'), '* filter=pwn\n')
+    git(repository, 'remote', 'set-url', 'origin', destination)
+    git(repository, 'fetch', '-q', 'origin', 'main')
+    git(repository, 'reset', '-q', '--hard', 'FETCH_HEAD')
+    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+    git(repository, 'add', 'kept.txt')
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '-m', 'second')
+
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } })).rejects.toThrow(/refusing to update checked out branch|denyCurrentBranch/)
+    expect(existsSync(marker)).toBe(false)
+    expect(existsSync(join(destination, 'kept.txt'))).toBe(false)
   })
 })
 

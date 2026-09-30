@@ -33,7 +33,10 @@ defines a `filter` driver, or gives a committed path a `filter=` attribute, is r
 `git_commit`: a clean filter is a program `git add` runs, and `filter.<name>.*` is a whole config
 section no override can empty. A repository using git-lfs is refused for that reason — commit
 through `shell_exec` instead. And `remote.origin.receivepack` is first-wins in git, so `git_push`
-passes `--receive-pack=git-receive-pack` on the command line, where it does win.
+passes `--receive-pack` on the command line, where it does win. For a repository on this
+filesystem that is git itself with the same resets as `-c` options, so the destination's own hooks
+and program keys do not run either, no gc runs there, and a push to its checked-out branch is
+refused.
 
 ## What each tool is for
 

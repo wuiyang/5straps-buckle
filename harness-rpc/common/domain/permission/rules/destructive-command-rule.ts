@@ -67,13 +67,27 @@ function classifyArgv(argv: ParsedArgv, args: readonly string[]): string | null 
 function classifyGit(argv: ParsedArgv, args: readonly string[]): string | null {
   if (argv.command !== 'git') return null
   const invocation = gitInvocation(args)
+  if (invocation.doubleDash) return 'git refuses a bare -- before its subcommand; asked rather than guessed at'
   const subcommand = invocation.subcommand?.toLowerCase()
   const flags = parseArgv('git', invocation.args)
-  if (subcommand === 'push' && hasFlag(flags, 'f', 'force', 'force-with-lease')) return 'Force push rewrites remote history'
-  if (subcommand === 'reset' && flags.longFlags.has('hard')) return 'git reset --hard discards local work'
-  if (subcommand === 'clean' && hasFlag(flags, 'f', 'force')) return 'git clean deletes untracked files'
-  if (subcommand === 'checkout' && hasFlag(flags, 'f', 'force')) return 'git checkout --force discards local changes'
+  if (subcommand === 'push' && hasGitOption(flags, 'f', 'force', 'force-with-lease', 'force-if-includes')) return 'Force push rewrites remote history'
+  if (subcommand === 'push' && hasGitOption(flags, 'd', 'delete')) return 'git push --delete deletes remote branches'
+  if (subcommand === 'push' && hasGitOption(flags, null, 'mirror')) return 'git push --mirror overwrites and deletes remote refs'
+  if (subcommand === 'push' && hasGitOption(flags, null, 'prune')) return 'git push --prune deletes remote branches'
+  if (subcommand === 'reset' && hasGitOption(flags, null, 'hard')) return 'git reset --hard discards local work'
+  if (subcommand === 'clean' && hasGitOption(flags, 'f', 'force')) return 'git clean deletes untracked files'
+  if (subcommand === 'checkout' && hasGitOption(flags, 'f', 'force')) return 'git checkout --force discards local changes'
   return null
+}
+
+/**
+ * A short flag, or a long option as git reads it: git takes any prefix of a long option's name that no other of the
+ * subcommand's options shares (`--forc` is `--force`) and refuses a shared one, so a typed name that begins one of
+ * these is read as it, the dangerous reading of an ambiguous prefix (the `--forc` item of the slice 5 re-review).
+ */
+function hasGitOption(flags: ParsedArgv, short: string | null, ...names: string[]): boolean {
+  if (short && flags.shortFlags.has(short)) return true
+  return [...flags.longFlags.keys()].some(typed => typed.length > 0 && names.some(name => name.startsWith(typed)))
 }
 
 function classifyAdded(input: { added: readonly CommandGlob[]; argv: ParsedArgv; words: string[] }): string | null {

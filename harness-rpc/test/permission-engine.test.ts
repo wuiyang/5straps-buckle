@@ -131,12 +131,48 @@ describe('destructive commands', () => {
     ['git', ['--git-dir', '.git', 'push', '-f']],
     ['git', ['--git-dir=.git', '--work-tree', '.', '--no-pager', '-c', 'a=b', 'push', '--force-with-lease']],
     ['git', ['--namespace', 'n', '--config-env', 'k=ENV', '-P', 'reset', '--hard']],
-    ['git', ['-C', '.', '--', 'push', '--force']],
   ])('gates %s %s past git\'s own options', (command, args) => {
     const outcome = evaluate([exec(command, args)], { write_scope: ['/'] })
     expect(outcome.kind).toBe('ask')
     if (outcome.kind !== 'ask') return
     expect(outcome.asks.some(ask => ask.rule === 'destructive_command')).toBe(true)
+  })
+
+  // Review L11 of the slice 5 re-review: git refuses a bare `--` before its subcommand, so it names none; the gate
+  // still asks, rather than guess what a git that took it would run.
+  it.each([
+    ['git', ['-C', '.', '--', 'push', '--force']],
+    ['git', ['--', 'status']],
+  ])('asks about %s %s, whose bare -- git refuses', (command, args) => {
+    const outcome = evaluate([exec(command, args)], { write_scope: ['/'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.find(ask => ask.rule === 'destructive_command')?.reason).toMatch(/bare --/)
+  })
+
+  // The slice 5 re-review's first unverified item: git takes a unique prefix of a long option (`--forc` is
+  // `--force`), and refuses a shared one, so a prefix of a destructive option is read as that option.
+  it.each([
+    ['git', ['push', '--forc'], /Force push/],
+    ['git', ['push', '--force-with'], /Force push/],
+    ['git', ['push', '--force-with=main'], /Force push/],
+    ['git', ['push', '--force-if-includes'], /Force push/],
+    ['git', ['push', '-f'], /Force push/],
+    ['git', ['push', '--f'], /Force push/],
+    ['git', ['push', '--delete', 'origin', 'old'], /--delete/],
+    ['git', ['push', '-d', 'origin', 'old'], /--delete/],
+    ['git', ['push', '--dele', 'origin', 'old'], /--delete/],
+    ['git', ['push', '--mirror'], /--mirror/],
+    ['git', ['push', '--mirr'], /--mirror/],
+    ['git', ['push', '--prune'], /--prune/],
+    ['git', ['reset', '--har'], /reset --hard/],
+    ['git', ['reset', '--h'], /reset --hard/],
+    ['git', ['clean', '--forc'], /git clean/],
+    ['git', ['checkout', '--forc', 'main'], /checkout --force/],
+    ['git', ['-C', '.', 'push', '--forc'], /Force push/],
+  ])('gates %s %s, a destructive option or a prefix of one', (command, args, reason) => {
+    const outcome = evaluate([exec(command, args)], { write_scope: ['/'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.find(ask => ask.rule === 'destructive_command')?.reason).toMatch(reason)
   })
 
   it.each([
@@ -147,6 +183,11 @@ describe('destructive commands', () => {
     ['git', ['-c', 'push.default=current', 'push', 'origin', 'main']],
     ['git', ['-C', 'force', 'status']],
     ['git', ['push', '--', '--force']],
+    ['git', ['push', '--dry-run']],
+    ['git', ['push', '--follow-tags', 'origin', 'main']],
+    ['git', ['push', '--no-force']],
+    ['git', ['reset', '--soft', 'HEAD~1']],
+    ['git', ['clean', '--dry-run']],
     ['rm', ['one-file.txt']],
     ['node', ['script.js']],
   ])('allows ordinary command %s %s', (command, args) => {

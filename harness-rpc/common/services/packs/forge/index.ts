@@ -15,7 +15,7 @@ import { judgedPath } from '../judged-path.js'
 import { resolveTarget } from '../../invocation/real-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
+import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, receivePackCommand, transportConfig, type GitConfig } from '../git-isolation.js'
 import { assertNoFilters, assertNoFilterPrograms } from './isolation.js'
 import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
@@ -140,14 +140,17 @@ export function createForgePack(options: ForgePackOptions): Pack {
    * Checked at launch, under the write lock, against the exact destination git is handed (review H3). Git
    * reads a push argument as a remote name before it reads it as a URL or a path, and applies every
    * url.<base>.insteadOf and pushInsteadOf whose value begins it (an empty value begins every one). So no
-   * remote may be named by a URL or a path, and no rewrite rule may match the destination.
+   * remote may be named by the destination or shaped like a URL, and no rewrite rule may match the destination.
+   * Git applies a remote only when its name is the argument itself, so a remote named anything else, such as
+   * `team/fork`, redirects nothing and is left alone (review L8 of the slice 5 re-review).
    */
   const assertDestinationUnaliased = async (input: { repository: string; destination: ForgeRemote; context: ToolContext }): Promise<void> => {
     const target = pushTarget(input.destination)
+    const spellings = destinationSpellings({ destination: input.destination, typed: classifyRemote(readOriginUrl(input.repository)) })
     const names = (await configEntries({ ...input, pattern: '^remote\\.', nameOnly: true })).map(entry => remoteNameOf(entry.key))
-    const named = names.find(isUrlOrPathName)
+    const named = names.find(name => name.includes(':') || spellings.has(sameRepositoryName(name)))
     if (named !== undefined) {
-      throw new ToolInputError(`this repository names a remote ${JSON.stringify(redactShownText(named))}, which is a URL or a path; git reads a push destination as a remote name first, so the push to ${input.destination.display} is refused rather than sent where that remote points. Rename or remove that remote`, { code: 'PERMISSION_DENIED' })
+      throw new ToolInputError(`this repository names a remote ${JSON.stringify(redactShownText(named))}, which is shaped like a URL or names the push destination; git reads a push destination as a remote name first, so the push to ${input.destination.display} is refused rather than sent where that remote points. Rename or remove that remote`, { code: 'PERMISSION_DENIED' })
     }
     const rules = await configEntries({ ...input, pattern: '^url\\..*\\.(insteadof|pushinsteadof)$' })
     if (rules.some(rule => target.startsWith(rule.value))) {
@@ -259,8 +262,11 @@ export function createForgePack(options: ForgePackOptions): Pack {
         // after the check. `remote.origin.receivepack` is first-wins in git, so only the command line resets it.
         // A local destination is its absolute real path, which git never reads as a remote name (git refuses a
         // remote named with a leading `/`); an https one has no such spelling, so a remote named by it is refused above.
+        // The git receiving a local push runs in the destination without the isolation above, so it is handed its
+        // own on its command line (review H1 of the slice 5 re-review).
         const refspec = `refs/heads/${branch}:refs/heads/${branch}`
-        await gitOutput({ repository, args: ['push', '--receive-pack=git-receive-pack', pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), secrets: userinfoForms(destination), context })
+        const receivePack = destination.kind === 'local' ? receivePackCommand(ensureHooksDirectory(options.stateDirectory)) : 'git-receive-pack'
+        await gitOutput({ repository, args: ['push', `--receive-pack=${receivePack}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), secrets: userinfoForms(destination), context })
         const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
         // A push to a URL moves no remote-tracking ref; origin named this destination at launch, so its ref follows.
         await gitOutput({ repository, args: ['update-ref', `refs/remotes/origin/${branch}`, headSha], context })
@@ -417,9 +423,20 @@ function remoteNameOf(key: string): string {
   return key.slice('remote.'.length, key.lastIndexOf('.'))
 }
 
-/** A remote name that reads as a URL, an scp-style address or a path (review H3). */
-function isUrlOrPathName(name: string): boolean {
-  return /[:/\\]/.test(name) || name === '.' || name === '..' || name.startsWith('~')
+/**
+ * Every spelling of the destination a remote could be named by and still stand for it: the target git is
+ * handed and, for a local repository, origin's path as typed, each with or without a trailing `.git` or `/`
+ * (review L8 of the slice 5 re-review). Git itself matches the argument exactly; the other spellings are refused
+ * too, since a person reading the config would take them for the destination.
+ */
+function destinationSpellings(input: { destination: ForgeRemote; typed: ForgeRemote }): Set<string> {
+  const spellings = [pushTarget(input.destination), ...(input.typed.kind === 'local' ? [input.typed.path] : [])]
+  return new Set(spellings.map(sameRepositoryName))
+}
+
+/** A remote name or a destination with any trailing `/` and one trailing `.git` dropped, so the two forms compare equal. */
+function sameRepositoryName(name: string): string {
+  return name.replace(/\/+$/, '').replace(/\.git$/, '').replace(/\/+$/, '')
 }
 
 /**
