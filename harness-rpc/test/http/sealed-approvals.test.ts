@@ -33,7 +33,7 @@ async function node(input: { key?: string; state?: string; graceMs?: number } = 
   } })
   nodes.push(app)
   const { config, runtime } = app
-  const ask = async () => ((await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })).requests)[0]!
+  const ask = async (complete = true) => ((await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...(complete ? { call: { arguments: { path: '/outside/fixture.txt', content: 'fixture' }, cwd: config.cwd, description: 'Write fixture.txt', effects: ['write /outside/fixture.txt'], complete: true as const } } : {}) })).requests)[0]!
   const decide = (body: unknown) => app.request('/setup/approvals', { method: 'POST', headers: ADMIN, body: JSON.stringify(body) })
   const refusals = () => runtime.actions.read(200).filter(entry => entry.tool === 'setup_approval_envelope_refused')
   return { state, config, runtime, app, ask, decide, refusals }
@@ -49,6 +49,24 @@ describe('sealed approval decisions on the setup face', () => {
     expect((await decide({ token: (await ask()).token, approved: true, scope: 'once' })).status).toBe(200)
     const status = await (await app.request('/setup/status', { headers: ADMIN })).json() as { approvalEnvelope: string }
     expect(status.approvalEnvelope).toBe('re-pair required')
+  })
+
+  it.each([false, true])('refuses approval of an incomplete call and permits denial when paired=%s', async (paired) => {
+    const encoded = paired ? mintApprovalKey() : undefined
+    const { runtime, ask, decide } = await node({ ...(encoded ? { key: encoded } : {}) })
+    const token = (await ask(false)).token
+    const body = (approved: boolean) => {
+      const decision = { token, approved, scope: 'once' }
+      return encoded ? seal(approvalKey(encoded), { method: 'POST', path: '/setup/approvals', body: decision }) : decision
+    }
+    const rejected = await decide(body(true))
+    expect(rejected.status).toBe(409)
+    expect(await rejected.json()).toMatchObject({ error: expect.stringContaining('cannot be approved') })
+    expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
+    expect(runtime.approvals.unspent('s1')).toEqual([])
+    expect((await decide(body(false))).status).toBe(200)
+    expect(runtime.approvals.pending()).toEqual([])
+    expect(runtime.approvals.unspent('s1')).toEqual([])
   })
 
   it('refuses a plain decision once a key is paired, and audits the reason without the body', async () => {

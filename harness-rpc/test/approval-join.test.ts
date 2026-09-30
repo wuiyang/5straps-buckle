@@ -197,7 +197,7 @@ describe('ordering inside a request and at close (review L5)', () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-join-order-'))
     return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
   }
-  const call = { sessionId: 's', requestId: 'r', tool: 'fs_write', asks: [outside(1)] }
+  const call = { sessionId: 's', requestId: 'r', tool: 'fs_write', asks: [outside(1)], call: { arguments: { path: '/outside/1', content: 'x' }, cwd: '/workspace', description: 'Write to /outside/1', effects: ['write /outside/1'], complete: true as const } }
 
   it('draws no question for a caller that cancelled while the ask was announced, and withdraws it', async () => {
     const registry = queue()
@@ -244,6 +244,7 @@ describe('ordering inside a request and at close (review L5)', () => {
     await closing
 
     expect(registry.pending()).toEqual([])
+    expect(registry.unspent('s')).toEqual([{ subject: { rule: 'write_scope', subject: '/outside/1' }, tool: 'fs_write' }])
     expect(await waiting).toMatchObject({ settled: false })
   })
 })

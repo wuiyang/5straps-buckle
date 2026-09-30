@@ -26,8 +26,8 @@ const headers = (token: string) => ({ authorization: `Bearer ${token}`, 'content
 
 describe('owner approval authority', () => {
   it('refuses agent decisions and accepts only the setup credential', async () => {
-    const { runtime, app } = await fixture()
-    const [approval] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 'read-session', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/synthetic', reason: 'outside', offeredScopes: ['session'] }] })).requests
+    const { runtime, app, config } = await fixture()
+    const [approval] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 'read-session', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/synthetic', reason: 'outside', offeredScopes: ['session'] }], call: { arguments: { path: '/synthetic/fixture.txt' }, cwd: config.cwd, description: 'Read fixture.txt', effects: ['read /synthetic/fixture.txt'], complete: true } })).requests
     const body = JSON.stringify({ token: approval!.token, approved: true, scope: 'session' })
     expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('agent-token'), body })).status).toBe(401)
     expect((await app.request('/v1/approvals', { method: 'POST', headers: headers('agent-token'), body })).status).toBe(404)
