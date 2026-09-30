@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { createLogger, createOperationScope, redactText, runInScope, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
+import { createLogger, createOperationScope, isCredentialKey, redactText, runInScope, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
 
 function memorySink(): LogSink & { events: LogEvent[] } {
   const events: LogEvent[] = []
@@ -151,6 +151,16 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     // Random secrets still go, whatever precedes them, unless they are exactly a fingerprint after SHA256:.
     const survivors = randomKeys(2_000).filter(key => redactText(`token ${key}`).includes(key))
     expect(survivors.length).toBe(0)
+  })
+
+  // One matcher for every redaction by name: Buckle's approval challenges use it too (review item 8 of the proof-of-possession fixes).
+  it('names credential headers and variables in any case, and keeps counts and plain names', () => {
+    for (const name of ['Authorization', 'Proxy-Authorization', 'Cookie', 'Set-Cookie', 'X-Api-Key', 'api-key', 'Bearer', 'x-auth', 'NPM_AUTH', 'PASSPHRASE', 'SIGNATURE', 'private-key', 'GITHUB_TOKEN', 'PGPASSWORD', 'client_secret']) {
+      expect({ name, credential: isCredentialKey(name) }).toEqual({ name, credential: true })
+    }
+    for (const name of ['path', 'content', 'url', 'PWD', 'HOME', 'Accept']) expect({ name, credential: isCredentialKey(name) }).toEqual({ name, credential: false })
+    expect(isCredentialKey('max_tokens', 1000)).toBe(false)
+    expect(isCredentialKey('max_tokens', 'sk-live-abc')).toBe(true)
   })
 
   it('keeps absolute and relative paths and stack frames readable', async () => {

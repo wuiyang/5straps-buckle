@@ -8,9 +8,12 @@ import { defineSetupHandler } from '../../utils/setup.js'
 export default defineSetupHandler({
   access: 'approval',
   resource: 'approvals',
-  handler: async ({ event, actor, workspace, body }) => {
+  handler: async ({ event, actor, workspace, body, audit }) => {
     const { runtime } = workspace
     const decided = await runtime.approvalService.decideSealed({ body: (await body()) ?? null, signedBy: actor.startsWith('key:') ? actor : undefined })
+    // What an opened decision said, beside the actor that signed or carried it (keys-provisioning.md: every
+    // approval and denial is logged with key identity and scope; review item 6 of the proof-of-possession fixes).
+    if (decided.status === 'answered' || decided.status === 'rejected') audit({ ...decided.decided })
     if (decided.status === 'refused') {
       await recordRefusal(tolerantLog(event, runtime.actions), { tool: 'setup_approval_envelope_refused', workspaceId: runtime.workspaceId, sessionId: 'workspace-admin', status: 401, detail: decided.reason })
       event.context.logger?.warn('Refused an approval decision envelope', { reason: decided.reason, workspaceId: runtime.workspaceId })

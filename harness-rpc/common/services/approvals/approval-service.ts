@@ -6,11 +6,12 @@ import type { ApprovalKey } from '@5straps/protocol/envelope'
 import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
 import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand } from '../../domain/approval-instruction.js'
+import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import { logger } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import type { ApprovalAuthority, ApprovalRegistry, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
+import type { ApprovalAuthority, ApprovalRegistry, AskedCall, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -43,8 +44,8 @@ export interface ApprovalAskInput {
   wait?: ApprovalWait
   /** The call's tool and whole arguments, hashed (requestFingerprint): a re-send joins only with the same one. */
   fingerprint?: string
-  /** The call as the node's signed challenge shows it (owner decision D9): redacted arguments and their directory. */
-  call?: { arguments: JsonValue; cwd: string }
+  /** The call as the node's signed challenge shows it (owner decision D9): redacted arguments, whether they are cut, their directory and the node's description. */
+  call?: AskedCall
 }
 
 /**
@@ -71,12 +72,28 @@ export interface ApprovalAnswer {
   decidedBy?: string
 }
 
-/** What a decision from Rings came to; the setup face answers 401, 400, 409 or 200 from it. */
+/**
+ * What a decision from Rings or a person's key came to; the setup face answers 401, 400, 409 or 200
+ * from it, and audits what an opened decision said (review item 6 of the proof-of-possession fixes).
+ */
 export type SealedDecisionResult =
   | { status: 'refused'; reason: DecisionRefusal }
   | { status: 'invalid' }
-  | { status: 'rejected'; reason: string }
-  | { status: 'answered' }
+  | { status: 'rejected'; reason: string; decided: DecidedRecord }
+  | { status: 'answered'; decided: DecidedRecord }
+
+/**
+ * One decision as its audit entry keeps it: what was decided, the digest of the challenge a key signed,
+ * and the rule and subject of the ask it answered (the subject as the audit keeps subjects).
+ */
+export interface DecidedRecord {
+  token: string
+  approved: boolean
+  scope: ApprovalDecision['scope']
+  challenge?: string
+  rule?: string
+  subject?: string
+}
 
 export interface ApprovalService {
   /** Issues the asks (or joins the ones the same call already made), then waits as the caller's entry point holds it. */
@@ -261,14 +278,14 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         if (!signed.success) return { status: 'invalid' }
         const { challenge, ...decision } = signed.data
         const result = await service.answer({ decision, authority: 'admin', challenge, decidedBy: input.signedBy })
-        return result.ok ? { status: 'answered' } : { status: 'rejected', reason: result.reason }
+        return settledDecision({ decision, challenge, result })
       }
       const opened = await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
       if (!opened.ok) return { status: 'refused', reason: opened.reason }
       const parsed = ApprovalDecisionSchema.safeParse(opened.body)
       if (!parsed.success) return { status: 'invalid' }
       const result = await service.answer({ decision: parsed.data, authority: 'admin' })
-      return result.ok ? { status: 'answered' } : { status: 'rejected', reason: result.reason }
+      return settledDecision({ decision: parsed.data, result })
     },
 
     challenges: () => options.registry.waiting().map(ask => ({ token: ask.request.token, challenge: challengeOf(ask) })),
@@ -308,7 +325,9 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       token: request.token, requestId: ask.requestId ?? null, sessionId: ask.sessionId, actor: ask.actor ?? null,
       tool: request.tool, rule: request.rule, subject: request.subject, reason: request.reason, offeredScopes: request.offeredScopes,
       arguments: call?.arguments ?? null, cwd: call?.cwd ?? null,
-      callDigest: call ? callDigestOf({ tool: request.tool, arguments: call.arguments }) : null, expiresAt: request.expiresAt,
+      callDigest: call ? callDigestOf({ tool: request.tool, arguments: call.arguments }) : null,
+      // A challenge without its call shows nothing to decide on; the client refuses it as it does a cut one.
+      truncated: call?.truncated ?? true, description: call?.description ?? null, expiresAt: request.expiresAt,
     }
   }
 
@@ -511,6 +530,14 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   }
 
   return service
+}
+
+/** A decision the service answered or rejected, with what its audit entry records. */
+function settledDecision(input: { decision: ApprovalDecision; challenge?: string; result: Resolution }): SealedDecisionResult {
+  const { decision, result } = input
+  const asked = result.ok && result.asked ? { rule: result.asked.rule, subject: redactedSubject(result.asked.rule, result.asked.subject) } : {}
+  const decided: DecidedRecord = { token: decision.token, approved: decision.approved, scope: decision.scope, ...(input.challenge === undefined ? {} : { challenge: input.challenge }), ...asked }
+  return result.ok ? { status: 'answered', decided } : { status: 'rejected', reason: result.reason, decided }
 }
 
 /** Whether the caller's abort is an explicit cancel; without a way to tell, it is a dropped transport. */

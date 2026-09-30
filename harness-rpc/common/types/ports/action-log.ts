@@ -24,6 +24,8 @@ export interface ActionLogEntry {
   asked?: string[]
   /** Grants that let the call through, as `rule:subject`. */
   approvedBy?: string[]
+  /** The enrolled keys (key:<fingerprint>) whose `once` decisions the call spent. */
+  decidedBy?: string[]
   detail?: string
 }
 

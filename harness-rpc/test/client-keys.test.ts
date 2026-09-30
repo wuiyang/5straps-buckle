@@ -145,7 +145,10 @@ describe('a key\'s scope (owner decision D10)', () => {
     await keys.enroll({ publicKey: enrolled.bothOnC.publicKey, label: '', purpose: 'both', workspace: 'child-c' })
     await keys.enroll({ publicKey: enrolled.setupOnNode.publicKey, label: '', purpose: 'setup', workspace: 'node' })
     await keys.enroll({ publicKey: enrolled.approvalOnNode.publicKey, label: '', purpose: 'approval', workspace: 'node' })
-    const verdict = (key: { keyId: string }, purpose: 'buckle-setup' | 'buckle-approval', workspace: string, registry = false) => ('key' in keys.publicKeyFor(key.keyId, { purpose, workspace, registry }) ? 'ok' : 'out_of_scope')
+    const verdict = (key: { keyId: string }, purpose: 'buckle-setup' | 'buckle-approval', workspace: string, registry = false) => {
+      const found = keys.publicKeyFor(key.keyId, { purpose, workspace, registry })
+      return 'covers' in found && found.covers ? 'ok' : 'out_of_scope'
+    }
     const rows: Array<[{ keyId: string }, 'buckle-setup' | 'buckle-approval', string, boolean, string]> = [
       [enrolled.setupOnA, 'buckle-setup', 'child-a', false, 'ok'],
       [enrolled.setupOnA, 'buckle-setup', 'child-b', false, 'out_of_scope'],

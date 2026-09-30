@@ -24,9 +24,8 @@ function verifier(input: { enrolled?: string[]; outOfScope?: string[] } = {}) {
       authorization, body: Buffer.from(options.body ?? body), now: options.at ?? now,
       expected: { purpose: options.purpose ?? 'buckle-setup', ...route, ...options.route },
       publicKeyFor: ({ keyId }) => {
-        if (input.outOfScope?.includes(keyId)) return { refused: 'out_of_scope' }
         const key = enrolled.get(keyId)
-        return key ? { key } : { refused: 'unknown_key' }
+        return key ? { key, covers: !input.outOfScope?.includes(keyId) } : { refused: 'unknown_key' }
       },
       claim: ({ keyId, nonce }) => {
         if (seen.has(`${keyId}:${nonce}`)) return false
@@ -68,10 +67,19 @@ describe('a signed request', () => {
     }
   })
 
-  it('refuses a key enrolled for another purpose or workspace before its signature is checked, and names the claimed key', () => {
+  it('refuses a key enrolled for another purpose or workspace once it proved the signature, and names the claimed key', () => {
     expect(verifier({ outOfScope: [owner.keyId] })(signed())).toBe('out_of_scope')
     const verdict = verifySignedRequest({ authorization: signed({ key: other }), body: Buffer.from(body), now, expected: { purpose: 'buckle-setup', ...route }, publicKeyFor: () => ({ refused: 'unknown_key' }), claim: () => true })
     expect(verdict).toEqual({ ok: false, reason: 'unknown_key', claimedKeyId: other.keyId })
+  })
+
+  // Review item 17 of the proof-of-possession fixes: a stranger naming an enrolled key out of its scope
+  // was refused as out_of_scope, so the owner's log blamed a device that signed nothing.
+  it('refuses a stranger who names an out-of-scope key as a bad signature, never as that key reaching out of scope', () => {
+    const forged = signRequest({ key: signingKeyFromPem(other.privateKeyPem), purpose: 'buckle-setup', ...route, body, now })
+    const payload = JSON.parse(Buffer.from(forged.split(' ')[1]!.split('.')[0]!, 'base64url').toString('utf8')) as Record<string, unknown>
+    const claimsOwner = `5straps-Signed ${Buffer.from(JSON.stringify({ ...payload, keyId: owner.keyId })).toString('base64url')}.${forged.split('.')[1]}`
+    expect(verifier({ outOfScope: [owner.keyId] })(claimsOwner)).toBe('bad_signature')
   })
 
   it('refuses reuse across purposes: a setup request on the approval route and an approval on the setup route', () => {
@@ -113,7 +121,8 @@ describe('an approval challenge the node signs (B24)', () => {
   const challenge: ApprovalChallenge = {
     v: 1, purpose: 'buckle-approval-challenge', node: 'node-1', workspace: 'default', token: 'token-1', requestId: 'a'.repeat(64), sessionId: 'chat-1',
     actor: 'agent:node', tool: 'shell_exec', rule: 'destructive_command', subject: 'rm -rf build', reason: 'Deletes files', offeredScopes: ['once', 'session'],
-    arguments: { args: ['-rf', 'build'], command: 'rm' }, cwd: '/workspace', callDigest: callDigestOf({ tool: 'shell_exec', arguments: { command: 'rm', args: ['-rf', 'build'] } }), expiresAt: '2026-09-29T10:00:00.000Z',
+    arguments: { args: ['-rf', 'build'], command: 'rm' }, cwd: '/workspace', callDigest: callDigestOf({ tool: 'shell_exec', arguments: { command: 'rm', args: ['-rf', 'build'] } }),
+    truncated: false, description: 'Run `rm -rf build` in /workspace', expiresAt: '2026-09-29T10:00:00.000Z',
   }
 
   it('carries a call digest a person\'s device recomputes from the arguments it shows, whatever order their keys came in', () => {
@@ -137,8 +146,13 @@ describe('an approval challenge the node signs (B24)', () => {
     const [encoded, signature] = signed.split('.')
     const altered = Buffer.from(JSON.stringify({ ...challenge, subject: 'ls' })).toString('base64url')
     expect(readChallenge({ signed: `${altered}.${signature}`, nodeKey: publicKeyFrom(node.publicKey) })).toBeNull()
+    // Owner decision D9: the description a relay rewrites, or a truncation it hides, breaks the node's signature too.
+    for (const changed of [{ description: 'Run `ls` in /workspace' }, { truncated: true }, { description: null }]) {
+      const rewritten = Buffer.from(JSON.stringify({ ...challenge, ...changed })).toString('base64url')
+      expect(readChallenge({ signed: `${rewritten}.${signature}`, nodeKey: publicKeyFrom(node.publicKey) })).toBeNull()
+    }
     // Signatures are made under separate contexts: a challenge signature is no request signature.
-    const asRequest = verifySignedRequest({ authorization: `5straps-Signed ${encoded}.${signature}`, body: Buffer.alloc(0), now, expected: { purpose: 'buckle-approval', ...route }, publicKeyFor: () => ({ key: publicKeyFrom(node.publicKey) }), claim: () => true })
+    const asRequest = verifySignedRequest({ authorization: `5straps-Signed ${encoded}.${signature}`, body: Buffer.alloc(0), now, expected: { purpose: 'buckle-approval', ...route }, publicKeyFor: () => ({ key: publicKeyFrom(node.publicKey), covers: true }), claim: () => true })
     expect(asRequest).toMatchObject({ ok: false })
   })
 })

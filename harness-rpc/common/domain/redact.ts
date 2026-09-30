@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { isCredentialKey } from '@5straps/runtime'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { isSecretName } from './environment.js'
 
@@ -69,27 +70,48 @@ const SHOWN_HEAD_LENGTH = 256
 /** What one challenge's arguments may take; past it every string is cut to a short head, and past that only the size shows. */
 const SHOWN_BYTES = 64 * 1_024
 const SHORT_STRING_LENGTH = 64
+/** Keys whose strings name a path: shown whole at every tier, since a cut path could hide where a call lands. */
+const PATH_KEY = /^(?:path|paths|cwd|repo|root|directory)$/i
+/** A URL's userinfo (`scheme://user:password@`), which carries a credential whatever key holds the URL. */
+const URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,63}:\/\/)[^\s/?#@]+@/gi
+
+/** A call's arguments as a challenge shows them, and whether any part of them is left out. */
+export interface ReviewableArguments {
+  arguments: JsonValue
+  /** A string was cut to its head, length and sha256, or the whole call replaced by its size and sha256 (review item 7). */
+  truncated: boolean
+}
 
 /**
  * A call's arguments as an approval challenge shows them (owner decision D9): canonical, every value
- * under a credential-named key redacted, and very long strings cut to a head, their length and their
- * sha256, so a person's device can show the raw action. Display only: a proven decision binds the
- * call's whole arguments through its fingerprint, not this.
+ * under a credential-named key and every URL's userinfo redacted, with the logger's own matcher
+ * (review item 8), and very long strings cut to a head, their length and their sha256, so a person's
+ * device can show the raw action. A path is never cut. Display only: a decision binds the call's whole
+ * arguments through its fingerprint, not this.
  */
-export function reviewableArguments(args: JsonObject): JsonValue {
-  const shown = review(args, SHOWN_STRING_LENGTH)
-  if (Buffer.byteLength(JSON.stringify(shown)) <= SHOWN_BYTES) return shown
-  const shorter = review(args, SHORT_STRING_LENGTH)
-  if (Buffer.byteLength(JSON.stringify(shorter)) <= SHOWN_BYTES) return shorter
+export function reviewableArguments(args: JsonObject): ReviewableArguments {
+  for (const limit of [SHOWN_STRING_LENGTH, SHORT_STRING_LENGTH]) {
+    const cut = { truncated: false }
+    const shown = review(args, { limit, cut, path: false })
+    if (Buffer.byteLength(JSON.stringify(shown)) <= SHOWN_BYTES) return { arguments: shown, truncated: cut.truncated }
+  }
   const whole = JSON.stringify(args)
-  return `[arguments of ${Buffer.byteLength(whole)} bytes, sha256 ${sha256(whole)}]`
+  return { arguments: `[arguments of ${Buffer.byteLength(whole)} bytes, sha256 ${sha256(whole)}]`, truncated: true }
 }
 
-function review(value: JsonValue, limit: number): JsonValue {
-  if (typeof value === 'string') return value.length > limit ? `${value.slice(0, Math.min(limit, SHOWN_HEAD_LENGTH))}... [${value.length} characters, sha256 ${sha256(value)}]` : value
-  if (Array.isArray(value)) return value.map(item => review(item, limit))
+function review(value: JsonValue, input: { limit: number; cut: { truncated: boolean }; path: boolean }): JsonValue {
+  if (typeof value === 'string') {
+    const shown = value.replace(URL_USERINFO, '$1[redacted]@')
+    if (input.path || shown.length <= input.limit) return shown
+    input.cut.truncated = true
+    return `${shown.slice(0, Math.min(input.limit, SHOWN_HEAD_LENGTH))}... [${value.length} characters, sha256 ${sha256(value)}]`
+  }
+  if (Array.isArray(value)) return value.map(item => review(item, input))
   if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value).sort().map(key => [key, isSecretName(key) ? '[redacted]' : review(value[key] ?? null, limit)]))
+    return Object.fromEntries(Object.keys(value).sort().map((key) => {
+      const item = value[key] ?? null
+      return [key, isCredentialKey(key, item) ? '[redacted]' : review(item, { ...input, path: PATH_KEY.test(key) })]
+    }))
   }
   return value
 }

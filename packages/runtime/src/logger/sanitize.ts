@@ -13,7 +13,7 @@ const REDACTED = '[redacted]'
 // Longest string scanned; the rest is dropped with a truncation marker. Shared by the logger and redactText.
 export const DEFAULT_MAX_STRING_BYTES = 8_192
 // Credential words, matched inside each key word so plurals and run-together names (accesstoken, PGPASSWORD) count.
-const CREDENTIAL_WORDS = ['authorization', 'secret', 'passw(?:or)?d', 'passphrase', 'cookie', 'credential', 'signature', 'apikey', 'privatekey']
+const CREDENTIAL_WORDS = ['authorization', 'bearer', 'secret', 'passw(?:or)?d', 'passphrase', 'cookie', 'credential', 'signature', 'apikey', 'privatekey']
 const SECRET_WORD = new RegExp(['token', ...CREDENTIAL_WORDS].join('|'))
 const CREDENTIAL_WORD = new RegExp(CREDENTIAL_WORDS.join('|'))
 const SECRET_WHOLE_WORDS = new Set(['auth'])
@@ -69,6 +69,16 @@ const REDACTION_SLACK_BYTES = 512
 
 function keyWords(key: string): string[] {
   return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+}
+
+/**
+ * Whether a key names a credential: a credential word inside any of its words (Authorization, Bearer,
+ * Cookie, Set-Cookie, X-Api-Key, api key, private key, auth, passphrase, signature, secret, password,
+ * token), whatever its case or nesting; a number under a count key (max_tokens) is not one. One matcher
+ * for every redaction by name, so the process log and what else redacts by it agree.
+ */
+export function isCredentialKey(key: string, value?: unknown): boolean {
+  return isSecretKey(key, value)
 }
 
 function isSecretKey(key: string, value: unknown): boolean {

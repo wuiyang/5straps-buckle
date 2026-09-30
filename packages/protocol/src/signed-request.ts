@@ -67,15 +67,19 @@ export type SignedRequestPayload = z.infer<typeof SignedRequestPayloadSchema>
 
 /**
  * Why a signed request was refused. The verifier's owner logs it; the caller is told only 401.
- * `out_of_scope`: the key is enrolled, but for another purpose or workspace (owner decision D10).
+ * `out_of_scope`: the key is enrolled, but for another purpose or workspace (owner decision D10), and
+ * it signed the request: scope is judged after the signature, so the entry never names a key that did not sign.
  */
 export type SignedRequestRefusal = 'malformed' | 'wrong_purpose' | 'wrong_target' | 'expired' | 'unknown_key' | 'out_of_scope' | 'bad_signature' | 'body_mismatch' | 'replayed'
 
 /** A refusal names the key the payload claims when it could be read, for the owner's audit: claimed, never proven. */
 export type SignedRequestVerdict = { ok: true; payload: SignedRequestPayload } | { ok: false; reason: SignedRequestRefusal; claimedKeyId?: string }
 
-/** The key an enrolled id verifies with, or why that id may not sign this request. */
-export type EnrolledKeyLookup = { key: KeyObject } | { refused: 'unknown_key' | 'out_of_scope' }
+/**
+ * The key an enrolled id verifies with and whether its scope covers this request, or why no key does.
+ * An out-of-scope key is still returned, so its signature is checked before its scope (review item 17).
+ */
+export type EnrolledKeyLookup = { key: KeyObject; covers: boolean } | { refused: 'unknown_key' }
 
 /** A private key and the name its public half is enrolled under. */
 export interface SigningKey {
@@ -195,7 +199,7 @@ export function isSignedRequest(authorization: string | undefined): boolean {
 
 /**
  * Verifies one signed request against what the verifier received. Cheap checks come first; the key's
- * enrollment and scope, then its signature, before the body; the nonce is claimed last, so a forged,
+ * enrollment, its signature, then its scope, before the body; the nonce is claimed last, so a forged,
  * out-of-scope or mismatched request never spends a genuine nonce. `claim` answers false for a nonce
  * already seen, and keeps it until `keepUntil`.
  */
@@ -237,6 +241,8 @@ export function checkSignedRequest(input: SignedRequestCheck): SignedRequestVerd
   const enrolled = input.publicKeyFor(payload)
   if ('refused' in enrolled) return refuse(enrolled.refused)
   if (!verifyBytes({ context: REQUEST_CONTEXT, bytes, signature, key: enrolled.key })) return refuse('bad_signature')
+  // After the signature: out_of_scope names a key that signed, never one a stranger named (review item 17).
+  if (!enrolled.covers) return refuse('out_of_scope')
   if (bodyDigest(input.body) !== payload.bodySha256) return refuse('body_mismatch')
   return { ok: true, payload }
 }
@@ -302,6 +308,18 @@ export const ApprovalChallengeSchema = z.object({
   cwd: z.string().max(4_096).nullable(),
   /** callDigestOf(tool, arguments); a changed call is a different challenge. */
   callDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  /**
+   * Whether `arguments` leaves out part of the call: a string cut to its head, length and sha256, or the
+   * whole call replaced by its size and sha256. A person's client refuses to sign one unless told to.
+   */
+  truncated: z.boolean(),
+  /**
+   * What the call does, in words the node wrote from the judged tool, subject, working directory and
+   * argument facts (a path, a size, a command), never from text the agent chose to describe it (owner
+   * decision D9). Inside the signed bytes, so a relay that changes it breaks the signature. Null for an
+   * ask recorded without its call.
+   */
+  description: z.string().max(4_096).nullable(),
   expiresAt: z.string(),
 }).strict()
 export type ApprovalChallenge = z.infer<typeof ApprovalChallengeSchema>

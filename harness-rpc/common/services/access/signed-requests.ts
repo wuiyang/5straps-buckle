@@ -1,4 +1,4 @@
-import { checkSignedRequest, nonceClaim, type SignedRequestPurpose, type SignedRequestVerdict } from '@5straps/protocol/signed-request'
+import { checkSignedRequest, nonceClaim, withinWindow, type SignedRequestPurpose, type SignedRequestVerdict } from '@5straps/protocol/signed-request'
 import type { NonceClaims } from '../../adapters/approval/file-nonce-store.js'
 import type { ClientKeys } from '../../types/ports/client-keys.js'
 import { requestIdKey } from '../invocation/executions.js'
@@ -28,6 +28,8 @@ export interface RequestVerifier {
  * request that passed takes it, to claim its nonce (review L10 of B23-B25), so a flood of malformed
  * or forged headers never rewrites the store or queues a genuine request behind it. A nonce is kept
  * under the requestId hash (executions.ts), so what is stored is bounded whatever a caller sends.
+ * The claim judges the window again with its own clock: a claim that waited past it would prune the
+ * nonce a replay needs to find, so it is refused as expired (review item 3 of the proof-of-possession fixes).
  */
 export function createRequestVerifier(input: { keys: ClientKeys; nonces: NonceClaims; serverId: string; nodeKeyId: string; now?: () => number }): RequestVerifier {
   const now = input.now ?? Date.now
@@ -42,9 +44,13 @@ export function createRequestVerifier(input: { keys: ClientKeys; nonces: NonceCl
       })
       if (!checked.ok) return checked
       const { keyId, nonce, keepUntil } = nonceClaim(checked.payload)
-      // The clock is read again under the lock, so what is pruned is judged at the claim.
-      const claimed = await input.nonces.withClaims(seen => seen.claim({ keyId, nonce: requestIdKey(nonce), ts: keepUntil, now: now() }))
-      return claimed ? checked : { ok: false, reason: 'replayed', claimedKeyId: keyId }
+      // The clock is read again under the lock, so both the window and what is pruned are judged at the claim.
+      const claimed = await input.nonces.withClaims((seen) => {
+        const at = now()
+        if (!withinWindow(checked.payload, at)) return 'expired'
+        return seen.claim({ keyId, nonce: requestIdKey(nonce), ts: keepUntil, now: at }) ? 'claimed' : 'replayed'
+      })
+      return claimed === 'claimed' ? checked : { ok: false, reason: claimed, claimedKeyId: keyId }
     },
   }
 }

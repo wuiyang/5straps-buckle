@@ -22,10 +22,13 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 // answered entry keeps them, so a call re-sent after part of its asks were answered still joins.
 const joinKey = { requestId: z.string().optional(), actor: z.string().optional() }
 // fingerprint: the tool and its whole arguments that asked, hashed (requestFingerprint); a re-send joins
-// only with the same one, and a once a person's key proved is spent only by it (review H3 of B23-B25).
+// only with the same one, and a once decided on its ask is spent only by it, whichever route decided it
+// (review H3 of B23-B25; review item 1 of the proof-of-possession fixes).
 const fingerprint = { fingerprint: z.string().optional() }
-// call: the arguments as the node's signed challenge shows them, and the directory they resolve against (owner decision D9).
-const callSchema = z.object({ arguments: JsonValueSchema, cwd: z.string() })
+// call: the arguments as the node's signed challenge shows them, whether any of them is cut, the directory
+// they resolve against, and what the call does in the node's words (owner decision D9). An ask recorded
+// before the last two existed counts as cut and undescribed, so no client signs it unflagged.
+const callSchema = z.object({ arguments: JsonValueSchema, truncated: z.boolean().default(true), cwd: z.string(), description: z.string().nullable().default(null) })
 // decidedBy: key:<fingerprint> when a person's enrolled key signed the decision (review H4 of B23-B25).
 const decidedBy = { decidedBy: z.string().optional() }
 const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, call: callSchema.optional() })
@@ -92,9 +95,12 @@ export interface AskInput {
   waitMs?: number | null
   /** The call's tool and whole arguments, hashed (requestFingerprint). */
   fingerprint?: string
-  /** The call as a challenge shows it: its redacted arguments and the directory they resolve against. */
-  call?: { arguments: JsonValue; cwd: string }
+  /** The call as a challenge shows it: its redacted arguments, whether they are cut, their directory and the node's description. */
+  call?: AskedCall
 }
+
+/** A call as its challenge shows it (owner decision D9). */
+export type AskedCall = z.infer<typeof callSchema>
 
 /**
  * `widenTo` records a network approval for a host pattern instead of the host that asked, per
@@ -115,9 +121,10 @@ export interface ResolveOptions {
 
 /**
  * On a widened grant, the pattern recorded and the host it was asked for, for the audit entry.
- * `repeated` marks an answer identical to the one already recorded, which changes nothing.
+ * `repeated` marks an answer identical to the one already recorded, which changes nothing. `asked`
+ * is the rule and subject the decision answered, for the decision's audit entry (review item 6).
  */
-export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true } | { ok: false; reason: string }
+export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string } } | { ok: false; reason: string }
 
 /**
  * A joined call gets the requests still waiting and the tokens of its asks already answered, so its
@@ -146,10 +153,12 @@ export interface ApprovalRegistry {
    */
   evaluate(input: {
     tokens: string[]; sessionId: string; tool: string
-    /** The call's fingerprint: a `once` a person's key proved is spent only by the call it was asked for. */
+    /** The call's fingerprint: a `once` is spent only by the call it was asked for. */
     fingerprint?: string
     check: (subjects: GrantSubject[]) => PermissionOutcome
     admit?: () => boolean
+    /** Told, when the call clears, who decided each `once` it spent (key:<fingerprint>), for its audit entry. */
+    spent?: (decidedBy: string[]) => void
   }): Promise<PermissionOutcome>
   wasDenied(tokens: string[]): boolean
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
@@ -223,7 +232,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
         if (previous) {
           return previous.decision.approved === decision.approved && previous.decision.scope === decision.scope && previous.widenedTo === widenedTo
-            ? { ok: true, repeated: true }
+            ? { ok: true, repeated: true, ...(previous.request ? { asked: { rule: previous.request.rule, subject: previous.request.subject } } : {}) }
             : { ok: false, reason: 'Approval already has a different decision' }
         }
         const approval = state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token)
@@ -235,8 +244,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const { rule, subject, tool } = approval.request
         const { requestId, actor } = approval
         const decider = options.decidedBy === undefined ? {} : { decidedBy: options.decidedBy }
-        // A decision a person's key proved on the ask's challenge covers that call and no other.
-        const bound = options.expect && approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
+        // A once covers the call that asked and no other, whichever route decided it: the terminal,
+        // `buckle approve`, MCP elicitation, the admin bearer, a sealed envelope or a person's key
+        // (policy.md: "Once binds to the exact invocation"; review item 1 of the proof-of-possession fixes).
+        const bound = approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
         if (rule === 'sensitive_path' && decision.approved && decision.scope !== 'once') return { ok: false, reason: 'Sensitive files can only be allowed once' }
         if (!decision.approved && decision.scope !== 'once' && rule !== 'sensitive_path') return { ok: false, reason: 'Persistent denials are supported only for sensitive files' }
         const expiresAt = new Date(Date.now() + PENDING_TTL_MS).toISOString()
@@ -256,13 +267,14 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId,
           ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(approval.fingerprint === undefined ? {} : { fingerprint: approval.fingerprint }), ...decider,
         })
-        return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject } } : { ok: true }
+        const asked = { rule, subject }
+        return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject }, asked } : { ok: true, asked }
       })
     },
 
-    evaluate({ tokens, sessionId, tool, fingerprint: callFingerprint, check, admit }) {
+    evaluate({ tokens, sessionId, tool, fingerprint: callFingerprint, check, admit, spent }) {
       return update(state => {
-        // A proven once names the call it was asked for; any other call, token or not, cannot spend it (review H3 of B23-B25).
+        // A once names the call it was asked for; any other call, token or not, cannot spend it (review H3 of B23-B25, item 1).
         const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool && (entry.fingerprint === undefined || entry.fingerprint === callFingerprint))
         const usable = bound.filter(entry => tokens.includes(entry.token))
         const used = [...usable, ...unclaimedReliedOn({ usable, unclaimed: bound.filter(entry => !tokens.includes(entry.token)), check })]
@@ -272,6 +284,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         if (outcome.kind === 'allow' && (admit?.() ?? true)) {
           const consumed = new Set(used.map(entry => entry.token))
           state.once = state.once.filter(entry => !consumed.has(entry.token))
+          spent?.([...new Set(used.flatMap(entry => entry.decidedBy === undefined ? [] : [entry.decidedBy]))])
         }
         return outcome
       })

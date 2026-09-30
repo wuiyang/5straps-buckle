@@ -67,9 +67,9 @@ export function createFileClientKeys(input: { filePath: string; lockDeadlineMs?:
         return { refused: 'unknown_key' }
       }
       if (!key) return { refused: 'unknown_key' }
-      if (!covers(key, use)) return { refused: 'out_of_scope' }
       try {
-        return { key: publicKeyFrom(key.publicKey) }
+        // Scope is judged after the signature (checkSignedRequest), so a refusal names a key that signed.
+        return { key: publicKeyFrom(key.publicKey), covers: covers(key, use) }
       } catch (error) {
         // A small-order key enrolled before they were refused trusts nobody.
         logger.error('An enrolled client key cannot verify anything', { keyId, error })

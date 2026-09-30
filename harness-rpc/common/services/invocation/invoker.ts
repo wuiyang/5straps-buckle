@@ -10,6 +10,7 @@ import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantLookup } from '../../domain/permission/decision.js'
 import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
+import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
@@ -87,6 +88,8 @@ interface GateOutcome {
   denial?: { rule: PermissionRuleId; subject: string; reason: string }
   /** The once approvals this call was cleared with, which also cover what it reaches mid-call. */
   consumed?: GrantSubject[]
+  /** The enrolled keys that decided the once approvals it spent (review item 6). */
+  decidedBy?: string[]
   /** A call of the same key ran or runs: its outcome answers this one, which does not run. */
   earlier?: Earlier
 }
@@ -231,6 +234,7 @@ function buildEntry(input: {
     args: redactAuditArguments(request.args),
     ...(gate.asked.length > 0 ? { asked: gate.asked.map(value => value.split(':')[0] ?? 'permission') } : {}),
     ...(gate.approvedBy.length > 0 ? { approvedBy: gate.approvedBy.map(value => value.split(':')[0] ?? 'permission') } : {}),
+    ...(gate.decidedBy && gate.decidedBy.length > 0 ? { decidedBy: gate.decidedBy } : {}),
     ...(detail ? { detail } : {}),
   }
 }
@@ -384,8 +388,10 @@ async function clearPermissions(input: {
   const { options, request, sessionId, effects, held } = input
   const approvedBy: string[] = []
   let consumed: GrantSubject[] = []
+  let decidedBy: string[] = []
   const evaluate = (tokens: string[]) => options.approvals.evaluate({
     tokens, sessionId, tool: request.tool, fingerprint: input.key.fingerprint,
+    spent: (deciders) => { decidedBy = deciders },
     check: subjects => {
       // The registry's last check carries the approvals the call uses, a superset of earlier ones.
       consumed = subjects
@@ -398,7 +404,7 @@ async function clearPermissions(input: {
     },
   })
   const cleared = (outcome: Extract<PermissionOutcome, { kind: 'allow' }>, asked: string[]): GateOutcome => held.claim?.kind === 'owner'
-    ? { response: null, asked, approvedBy: [...new Set([...approvedBy, ...outcome.allowedBy])], consumed }
+    ? { response: null, asked, approvedBy: [...new Set([...approvedBy, ...outcome.allowedBy])], consumed, decidedBy }
     : { response: null, asked, approvedBy: [...new Set(approvedBy)], ...(held.claim ? { earlier: held.claim } : {}) }
   const outcome = await evaluate(request.approvalTokens)
   if (outcome.kind === 'allow') return cleared(outcome, [])
@@ -420,9 +426,10 @@ async function clearPermissions(input: {
   // its policy skips); an entry point may add its own, and the one that holds less wins.
   const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
   // Only the caller's own signal reaches the wait: shutdown settles waits through the service's close.
+  const cwd = options.paths.displayRoot
   const waited = await options.approvalService.request({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
-    fingerprint: input.key.fingerprint, call: { arguments: reviewableArguments(request.args), cwd: options.paths.displayRoot },
+    fingerprint: input.key.fingerprint, call: { ...reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd }) },
   })
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
   const approvals = waited.approvals
