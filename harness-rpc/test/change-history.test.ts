@@ -262,7 +262,7 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
       linkSync(join(store, 'index.js'), join(added, 'index.js'))
       writeFileSync(join(workspace, 'notes.md'), 'x')
     })
-    await expect(history.restore((await history.list())[0]!.id)).rejects.toThrow('Restore conflict: a directory holds hard-linked dependency files history does not capture')
+    await expect(history.restore((await history.list())[0]!.id)).rejects.toThrow('Restore conflict: a directory holds hard-linked dependency files history does not capture; remove only those hard-linked files')
     expect(readFileSync(join(added, 'index.js'), 'utf8')).toBe('module.exports = 1\n')
     expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('x')
   })
@@ -274,6 +274,39 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
     expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
     rmSync(join(workspace, 'linked-elsewhere.js'))
     expect(() => snapshot({ roots: [workspace], excluded: [], maxBytes: 1_000_000, save: () => {} })).toThrow('History cannot safely restore hard-linked files')
+  })
+
+  // Review L1: a restore left the dependency changes it could not make out without a word.
+  it('lists the dependency changes a checkpoint made as not restorable, in the checkpoint and in the restore result', async () => {
+    const { workspace, history, details, linked, store } = await linkedWorkspace()
+    const plain = join(workspace, 'node_modules', 'plain', 'index.js')
+    mkdirSync(join(plain, '..'), { recursive: true })
+    writeFileSync(plain, 'plain')
+    await history.run(details, async () => {
+      rmSync(linked)
+      // A file that gains a second link during the call is excluded after it: its change is not recorded.
+      linkSync(plain, join(store, 'plain-copy.js'))
+      writeFileSync(join(workspace, 'notes.md'), 'x')
+    })
+    const [checkpoint] = await history.list()
+    expect(checkpoint).toMatchObject({ paths: [join(workspace, 'notes.md')], notRestorable: [plain, linked].sort() })
+    const restored = await history.restore(checkpoint!.id)
+    expect(restored.notRestorable).toEqual([plain, linked].sort())
+    expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
+    expect(existsSync(linked)).toBe(false)
+  })
+
+  // Review L3: the exemption matched a node_modules component anywhere in the path, the root's own included.
+  it('exempts nothing when the root itself sits beneath a node_modules directory', async () => {
+    const { root, store } = await linkedWorkspace()
+    const nested = join(root, 'node_modules', 'project')
+    mkdirSync(nested, { recursive: true })
+    linkSync(join(store, 'index.js'), join(nested, 'linked.js'))
+    expect(() => snapshot({ roots: [nested], excluded: [], maxBytes: 1_000_000, excludeLinkedDependencies: true, save: () => {} })).toThrow('History cannot safely restore hard-linked files')
+    mkdirSync(join(nested, 'node_modules', 'dep'), { recursive: true })
+    rmSync(join(nested, 'linked.js'))
+    linkSync(join(store, 'index.js'), join(nested, 'node_modules', 'dep', 'index.js'))
+    expect(snapshot({ roots: [nested], excluded: [], maxBytes: 1_000_000, excludeLinkedDependencies: true, save: () => {} })[join(nested, 'node_modules', 'dep', 'index.js')]).toMatchObject({ kind: 'excluded' })
   })
 
   it('lets fs_write run in a workspace whose node_modules is hard-linked, and restores it', async () => {

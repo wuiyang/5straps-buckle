@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
-import { isInside } from '../domain/paths.js'
+import { isInside, isInsideComparable } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
@@ -99,9 +99,12 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
   // Named as the disk names it (realpathSync.native), as every judged effect path is: a root typed in
   // another case than the disk's put every existing file outside it on macOS (review M1 of the second
   // proof-of-possession re-review), and a linked root put every file outside it everywhere.
-  const cwd = realPathOf(resolve(environment.BUCKLE_WORKSPACE_ROOT ?? process.cwd()))
+  const typedRoot = resolve(environment.BUCKLE_WORKSPACE_ROOT ?? process.cwd())
+  const cwd = realPathOf(typedRoot)
   const stateDirectory = stateDirectoryOf(environment)
-  if (isInside(cwd, stateDirectory)) {
+  // As typed, and where each really is, compared as the disk compares: a root or state directory spelled
+  // through a link must not start a node whose state an agent can write (review M3).
+  if (isInside(typedRoot, stateDirectory) || isInside(cwd, stateDirectory) || isInsideComparable(cwd, realPathOf(stateDirectory))) {
     throw new Error(`BUCKLE_STATE_DIR is ${stateDirectory}, inside the BUCKLE_WORKSPACE_ROOT at ${cwd}: an agent writes anywhere in the workspace, and the state directory holds the recorded grants, the approvals and the empty hooks directory the forge tools run git with`)
   }
 

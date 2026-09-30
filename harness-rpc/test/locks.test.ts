@@ -188,18 +188,22 @@ describe('a state file busy past the wait, at the faces', () => {
     expect(result.stderr).toContain('is busy in another Buckle process')
   })
 
+  // A call that reads the approval queue (it carries a token, or it asks); an ordinary call never touches the queue (review M5).
   it('answers a tool call with a retryable STATE_BUSY that names no path', async () => {
     const { config, runtime } = await busyNode('approvals.json')
-    const response = await runtime.invoke({ sessionId: 's', request: { requestId: 'busy-read', tool: 'fs_list', args: { path: '.' }, approvalTokens: [] } })
+    const response = await runtime.invoke({ sessionId: 's', request: { requestId: 'busy-read', tool: 'fs_list', args: { path: '.' }, approvalTokens: ['token-of-an-earlier-ask'] } })
     expect(response).toMatchObject({ outcome: 'error', error: { code: 'STATE_BUSY', message: 'Buckle state is busy in another process; retry shortly', retryable: true } })
     expect(JSON.stringify(response)).not.toContain(config.stateDirectory)
+    // An ordinary call spends no once, so it neither waits on the queue nor is refused by it.
+    expect(await runtime.invoke({ sessionId: 's', request: { requestId: 'plain-read', tool: 'fs_list', args: { path: '.' }, approvalTokens: [] } })).toMatchObject({ outcome: 'ok' })
     await runtime.history.close()
   })
 
   it('exits 1 from a CLI tool call with the STATE_BUSY reason', async () => {
     const { config, runtime } = await busyNode('approvals.json')
     await runtime.history.close()
-    const result = await captureStderr(() => runCli({ argv: ['call', 'fs_list', '--json', '{"path":"."}'], config }))
+    const outside = join(directory(), 'outside.md')
+    const result = await captureStderr(() => runCli({ argv: ['call', 'fs_write', '--json', JSON.stringify({ path: outside, content: 'x' })], config }))
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain('STATE_BUSY: Buckle state is busy in another process; retry shortly')
   })

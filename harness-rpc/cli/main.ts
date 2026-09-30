@@ -502,6 +502,7 @@ function printableCheckpoint(checkpoint: CheckpointSummary): CheckpointSummary {
     tool: printable(checkpoint.tool),
     paths: checkpoint.paths.map(printable),
     changes: checkpoint.changes.map(change => ({ ...change, path: printable(change.path) })),
+    notRestorable: checkpoint.notRestorable.map(printable),
   }
 }
 

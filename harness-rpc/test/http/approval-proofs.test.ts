@@ -275,8 +275,10 @@ describe('a challenge listing with an ask too long to describe whole', () => {
     const token = await ask(buckle, request)
     // Rewrite the queue as a build before D17 left it: the call cut and flagged, no effects, no mark.
     const file = join(buckle.config.stateDirectory, 'approvals.json')
-    const state = JSON.parse(readFileSync(file, 'utf8')) as { pending: Array<{ call: Record<string, unknown> }> }
+    const state = JSON.parse(readFileSync(file, 'utf8')) as { pending: Array<{ call?: Record<string, unknown>; callFile?: unknown }> }
+    // Such a build kept the call inline, in approvals.json, with no call file beside it.
     state.pending[0]!.call = { arguments: { content: 'writ... [7 characters, sha256 00]', path: join(buckle.root, 'outside.md') }, truncated: true, cwd: buckle.config.cwd, description: null }
+    delete state.pending[0]!.callFile
     writeFileSync(file, JSON.stringify(state))
     expect((await challenges(buckle)).challenges).toEqual([{ token, error: 'recorded before this build: decide at the node or re-send' }])
     expect((await buckle.runtime.invoke({ sessionId: 'chat-1', request })).outcome).toBe('approval_required')

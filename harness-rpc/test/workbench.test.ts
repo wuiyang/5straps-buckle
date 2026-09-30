@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createOperationScope, runInScope } from '@5straps/runtime'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ActionLogEntry } from '../common/types/ports/action-log.js'
 import type { PtyProcess, PtySpawnRequest } from '../common/types/ports/pty-process.js'
@@ -291,4 +292,23 @@ describe('terminal control and recovery', () => {
   await expect(f.manager.startTerminal(f.grant.id, { actorId: 'alice', cwd: '.', cols: 80, rows: 24 })).rejects.toThrow('Tool disabled')
   expect(f.spawned).toHaveLength(0)
   expect(f.audit.filter(event => event.outcome === 'error').length).toBe(4)
+})
+
+// Review M2: workbench entries recorded the actorId a request body named as the actor, with no trust label, while
+// the guard's authenticated actor (workbench:<id>) was never recorded. They now keep both apart, as tool calls do.
+it('records the authenticated workbench actor, and the requester the body names beside it as a claim', async () => {
+  const f = await fixture()
+  const provisioned = f.audit.find(event => event.tool === 'workbench_create' && event.event === 'result')
+  expect(provisioned).toMatchObject({ actorId: 'workspace-setup' })
+  expect(provisioned).not.toHaveProperty('claimedActorId')
+  f.audit.length = 0
+  const guard = `workbench:${f.grant.id}`
+  const asWorkbench = <T>(run: () => Promise<T>) => runInScope(createOperationScope({ owner: Symbol('workbench-attribution'), context: { actor: guard } }), run)
+  await asWorkbench(() => f.manager.invoke(f.grant.id, { actorId: 'forged-other-user', tool: 'fs_read', args: { path: 'note.txt' } }))
+  await asWorkbench(() => f.manager.review(f.grant.id, 'forged-other-user'))
+  await asWorkbench(() => f.manager.discard(f.grant.id, 'forged-other-user'))
+  expect(f.audit.map(event => event.tool)).toEqual(['workbench_invoke', 'workbench_invoke', 'workbench_review', 'workbench_review', 'workbench_discard', 'workbench_discard'])
+  for (const event of f.audit) {
+    expect(event).toMatchObject({ actorId: guard, actorTrust: 'authenticated', claimedActorId: 'forged-other-user', claimedActorTrust: 'claimed' })
+  }
 })

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../../runtime/log.js'
@@ -15,6 +16,31 @@ import { assertSnapshotMatches, changedPaths, snapshotSchema } from '../history/
 import { createWorkbenchFiles, type WorkbenchFileOptions } from './files.js'
 import { createWorkbenchTerminals } from './terminals.js'
 import { createWorkbenchStorage, publicWorkbench, StoredWorkbenchSchema, WorkbenchError, workbenchHash, writeWorkbenchJson, type StoredWorkbench } from './storage.js'
+
+/** The audit log's bound on caller-chosen ids, as the invoker's. */
+const MAX_LOGGED_ID = 200
+
+/**
+ * Who asked for a workbench step: the requester a caller's body names (a claim), or one of Buckle's own steps
+ * (recovery, provisioning, a terminal's exit), which no body can name.
+ */
+export type WorkbenchRequester = string | { buckle: string }
+
+/**
+ * A workbench entry's attribution, as a tool call's (common/types/ports/action-log.ts): the actor its transport
+ * authenticated (`workbench:<id>` through the workbench guard), trust authenticated, and the requester the body
+ * names beside it, trust claimed, never in its place (review M2). A step of Buckle's own with no transport actor
+ * names that step.
+ */
+function attribution(requester: WorkbenchRequester) {
+  const actor = useScopeSafe()?.context.actor
+  const own = typeof requester === 'string' ? undefined : requester.buckle
+  const claimed = typeof requester === 'string' ? requester.slice(0, MAX_LOGGED_ID) : undefined
+  return {
+    ...(actor ? { actorId: actor.slice(0, MAX_LOGGED_ID), actorTrust: 'authenticated' as const } : own === undefined ? {} : { actorId: own }),
+    ...(claimed ? { claimedActorId: claimed, claimedActorTrust: 'claimed' as const } : {}),
+  }
+}
 
 const reviewStorageSchema = z.object({ id: z.string().uuid(), workbenchId: z.string().uuid(), revision: z.number().int(), createdAt: z.string(), target: snapshotSchema })
 const CLOSED = new Set(['applied', 'discarded'])
@@ -36,9 +62,9 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
   const now = options.now ?? Date.now
   const time = () => new Date(now()).toISOString()
   function save(record: StoredWorkbench): void { record.updatedAt = time(); storage.save(record) }
-  async function audit(record: StoredWorkbench, tool: string, actorId: string, args: Record<string, string | number>, event: 'attempt' | 'result', auditId: string = randomUUID(), outcome: 'ok' | 'error' | 'started' | 'interrupted' = event === 'attempt' ? 'started' : 'ok'): Promise<string> {
+  async function audit(record: StoredWorkbench, tool: string, requester: WorkbenchRequester, args: Record<string, string | number>, event: 'attempt' | 'result', auditId: string = randomUUID(), outcome: 'ok' | 'error' | 'started' | 'interrupted' = event === 'attempt' ? 'started' : 'ok'): Promise<string> {
     await options.actions.record({ auditId, event, workspaceId: options.workspaceId, requestId: auditId, at: time(),
-      projectId: record.projectId, chatId: record.chatId, sessionId: record.chatId, stageId: record.id, actorId,
+      projectId: record.projectId, chatId: record.chatId, sessionId: record.chatId, stageId: record.id, ...attribution(requester),
       tool: 'workbench_' + tool, outcome, durationMs: 0, effects: [], args })
     return auditId
   }
@@ -53,7 +79,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
         terminal.status = 'interrupted'; terminal.controllerId = null; terminal.leaseExpiresAt = null; terminal.generation++; terminal.exitedAt = time()
         recovered = true
       }
-      if (recovered) { record.reviewId = null; record.revision++; save(record); void audit(record, 'recover', 'buckle-recovery', {}, 'result', undefined, 'interrupted').catch(reportAuditFailure) }
+      if (recovered) { record.reviewId = null; record.revision++; save(record); void audit(record, 'recover', { buckle: 'buckle-recovery' }, {}, 'result', undefined, 'interrupted').catch(reportAuditFailure) }
       records.set(record.id, record)
     }
   }
@@ -77,18 +103,18 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     assertOpen(record)
     if (terminals.isRunning(record)) throw new WorkbenchError('Stop all terminals before reviewing, applying or discarding')
   }
-  async function operation<T>(id: string, tool: string, actorId: string, args: Record<string, string | number>, execute: (record: StoredWorkbench) => Promise<T> | T): Promise<T> {
+  async function operation<T>(id: string, tool: string, requester: WorkbenchRequester, args: Record<string, string | number>, execute: (record: StoredWorkbench) => Promise<T> | T): Promise<T> {
     const record = await get(id)
-    const auditId = await audit(record, tool, actorId, args, 'attempt')
+    const auditId = await audit(record, tool, requester, args, 'attempt')
     try {
       if (active.has(id)) throw new WorkbenchError('Another workbench operation is running')
       active.add(id)
       try {
         const result = await execute(record)
-        await audit(record, tool, actorId, args, 'result', auditId)
+        await audit(record, tool, requester, args, 'result', auditId)
         return result
       } finally { active.delete(id) }
-    } catch (error) { await audit(record, tool, actorId, args, 'result', auditId, 'error'); throw error }
+    } catch (error) { await audit(record, tool, requester, args, 'result', auditId, 'error'); throw error }
   }
   return {
     get: async (id: string) => publicWorkbench(await get(id)),
@@ -116,7 +142,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
         createdAt: time(), updatedAt: time(), allowShell: parsed.allowShell, terminals: [], reviewId: null, tokenHash: workbenchHash(parsed.token), policyHash: options.policyHash(),
       })
       records.set(record.id, record); save(record)
-      return operation(record.id, 'create', 'workspace-setup', {}, async () => {
+      return operation(record.id, 'create', { buckle: 'workspace-setup' }, {}, async () => {
         try { assertTool('fs_read'); files.prepare(record.id); record.status = 'open'; save(record); return publicWorkbench(record) }
         catch (error) { record.status = 'interrupted'; save(record); throw error }
       })
@@ -220,7 +246,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
       })
     },
     recover(id: string) {
-      return operation(id, 'recover_apply', 'workspace-setup', {}, async record => {
+      return operation(id, 'recover_apply', { buckle: 'workspace-setup' }, {}, async record => {
         if (!['apply_uncertain', 'applying'].includes(record.status)) throw new WorkbenchError('Only uncertain publication needs setup recovery')
         if (terminals.isRunning(record)) throw new WorkbenchError('Stop terminals before recovery')
         if ((await options.history.list()).some(checkpoint => checkpoint.stageId === id && checkpoint.status === 'pending')) throw new WorkbenchError('Recover the pending file-history checkpoint before reconciling this workbench')

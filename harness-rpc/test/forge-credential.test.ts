@@ -1,4 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createGitHubForgeClient } from '../common/adapters/forge/github.js'
@@ -82,7 +85,46 @@ describe('the forge credential in configuration', () => {
       .toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
     expect(loadConfig({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/state' }).stateDirectory).toBe('/srv/state')
   })
+
+  // Review M3: the root was named by its real path and the state directory as typed, so either one spelled
+  // through a link started a node whose state sat inside the workspace, where git_commit then committed it.
+  it.each([
+    ['the root through a link', (s: Spellings) => ({ BUCKLE_WORKSPACE_ROOT: s.linkedRoot, BUCKLE_STATE_DIR: join(s.realRoot, '.buckle') })],
+    ['the state directory through a link', (s: Spellings) => ({ BUCKLE_WORKSPACE_ROOT: s.realRoot, BUCKLE_STATE_DIR: join(s.linkedRoot, '.buckle') })],
+    ['both through a link', (s: Spellings) => ({ BUCKLE_WORKSPACE_ROOT: s.linkedRoot, BUCKLE_STATE_DIR: join(s.linkedRoot, '.buckle') })],
+  ])('refuses a state directory inside the workspace with %s', (_, environment) => {
+    const spellings = linkedRoot()
+    try {
+      expect(() => loadConfig(environment(spellings))).toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
+      expect(loadConfig({ BUCKLE_WORKSPACE_ROOT: spellings.linkedRoot, BUCKLE_STATE_DIR: join(spellings.base, 'state') }).stateDirectory).toBe(join(spellings.base, 'state'))
+    } finally { rmSync(spellings.base, { recursive: true, force: true }) }
+  })
+
+  it('refuses the default state directory under a HOME that is the root spelled through a link', () => {
+    const spellings = linkedRoot()
+    const home = process.env.HOME
+    process.env.HOME = spellings.linkedRoot
+    try {
+      expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: spellings.realRoot })).toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
+    } finally {
+      process.env.HOME = home
+      rmSync(spellings.base, { recursive: true, force: true })
+    }
+  })
 })
+
+interface Spellings { base: string; realRoot: string; linkedRoot: string }
+
+/** `<base>/data/work`, also reached as `<base>/home/work`, a link to it. */
+function linkedRoot(): Spellings {
+  const base = mkdtempSync(join(tmpdir(), 'buckle-start-guard-'))
+  const realRoot = join(base, 'data', 'work')
+  mkdirSync(realRoot, { recursive: true })
+  mkdirSync(join(base, 'home'))
+  const linkedRoot = join(base, 'home', 'work')
+  symlinkSync(realRoot, linkedRoot)
+  return { base, realRoot, linkedRoot }
+}
 
 describe('the GitHub adapter', () => {
   it('sends the credential as a bearer header with the versioned JSON media type', async () => {

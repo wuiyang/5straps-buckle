@@ -1,5 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, statSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, relative, sep } from 'node:path'
+import { isInside } from '../domain/paths.js'
 import { ToolInputError } from '../domain/tool.js'
 
 const PINNED = process.platform === 'linux'
@@ -112,6 +113,8 @@ interface FileBeneath {
    * (isLinkedOnStateDevice). Absent, hard links are read as any file.
    */
   protectedRoots?: readonly string[]
+  /** The workspace roots: only a node_modules component below one of them exempts a hard link (isLinkedOnStateDevice). */
+  roots?: readonly string[]
 }
 
 /**
@@ -145,7 +148,7 @@ function openFileBeneath(target: string, input: FileBeneath): { descriptor: numb
   try {
     const info = fstatSync(descriptor)
     if (!info.isFile()) throw new ToolInputError(`Not a regular file: ${refusal.shown}`)
-    if (reading && input.protectedRoots && isLinkedOnStateDevice({ info, path: target, protectedRoots: input.protectedRoots })) {
+    if (reading && input.protectedRoots && isLinkedOnStateDevice({ info, path: target, protectedRoots: input.protectedRoots, roots: input.roots ?? [] })) {
       throw new ToolInputError(`${refusal.shown} is a hard link on the disk that holds Buckle's state, so nothing was read`, { code: 'PERMISSION_DENIED' })
     }
   } catch (error) {
@@ -157,14 +160,24 @@ function openFileBeneath(target: string, input: FileBeneath): { descriptor: numb
 
 /**
  * Whether a regular file is a hard link (more than one name) on a device that holds one of Buckle's
- * protected roots, outside a node_modules tree. A hard link is the same file as whatever else names
- * it, so a workspace name for a state file would read that state past every path check (review L3 of
- * the second proof-of-possession re-review). pnpm links node_modules files from its store, so a path
- * with a node_modules component stays readable; a hard link to state placed there is the residual.
+ * protected roots, outside a node_modules tree of the workspace. A hard link is the same file as whatever
+ * else names it, so a workspace name for a state file would read that state past every path check (review
+ * L3 of the second proof-of-possession re-review). pnpm links node_modules files from its store, so a
+ * node_modules component below a workspace root keeps a file readable; a hard link to state placed there
+ * is the residual.
  */
-export function isLinkedOnStateDevice(input: { info: { nlink: number; dev: number }; path: string; protectedRoots: readonly string[] }): boolean {
-  if (input.info.nlink <= 1 || input.path.split('/').includes('node_modules')) return false
+export function isLinkedOnStateDevice(input: { info: { nlink: number; dev: number }; path: string; protectedRoots: readonly string[]; roots: readonly string[] }): boolean {
+  if (input.info.nlink <= 1 || isDependencyBelowRoot(input.path, input.roots)) return false
   return input.protectedRoots.some(root => deviceOf(root) === input.info.dev)
+}
+
+/**
+ * Whether a path has a node_modules component below a root that holds it. The root's own components never
+ * count, so a root beneath a node_modules directory exempts nothing, and a path outside every root has none
+ * (review L3).
+ */
+export function isDependencyBelowRoot(path: string, roots: readonly string[]): boolean {
+  return roots.some(root => isInside(root, path) && relative(root, path).split(sep).includes('node_modules'))
 }
 
 /** A protected root that is absent, or that this process cannot stat, holds no state a link could reach through it. */

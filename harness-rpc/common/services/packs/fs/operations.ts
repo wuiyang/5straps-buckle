@@ -38,7 +38,7 @@ export async function readFileEntry(
 ): Promise<JsonValue> {
   const path = context.paths.resolve(input.path)
   const target = judgedTarget(path, 'read', context)
-  const { buffer, size } = withFileBeneath(target, { flags: constants.O_RDONLY, shown: input.path, ...(context.protectedRoots ? { protectedRoots: context.protectedRoots } : {}) }, (descriptor) => {
+  const { buffer, size } = withFileBeneath(target, { flags: constants.O_RDONLY, shown: input.path, ...(context.protectedRoots ? { protectedRoots: context.protectedRoots, roots: [context.paths.root, ...context.paths.scratchRoots] } : {}) }, (descriptor) => {
     const info = fstatSync(descriptor)
     if (info.size > MAX_FILE_BYTES) throw new ToolInputError(`File exceeds ${MAX_FILE_BYTES} bytes`)
     return { buffer: readFileSync(descriptor), size: info.size }

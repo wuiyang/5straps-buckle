@@ -7,7 +7,7 @@ import { createConnectionOwner, openDatabase, rawConnection, SqliteErrorCode, wi
 import { z } from 'zod'
 import { STATE_BUSY } from '../../adapters/json-file-store.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
-import { applySnapshot, assertSnapshotMatches, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
+import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
 
 const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), roots: z.array(z.string()), excluded: z.array(z.string()).optional(), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional() })
 type Checkpoint = z.infer<typeof checkpointSchema>
@@ -133,7 +133,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     try {
       await section(connection => applySnapshot({ target: record.before, current, paths, content: hash => readObject(connection, hash), roots: record.roots }))
     } finally { await finish(restore) }
-    return summary(restore)
+    // What the restored checkpoint changed in hard-linked dependencies stays as it is, and the result says so (review L1).
+    return { ...summary(restore), notRestorable: notRestorablePaths(record.before, after) }
   }
   return {
     list: () => section(connection => records(connection).map(summary)),
@@ -197,8 +198,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
 }
 export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
 
+/**
+ * A checkpoint as the owner reads it. `notRestorable`: the paths it changed among hard-linked dependency files,
+ * which history records without content and no restore puts back (review L1).
+ */
 function summary(record: Checkpoint) {
-  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, createdAt: record.createdAt, status: record.status, restores: record.restores, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changedPaths(record.before, record.after).map(path => ({ path, kind: !record.before[path] ? 'created' : !record.after![path] ? 'deleted' : 'modified' })) : [] }
+  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, createdAt: record.createdAt, status: record.status, restores: record.restores, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changedPaths(record.before, record.after).map(path => ({ path, kind: !record.before[path] ? 'created' : !record.after![path] ? 'deleted' : 'modified' })) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
 }
 
 function assertExcludedUntouched(paths: string[], excluded: string[] = []): void {

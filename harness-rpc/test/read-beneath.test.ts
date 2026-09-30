@@ -182,6 +182,22 @@ describe('a hard link to Buckle\'s state (review L3 of the second proof-of-posse
     await runtime.history.close()
   })
 
+  // Review L3: the exemption matched a node_modules component anywhere in the host path, the root's own included.
+  it('refuses a hard link to state in a workspace root that sits beneath a node_modules directory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-read-beneath-root-'))
+    roots.push(root)
+    const workspace = join(root, 'node_modules', 'project')
+    mkdirSync(workspace, { recursive: true })
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'buckle-state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    const runtime = await createRuntime({ config })
+    writeFileSync(join(config.stateDirectory, 'owner-state.json'), '{"owner":"secret"}')
+    linkSync(join(config.stateDirectory, 'owner-state.json'), join(workspace, 'linked.json'))
+    const result = await runtime.invoke({ sessionId: 'reader', request: { requestId: 'root-under-node-modules', tool: 'fs_read', args: { path: 'linked.json' }, approvalTokens: [] }, approvalWait: { mode: 'none' } })
+    expect(result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('hard link on the disk that holds Buckle\'s state') } })
+    expect(JSON.stringify(result)).not.toContain('secret')
+    await runtime.history.close()
+  })
+
   it('still reads a hard-linked file under node_modules, as pnpm links its store there', async () => {
     const { workspace, runtime, invoke } = await linked()
     mkdirSync(join(workspace, 'node_modules', 'left-pad'), { recursive: true })

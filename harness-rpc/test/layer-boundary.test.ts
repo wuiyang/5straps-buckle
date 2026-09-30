@@ -142,10 +142,10 @@ describe('the layer boundary', () => {
     expect(readFileSync(join(PACKAGE_ROOT, 'server/entry.ts'), 'utf8')).toMatch(/^import \{ useNitroApp \} from 'nitro\/app'$/m)
     // Review L7 of B23-B25: an event reaches the app, or the matched route's handler, through neither.
     expect(touching(/\bevent\.app\b|\.app\s*\.\s*handler\b|matchedRoute\s*\??\.\s*handler\b|\[\s*['"`]handler['"`]\s*\]/)).toEqual([])
-    // Review item 21 of the proof-of-possession fixes and L11 of the second re-review: a tripwire, not a proof.
-    // It flags the spellings below (a member or index write at any depth, destructuring, Object.assign and its
-    // kin, and any write through a prototype); a write through an alias it cannot follow is caught at run time,
-    // where 20.head.ts locks the app and its routes and guard-sweep compares them before and after every request.
+    // Review item 21 of the proof-of-possession fixes, L11 of the second re-review and L8: a tripwire, not a proof.
+    // It flags the spellings appWrites lists and the rows below exercise; any other write (an alias, a computed
+    // name, deeper nesting) is caught at run time, where 20.head.ts locks the app and its routes and guard-sweep
+    // compares them before and after every request.
     // The head plugin's ~findRoute wrapper and its lock are the only writes, and ~findRoute the one ~ member above.
     const writes = sources.flatMap(file => appWrites(withoutComments(readFileSync(join(PACKAGE_ROOT, file), 'utf8'))).map(write => `${file}: ${write}`))
     expect(writes).toEqual([
@@ -157,9 +157,13 @@ describe('the layer boundary', () => {
       `Object.defineProperty(event.context.matchedRoute, 'handler', {})`, 'event.context.matchedRoute.handler = wrapped', 'const { matchedRoute: route } = event.context',
       'app.config.onRequest = wrapped', `app.config['onRequest'] = wrapped`, 'app.config.onRequest ||= wrapped', 'Object.assign(app.config, { onRequest })',
       `Object.getPrototypeOf(app)['~request'] = wrapped`, 'app.constructor.prototype.handler = wrapped', 'app.__proto__.fetch = wrapped', 'H3Core.prototype.fetch = wrapped',
-      `Object.defineProperty(Object.getPrototypeOf(app), 'fetch', {})`, `Reflect.set(Object.getPrototypeOf(app), 'fetch', wrapped)`]
+      `Object.defineProperty(Object.getPrototypeOf(app), 'fetch', {})`, `Reflect.set(Object.getPrototypeOf(app), 'fetch', wrapped)`,
+      // Review L8: the spellings the comment claimed and the scan missed.
+      '(app).handler = wrapped', '(app.config).onRequest = wrapped', '[app.handler] = [wrapped]', 'for (app.handler of handlers) run()',
+      `event.context['matchedRoute'].handler = wrapped`, 'Object.getPrototypeOf(Object.getPrototypeOf(app)).fetch = wrapped', 'app.hits++', '--app.config.depth']
     expect(evasions.filter(evasion => appWrites(evasion).length === 0)).toEqual([])
     expect(appWrites('if (app.handler === wrapped) run(app, matchedRoute)')).toEqual([])
+    expect(appWrites('const routes = [app.handler, other]; for (const handler of [app.handler]) run(handler, counts[app.id] + 1)')).toEqual([])
     expect(appWrites('if (Object.getPrototypeOf(app).fetch === wrapped && app.config.onRequest !== undefined) run(app.config)')).toEqual([])
   })
 
@@ -208,20 +212,31 @@ const GUARDED_BUILDER = /^export default define(Operation|Workbench|Setup|Regist
 const RE_EXPORT = /^(?:\s*\/\/[^\n]*\n)*\s*export \{ default \} from '([^']+)'\s*$/
 
 /**
- * Every write a source makes to something named `app` or `matchedRoute`, or through a prototype: a member
- * or index assignment at any depth (app.config.onRequest, compound ones too), a destructuring that binds
- * either name, and Object.assign, defineProperty, setPrototypeOf or Reflect.set with either, a member of
- * either or a prototype as the target (review L11 of the second proof-of-possession re-review).
+ * The writes a source makes to something named `app` or `matchedRoute` (as a name, or as a quoted index such as
+ * `event.context['matchedRoute']`), or through a prototype (`.prototype`, `__proto__`, `getPrototypeOf(...)` with
+ * one level of nested parentheses), that these regular expressions read:
+ * - a member or index assignment at any depth, plain or compound, the target parenthesised or not;
+ * - `++` or `--` on such a member, before or after it;
+ * - an object or array destructuring assignment that names either;
+ * - a `for (... of|in ...)` whose loop target is such a member;
+ * - Object.assign, defineProperty, defineProperties or setPrototypeOf, or Reflect.set, defineProperty or
+ *   setPrototypeOf, with either, a member of either or a prototype as the target.
+ * A write through an alias, a computed name or deeper nesting is not read here; the run-time lock in 20.head.ts
+ * throws for those, and guard-sweep compares the app before and after every request (review L11 of the second
+ * proof-of-possession re-review, review L8).
  */
 function appWrites(text: string): string[] {
-  const target = String.raw`\b(?:app|matchedRoute)\b`
-  const prototype = String.raw`(?:\.\s*prototype\b|\b__proto__\b|\bgetPrototypeOf\s*\([^()]*\))`
+  const target = String.raw`(?:\b(?:app|matchedRoute)\b|\[\s*['"\`](?:app|matchedRoute)['"\`]\s*\])`
+  const prototype = String.raw`(?:\.\s*prototype\b|\b__proto__\b|\bgetPrototypeOf\s*\((?:[^()]|\([^()]*\))*\))`
   const members = String.raw`(?:\s*(?:\?\.|\.)\s*[\w$~]+|\s*\[[^\]]*\])`
   const assigned = String.raw`\s*(?:[-+*/%&|^]|\?\?|&&|\|\||<<|>>>?|\*\*)?=(?![=>])`
+  const written = String.raw`(?:${target}|\(\s*${target}${members}*\s*\)|${prototype})${members}+`
   const patterns = [
-    new RegExp(String.raw`${target}${members}+${assigned}`, 'g'),
-    new RegExp(String.raw`${prototype}${members}+${assigned}`, 'g'),
+    new RegExp(String.raw`${written}${assigned}`, 'g'),
+    new RegExp(String.raw`${written}\s*(?:\+\+|--)|(?:\+\+|--)\s*${written}`, 'g'),
     new RegExp(String.raw`\{[^{}]*${target}[^{}]*\}\s*=(?![=>])`, 'g'),
+    new RegExp(String.raw`(?<![\w$\])])\s*\[[^\[\]]*${target}[^\[\]]*\]\s*=(?![=>])`, 'g'),
+    new RegExp(String.raw`\bfor\s*(?:await\s*)?\(\s*${written}\s+(?:of|in)\b`, 'g'),
     new RegExp(String.raw`\b(?:Object\.(?:assign|defineProperty|defineProperties|setPrototypeOf)|Reflect\.(?:set|defineProperty|setPrototypeOf))\s*\(\s*[\w$.?\[\]'"\`~(]*(?:${target}|${prototype})`, 'g'),
   ]
   return patterns.flatMap(pattern => [...text.matchAll(pattern)].map(match => match[0].replace(/\s+/g, ' ').trim()))

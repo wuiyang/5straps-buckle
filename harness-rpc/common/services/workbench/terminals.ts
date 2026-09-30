@@ -19,7 +19,8 @@ export interface TerminalManagerOptions {
   directory: string
   spawn: PtySpawner
   save(record: StoredWorkbench): void
-  audit(record: StoredWorkbench, tool: string, actorId: string, args: Record<string, string | number>, event: 'attempt' | 'result', auditId?: string, outcome?: 'ok' | 'error' | 'started' | 'interrupted'): Promise<string>
+  /** `requester`: the actorId a caller's body names (a claim), or `{ buckle }` for a step of Buckle's own. */
+  audit(record: StoredWorkbench, tool: string, requester: string | { buckle: string }, args: Record<string, string | number>, event: 'attempt' | 'result', auditId?: string, outcome?: 'ok' | 'error' | 'started' | 'interrupted'): Promise<string>
   checkBudget(record: StoredWorkbench): void
   now?: () => number
 }
@@ -80,7 +81,7 @@ export function createWorkbenchTerminals(options: TerminalManagerOptions) {
     try {
       flush(record, terminal, state)
       options.save(record)
-      void options.audit(record, 'terminal_lifetime', 'terminal-process', { terminalId: terminal.id, exitCode }, 'result', state.auditId, 'ok')
+      void options.audit(record, 'terminal_lifetime', { buckle: 'terminal-process' }, { terminalId: terminal.id, exitCode }, 'result', state.auditId, 'ok')
         .catch((error: unknown) => logger.error('Terminal exit audit failed', { terminalId: terminal.id, error }))
     } catch (error) {
       logger.error('Terminal exit persistence failed', { terminalId: terminal.id, message: error instanceof Error ? error.message : 'Unknown error' })

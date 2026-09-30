@@ -1,6 +1,7 @@
 import type { ApprovalNotice, ApprovalRequest } from '@5straps/protocol'
 import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { sealForRings } from '../../services/approvals/approval-envelope.js'
+import { shownCall, type AskedCall } from '../../services/approvals/approval-registry.js'
 import { approveCommand, reviewCommand } from '../../domain/approval-instruction.js'
 import { logger } from '../../runtime/log.js'
 
@@ -28,8 +29,11 @@ export interface WebhookNotifierOptions {
  * rules that judge a tool's own network access; a relay on the local network is a normal setup.
  */
 export function createWebhookNotifier(options: WebhookNotifierOptions) {
-  return async (requests: ApprovalRequest[]): Promise<void> => {
-    const response = await postSealed(options, { approvals: requests.map(request => describe(request, options.workspaceId)) })
+  return async (requests: ApprovalRequest[], recorded?: AskedCall): Promise<void> => {
+    // The whole call the asks came from, once for all of them, so a relay can show the action (review M1). Optional:
+    // a relay that reads only the requests is unchanged.
+    const call = shownCall(recorded)
+    const response = await postSealed(options, { approvals: requests.map(request => describe(request, options.workspaceId)), ...(call ? { call } : {}) })
     if (!response.ok) logger.warn('Approval webhook refused the notification', { status: response.status })
   }
 }
@@ -50,7 +54,7 @@ export function createApprovalNoticeSender(options: WebhookNotifierOptions) {
 }
 
 /** One body to the approval webhook, naming the node and workspace, sealed for Rings when a key was paired. */
-function postSealed(options: WebhookNotifierOptions, body: { approvals: unknown[] } | { notices: ApprovalNotice[] }): Promise<Response> {
+function postSealed(options: WebhookNotifierOptions, body: { approvals: unknown[]; call?: unknown } | { notices: ApprovalNotice[] }): Promise<Response> {
   return fetch(options.url, {
     method: 'POST',
     headers: {

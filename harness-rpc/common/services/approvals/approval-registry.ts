@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
 import { createJsonFileStore } from '../../adapters/json-file-store.js'
@@ -23,8 +25,18 @@ export const MAX_PENDING_PER_WORKSPACE = 500
  * 1 MiB unless the owner raises it) keeps every call sent over HTTP well inside it.
  */
 export const MAX_ASK_BYTES = 16 * 1_024 * 1_024
-/** What every waiting ask in approvals.json may hold together, so the file and a challenge listing stay bounded. */
+/**
+ * What every waiting ask of one session may hold together, so one session never holds the budgets of the
+ * others (review M5): one ask of the largest size fits. A group's whole call counts once.
+ */
+export const MAX_PENDING_BYTES_PER_SESSION = 16 * 1_024 * 1_024
+/** What the waiting asks of one actor (the identity its transport authenticated) may hold, whatever sessions it opens. */
+export const MAX_PENDING_BYTES_PER_ACTOR = 32 * 1_024 * 1_024
+/** What every waiting ask of the workspace may hold together, so a challenge listing stays bounded. */
 export const MAX_PENDING_BYTES = 64 * 1_024 * 1_024
+/** Where each request group's whole call is kept, beside approvals.json. */
+const CALLS_DIRECTORY = 'approval-calls'
+const CALL_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 // requestId and actor let a re-sent call join the ask it already made (ruling 5 of 2026-09-28); an
@@ -44,7 +56,12 @@ const callSchema = z.object({
 })
 // decidedBy: key:<fingerprint> when a person's enrolled key signed the decision (review H4 of B23-B25).
 const decidedBy = { decidedBy: z.string().optional() }
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, call: callSchema.optional() })
+// callFile: the file beside approvals.json that holds the whole call of the ask's request group, once for every
+// ask the call made, so the file every update rewrites holds requests alone (review M5). `bytes` counts against
+// the budgets once per group; `complete` repeats the call's own mark. An ask recorded before this build keeps its
+// call inline, in `call`.
+const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), bytes: z.number().int().nonnegative(), complete: z.literal(true).optional() })
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, call: callSchema.optional(), callFile: callFileSchema.optional() })
 const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
   sessionId: z.string(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(), ...fingerprint, ...decidedBy,
@@ -61,8 +78,9 @@ const fileSchema = z.object({
 })
 type State = z.infer<typeof fileSchema>
 type OnceEntry = z.infer<typeof onceSchema>
-/** An ask waiting in the queue, with the call it came from. */
-export type PendingAsk = Omit<z.infer<typeof pendingSchema>, 'workspace'>
+type PendingEntry = State['pending'][number]
+/** An ask waiting in the queue, with the whole call it came from, read from its file. */
+export type PendingAsk = Omit<PendingEntry, 'workspace' | 'callFile'>
 
 /**
  * Whose answer a decision carries. `BUCKLE-D14` keeps a persisted approval on the admin
@@ -85,23 +103,107 @@ function assertRoomFor(input: { state: State; workspace: string; sessionId: stri
   }
 }
 
+/** What each waiting ask holds against the budgets: its record in approvals.json, and its group's call file once. */
+function footprints(pending: readonly PendingEntry[]): Array<{ bytes: number; sessionId: string; actor: string | undefined }> {
+  const counted = new Set<string>()
+  return pending.map((entry) => {
+    const file = entry.callFile && !counted.has(entry.callFile.id) ? entry.callFile.bytes : 0
+    if (entry.callFile) counted.add(entry.callFile.id)
+    return { bytes: Buffer.byteLength(JSON.stringify(entry)) + file, sessionId: entry.sessionId, actor: entry.actor }
+  })
+}
+
 /**
- * The whole call each ask records must fit one challenge, and every waiting ask together the queue's
- * budget: one too large is refused for good, a full queue until asks are answered or withdrawn.
+ * One request group against the budgets (review M5). Each ask records its request and the group's whole call,
+ * which must fit what a person is shown whole: one too large is refused for good. Every waiting ask of the
+ * session, of the actor and of the workspace together must fit theirs, the group's call counted once: a full
+ * budget refuses until asks are answered, withdrawn or expire.
  */
-function assertBytesFor(input: { state: State; entries: State['pending'] }): void {
-  const sizes = input.entries.map(entry => Buffer.byteLength(JSON.stringify(entry)))
-  const largest = Math.max(0, ...sizes)
+function assertBytesFor(input: { waiting: readonly PendingEntry[]; group: readonly PendingEntry[]; callBytes: number }): void {
+  const sizes = input.group.map(entry => Buffer.byteLength(JSON.stringify(entry)))
+  const largest = Math.max(0, ...sizes) + input.callBytes
   if (largest > MAX_ASK_BYTES) {
     logger.warn('Approval refused: the call is larger than an approval shows whole', { bytes: largest, limit: MAX_ASK_BYTES })
-    throw new ActionTooLargeError(`This call needs approval, and its arguments come to ${largest} bytes as an approval shows them, over the ${MAX_ASK_BYTES} bytes a person is shown whole; nothing was asked or run. Send a smaller call: split a batch, or write a long script to a file first`)
+    throw new ActionTooLargeError(`This call needs approval, and one of its asks records ${largest} bytes (its request and the whole call as an approval shows it), over the ${MAX_ASK_BYTES} bytes a person is shown whole; nothing was asked or run. Send a smaller call: split a batch, or write a long script to a file first`)
   }
-  const waiting = input.state.pending.reduce((sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry)), 0)
-  const asked = sizes.reduce((sum, size) => sum + size, 0)
-  if (waiting + asked > MAX_PENDING_BYTES) {
-    logger.warn('Approval refused: the approvals waiting hold too much', { waiting, asked, limit: MAX_PENDING_BYTES })
-    throw new ApprovalLimitError(`The approvals waiting on this node already hold ${waiting} bytes; ask again once some are answered or withdrawn (limit ${MAX_PENDING_BYTES})`)
+  const asked = sizes.reduce((sum, size) => sum + size, 0) + input.callBytes
+  const [first] = input.group
+  if (!first) return
+  const held = footprints(input.waiting)
+  const sum = (keep: (item: (typeof held)[number]) => boolean) => held.filter(keep).reduce((total, item) => total + item.bytes, 0)
+  const budgets = [
+    { held: sum(item => item.sessionId === first.sessionId), limit: MAX_PENDING_BYTES_PER_SESSION, whose: 'This session\'s approvals waiting', per: 'per session' },
+    { held: sum(item => item.actor === first.actor), limit: MAX_PENDING_BYTES_PER_ACTOR, whose: 'The approvals waiting from this caller', per: 'per caller' },
+    { held: sum(() => true), limit: MAX_PENDING_BYTES, whose: 'The approvals waiting in this workspace', per: 'per workspace' },
+  ]
+  for (const budget of budgets) {
+    if (budget.held + asked <= budget.limit) continue
+    logger.warn('Approval refused: the approvals waiting hold too much', { waiting: budget.held, asked, limit: budget.limit, per: budget.per })
+    throw new ApprovalLimitError(`${budget.whose} already hold ${budget.held} bytes and this call's asks would add ${asked}; ask again once some are answered or withdrawn (limit ${budget.limit} bytes ${budget.per})`)
   }
+}
+
+/**
+ * The whole calls of waiting asks, one 0600 file per request group in a 0700 directory beside approvals.json,
+ * written before the index names it and removed once no waiting ask names it (review M5).
+ */
+interface CallFiles {
+  write(id: string, text: string): void
+  read(id: string): AskedCall | undefined
+  remove(ids: Iterable<string>): void
+  /** Removes every call file no waiting ask names; run under the queue's lock. */
+  prune(named: ReadonlySet<string>): void
+}
+
+function createCallFiles(directory: string): CallFiles {
+  const pathOf = (id: string) => join(directory, `${id}.json`)
+  return {
+    write(id, text) {
+      mkdirSync(directory, { recursive: true, mode: 0o700 })
+      const temporary = join(directory, `${id}.${randomUUID()}.tmp`)
+      try {
+        const descriptor = openSync(temporary, 'wx', 0o600)
+        try {
+          writeFileSync(descriptor, text)
+          fsyncSync(descriptor)
+        } finally {
+          closeSync(descriptor)
+        }
+        renameSync(temporary, pathOf(id))
+      } finally {
+        rmSync(temporary, { force: true })
+      }
+    },
+    read(id) {
+      try {
+        return callSchema.parse(JSON.parse(readFileSync(pathOf(id), 'utf8')))
+      } catch (error) {
+        // Shown as recorded before this build: denied or re-sent, never approved from a part.
+        logger.warn('A waiting ask\'s call file is missing or unreadable', { id, error: error instanceof Error ? error.name : 'Unknown error' })
+        return undefined
+      }
+    },
+    remove(ids) {
+      for (const id of ids) rmSync(pathOf(id), { force: true })
+    },
+    prune(named) {
+      let names: string[]
+      try {
+        names = readdirSync(directory)
+      } catch {
+        return
+      }
+      for (const name of names) {
+        const id = CALL_FILE.exec(name)?.[1]
+        if ((id !== undefined && !named.has(id)) || name.endsWith('.tmp')) rmSync(join(directory, name), { force: true })
+      }
+    },
+  }
+}
+
+/** The call files the waiting asks name, of every workspace the file holds. */
+function namedCalls(state: State): Set<string> {
+  return new Set(state.pending.flatMap(entry => entry.callFile ? [entry.callFile.id] : []))
 }
 
 /** A call re-sent under the same requestId asked for something else: HTTP 409. */
@@ -138,6 +240,11 @@ export interface AskInput {
 
 /** A call as its challenge shows it (owner decision D9). */
 export type AskedCall = z.infer<typeof callSchema>
+
+/** A recorded call as a relay or listing is handed it: the whole call when it was kept whole, else nothing (owner decision D17). */
+export function shownCall(call: AskedCall | undefined): { arguments: JsonValue; cwd: string; description: string | null; effects: string[] } | undefined {
+  return call?.complete ? { arguments: call.arguments, cwd: call.cwd, description: call.description, effects: call.effects ?? [] } : undefined
+}
 
 /**
  * `widenTo` records a network approval for a host pattern instead of the host that asked, per
@@ -239,22 +346,52 @@ export interface ApprovalRegistryOptions {
 
 export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath, waitMs: number | null = 0, options: ApprovalRegistryOptions = {}): ApprovalRegistry {
   const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [] }, lockDeadlineMs: options.lockDeadlineMs })
+  const calls = createCallFiles(join(dirname(filePath), CALLS_DIRECTORY))
 
-  /** Every change starts by dropping what expired; this workspace's unanswered asks among them are reported once written. */
+  /**
+   * Every change starts by dropping what expired; this workspace's unanswered asks among them are reported once
+   * written, and the call files no waiting ask names any longer are removed once the index no longer names them.
+   */
   async function update<R>(change: (state: State) => R | Promise<R>): Promise<R> {
     let expired: ApprovalRequest[] = []
-    const result = await store.update(state => {
+    let released: string[] = []
+    const result = await store.update(async (state) => {
+      const before = namedCalls(state)
       expired = prune(state).filter(entry => entry.workspace === workspace).map(entry => entry.request)
-      return change(state)
+      const value = await change(state)
+      const after = namedCalls(state)
+      released = [...before].filter(id => !after.has(id))
+      return value
     })
+    calls.remove(released)
     if (expired.length > 0) options.onExpired?.(expired)
     return result
+  }
+
+  /** A waiting ask with its whole call: read from the group's file, or inline for an ask recorded before this build. */
+  function withCall({ workspace: _workspace, callFile, call, ...entry }: PendingEntry): PendingAsk {
+    const whole = callFile ? calls.read(callFile.id) : call
+    return { ...entry, ...(whole === undefined ? {} : { call: whole }) }
+  }
+
+  /**
+   * Records one group's whole call in a file of its own, once the group fits the budgets, and names it from each
+   * ask. `replacing`: the waiting asks the group stands in for (a re-send recording a call kept in part), not counted.
+   */
+  function recordCall(input: { state: State; group: PendingEntry[]; call: AskedCall; replacing?: readonly PendingEntry[] }): PendingEntry[] {
+    const text = JSON.stringify(input.call)
+    const callFile = { id: randomUUID(), bytes: Buffer.byteLength(text), ...(input.call.complete ? { complete: true as const } : {}) }
+    const named = input.group.map(entry => ({ ...entry, callFile }))
+    const replaced = new Set(input.replacing ?? [])
+    assertBytesFor({ waiting: input.state.pending.filter(entry => entry.workspace === workspace && !replaced.has(entry)), group: named, callBytes: callFile.bytes })
+    calls.write(callFile.id, text)
+    return named
   }
 
   const registry: ApprovalRegistry = {
     ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs }) {
       return update(state => {
-        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) } })
+        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) }, record: recordCall })
         if (joined) return joined
         assertRoomFor({ state, workspace, sessionId, asked: asks.length })
         // Every field a person or a relay reads is redacted as the shown arguments are (owner decision D17);
@@ -263,9 +400,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactShownText(item.reason),
           tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),
         }))
-        const entries = requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(call === undefined ? {} : { call }) }))
-        assertBytesFor({ state, entries })
-        state.pending.push(...entries)
+        const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }) }))
+        // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
+        if (call === undefined) assertBytesFor({ waiting: state.pending.filter(entry => entry.workspace === workspace), group: entries, callBytes: 0 })
+        state.pending.push(...(call === undefined ? entries : recordCall({ state, group: entries, call })))
         return { requests, joined: false, answered: [] }
       })
     },
@@ -288,7 +426,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         }
         const approval = state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token)
         if (!approval) return { ok: false, reason: 'Approval token is unknown or expired' }
-        if (options.expect && !options.expect(approval)) return { ok: false, reason: 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows' }
+        if (options.expect && !options.expect(withCall(approval))) return { ok: false, reason: 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows' }
         if (decision.approved && !approval.request.offeredScopes.includes(decision.scope)) {
           return { ok: false, reason: `Scope ${decision.scope} is not offered for this approval` }
         }
@@ -324,6 +462,15 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     },
 
     evaluate({ tokens, sessionId, tool, fingerprint: callFingerprint, check, admit, spent }) {
+      // An ordinary call carries no token and the rules settle it without a once, so no once could be spent:
+      // the queue is neither read nor rewritten, and its cost does not grow with the asks waiting (review M5).
+      if (tokens.length === 0) {
+        const settled = check([])
+        if (settled.kind !== 'ask') {
+          if (settled.kind === 'allow') admit?.()
+          return Promise.resolve(settled)
+        }
+      }
       return update(state => {
         // A once names the call it was asked for; any other call, token or not, cannot spend it (review H3 of B23-B25, item 1).
         const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool && (entry.fingerprint === undefined || entry.fingerprint === callFingerprint))
@@ -382,13 +529,16 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       })
     },
 
-    sweep: () => update(() => undefined),
+    // Also removes call files no waiting ask names, which a process that stopped between the two writes leaves.
+    sweep: () => update(state => calls.prune(namedCalls(state))),
 
-    pending: () => registry.waiting().map(entry => entry.request),
+    pending: () => store.read().pending
+      .filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now())
+      .map(entry => entry.request),
 
     waiting: () => store.read().pending
       .filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now())
-      .map(({ workspace: _workspace, ...entry }) => entry),
+      .map(withCall),
   }
   return registry
 }
@@ -403,7 +553,7 @@ interface JoinKey { requestId: string; sessionId: string; actor: string | undefi
  * grant; anything else is a different call reusing the id. A group answered with approvals alone is
  * not joined: its call ran (a re-send replays it) or asks afresh.
  */
-function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[]; fingerprint?: string; recorded?: AskedCall } }): AskResult | null {
+function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[]; fingerprint?: string; recorded?: AskedCall }; record: (input: { state: State; group: PendingEntry[]; call: AskedCall; replacing: readonly PendingEntry[] }) => PendingEntry[] }): AskResult | null {
   const { key } = input
   const inGroup = (entry: { workspace: string; sessionId?: string; requestId?: string; actor?: string }) =>
     entry.workspace === input.workspace && entry.requestId === key.requestId && entry.sessionId === key.sessionId && entry.actor === key.actor
@@ -417,9 +567,13 @@ function joinWaiting(input: { state: State; workspace: string; key: JoinKey; cal
   const answered = resolved.flatMap(entry => entry.request ? [entry.request] : [])
   if (!sameGroup({ waiting, answered, call: input.call })) throw new ApprovalConflictError(`Request ${key.requestId} is already waiting for approval of different asks`)
   // An ask recorded before this build names the same call (its fingerprint matched): the re-send records it
-  // whole, so a person's device can decide it (owner decision D17).
+  // whole, in a file of its own and within the budgets, so a person's device can decide it (owner decision D17, review M5).
   const { recorded: whole } = input.call
-  if (whole?.complete) for (const entry of pending) if (!entry.call?.complete && entry.fingerprint !== undefined && entry.fingerprint === input.call.fingerprint) entry.call = whole
+  const partial = pending.filter(entry => !(entry.callFile?.complete ?? entry.call?.complete) && entry.fingerprint !== undefined && entry.fingerprint === input.call.fingerprint)
+  if (whole?.complete && partial.length > 0) {
+    const recorded = input.record({ state: input.state, group: partial.map(({ call: _call, callFile: _callFile, ...entry }) => entry), call: whole, replacing: partial })
+    input.state.pending = input.state.pending.map(entry => { const index = partial.indexOf(entry); return index === -1 ? entry : recorded[index]! })
+  }
   return { requests: waiting, joined: true, answered: answered.map(request => request.token) }
 }
 

@@ -192,8 +192,11 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     for (const name of ['passage', 'wordCount', 'compass', 'bypass']) expect({ name, credential: isCredentialKey(name, 'x') }).toEqual({ name, credential: false })
   })
 
-  it('redacts a URL password to the last @ of its authority, and credential parameters in its query', () => {
-    expect(redactText('clone https://user:p@ss@word@host.example/org/repo.git')).toBe('clone https://user:[redacted]@host.example/org/repo.git')
+  it('redacts URL userinfo to the last @ of its authority, and credential parameters in its query', () => {
+    // Review L7: a bare token used as userinfo, with no ':', as Node's fetch error names a credentialed URL.
+    expect(redactText('fetch failed for https://bare-userinfo-word@github.com/org/repo.git')).toBe('fetch failed for https://[redacted]@github.com/org/repo.git')
+    expect(redactText('open https://bare-userinfo-word@host.example?x=1')).toBe('open https://[redacted]@host.example?x=1')
+    expect(redactText('clone https://user:p@ss@word@host.example/org/repo.git')).toBe('clone https://[redacted]@host.example/org/repo.git')
     expect(redactText('mail me@example.com about https://host.example/a@b')).toBe('mail me@example.com about https://host.example/a@b')
     expect(redactUrlParameters('https://api.example.com/x?access_token=abc&key=def&sig=ghi&page=2#code=jkl')).toBe('https://api.example.com/x?access_token=[redacted]&key=[redacted]&sig=[redacted]&page=2#code=[redacted]')
     expect(isCredentialParameter('client_secret', 'x')).toBe(true)
@@ -299,7 +302,7 @@ describe('logger lows (logger-fixes-3, -6, -7, -8, -9, -11, -12, -13)', () => {
       sas: `https://blob.example.com/c?sv=2024&sig=${token}`,
     })
     expect(JSON.stringify(event)).not.toContain(token)
-    expect(event.fields).toMatchObject({ target: '/api/callback?access_token=[redacted]&state=ok', fragment: 'https://app.example.com/cb#access_token=[redacted]&expires_in=3600', dsn: 'postgres://admin:[redacted]@db.internal/app' })
+    expect(event.fields).toMatchObject({ target: '/api/callback?access_token=[redacted]&state=ok', fragment: 'https://app.example.com/cb#access_token=[redacted]&expires_in=3600', dsn: 'postgres://[redacted]@db.internal/app' })
   })
 
   it('logger-fixes-9 rewrites only the secret value, keeping punctuation and other parameters as written', async () => {

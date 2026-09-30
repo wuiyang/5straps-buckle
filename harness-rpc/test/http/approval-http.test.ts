@@ -118,6 +118,19 @@ describe('a withdraw of a call already answered (review L1 of B23-B25)', () => {
   })
 })
 
+describe('the admin approvals listing (review M1)', () => {
+  it('lists each waiting request with the whole call it came from', async () => {
+    const buckle = await node({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'approval-http-admin-token' })
+    const admin = { authorization: 'Bearer approval-http-admin-token' }
+    const asked = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'listed-1', tool: 'fs_write', args: { path: 'listed.md', content: 'listed content' }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { approvals: Array<{ token: string }> }
+    const listed = await (await buckle.request('/setup/approvals', { headers: admin })).json() as { approvals: Array<Record<string, unknown>> }
+    expect(listed.approvals).toEqual([expect.objectContaining({
+      token: asked.approvals[0]!.token, tool: 'fs_write',
+      call: { arguments: { content: 'listed content', path: 'listed.md' }, cwd: buckle.config.cwd, description: expect.stringContaining('listed.md'), effects: [`write ${join(buckle.config.cwd, 'listed.md')}`] },
+    })])
+  })
+})
+
 describe('the setup face withdraws one call\'s asks (owner decision D6, review M1 of B20-B22)', () => {
   it('by requestId and session, or by a token of its group, telling each cancelled, ending a waiting caller, and never touching another call', async () => {
     const webhook = await captureWebhook()

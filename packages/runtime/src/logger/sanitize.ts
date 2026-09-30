@@ -59,8 +59,9 @@ const CREDENTIAL_NEARBY = /token|secret|passw(?:or)?d|passphrase|credential|cook
 // at 64 characters: '.', '+' and '-' give a word boundary inside a run, and an uncapped scheme rescanned the rest
 // of the run from each one.
 const URL_LIKE = /(?:\b[a-z][a-z0-9+.-]{0,63}:\/\/|(?<=^|[\s("'=<>])\/)[^\s"'<>]*/gi
-// The password runs to the last '@' of the authority, so one holding an '@' is redacted whole (review L7 of the second re-review).
-const USERINFO_PASSWORD = /^([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#]+)@/i
+// The whole userinfo, to the last '@' of the authority, as Buckle's display redaction does: a password holding an '@'
+// is redacted whole (review L7 of the second re-review), and so is a bare token used as userinfo with no ':' (review L7).
+const USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^\s/?#]*@/i
 // name=value in a query or fragment; the value stops at the next separator.
 const URL_PARAM = /([?&#;])([^=&#;?]+)=([^&#;]*)/g
 const TRAILING_PUNCTUATION = new Set([')', '.', ',', ';', ':', '!', '?'])
@@ -182,10 +183,10 @@ function isOpaque(text: string): boolean {
   return text.length >= OPAQUE_MIN_LENGTH && !GIT_SHA.test(text) && HAS_LETTER.test(text) && (HAS_DIGIT.test(text) || !readsAsWords(text))
 }
 
-// Userinfo passwords and secret-named query or fragment parameters in any URL or request target.
+// Userinfo and secret-named query or fragment parameters in any URL or request target.
 // Only the secret value is rewritten, so the rest stays exactly as written.
 function redactUrls(text: string): string {
-  return text.replace(URL_LIKE, url => redactUrlParameters(url.replace(USERINFO_PASSWORD, `$1${REDACTED}@`)))
+  return text.replace(URL_LIKE, url => redactUrlParameters(url.replace(USERINFO, `$1${REDACTED}@`)))
 }
 
 /** One URL with the value of each credential parameter in its query or fragment redacted (isCredentialParameter), the rest as written. */

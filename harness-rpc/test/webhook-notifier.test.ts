@@ -62,6 +62,15 @@ describe('what the approval webhook carries', () => {
     expect(keys.indexOf('reviewCommand')).toBeLessThan(keys.indexOf('approveCommand'))
   })
 
+  it('carries the whole call the asks came from once, when it was kept whole, and nothing for one kept in part (review M1)', async () => {
+    const call = { arguments: { path: '/etc/hostname' }, cwd: '/workspace', description: 'Read "/etc/hostname"', effects: ['read /etc/hostname'], complete: true as const }
+    await createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'default' })([request, { ...request, token: 'tok-2' }], call)
+    expect(received.at(-1)?.body.call).toEqual({ arguments: { path: '/etc/hostname' }, cwd: '/workspace', description: 'Read "/etc/hostname"', effects: ['read /etc/hostname'] })
+    expect(JSON.stringify(received.at(-1)?.body.approvals)).not.toContain('"arguments"')
+    await createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'default' })([request], { arguments: { path: '/etc/ho...' }, cwd: '/workspace', description: null, truncated: true })
+    expect(received.at(-1)?.body).not.toHaveProperty('call')
+  })
+
   it('sends no credential when the node has none configured', async () => {
     await createWebhookNotifier({ url, serverId: 'laptop', workspaceId: 'default' })([request])
     expect(received.at(-1)?.authorization).toBeUndefined()

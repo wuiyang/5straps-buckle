@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApprovalRequest, InvokeResponse, JsonValue } from '@5straps/protocol'
@@ -7,7 +7,7 @@ import { runCli } from '../cli/main.js'
 import { describeQuestion } from '../cli/terminal-consumer.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
-import { ActionTooLargeError, ApprovalLimitError, createApprovalRegistry, MAX_ASK_BYTES, MAX_PENDING_BYTES } from '../common/services/approvals/approval-registry.js'
+import { ActionTooLargeError, ApprovalLimitError, createApprovalRegistry, MAX_ASK_BYTES, MAX_PENDING_BYTES, MAX_PENDING_BYTES_PER_ACTOR, MAX_PENDING_BYTES_PER_SESSION, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -177,6 +177,8 @@ describe('an action shown whole, or refused whole (owner decision D17)', () => {
     const huge = Array.from({ length: 180 }, (_, index) => `${index}-${'h'.repeat(99_990)}`)
     const refused = await run(runtime, 'rm', ['-f', ...huge])
     expect(refused).toMatchObject({ outcome: 'error', error: { code: 'ACTION_TOO_LARGE', retryable: false, message: expect.stringContaining('nothing was asked or run') } })
+    // Review M5: the size is the ask's whole record, its request and the call, and the message says so.
+    expect(refused.outcome === 'error' && refused.error.message).toMatch(/one of its asks records \d+ bytes \(its request and the whole call as an approval shows it\)/)
     expect(runtime.approvalService.pending()).toEqual([])
     expect(ran).toEqual([])
   })
@@ -195,11 +197,85 @@ describe('an action shown whole, or refused whole (owner decision D17)', () => {
     roots.push(root)
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
     const each = Math.floor(MAX_PENDING_BYTES / 4) - 4_096
-    const ask = (index: number) => registry.ask({ tool: 'fs_write', sessionId: `chat-${index}`, asks: [{ kind: 'ask', rule: 'write_scope', subject: root, reason: 'outside', offeredScopes: ['once'] }], call: { arguments: { content: String(index).repeat(each) }, cwd: root, description: null, effects: [], complete: true } })
+    const ask = (index: number) => registry.ask({ tool: 'fs_write', sessionId: `chat-${index}`, actor: `actor-${index}`, asks: [{ kind: 'ask', rule: 'write_scope', subject: root, reason: 'outside', offeredScopes: ['once'] }], call: { arguments: { content: String(index).repeat(each) }, cwd: root, description: null, effects: [], complete: true } })
     const tokens: string[] = []
     for (const index of [1, 2, 3, 4]) tokens.push((await ask(index)).requests[0]!.token)
-    await expect(ask(5)).rejects.toBeInstanceOf(ApprovalLimitError)
+    await expect(ask(5)).rejects.toThrow(/waiting in this workspace already hold \d+ bytes.*per workspace/)
     expect(await registry.resolve({ token: tokens[0]!, approved: false, scope: 'once' })).toMatchObject({ ok: true })
     expect((await ask(5)).requests).toHaveLength(1)
+  })
+})
+
+// Review M5: each ask copied the whole call into approvals.json, one session could fill the workspace's 64 MiB and
+// refuse every other session, every call rewrote the whole file under its lock (fs_read went from about 4 ms to about
+// 530 ms), a re-send swapped in a whole call unchecked, and both refusals named the wrong thing.
+describe('the approval budgets, per session, per caller and per workspace (review M5)', () => {
+  function queue(): { root: string; registry: ApprovalRegistry } {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-full-action-budgets-'))
+    roots.push(root)
+    return { root, registry: createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root) }
+  }
+  const write = (subject: string) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] })
+  const whole = (bytes: number, marker = 'x') => ({ arguments: { content: marker.repeat(bytes) } as JsonValue, cwd: '/workspace', description: null, effects: [], complete: true as const })
+  const callFiles = (root: string) => { try { return readdirSync(join(root, 'approval-calls')) } catch { return [] } }
+
+  it('takes another session\'s small ask while one session holds its share, and refuses that session\'s next one, saying so', async () => {
+    const { registry } = queue()
+    await registry.ask({ tool: 'fs_write', sessionId: 'loud', actor: 'agent', requestId: 'big', asks: [write('/a')], call: whole(MAX_PENDING_BYTES_PER_SESSION - 64 * 1_024) })
+    await expect(registry.ask({ tool: 'fs_write', sessionId: 'loud', actor: 'agent', requestId: 'more', asks: [write('/b')], call: whole(128 * 1_024) }))
+      .rejects.toThrow(/This session's approvals waiting already hold \d+ bytes and this call's asks would add \d+.*per session/)
+    expect((await registry.ask({ tool: 'fs_write', sessionId: 'quiet', actor: 'agent', requestId: 'small', asks: [write('/c')], call: whole(1_000) })).requests).toHaveLength(1)
+  })
+
+  it('refuses a caller whose sessions hold its share, and still takes another caller\'s ask', async () => {
+    const { registry } = queue()
+    for (const session of ['one', 'two']) await registry.ask({ tool: 'fs_write', sessionId: session, actor: 'agent', asks: [write(`/${session}`)], call: whole(MAX_PENDING_BYTES_PER_ACTOR / 2 - 64 * 1_024) })
+    await expect(registry.ask({ tool: 'fs_write', sessionId: 'three', actor: 'agent', asks: [write('/three')], call: whole(128 * 1_024) }))
+      .rejects.toThrow(/waiting from this caller already hold \d+ bytes.*per caller/)
+    expect((await registry.ask({ tool: 'fs_write', sessionId: 'four', actor: 'rings', asks: [write('/four')], call: whole(1_000) })).requests).toHaveLength(1)
+  })
+
+  it('keeps a call\'s whole body once, beside the queue, however many asks it made, and removes it with the last of them', async () => {
+    const { root, registry } = queue()
+    const asked = await registry.ask({ tool: 'fs_write_batch', sessionId: 'chat-1', asks: Array.from({ length: 40 }, (_, index) => write(`/dir-${index}`)), call: whole(1_024 * 1_024) })
+    expect(asked.requests).toHaveLength(40)
+    expect(callFiles(root)).toHaveLength(1)
+    expect(statSync(join(root, 'approval-calls', callFiles(root)[0]!)).mode & 0o777).toBe(0o600)
+    expect(statSync(join(root, 'approvals.json')).size).toBeLessThan(64 * 1_024)
+    expect(registry.waiting().every(ask => (ask.call?.arguments as { content: string }).content.length === 1_024 * 1_024)).toBe(true)
+    // Counted once: 40 asks of a 1 MiB call leave the session room for 14 MiB more.
+    expect((await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [write('/next')], call: whole(14 * 1_024 * 1_024) })).requests).toHaveLength(1)
+    const [first, ...rest] = asked.requests
+    await registry.resolve({ token: first!.token, approved: false, scope: 'once' })
+    expect(callFiles(root)).toHaveLength(2)
+    await registry.cancel(rest.map(request => request.token))
+    expect(callFiles(root)).toHaveLength(1)
+  })
+
+  it('checks a re-send that records a call kept in part against the budgets, as a new ask is', async () => {
+    const { root, registry } = queue()
+    await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [write('/held')], call: whole(MAX_PENDING_BYTES_PER_SESSION - 1_024 * 1_024) })
+    const legacy = { tool: 'fs_write', sessionId: 'chat-1', requestId: 'legacy', fingerprint: 'fp-1', asks: [write('/legacy')] }
+    await registry.ask({ ...legacy, call: { arguments: { content: 'cut...' }, cwd: '/workspace', description: null, truncated: true } })
+    await expect(registry.ask({ ...legacy, call: whole(2 * 1_024 * 1_024) })).rejects.toThrow(/per session/)
+    expect(registry.waiting().find(ask => ask.requestId === 'legacy')?.call).toMatchObject({ truncated: true })
+    expect(callFiles(root)).toHaveLength(2)
+  })
+
+  it('leaves the queue unread and unwritten by an ordinary call, however much is waiting', async () => {
+    const { config, runtime } = await node()
+    writeFileSync(join(config.cwd, 'notes.md'), 'hello')
+    const read = () => runtime.invoke({ sessionId: 'reader', request: { requestId: `read-${Math.random()}`, tool: 'fs_read', args: { path: 'notes.md' }, approvalTokens: [] } })
+    const timed = async () => { const times: number[] = []; for (let index = 0; index < 5; index++) { const started = performance.now(); expect(await read()).toMatchObject({ outcome: 'ok' }); times.push(performance.now() - started) } return times.sort((a, b) => a - b)[2]! }
+    const baseline = await timed()
+    // About 60 MiB waiting, from four callers, as the review's 66 MB.
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }), approvalsPath(config), config.cwd)
+    for (const caller of ['a', 'b', 'c', 'd']) await registry.ask({ tool: 'fs_write', sessionId: `s-${caller}`, actor: caller, asks: [write(`/${caller}`)], call: whole(15 * 1_024 * 1_024, caller) })
+    const before = statSync(approvalsPath(config))
+    const loaded = await timed()
+    const after = statSync(approvalsPath(config))
+    expect([after.ino, after.mtimeMs, after.size]).toEqual([before.ino, before.mtimeMs, before.size])
+    expect(before.size).toBeLessThan(64 * 1_024)
+    expect(loaded).toBeLessThan(baseline * 5 + 50)
   })
 })

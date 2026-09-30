@@ -150,8 +150,11 @@ export interface ApprovalServiceOptions {
   graceMs: number | null
   /** The current operation's interaction; an unbound operation asks nobody. */
   interaction: InteractionSource
-  /** Told once an ask is issued, from every entry point, so a person can be reached away from the machine. */
-  announce?: (requests: ApprovalRequest[]) => Promise<void>
+  /**
+   * Told once an ask is issued, from every entry point, so a person can be reached away from the machine: the
+   * requests and, when it was kept whole, the one call they all came from (review M1).
+   */
+  announce?: (requests: ApprovalRequest[], call?: AskedCall) => Promise<void>
   /** What became of the announced asks, on the same path; nothing is sent without one. */
   notices?: ApprovalNotices
   /** The key Rings minted at pairing; without one a plain decision is accepted and an envelope refused. */
@@ -233,7 +236,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (issued.joined && approvals.length === 0) return { settled: true, approvals, answered }
       const tokens = approvals.map(approval => approval.token)
       if (!issued.joined) {
-        await announce(options.announce, approvals)
+        await announce(options.announce, approvals, input.call)
         scheduleSweep(approvals)
       }
       // Checked before any question is drawn: a caller that cancelled during the announce is asked about no more (review L5).
@@ -589,10 +592,10 @@ function askLifetime(graceMs: number | null, hint: ApprovalWait | undefined): nu
   return hint?.mode === 'finite' ? Math.max(graceMs, hint.ms) : graceMs
 }
 
-async function announce(notify: ApprovalServiceOptions['announce'], requests: ApprovalRequest[]): Promise<void> {
+async function announce(notify: ApprovalServiceOptions['announce'], requests: ApprovalRequest[], call: AskedCall | undefined): Promise<void> {
   if (!notify) return
   try {
-    await notify(requests)
+    await notify(requests, call)
   } catch (error) {
     // Failing to reach someone must not also fail the call they would have approved.
     logger.warn('Could not announce a pending approval', { message: error instanceof Error ? error.message : 'Unknown error' })
