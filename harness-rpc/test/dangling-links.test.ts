@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -14,8 +14,24 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 // enroll a key, load a plugin) or land outside the root and the mount. A link is now judged where it
 // lands, a write that lands in Buckle's state is refused, and an ask names the real target.
 
+/**
+ * A hook run once, right after the first directory read whose entries it accepts: a listing has opened
+ * its judged directory and has judged none of its children yet (review H1 of the second re-review).
+ */
+const listing = vi.hoisted(() => ({ afterRead: undefined as undefined | ((names: string[]) => boolean) }))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:fs/promises')>()
+  const readdir = (async (...args: unknown[]) => {
+    const read = await (original.readdir as (...input: unknown[]) => Promise<Array<string | { name: string }>>)(...args)
+    if (listing.afterRead?.(read.map(entry => typeof entry === 'string' ? entry : entry.name))) listing.afterRead = undefined
+    return read
+  }) as typeof original.readdir
+  return { ...original, readdir, default: { ...original, readdir } }
+})
+
 const roots: string[] = []
 afterEach(async () => {
+  listing.afterRead = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -189,7 +205,7 @@ describe('a link that climbs back out of a missing directory (review item 0 of t
     ['setup-sessions.json', setup => setupSessionsPath(setup.config)],
   ]
 
-  it.each(TARGETS)('refuses fs_write, fs_patch and browser_command through a -> nope/../L/%s and changes nothing', async (_, fileOf) => {
+  it.each(TARGETS)('refuses every file tool through a -> nope/../L/%s and changes nothing', async (_, fileOf) => {
     const setup = await node()
     const { runtime, workspace, config } = setup
     const file = fileOf(setup)
@@ -200,10 +216,17 @@ describe('a link that climbs back out of a missing directory (review item 0 of t
     await runtime.policy.setDangerouslyAllow(true)
     const before = existsSync(file) ? readFileSync(file, 'utf8') : null
 
+    // Review L1 of the second re-review: every tool that takes a path, not the writers alone.
     const calls: Array<[string, Record<string, JsonValue>]> = [
       ['fs_write', { path: 'a', content: 'planted' }],
+      ['fs_write_batch', { files: [{ path: 'a', content: 'planted' }] }],
       ['fs_patch', { path: 'a', edits: [{ oldText: '{', newText: '{"planted":true,' }] }],
+      ['fs_read', { path: 'a' }],
+      ['fs_read_batch', { paths: ['a'] }],
+      ['fs_list', { path: 'a', depth: 1 }],
+      ['fs_find_names', { path: 'a', pattern: '*' }],
       ['browser_command', { command: 'screenshot', args: ['a'] }],
+      ['browser_command', { command: 'upload', args: ['#file', 'a'] }],
     ]
     for (const [tool, args] of calls) {
       const { result } = await run(runtime, tool, args)
@@ -223,6 +246,60 @@ describe('a link that climbs back out of a missing directory (review item 0 of t
     const { result } = await run(runtime, 'fs_write', { path: 'b', content: 'kept', createParents: true })
     expect(result).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(workspace, 'drafts', 'new', 'note.md'), 'utf8')).toBe('kept')
+    await stop(setup)
+  })
+})
+
+describe('a `..` after a link whose target is missing or a file (review L2 of the second proof-of-possession re-review)', () => {
+  // E -> D/../x.txt: the kernel answers ENOENT (D -> nope) or ENOTDIR (D -> a file) for D/..; read as
+  // text it named <root>/x.txt, which the write then created.
+  it.each([
+    ['a link to a missing target', (workspace: string) => { symlinkSync('nope', join(workspace, 'D')) }],
+    ['a link to a file', (workspace: string) => { writeFileSync(join(workspace, 'file.txt'), 'kept'); symlinkSync('file.txt', join(workspace, 'D')) }],
+  ])('refuses a write through %s and a following `..`, and creates nothing', async (_, plantD) => {
+    const setup = await node()
+    const { runtime, workspace } = setup
+    plantD(workspace)
+    symlinkSync('D/../x.txt', join(workspace, 'E'))
+    await runtime.policy.setDangerouslyAllow(true)
+    const calls: Array<[string, Record<string, JsonValue>]> = [['fs_write', { path: 'E', content: 'planted' }], ['fs_write_batch', { files: [{ path: 'E', content: 'planted' }] }], ['fs_read', { path: 'E' }]]
+    for (const [tool, args] of calls) {
+      const { result } = await run(runtime, tool, args)
+      expect({ tool, result }).toMatchObject({ tool, result: { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('climbs back out') } } })
+    }
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false)
+    expect(existsSync(join(workspace, 'nope'))).toBe(false)
+    await stop(setup)
+  })
+})
+
+describe('a listing whose named root link flips during the walk (review H1 of the second proof-of-possession re-review)', () => {
+  // L -> the directory that holds Buckle's state, under an owner's session read grant on it. Once the
+  // listing has read that directory, L flips to a decoy the grant also covers: a child judged by the
+  // agent's name (L/state) would land in the decoy and pass, while the entries come from the real one.
+  it.each<[string, Record<string, JsonValue>]>([
+    ['fs_list', { path: 'L', depth: 2, includeIgnored: true }],
+    ['fs_find_names', { path: 'L', pattern: '**', limit: 500, includeIgnored: true }],
+  ])('%s never shows Buckle\'s state, whatever L names by the time a child is judged', async (tool, args) => {
+    const setup = await node()
+    const { runtime, workspace, root } = setup
+    symlinkSync(root, join(workspace, 'L'))
+    await runtime.grants.grant({ sessionId: 'dangling-session', rule: 'read_scope', subject: root, scope: 'session' })
+    let flipped = false
+    listing.afterRead = (names) => {
+      if (!names.includes('state')) return false
+      unlinkSync(join(workspace, 'L'))
+      symlinkSync(join(root, 'elsewhere'), join(workspace, 'L'))
+      flipped = true
+      return true
+    }
+    const { result } = await run(runtime, tool, args)
+    expect(flipped).toBe(true)
+    expect(result).toMatchObject({ outcome: 'ok' })
+    const output = (result as Extract<InvokeResponse, { outcome: 'ok' }>).output as { entries?: Array<{ path: string }>; matches?: string[] }
+    const shown = output.entries?.map(entry => entry.path) ?? output.matches ?? []
+    expect(shown).toEqual(expect.arrayContaining(['elsewhere', 'home']))
+    expect(shown.filter(path => path === 'state' || path.startsWith('state/'))).toEqual([])
     await stop(setup)
   })
 })

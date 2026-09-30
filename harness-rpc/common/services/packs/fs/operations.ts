@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { isUtf8 } from 'node:buffer'
 import { constants, fstatSync, ftruncateSync, lstatSync, readFileSync, writeSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
-import { basename, join, matchesGlob, relative } from 'node:path'
+import { basename, join, matchesGlob } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
 import { openDirectoryBeneath, openRealDirectory, withFileBeneath, type PinnedDirectory } from '../../../adapters/beneath.js'
@@ -19,6 +19,7 @@ const MAX_FIND_DEPTH = 256
 
 export interface FsContext {
   paths: PathView
+  /** Judges a host path where it lands now (ToolContext.authorizeRead). */
   authorizeRead?: (path: string) => Promise<boolean>
   authorizeReadTarget?: (target: string) => boolean
   authorizeWrite?: (target: string) => boolean
@@ -147,7 +148,7 @@ export async function listTree(
 ): Promise<JsonValue> {
   const root = context.paths.resolve(input.path)
   const entries: JsonValue[] = []
-  await withDirectoryBeneath(root, context, directory => walkTree({ root, current: root, directory, depth: input.depth, includeIgnored: input.includeIgnored, entries, authorizeRead: context.authorizeRead }))
+  await withDirectoryBeneath(root, context, (directory, real) => walkTree({ real, shown: '', directory, depth: input.depth, includeIgnored: input.includeIgnored, entries, authorizeRead: context.authorizeRead }))
   return { path: context.paths.display(root), entries, truncated: entries.length >= MAX_TREE_ENTRIES }
 }
 
@@ -158,20 +159,22 @@ export async function findNames(
   const root = context.paths.resolve(input.path)
   const matches: string[] = []
   const walk = { deep: false }
-  await withDirectoryBeneath(root, context, directory => walkNames({ root, current: root, directory, depth: 0, walk, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches, authorizeRead: context.authorizeRead }))
+  await withDirectoryBeneath(root, context, (directory, real) => walkNames({ real, shown: '', directory, depth: 0, walk, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches, authorizeRead: context.authorizeRead }))
   return { path: context.paths.display(root), matches, truncated: matches.length >= input.limit || walk.deep }
 }
 
 /**
  * A listing walks the judged directory from a descriptor reached without following a link, and each
  * level below it from its parent's, so a link swapped into the tree after a check is refused rather
- * than listed through (review item 4 of the proof-of-possession fixes). Each child is still judged
- * on its own before it is shown.
+ * than listed through (review item 4 of the proof-of-possession fixes). Each child is judged on its
+ * own before it is shown, at its real path beneath the judged directory, never through the agent's
+ * name, which a link flipped during the walk could point elsewhere (review H1 of the second
+ * proof-of-possession re-review).
  */
-async function withDirectoryBeneath(root: string, context: FsContext, walk: (directory: PinnedDirectory) => Promise<void>): Promise<void> {
+async function withDirectoryBeneath(root: string, context: FsContext, walk: (directory: PinnedDirectory, real: string) => Promise<void>): Promise<void> {
   const target = judgedTarget(root, 'read', context)
   const directory = openRealDirectory(target, { refusal: { shown: context.paths.display(root), outcome: 'it was not listed' } })
-  try { await walk(directory) } finally { directory.close() }
+  try { await walk(directory, target) } finally { directory.close() }
 }
 
 async function descend(input: { directory: PinnedDirectory; name: string; shown: string }, walk: (directory: PinnedDirectory) => Promise<void>): Promise<void> {
@@ -179,10 +182,13 @@ async function descend(input: { directory: PinnedDirectory; name: string; shown:
   try { await walk(directory) } finally { directory.close() }
 }
 
-/** `root` and `current` are the names the agent's path gives, which children are judged and shown by; `directory` is what is read. */
+/**
+ * `directory` is what is read; `real` is its judged real path, where each child is judged; `shown` names
+ * it from the listed root, for display only.
+ */
 async function walkTree(input: {
-  root: string
-  current: string
+  real: string
+  shown: string
   directory: PinnedDirectory
   depth: number
   includeIgnored: boolean
@@ -197,25 +203,27 @@ async function walkTree(input: {
     if (input.entries.length >= MAX_TREE_ENTRIES) return
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
 
-    const childPath = join(input.current, child.name)
-    if (input.authorizeRead && !await input.authorizeRead(childPath)) continue
+    const real = join(input.real, child.name)
+    const shown = join(input.shown, child.name)
+    if (input.authorizeRead && !await input.authorizeRead(real)) continue
     const info = lstatSync(input.directory.child(child.name))
     input.entries.push({
-      path: relative(input.root, childPath),
+      path: shown,
       name: child.name,
       type: child.isDirectory() ? 'directory' : child.isSymbolicLink() ? 'symlink' : 'file',
       size: info.size,
       modifiedAt: info.mtime.toISOString(),
     })
     if (child.isDirectory() && !child.isSymbolicLink() && input.depth > 0) {
-      await descend({ directory: input.directory, name: child.name, shown: relative(input.root, childPath) }, directory => walkTree({ ...input, current: childPath, directory, depth: input.depth - 1 }))
+      await descend({ directory: input.directory, name: child.name, shown }, directory => walkTree({ ...input, real, shown, directory, depth: input.depth - 1 }))
     }
   }
 }
 
+/** As walkTree: children are judged at `real`, matched and shown by `shown`. */
 async function walkNames(input: {
-  root: string
-  current: string
+  real: string
+  shown: string
   directory: PinnedDirectory
   depth: number
   /** Set when a level past MAX_FIND_DEPTH was left unsearched. */
@@ -231,15 +239,15 @@ async function walkNames(input: {
     if (input.matches.length >= input.limit) return
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
 
-    const childPath = join(input.current, child.name)
-    if (input.authorizeRead && !await input.authorizeRead(childPath)) continue
-    const relativePath = relative(input.root, childPath)
-    if (matchesGlob(relativePath, input.pattern) || matchesGlob(basename(relativePath), input.pattern)) {
-      input.matches.push(relativePath)
+    const real = join(input.real, child.name)
+    const shown = join(input.shown, child.name)
+    if (input.authorizeRead && !await input.authorizeRead(real)) continue
+    if (matchesGlob(shown, input.pattern) || matchesGlob(basename(shown), input.pattern)) {
+      input.matches.push(shown)
     }
     if (!child.isDirectory() || child.isSymbolicLink()) continue
     if (input.depth >= MAX_FIND_DEPTH) { input.walk.deep = true; continue }
-    await descend({ directory: input.directory, name: child.name, shown: relativePath }, directory => walkNames({ ...input, current: childPath, directory, depth: input.depth + 1 }))
+    await descend({ directory: input.directory, name: child.name, shown }, directory => walkNames({ ...input, real, shown, directory, depth: input.depth + 1 }))
   }
 }
 

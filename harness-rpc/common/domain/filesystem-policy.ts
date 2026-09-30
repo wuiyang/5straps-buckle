@@ -2,7 +2,7 @@ import { realpathSync } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
 import { dirname, relative, resolve } from 'node:path'
 import type { FilesystemPermission, WorkspacePolicy } from '@5straps/protocol'
-import { isInside } from './paths.js'
+import { comparablePath, isInside, isInsideComparable } from './paths.js'
 import type { PermissionRule } from './permission/decision.js'
 import { allowedVia, ask, deny } from './permission/decision.js'
 
@@ -11,12 +11,14 @@ export interface FilesystemPolicyInput {
   operation: 'read' | 'write'
   policy: WorkspacePolicy
   ceiling?: WorkspacePolicy | null
+  /** Whether the volume ignores case; the platform's default (comparablePath) when absent. */
+  caseInsensitive?: boolean
 }
 export type FilesystemDecision = FilesystemPermission | 'inherit'
 
 export function resolveFilesystemPermission(input: FilesystemPolicyInput): FilesystemDecision {
-  const own = matchRules(input.policy, input.path, input.operation)
-  const ceiling = input.ceiling ? matchRules(input.ceiling, input.path, input.operation) : 'inherit'
+  const own = matchRules(input.policy, input)
+  const ceiling = input.ceiling ? matchRules(input.ceiling, input) : 'inherit'
   if (own === 'deny' || ceiling === 'deny') return 'deny'
   if (ceiling === 'ask') return 'ask'
   return own === 'inherit' ? ceiling : own
@@ -28,23 +30,44 @@ export function resolveFilesystemAccess(input: Omit<FilesystemPolicyInput, 'oper
   return { read: read === 'inherit' ? 'allow' as const : read, write: write === 'inherit' ? 'ask' as const : write }
 }
 
-function matchRules(policy: WorkspacePolicy, path: string, operation: 'read' | 'write'): FilesystemDecision {
-  const matching = (policy.filesystem?.rules ?? []).filter(rule => rule.path === '.' || path === rule.path || path.startsWith(`${rule.path}/`))
+/**
+ * The rules that cover a relative path. A restriction (deny or ask) covers every spelling the volume
+ * treats as its path, so `SECRETS/new.json` meets a `secrets` deny on macOS (review H2 of the second
+ * proof-of-possession re-review); an allow covers its own spelling only, so on a case-sensitive
+ * volume a sibling directory is never allowed by another's rule.
+ */
+function matchRules(policy: WorkspacePolicy, input: Pick<FilesystemPolicyInput, 'path' | 'operation' | 'caseInsensitive'>): FilesystemDecision {
+  const { path, operation } = input
+  const fold = (value: string) => comparablePath(value, input.caseInsensitive)
+  const covers = (rulePath: string, candidate: string) => rulePath === '.' || candidate === rulePath || candidate.startsWith(`${rulePath}/`)
+  const matching = (policy.filesystem?.rules ?? []).filter(rule => rule[operation] === 'allow' ? covers(rule.path, path) : covers(fold(rule.path), fold(path)))
   if (matching.some(rule => rule[operation] === 'deny')) return 'deny'
   return matching.filter(rule => rule[operation] !== undefined).sort((a, b) => b.path.length - a.path.length)[0]?.[operation] ?? 'inherit'
 }
 
 export function filesystemPathDecision(input: Omit<FilesystemPolicyInput, 'path'> & { root: string; path: string }): FilesystemDecision {
-  if (!isInside(input.root, input.path)) return 'inherit'
+  const path = relativeWithin(input.root, input.path, input.caseInsensitive)
+  if (path === null) return 'inherit'
   const canonical = (policy: WorkspacePolicy): WorkspacePolicy => ({ ...policy, filesystem: { rules: (policy.filesystem?.rules ?? []).flatMap(rule => {
-    const target = canonicalPolicyPath(resolve(input.root, rule.path))
-    if (!isInside(input.root, target)) return [rule]
-    return [rule, { ...rule, path: relative(input.root, target).split('\\').join('/') || '.' }]
+    const target = relativeWithin(input.root, canonicalPolicyPath(resolve(input.root, rule.path)), input.caseInsensitive)
+    return target === null ? [rule] : [rule, { ...rule, path: target }]
   }) } })
-  return resolveFilesystemPermission({ ...input, policy: canonical(input.policy), ceiling: input.ceiling ? canonical(input.ceiling) : null, path: relative(input.root, input.path).split('\\').join('/') || '.' })
+  return resolveFilesystemPermission({ ...input, policy: canonical(input.policy), ceiling: input.ceiling ? canonical(input.ceiling) : null, path })
 }
 
-export function createFilesystemPolicyRule(input: { root: string; policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null }): PermissionRule {
+/**
+ * A path relative to the root, with `/` separators: in its own spelling when it sits inside the root
+ * as written, folded when only a volume that ignores case puts it there (so restrictions still meet
+ * it), null outside.
+ */
+function relativeWithin(root: string, path: string, caseInsensitive?: boolean): string | null {
+  const within = (from: string, to: string) => relative(from, to).split('\\').join('/') || '.'
+  if (isInside(root, path)) return within(root, path)
+  if (!isInsideComparable(root, path, caseInsensitive)) return null
+  return within(comparablePath(root, caseInsensitive), comparablePath(path, caseInsensitive))
+}
+
+export function createFilesystemPolicyRule(input: { root: string; policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null; caseInsensitive?: boolean }): PermissionRule {
   return {
     id: 'filesystem_policy',
     evaluate({ effect, grants }) {
@@ -94,8 +117,9 @@ async function nearestExisting(path: string): Promise<string> {
   }
 }
 
+/** A rule's path as the disk names it (realpathSync.native: the case it stores), so it compares with judged effect paths. */
 function canonicalPolicyPath(path: string): string {
-  try { return realpathSync(path) }
+  try { return realpathSync.native(path) }
   catch (error) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
     const parent = dirname(path)

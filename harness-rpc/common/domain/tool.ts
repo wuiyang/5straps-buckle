@@ -9,6 +9,10 @@ export interface ToolContext {
   stageId?: string
   timeoutMs: number
   signal: AbortSignal
+  /**
+   * Whether the rules allow reading an absolute host path the tool reached mid-call (a listed child
+   * beneath its judged directory, a searched file), judged where it lands now; never an agent's name.
+   */
   authorizeRead?: (path: string) => Promise<boolean>
   /** Whether a real path is one the call's permission check judged as a read; a reader refuses any other. */
   authorizeReadTarget?: (target: string) => boolean

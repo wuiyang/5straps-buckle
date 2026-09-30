@@ -7,6 +7,7 @@ import { createJsonFileStore, StateFileError } from '../../adapters/json-file-st
 import type { InteractionSource } from '../approvals/interaction.js'
 import { actionsPath, type BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
+import { comparablePath } from '../../domain/paths.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { tokenMatches } from '../access/tokens.js'
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
@@ -95,10 +96,10 @@ function registryStore(filePath: string, lockDeadlineMs?: number) {
 }
 
 export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime; interaction?: InteractionSource }) {
-  const defaultRoot = realpathSync(input.config.cwd)
-  const stateRoot = realpathSync(input.config.stateDirectory)
+  const defaultRoot = realpathSync.native(input.config.cwd)
+  const stateRoot = realpathSync.native(input.config.stateDirectory)
   const store = registryStore(join(stateRoot, 'workspaces.json'), input.config.stateLockDeadlineMs)
-  const exposedRoots = [...input.config.mountReadOnlyPaths, ...(input.config.sandboxMounts ?? []).map(mount => mount.source), dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return realpathSync(path) } catch { return path } })
+  const exposedRoots = [...input.config.mountReadOnlyPaths, ...(input.config.sandboxMounts ?? []).map(mount => mount.source), dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return realpathSync.native(path) } catch { return path } })
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
   const defaultDescriptor = (): WorkspaceDescriptor => ({ id: 'default', name: input.config.serverName, root: defaultRoot, enabled: true, default: true, retiredAt: null, updatedAt: null })
 
@@ -245,7 +246,9 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       if (!workspace) throw new WorkspaceError('Workspace not found', 404)
       if (!options.setup && (!workspace.enabled || workspace.retiredAt)) throw new WorkspaceError('Workspace is disabled or retired', 409)
       assertNoHostExposure(workspace.root, exposedRoots)
-      if (canonicalDirectory(workspace.root) !== workspace.root) throw new WorkspaceError('Workspace root changed; owner repair is required', 409)
+      // A root stored before roots were named in the disk's case still loads, in that case (review M1 of the second re-review).
+      const root = canonicalDirectory(workspace.root)
+      if (comparablePath(root) !== comparablePath(workspace.root)) throw new WorkspaceError('Workspace root changed; owner repair is required', 409)
       let pending = runtimes.get(id)
       if (!pending) {
         const config: BuckleConfig = {
@@ -255,7 +258,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           // this did before, left a registered workspace out of the owner's audit trail and its
           // approvals announced to nobody.
           ...input.config,
-          cwd: workspace.root,
+          cwd: root,
           serverName: workspace.name,
           authToken: workspace.tokens[0]!.token,
           adminToken: workspace.adminToken,
@@ -306,17 +309,19 @@ function describe(workspace: StoredWorkspace): WorkspaceDescriptor {
   return { id: workspace.id, name: workspace.name, root: workspace.root, enabled: workspace.enabled, default: false, retiredAt: workspace.retiredAt, updatedAt: workspace.updatedAt }
 }
 
+/** An existing directory as the disk names it: links followed, in the case the disk stores (review M1 of the second re-review). */
 function canonicalDirectory(root: string): string {
   try {
-    const canonical = realpathSync(root)
+    const canonical = realpathSync.native(root)
     if (!statSync(canonical).isDirectory()) throw new Error('Not a directory')
     return canonical
   } catch { throw new WorkspaceError('Workspace root must be an existing directory') }
 }
 
+/** Whether either root holds the other, as the volume compares paths (a case variant of a root is that root on macOS). */
 function overlaps(left: string, right: string): boolean {
   const contains = (parent: string, child: string) => {
-    const path = relative(parent, child)
+    const path = relative(comparablePath(parent), comparablePath(child))
     return path === '' || !path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path)
   }
   return contains(left, right) || contains(right, left)

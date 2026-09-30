@@ -54,3 +54,39 @@ it('atomically refuses stale policy revisions across separate store instances', 
   await expect(second.write(policy([{ path: '.', write: 'allow' }]), revision)).rejects.toThrow(/changed/)
   expect(first.read()?.filesystem?.rules[0]?.write).toBe('deny')
 })
+
+// Review H2 of the second proof-of-possession re-review: on macOS a case variant of an owner-denied
+// directory names that directory, so a new file there was judged by its spelling and allowed. A
+// restriction now meets every spelling the volume folds; an allow meets only its own.
+const judged = (input: { rules: unknown[]; path: string; kind?: 'read_path' | 'write_path'; caseInsensitive: boolean; ceiling?: unknown[] }) => {
+  const directory = '/Users/owner/project'
+  const rule = createFilesystemPolicyRule({ root: directory, policy: policy(input.rules), ...(input.ceiling ? { ceiling: policy(input.ceiling) } : {}), caseInsensitive: input.caseInsensitive })
+  const path = join(directory, input.path)
+  return rule.evaluate({ tool: 'fs_write', effect: { kind: input.kind ?? 'write_path', path, directory: join(path, '..') }, grants: { subjectsFor: () => [] } })
+}
+
+it.each([
+  [[{ path: 'secrets', write: 'deny' }], 'SECRETS/new.json'],
+  [[{ path: 'secrets', write: 'deny' }], 'Secrets/deeper/new.json'],
+  [[{ path: '.git', write: 'deny' }], '.GIT/hooks/pre-commit'],
+  [[{ path: 'Private', write: 'deny' }], 'private/notes.md'],
+])('denies a new file under a case variant of an owner-denied directory where the volume ignores case (%j, %s)', (rules, path) => {
+  expect(judged({ rules, path, caseInsensitive: true })).toMatchObject({ kind: 'deny', rule: 'filesystem_policy' })
+  // Where the volume keeps case, the variant is another directory the rule does not name.
+  expect(judged({ rules, path, caseInsensitive: false })).toBeNull()
+})
+
+it('folds a node ceiling and an ask rule the same way', () => {
+  expect(judged({ rules: [], ceiling: [{ path: 'secrets', write: 'deny' }], path: 'SECRETS/new.json', caseInsensitive: true })).toMatchObject({ kind: 'deny' })
+  expect(judged({ rules: [{ path: 'docs', read: 'ask' }], path: 'DOCS/plan.md', kind: 'read_path', caseInsensitive: true })).toMatchObject({ kind: 'ask', rule: 'filesystem_policy' })
+})
+
+it('folds the long s as case folding does, so .5ſtraps meets a .5straps deny', () => {
+  expect(judged({ rules: [{ path: '.5straps', write: 'deny' }], path: '.5ſtraps/buckle/plugins.json', caseInsensitive: true })).toMatchObject({ kind: 'deny' })
+})
+
+it('lets an allow cover its own spelling only, so a case-sensitive sibling is not allowed by it', () => {
+  const rules = policy([{ path: 'docs', write: 'allow' }])
+  expect(resolveFilesystemPermission({ path: 'docs/a.md', operation: 'write', policy: rules, caseInsensitive: true })).toBe('allow')
+  expect(resolveFilesystemPermission({ path: 'DOCS/a.md', operation: 'write', policy: rules, caseInsensitive: true })).toBe('inherit')
+})

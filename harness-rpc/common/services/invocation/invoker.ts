@@ -2,7 +2,7 @@ import { deniedSubjects } from '../../adapters/grant-store/file-grant-store.js'
 import { randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, realpathSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, isAbsolute } from 'node:path'
 import type { ChangeHistory } from '../history/journal.js'
 import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { type ResolvedEffect } from '../../domain/effect.js'
@@ -19,7 +19,7 @@ import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
-import { resolveEffects } from './resolve-effects.js'
+import { resolveEffects, resolveHostRead } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
@@ -535,9 +535,9 @@ async function executeWithTimeout(input: {
       timeoutMs,
       signal: input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal,
       authorizeRead: async path => {
-        const effects = await resolveEffects({ effects: [{ kind: 'read_path', path }], paths: input.options.paths })
+        if (!isAbsolute(path)) return false
         const outcome = input.options.permissions.evaluate({
-          tool: input.request.tool, effects,
+          tool: input.request.tool, effects: [await resolveHostRead(path)],
           grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
         })
         if (outcome.kind !== 'allow') return false

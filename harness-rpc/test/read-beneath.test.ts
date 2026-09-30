@@ -6,6 +6,7 @@ import { LinkAppearedError, openDirectoryBeneath, openRealDirectory, withFileBen
 import { createPathView } from '../common/domain/path-view.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { findNames, listTree, readFileEntry } from '../common/services/packs/fs/operations.js'
+import { resolveTarget } from '../common/services/invocation/real-path.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
@@ -101,5 +102,49 @@ describe('a read whose target a link replaces during its approval wait', () => {
     expect(result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
     expect(JSON.stringify(result)).not.toContain('owner secret')
     await runtime.history.close()
+  })
+})
+
+describe('a listing whose named root link flips during the walk (review H1 of the second proof-of-possession re-review)', () => {
+  // L -> a directory that holds Buckle's state, under an owner read grant; the listing opens it, then L
+  // flips to a decoy before the first child is judged. Children read from the pinned directory must be
+  // judged there, not by the agent's name, which now leads to the decoy.
+  function flipping() {
+    const { root, workspace, state, paths } = fixture()
+    mkdirSync(join(root, 'decoy'))
+    symlinkSync(root, join(workspace, 'L'))
+    let flipped = false
+    const judged: string[] = []
+    const context = {
+      paths,
+      authorizeReadTarget: (target: string) => target === root,
+      // The invoker's rule for a mid-call read, reduced to the state boundary: judged where the path lands now.
+      authorizeRead: async (path: string) => {
+        if (!flipped) {
+          flipped = true
+          unlinkSync(join(workspace, 'L'))
+          symlinkSync(join(root, 'decoy'), join(workspace, 'L'))
+        }
+        judged.push(path)
+        const target = resolveTarget(path)
+        return !(target === state || target.startsWith(`${state}/`))
+      },
+    }
+    return { root, context, judged }
+  }
+
+  it('fs_list judges each child at its real path, so the state directory is neither listed nor walked', async () => {
+    const { root, context, judged } = flipping()
+    const listed = await listTree({ path: 'L', depth: 2, includeIgnored: true }, context) as { entries: Array<{ path: string }> }
+    const shown = listed.entries.map(entry => entry.path)
+    expect(shown).toEqual(expect.arrayContaining(['decoy', 'workspace']))
+    expect(shown.filter(path => path === 'state' || path.startsWith('state/'))).toEqual([])
+    expect(judged.every(path => path.startsWith(`${root}/`))).toBe(true)
+  })
+
+  it('fs_find_names judges each child at its real path, so nothing in the state directory matches', async () => {
+    const { context } = flipping()
+    const found = await findNames({ path: 'L', pattern: '**/client-keys.json', limit: 10, includeIgnored: true }, context) as { matches: string[] }
+    expect(found.matches).toEqual([])
   })
 })

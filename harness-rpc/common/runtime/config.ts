@@ -96,7 +96,10 @@ export interface BuckleConfig {
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): BuckleConfig {
-  const cwd = resolve(environment.BUCKLE_WORKSPACE_ROOT ?? process.cwd())
+  // Named as the disk names it (realpathSync.native), as every judged effect path is: a root typed in
+  // another case than the disk's put every existing file outside it on macOS (review M1 of the second
+  // proof-of-possession re-review), and a linked root put every file outside it everywhere.
+  const cwd = realPathOf(resolve(environment.BUCKLE_WORKSPACE_ROOT ?? process.cwd()))
   const stateDirectory = stateDirectoryOf(environment)
   if (isInside(cwd, stateDirectory)) {
     throw new Error(`BUCKLE_STATE_DIR is ${stateDirectory}, inside the BUCKLE_WORKSPACE_ROOT at ${cwd}: an agent writes anywhere in the workspace, and the state directory holds the recorded grants, the approvals and the empty hooks directory the forge tools run git with`)

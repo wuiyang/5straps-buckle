@@ -115,3 +115,9 @@ it('asks again after a once read and enforces a session denial through the invok
   expect(await read('.env.local')).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
   expect((await read('.env.local', 'two')).outcome).toBe('approval_required')
 })
+// Review H2 of the second proof-of-possession re-review: toLowerCase kept the long s (U+017F), which case
+// folding maps to s, so .5ſtraps passed the protected-root check where the disk folds it.
+it('denies a long-s variant of ~/.5straps as Buckle\'s state where the disk ignores case', () => {
+  const rule = createSensitivePathRule({ protectedRoots: ['/Users/owner/.5straps'], caseInsensitive: true })
+  expect(rule.evaluate({ tool: 'fs_write', effect: { kind: 'write_path', path: '/Users/owner/.5ſtraps/buckle/plugins.json', directory: '/Users/owner' }, grants: { subjectsFor: () => [] } })).toMatchObject({ kind: 'deny', rule: 'sensitive_path' })
+})

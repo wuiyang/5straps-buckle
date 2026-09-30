@@ -31,6 +31,16 @@ async function resolveOne(effect: ToolEffect, paths: PathView): Promise<Resolved
   return effect
 }
 
+/**
+ * A read of a host path a tool reached mid-call (a listed child beneath its judged directory, a searched
+ * file, a shell's credential file), judged where it lands now. Never read through the agent's view:
+ * the path is already the host's, and a mount would take it for one of its own names.
+ */
+export async function resolveHostRead(path: string): Promise<ResolvedEffect> {
+  const target = await realPathOrPlanned(path)
+  return { kind: 'read_path', path: target, directory: await containingDirectory(target) }
+}
+
 async function containingDirectory(path: string): Promise<string> {
   try {
     if ((await stat(path)).isDirectory()) return path
