@@ -203,6 +203,28 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     expect(isCredentialParameter('page', '2')).toBe(false)
   })
 
+  it.each([
+    "o'brien:short-password",
+    'user:short"password',
+    'user:<password>',
+    'user:short password',
+    'short token',
+    "o'brien",
+    'token"value',
+    '<token>',
+    'user:p@ss@word',
+    'bare-token',
+    'user:percent%20password',
+  ])('redacts the whole URL authority userinfo %s before URL punctuation is scanned', async (userinfo) => {
+    const url = `https://${userinfo}@host.example/path?token=query-secret&page=2`
+    const expected = 'https://[redacted]@host.example/path?token=[redacted]&page=2'
+    expect(redactText(`fetch failed for ${url}`)).toBe(`fetch failed for ${expected}`)
+    const event = await logOnce({ error: new Error(`fetch failed for ${url}`) }, { message: `GET ${url}` })
+    expect(event.message).toBe(`GET ${expected}`)
+    expect(JSON.stringify(event)).not.toContain(userinfo)
+    expect(JSON.stringify(event)).not.toContain('query-secret')
+  })
+
   // One matcher for every redaction by name: Buckle's approval challenges use it too (review item 8 of the proof-of-possession fixes).
   it('names credential headers and variables in any case, and keeps counts and plain names', () => {
     for (const name of ['Authorization', 'Proxy-Authorization', 'Cookie', 'Set-Cookie', 'X-Api-Key', 'api-key', 'Bearer', 'x-auth', 'NPM_AUTH', 'PASSPHRASE', 'SIGNATURE', 'private-key', 'GITHUB_TOKEN', 'PGPASSWORD', 'client_secret']) {
@@ -419,6 +441,8 @@ describe('bounded redaction scans (URL pattern super-linear)', () => {
     'scheme characters without ://': fill('ab+', '!'),
     'dotted words (URL scheme)': fill('eyJa.'),
     'eyJ runs without dots (JWT)': fill('eyJ-'),
+    'userinfo with spaces and no @': `https://${fill('word ')}`,
+    'userinfo with quotes and no @': `https://${fill("word'")}`,
     'trailing punctuation in a URL parameter': `https://x.example/?token=${fill(').', 'x')}`,
   }
 
