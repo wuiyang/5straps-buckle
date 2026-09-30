@@ -30,8 +30,10 @@ const CONTENT_KEY = /^(content|contents|file[-_]?contents?|body|payload|argument
 const CONTENT_LAST_WORDS = new Set(['body', 'content', 'contents', 'payload', 'input', 'inputs', 'text', 'texts', 'prompt', 'prompts', 'messages'])
 // Flat [name, value, name, value] header lists (IncomingMessage.rawHeaders) under a key ending in header(s).
 const HEADER_LIST_WORD = /^headers?$/
-// Bearer/Basic headers, sk-/ghp-style keys and hex runs of 32+ characters inside free text.
-const SECRET_VALUE = /\b(?:Bearer|Basic)\s+[\w.~+/=-]+|\b(?:sk|pk|rk|ghp|gho|ghs|xox[abp])[-_][\w-]{10,}|\b[a-fA-F0-9]{32,}\b/g
+// Bearer/Basic credentials: judged by the word before them, so over the whole text (review L10 of the second re-review).
+const AUTHORIZATION_VALUE = /\b(?:Bearer|Basic)\s+[\w.~+/=-]+/g
+// sk-/ghp-style keys and hex runs of 32+ characters inside free text.
+const SECRET_VALUE = /\b(?:sk|pk|rk|ghp|gho|ghs|xox[abp])[-_][\w-]{10,}|\b[a-fA-F0-9]{32,}\b/g
 // A JWT (eyJ header, then two '.'-separated segments). The header run is consumed atomically (lookahead plus
 // backreference), so a long run without the dots is scanned once, not again from every 'eyJ' inside it.
 const JWT_CANDIDATE = /\beyJ(?=([\w-]*))\1(\.[\w-]+\.[\w-]+)?/g
@@ -40,8 +42,10 @@ const OPAQUE_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/g
 const OPAQUE_MIN_LENGTH = 40
 // A public key fingerprint (`SHA256:` and exactly 43 base64url characters, as ssh and Buckle's enrolled keys
 // name them) identifies a key and holds nothing secret, so the log can say which device signed. It is set
-// aside before any pass runs: an sk_, pk- or hex run inside one would otherwise be cut (review item 20).
-const KEY_FINGERPRINT = /SHA256:[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g
+// aside before the value passes run: an sk_, pk- or hex run inside one would otherwise be cut (review item 20).
+// Only a whole one: no base64 character may touch it on either side, so a longer secret that starts or
+// ends like one is judged whole (review L10 of the second re-review).
+const KEY_FINGERPRINT = /(?<![A-Za-z0-9+/_-])SHA256:[A-Za-z0-9_-]{43}(?![A-Za-z0-9+/=_-])/g
 // Readable pieces between '/', '_' and '-': lowercase or hex, all caps, or camel words with trailing digits (myApp2, UserCard).
 const WORD_PIECE = /^(?:[a-z0-9]*|[A-Z0-9]+|[a-z]*[0-9]*(?:[A-Z][a-z]+[0-9]*)+)$/
 const PIECE_SEPARATOR = /[/_-]/
@@ -55,7 +59,8 @@ const CREDENTIAL_NEARBY = /token|secret|passw(?:or)?d|passphrase|credential|cook
 // at 64 characters: '.', '+' and '-' give a word boundary inside a run, and an uncapped scheme rescanned the rest
 // of the run from each one.
 const URL_LIKE = /(?:\b[a-z][a-z0-9+.-]{0,63}:\/\/|(?<=^|[\s("'=<>])\/)[^\s"'<>]*/gi
-const USERINFO_PASSWORD = /^([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#@]+)@/i
+// The password runs to the last '@' of the authority, so one holding an '@' is redacted whole (review L7 of the second re-review).
+const USERINFO_PASSWORD = /^([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#]+)@/i
 // name=value in a query or fragment; the value stops at the next separator.
 const URL_PARAM = /([?&#;])([^=&#;?]+)=([^&#;]*)/g
 const TRAILING_PUNCTUATION = new Set([')', '.', ',', ';', ':', '!', '?'])
@@ -81,10 +86,21 @@ export function isCredentialKey(key: string, value?: unknown): boolean {
   return isSecretKey(key, value)
 }
 
+// A word and the next one are judged joined too, so a camel-case split of one credential word (passWord,
+// PassWord, passPhrase) still names it (review L7 of the second re-review).
 function isSecretKey(key: string, value: unknown): boolean {
   const words = keyWords(key)
   const secretWord = isTokenCount({ words, value }) ? CREDENTIAL_WORD : SECRET_WORD
-  return words.some((word, index) => isSecretWord({ word, next: words[index + 1], secretWord }))
+  return words.some((word, index) => isSecretWord({ word, next: words[index + 1], secretWord }) || (index + 1 < words.length && secretWord.test(`${word}${words[index + 1]}`)))
+}
+
+/**
+ * Whether a URL query or fragment parameter carries a credential: a credential-named key
+ * (isCredentialKey), or a name services give keys, signatures and codes (key, sig, code). One matcher
+ * for the log and for what else redacts a URL.
+ */
+export function isCredentialParameter(name: string, value?: string): boolean {
+  return isSecretKey(name, value) || SECRET_QUERY_NAMES.has(name.toLowerCase())
 }
 
 function isContentKey(key: string): boolean {
@@ -115,20 +131,28 @@ function redactWithin(text: string, maxBytes: number): string {
 }
 
 // Every pattern is linear in the input: no pattern can backtrack over the rest of the text from each start.
-// Key fingerprints pass through whole; the text around them is redacted as usual.
+// The passes that judge a value by what precedes it (URL userinfo and parameters, Bearer and Basic) run over
+// the whole text first, so a fingerprint-shaped value there is a credential (review L10 of the second
+// re-review); key fingerprints left after them pass through whole, and the text around them is redacted as usual.
 function redactSecrets(text: string): string {
+  const judged = redactContext(text)
   let redacted = ''
   let from = 0
-  for (const fingerprint of text.matchAll(KEY_FINGERPRINT)) {
-    redacted += redactPlain(text.slice(from, fingerprint.index)) + fingerprint[0]
+  for (const fingerprint of judged.matchAll(KEY_FINGERPRINT)) {
+    redacted += redactValues(judged.slice(from, fingerprint.index)) + fingerprint[0]
     from = fingerprint.index + fingerprint[0].length
   }
-  return redacted + redactPlain(text.slice(from))
+  return redacted + redactValues(judged.slice(from))
 }
 
-function redactPlain(text: string): string {
+function redactContext(text: string): string {
   return redactUrls(text)
     .replace(JWT_CANDIDATE, (match: string, header: string, rest: string | undefined) => (header && rest ? REDACTED : match))
+    .replace(AUTHORIZATION_VALUE, REDACTED)
+}
+
+function redactValues(text: string): string {
+  return text
     .replace(SECRET_VALUE, (match: string, offset: number, whole: string) => (isGitSha({ match, before: whole.slice(Math.max(0, offset - SHA_CONTEXT_CHARS), offset) }) ? match : REDACTED))
     .replace(OPAQUE_RUN, redactOpaqueRun)
 }
@@ -161,11 +185,16 @@ function isOpaque(text: string): boolean {
 // Userinfo passwords and secret-named query or fragment parameters in any URL or request target.
 // Only the secret value is rewritten, so the rest stays exactly as written.
 function redactUrls(text: string): string {
-  return text.replace(URL_LIKE, url => url.replace(USERINFO_PASSWORD, `$1${REDACTED}@`).replace(URL_PARAM, (pair, separator: string, name: string, value: string) => {
+  return text.replace(URL_LIKE, url => redactUrlParameters(url.replace(USERINFO_PASSWORD, `$1${REDACTED}@`)))
+}
+
+/** One URL with the value of each credential parameter in its query or fragment redacted (isCredentialParameter), the rest as written. */
+export function redactUrlParameters(url: string): string {
+  return url.replace(URL_PARAM, (pair, separator: string, name: string, value: string) => {
     const trailing = trailingPunctuation(value)
-    if (!isSecretKey(name, value.slice(0, value.length - trailing.length)) && !SECRET_QUERY_NAMES.has(name.toLowerCase())) return pair
+    if (!isCredentialParameter(name, value.slice(0, value.length - trailing.length))) return pair
     return `${separator}${name}=${REDACTED}${trailing}`
-  }))
+  })
 }
 
 // A backward scan: an anchored regex such as /[).]+$/ retries from every position of a long punctuation run.

@@ -1,9 +1,14 @@
 import { useServices } from '../../../../../common/server/utils/services.js'
 import { defineSetupHandler } from '../../../utils/setup.js'
 
+/** What the listing says in place of a challenge the node could not sign; it names no field and no value. */
+const UNSIGNABLE = 'The node could not sign this ask\'s challenge, so no device can decide it; answer it at the node (buckle approve) or withdraw the call'
+
 // The approval guard: each waiting ask as the node signs it (B24; approval-proofs.md, Signed
 // request). A person's client verifies the node's signature with the node key it pinned, shows the
-// raw action from the verified challenge, and signs its decision over the challenge's digest.
+// raw action from the verified challenge, and signs its decision over the challenge's digest. Each
+// ask is signed on its own: one the node cannot sign is listed as an error for its token, and every
+// other ask stays decidable (review M3 of the second proof-of-possession re-review).
 export default defineSetupHandler({
   access: 'approval',
   resource: 'approvals-challenges',
@@ -11,7 +16,14 @@ export default defineSetupHandler({
     const signer = await useServices(event).getNodeSigner()
     return {
       node: { keyId: signer.keyId, publicKey: signer.publicKey },
-      challenges: workspace.runtime.approvalService.challenges().map(({ token, challenge }) => ({ token, ...signer.signChallenge(challenge) })),
+      challenges: workspace.runtime.approvalService.challenges().map(({ token, challenge }) => {
+        try {
+          return { token, ...signer.signChallenge(challenge) }
+        } catch (error) {
+          event.context.logger?.warn('Could not sign an approval challenge', { workspaceId: workspace.runtime.workspaceId, tool: challenge.tool, error: error instanceof Error ? error.name : 'Unknown error' })
+          return { token, error: UNSIGNABLE }
+        }
+      }),
     }
   },
 })

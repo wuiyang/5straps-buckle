@@ -15,7 +15,7 @@ import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
 import { ToolExecutionError, ToolInputError, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
-import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
+import type { ActionLog, ActionLogEntry, GrantUse } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
@@ -118,7 +118,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
       // The caller leaving or the runtime shutting down: either stops a running tool.
       const stop = anySignal(signal, options.shutdown)
       // One entry per rule and subject a call's dangerously-allowed uses name, however often it meets them (review L12 of B20-B22).
-      const auditUses = useAuditor({ options, request, sessionId })
+      const grantUses = grantUseRecorder({ grants: options.grants, sessionId })
+      const auditUses = useAuditor({ options, request, sessionId, grantUses })
       const answerEarlier = async (earlier: Earlier): Promise<InvokeResponse> => {
         if (earlier.kind === 'reused') return failed(request, REUSED)
         replayed = true
@@ -199,6 +200,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         sessionId,
         effects,
         gate,
+        grantUses: grantUses.uses(),
         response,
         durationMs: Math.round(performance.now() - startedAt),
         replayed,
@@ -222,6 +224,8 @@ function buildEntry(input: {
   sessionId: string
   effects: ResolvedEffect[]
   gate: GateOutcome
+  /** The standing grants the call relied on, at the gate and mid-call. */
+  grantUses: GrantUse[]
   response: InvokeResponse
   durationMs: number
   /** Answered with an earlier run's outcome: nothing ran for this attempt. */
@@ -229,6 +233,7 @@ function buildEntry(input: {
 }): ActionLogEntry {
   const { request, response, gate } = input
   const detail = input.replayed ? REPLAYED : describeDetail(response)
+  const decidedBy = [...new Set([...gate.decidedBy ?? [], ...input.grantUses.flatMap(use => use.decidedBy === undefined ? [] : [use.decidedBy])])]
   return {
     at: new Date().toISOString(),
     requestId: request.requestId.slice(0, MAX_LOGGED_ID),
@@ -240,7 +245,8 @@ function buildEntry(input: {
     args: redactAuditArguments(request.args),
     ...(gate.asked.length > 0 ? { asked: gate.asked.map(value => value.split(':')[0] ?? 'permission') } : {}),
     ...(gate.approvedBy.length > 0 ? { approvedBy: gate.approvedBy.map(value => value.split(':')[0] ?? 'permission') } : {}),
-    ...(gate.decidedBy && gate.decidedBy.length > 0 ? { decidedBy: gate.decidedBy } : {}),
+    ...(decidedBy.length > 0 ? { decidedBy } : {}),
+    ...(input.grantUses.length > 0 ? { grantUses: input.grantUses } : {}),
     ...(detail ? { detail } : {}),
   }
 }
@@ -270,12 +276,50 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Pro
   })
 }
 
-/** Audits the dangerously-allowed uses an allowedBy list names; a call's auditor writes each rule and subject once. */
+/**
+ * Audits the dangerously-allowed uses an allowedBy list names, and notes the standing grants it names
+ * for the call's entry; a call's auditor writes each rule and subject once.
+ */
 type UseAuditor = (allowedBy: readonly string[]) => Promise<void>
 
-function useAuditor(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string }): UseAuditor {
+function useAuditor(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; grantUses: GrantUseRecorder }): UseAuditor {
   const audited = new Set<string>()
-  return allowedBy => auditDangerousUses({ ...input, allowedBy, audited })
+  return (allowedBy) => {
+    input.grantUses.note(allowedBy)
+    return auditDangerousUses({ ...input, allowedBy, audited })
+  }
+}
+
+interface GrantUseRecorder {
+  /** Looks up, once per rule and subject, the standing grants an allowedBy list names. */
+  note(allowedBy: readonly string[]): void
+  uses(): GrantUse[]
+}
+
+/**
+ * The session and always grants a call relied on, read from the store as they stood when used, with the
+ * scope and deciding key each record holds (review M4 of the second proof-of-possession re-review). A
+ * `once` is the registry's and is named by `decidedBy` as it is spent.
+ */
+function grantUseRecorder(input: { grants: GrantStore; sessionId: string }): GrantUseRecorder {
+  const seen = new Set<string>()
+  const found = new Map<string, GrantUse>()
+  return {
+    note(allowedBy) {
+      const fresh = allowedBy.filter(key => !seen.has(key))
+      if (fresh.length === 0) return
+      for (const key of fresh) seen.add(key)
+      const now = Date.now()
+      const standing = input.grants.list().filter(grant => !grant.denied && grant.scope !== 'once' && (grant.sessionId === null || grant.sessionId === input.sessionId) && (!grant.expiresAt || Date.parse(grant.expiresAt) > now))
+      for (const key of fresh) {
+        for (const grant of standing.filter(record => `${record.rule}:${record.subject}` === key)) {
+          const use: GrantUse = { rule: grant.rule, scope: grant.scope === 'always' ? 'always' : 'session', ...(grant.decidedBy === undefined ? {} : { decidedBy: grant.decidedBy }) }
+          found.set(JSON.stringify(use), use)
+        }
+      }
+    },
+    uses: () => [...found.values()],
+  }
 }
 
 /**
@@ -433,9 +477,12 @@ async function clearPermissions(input: {
   const wait = shorterWait(input.approvalWait, request.context?.approvalWait)
   // Only the caller's own signal reaches the wait: shutdown settles waits through the service's close.
   const cwd = options.paths.displayRoot
+  const shown = reviewableArguments(request.args)
+  const described = describeCall({ tool: request.tool, args: request.args, cwd })
   const waited = await options.approvalService.request({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
-    fingerprint: input.key.fingerprint, call: { ...reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd }) },
+    // A cut description is a cut challenge: the person's client refuses it without --accept-truncated (review M3 of the second re-review).
+    fingerprint: input.key.fingerprint, call: { arguments: shown.arguments, truncated: shown.truncated || described.truncated, cwd, description: described.text },
   })
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
   const approvals = waited.approvals

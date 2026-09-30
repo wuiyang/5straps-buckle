@@ -212,20 +212,35 @@ interface VerifiedChallenge {
   consistent: boolean
 }
 
-/** The node's waiting asks, each verified with the key pinned for the URL; one that does not verify is never shown. */
-async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node: string; workspace: string | undefined }): Promise<{ pin: Pin; origin: string; challenges: VerifiedChallenge[] }> {
+/** An ask the node listed without a signed challenge, with the node's reason; never decidable from a device. */
+interface UnsignedAsk { token: string; error: string }
+
+/**
+ * The node's waiting asks, each verified with the key pinned for the URL; one that does not verify is
+ * never shown. An ask the node could not sign comes back as its token and the node's reason, so one bad
+ * ask never hides the others (review M3 of the second proof-of-possession re-review).
+ */
+async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node: string; workspace: string | undefined }): Promise<{ pin: Pin; origin: string; challenges: VerifiedChallenge[]; unsigned: UnsignedAsk[] }> {
   const url = setupUrl(input.node, input.workspace, 'approvals/challenges')
   const pin = pinFor(input.environment, url)
   const response = await send({ environment: input.environment, method: 'GET', url, body: '', purpose: 'buckle-approval' })
   if (!response.ok) throw new ClientError(`The node answered HTTP ${response.status}`)
-  const body = await response.json() as { challenges?: Array<{ token: string; signed: string }> }
+  const body = await response.json() as { challenges?: Array<{ token: string; signed?: unknown; error?: unknown }> }
   const nodeKey = publicKeyFrom(pin.publicKey)
-  const challenges = (body.challenges ?? []).flatMap((item) => {
+  const listed = body.challenges ?? []
+  const challenges = listed.flatMap((item) => {
+    if (typeof item.signed !== 'string') return []
     const read = readChallenge({ signed: item.signed, nodeKey })
     if (!read || read.challenge.node !== pin.serverId || read.challenge.token !== item.token) return []
     return [{ token: item.token, ...read, consistent: recomputes(read.challenge) }]
   })
-  return { pin, origin: url.origin, challenges }
+  const unsigned = listed.flatMap(item => typeof item.signed !== 'string' && typeof item.token === 'string' && typeof item.error === 'string' ? [{ token: item.token, error: item.error }] : [])
+  return { pin, origin: url.origin, challenges, unsigned }
+}
+
+/** An ask listed without a challenge: its token and the node's reason, unverified, so escaped like every field. */
+function describeUnsigned(item: UnsignedAsk): string {
+  return `${printable(item.token)}  not signed by the node: ${printable(item.error)}`
 }
 
 /** The call digest recomputed from the arguments shown; a challenge without them shows no action to decide on. */
@@ -251,7 +266,7 @@ function describeChallenge(item: VerifiedChallenge): string {
     ...shown,
     `  scopes:   ${challenge.offeredScopes.join(', ')}; expires ${printable(challenge.expiresAt)}`,
     `  call:     ${challenge.callDigest ?? 'not recorded'}; workspace ${printable(challenge.workspace)}, session ${printable(challenge.sessionId)}`,
-    ...(challenge.truncated ? [`  WARNING: the node cut part of this call's arguments to fit (a string shown as its head, length and sha256, or the whole call as its size and sha256); approve refuses it without --accept-truncated`] : []),
+    ...(challenge.truncated ? [`  WARNING: the node cut part of this call's arguments or description to fit (a string shown as its head, length and sha256, the whole call as its size and sha256, or a fact or the description cut with its length named); approve refuses it without --accept-truncated`] : []),
     ...(item.consistent ? [] : ['  WARNING: the arguments shown do not match the call digest; approve refuses this ask']),
   ].join('\n')
 }
@@ -260,8 +275,9 @@ async function approvals(argv: string[], environment: NodeJS.ProcessEnv): Promis
   const { values, positionals } = parseArgs({ args: argv, options: { workspace: { type: 'string' } }, allowPositionals: true })
   const [node] = positionals
   if (!node || positionals.length !== 1) throw new ClientError(USAGE)
-  const { challenges } = await verifiedChallenges({ environment, node, workspace: values.workspace })
-  process.stdout.write(challenges.length === 0 ? 'Nothing is waiting for approval.\n' : `${challenges.map(describeChallenge).join('\n')}\n`)
+  const { challenges, unsigned } = await verifiedChallenges({ environment, node, workspace: values.workspace })
+  const shown = [...challenges.map(describeChallenge), ...unsigned.map(describeUnsigned)]
+  process.stdout.write(shown.length === 0 ? 'Nothing is waiting for approval.\n' : `${shown.join('\n')}\n`)
   return { exitCode: 0 }
 }
 
@@ -271,8 +287,10 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv): Promise<
   if (!node || !token || positionals.length !== 2) throw new ClientError(USAGE)
   const scope = values.scope ?? 'once'
   if (scope !== 'once' && scope !== 'session' && scope !== 'always') throw new ClientError('--scope takes once, session or always')
-  const { pin, origin, challenges } = await verifiedChallenges({ environment, node, workspace: values.workspace })
+  const { pin, origin, challenges, unsigned } = await verifiedChallenges({ environment, node, workspace: values.workspace })
   const found = challenges.find(item => item.token === token)
+  const refused = unsigned.find(item => item.token === token)
+  if (!found && refused) throw new ClientError(`${describeUnsigned(refused)}; nothing was signed`)
   if (!found) throw new ClientError(`No waiting ask ${printable(token)} that ${printable(pin.serverId)}'s pinned key signed`)
   process.stdout.write(`Node:  ${printable(pin.serverId)}  ${keyIdOf(pin.publicKey)}  at ${printable(origin)}\n${describeChallenge(found)}\n`)
   if (!found.consistent) throw new ClientError(`The arguments ${printable(pin.serverId)} shows for ${printable(token)} do not recompute to its call digest; nothing was signed`)

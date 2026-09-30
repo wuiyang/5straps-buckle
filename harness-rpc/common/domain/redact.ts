@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { isCredentialKey } from '@5straps/runtime'
+import { isCredentialKey, redactUrlParameters } from '@5straps/runtime'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { isSecretName } from './environment.js'
 
@@ -72,8 +72,24 @@ const SHOWN_BYTES = 64 * 1_024
 const SHORT_STRING_LENGTH = 64
 /** Keys whose strings name a path: shown whole at every tier, since a cut path could hide where a call lands. */
 const PATH_KEY = /^(?:path|paths|cwd|repo|root|directory)$/i
-/** A URL's userinfo (`scheme://user:password@`), which carries a credential whatever key holds the URL. */
-const URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,63}:\/\/)[^\s/?#@]+@/gi
+/**
+ * A URL's userinfo (`scheme://user:password@`), which carries a credential whatever key holds the URL. It
+ * runs to the last `@` of the authority, so a password holding an `@` is redacted whole (review L7 of the
+ * second proof-of-possession re-review).
+ */
+const URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,63}:\/\/)[^\s/?#]*@/gi
+/** A URL with a scheme, up to whitespace or a quote: where a query can carry a credential parameter. */
+const SCHEME_URL = /\b[a-z][a-z0-9+.-]{0,63}:\/\/[^\s"'<>]*/gi
+
+/**
+ * A string as a person reviewing a call may see it: every URL's userinfo, and the value of every
+ * credential parameter in its query or fragment (the logger's matcher), redacted. The shown arguments
+ * and the description Buckle writes both pass through it, so neither shows what the other hides
+ * (review M2 of the second proof-of-possession re-review).
+ */
+export function redactShownText(value: string): string {
+  return value.replace(URL_USERINFO, '$1[redacted]@').replace(SCHEME_URL, url => redactUrlParameters(url))
+}
 
 /** A call's arguments as a challenge shows them, and whether any part of them is left out. */
 export interface ReviewableArguments {
@@ -84,7 +100,7 @@ export interface ReviewableArguments {
 
 /**
  * A call's arguments as an approval challenge shows them (owner decision D9): canonical, every value
- * under a credential-named key and every URL's userinfo redacted, with the logger's own matcher
+ * under a credential-named key, every URL's userinfo and credential parameter redacted, with the logger's own matcher
  * (review item 8), and very long strings cut to a head, their length and their sha256, so a person's
  * device can show the raw action. A path is never cut. Display only: a decision binds the call's whole
  * arguments through its fingerprint, not this.
@@ -101,7 +117,7 @@ export function reviewableArguments(args: JsonObject): ReviewableArguments {
 
 function review(value: JsonValue, input: { limit: number; cut: { truncated: boolean }; path: boolean }): JsonValue {
   if (typeof value === 'string') {
-    const shown = value.replace(URL_USERINFO, '$1[redacted]@')
+    const shown = redactShownText(value)
     if (input.path || shown.length <= input.limit) return shown
     input.cut.truncated = true
     return `${shown.slice(0, Math.min(input.limit, SHOWN_HEAD_LENGTH))}... [${value.length} characters, sha256 ${sha256(value)}]`

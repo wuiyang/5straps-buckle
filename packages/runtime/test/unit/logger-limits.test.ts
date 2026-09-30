@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { createLogger, createOperationScope, isCredentialKey, redactText, runInScope, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
+import { createLogger, createOperationScope, isCredentialKey, isCredentialParameter, redactText, redactUrlParameters, runInScope, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
 
 function memorySink(): LogSink & { events: LogEvent[] } {
   const events: LogEvent[] = []
@@ -170,6 +170,34 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     const event = await logOnce({ actor: `key:${fingerprint}`, token: fingerprint }, { message: `key:${fingerprint} decided` })
     expect(event.fields).toEqual({ actor: `key:${fingerprint}`, token: '[redacted]' })
     expect(event.message).toBe(`key:${fingerprint} decided`)
+  })
+
+  // Review L10 of the second proof-of-possession re-review: the set-aside kept a fingerprint-shaped value after
+  // Bearer or under a credential parameter, and one touching a longer base64 run.
+  it('redacts a fingerprint-shaped credential where its context names one, and sets aside only a whole fingerprint', () => {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+    const fill = (length: number) => Array.from(randomBytes(length), byte => alphabet[byte % 64]).join('')
+    const shaped = Array.from({ length: 2_000 }, () => `SHA256:${fill(43)}`)
+    const contexts = (value: string) => [`Authorization: Bearer ${value}`, `Basic ${value}`, `GET https://api.example.com/x?token=${value}`, `https://api.example.com/x?access_token=${value}&y=1`, `https://bot:${value}@github.com/org/repo.git`]
+    const kept = shaped.flatMap(value => contexts(value).filter(text => redactText(text).includes(value.slice(7))))
+    expect(kept).toEqual([])
+    const [fingerprint] = shaped
+    for (const touching of [`x${fingerprint}`, `+${fingerprint}`, `${fingerprint}=`, `${fingerprint}+tail`, `${fingerprint}/tail`]) expect(redactText(`seen ${touching}`)).not.toContain(fingerprint!.slice(7))
+    expect(redactText(`Approved by key:${fingerprint}, (${fingerprint}).`)).toBe(`Approved by key:${fingerprint}, (${fingerprint}).`)
+  })
+
+  // Review L7 of the second proof-of-possession re-review.
+  it('names a camel-case split of a credential word, as 5036e49 did for passWord and PassWord', () => {
+    for (const name of ['passWord', 'PassWord', 'passPhrase', 'userPassWord', 'db_passWord', 'sigNature']) expect({ name, credential: isCredentialKey(name, 'x') }).toEqual({ name, credential: true })
+    for (const name of ['passage', 'wordCount', 'compass', 'bypass']) expect({ name, credential: isCredentialKey(name, 'x') }).toEqual({ name, credential: false })
+  })
+
+  it('redacts a URL password to the last @ of its authority, and credential parameters in its query', () => {
+    expect(redactText('clone https://user:p@ss@word@host.example/org/repo.git')).toBe('clone https://user:[redacted]@host.example/org/repo.git')
+    expect(redactText('mail me@example.com about https://host.example/a@b')).toBe('mail me@example.com about https://host.example/a@b')
+    expect(redactUrlParameters('https://api.example.com/x?access_token=abc&key=def&sig=ghi&page=2#code=jkl')).toBe('https://api.example.com/x?access_token=[redacted]&key=[redacted]&sig=[redacted]&page=2#code=[redacted]')
+    expect(isCredentialParameter('client_secret', 'x')).toBe(true)
+    expect(isCredentialParameter('page', '2')).toBe(false)
   })
 
   // One matcher for every redaction by name: Buckle's approval challenges use it too (review item 8 of the proof-of-possession fixes).

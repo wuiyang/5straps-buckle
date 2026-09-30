@@ -1,5 +1,12 @@
 import type { JsonValue } from '@5straps/protocol'
 
+/** A standing grant a call used, as its audit entry names it. */
+export interface GrantUse {
+  rule: string
+  scope: 'session' | 'always'
+  decidedBy?: string
+}
+
 /** One attempted tool call, recorded whether it ran, was gated, or failed. */
 export interface ActionLogEntry {
   auditId?: string
@@ -24,8 +31,14 @@ export interface ActionLogEntry {
   asked?: string[]
   /** Grants that let the call through, as `rule:subject`. */
   approvedBy?: string[]
-  /** The enrolled keys (key:<fingerprint>) whose `once` decisions the call spent. */
+  /** The enrolled keys (key:<fingerprint>) whose decisions the call used: `once` approvals it spent, and standing grants it relied on. */
   decidedBy?: string[]
+  /**
+   * The standing (session or always) grants the call relied on, by rule and scope, each with the key that
+   * decided it when a person's enrolled key did (keys-provisioning.md: consumption is logged with key
+   * identity and scope; review M4 of the second proof-of-possession re-review). Never a subject.
+   */
+  grantUses?: GrantUse[]
   detail?: string
 }
 

