@@ -41,6 +41,16 @@ it('compares protected roots exactly where the disk keeps case', () => {
   expect(judged('/home/owner/.5STRAPS/notes.md')).toBeNull()
   expect(judged('/home/owner/.5straps/notes.md')).toMatchObject({ kind: 'deny' })
 })
+// GPT review of c71dee5 (case-insensitive denial): a remembered deny meets a case variant where the disk ignores
+// case, and only there; an allow stays exact on every volume, so the fold never widens one.
+it('meets a remembered deny in any case where the disk ignores case, keeps it exact where it does not, and keeps allows exact', () => {
+  const judged = (input: { caseInsensitive: boolean; path: string; denied?: string[]; allowed?: string[] }) => createSensitivePathRule({ protectedRoots: [], caseInsensitive: input.caseInsensitive })
+    .evaluate({ tool: 'fs_write', effect: { kind: 'write_path', path: input.path, directory: '/w' }, grants: { subjectsFor: () => input.allowed ?? [], deniedSubjectsFor: () => input.denied ?? [] } })
+  for (const path of ['/w/.ENV', '/w/.Env', '/w/.env']) expect(judged({ caseInsensitive: true, path, denied: ['/w/.env'] })).toMatchObject({ kind: 'deny', reason: 'The owner denied this sensitive file' })
+  expect(judged({ caseInsensitive: false, path: '/w/.ENV', denied: ['/w/.env'] })).toMatchObject({ kind: 'ask' })
+  expect(judged({ caseInsensitive: false, path: '/w/.env', denied: ['/w/.env'] })).toMatchObject({ kind: 'deny' })
+  expect(judged({ caseInsensitive: true, path: '/w/.ENV', allowed: ['/w/.env'] })).toMatchObject({ kind: 'ask' })
+})
 it.each(['session', 'always'] as const)('records a %s denial, enforces scope and supports owner revocation', async scope => {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
   const approvals = createApprovalRegistry(grants, join(root, 'approvals.json'))

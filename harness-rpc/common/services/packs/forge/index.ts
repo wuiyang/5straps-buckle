@@ -12,6 +12,7 @@ import { defineTool, ToolExecutionError, ToolInputError, type ToolContext } from
 import type { UrlMatcher } from '../../../domain/url-pattern.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
 import { judgedPath } from '../judged-path.js'
+import { resolveTarget } from '../../invocation/real-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
@@ -142,17 +143,21 @@ export function createForgePack(options: ForgePackOptions): Pack {
     return { raw, remote: classifyRemote(raw) }
   }
 
-  /** The remote git itself would push to, which is what settles any rewrite rule config carries. */
-  const resolvePushRemote = async (input: { repository: string; context: ToolContext }): Promise<ForgeRemote> => {
-    const declared = classifyRemote(readOriginUrl(input.repository))
+  /**
+   * Checked at launch: the remote git itself would push to now (which settles any pushurl or rewrite rule
+   * the config carries) must be the destination the permission rules judged before the approval, not
+   * merely the one the config names now (GPT review of c71dee5, git destination binding).
+   */
+  const assertPushTarget = async (input: { repository: string; pinned: ForgeRemote; context: ToolContext }): Promise<void> => {
+    const declared = judgedRemote(classifyRemote(readOriginUrl(input.repository)))
     const configured = await readConfiguredPushUrl(input)
     const actual = await readResolvedPushUrl(input)
     assertNoRewrite({ configured, actual })
-    if (remoteSubject(actual.remote) !== remoteSubject(declared)) {
-      throw new ToolInputError(`origin resolves to ${actual.remote.display}, not the ${declared.display} the permission rules judged; the push is refused rather than sent somewhere unjudged`, { code: 'PERMISSION_DENIED' })
+    for (const now of [declared, judgedRemote(actual.remote)]) {
+      if (destinationOf(now) !== destinationOf(input.pinned)) {
+        throw new ToolInputError(`origin resolves to ${now.display}, not the ${input.pinned.display} the permission rules judged; the push is refused rather than sent somewhere unjudged`, { code: 'PERMISSION_DENIED' })
+      }
     }
-    assertRemoteAllowed({ remote: actual.remote, gitHost: forge.gitHost, approved: options.approved })
-    return actual.remote
   }
 
   const forgeRepository = (repository: string): ForgeRepository => {
@@ -199,19 +204,29 @@ export function createForgePack(options: ForgePackOptions): Pack {
       risk: 'write',
       tags: ['git', 'forge', 'network'],
       input: pushInput,
-      effects: input => [{ kind: 'read_path', path: input.repo }, remoteEffect(paths.resolve(input.repo))],
-      run: async (input, context): Promise<JsonValue> => {
+      // The destination is read once, before the rules judge it, and the push goes there or nowhere.
+      judge: input => judgedRemote(classifyRemote(readOriginUrl(paths.resolve(input.repo)))),
+      effects: (input, destination) => [{ kind: 'read_path', path: input.repo }, remoteEffect(destination)],
+      run: async (input, context, destination): Promise<JsonValue> => {
         if (input.force) {
           throw new ToolInputError('git_push refuses force: true by name. Rewriting a published branch is a shell_exec decision the destructive-command gate asks about.', { code: 'PERMISSION_DENIED' })
         }
         const branch = assertBranchName(input.branch)
         const repository = judgedPath({ named: input.repo, kind: 'read', paths, context })
-        const remote = await resolvePushRemote({ repository, context })
-        // `remote.origin.receivepack` is first-wins in git, so only the command line can reset it.
-        const args = ['push', '--receive-pack=git-receive-pack', ...(input.setUpstream ? ['--set-upstream'] : []), 'origin', branch]
-        await gitOutput({ repository, args, config: pushConfig({ remote, forge }), context })
+        await assertPushTarget({ repository, pinned: destination, context })
+        assertDestinationAllowed({ remote: destination, gitHost: forge.gitHost, approved: options.approved, context })
+        // To the judged destination by name, never the symbolic origin, which a config change could move
+        // after the check. `remote.origin.receivepack` is first-wins in git, so only the command line resets it.
+        const refspec = `refs/heads/${branch}:refs/heads/${branch}`
+        await gitOutput({ repository, args: ['push', '--receive-pack=git-receive-pack', pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), context })
         const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
-        return { branch, remote: remote.display, headSha }
+        // A push to a URL moves no remote-tracking ref; origin named this destination at launch, so its ref follows.
+        await gitOutput({ repository, args: ['update-ref', `refs/remotes/origin/${branch}`, headSha], context })
+        if (input.setUpstream) {
+          await gitOutput({ repository, args: ['config', `branch.${branch}.remote`, 'origin'], context })
+          await gitOutput({ repository, args: ['config', `branch.${branch}.merge`, `refs/heads/${branch}`], context })
+        }
+        return { branch, remote: destination.display, headSha }
       },
     }),
 
@@ -283,11 +298,27 @@ export function createForgePack(options: ForgePackOptions): Pack {
  * A push to an https remote is a network reach the egress rule must judge; a push to a
  * repository on this filesystem is a write, and is judged as one.
  */
-function remoteEffect(repository: string): ToolEffect {
-  const remote = classifyRemote(readOriginUrl(repository))
+function remoteEffect(remote: ForgeRemote): ToolEffect {
   return remote.kind === 'https'
     ? { kind: 'network', url: remote.url.origin }
     : { kind: 'write_path', path: remote.path }
+}
+
+/** A destination as the rules judge it: a local repository by its real path, so a link moved later is not followed. */
+function judgedRemote(remote: ForgeRemote): ForgeRemote {
+  if (remote.kind !== 'local') return remote
+  const path = resolveTarget(remote.path)
+  return { kind: 'local', path, display: path }
+}
+
+/** What makes two destinations the same repository: an https remote's scheme, host, port and path, a local one's real path. */
+function destinationOf(remote: ForgeRemote): string {
+  return remote.kind === 'https' ? remoteSubject(remote) : `local:${remote.path}`
+}
+
+/** What git is handed to push to: the judged URL without userinfo (the credential rides in a scoped header), or the real path. */
+function pushTarget(remote: ForgeRemote): string {
+  return remote.kind === 'https' ? remote.display : remote.path
 }
 
 interface PushUrl {
@@ -343,10 +374,20 @@ function nonEmptyLines(text: string): string[] {
   return text.split('\n').map(line => line.trim()).filter(Boolean)
 }
 
-function assertRemoteAllowed(input: { remote: ForgeRemote; gitHost: string; approved: UrlMatcher | null }): void {
-  if (input.remote.kind !== 'https' || input.remote.host === input.gitHost) return
-  if (input.approved?.matches(input.remote.url)) return
-  throw new ToolInputError(`origin is ${input.remote.display}, and the configured forge host is ${input.gitHost}. Pushing elsewhere needs that host on BUCKLE_NETWORK_ALLOW, and the forge credential is never sent there.`, { code: 'PERMISSION_DENIED' })
+/**
+ * The destination policy, for a local destination too: a repository on this filesystem is pushed to only
+ * where the call's permission check judged a write (GPT review of c71dee5), an https one only on the forge
+ * host or the owner's approved list.
+ */
+function assertDestinationAllowed(input: { remote: ForgeRemote; gitHost: string; approved: UrlMatcher | null; context: Pick<ToolContext, 'authorizeWrite'> }): void {
+  const { remote } = input
+  if (remote.kind === 'local') {
+    if (!input.context.authorizeWrite || input.context.authorizeWrite(remote.path)) return
+    throw new ToolInputError(`origin is ${remote.display}, a repository on this filesystem the permission check did not judge as a write; send the call again`, { code: 'PERMISSION_DENIED' })
+  }
+  if (remote.host === input.gitHost) return
+  if (input.approved?.matches(remote.url)) return
+  throw new ToolInputError(`origin is ${remote.display}, and the configured forge host is ${input.gitHost}. Pushing elsewhere needs that host on BUCKLE_NETWORK_ALLOW, and the forge credential is never sent there.`, { code: 'PERMISSION_DENIED' })
 }
 
 function assertBranchName(branch: string): string {

@@ -123,3 +123,22 @@ describe('a workspace root typed in another case than the disk\'s (review M1)', 
     expect(existsSync(join(root, 'Code'))).toBe(false)
   })
 })
+
+// GPT review of c71dee5 (conditional P2, case-insensitive denial): a remembered deny for a missing sensitive
+// file was compared by exact spelling, so `.ENV` became a new ask, and the dangerously-allow switch allowed it.
+describe('a remembered deny for a missing sensitive file, met by a case variant', () => {
+  it.each([false, true])('refuses .ENV and .Env after the owner always-denied .env (switch on: %s), and writes nothing', async (switchOn) => {
+    const { root, workspace, state } = volume()
+    const runtime = await runtimeFor({ root, typed: workspace, state })
+    const asked = await call(runtime, 'fs_write', { path: '.env', content: 'x' })
+    if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
+    const token = asked.approvals.find(approval => approval.rule === 'sensitive_path')!.token
+    expect((await runtime.approvalService.answer({ decision: { token, approved: false, scope: 'always' }, authority: 'admin' })).ok).toBe(true)
+    if (switchOn) await runtime.policy.setDangerouslyAllow(true)
+    for (const path of ['.ENV', '.Env', '.env']) {
+      const result = await call(runtime, 'fs_write', { path, content: 'planted' })
+      expect({ path, result }).toMatchObject({ path, result: { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'The owner denied this sensitive file' } } })
+    }
+    expect(readdirSync(workspace).filter(name => name.toLowerCase() === '.env')).toEqual([])
+  })
+})

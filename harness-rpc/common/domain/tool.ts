@@ -33,15 +33,21 @@ export interface ToolContext {
  */
 export type NetworkVerdict = { kind: 'granted' } | { kind: 'allowed' } | { kind: 'refused'; reason: string }
 
-export interface ToolDefinition<TInput> {
+export interface ToolDefinition<TInput, TJudged = undefined> {
   managesHistory?: boolean
   name: string
   description: string
   risk: CapabilityRisk
   tags?: string[]
   input: z.ZodType<TInput, JsonObject>
-  effects: (input: TInput) => ToolEffect[]
-  run: (input: TInput, context: ToolContext) => Promise<JsonValue>
+  /**
+   * What the call acts on that its input does not name, settled once before any rule judges it (a push's
+   * destination): its effects are declared from it and its run acts on it, so a change made while the call
+   * waits for approval is refused rather than followed (GPT review of c71dee5, git destination binding).
+   */
+  judge?: (input: TInput) => TJudged
+  effects: (input: TInput, judged: TJudged) => ToolEffect[]
+  run: (input: TInput, context: ToolContext, judged: TJudged) => Promise<JsonValue>
 }
 
 /**
@@ -83,7 +89,7 @@ export class ToolExecutionError extends Error {
   }
 }
 
-export function defineTool<TInput>(pack: string, definition: ToolDefinition<TInput>): RegisteredTool {
+export function defineTool<TInput, TJudged = undefined>(pack: string, definition: ToolDefinition<TInput, TJudged>): RegisteredTool {
   if (!TOOL_NAME_PATTERN.test(definition.name)) {
     throw new Error(`Tool name is not MCP-safe: ${definition.name}`)
   }
@@ -103,10 +109,11 @@ export function defineTool<TInput>(pack: string, definition: ToolDefinition<TInp
       const parsed = definition.input.safeParse(args)
       if (!parsed.success) throw new ToolInputError(z.prettifyError(parsed.error))
       const input = parsed.data
+      const judged = (definition.judge ? definition.judge(input) : undefined) as TJudged
       return {
         managesHistory: definition.managesHistory,
-        effects: definition.effects(input),
-        execute: context => definition.run(input, context),
+        effects: definition.effects(input, judged),
+        execute: context => definition.run(input, context, judged),
       }
     },
   }

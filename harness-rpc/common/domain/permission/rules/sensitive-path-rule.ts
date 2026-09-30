@@ -66,7 +66,11 @@ export function createSensitivePathRule(options: SensitivePathOptions = { protec
       if (isInsideAny(protectedRoots, fold(effect.path))) {
         return deny('sensitive_path', effect.path, "Buckle's own state and policy are not reachable from a tool")
       }
-      if (grants.deniedSubjectsFor?.('sensitive_path').includes(effect.path)) return deny('sensitive_path', effect.path, 'The owner denied this sensitive file')
+      // A remembered deny meets every spelling the volume reads as the same file, a missing one included: it is
+      // compared folded where the disk ignores case, as the protected roots are, and only ever denies more
+      // (GPT review of c71dee5, case-insensitive denial). The allow below stays exact.
+      const path = fold(effect.path)
+      if (grants.deniedSubjectsFor?.('sensitive_path').some(denied => fold(denied) === path)) return deny('sensitive_path', effect.path, 'The owner denied this sensitive file')
       const reason = sensitivePathReason(effect.path)
       if (!reason) return null
 

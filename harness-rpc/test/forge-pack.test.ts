@@ -13,6 +13,7 @@ import { createPathView } from '../common/domain/path-view.js'
 import { compileUrlPatterns } from '../common/domain/url-pattern.js'
 import { createForgePack, type ForgePackOptions } from '../common/services/packs/forge/index.js'
 import type { ProcessRequest, ProcessResult } from '../common/types/ports/process-runner.js'
+import type { ToolContext } from '../common/domain/tool.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 const TOKEN = 'ghp-forge-pack-secret-value'
@@ -298,7 +299,7 @@ describe('git_push', () => {
     }) as JsonObject
     const push = calls.find(request => request.args[0] === 'push')
     const encoded = Buffer.from(`x-access-token:${TOKEN}`).toString('base64')
-    expect(push?.args).toEqual(['push', '--receive-pack=git-receive-pack', '--set-upstream', 'origin', 'forge-live-check'])
+    expect(push?.args).toEqual(['push', '--receive-pack=git-receive-pack', `${apiUrl}/5straps/demo.git`, 'refs/heads/forge-live-check:refs/heads/forge-live-check'])
     expect(gitConfigOf(push?.environment)[`http.${apiUrl}/5straps/demo.git.extraheader`]).toBe(`Authorization: Basic ${encoded}`)
     expect(gitConfigOf(push?.environment)[`http.${apiUrl}/5straps/demo.git.proxy`]).toBe('')
     expect(gitConfigOf(push?.environment)[`http.${apiUrl}/5straps/demo.git.sslVerify`]).toBe('true')
@@ -454,6 +455,95 @@ describe('git_push', () => {
     const { repository } = bareOrigin()
     appendFileSync(join(repository, '.git', 'config'), '[include]\n\tpath = ../included-config\n')
     expect(() => effectsOf({ repository, tool: 'git_push', args: { branch: 'main' } })).toThrow(/includes another file/)
+  })
+})
+
+// GPT review of c71dee5, git destination binding (P1): the push destination was read again after the approval
+// and the push went to the symbolic origin, so a config changed during the wait sent it somewhere unjudged.
+describe('git_push goes to the destination its permission check judged, or nowhere', () => {
+  /** Prepared (judged) now, run later: what the invoker does around an approval wait. */
+  function prepared(input: { repository: string; runner?: typeof runProcess; approved?: string[] }) {
+    const tool = pack(input).tools.find(candidate => candidate.capability.name === 'git_push')!
+    const call = tool.prepare({ branch: 'main', setUpstream: true })
+    return { effects: call.effects, run: (context: Partial<ToolContext> = {}) => call.execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 20_000, signal: AbortSignal.timeout(20_000), ...context }) }
+  }
+  function committed(repository: string) {
+    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+    git(repository, 'add', 'kept.txt')
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-m', 'first')
+  }
+  const hasMain = (bare: string) => { try { execFileSync('git', ['-C', bare, 'rev-parse', '--verify', 'main'], { stdio: 'pipe' }); return true } catch { return false } }
+  function other(): string {
+    const bare = join(temporaryRoot('other'), 'other.git')
+    execFileSync('git', ['init', '--bare', '-b', 'main', bare])
+    return bare
+  }
+
+  it('refuses when origin is moved to another local repository while the call waits, and pushes nowhere', async () => {
+    const { origin, repository } = bareOrigin()
+    committed(repository)
+    const push = prepared({ repository })
+    expect(push.effects).toEqual([{ kind: 'read_path', path: '.' }, { kind: 'write_path', path: origin }])
+    const moved = other()
+    git(repository, 'remote', 'set-url', 'origin', moved)
+    await expect(push.run()).rejects.toThrow(`origin resolves to ${moved}, not the ${origin} the permission rules judged`)
+    expect([hasMain(origin), hasMain(moved)]).toEqual([false, false])
+  })
+
+  it('pushes to the judged repository when origin is moved immediately before git runs, and sets origin\'s refs', async () => {
+    const { origin, repository } = bareOrigin()
+    committed(repository)
+    const moved = other()
+    const calls: ProcessRequest[] = []
+    const push = prepared({ repository, runner: async (request) => {
+      calls.push(request)
+      if (request.args[0] === 'push') git(repository, 'remote', 'set-url', 'origin', moved)
+      return await runProcess(request)
+    } })
+    const output = await push.run() as JsonObject
+    expect(calls.find(request => request.args[0] === 'push')?.args).toContain(origin)
+    expect([hasMain(origin), hasMain(moved)]).toEqual([true, false])
+    expect(output).toMatchObject({ remote: origin, headSha: git(origin, 'rev-parse', 'main').trim() })
+    expect(git(repository, 'rev-parse', 'refs/remotes/origin/main').trim()).toBe(output.headSha)
+    expect(git(repository, 'config', 'branch.main.remote').trim()).toBe('origin')
+  })
+
+  it.each<[string, (repository: string, moved: string) => void, RegExp]>([
+    ['a pushurl added', (repository, moved) => git(repository, 'config', 'remote.origin.pushurl', moved), /not the .* the permission rules judged/],
+    ['a pushInsteadOf rule added', (repository, moved) => git(repository, 'config', `url.${moved}.pushInsteadOf`, git(repository, 'config', 'remote.origin.url').trim()), /insteadOf or pushInsteadOf rule rewrites origin/],
+    ['an insteadOf rule added', (repository, moved) => git(repository, 'config', `url.${moved}.insteadOf`, git(repository, 'config', 'remote.origin.url').trim()), /insteadOf or pushInsteadOf rule rewrites origin|not the .* the permission rules judged/],
+  ])('refuses %s during the wait on a local origin', async (_, change, refusal) => {
+    const { origin, repository } = bareOrigin()
+    committed(repository)
+    const push = prepared({ repository })
+    const moved = other()
+    change(repository, moved)
+    await expect(push.run()).rejects.toThrow(refusal)
+    expect([hasMain(origin), hasMain(moved)]).toEqual([false, false])
+  })
+
+  it('refuses when an https origin is moved to another repository on the forge host while the call waits', async () => {
+    const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
+    const calls: ProcessRequest[] = []
+    const push = prepared({ repository, runner: scriptedGit(calls, `${apiUrl}/attacker/demo.git`) })
+    expect(push.effects).toEqual([{ kind: 'read_path', path: '.' }, { kind: 'network', url: apiUrl }])
+    git(repository, 'remote', 'set-url', 'origin', `${apiUrl}/attacker/demo.git`)
+    await expect(push.run()).rejects.toThrow(/not the .*5straps\/demo\.git the permission rules judged/)
+    expect(calls.some(request => request.args[0] === 'push')).toBe(false)
+  })
+
+  it('judges and pushes a local origin named through a link by its real path, and refuses one the check did not judge as a write', async () => {
+    const { origin, repository } = bareOrigin()
+    committed(repository)
+    const link = join(temporaryRoot('link'), 'origin-link.git')
+    symlinkSync(origin, link)
+    git(repository, 'remote', 'set-url', 'origin', link)
+    const push = prepared({ repository })
+    expect(push.effects).toEqual([{ kind: 'read_path', path: '.' }, { kind: 'write_path', path: origin }])
+    await expect(push.run({ authorizeWrite: () => false })).rejects.toThrow(/did not judge as a write/)
+    expect(hasMain(origin)).toBe(false)
+    expect(await push.run({ authorizeWrite: target => target === origin })).toMatchObject({ remote: origin })
+    expect(hasMain(origin)).toBe(true)
   })
 })
 
