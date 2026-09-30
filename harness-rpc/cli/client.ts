@@ -3,8 +3,9 @@ import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
-import { describeAction, printable } from '../common/domain/approval-instruction.js'
-import { callDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SmallOrderKeyError, type ApprovalChallenge, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
+import { terminalConfirm, type Confirm } from './terminal-consumer.js'
+import { describeAction, printable, sameCallNote } from '../common/domain/approval-instruction.js'
+import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 
 export interface CliResult {
   exitCode: number
@@ -44,7 +45,7 @@ A request is signed only for the node pinned for the URL typed, never for what t
  * never needs the node's settings, and no private key leaves it: a node, or Rings relaying for one,
  * only ever sees the public key and signatures.
  */
-export async function clientCommand(argv: string[], environment: NodeJS.ProcessEnv = process.env): Promise<CliResult> {
+export async function clientCommand(argv: string[], environment: NodeJS.ProcessEnv = process.env, options: { confirm?: Confirm | null } = {}): Promise<CliResult> {
   const [verb, ...rest] = argv
   try {
     if (verb === 'keygen') return keygen(rest, environment)
@@ -53,7 +54,7 @@ export async function clientCommand(argv: string[], environment: NodeJS.ProcessE
     if (verb === 'session') return await session(rest, environment)
     if (verb === 'trust') return trust(rest, environment)
     if (verb === 'approvals') return await approvals(rest, environment)
-    if (verb === 'approve') return await approve(rest, environment)
+    if (verb === 'approve') return await approve(rest, environment, options.confirm === undefined ? terminalConfirm({ input: process.stdin, output: process.stdout }) : options.confirm)
   } catch (error) {
     if (error instanceof ClientError) return fail(error.message)
     throw error
@@ -224,19 +225,35 @@ async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node:
   const pin = pinFor(input.environment, url)
   const response = await send({ environment: input.environment, method: 'GET', url, body: '', purpose: 'buckle-approval' })
   if (!response.ok) throw new ClientError(`The node answered HTTP ${response.status}`)
-  const body = await response.json() as { challenges?: Array<{ token: string; signed?: unknown; error?: unknown }> }
+  const body = await response.json() as { challenges?: Array<{ token: string; signed?: unknown; error?: unknown }>; calls?: Record<string, unknown> }
   const nodeKey = publicKeyFrom(pin.publicKey)
-  const listed = body.challenges ?? []
+  const listed = Array.isArray(body.challenges) ? body.challenges : []
+  const sharedCalls = new Map<string, { call: ShownApprovalCall; digest: string } | null>()
   const challenges = listed.flatMap((item) => {
     if (typeof item.signed !== 'string') return []
     const read = readChallenge({ signed: item.signed, nodeKey })
     if (!read || read.challenge.node !== pin.serverId || read.challenge.token !== item.token) return []
-    return [{ token: item.token, ...read, consistent: recomputes(read.challenge) }]
+    const shared = read.challenge.callRef === undefined ? null : verifiedSharedCall({ reference: read.challenge.callRef, calls: body.calls, known: sharedCalls })
+    const consistent = read.challenge.callRef === undefined
+      ? recomputes(read.challenge)
+      : shared !== null && shared.call.tool === read.challenge.tool && shared.digest === read.challenge.callDigest
+    const challenge = consistent && shared !== null ? { ...read.challenge, arguments: shared.call.arguments, cwd: shared.call.cwd, description: shared.call.description, effects: shared.call.effects } : read.challenge
+    return [{ token: item.token, digest: read.digest, challenge, consistent }]
   })
   // An entry beside a verified challenge for the same token says nothing the challenge does not.
   const verified = new Set(challenges.map(item => item.token))
   const unsigned = listed.flatMap(item => typeof item.signed !== 'string' && typeof item.token === 'string' && typeof item.error === 'string' && !verified.has(item.token) ? [{ token: item.token, error: item.error }] : [])
   return { pin, origin: url.origin, challenges, unsigned }
+}
+
+function verifiedSharedCall(input: { reference: string; calls: Record<string, unknown> | undefined; known: Map<string, { call: ShownApprovalCall; digest: string } | null> }): { call: ShownApprovalCall; digest: string } | null {
+  if (input.known.has(input.reference)) return input.known.get(input.reference) ?? null
+  const parsed = ShownApprovalCallSchema.safeParse(input.calls?.[input.reference])
+  const verified = parsed.success && shownCallDigestOf(parsed.data) === input.reference
+    ? { call: parsed.data, digest: callDigestOf(parsed.data) }
+    : null
+  input.known.set(input.reference, verified)
+  return verified
 }
 
 /**
@@ -272,15 +289,22 @@ function recomputes(challenge: ApprovalChallenge): boolean {
  * escaped: nothing in a challenge can move the cursor, reorder a line or hide text before a person signs
  * (review item 2 of the proof-of-possession fixes). Nothing is cut or paged.
  */
-function describeChallenge(item: VerifiedChallenge): string {
+function describeChallenge(item: VerifiedChallenge, shownWith?: string): string {
   const { challenge } = item
   return [
     `${printable(challenge.token)}  ${printable(challenge.tool)} asks ${printable(challenge.rule)}`,
-    ...describeAction({ ...challenge, node: challenge.node, workspace: challenge.workspace, effects: challenge.effects ?? null }),
+    ...(shownWith === undefined ? describeAction({ ...challenge, node: challenge.node, workspace: challenge.workspace, effects: challenge.effects ?? null }) : [
+      `  node:     ${printable(challenge.node)}`,
+      `  workspace: ${printable(challenge.workspace)}`,
+      `  rule:     ${printable(challenge.rule)}`,
+      `  subject:  ${printable(challenge.subject)}`,
+      `  reason:   ${printable(challenge.reason)}`,
+      `  ${sameCallNote(shownWith)}`,
+    ]),
     `  scopes:   ${challenge.offeredScopes.join(', ')}; expires ${printable(challenge.expiresAt)}`,
     `  call:     ${challenge.callDigest ?? 'not recorded'}; session ${printable(challenge.sessionId)}`,
     ...(challenge.truncated ? [`  WARNING: a node built before full display cut this call's arguments or summary; approve refuses it: decide it at the node, or update the node and re-send the call`] : []),
-    ...(item.consistent ? [] : ['  WARNING: the arguments shown do not match the call digest; approve refuses this ask']),
+    ...(item.consistent ? [] : [challenge.callRef === undefined ? '  WARNING: the arguments shown do not match the call digest; approve refuses this ask' : '  WARNING: the shared whole action does not match its node-signed reference or call digest; approve refuses this ask']),
   ].join('\n')
 }
 
@@ -289,12 +313,18 @@ async function approvals(argv: string[], environment: NodeJS.ProcessEnv): Promis
   const [node] = positionals
   if (!node || positionals.length !== 1) throw new ClientError(USAGE)
   const { challenges, unsigned } = await verifiedChallenges({ environment, node, workspace: values.workspace })
-  const shown = [...challenges.map(describeChallenge), ...unsigned.map(describeUnsigned)]
+  const carried = new Map<string, string>()
+  const shown = [...challenges.map(item => {
+    const reference = item.consistent ? item.challenge.callRef : undefined
+    const first = reference === undefined ? undefined : carried.get(reference)
+    if (reference !== undefined && first === undefined) carried.set(reference, item.token)
+    return describeChallenge(item, first)
+  }), ...unsigned.map(describeUnsigned)]
   process.stdout.write(shown.length === 0 ? 'Nothing is waiting for approval.\n' : `${shown.join('\n')}\n`)
   return { exitCode: 0 }
 }
 
-async function approve(argv: string[], environment: NodeJS.ProcessEnv): Promise<CliResult> {
+async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: Confirm | null): Promise<CliResult> {
   const { values, positionals } = parseArgs({ args: argv, options: { workspace: { type: 'string' }, deny: { type: 'boolean' }, scope: { type: 'string' } }, allowPositionals: true })
   const [node, token] = positionals
   if (!node || !token || positionals.length !== 2) throw new ClientError(USAGE)
@@ -306,9 +336,17 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv): Promise<
   if (!found && refused) throw new ClientError(`${describeUnsigned(refused)}; nothing was signed`)
   if (!found) throw new ClientError(`No waiting ask ${printable(token)} that ${printable(pin.serverId)}'s pinned key signed`)
   process.stdout.write(`Node:  ${printable(pin.serverId)}  ${keyIdOf(pin.publicKey)}  at ${printable(origin)}\n${describeChallenge(found)}\n`)
+  if (!found.consistent && found.challenge.callRef !== undefined) throw new ClientError(`The shared whole action for ${printable(token)} does not match its node-signed reference or call digest; nothing was signed`)
   if (!found.consistent) throw new ClientError(`The arguments ${printable(pin.serverId)} shows for ${printable(token)} do not recompute to its call digest; nothing was signed`)
   // D17: the whole action is shown or nothing is signed; there is no override for a cut one.
   if (found.challenge.truncated === true) throw new ClientError(`${printable(pin.serverId)} showed ${printable(token)} only in part (a node built before full display), so nothing was signed; decide it at the node, or update the node and re-send the call`)
+  if (!values.deny) {
+    if (!confirm) throw new ClientError(`Approving needs a person at a terminal after the whole action is shown; run buckle client approve ${printable(node)} ${printable(token)} at a terminal, or use --deny without one`)
+    if (!await confirm('Approve exactly this action? Type yes to confirm: ')) {
+      process.stdout.write('Not approved; the ask is still waiting.\n')
+      return { exitCode: 1 }
+    }
+  }
   const body = JSON.stringify({ token, approved: !values.deny, scope, challenge: found.digest })
   const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'approvals'), body, purpose: 'buckle-approval', node: pin.serverId })
   return report(response, await response.text())

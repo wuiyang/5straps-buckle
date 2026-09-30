@@ -10,15 +10,19 @@ const RECORDED_BEFORE = 'recorded before this build: decide at the node or re-se
 // request). A person's client verifies the node's signature with the node key it pinned, shows the
 // raw action from the verified challenge, and signs its decision over the challenge's digest. Each
 // ask is signed on its own: one the node cannot sign is listed as an error for its token, and every
-// other ask stays decidable (review M3 of the second proof-of-possession re-review).
+// other ask stays decidable (review M3 of the second proof-of-possession re-review). A call too large
+// to repeat in each of its asks' challenges is listed once in `calls`, by the call digest its
+// challenges sign; the client recomputes that digest from it (review M1 of the slice 5 re-review).
 export default defineSetupHandler({
   access: 'approval',
   resource: 'approvals-challenges',
   handler: async ({ event, workspace }) => {
     const signer = await useServices(event).getNodeSigner()
+    const listing = workspace.runtime.approvalService.challengeListing()
     return {
       node: { keyId: signer.keyId, publicKey: signer.publicKey },
-      challenges: workspace.runtime.approvalService.challenges().map(({ token, challenge }) => {
+      calls: listing.calls,
+      challenges: listing.challenges.map(({ token, challenge }) => {
         if (challenge === null) return { token, error: RECORDED_BEFORE }
         try {
           return { token, ...signer.signChallenge(challenge) }

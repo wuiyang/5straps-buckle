@@ -1,6 +1,6 @@
 import { useScopeSafe, type CliOutcome, type CliRequest, type CliWait } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw, type JsonValue } from '@5straps/protocol'
-import { callDigestOf, challengeBytes, SIGNED_REQUEST_VERSION, type ApprovalChallenge } from '@5straps/protocol/signed-request'
+import { callDigestOf, canonicalJson, challengeBytes, shownCallDigestOf, SIGNED_REQUEST_VERSION, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { requestIdKey } from '../invocation/executions.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
@@ -10,6 +10,7 @@ import { redactedSubject } from '../../domain/permission/rules/dangerously-allow
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import { logger } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
+import { listedApprovals, type ListedApproval } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import type { ApprovalAuthority, ApprovalRegistry, AskedCall, GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
@@ -18,6 +19,11 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
 /** How quickly an answer written by another process (buckle approve, a second node process) is noticed. */
 const POLL_INTERVAL_MS = 400
+/**
+ * A whole shown call larger than this is not repeated inside each of its asks'
+ * challenges: each carries its digest, and the listing carries the call once (review M1 of the slice 5 re-review).
+ */
+export const INLINE_CALL_BYTES = 16 * 1_024
 const SWEEP_MARGIN_MS = 1_000
 const MAX_TIMER_MS = 2_147_483_647
 
@@ -111,12 +117,10 @@ export interface ApprovalService {
    */
   decideSealed(input: { body: unknown; signedBy?: string }): Promise<SealedDecisionResult>
   /**
-   * What each waiting ask is, as the node signs it for a person's client (owner ruling H4 of
-   * 2026-09-28): built from the durable queue, so one ask always gives the same challenge. An ask
-   * recorded before this build carries no whole call, so it has no challenge (null) and no device
-   * decides it (owner decision D17).
+   * The challenges and each large whole call once, by its signed full-content reference. The device verifies
+   * that reference and the tool/arguments digest before showing the shared directory, summary and effects.
    */
-  challenges(): Array<{ token: string; challenge: ApprovalChallenge | null }>
+  challengeListing(): ChallengeListing
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
   /**
@@ -129,11 +133,21 @@ export interface ApprovalService {
   pending(): ApprovalRequest[]
   /** The asks still waiting, each with the whole call it came from, for a terminal that shows them. */
   waiting(): PendingAsk[]
+  /** One ask still waiting, with its call, read alone: what `buckle approve` shows. */
+  waitingAsk(token: string): PendingAsk | undefined
+  /** The waiting requests as a listing carries them: each group's whole call once, named by `callRef` from each of its asks. */
+  listing(): ListedApproval[]
   /**
    * Settles every open wait as still pending and ends its questions, then waits for the lifecycle
    * notices still in flight; the asks stay in the durable queue.
    */
   close(): Promise<void>
+}
+
+/** Every waiting ask's challenge, with each large whole call carried once by its signed reference. */
+export interface ChallengeListing {
+  challenges: Array<{ token: string; challenge: ApprovalChallenge | null }>
+  calls: Record<string, ShownApprovalCall>
 }
 
 /** A withdrawal, with its selector as the registry keeps it (a requestId hashed) for the audit entry (review L14 of B23-B25). */
@@ -222,6 +236,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   // an answer already being recorded finish before the notices are flushed.
   const waiting = new Set<Promise<unknown>>()
   let unreadable = false
+  // What expired, or a call file left over, while no process of this node ran is dropped now (review L1 of the slice 5 re-review).
+  track(options.registry.sweepIfDue().catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error }) }))
 
   const service: ApprovalService = {
     async request(input) {
@@ -271,7 +287,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const { challenge } = input
       const result = await options.registry.resolve(input.decision, input.authority, {
         ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
-        ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => { const shown = challengeOf(ask); return shown !== null && challengeBytes(shown).digest === challenge } }),
+        ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => { const shown = challengeOf(ask, createCallShapes()); return shown !== null && challengeBytes(shown).digest === challenge } }),
         ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
       })
       if (!result.ok) return result
@@ -297,7 +313,16 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       return settledDecision({ decision: parsed.data, result })
     },
 
-    challenges: () => options.registry.waiting().map(ask => ({ token: ask.request.token, challenge: challengeOf(ask) })),
+    challengeListing() {
+      const shown = createCallShapes()
+      const calls: ChallengeListing['calls'] = {}
+      const challenges = options.registry.waiting().map((ask) => {
+        const challenge = challengeOf(ask, shown)
+        if (challenge?.callRef !== undefined && ask.call) calls[challenge.callRef] = shownCallOf(challenge.tool, ask.call)
+        return { token: ask.request.token, challenge }
+      })
+      return { challenges, calls }
+    },
 
     withdraw: tokens => withdraw(tokens),
 
@@ -315,6 +340,10 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     waiting: () => options.registry.waiting(),
 
+    waitingAsk: token => options.registry.waitingAsk(token),
+
+    listing: () => listedApprovals(options.registry.waiting()),
+
     async close() {
       closing.abort()
       for (const ask of [...live]) ask.stop.abort()
@@ -325,20 +354,18 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
   }
 
-  /**
-   * The challenge for one ask: every field from the durable queue, so the same ask always signs the same
-   * bytes. It carries the whole call as shown (its arguments, directory, description and effects) and its
-   * digest, which a person's client recomputes (D9, D17). An ask recorded before this build has none.
-   */
-  function challengeOf(ask: PendingAsk): ApprovalChallenge | null {
+  // Each challenge signs either the whole inline call or the digest of every shared display field.
+  function challengeOf(ask: PendingAsk, shapes: CallShapes): ApprovalChallenge | null {
     const { request, call } = ask
     if (!call?.complete) return null
+    const { digest, callRef, inline } = shapes(request.tool, call)
     return {
       v: SIGNED_REQUEST_VERSION, purpose: 'buckle-approval-challenge', node: options.serverId, workspace: options.workspaceId,
       token: request.token, requestId: ask.requestId ?? null, sessionId: ask.sessionId, actor: ask.actor ?? null,
       tool: request.tool, rule: request.rule, subject: request.subject, reason: request.reason, offeredScopes: request.offeredScopes,
-      arguments: call.arguments, cwd: call.cwd, callDigest: callDigestOf({ tool: request.tool, arguments: call.arguments }),
-      description: call.description, effects: call.effects ?? [], expiresAt: request.expiresAt,
+      arguments: inline ? call.arguments : null, cwd: inline ? call.cwd : null, callDigest: digest,
+      ...(inline ? {} : { callRef }),
+      description: inline ? call.description : null, effects: inline ? call.effects ?? [] : null, expiresAt: request.expiresAt,
     }
   }
 
@@ -359,7 +386,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     if (remaining === Infinity || closing.signal.aborted) return
     const sweep = setTimeout(() => {
       sweeps.delete(sweep)
-      Promise.resolve().then(() => options.registry.sweep()).catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error }) })
+      track(Promise.resolve().then(() => options.registry.sweep()).catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error }) }))
     }, Math.min(remaining + SWEEP_MARGIN_MS, MAX_TIMER_MS))
     // A one-shot command does not stay open for it; the next update anywhere reports the expiry instead.
     sweep.unref()
@@ -643,4 +670,26 @@ function decisionFor(approval: ApprovalRequest, outcome: Extract<CliOutcome, { s
   if (choice === 'deny_session') return { token: approval.token, approved: false, scope: 'session' }
   if (choice === 'deny_always') return { token: approval.token, approved: false, scope: 'always' }
   return { token: approval.token, approved: false, scope: 'once' }
+}
+
+// Hash and size each group's whole call once, however many asks share it.
+type CallShape = { digest: string; callRef: string; inline: boolean }
+type CallShapes = (tool: string, call: AskedCall) => CallShape
+
+function createCallShapes(): CallShapes {
+  const known = new WeakMap<AskedCall, Map<string, CallShape>>()
+  return (tool, call) => {
+    const byTool = known.get(call) ?? new Map<string, CallShape>()
+    known.set(call, byTool)
+    const cached = byTool.get(tool)
+    if (cached) return cached
+    const shown = shownCallOf(tool, call)
+    const shape = { digest: callDigestOf(shown), callRef: shownCallDigestOf(shown), inline: Buffer.byteLength(canonicalJson(shown)) <= INLINE_CALL_BYTES }
+    byTool.set(tool, shape)
+    return shape
+  }
+}
+
+function shownCallOf(tool: string, call: AskedCall): ShownApprovalCall {
+  return { tool, arguments: call.arguments, cwd: call.cwd, description: call.description, effects: call.effects ?? [] }
 }

@@ -30,10 +30,9 @@ export interface WebhookNotifierOptions {
  */
 export function createWebhookNotifier(options: WebhookNotifierOptions) {
   return async (requests: ApprovalRequest[], recorded?: AskedCall): Promise<void> => {
-    // The whole call the asks came from, once for all of them, so a relay can show the action (review M1). Optional:
-    // a relay that reads only the requests is unchanged.
-    const call = shownCall(recorded)
-    const response = await postSealed(options, { approvals: requests.map(request => describe(request, options.workspaceId)), ...(call ? { call } : {}) })
+    // Owner default D19: only the paired Rings key receives the whole call.
+    const call = options.approvalKey ? shownCall(recorded) : undefined
+    const response = await postSealed(options, { approvals: requests.map(request => describe(request, options.workspaceId)), ...(recorded?.description === null || recorded?.description === undefined ? {} : { description: recorded.description }), ...(call ? { call } : {}) })
     if (!response.ok) logger.warn('Approval webhook refused the notification', { status: response.status })
   }
 }

@@ -7,8 +7,8 @@ import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
-import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, printable, RECORDED_BEFORE_NOTE } from '../common/domain/approval-instruction.js'
-import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, printable, RECORDED_BEFORE_NOTE, sameCallNote } from '../common/domain/approval-instruction.js'
+import { shownCall, type PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { CheckpointSummary } from '../common/services/history/journal.js'
@@ -27,7 +27,7 @@ import { workspaceRegistryCommand } from './workspace.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
 import { BUCKLE_VERSION } from '../common/runtime/version.js'
-import { confirmAtTerminal } from './terminal-consumer.js'
+import { terminalConfirm, type Confirm } from './terminal-consumer.js'
 
 export interface CliResult {
   exitCode: number
@@ -52,17 +52,13 @@ export function answerWithoutConfiguration(argv: string[]): CliResult | null {
   return null
 }
 
-/**
- * Asks the person at this process's terminal to confirm one decision, after the whole action was shown
- * (owner decision D17); null where the process has no terminal, so nothing can be confirmed.
- */
-export type Confirm = (prompt: string) => Promise<boolean>
+export type { Confirm } from './terminal-consumer.js'
 
 export async function runCli(input: { argv: string[]; config: BuckleConfig; confirm?: Confirm | null }): Promise<CliResult> {
   const answered = answerWithoutConfiguration(input.argv)
   if (answered) return answered
   const [command = '', ...rest] = input.argv
-  const confirm = input.confirm !== undefined ? input.confirm : process.stdin.isTTY ? (prompt: string) => confirmAtTerminal(prompt) : null
+  const confirm = input.confirm !== undefined ? input.confirm : terminalConfirm({ input: process.stdin, output: process.stdout })
 
   // One command is one process owner: its common runtime closes when the command ends.
   const common = initializeCommon({ config: input.config, role: 'cli' })
@@ -282,27 +278,40 @@ async function approvals(input: CommandInput): Promise<CliResult> {
   if (values.watch && values.json) return fail('--watch asks in the terminal, so it takes no --json')
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
   if (values.watch) return watch(runtime, input.runtime)
+  // The whole call each ask came from (owner decision D17), redacted and never cut, once per request group: each ask
+  // names it by callRef and the group's first carries it (review M1 of the slice 5 re-review). An ask recorded before
+  // this build has none, and is listed with the command that denies it (review L6 of the slice 5 re-review).
+  if (values.json) {
+    return print(runtime.approvalService.listing().map((entry) => {
+      const { callRef, call, ...request } = entry
+      const command = callRef === undefined ? { denyCommand: denyCommand({ request, workspaceId: runtime.workspaceId }) } : { approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }) }
+      return { ...request, workspaceId: runtime.workspaceId, ...command, ...(callRef === undefined ? {} : { callRef }), ...(call === undefined ? {} : { call }) }
+    }))
+  }
   const waiting = runtime.approvalService.waiting()
-  // The whole call each ask came from (owner decision D17), redacted and never cut; an ask recorded before this build has none.
-  const callOf = (call: (typeof waiting)[number]['call']) => call?.complete ? { call: { arguments: call.arguments, cwd: call.cwd, description: call.description, effects: call.effects ?? [] } } : {}
-  if (values.json) return print(waiting.map(({ request, call }) => ({ ...request, workspaceId: runtime.workspaceId, approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }), ...callOf(call) })))
   if (waiting.length === 0) {
     process.stdout.write(`Nothing is waiting for a decision in workspace ${runtime.workspaceId}.\n`)
     return { exitCode: 0 }
   }
 
-  for (const { request, call } of waiting) {
+  // Each group's whole action is printed once, with its first ask; the others name that ask.
+  const shownWith = new Map<string, string>()
+  for (const { request, call, callRef } of waiting) {
     process.stdout.write(`${request.token}  ${printable(request.tool)}\n`)
     process.stdout.write(`    ${request.rule}: ${printable(request.subject)}\n`)
     process.stdout.write(`    ${printable(request.reason)}\n`)
     process.stdout.write(`    scopes: ${request.offeredScopes.join(' | ')}\n`)
     process.stdout.write(`    ${describeExpiry(request.expiresAt)}\n`)
-    const shown = callOf(call).call
+    const shown = shownCall(call)
     // An ask recorded before this build is denied or re-sent, never approved (owner decision D17).
     process.stdout.write(`    ${shown ? approveCommand({ request, workspaceId: runtime.workspaceId }) : denyCommand({ request, workspaceId: runtime.workspaceId })}\n`)
-    const action = shown
-      ? describeAction({ node: input.config.serverId, workspace: runtime.workspaceId, rule: request.rule, subject: request.subject, reason: request.reason, ...shown })
-      : [`  ${RECORDED_BEFORE_NOTE}`]
+    const earlier = callRef === undefined ? undefined : shownWith.get(callRef)
+    const action = !shown
+      ? [`  ${RECORDED_BEFORE_NOTE}`]
+      : earlier !== undefined
+        ? [`  ${sameCallNote(earlier)}`]
+        : describeAction({ node: input.config.serverId, workspace: runtime.workspaceId, rule: request.rule, subject: request.subject, reason: request.reason, ...shown })
+    if (shown && callRef !== undefined && earlier === undefined) shownWith.set(callRef, request.token)
     process.stdout.write(`${action.map(line => `  ${line}`).join('\n')}\n`)
   }
   return { exitCode: 0 }
@@ -314,7 +323,7 @@ async function approvals(input: CommandInput): Promise<CliResult> {
  * Each answer is audited in the node's log, where `buckle approve` records its own.
  */
 async function watch(runtime: BuckleRuntime, node: BuckleRuntime): Promise<CliResult> {
-  if (!process.stdin.isTTY) return fail('buckle approvals --watch needs a terminal to ask in; use buckle approvals and buckle approve instead')
+  if (!process.stdin.isTTY) return fail(`buckle approvals --watch needs a terminal to ask in. ${noTerminal(runtime.workspaceId)}`)
   const interrupted = new AbortController()
   const interrupt = () => interrupted.abort()
   process.once('SIGINT', interrupt)
@@ -344,12 +353,13 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
   if (!scope.success) return fail(`Invalid scope: ${values.scope}`)
 
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
-  const ask = runtime.approvalService.waiting().find(entry => entry.request.token === token)
+  // The named ask alone, and its call file alone, however many asks its call made (review M1 of the slice 5 re-review).
+  const ask = runtime.approvalService.waitingAsk(token)
   if (ask) process.stdout.write(`${token}\n${describeWaitingAsk({ ask, node: input.config.serverId, workspaceId: runtime.workspaceId }).join('\n')}\n`)
   // A token no longer waiting reaches the queue as it is: it can repeat the decision already recorded, and decide nothing new.
   if (values.deny !== true && ask) {
     if (!ask.call?.complete) return fail(`Not approved: ${printable(token)} was ${RECORDED_BEFORE_NOTE}. Deny it with ${denyCommand({ request: ask.request, workspaceId: runtime.workspaceId })}`)
-    if (!input.confirm) return fail(`Not approved: buckle approve records an approval only after a person at a terminal confirms the action above, and this process has none. Answer it in buckle approvals --watch${runtime.workspaceId === 'default' ? '' : ` --workspace ${runtime.workspaceId}`}, or run buckle approve in a terminal; --deny works anywhere`)
+    if (!input.confirm) return fail(`Not approved: buckle approve records an approval only after a person at a terminal confirms the action above, and this process's input and output are not both a terminal. ${noTerminal(runtime.workspaceId)}`)
     const widened = values.host === undefined ? '' : ` for ${printable(values.host)}`
     if (!await input.confirm(`Approve ${token} (${scope.data})${widened} in workspace ${runtime.workspaceId}? Type yes to approve; anything else leaves it waiting.\n`)) {
       process.stdout.write(`Nothing decided; ${token} is still waiting in workspace ${runtime.workspaceId}\n`)
@@ -447,7 +457,16 @@ async function invoke(runtime: BuckleRuntime, tool: string, args: unknown): Prom
   return reportResponse({ response, workspaceId: runtime.workspaceId })
 }
 
-/** One waiting ask as `buckle approve` shows it before deciding: the ask, then its whole action (owner decision D17). */
+/**
+ * Where a decision goes when this process has no terminal (review L12 of the slice 5 re-review): approving takes a
+ * person at a terminal, or a person's device where the node serves its admin face; denying works anywhere.
+ */
+function noTerminal(workspaceId: string): string {
+  const named = workspaceId === 'default' ? '' : ` --workspace ${workspaceId}`
+  return `At a terminal, answer asks in buckle approvals --watch${named}, or approve one with buckle approve <token>${named}, which shows the action and asks to confirm. Without one, list them with buckle approvals${named} and deny one with buckle approve <token> --deny${named}. Where the node sets BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true, a person's enrolled device approves with buckle client approve <node-url> <token>${named}.`
+}
+
+/** One waiting ask, followed by its whole action before a decision. */
 function describeWaitingAsk(input: { ask: PendingAsk; node: string; workspaceId: string }): string[] {
   const { request, call } = input.ask
   return describeAsk({ ...request, workspaceId: input.workspaceId, node: input.node, ...(call?.complete ? { call } : {}) })

@@ -47,7 +47,7 @@ function gatedServer(answer: BuckleRuntime['approvalService']['answer'] = async 
     manifest: () => ({ tools: registry.capabilities() }),
     skills: () => [],
     onToolsChanged: () => undefined,
-    invoke: async () => gatedResponse,
+    invoke: async () => ({ ...gatedResponse, approvals: waiting.map(ask => ask.request) }),
     approvalService: { answer, waiting: () => waiting },
     workspaceId: 'default',
   } as unknown as BuckleRuntime
@@ -122,6 +122,28 @@ function formOf(result: unknown, token = 'token-1'): Form {
 const elicitingContext = () => stubContext({ envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } } })
 
 describe('what an elicitation shows before a decision (owner decision D17, review H1)', () => {
+  it('shows one complete large call across fifty forms while preserving every ask and decision', async () => {
+    const content = `WHOLE-GROUP-CONTENT${'x'.repeat(1_024 * 1_024)}`
+    const effect = `WHOLE-GROUP-EFFECT${'e'.repeat(64 * 1_024)}`
+    const requests = Array.from({ length: 50 }, (_, index) => ({ ...approval, token: `group-token-${index}`, subject: `/outside/group-${index}` }))
+    const waiting: PendingAsk[] = requests.map(request => ({ ...recorded, request, callRef: 'shared-group', call: { ...recorded.call!, arguments: { content }, effects: [effect] } }))
+    const result = await gatedCall(gatedServer(undefined, waiting), elicitingContext())
+    expect(Object.keys((result as { inputRequests: Record<string, unknown> }).inputRequests)).toEqual(requests.map(request => request.token))
+    const forms = requests.map(request => formOf(result, request.token))
+    const displayed = forms.map(form => form.message).join('\n')
+    expect(displayed.match(/WHOLE-GROUP-CONTENT/g)).toHaveLength(1)
+    expect(displayed.match(/WHOLE-GROUP-EFFECT/g)).toHaveLength(1)
+    expect(Buffer.byteLength(displayed)).toBeLessThan(2 * (content.length + effect.length))
+    expect(forms[0]!.message).toContain(content)
+    expect(forms[0]!.message).toContain(effect)
+    for (const request of requests) {
+      expect(forms[0]!.message).toContain(request.token)
+      expect(displayed).toContain(request.subject)
+    }
+    for (const form of forms.slice(1)) expect(form.message).toContain('its call is the one shown whole above with group-token-0')
+    for (const form of forms) expect(form.requestedSchema.properties['approve']).toBeDefined()
+  })
+
   it('shows the whole action the ask recorded: every argument, the directory, the effects, the summary, the node and workspace', async () => {
     const form = formOf(await gatedCall(gatedServer(), elicitingContext()))
     expect(form.message).toContain('gated_tool needs approval')

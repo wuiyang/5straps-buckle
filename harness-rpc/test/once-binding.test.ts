@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CliOutcome, CliRequest } from '@5straps/runtime'
@@ -158,5 +158,39 @@ describe('a once decided through MCP elicitation', () => {
     expect((await retry(server, approved('unused').args)).isError).not.toBe(true)
     expect(readFileSync(join(setup.workspace, 'one', 'notes.md'), 'utf8')).toBe('hello')
     await stop(setup)
+  })
+})
+
+describe.each([['the admin bearer', false], ['a sealed envelope', true]] as const)('incomplete calls cannot be approved by %s', (_, paired) => {
+  it.each(['no-call', 'incomplete', 'missing-file', 'unreadable-file'] as const)('refuses once and session grants for %s, and still permits denial', async (state) => {
+    const setup = await node({ paired })
+    try {
+      const call = state === 'no-call' ? undefined : { arguments: { path: 'one/notes.md', content: 'hello' }, cwd: setup.workspace, description: 'Write hello', ...(state === 'incomplete' ? {} : { complete: true as const }) }
+      const issued = await setup.runtime.approvals.ask({ tool: 'fs_write', sessionId: SESSION, asks: [{ kind: 'ask', rule: 'write_scope', subject: join(setup.workspace, 'one'), reason: 'Write needs approval', offeredScopes: ['once', 'session'] }], ...(call === undefined ? {} : { call }) })
+      const token = issued.requests[0]!.token
+      if (state === 'missing-file' || state === 'unreadable-file') {
+        const stored = JSON.parse(readFileSync(join(setup.config.stateDirectory, 'approvals.json'), 'utf8')) as { pending: Array<{ request: { token: string }; callFile: { id: string } }> }
+        const file = join(setup.config.stateDirectory, 'approval-calls', `${stored.pending.find(entry => entry.request.token === token)!.callFile.id}.json`)
+        if (state === 'missing-file') rmSync(file)
+        else writeFileSync(file, '{invalid-json')
+      }
+      const decide = (approved: boolean, scope: 'once' | 'session') => {
+        const decision = { token, approved, scope }
+        const body = paired ? seal(approvalKey(setup.key), { method: 'POST', path: '/setup/approvals', body: decision }) : decision
+        return setup.runtime.approvalService.decideSealed({ body })
+      }
+      for (const scope of ['once', 'session'] as const) {
+        expect(await decide(true, scope)).toMatchObject({ status: 'rejected', reason: expect.stringContaining('cannot be approved') })
+        expect(setup.runtime.approvals.pending().map(item => item.token)).toContain(token)
+        expect(setup.runtime.approvals.unspent(SESSION)).toEqual([])
+        expect(setup.runtime.grants.list()).toEqual([])
+      }
+      expect((await decide(false, 'once')).status).toBe('answered')
+      expect(setup.runtime.approvals.pending().map(item => item.token)).not.toContain(token)
+      expect(setup.runtime.approvals.unspent(SESSION)).toEqual([])
+      expect(setup.runtime.grants.list()).toEqual([])
+    } finally {
+      await stop(setup)
+    }
   })
 })

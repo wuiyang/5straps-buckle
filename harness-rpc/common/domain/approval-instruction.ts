@@ -122,19 +122,41 @@ export interface ShownAsk {
  * `buckle approve` and MCP elicitation read alike (owner decision D17): the ask, then its whole action.
  */
 export function describeAsk(ask: ShownAsk): string[] {
-  const head = [
-    `${printable(ask.tool)} needs approval`,
-    `  ${printable(ask.reason)}`,
-    `  subject: ${printable(ask.subject)}`,
-    ...(ask.workspaceId && ask.workspaceId !== DEFAULT_WORKSPACE ? [`  workspace: ${printable(ask.workspaceId)}`] : []),
-    `  ${describeExpiry(ask.expiresAt)}`,
-  ]
+  const head = askHead(ask)
   const { call } = ask
   if (!call) return [...head, `  ${RECORDED_BEFORE_NOTE}`]
   return [...head, ...describeAction({
     ...(ask.node === undefined ? {} : { node: ask.node }), workspace: ask.workspaceId ?? DEFAULT_WORKSPACE, rule: ask.rule, subject: ask.subject, reason: ask.reason,
     description: call.description, cwd: call.cwd, effects: call.effects ?? null, arguments: call.arguments,
   })]
+}
+
+/**
+ * An ask whose request group's whole call another ask of the group already showed, above it: the ask, then where
+ * its action is, so a call is shown once however many asks it made (review M1 of the slice 5 re-review).
+ */
+export function describeAskOfShownCall(ask: ShownAsk, shownWith: string): string[] {
+  return [...askHead(ask), `  ${sameCallNote(shownWith)}`]
+}
+
+/** Said of an ask whose call was shown whole above, with the ask named first. */
+export function sameCallNote(shownWith: string): string {
+  return `its call is the one shown whole above with ${printable(shownWith)}; that is the whole action`
+}
+
+/** The asks one call made, listed where its whole action is shown once (review M1 of the slice 5 re-review). */
+export function describeCallAsks(requests: ReadonlyArray<{ token: string; rule: string; subject: string }>): string[] {
+  return [`  asks:     this call makes ${requests.length}, each decided on its own`, ...requests.map(request => `            ${printable(request.token)}  ${printable(request.rule)}: ${printable(request.subject)}`)]
+}
+
+function askHead(ask: ShownAsk): string[] {
+  return [
+    `${printable(ask.tool)} needs approval`,
+    `  ${printable(ask.reason)}`,
+    `  subject: ${printable(ask.subject)}`,
+    ...(ask.workspaceId && ask.workspaceId !== DEFAULT_WORKSPACE ? [`  workspace: ${printable(ask.workspaceId)}`] : []),
+    `  ${describeExpiry(ask.expiresAt)}`,
+  ]
 }
 
 /**

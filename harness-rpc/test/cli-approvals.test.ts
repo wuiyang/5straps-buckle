@@ -2,6 +2,8 @@ import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ApprovalDecisionSchema } from '@5straps/protocol'
+import { runsNativeTerminal } from './support/native-terminal.js'
+import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFileGrantStore, createGrantLookup } from '../common/adapters/grant-store/file-grant-store.js'
@@ -119,6 +121,20 @@ describe('buckle approvals, the queue a person answers from', () => {
     const listed = await capture({ argv: ['approvals', '--json'], config })
 
     expect(JSON.parse(listed.stdout)).toMatchObject([{ token, tool: 'fs_write', rule: 'write_scope' }])
+  })
+
+  it('shows a batch call once in text and JSON while every ask names its whole action', async () => {
+    const config = node()
+    const content = 'whole batch contents'.repeat(1_000)
+    const requests = (await registry(config).ask({ tool: 'fs_write_batch', sessionId: 'mcp', asks: ['/one', '/two', '/three'].map(subject => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] })), call: { arguments: { content }, cwd: '/workspace', description: 'Write three files', effects: ['write /one', 'write /two', 'write /three'], complete: true } })).requests
+    const text = await capture({ argv: ['approvals'], config })
+    expect(text.stdout.split(content)).toHaveLength(2)
+    for (const request of requests) expect(text.stdout).toContain(request.token)
+    expect(text.stdout).toContain(`shown whole above with ${requests[0]!.token}`)
+    const json = JSON.parse((await capture({ argv: ['approvals', '--json'], config })).stdout) as Array<{ token: string; callRef: string; call?: unknown }>
+    expect(json.filter(entry => entry.call)).toHaveLength(1)
+    expect(new Set(json.map(entry => entry.callRef)).size).toBe(1)
+    expect(json.map(entry => entry.token)).toEqual(requests.map(request => request.token))
   })
 
   it('stops naming a request once it has been decided', async () => {
@@ -411,6 +427,41 @@ describe('buckle approve shows the whole action before it decides (owner decisio
     expect(listed.stdout).toContain(`buckle approve ${token} --deny`)
     expect(listed.stdout).not.toContain(`buckle approve ${token} --scope`)
   })
+
+  it('lists a pre-build ask in JSON only with the command that denies it', async () => {
+    const config = node()
+    const token = await preBuildRequest(config)
+    const json = JSON.parse((await capture({ argv: ['approvals', '--json'], config })).stdout)
+    expect(json).toEqual([expect.objectContaining({ token, denyCommand: `buckle approve ${token} --deny` })])
+    expect(json[0]).not.toHaveProperty('approveCommand')
+    expect(json[0]).not.toHaveProperty('callRef')
+  })
+
+  it.runIf(runsNativeTerminal)('refuses approval when stdout hides the action even though stdin is a terminal', async () => {
+    const config = node()
+    const token = await pendingRequest(config)
+    const script = join(mkdtempSync(join(tmpdir(), 'buckle-hidden-action-')), 'approve.mts')
+    writeFileSync(script, `
+      import { openSync } from 'node:fs';
+      import { spawn } from 'node:child_process';
+      const child = spawn(process.execPath, ['--import', ${JSON.stringify(import.meta.resolve('tsx'))}, '--input-type=module', '-e', ${JSON.stringify(`import { runCli } from ${JSON.stringify(new URL('../cli/main.ts', import.meta.url).href)}; const result = await runCli({ argv: ['approve', ${JSON.stringify(token)}, '--scope', 'session'], config: ${JSON.stringify(config)} }); process.exitCode = result.exitCode;`)}], { stdio: [0, openSync('/dev/null', 'w'), 2] });
+      child.on('exit', code => { process.exitCode = code ?? 1 });
+    `)
+    const pty = await import('node-pty')
+    const child = pty.spawn(process.execPath, ['--import', import.meta.resolve('tsx'), script], { name: 'xterm-256color', cwd: tmpdir(), env: { PATH: process.env.PATH ?? '/usr/bin:/bin', TERM: 'xterm-256color' }, cols: 120, rows: 24 })
+    let shown = ''
+    child.onData(data => { shown += data })
+    const exited = new Promise<{ exitCode: number; signal?: number }>(resolve => child.onExit(resolve))
+    try {
+      const result = await Promise.race([exited, new Promise<null>(resolve => setTimeout(() => resolve(null), SPAWN_TEST_TIMEOUT_MS / 2))])
+      expect(result).not.toBeNull()
+      expect(result!.exitCode).toBe(1)
+      expect(shown).toContain('input and output are not both a terminal')
+      expect(shown).toContain('buckle client approve')
+      expect(pendingTokens(config)).toEqual([token])
+      expect(grantStore(config).list()).toEqual([])
+    } finally { child.kill('SIGKILL') }
+  }, SPAWN_TEST_TIMEOUT_MS)
 
   it('leads the exit-3 text of a gated call with buckle approvals, and names buckle approve after it', async () => {
     const config = node()

@@ -1,4 +1,4 @@
-import { isCredentialKey, redactUrlParameters } from '@5straps/runtime'
+import { isCredentialKey, redactUrlParameters, redactUrlUserinfo } from '@5straps/runtime'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { isSecretName } from './environment.js'
 
@@ -63,12 +63,6 @@ export function stripSecret(value: string, secret: string | undefined): string {
   return value.split(secret).join('[redacted]')
 }
 
-/**
- * A URL's userinfo (`scheme://user:password@`), which carries a credential whatever key holds the URL. It
- * runs to the last `@` of the authority, so a password holding an `@` is redacted whole (review L7 of the
- * second proof-of-possession re-review).
- */
-const URL_USERINFO = /\b([a-z][a-z0-9+.-]{0,63}:\/\/)[^\s/?#]*@/gi
 /** A URL with a scheme, up to whitespace or a quote: where a query can carry a credential parameter. */
 const SCHEME_URL = /\b[a-z][a-z0-9+.-]{0,63}:\/\/[^\s"'<>]*/gi
 
@@ -80,7 +74,7 @@ const SCHEME_URL = /\b[a-z][a-z0-9+.-]{0,63}:\/\/[^\s"'<>]*/gi
  * owner decision D17).
  */
 export function redactShownText(value: string): string {
-  return value.replace(URL_USERINFO, '$1[redacted]@').replace(SCHEME_URL, url => redactUrlParameters(url))
+  return redactUrlUserinfo(value).replace(SCHEME_URL, redactUrlParameters)
 }
 
 /**

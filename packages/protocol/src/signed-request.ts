@@ -277,6 +277,20 @@ export function callDigestOf(input: { tool: string; arguments: JsonValue }): str
   return bodyDigest(canonicalJson([input.tool, input.arguments]))
 }
 
+export const ShownApprovalCallSchema = z.object({
+  tool: z.string().min(1),
+  arguments: JsonValueSchema,
+  cwd: z.string().max(4_096),
+  description: z.string().max(4_096).nullable(),
+  effects: z.array(z.string()),
+}).strict()
+export type ShownApprovalCall = z.infer<typeof ShownApprovalCallSchema>
+
+/** Commits every field displayed from a shared call, whose contents travel once beside signed challenges. */
+export function shownCallDigestOf(input: ShownApprovalCall): string {
+  return bodyDigest(canonicalJson([input.tool, input.arguments, input.cwd, input.description, input.effects]))
+}
+
 /**
  * What a pending ask is, as the node signs it (approval-proofs.md, Signed request): a person's client
  * verifies the node's signature, recomputes the call's digest from the arguments it carries, shows
@@ -301,13 +315,15 @@ export const ApprovalChallengeSchema = z.object({
   /**
    * The call's whole arguments as the node shows them (owner decisions D9 and D17): canonical, with values
    * under credential-named keys and URL credentials redacted, and nothing cut. A call too large to show
-   * whole is refused before it is asked. Null only from a node built before D17.
+   * whole is refused before it is asked. Null when callRef names its whole contents in the listing.
    */
   arguments: JsonValueSchema.nullable(),
   /** The directory relative paths in the arguments resolve against, as the agent names it. */
   cwd: z.string().max(4_096).nullable(),
   /** callDigestOf(tool, arguments); a changed call is a different challenge. */
   callDigest: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  /** shownCallDigestOf() for the whole call carried once in the listing; absent for an inline call. */
+  callRef: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   /**
    * Set only by a node built before owner decision D17, when it cut the arguments or the description to fit;
    * a node of this build never cuts, and a person's client refuses a challenge that says it did.
@@ -326,7 +342,7 @@ export const ApprovalChallengeSchema = z.object({
    * `exec <command>`, `process probe`), redacted as the arguments are (owner decision D17). Absent from a
    * node built before it.
    */
-  effects: z.array(z.string()).optional(),
+  effects: z.array(z.string()).nullable().optional(),
   expiresAt: z.string(),
 }).strict()
 export type ApprovalChallenge = z.infer<typeof ApprovalChallengeSchema>

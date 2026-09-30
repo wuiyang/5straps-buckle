@@ -18,6 +18,7 @@ import type { ApprovalAskInput } from '../common/services/approvals/approval-ser
 type Ask = ApprovalAskInput['asks'][number]
 import { describeExpiry, remainingMs } from '../common/domain/approval-deadline.js'
 
+const recorded = { arguments: { path: '/synthetic', content: 'x' }, cwd: '/workspace', description: null, effects: ['write /synthetic'], complete: true as const }
 const roots: string[] = []
 function directory() { const root = mkdtempSync(join(tmpdir(), 'approval-wait-')); roots.push(root); return root }
 afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -27,7 +28,7 @@ async function fixture(timeoutMs: number | null) {
   const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, timeoutMs)
   const service = createApprovalService({ registry: approvals, workspaceId: 'default', serverId: 'test-node', graceMs: timeoutMs, interaction: fixedInteraction() })
   const ask: Ask = { kind: 'ask', rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }
-  const request = (asks: Ask[] = [ask]) => service.request({ sessionId: 'test', requestId: `request-${asks.length}`, tool: 'fs_write', asks })
+  const request = (asks: Ask[] = [ask]) => service.request({ sessionId: 'test', requestId: `request-${asks.length}`, tool: 'fs_write', call: recorded, asks })
   return { approvals, service, request }
 }
 it.each(['-1', '60000ms', 'Infinity', '2147483648', '1.5'])('rejects invalid wait %s', value => {
@@ -69,7 +70,7 @@ it.each([true, false])('waits beyond ten minutes until an owner answers approved
 it('does not give an answered once grant an indefinite lifetime', async () => {
   vi.useFakeTimers()
   const { approvals } = await fixture(null)
-  const requests = (await approvals.ask({ tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/synthetic', reason: 'test write', offeredScopes: ['once'] }] })).requests
+  const requests = (await approvals.ask({ call: recorded, tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/synthetic', reason: 'test write', offeredScopes: ['once'] }] })).requests
   await approvals.resolve({ token: requests[0]!.token, approved: true, scope: 'once' })
   expect(approvals.unspent('test')).toHaveLength(1)
   vi.advanceTimersByTime(10 * 60_000 + 1)

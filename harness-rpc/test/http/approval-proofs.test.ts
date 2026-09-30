@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
 import type { InvokeRequest } from '@5straps/protocol'
-import { callDigestOf, generateSigningKey, publicKeyFrom, readChallenge, signChallenge, signingKeyFromPem, signRequest, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, type ApprovalChallenge } from '@5straps/protocol/signed-request'
+import { callDigestOf, shownCallDigestOf, generateSigningKey, publicKeyFrom, readChallenge, signChallenge, signingKeyFromPem, signRequest, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clientCommand, CLIENT_KEY_FILE } from '../../cli/client.js'
 import { keysCommand } from '../../cli/keys.js'
@@ -265,7 +265,7 @@ describe('a challenge listing with an ask too long to describe whole', () => {
       expect((await clientCommand(['approve', url, token], environment)).exitCode).toBe(1)
       expect(output.stderr).toContain('nothing was signed')
     }
-    expect((await clientCommand(['approve', url, other], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approve', url, other], environment, { confirm: async () => true })).exitCode).toBe(0)
     expect(buckle.runtime.approvals.pending().map(request => request.token).sort()).toEqual([legacy, unsignable].sort())
   })
 
@@ -403,6 +403,84 @@ describe('a device that recomputes the call digest (owner decision D9)', () => {
   })
 })
 
+describe('a device verifies shared calls and asks the person before approving', () => {
+  function shared(call: ShownApprovalCall): ApprovalChallenge {
+    return fakeChallenge({ tool: call.tool, arguments: null, cwd: null, description: null, effects: null, callDigest: callDigestOf(call), callRef: shownCallDigestOf(call) })
+  }
+
+  const call: ShownApprovalCall = { tool: 'fs_write', arguments: { path: '/workspace/notes.md', content: 'WHOLE-SHARED-CONTENT' }, cwd: '/workspace', description: 'Write the complete contents', effects: ['write /workspace/notes.md'] }
+
+  it('shows a shared whole call once, keeps both asks visible, and confirms the complete action before signing one', async () => {
+    const challenge = shared(call)
+    const other = { ...challenge, token: 'second-token', subject: '/workspace/second' }
+    const device = await fakeNodeDevice(challenge, [], { calls: { [challenge.callRef!]: call }, others: [other] })
+    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect(device.output.stdout.match(/WHOLE-SHARED-CONTENT/g)).toHaveLength(1)
+    expect(device.output.stdout).toContain('second-token')
+    expect(device.output.stdout).toContain('/workspace/second')
+    expect(device.output.stdout).toContain('its call is the one shown whole above with fake-token')
+    device.output.stdout = ''
+    const confirm = vi.fn(async (prompt: string) => {
+      expect(prompt).toContain('Type yes')
+      for (const expected of ['WHOLE-SHARED-CONTENT', call.cwd, call.description!, call.effects[0]!]) expect(device.output.stdout).toContain(expected)
+      expect(device.decisions).toEqual([])
+      return true
+    })
+    expect((await clientCommand(['approve', device.url, challenge.token], device.environment, { confirm })).exitCode).toBe(0)
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(device.decisions).toHaveLength(1)
+  })
+
+  it.each(['tool', 'arguments', 'cwd', 'description', 'effects', 'missing'] as const)('refuses altered or omitted shared %s before showing relay content or signing', async (field) => {
+    const challenge = shared(call)
+    const changed = { ...call, ...(field === 'tool' ? { tool: 'shell_exec' } : field === 'arguments' ? { arguments: { planted: 'RELAY-CONTENT' } } : field === 'cwd' ? { cwd: 'RELAY-CONTENT' } : field === 'description' ? { description: 'RELAY-CONTENT' } : field === 'effects' ? { effects: ['RELAY-CONTENT'] } : {}) }
+    const device = await fakeNodeDevice(challenge, [], { calls: field === 'missing' ? {} : { [challenge.callRef!]: changed } })
+    const confirm = vi.fn(async () => true)
+    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect(device.output.stdout).not.toContain('RELAY-CONTENT')
+    expect(device.output.stdout).toContain('shared whole action does not match')
+    expect((await clientCommand(['approve', device.url, challenge.token], device.environment, { confirm })).exitCode).toBe(1)
+    expect(device.output.stderr).toContain('nothing was signed')
+    expect(confirm).not.toHaveBeenCalled()
+    expect(device.decisions).toEqual([])
+  })
+
+  it('refuses without a terminal or affirmative confirmation, while denial works without a terminal', async () => {
+    const challenge = shared(call)
+    const device = await fakeNodeDevice(challenge, [], { calls: { [challenge.callRef!]: call } })
+    expect((await clientCommand(['approve', device.url, challenge.token], device.environment, { confirm: null })).exitCode).toBe(1)
+    expect(device.output.stderr).toContain('needs a person at a terminal')
+    expect(device.decisions).toEqual([])
+    expect((await clientCommand(['approve', device.url, challenge.token], device.environment, { confirm: async () => false })).exitCode).toBe(1)
+    expect(device.decisions).toEqual([])
+    expect((await clientCommand(['approve', device.url, challenge.token, '--deny'], device.environment, { confirm: null })).exitCode).toBe(0)
+    expect(device.decisions).toHaveLength(1)
+  })
+
+  it('verifies and approves one ask from a real shared-call listing, leaving its other ask waiting', async () => {
+    const buckle = await node()
+    const content = 'COMPLETE-LARGE-CALL'.repeat(2_000)
+    const asked = await buckle.runtime.approvalService.request({
+      sessionId: 'shared-device', requestId: 'shared-device', tool: 'fs_write', wait: { mode: 'none' },
+      asks: [buckle.root, join(buckle.root, 'sub')].map(subject => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject, reason: 'Writing needs approval', offeredScopes: ['once' as const] })),
+      call: { arguments: { path: join(buckle.root, 'notes.md'), content }, cwd: buckle.config.cwd, description: 'Write the entire contents', effects: [join(buckle.root, 'notes.md')], complete: true },
+    })
+    const listed = await challenges(buckle)
+    const verified = readChallenge({ signed: listed.challenges[0]!.signed, nodeKey: publicKeyFrom((await buckle.services.getNodeSigner()).publicKey) })!
+    expect(verified.challenge.arguments).toBeNull()
+    expect(verified.challenge.callRef).toEqual(expect.any(String))
+    const url = await buckle.listen()
+    const environment = await pinnedDevice(buckle, url)
+    const output = capture()
+    const token = asked.approvals[0]!.token
+    expect((await clientCommand(['approve', url, token], environment, { confirm: async () => {
+      expect(output.stdout).toContain(content)
+      return true
+    } })).exitCode).toBe(0)
+    expect(buckle.runtime.approvals.pending().map(item => item.token)).toEqual([asked.approvals[1]!.token])
+  })
+})
+
 // Review L5: the listing is unsigned and a relay carries it, so an entry's text is never printed. The node's two
 // fixed reasons are shown in the client's own words; anything else is an unrecognised entry, and an entry beside
 // a signed challenge for its token is not shown at all.
@@ -442,14 +520,14 @@ function fakeChallenge(fields: Partial<ApprovalChallenge>): ApprovalChallenge {
 }
 
 /** A node that answers with one challenge it signed (and any unsigned entries), and a device with a key that pinned it; decisions it receives are counted. */
-async function fakeNodeDevice(challenge: ApprovalChallenge, unsigned: Array<{ token: string; error: string }> = []) {
+async function fakeNodeDevice(challenge: ApprovalChallenge, unsigned: Array<{ token: string; error: string }> = [], options: { calls?: Record<string, unknown>; others?: ApprovalChallenge[] } = {}) {
   const fakeNode = generateSigningKey()
   const signedChallenge = signChallenge({ challenge, key: signingKeyFromPem(fakeNode.privateKeyPem).privateKey })
   const decisions: string[] = []
   const server = createServer((request, response) => {
     if (request.method === 'POST') decisions.push(request.url ?? '')
     response.setHeader('content-type', 'application/json')
-    response.end(JSON.stringify({ node: { keyId: fakeNode.keyId, publicKey: fakeNode.publicKey }, challenges: [{ token: challenge.token, ...signedChallenge }, ...unsigned] }))
+    response.end(JSON.stringify({ node: { keyId: fakeNode.keyId, publicKey: fakeNode.publicKey }, challenges: [{ token: challenge.token, ...signedChallenge }, ...(options.others ?? []).map(other => ({ token: other.token, ...signChallenge({ challenge: other, key: signingKeyFromPem(fakeNode.privateKeyPem).privateKey }) })), ...unsigned], ...(options.calls ? { calls: options.calls } : {}) }))
   })
   servers.push(server)
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))

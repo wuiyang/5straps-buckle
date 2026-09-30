@@ -147,6 +147,22 @@ function scopeLabel(scope: GrantScope): string {
 }
 
 /**
+ * Asks the person at this process's terminal to confirm one decision, after the whole action was shown
+ * (owner decision D17); null where the process has no terminal, so nothing can be confirmed.
+ */
+export type Confirm = (prompt: string) => Promise<boolean>
+
+/**
+ * The confirmation `buckle approve` and `buckle client approve` ask for, where both the input and the output the
+ * action is printed to are a terminal, with the prompt on that same output: with the action redirected away, a
+ * person would confirm what they never saw (review L7 of the slice 5 re-review). Null otherwise: nothing is approved.
+ */
+export function terminalConfirm(streams: { input: NodeJS.ReadStream; output: NodeJS.WriteStream }): Confirm | null {
+  if (!streams.input.isTTY || !streams.output.isTTY) return null
+  return prompt => confirmAtTerminal(prompt, { input: streams.input, output: streams.output })
+}
+
+/**
  * One yes-or-no at this process's terminal, for `buckle approve` after it showed the whole action (owner
  * decision D17): the word yes confirms; anything else, Enter or Ctrl-C declines. As a question does, it
  * takes keys only once the keyboard has been still with it on screen, and throws away a line typed before.

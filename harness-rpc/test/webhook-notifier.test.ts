@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { approvalKey, mintApprovalKey, open, SEALED_REPORT_PATHS } from '@5straps/protocol/envelope'
 import type { ApprovalRequest } from '@5straps/protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createWebhookNotifier } from '../common/adapters/approval/webhook-notifier.js'
@@ -62,13 +63,30 @@ describe('what the approval webhook carries', () => {
     expect(keys.indexOf('reviewCommand')).toBeLessThan(keys.indexOf('approveCommand'))
   })
 
-  it('carries the whole call the asks came from once, when it was kept whole, and nothing for one kept in part (review M1)', async () => {
+  it('keeps an unpaired webhook to the summary and approval instructions, without arguments or effects', async () => {
+    const call = { arguments: { path: '/etc/hostname', content: 'private file contents' }, cwd: '/workspace', description: 'Write to "/etc/hostname"', effects: ['write /etc/hostname'], complete: true as const }
+    await createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'default' })([request], call)
+    const body = received.at(-1)!.body
+    expect(body.description).toBe(call.description)
+    expect(body).not.toHaveProperty('call')
+    expect(JSON.stringify(body)).not.toContain('private file contents')
+    expect(JSON.stringify(body)).not.toContain('"effects"')
+    expect(body.approvals).toEqual([expect.objectContaining({ subject: request.subject, reason: request.reason, rule: request.rule, expiresAt: request.expiresAt, offeredScopes: request.offeredScopes, workspaceId: 'default', reviewCommand: 'buckle approvals', approveCommand: 'buckle approve tok-1 --scope session' })])
+  })
+
+  it('carries the whole call once only inside the envelope sealed to the paired Rings key', async () => {
+    const key = approvalKey(mintApprovalKey())
+    const notifier = createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'default', approvalKey: key })
     const call = { arguments: { path: '/etc/hostname' }, cwd: '/workspace', description: 'Read "/etc/hostname"', effects: ['read /etc/hostname'], complete: true as const }
-    await createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'default' })([request, { ...request, token: 'tok-2' }], call)
-    expect(received.at(-1)?.body.call).toEqual({ arguments: { path: '/etc/hostname' }, cwd: '/workspace', description: 'Read "/etc/hostname"', effects: ['read /etc/hostname'] })
-    expect(JSON.stringify(received.at(-1)?.body.approvals)).not.toContain('"arguments"')
-    await createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'default' })([request], { arguments: { path: '/etc/ho...' }, cwd: '/workspace', description: null, truncated: true })
-    expect(received.at(-1)?.body).not.toHaveProperty('call')
+    await notifier([request, { ...request, token: 'tok-2' }], call)
+    const wire = received.at(-1)!.body
+    expect(JSON.stringify(wire)).not.toContain('/etc/hostname')
+    const body = open(key, wire, { method: 'POST', path: SEALED_REPORT_PATHS.approvals, now: Date.now(), seen: { claim: () => true } }) as Record<string, unknown>
+    expect(body.call).toEqual({ arguments: call.arguments, cwd: call.cwd, description: call.description, effects: call.effects })
+    expect(JSON.stringify(body.approvals)).not.toContain('"arguments"')
+    await notifier([request], { arguments: { path: '/etc/ho...' }, cwd: '/workspace', description: null, truncated: true })
+    const incomplete = open(key, received.at(-1)!.body, { method: 'POST', path: SEALED_REPORT_PATHS.approvals, now: Date.now(), seen: { claim: () => true } })
+    expect(incomplete).not.toHaveProperty('call')
   })
 
   it('sends no credential when the node has none configured', async () => {

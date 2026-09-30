@@ -30,7 +30,7 @@ function ask(subject: string, rule: PermissionRuleId = 'write_scope') {
 }
 
 function call(overrides: Partial<ApprovalAskInput> = {}): ApprovalAskInput {
-  return { sessionId: 'chat-1', requestId: 'request-1', tool: 'fs_write', asks: [ask('/outside/a.md')], ...overrides }
+  return { sessionId: 'chat-1', requestId: 'request-1', tool: 'fs_write', call: { arguments: { path: '/outside/a.md', content: 'x' }, cwd: '/workspace', description: null, effects: ['write /outside/a.md'], complete: true }, asks: [ask('/outside/a.md')], ...overrides }
 }
 
 /** A terminal that answers its questions in order with the given choices, then leaves the rest on screen. */

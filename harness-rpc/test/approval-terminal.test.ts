@@ -76,6 +76,7 @@ function stubQueue(requests: ApprovalRequest[]) {
       return withdrawn
     },
     sweep: async () => undefined,
+    sweepIfDue: async () => undefined,
   }
   return { registry: registry as unknown as ApprovalRegistry, pending: registry.pending, resolved, answerElsewhere: (token: string) => { pending = pending.filter(request => request.token !== token) } }
 }

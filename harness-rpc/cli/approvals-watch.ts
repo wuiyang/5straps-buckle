@@ -4,7 +4,7 @@ import type { ApprovalDecision, ApprovalRequest, GrantScope } from '@5straps/pro
 import { describeQuestion } from './terminal-consumer.js'
 import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from './terminal-keys.js'
 import { remainingMs } from '../common/domain/approval-deadline.js'
-import { approveCommand } from '../common/domain/approval-instruction.js'
+import { approveCommand, denyCommand, describeAskOfShownCall } from '../common/domain/approval-instruction.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
@@ -28,8 +28,11 @@ const SCOPE_KEYS: Array<{ key: string; scope: GrantScope; label: string }> = [
 ]
 
 export interface ApprovalWatchOptions {
-  /** The asks waiting, each with the whole call it came from, and the answer path `buckle approve` uses. */
-  approvals: Pick<ApprovalService, 'waiting' | 'answer'>
+  /**
+   * The asks waiting, each with the whole call it came from, the requests alone for the check a question on screen
+   * makes while it waits, and the answer path `buckle approve` uses.
+   */
+  approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'answer'>
   /** Each answer is audited on its own, as the `buckle approve` it stands in for. */
   actions: ActionLog
   workspaceId: string
@@ -80,6 +83,9 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
 
   options.output.write(`Watching workspace ${options.workspaceId} for approvals. Keys: o once, s session, the word always, d deny, n skip; Enter grants nothing. Ctrl-C stops.\n`)
   const seen = new Set<string>()
+  // Each request group's whole action is shown with the first of its asks asked here; the others name that ask
+  // (review M1 of the slice 5 re-review).
+  const shownWith = new Map<string, string>()
   let wait = poll.first
   let afterDrop = false
   try {
@@ -100,7 +106,9 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
         break
       }
       seen.add(next.request.token)
-      afterDrop = await askOne({ ...options, readline, keys, request: next.request, call: next.call, stopped: stopped.signal, recheckMs: poll.first }) === 'dropped'
+      const earlier = next.callRef === undefined ? undefined : shownWith.get(next.callRef)
+      if (next.callRef !== undefined && earlier === undefined && next.call?.complete) shownWith.set(next.callRef, next.request.token)
+      afterDrop = await askOne({ ...options, readline, keys, request: next.request, call: next.call, shownWith: earlier, stopped: stopped.signal, recheckMs: poll.first }) === 'dropped'
     }
     return { exitCode: 0 }
   } finally {
@@ -127,19 +135,25 @@ async function awaitEnter(readline: Interface, output: Writable, stopped: AbortS
 
 type Ending = 'answered' | 'skipped' | 'dropped' | 'stopped'
 
-async function askOne(context: ApprovalWatchOptions & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; call: PendingAsk['call']; stopped: AbortSignal; recheckMs: number }): Promise<Ending> {
+async function askOne(context: ApprovalWatchOptions & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; call: PendingAsk['call']; shownWith: string | undefined; stopped: AbortSignal; recheckMs: number }): Promise<Ending> {
   const { request, call, output } = context
-  // The whole action (owner decision D17). An ask recorded before this build shows its request and the note,
-  // and offers denials only: nobody approves an action they were not shown whole (review L9).
+  // The whole action (owner decision D17), or, for a later ask of a group, the ask and the one its action was shown
+  // with above. An ask recorded before this build shows its request and the note, and offers denials only: nobody
+  // approves an action they were not shown whole (review L9).
   const shown = call?.complete ? call : undefined
   const offered = shown ? SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope)) : []
   const prompt = `  ${[...offered.map(entry => `${entry.key}) ${request.rule === 'sensitive_path' && entry.scope === 'once' ? 'allow once' : entry.label}`), 'd) deny', ...(request.rule === 'sensitive_path' ? ['ds) deny this session', 'da) always deny'] : []), 'n) skip'].join('  ')} > `
-  output.write(`${describeQuestion({ ...request, workspaceId: context.workspaceId, ...(shown ? { call: shown } : {}) })}  token: ${request.token}\n`)
+  const question = { ...request, workspaceId: context.workspaceId, ...(shown ? { call: shown } : {}) }
+  output.write(`${shown && context.shownWith !== undefined ? `\n${describeAskOfShownCall(question, context.shownWith).join('\n')}\n` : describeQuestion(question)}  token: ${request.token}\n`)
 
+  // The requests alone: a question on screen checks every poll that its ask still waits, and reads no call to do it.
   const dropped = new AbortController()
   const watcher = setInterval(() => {
-    const pending = readPending(context)
-    if (pending.ok && !pending.asks.some(entry => entry.request.token === request.token)) dropped.abort()
+    try {
+      if (!context.approvals.pending().some(entry => entry.token === request.token)) dropped.abort()
+    } catch {
+      // Unreadable for now: the next poll, the expiry or the person ends the question.
+    }
   }, context.recheckMs)
   const remaining = remainingMs(request.expiresAt)
   // Node timers run on the cached loop time, so this can fire a moment before the wall clock passes expiresAt.
@@ -161,7 +175,8 @@ async function askOne(context: ApprovalWatchOptions & { readline: Interface; key
         return 'dropped'
       }
       if (answer === 'n') {
-        output.write(`  Skipped; still waiting. Answer later with: ${approveCommand({ request, workspaceId: context.workspaceId })}\n`)
+        // An ask recorded before this build is denied, never approved (review L6 of the slice 5 re-review).
+        output.write(`  Skipped; still waiting. Answer later with: ${shown ? approveCommand({ request, workspaceId: context.workspaceId }) : denyCommand({ request, workspaceId: context.workspaceId })}\n`)
         return 'skipped'
       }
       const decision = decide(request, answer, offered)

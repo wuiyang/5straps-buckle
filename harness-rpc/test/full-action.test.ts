@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApprovalRequest, InvokeResponse, JsonValue } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { reviewableArguments } from '../common/domain/redact.js'
 import { runCli } from '../cli/main.js'
 import { describeQuestion } from '../cli/terminal-consumer.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
@@ -111,13 +112,33 @@ describe('a destructive command\'s grant names exactly the command a person appr
   })
 })
 
+describe('userinfo redaction is shared by logs and complete approval displays', () => {
+  it('keeps the complete long arguments while redacting space-containing URL credentials and query values', () => {
+    const prefix = 'complete-action '.repeat(10_000)
+    const value = `${prefix}https://user:short password@host.example/path?token=query-secret&page=2`
+    expect(reviewableArguments({ value })).toEqual({ value: `${prefix}https://[redacted]@host.example/path?token=[redacted]&page=2` })
+  })
+
+  it('redacts userinfo with spaces and its query credentials in signed arguments and the node description', async () => {
+    const { runtime } = await node()
+    const response = await run(runtime, 'git', ['push', '--force', 'https://user:short password@host.example/path?token=query-secret&page=2', 'main'])
+    const ask = destructiveAsk(response)
+    const challenge = runtime.approvalService.challengeListing().challenges.find(item => item.token === ask.token)!.challenge!
+    expect(challenge.description).toContain('https://[redacted]@host.example/path?token=[redacted]&page=2')
+    for (const value of [challenge, runtime.approvalService.waiting()]) {
+      expect(JSON.stringify(value)).not.toContain('short password')
+      expect(JSON.stringify(value)).not.toContain('query-secret')
+    }
+  })
+})
+
 describe('every approval field a person or a relay reads is redacted (owner decision D17)', () => {
   it('keeps a URL credential out of the subject, reason, description, arguments, effects, queue, challenge, terminal, CLI and audit', async () => {
     const { runtime, config } = await node()
     const asked = await run(runtime, 'git', ['push', '--force', `https://bot:${SECRET_A}@github.com/org/repo.git?access_token=${SECRET_B}`, 'main'])
     const ask = destructiveAsk(asked)
     const waiting = runtime.approvalService.waiting().find(entry => entry.request.token === ask.token)!
-    const challenge = runtime.approvalService.challenges().find(entry => entry.token === ask.token)!.challenge!
+    const challenge = runtime.approvalService.challengeListing().challenges.find(entry => entry.token === ask.token)!.challenge!
     const terminal = describeQuestion({ ...ask, workspaceId: 'default', call: waiting.call! })
     const question = questionFor({ approval: ask, workspaceId: 'default', node: config.serverId, context: { correlationId: 'c', sessionId: 'chat-1', call: waiting.call! } })
     const seen: Record<string, unknown> = {
@@ -167,8 +188,10 @@ describe('an action shown whole, or refused whole (owner decision D17)', () => {
     expect(call!.arguments).toEqual({ args: ['-f', ...files], command: 'rm' })
     expect(ask.subject).toBe(`rm -f ${files.join(' ')}  # argv sha256 ${/[a-f0-9]{64}$/.exec(ask.subject)![0]}`)
     expect(call!.effects).toContain(`exec rm -f ${files.join(' ')}`)
-    const challenge = runtime.approvalService.challenges().find(entry => entry.token === ask.token)!.challenge!
-    expect(challenge.arguments).toEqual(call!.arguments)
+    const listing = runtime.approvalService.challengeListing()
+    const challenge = listing.challenges.find(entry => entry.token === ask.token)!.challenge!
+    expect(challenge.arguments).toBeNull()
+    expect(listing.calls[challenge.callRef!]).toMatchObject({ arguments: call!.arguments, effects: call!.effects })
     expect(challenge).not.toHaveProperty('truncated')
   })
 

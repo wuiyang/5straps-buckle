@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
-import { describeApprovalRequest, describeAsk, reviewCommand } from '../common/domain/approval-instruction.js'
+import { describeApprovalRequest, describeAsk, describeAskOfShownCall, describeCallAsks, reviewCommand } from '../common/domain/approval-instruction.js'
 import { logger } from '../common/runtime/log.js'
 import { agentFailureMessage } from '../common/services/agent-failure.js'
 import type { ApprovalAuthority, PendingAsk } from '../common/services/approvals/approval-registry.js'
@@ -176,11 +176,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * One form per ask, whose message is the whole action as the node's terminal shows it (owner decision D17):
  * the ask, then every argument, the directory, the effects and the node's summary from the call the ask
  * recorded. An ask recorded before this build has no whole call: its form says so and offers denials only.
+ * A call that made several asks is shown whole once, in the form of its first ask, which lists the others;
+ * each other form names that ask (review M1 of the slice 5 re-review).
  */
 function askForApproval(input: { approvals: ApprovalRequest[]; waiting: PendingAsk[]; workspaceId: string; node?: string }) {
-  const inputRequests = Object.fromEntries(input.approvals.map(approval => {
+  const refOf = new Map(input.waiting.map(ask => [ask.request.token, ask.callRef]))
+  const group = (ref: string | undefined) => ref === undefined ? [] : input.approvals.filter(approval => refOf.get(approval.token) === ref)
+  const shownWith = new Map<string, string>()
+  const inputRequests = Object.fromEntries(input.approvals.map((approval) => {
     const call = recordedCall(input.waiting, approval.token)
-    const message = describeAsk({ ...approval, workspaceId: input.workspaceId, ...(input.node === undefined ? {} : { node: input.node }), ...(call ? { call } : {}) }).join('\n')
+    const ref = refOf.get(approval.token)
+    const shown = { ...approval, workspaceId: input.workspaceId, ...(input.node === undefined ? {} : { node: input.node }), ...(call ? { call } : {}) }
+    const earlier = ref === undefined ? undefined : shownWith.get(ref)
+    if (call && ref !== undefined && earlier === undefined) shownWith.set(ref, approval.token)
+    const asks = group(ref)
+    const lines = !call ? describeAsk(shown) : earlier !== undefined ? describeAskOfShownCall(shown, earlier) : [...describeAsk(shown), ...(asks.length > 1 ? describeCallAsks(asks) : [])]
+    const message = lines.join('\n')
     return [approval.token, call ? approvalForm({ approval, message }) : denialForm({ approval, message })]
   }))
   return inputRequired({ inputRequests })

@@ -185,7 +185,12 @@ function isOpaque(text: string): boolean {
 // Userinfo and secret-named query or fragment parameters in any URL or request target.
 // Only the secret value is rewritten, so the rest stays exactly as written.
 function redactUrls(text: string): string {
-  return text.replace(USERINFO, `$1${REDACTED}@`).replace(URL_LIKE, redactUrlParameters)
+  return redactUrlUserinfo(text).replace(URL_LIKE, redactUrlParameters)
+}
+
+// Uncapped for approval displays; the logger applies its own byte limit before calling it.
+export function redactUrlUserinfo(text: string): string {
+  return text.replace(USERINFO, `$1${REDACTED}@`)
 }
 
 /** One URL with the value of each credential parameter in its query or fragment redacted (isCredentialParameter), the rest as written. */

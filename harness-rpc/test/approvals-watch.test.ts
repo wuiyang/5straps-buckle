@@ -58,7 +58,7 @@ function keyboardTerminal() {
 /** An action log of its own, for a watch whose audit the test does not read. */
 const scratchLog = () => createFileActionLog(join(mkdtempSync(join(tmpdir(), 'buckle-watch-log-')), 'actions.jsonl'))
 
-function watch(approvals: Pick<ApprovalService, 'waiting' | 'answer'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
+function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'answer'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
   const done = watchApprovals({ approvals, actions, workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
   return { terminal, done }
 }
@@ -83,6 +83,61 @@ async function issuePrivate(registry: ApprovalRegistry, subject: string): Promis
 const grantsOf = (config: BuckleConfig) => createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }).list()
 
 describe('buckle approvals --watch', () => {
+  it('shows a group call once while skipped asks remain individually visible and waiting', async () => {
+    const config = node()
+    const registry = registryOf(config)
+    const content = `WHOLE-WATCH-CONTENT${'x'.repeat(1_024 * 1_024)}`
+    const effect = `WHOLE-WATCH-EFFECT${'e'.repeat(64 * 1_024)}`
+    const { requests } = await registry.ask({ tool: 'fs_write', sessionId: 'group',
+      asks: Array.from({ length: 3 }, (_, index) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject: `/outside/group-${index}`, reason: 'outside the workspace', offeredScopes: ['once' as const] })),
+      call: { arguments: { content }, cwd: '/workspace', description: 'Write the complete group contents', effects: [effect], complete: true },
+    })
+    const approvals = serviceOf(config)
+    const { terminal, done } = watch(approvals)
+    try {
+      for (const [index, request] of requests.entries()) {
+        await prompted(terminal, index + 1)
+        expect(terminal.shown()).toContain(`token: ${request.token}`)
+        expect(terminal.shown()).toContain(request.subject)
+        terminal.type('n\r')
+      }
+      await vi.waitFor(() => expect(count(terminal.shown(), /Skipped; still waiting/g)).toBe(requests.length))
+      expect(count(terminal.shown(), /WHOLE-WATCH-CONTENT/g)).toBe(1)
+      expect(count(terminal.shown(), /WHOLE-WATCH-EFFECT/g)).toBe(1)
+      expect(terminal.shown()).toContain(content)
+      expect(terminal.shown()).toContain(effect)
+      expect(count(terminal.shown(), new RegExp(`its call is the one shown whole above with ${requests[0]!.token}`, 'g'))).toBe(2)
+      expect(Buffer.byteLength(terminal.shown())).toBeLessThan(2 * (content.length + effect.length))
+      expect(registry.pending().map(request => request.token)).toEqual(requests.map(request => request.token))
+      expect(grantsOf(config)).toEqual([])
+    } finally {
+      terminal.type('\x03')
+      await done
+      await approvals.close()
+    }
+  })
+
+  it('offers only the denial command after skipping an ask without a complete recorded call', async () => {
+    const config = node()
+    const registry = registryOf(config)
+    const { requests: [request] } = await registry.ask({ tool: 'fs_write', sessionId: 'legacy', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/old.md', reason: 'outside', offeredScopes: ['once'] }] })
+    const approvals = serviceOf(config)
+    const { terminal, done } = watch(approvals)
+    try {
+      await prompted(terminal)
+      terminal.type('n\r')
+      await vi.waitFor(() => expect(terminal.shown()).toContain(`Answer later with: buckle approve ${request!.token} --deny`))
+      const later = terminal.shown().split('Answer later with: ')[1]!.split('\n')[0]!.trimEnd()
+      expect(later).toBe(`buckle approve ${request!.token} --deny`)
+      expect(registry.pending().map(pending => pending.token)).toEqual([request!.token])
+      expect(grantsOf(config)).toEqual([])
+    } finally {
+      terminal.type('\x03')
+      await done
+      await approvals.close()
+    }
+  })
+
   it('answers a waiting approval, and the gated tool call proceeds', async () => {
     const config = node()
     const outside = mkdtempSync(join(tmpdir(), 'buckle-watch-outside-'))
@@ -161,7 +216,8 @@ describe('buckle approvals --watch', () => {
       offeredScopes: ['once'], expiresAt: new Date(Date.now() + 300).toISOString(),
     }
     const answer = vi.fn()
-    const { terminal, done } = watch({ waiting: () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now()).map(request => ({ request, sessionId: 'chat-1' })), answer })
+    const live = () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now())
+    const { terminal, done } = watch({ waiting: () => live().map(request => ({ request, sessionId: 'chat-1' })), pending: live, answer })
 
     await vi.waitFor(() => expect(terminal.shown()).toContain('expiring expired; dropped.'))
     terminal.type('o\r')
