@@ -46,18 +46,22 @@ function createDurableNotices(input: {
   let closed = false
   let closing: Promise<void> | null = null
   let requested = false
+  // After a failed attempt the retry timer owns the next one (review L6 of the continuation review): a notice queued
+  // meanwhile waits for it, rather than sending again to a receiver that just refused.
+  let backingOff = false
   const enqueues = new Set<Promise<void>>()
 
   function flush(): Promise<void> {
     if (closed) return active ?? Promise.resolve()
     requested = true
     if (active) return active
+    if (backingOff) return Promise.resolve()
     if (timer) clearTimeout(timer)
     timer = undefined
     active = drain().finally(() => {
       active = null
       if (!closed) {
-        timer = setTimeout(() => { timer = undefined; void flush() }, requested ? 0 : input.retryMs)
+        timer = setTimeout(() => { timer = undefined; backingOff = false; void flush() }, requested ? 0 : input.retryMs)
         timer.unref()
       }
     })
@@ -77,6 +81,7 @@ function createDurableNotices(input: {
       } while (requested)
     } catch (error: unknown) {
       requested = false
+      backingOff = true
       logger.warn('Approval lifecycle delivery will be retried', { message: error instanceof Error ? error.message : 'Unknown error' })
     }
   }

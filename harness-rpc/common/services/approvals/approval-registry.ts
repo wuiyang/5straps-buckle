@@ -3,7 +3,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, r
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
-import { createJsonFileStore } from '../../adapters/json-file-store.js'
+import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
@@ -393,6 +393,11 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   let nextExpiry = Number.NEGATIVE_INFINITY
   let queueVersion: string | undefined
   let pruning: Promise<void> | undefined
+  // The index version an ordinary call last found unreadable: it is not read again, nor its failure logged again,
+  // until the file changes (review L3 of the continuation review).
+  let unreadableVersion: string | undefined
+  /** Whether an ask's end is told to the webhook: asked with the flag, or waiting in this durable registry's workspace. */
+  const notifies = (entry: PendingEntry): boolean => entry.notify === true || (durableNotices && entry.workspace === workspace)
 
   /** Reads the queue without the lock, and notes when its earliest waiting ask expires. */
   function read(): State {
@@ -411,23 +416,30 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   async function update<R>(change: (state: State) => R | Promise<R>): Promise<R> {
     let expired: ApprovalRequest[] = []
     let released: string[] = []
+    let queued = false
     const result = await store.update(async (state) => {
       const before = namedCalls(state)
+      const outboxBefore = new Set(state.outbox.map(entry => entry.id))
       const expiredEntries = prune(state)
       expired = expiredEntries.filter(entry => entry.workspace === workspace).map(entry => entry.request)
+      // An expiry never refuses (review M2 of the continuation review): every update prunes first, so a throw here
+      // would fail every later update, acknowledgement included.
       for (const entry of expiredEntries) {
-        if (entry.notify || (options.durableNotices && entry.workspace === workspace)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'expired', at: new Date().toISOString() })
+        if (notifies(entry)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'expired', at: new Date().toISOString() })
       }
       const value = await change(state)
       const after = namedCalls(state)
       released = [...before].filter(id => !after.has(id))
+      queued = state.outbox.some(entry => entry.workspace === workspace && !outboxBefore.has(entry.id))
       nextExpiry = earliestExpiry(state)
       return value
     })
     queueVersion = undefined
     calls.remove(released)
     if (expired.length > 0) options.onExpired?.(expired)
-    if (options.durableNotices && read().outbox.some(entry => entry.workspace === workspace)) options.onNoticeQueued?.()
+    // Only an update that queued a notice wakes the sender, which otherwise keeps its own retry delay (review L6 of the
+    // continuation review): a decision, a cancel or an expiry here, not every write of the index.
+    if (durableNotices && queued) options.onNoticeQueued?.()
     return result
   }
 
@@ -437,7 +449,9 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
    */
   function pruneWhenDue(): Promise<void> | undefined {
     if (pruning) return pruning
-    if (currentQueueVersion() !== queueVersion) read()
+    const version = currentQueueVersion()
+    if (version === unreadableVersion) return undefined
+    if (version !== queueVersion && !readForPrune(version)) return undefined
     if (Date.now() < nextExpiry) return undefined
     nextExpiry = Number.POSITIVE_INFINITY
     pruning = update(() => undefined).catch((error: unknown) => {
@@ -445,6 +459,24 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       logger.warn('Could not drop the approvals that expired', { error })
     }).finally(() => { pruning = undefined })
     return pruning
+  }
+
+  /**
+   * Reads the index for pruneWhenDue. A damaged one fails the calls that need the queue, never an ordinary call the
+   * rules settled (review L3 of the continuation review): it is logged once, and read again once the file changes.
+   */
+  function readForPrune(version: string): boolean {
+    try {
+      read()
+      unreadableVersion = undefined
+      return true
+    } catch (error) {
+      if (!(error instanceof StateFileError)) throw error
+      logger.warn('The approvals index is unreadable; ordinary calls go on, while asks and decisions wait for its repair', { error })
+      unreadableVersion = version
+      nextExpiry = Date.now() + PRUNE_RETRY_MS
+      return false
+    }
   }
 
   function currentQueueVersion(): string {
@@ -474,7 +506,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   const registry: ApprovalRegistry = {
     ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs }) {
       return update(state => {
-        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) }, record: recordCall })
+        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) }, record: recordCall, shownWhole: entry => withCall(entry).call?.complete === true })
         if (joined) return joined
         assertRoomFor({ state, workspace, sessionId, actor, asked: asks.length })
         // Every field a person or a relay reads is redacted as the shown arguments are (owner decision D17);
@@ -484,7 +516,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),
         }))
         const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }) }))
-        assertDeliveryRoom(state, entries)
+        assertDeliveryRoom(state, entries, notifies)
         // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
         if (call === undefined) assertBytesFor({ waiting: state.pending.filter(entry => entry.workspace === workspace), group: entries, callBytes: 0 })
         state.pending.push(...(call === undefined ? entries : recordCall({ state, group: entries, call })))
@@ -556,8 +588,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     },
 
     evaluate({ tokens, sessionId, tool, fingerprint: callFingerprint, check, admit, spent }) {
-      // An ordinary call carries no token and the rules settle it without a once, so no once could be spent:
-      // the queue is neither read nor rewritten, and its cost does not grow with the asks waiting (review M5).
+      // An ordinary call carries no token and the rules settle it without a once, so no once could be spent and the
+      // queue is not locked (review M5). It reads the small index only after another process replaced it, to learn
+      // when the earliest ask expires, and rewrites it only to drop what expired; a damaged index fails neither the
+      // call nor the next one (review L3 of the continuation review).
       if (tokens.length === 0) {
         const settled = check([])
         if (settled.kind !== 'ask') {
@@ -705,7 +739,7 @@ interface JoinKey { requestId: string; sessionId: string; actor: string | undefi
  * grant; anything else is a different call reusing the id. A group answered with approvals alone is
  * not joined: its call ran (a re-send replays it) or asks afresh.
  */
-function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[]; fingerprint?: string; recorded?: AskedCall }; record: (input: { state: State; group: PendingEntry[]; call: AskedCall; replacing: readonly PendingEntry[] }) => PendingEntry[] }): AskResult | null {
+function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[]; fingerprint?: string; recorded?: AskedCall }; record: (input: { state: State; group: PendingEntry[]; call: AskedCall; replacing: readonly PendingEntry[] }) => PendingEntry[]; shownWhole: (entry: PendingEntry) => boolean }): AskResult | null {
   const { key } = input
   const inGroup = (entry: { workspace: string; sessionId?: string; requestId?: string; actor?: string }) =>
     entry.workspace === input.workspace && entry.requestId === key.requestId && entry.sessionId === key.sessionId && entry.actor === key.actor
@@ -718,10 +752,11 @@ function joinWaiting(input: { state: State; workspace: string; key: JoinKey; cal
   if (recorded.some(value => value !== input.call.fingerprint)) throw new RequestIdReusedError(`Request ${key.requestId} already names a different call waiting for approval; send a new requestId`)
   const answered = resolved.flatMap(entry => entry.request ? [entry.request] : [])
   if (!sameGroup({ waiting, answered, call: input.call })) throw new ApprovalConflictError(`Request ${key.requestId} is already waiting for approval of different asks`)
-  // An ask recorded before this build names the same call (its fingerprint matched): the re-send records it
-  // whole, in a file of its own and within the budgets, so a person's device can decide it (owner decision D17, review M5).
+  // An ask recorded before this build, or whose call file is missing or damaged, names the same call (its fingerprint
+  // matched): the re-send records it whole, in a file of its own and within the budgets, so a person's device can
+  // decide it (owner decision D17, review M5; review L4 of the continuation review).
   const { recorded: whole } = input.call
-  const partial = pending.filter(entry => !(entry.callFile?.complete ?? entry.call?.complete) && entry.fingerprint !== undefined && entry.fingerprint === input.call.fingerprint)
+  const partial = pending.filter(entry => !input.shownWhole(entry) && entry.fingerprint !== undefined && entry.fingerprint === input.call.fingerprint)
   if (whole?.complete && partial.length > 0) {
     const recorded = input.record({ state: input.state, group: partial.map(({ call: _call, callFile: _callFile, ...entry }) => entry), call: whole, replacing: partial })
     input.state.pending = input.state.pending.map(entry => { const index = partial.indexOf(entry); return index === -1 ? entry : recorded[index]! })
@@ -820,8 +855,14 @@ function prune(state: State): State['pending'] {
   return expired
 }
 
-function assertDeliveryRoom(state: State, additional: readonly PendingEntry[] = []): void {
-  const pending = [...state.pending, ...additional].filter(entry => entry.notify)
+/**
+ * Admits an ask only while the outbox has room for every waiting ask's end (and its wait notice) besides what it
+ * holds. `notifies` names the asks whose end is queued: those asked with the flag, and in a durable registry every
+ * ask of its workspace, so an ask from before the webhook was configured is reserved for too (review M2 of the
+ * continuation review).
+ */
+function assertDeliveryRoom(state: State, additional: readonly PendingEntry[], notifies: (entry: PendingEntry) => boolean): void {
+  const pending = [...state.pending, ...additional].filter(notifies)
   const reserved = pending.flatMap(entry => {
     const reservation = {
     id: '00000000-0000-4000-8000-000000000000', workspace: entry.workspace, expiresAt: '9999-12-31T23:59:59.999Z',
@@ -830,18 +871,27 @@ function assertDeliveryRoom(state: State, additional: readonly PendingEntry[] = 
     // Reserve the skipped wait notice too, until it already occupies its own slot.
     return state.outbox.some(item => item.workspace === entry.workspace && item.notice.token === entry.request.token) ? [reservation] : [reservation, reservation]
   })
-  if (state.outbox.length + reserved.length > APPROVAL_OUTBOX_COUNT_MAX
-    || Buffer.byteLength(JSON.stringify([...state.outbox, ...reserved])) > APPROVAL_OUTBOX_BYTES_MAX) {
+  if (pastDeliveryLimits([...state.outbox, ...reserved])) {
     throw new ApprovalLimitError('Approval outcome delivery is full; restore the webhook receiver before asking for more approvals')
   }
 }
 
+function pastDeliveryLimits(entries: readonly unknown[]): boolean {
+  return entries.length > APPROVAL_OUTBOX_COUNT_MAX || Buffer.byteLength(JSON.stringify(entries)) > APPROVAL_OUTBOX_BYTES_MAX
+}
+
+/**
+ * Queues an ask's end or its wait notice, and never refuses (review M2 of the continuation review): an expiry,
+ * a decision, a cancel or an acknowledgement must commit whatever the outbox holds. Admission keeps the outbox
+ * within its limits for every reserved ask; an end nothing reserved room for may pass them, which is logged, and
+ * new asks then wait until the receiver drains it.
+ */
 function enqueueOutcome(state: State, workspace: string, notice: ApprovalNotice): void {
   const previous = state.outbox.find(entry => entry.workspace === workspace && entry.notice.token === notice.token)
   if (previous && (previous.notice.event !== 'skipped' || notice.event === 'skipped')) return
   state.outbox = state.outbox.filter(entry => entry !== previous)
   state.outbox.push({ id: randomUUID(), workspace, notice, expiresAt: new Date(Date.now() + APPROVAL_OUTBOX_RETENTION_MS).toISOString() })
-  assertDeliveryRoom(state)
+  if (pastDeliveryLimits(state.outbox)) logger.warn('Approval outcome delivery is past its limits; an ask\'s end was kept anyway, and new asks wait until the receiver drains it', { entries: state.outbox.length, event: notice.event })
 }
 
 export function subjectsByRule(subjects: GrantSubject[], rule: PermissionRuleId): string[] {

@@ -93,6 +93,54 @@ describe('every decision needs a complete recorded call', () => {
   })
 })
 
+// Review L4 of the continuation review: the refusal of an ask whose call file was lost recommends re-sending the call,
+// and a re-send under the same requestId joined the waiting ask without recording anything, so it stayed unapprovable.
+describe('a re-send repairs an ask whose kept call is lost', () => {
+  it.each(['missing_file', 'unreadable'] as const)('records a %s call again under the same requestId, so the ask can be approved', async (kind) => {
+    const { root, registry, service } = queue()
+    const calls = join(root, 'approval-calls')
+    try {
+      const sent = { tool: 'fs_write', sessionId: 'mcp', requestId: 'request-1', fingerprint: 'call-1', asks: asks(1), call: whole() }
+      const [request] = (await registry.ask(sent)).requests
+      const [file] = readdirSync(calls)
+      if (kind === 'missing_file') rmSync(join(calls, file!))
+      else writeFileSync(join(calls, file!), 'invalid JSON')
+      expect(await registry.resolve({ token: request!.token, approved: true, scope: 'once' }, 'admin')).toMatchObject({ ok: false, reason: expect.stringContaining('re-send the call') })
+      expect(await registry.ask(sent)).toMatchObject({ joined: true, requests: [{ token: request!.token }] })
+      expect(readdirSync(calls)).toHaveLength(1)
+      expect(readdirSync(calls)).not.toContain(file)
+      expect(registry.waitingAsk(request!.token)?.call).toEqual(whole())
+      expect(await registry.resolve({ token: request!.token, approved: true, scope: 'once' }, 'admin')).toMatchObject({ ok: true })
+    } finally { await service.close() }
+  })
+})
+
+// Review L3 of the continuation review: an ordinary call read the index to learn the next expiry, so a damaged
+// approvals.json made every allowed or denied call throw until the owner repaired it.
+describe('an unreadable approvals index fails the calls that need it, not ordinary ones', () => {
+  it('lets allowed and denied calls through while it is damaged, refuses an ask, and prunes again once it is repaired', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const { filePath, registry, service } = queue()
+    const allowed = () => registry.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: () => ({ kind: 'allow', allowedBy: [] }) })
+    const denied = () => registry.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: () => ({ kind: 'deny', denial: { kind: 'deny', rule: 'command_policy', subject: 'x', reason: 'refused' } }) })
+    try {
+      const [request] = (await issue(registry)).requests
+      const healthy = readFileSync(filePath, 'utf8')
+      writeFileSync(filePath, '{"version":1,"pending":[')
+      expect(await allowed()).toMatchObject({ kind: 'allow' })
+      expect(await denied()).toMatchObject({ kind: 'deny' })
+      vi.setSystemTime(Date.now() + 11 * 60_000)
+      expect(await allowed()).toMatchObject({ kind: 'allow' })
+      expect(await denied()).toMatchObject({ kind: 'deny' })
+      await expect(issue(registry)).rejects.toThrow(/unreadable or invalid/)
+      writeFileSync(filePath, healthy)
+      expect(await allowed()).toMatchObject({ kind: 'allow' })
+      expect(JSON.parse(readFileSync(filePath, 'utf8')).pending).toEqual([])
+      expect(registry.pending().map(entry => entry.token)).not.toContain(request!.token)
+    } finally { await service.close() }
+  })
+})
+
 describe('approval caps distinguish the actor and session pair', () => {
   it('keeps an HTTP caller using mcp from filling the stdio host count cap', async () => {
     const { registry, service } = queue()

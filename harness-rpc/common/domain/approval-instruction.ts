@@ -74,10 +74,11 @@ export function describeApprovalRequest(input: { request: ApprovalRequest; works
 }
 
 /**
- * What every route says of an ask recorded before this build: its whole call was never kept, so it is shown
- * in part and nobody approves it; it can be denied, or the call re-sent to ask again (owner decision D17).
+ * What every route says of an ask recorded before this build, or whose kept call file is missing or damaged: its
+ * whole call cannot be shown, so nobody approves it; it can be denied, or the call re-sent under the same requestId,
+ * which records it again (owner decision D17; review L4 of the continuation review).
  */
-export const RECORDED_BEFORE_NOTE = 'recorded before this build: its whole call was not kept, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
+export const RECORDED_BEFORE_NOTE = 'recorded before this build, or its kept call is missing or damaged: its whole call cannot be shown, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
 
 /** Arguments past this size get a line naming their size before anything else, so a person knows how much follows. */
 export const LARGE_ACTION_BYTES = 64 * 1_024

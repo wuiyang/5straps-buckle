@@ -8,7 +8,7 @@ import { createApprovalNoticeSender } from '../common/adapters/approval/webhook-
 import { loadConfig, policyPath } from '../common/runtime/config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
+import { createApprovalNotices, type ApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { APPROVAL_OUTBOX_BYTES_MAX, APPROVAL_OUTBOX_COUNT_MAX, APPROVAL_OUTBOX_RETENTION_MS, createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 
 const at = new Date('2026-10-01T12:00:00.000Z').getTime()
@@ -215,5 +215,100 @@ describe('durable approval outcome delivery', () => {
     await expect(send(notice)).rejects.toThrow('503')
     await expect(send(notice)).resolves.toBeUndefined()
     expect(calls[0]).not.toEqual(calls[1])
+  })
+})
+
+// Review M2 of the continuation review: an ask without the notify flag (asked before the webhook was configured, by
+// a process without it, or before 3a66f2b) reserved no room, so its expiry at the outbox cap threw inside every
+// update, acknowledgement included, and nothing drained or decided until the oldest entry aged out.
+describe('an ask\'s end is recorded whatever the outbox holds', () => {
+  const iso = (ms: number) => new Date(ms).toISOString()
+  const entry = (q: ReturnType<typeof queue>, expiresAt: number, notify: boolean) => ({
+    request: { token: randomUUID(), rule: 'write_scope', subject: '/outside/x', reason: 'outside', tool: 'fs_write', offeredScopes: ['once'], expiresAt: iso(expiresAt) },
+    sessionId: 's', workspace: q.workspace, ...(notify ? { notify: true } : {}),
+  })
+  const outcomes = (q: ReturnType<typeof queue>, count: number) => Array.from({ length: count }, () => ({ id: randomUUID(), workspace: q.workspace, notice: { token: randomUUID(), event: 'cancelled', at: iso(Date.now() - 60_000) }, expiresAt: iso(Date.now() + APPROVAL_OUTBOX_RETENTION_MS - 60_000) }))
+  /** One waiting ask holding its reservation, one unreserved ask that has just expired, and the outbox at its cap. */
+  function atCap(q: ReturnType<typeof queue>) {
+    const live = entry(q, Date.now() + 3_600_000, true)
+    const legacy = entry(q, Date.now() - 1_000, false)
+    writeFileSync(q.file, JSON.stringify({ version: 1, pending: [live, legacy], once: [], resolved: [], outbox: outcomes(q, APPROVAL_OUTBOX_COUNT_MAX - 2) }))
+    return { live, legacy }
+  }
+
+  it.each<[string, (registry: ReturnType<ReturnType<typeof queue>['open']>, live: { request: { token: string } }) => Promise<unknown>]>([
+    ['acknowledge', registry => registry.acknowledgeDeliveries(registry.pendingDeliveries().slice(0, 100).map(item => item.id))],
+    ['sweep', registry => registry.sweep()],
+    ['cancel', registry => registry.cancel(['none'])],
+    ['resolve', (registry, live) => registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, 'admin')],
+  ])('lets %s commit while an unreserved ask expires at the cap, and records that expiry', async (_, act) => {
+    const q = queue()
+    const { live, legacy } = atCap(q)
+    const registry = q.open()
+    await act(registry, live)
+    expect(registry.pendingDeliveries().some(item => item.notice.token === legacy.request.token && item.notice.event === 'expired')).toBe(true)
+  })
+
+  it('acknowledges, sweeps, cancels, resolves and asks again in turn once the receiver drains the head', async () => {
+    const q = queue()
+    const { live, legacy } = atCap(q)
+    const registry = q.open()
+    await registry.acknowledgeDeliveries(registry.pendingDeliveries().slice(0, 100).map(item => item.id))
+    await registry.sweep()
+    expect(await registry.cancel(['none'])).toEqual([])
+    expect(await registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, 'admin')).toMatchObject({ ok: true })
+    expect(await q.ask()).toHaveLength(1)
+    expect(registry.pendingDeliveries().map(item => item.notice)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ token: legacy.request.token, event: 'expired' }),
+      expect.objectContaining({ token: live.request.token, event: 'denied' }),
+    ]))
+  })
+
+  it('still refuses a new ask while reserved asks hold the outbox at its maximum (control)', async () => {
+    const q = queue()
+    const live = entry(q, Date.now() + 3_600_000, true)
+    writeFileSync(q.file, JSON.stringify({ version: 1, pending: [live], once: [], resolved: [], outbox: outcomes(q, APPROVAL_OUTBOX_COUNT_MAX - 2) }))
+    await expect(q.ask()).rejects.toThrow('delivery is full')
+    await q.registry.sweep()
+    expect(await q.registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, 'admin')).toMatchObject({ ok: true })
+    expect(q.registry.pendingDeliveries()).toHaveLength(APPROVAL_OUTBOX_COUNT_MAX - 1)
+  })
+
+  it('reserves room for a waiting ask without the flag once a durable registry admits asks', async () => {
+    const q = queue()
+    const unflagged = entry(q, Date.now() + 3_600_000, false)
+    writeFileSync(q.file, JSON.stringify({ version: 1, pending: [unflagged], once: [], resolved: [], outbox: outcomes(q, APPROVAL_OUTBOX_COUNT_MAX - 3) }))
+    await expect(q.ask()).rejects.toThrow('delivery is full')
+    expect(await q.registry.cancel([unflagged.request.token])).toEqual([unflagged.request.token])
+    expect(await q.ask()).toHaveLength(1)
+  })
+})
+
+// Review L6 of the continuation review: every index write signalled the sender, which cleared its retry timer, so
+// twenty updates that queued nothing made twenty attempts in a second while the receiver failed.
+describe('the outcome sender keeps its retry delay while the receiver fails', () => {
+  it('starts no attempt for updates that queue nothing, and holds a newly queued outcome for the retry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-outbox-retry-'))
+    let notices: ApprovalNotices | undefined
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, 1, { durableNotices: true, onNoticeQueued: () => { void notices?.flush() } })
+    const attempts: number[] = []
+    notices = createApprovalNotices(async () => { attempts.push(Date.now()); throw new Error('HTTP 503') }, { registry, retryMs: 2_000 })
+    const asked = async () => (await registry.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], call: { arguments: { path: '/outside', content: 'x' }, cwd: root, description: null, complete: true } })).requests
+    try {
+      await registry.cancel((await asked()).map(request => request.token))
+      await vi.waitFor(() => expect(attempts).toHaveLength(1))
+      for (let index = 0; index < 20; index++) {
+        await registry.cancel(['none'])
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+      await registry.cancel((await asked()).map(request => request.token))
+      expect(attempts).toHaveLength(1)
+      expect(registry.pendingDeliveries()).toHaveLength(2)
+      await vi.waitFor(() => expect(attempts).toHaveLength(2), { timeout: 4_000 })
+      expect(attempts[1]! - attempts[0]!).toBeGreaterThanOrEqual(1_900)
+    } finally {
+      await notices.settle()
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
