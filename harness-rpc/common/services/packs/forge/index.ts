@@ -16,10 +16,10 @@ import { judgedPath } from '../judged-path.js'
 import { resolveTarget } from '../../invocation/real-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, receivePackCommand, transportConfig, type GitConfig } from '../git-isolation.js'
+import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
 import { assertNoFilters, assertNoFilterPrograms } from './isolation.js'
 import { assertGitAgrees, GIT_DIRECTORY_QUERY, ownGitDirectory } from './own-git-directory.js'
-import { ensureReceiveGuard, guardRefusal, receiveGuardEnvironment } from './receive-pack-guard.js'
+import { guardedReceivePackCommand, guardRefusal, receiveGuardEnvironment } from './receive-pack-guard.js'
 import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
 const PACK_ID = 'forge'
@@ -76,6 +76,13 @@ export interface ForgePackOptions {
   /** The owner's approved list, so a remote off the forge host is pushed to only where it says so. */
   approved: UrlMatcher | null
   unavailableReason: string | null
+}
+
+/** The git that receives a push: its command, its environment, and for Buckle's own guard, how to read its refusal. */
+interface ReceivingGit {
+  command: string
+  environment: Record<string, string>
+  refusedBy?: (stderr: string) => string | null
 }
 
 export function createForgePack(options: ForgePackOptions): Pack {
@@ -222,13 +229,15 @@ export function createForgePack(options: ForgePackOptions): Pack {
    * How a push reaches `repository` on this filesystem, once its git directory is its own (review H1 of the
    * continuation review): the receiving git's command, pointed at Buckle's guard as its only hook, and what the
    * guard is told so it can test the repository git really opened before any ref is written (slice 7 review F3).
+   * Only this receiving git is Buckle's, so only its refusal is read as one (slice 7b review RG-2).
    */
-  const guardedReceivePack = async (input: { repository: string; context: ToolContext }): Promise<{ command: string; environment: Record<string, string> }> => {
+  const guardedReceivePack = async (input: { repository: string; context: ToolContext }): Promise<ReceivingGit> => {
     const gitDirectory = ownGitDirectory({ repository: input.repository, remedy: PUSH_REMEDY })
     await assertGitResolvesOwn({ repository: input.repository, gitDirectory, remedy: PUSH_REMEDY, context: input.context })
     return {
-      command: receivePackCommand(ensureReceiveGuard(options.stateDirectory)),
+      command: guardedReceivePackCommand(options.stateDirectory),
       environment: receiveGuardEnvironment({ repository: input.repository, gitDirectory, remedy: PUSH_REMEDY }),
+      refusedBy: guardRefusal,
     }
   }
 
@@ -301,8 +310,9 @@ export function createForgePack(options: ForgePackOptions): Pack {
         // own on its command line (review H1 of the slice 5 re-review), with Buckle's guard as its only hook, which
         // tests the repository it opened before any ref is written (slice 7 review F3).
         const refspec = `refs/heads/${branch}:refs/heads/${branch}`
-        const receiving = destination.kind === 'local' ? await guardedReceivePack({ repository: destination.path, context }) : { command: 'git-receive-pack', environment: {} }
-        await gitOutput({ repository, args: ['push', `--receive-pack=${receiving.command}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), extra: receiving.environment, secrets: userinfoForms(destination), refusedBy: guardRefusal, context })
+        // A remote's own stderr is never read as Buckle's refusal: an https push that fails is a failed push.
+        const receiving: ReceivingGit = destination.kind === 'local' ? await guardedReceivePack({ repository: destination.path, context }) : { command: 'git-receive-pack', environment: {} }
+        await gitOutput({ repository, args: ['push', `--receive-pack=${receiving.command}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), extra: receiving.environment, secrets: userinfoForms(destination), ...(receiving.refusedBy ? { refusedBy: receiving.refusedBy } : {}), context })
         const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
         // A push to a URL moves no remote-tracking ref; origin named this destination at launch, so its ref follows.
         await gitOutput({ repository, args: ['update-ref', `refs/remotes/origin/${branch}`, headSha], context })

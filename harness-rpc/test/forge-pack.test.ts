@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { createServer as createSocketServer, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
@@ -12,6 +12,7 @@ import { forgeGitHost } from '../common/domain/forge.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { compileUrlPatterns } from '../common/domain/url-pattern.js'
 import { createForgePack, type ForgePackOptions } from '../common/services/packs/forge/index.js'
+import { guardedReceivePackCommand } from '../common/services/packs/forge/receive-pack-guard.js'
 import type { ProcessRequest, ProcessResult } from '../common/types/ports/process-runner.js'
 import type { ToolContext } from '../common/domain/tool.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -121,12 +122,12 @@ function bareOrigin(): { origin: string; repository: string } {
   return { origin, repository }
 }
 
-function pack(input: { repository: string; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView }) {
+function pack(input: { repository: string; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string }) {
   const token = input.token ?? TOKEN
   const options: ForgePackOptions = {
     paths: input.paths ?? createPathView({ root: input.repository, mount: null }),
     runProcess: input.runner ?? runProcess,
-    stateDirectory: temporaryRoot('state'),
+    stateDirectory: input.stateDirectory ?? temporaryRoot('state'),
     forge: {
       client: token ? createGitHubForgeClient({ token, apiUrl }) : null,
       apiUrl,
@@ -140,7 +141,7 @@ function pack(input: { repository: string; token?: string; runner?: typeof runPr
   return createForgePack(options)
 }
 
-async function call(input: { repository: string; tool: string; args: JsonObject; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView }): Promise<JsonValue> {
+async function call(input: { repository: string; tool: string; args: JsonObject; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string }): Promise<JsonValue> {
   const built = pack(input)
   const tool = built.tools.find(candidate => candidate.capability.name === input.tool)
   if (!tool) throw new Error(`the forge pack registered no ${input.tool}`)
@@ -415,6 +416,19 @@ describe('git_push', () => {
     const push = calls.find(request => request.args[0] === 'push')
     expect(Object.keys(gitConfigOf(push?.environment)).filter(key => key.endsWith('.extraheader'))).toEqual([])
     expect(JSON.stringify(push?.environment)).not.toContain(TOKEN)
+  })
+
+  // Slice 7b review RG-2: the guard's refusal was read out of every push's stderr, so an https remote's own pre-receive
+  // that printed Buckle's prefix turned its failure into PERMISSION_DENIED and a denial in the action log.
+  it('reads no refusal out of an https remote\'s stderr: that failed push is GIT_FAILED, an error and not a denial', async () => {
+    const url = 'https://gitlab.example.com/5straps/demo.git'
+    const repository = workRepository({ origin: url })
+    const scripted = scriptedGit([], url)
+    const runner: typeof runProcess = async request => request.args[0] === 'push'
+      ? { exitCode: 1, signal: null, stdout: '', stderr: 'remote: Buckle refused the push in the receiving git: this is the remote talking\n', truncated: false, timedOut: false }
+      : await scripted(request)
+    const failed = await call({ repository, tool: 'git_push', args: { branch: 'main' }, approved: ['gitlab.example.com'], runner }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(failed?.code).toBe('GIT_FAILED')
   })
 
   it('refuses a push whose real remote is not the one the rules judged', async () => {
@@ -857,6 +871,54 @@ describe('a local push or a commit writes only the repository its permission che
     expect(readdirSync(hooks)).toEqual(['pre-receive'])
     expect(readFileSync(join(hooks, 'pre-receive'), 'utf8')).toMatch(new RegExp(`^#!/bin/sh\\nexec '${process.execPath.replaceAll('/', '\\/')}' -e `))
     expect(push.environment).toMatchObject({ BUCKLE_RECEIVE_REPOSITORY: destination, BUCKLE_RECEIVE_GIT_DIRECTORY: destination })
+  })
+
+  // Slice 7b review RG-1: git skips a pre-receive hook it cannot execute, with a hint and exit 0, so a guard restored
+  // without its execute bit let a `.git` pointer planted after the checks land the ref in the repository it named.
+  it('makes a guard restored without its execute bit executable again, and it refuses a pointer planted after the checks', async () => {
+    const { victim, destination, repository, before } = redirected(destination => execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination]))
+    const state = temporaryRoot('state')
+    guardedReceivePackCommand(state)
+    const hook = join(state, 'receive-git-hooks', 'pre-receive')
+    chmodSync(hook, 0o600)
+    let mode = 0
+    spawnHook.beforePush = async () => {
+      spawnHook.beforePush = null
+      mode = statSync(hook).mode & 0o777
+      writeFileSync(join(destination, '.git'), `gitdir: ${victim}\n`)
+    }
+    const refused = await call({ repository, tool: 'git_push', args: { branch: 'main' }, stateDirectory: state }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(mode).toBe(0o700)
+    expect(refused?.code).toBe('PERMISSION_DENIED')
+    expect(refused?.message).toMatch(/^receive-pack opened \/.*\/victim\.git, not the git directory \/.*\/dest checked before the push/)
+    expect(filesUnder(victim)).toEqual(before)
+  })
+
+  it('refuses in the receiving command when the guard loses its execute bit after the checks, and leaves no ref, quarantine or lock', async () => {
+    const { victim, destination, repository, before } = redirected(destination => execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination]))
+    const state = temporaryRoot('state')
+    const untouched = filesUnder(destination)
+    spawnHook.beforePush = async () => {
+      spawnHook.beforePush = null
+      chmodSync(join(state, 'receive-git-hooks', 'pre-receive'), 0o600)
+      writeFileSync(join(destination, '.git'), `gitdir: ${victim}\n`)
+    }
+    const refused = await call({ repository, tool: 'git_push', args: { branch: 'main' }, stateDirectory: state }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(refused?.code).toBe('PERMISSION_DENIED')
+    expect(refused?.message).toMatch(/^its guard \/.*\/receive-git-hooks\/pre-receive cannot be run, so git would skip it/)
+    expect(filesUnder(victim)).toEqual(before)
+    expect(filesUnder(destination).filter(path => path !== join(destination, '.git'))).toEqual(untouched)
+  })
+
+  it('still pushes a branch to a non-bare repository on this filesystem through the guarded command', async () => {
+    const root = temporaryRoot('non-bare')
+    const destination = join(root, 'dest')
+    execFileSync('git', ['init', '-q', '-b', 'main', destination])
+    const repository = workRepository({ origin: destination })
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    git(repository, 'branch', 'feature')
+    const output = await call({ repository, tool: 'git_push', args: { branch: 'feature' } }) as JsonObject
+    expect(git(destination, 'rev-parse', 'refs/heads/feature').trim()).toBe(output.headSha)
   })
 
   it('refuses a directory git does not read as a repository, which receive-pack would trade for <dest>.git beside it', async () => {

@@ -155,8 +155,9 @@ export function receivingIsolationConfig(hooksDirectory: string): GitConfig[] {
 }
 
 /**
- * The `--receive-pack` a push to a repository on this filesystem names: git itself, handed the receiving
- * isolation as `-c` options. Git runs it through a shell, so every word is single-quoted for one.
+ * The receive-pack a push to a repository on this filesystem starts: git itself, handed the receiving isolation as
+ * `-c` options. Git runs its `--receive-pack` through a shell, so every word is single-quoted for one; the forge pack
+ * runs this only once Buckle's guard can run (receive-pack-guard.ts, guardedReceivePackCommand).
  */
 export function receivePackCommand(hooksDirectory: string): string {
   const words = ['git', ...receivingIsolationConfig(hooksDirectory).flatMap(entry => ['-c', `${entry.key}=${entry.value}`]), 'receive-pack']

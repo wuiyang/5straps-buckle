@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ToolExecutionError } from '../../../domain/tool.js'
+import { receivePackCommand } from '../git-isolation.js'
 import { MAX_ENTRIES, POINTER_FILES, REF_DIRECTORIES } from './own-git-directory.js'
 
 /** Buckle-owned, and where the receiving git of a local push finds its hooks: the guard below, and nothing else. */
@@ -66,24 +67,60 @@ for (const [path, depth] of scans) {
 `
 
 /**
+ * The `--receive-pack` command of a push to a repository on this filesystem: git's receive-pack with the receiving
+ * isolation and Buckle's guard as its only hook (ensureReceiveGuard), started only while that hook can run. Git skips
+ * a hook it cannot execute with a hint and no failure, so the command tests the execute bit itself first and refuses
+ * without it (slice 7b review RG-1): a hook that lost its mode after the checks, or a state directory on a noexec
+ * mount, fails the push closed. Git runs the command through a shell and appends the destination's path to it.
+ */
+export function guardedReceivePackCommand(stateDirectory: string): string {
+  const directory = ensureReceiveGuard(stateDirectory)
+  const hook = join(directory, 'pre-receive')
+  const refusal = `${REFUSAL}its guard ${hook} cannot be run, so git would skip it and could write somewhere the permission rules never judged; restore the file's execute permission, or keep Buckle's state directory off a noexec mount`
+  return `test -x ${shellQuoted(hook)} || { echo ${shellQuoted(refusal)} >&2; exit 1; }; exec ${receivePackCommand(directory)}`
+}
+
+/**
  * The hooks directory the receiving git of a local push is pointed at (receivingIsolationConfig's
  * `core.hooksPath`), holding only the guard as `pre-receive`, run by this process's own node. Written in
- * Buckle's state directory and replaced whole, so a push never runs a half-written hook.
+ * Buckle's state directory and replaced whole, so a push never runs a half-written hook. A guard without its
+ * execute permission (a state directory restored or copied without modes, a umask that narrowed the mode it was
+ * written with) is made executable again, and one that still cannot run stops the push before it starts (slice 7b
+ * review RG-1).
  */
-export function ensureReceiveGuard(stateDirectory: string): string {
+function ensureReceiveGuard(stateDirectory: string): string {
   const directory = join(stateDirectory, RECEIVE_HOOKS_DIRECTORY)
   const hook = join(directory, 'pre-receive')
   const content = `#!/bin/sh\nexec ${shellQuoted(process.execPath)} -e ${shellQuoted(GUARD_SOURCE)}\n`
   try {
     mkdirSync(directory, { recursive: true, mode: 0o700 })
-    if (readOrNull(hook) === content) return directory
-    const written = `${hook}.${process.pid}.${Date.now()}`
-    writeFileSync(written, content, { mode: 0o700 })
-    renameSync(written, hook)
+    if (readOrNull(hook) !== content) {
+      const written = `${hook}.${process.pid}.${Date.now()}`
+      writeFileSync(written, content, { mode: 0o700 })
+      renameSync(written, hook)
+    }
   } catch {
     throw new ToolExecutionError(`Buckle could not write its receive-pack guard at ${hook}; a push to a repository on this filesystem is not run without it`, { code: 'GIT_ISOLATION_UNAVAILABLE' })
   }
+  if (!executable(hook)) {
+    try {
+      chmodSync(hook, 0o700)
+    } catch {
+      // Judged by the test below.
+    }
+    if (!executable(hook)) throw new ToolExecutionError(`Buckle's receive-pack guard at ${hook} cannot be run (its execute permission cannot be set, or the state directory is on a noexec mount), and git would skip it; a push to a repository on this filesystem is not run without it`, { code: 'GIT_ISOLATION_UNAVAILABLE' })
+  }
   return directory
+}
+
+/** Whether this process may execute the file at `path`, as git tests a hook before it runs one. */
+function executable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** What the guard is told about the push, through the environment git hands the receiving git and its hooks. */
