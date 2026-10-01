@@ -111,6 +111,52 @@ describe('a shell wrapper', () => {
   })
 })
 
+// The continuation review, "Seen outside this range": `env git push --force dest main` passed both the destructive
+// floor and the default command policy, and an allowed wrapper's body was never read as commands.
+describe('a prefix that runs another command', () => {
+  it.each([
+    ['env', ['git', 'push', '--force', 'dest', 'main']],
+    ['env', ['A=b', 'git', 'clean', '-fdx']],
+    ['timeout', ['5', 'git', 'reset', '--hard']],
+  ])('asks about %s %s under the default policy, as the command it runs would', (command, args) => {
+    const outcome = evaluate(command, args)
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks[0]?.rule).toBe('destructive_command')
+  })
+
+  it('asks about a destructive body once the owner allows the wrapper', () => {
+    const outcome = evaluate('bash', ['-c', 'git push --force origin main'], { allow: ['bash -c *'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks[0]?.reason).toMatch(/Force push/)
+  })
+
+  it('leaves an ordinary wrapped command alone', () => {
+    expect(evaluate('env', ['git', 'status']).kind).toBe('allow')
+    expect(evaluate('bash', ['-c', 'git status'], { allow: ['bash -c *'] }).kind).toBe('allow')
+  })
+
+  it('has the deny list meet the command behind the prefix', () => {
+    expect(evaluate('env', ['A=b', 'curl', 'https://x.test'], { deny: ['curl'] }).kind).toBe('deny')
+    expect(evaluate('timeout', ['5', 'nice', 'curl', 'https://x.test'], { deny: ['curl'] }).kind).toBe('deny')
+    expect(evaluate('bash', ['-c', 'env curl https://x.test'], { allow: ['bash -c *'], deny: ['curl'] }).kind).toBe('deny')
+  })
+
+  it('needs the wrapper allowed when a prefix hands its command to a shell', () => {
+    const outcome = evaluate('env', ['bash', '-c', 'pnpm build'])
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain("allow-command 'bash -c *'")
+  })
+
+  it('never carries a command past the allow list, which admits the call as typed', () => {
+    expect(evaluate('env', ['pnpm', 'build'], { allow: ['pnpm build'] }).kind).toBe('deny')
+    expect(evaluate('pnpm', ['build'], { allow: ['pnpm build'] }).kind).toBe('allow')
+  })
+
+  it('reaches the owner\'s destructive list behind a prefix', () => {
+    expect(evaluate('env', ['TF_LOG=1', 'terraform', 'destroy'], { destructive: ['terraform destroy *'] }).kind).toBe('ask')
+  })
+})
+
 describe('the destructive floor the owner raised', () => {
   const destructive = ['terraform destroy *']
 

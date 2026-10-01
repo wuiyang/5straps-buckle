@@ -1,6 +1,7 @@
 import type { ParsedArgv } from '../../argv.js'
-import { commandSubject, gitInvocation, hasFlag, parseArgv, shellStatements, statementWords, SHELL_COMMANDS } from '../../argv.js'
+import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, SHELL_COMMANDS } from '../../argv.js'
 import type { CommandGlob } from '../../command-glob.js'
+import { allForms, commandForms } from '../../command-forms.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
 
@@ -21,6 +22,10 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 /**
  * The built-in list is a floor. `added` holds the globs the owner raised it with for this
  * workspace, which widen what asks and can never narrow it.
+ *
+ * Every command the call runs is judged: the call as typed, the command behind a wrapper prefix such as `env`,
+ * `nice` or `timeout 5`, and each statement of a shell body (the continuation review, "Seen outside this
+ * range"). The subject asked and granted stays the call's own argv (owner decision D17).
  */
 export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[] } = {}): PermissionRule {
   const added = input.added ?? []
@@ -28,9 +33,8 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
     id: 'destructive_command',
     evaluate({ effect, grants }) {
       if (effect.kind !== 'exec') return null
-      const argv = parseArgv(effect.command, effect.args)
-      const words = [argv.command, ...effect.args]
-      const reason = classifyArgv(argv, effect.args) ?? classifyShellScript(argv) ?? classifyAdded({ added, argv, words })
+      const forms = commandForms(effect.command, effect.args)
+      const reason = firstReason(allForms(forms)) ?? (forms.unread ? UNREAD_REASON : null) ?? classifyAdded({ added, forms: allForms(forms) })
       if (!reason) return null
 
       // The shown command and its lossless identity (owner decision D17): never joined, never cut, no
@@ -41,6 +45,17 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       return ask('destructive_command', subject, reason, ['once', 'session'])
     },
   }
+}
+
+const UNREAD_REASON = 'Wrappers or shell bodies nest deeper than Buckle reads; asked rather than guessed at'
+
+function firstReason(forms: readonly string[][]): string | null {
+  for (const [command = '', ...args] of forms) {
+    const argv = parseArgv(command, args)
+    const reason = classifyArgv(argv, args) ?? classifyShellScript(argv)
+    if (reason) return reason
+  }
+  return null
 }
 
 function classifyArgv(argv: ParsedArgv, args: readonly string[]): string | null {
@@ -68,8 +83,8 @@ function classifyGit(argv: ParsedArgv, args: readonly string[]): string | null {
   if (argv.command !== 'git') return null
   const invocation = gitInvocation(args)
   if (invocation.doubleDash) return 'git refuses a bare -- before its subcommand; asked rather than guessed at'
-  const subcommand = invocation.subcommand?.toLowerCase()
-  const flags = parseArgv('git', invocation.args)
+  const subcommand = invocation.subcommand?.toLowerCase() ?? null
+  const flags = parseGitSubcommand(subcommand, invocation.args)
   if (subcommand === 'push' && hasGitOption(flags, 'f', 'force', 'force-with-lease', 'force-if-includes')) return 'Force push rewrites remote history'
   if (subcommand === 'push' && hasGitOption(flags, 'd', 'delete')) return 'git push --delete deletes remote branches'
   if (subcommand === 'push' && hasGitOption(flags, null, 'mirror')) return 'git push --mirror overwrites and deletes remote refs'
@@ -90,9 +105,8 @@ function hasGitOption(flags: ParsedArgv, short: string | null, ...names: string[
   return [...flags.longFlags.keys()].some(typed => typed.length > 0 && names.some(name => name.startsWith(typed)))
 }
 
-function classifyAdded(input: { added: readonly CommandGlob[]; argv: ParsedArgv; words: string[] }): string | null {
-  const statements = shellStatements(input.argv).map(statementWords)
-  const matched = input.added.find(glob => glob.matchesPrefix(input.words) || statements.some(statement => glob.matchesPrefix(statement)))
+function classifyAdded(input: { added: readonly CommandGlob[]; forms: readonly string[][] }): string | null {
+  const matched = input.added.find(glob => input.forms.some(form => glob.matchesPrefix(form)))
   return matched ? `On the workspace destructive list: ${matched.source}` : null
 }
 

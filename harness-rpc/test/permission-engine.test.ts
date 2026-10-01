@@ -175,6 +175,87 @@ describe('destructive commands', () => {
     expect(outcome.asks.find(ask => ask.rule === 'destructive_command')?.reason).toMatch(reason)
   })
 
+  // Review L1 of the continuation review: git gives a value-taking option the next word even when it is `--`, so
+  // the `--force` or `-f` after it stays live; the gate read that `--` as the end of the options and passed.
+  it.each([
+    ['git', ['push', '-o', '--', '--force', 'dest', 'main'], /Force push/],
+    ['git', ['push', '--push-option', '--', '--force', 'dest', 'main'], /Force push/],
+    ['git', ['push', '--push-o', '--', '-f', 'dest', 'main'], /Force push/],
+    ['git', ['push', '-o', '--', '--delete', 'dest', 'main'], /--delete/],
+    ['git', ['push', '--repo', '--', '--force'], /Force push/],
+    ['git', ['push', '--receive-pack', '--', '--force', 'dest'], /Force push/],
+    ['git', ['push', '--exec', '--', '--force', 'dest'], /Force push/],
+    ['git', ['push', '-fo', '--', 'dest'], /Force push/],
+    ['git', ['clean', '-e', '--', '-f'], /git clean/],
+    ['git', ['clean', '--exclude', '--', '-fdx'], /git clean/],
+    ['git', ['clean', '--ex', '--', '-f'], /git clean/],
+    ['git', ['reset', '--pathspec-from-file', '--', '--hard'], /reset --hard/],
+    ['git', ['-c', '--', 'push', '--force'], /Force push/],
+    ['git', ['-C', '--', 'clean', '-f'], /git clean/],
+    ['git', ['--git-dir', '--', 'reset', '--hard'], /reset --hard/],
+    ['git', ['--work-tree', '--', 'push', '-f'], /Force push/],
+    ['git', ['--namespace', '--', 'push', '--force'], /Force push/],
+  ])('gates %s %s, whose -- is an option\'s value', (command, args, reason) => {
+    const outcome = evaluate([exec(command, args)], { write_scope: ['/'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.find(ask => ask.rule === 'destructive_command')?.reason).toMatch(reason)
+  })
+
+  // Controls: a `--` no option took still ends the options, and a value attached to its option is that value.
+  it.each([
+    ['git', ['clean', '-n', '--', '-f']],
+    ['git', ['clean', '-e', 'build', '--', '-f']],
+    ['git', ['push', '-o', 'ci.skip', '--', '--force']],
+    ['git', ['push', '--push-option=ci.skip', '--', '--force']],
+    ['git', ['push', '-o--force', 'origin', 'main']],
+    ['git', ['push', '--signed=--force', 'origin', 'main']],
+    ['git', ['push', '--repo=--force', 'main']],
+  ])('allows %s %s, whose -- or option value ends where git ends it', (command, args) => {
+    expect(evaluate([exec(command, args)], { write_scope: ['/'] }).kind).toBe('allow')
+  })
+
+  // The continuation review, "Seen outside this range": a prefix that runs another command hid it from the gate.
+  it.each([
+    ['env', ['git', 'push', '--force', 'dest', 'main'], /Force push/],
+    ['env', ['A=b', 'git', 'clean', '-fdx'], /git clean/],
+    ['env', ['-i', '-u', 'HOME', '--chdir=/tmp', 'A=b', '/usr/bin/git', 'reset', '--hard'], /reset --hard/],
+    ['env', ['-S', 'git push --force', 'dest', 'main'], /Force push/],
+    ['timeout', ['5', 'git', 'reset', '--hard'], /reset --hard/],
+    ['timeout', ['-s', 'KILL', '--kill-after=3', '5s', 'git', 'push', '-f'], /Force push/],
+    ['nice', ['-n', '10', 'git', 'push', '--force'], /Force push/],
+    ['nice', ['-10', 'rm', '-rf', 'build'], /Recursive delete/],
+    ['nohup', ['git', 'clean', '-f'], /git clean/],
+    ['time', ['-p', 'git', 'push', '-f'], /Force push/],
+    ['stdbuf', ['-oL', 'git', 'clean', '-f'], /git clean/],
+    ['ionice', ['-c', '3', 'git', 'push', '-f'], /Force push/],
+    ['chrt', ['--fifo', '10', 'git', 'reset', '--hard'], /reset --hard/],
+    ['nohup', ['env', 'timeout', '5', 'nice', 'git', 'push', '-f'], /Force push/],
+    ['bash', ['-c', 'git push --force origin main'], /Force push/],
+    ['sh', ['-c', 'cd /x && env git clean -fdx'], /git clean/],
+    ['bash', ['-c', 'true & git push -f origin main'], /Force push/],
+    ['bash', ['-c', 'if git reset --hard; then echo done; fi'], /reset --hard/],
+    ['bash', ['-c', 'echo $(git clean -f)'], /git clean/],
+    ['bash', ['-c', "bash -c 'timeout 5 git push -f'"], /Force push/],
+  ])('gates %s %s, the command behind the prefix', (command, args, reason) => {
+    const outcome = evaluate([exec(command, args)], { write_scope: ['/'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    const ask = outcome.asks.find(entry => entry.rule === 'destructive_command')
+    expect(ask?.reason).toMatch(reason)
+    // The subject asked and granted is the call as typed (owner decision D17), not the unwrapped command.
+    expect(ask?.subject).toBe(commandSubject(command, args))
+  })
+
+  it.each([
+    ['env', ['git', 'status']],
+    ['env', ['A=b', 'pnpm', 'build']],
+    ['timeout', ['5', 'git', 'fetch']],
+    ['ionice', ['-p', '123']],
+    ['bash', ['-c', 'git status']],
+    ['bash', ['-c', 'make build > /dev/null 2>&1']],
+  ])('allows %s %s, whose wrapped command is ordinary', (command, args) => {
+    expect(evaluate([exec(command, args)], { write_scope: ['/'] }).kind).toBe('allow')
+  })
+
   it.each([
     ['pnpm', ['build']],
     ['git', ['push']],

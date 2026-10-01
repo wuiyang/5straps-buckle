@@ -17,6 +17,7 @@ import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, receivePackCommand, transportConfig, type GitConfig } from '../git-isolation.js'
 import { assertNoFilters, assertNoFilterPrograms } from './isolation.js'
+import { assertGitAgrees, GIT_DIRECTORY_QUERY, ownGitDirectory } from './own-git-directory.js'
 import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
 const PACK_ID = 'forge'
@@ -25,6 +26,9 @@ const MAX_DIFF_BYTES = 524_288
 const FIELD_SEPARATOR = '\x1f'
 /** No leading dash, so a branch can never be read as a flag, and no `..` or ref-name punctuation. */
 const BRANCH_PATTERN = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/
+/** What a refusal of a redirected repository tells the caller to do instead (review H1 of the continuation review). */
+const PUSH_REMEDY = 'push to the real repository by its own path (set origin to it) so the permission rules judge it'
+const COMMIT_REMEDY = 'commit in the real repository by its own path so the permission rules judge it'
 
 const repoInput = z.object({ repo: z.string().default('.') })
 
@@ -199,6 +203,16 @@ export function createForgePack(options: ForgePackOptions): Pack {
     }
   }
 
+  /**
+   * Review H1 of the continuation review: the repository a local push or a commit writes is the one the rules
+   * judged, its git directory read from the disk first (no git runs where a pointer sends it) and then as git
+   * itself resolves it.
+   */
+  const assertGitResolvesOwn = async (input: { repository: string; gitDirectory: string; remedy: string; context: ToolContext }): Promise<void> => {
+    const answer = await runGit({ repository: input.repository, args: GIT_DIRECTORY_QUERY, context: input.context })
+    assertGitAgrees({ ...input, answer })
+  }
+
   const forgeRepository = (repository: string): ForgeRepository => {
     const remote = classifyRemote(readOriginUrl(repository))
     assertForgeHost({ remote, gitHost: forge.gitHost })
@@ -221,7 +235,9 @@ export function createForgePack(options: ForgePackOptions): Pack {
       run: async (input, context): Promise<JsonValue> => {
         const repository = judgedPath({ named: input.repo, kind: 'write', paths, context })
         assertRepositoryPaths({ repository, named: input.paths })
+        const gitDirectory = ownGitDirectory({ repository, remedy: COMMIT_REMEDY })
         assertNoFilters({ repository, paths: input.paths })
+        await assertGitResolvesOwn({ repository, gitDirectory, remedy: COMMIT_REMEDY, context })
         assertNoFilterPrograms({ repository, keys: await filterPrograms({ repository, context }) })
         const identity = {
           GIT_AUTHOR_NAME: options.author.name,
@@ -258,6 +274,10 @@ export function createForgePack(options: ForgePackOptions): Pack {
         await assertPushTarget({ repository, pinned: destination, context })
         await assertDestinationUnaliased({ repository, destination, context })
         assertDestinationAllowed({ remote: destination, gitHost: forge.gitHost, approved: options.approved, context })
+        if (destination.kind === 'local') {
+          const gitDirectory = ownGitDirectory({ repository: destination.path, remedy: PUSH_REMEDY })
+          await assertGitResolvesOwn({ repository: destination.path, gitDirectory, remedy: PUSH_REMEDY, context })
+        }
         // To the judged destination by name, never the symbolic origin, which a config change could move
         // after the check. `remote.origin.receivepack` is first-wins in git, so only the command line resets it.
         // A local destination is its absolute real path, which git never reads as a remote name (git refuses a

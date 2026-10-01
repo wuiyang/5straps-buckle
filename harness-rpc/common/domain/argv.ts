@@ -71,6 +71,58 @@ export function gitInvocation(args: readonly string[]): { subcommand: string | n
   return { subcommand: null, args: [] }
 }
 
+/**
+ * The options of each subcommand the destructive gate reads that take the next word as their value, as git's
+ * parse-options reads them: a value it takes may be `--` or `--force`, which then ends nothing and sets nothing
+ * (review L1 of the continuation review: `git push -o -- --force` force-pushed and `git clean -e -- -f` deleted).
+ * Only the subcommands the gate classifies are listed; any other subcommand is read with no value options.
+ */
+const GIT_VALUE_OPTIONS: Readonly<Record<string, { short: string; long: readonly string[] }>> = {
+  push: { short: 'o', long: ['push-option', 'repo', 'receive-pack', 'exec', 'recurse-submodules'] },
+  clean: { short: 'e', long: ['exclude'] },
+  reset: { short: '', long: ['pathspec-from-file'] },
+  checkout: { short: 'bB', long: ['orphan', 'conflict', 'pathspec-from-file'] },
+}
+
+/**
+ * A git subcommand's words as its parse-options reads them: an option that takes a value takes the rest of its
+ * short cluster (`-o--force`) or else the next word, whatever that word is; a long option given without `=`
+ * takes the next word when its name, or a prefix of it git would expand (`--ex` is `--exclude`), takes a value;
+ * and only a `--` no option took ends the options.
+ */
+export function parseGitSubcommand(subcommand: string | null, args: readonly string[]): ParsedArgv {
+  const values = (subcommand ? GIT_VALUE_OPTIONS[subcommand] : undefined) ?? { short: '', long: [] }
+  const shortFlags = new Set<string>()
+  const longFlags = new Map<string, string | null>()
+  const positionals: string[] = []
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index]!
+    if (word === '--') {
+      positionals.push(...args.slice(index + 1))
+      break
+    }
+    if (word === '-' || !word.startsWith('-')) {
+      positionals.push(word)
+      continue
+    }
+    if (word.startsWith('--')) {
+      const separator = word.indexOf('=')
+      const name = (separator === -1 ? word.slice(2) : word.slice(2, separator)).toLowerCase()
+      longFlags.set(name, separator === -1 ? null : word.slice(separator + 1))
+      if (separator === -1 && name.length > 0 && values.long.some(option => option.startsWith(name))) index++
+      continue
+    }
+    for (let offset = 1; offset < word.length; offset++) {
+      const character = word.charAt(offset)
+      shortFlags.add(character)
+      if (!values.short.includes(character)) continue
+      if (offset === word.length - 1) index++
+      break
+    }
+  }
+  return { command: 'git', shortFlags, longFlags, positionals, subcommand }
+}
+
 export function hasFlag(argv: ParsedArgv, short: string | null, ...long: string[]): boolean {
   if (short && argv.shortFlags.has(short)) return true
   return long.some(name => argv.longFlags.has(name))
@@ -119,13 +171,15 @@ export function isShellWrapper(argv: ParsedArgv): boolean {
 
 /**
  * The statements of a shell script body, split where a shell would start a new command, so a
- * pattern written for a command line also meets `curl` inside `bash -c "... | curl ..."`.
+ * pattern written for a command line also meets `curl` inside `bash -c "... | curl ..."`. A single
+ * `&`, a subshell's parentheses, `$(` and a backtick start one too (`true & git push -f`, `$(git clean -f)`).
+ * Splitting is textual, so a separator inside quotes splits too: that only adds candidates to judge.
  */
 export function shellStatements(argv: ParsedArgv): string[] {
   if (!SHELL_COMMANDS.has(argv.command)) return []
   return argv.positionals
     .join('\n')
-    .split(/\n|;|&&|\|\||\|/)
+    .split(/\n|;|&|\||`|\$\(|\(|\)/)
     .map(statement => statement.trim())
     .filter(Boolean)
 }
@@ -133,15 +187,9 @@ export function shellStatements(argv: ParsedArgv): string[] {
 /** Splits on whitespace, keeping a quoted run together and dropping the quotes. */
 const STATEMENT_WORD = /"[^"]*"|'[^']*'|\S+/g
 
-/**
- * One statement of a script body as words, normalised like `parseArgv` does, so a command glob
- * judges what runs inside `bash -c` the way it judges an argument list.
- */
-export function statementWords(statement: string): string[] {
-  const words = (statement.match(STATEMENT_WORD) ?? []).map(unquote)
-  const [command, ...rest] = words
-  if (command === undefined) return []
-  return [baseCommand(command), ...rest]
+/** Text as a shell would split it into words, roughly: whitespace separates, a quoted run stays one word. */
+export function shellWords(text: string): string[] {
+  return (text.match(STATEMENT_WORD) ?? []).map(unquote)
 }
 
 function unquote(word: string): string {
@@ -150,7 +198,8 @@ function unquote(word: string): string {
   return word
 }
 
-function baseCommand(command: string): string {
+/** A command word as the rules compare it: its basename, lowercased, so a path to a binary is the binary. */
+export function baseCommand(command: string): string {
   const withoutDirectory = command.split(/[\\/]/).pop() ?? command
   return withoutDirectory.toLowerCase()
 }

@@ -712,6 +712,11 @@ describe('a push to a repository on this filesystem isolates the receiving git t
     const receivePack = calls.find(request => request.args[0] === 'push')?.args.find(word => word.startsWith('--receive-pack='))
     expect(receivePack).toMatch(/'core\.hooksPath=[^']*git-hooks'/)
     expect(receivePack).toContain("'core.alternateRefsCommand=true'")
+    // Review L8 of the continuation review: the hooks above are silenced by hooksPath whatever gc does, so the gc
+    // keys are asserted on the command line and by their effect: a gc would leave a pack in objects/pack.
+    expect(receivePack).toContain("'receive.autogc=false'")
+    expect(receivePack).toContain("'gc.auto=0'")
+    expect(readdirSync(join(origin, 'objects', 'pack')).filter(name => name.endsWith('.pack'))).toEqual([])
   })
 
   it('refuses a push to the destination\'s checked-out branch rather than checking it out through its filters', async () => {
@@ -735,6 +740,142 @@ describe('a push to a repository on this filesystem isolates the receiving git t
     expect(existsSync(join(destination, 'kept.txt'))).toBe(false)
   })
 })
+
+// Review H1 of the continuation review: receive-pack follows a destination's `.git` file, `.git` link or `commondir`
+// into a repository nothing judged, so a push judged as a write on `dest` landed refs in another repository with no
+// ask; git_commit judged its repository the same way. The git directory is now read from the disk before any git
+// runs there, and confirmed with git itself.
+describe('a local push or a commit writes only the repository its permission check judged (review H1 of the continuation review)', () => {
+  /** A work repository with one commit whose origin is `dest`, shaped by `shape`, beside a victim repository. */
+  function redirected(shape: (destination: string, victim: string) => void) {
+    const root = temporaryRoot('redirect')
+    const victim = join(root, 'victim.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', victim])
+    const destination = join(root, 'dest')
+    mkdirSync(destination)
+    shape(destination, victim)
+    const repository = workRepository({ origin: destination })
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    return { victim, destination, repository, before: filesUnder(victim) }
+  }
+  const recording = (calls: ProcessRequest[]): typeof runProcess => async (request) => {
+    calls.push(request)
+    return await runProcess(request)
+  }
+  const bareShaped = (destination: string) => {
+    writeFileSync(join(destination, 'HEAD'), 'ref: refs/heads/main\n')
+    mkdirSync(join(destination, 'objects'))
+    mkdirSync(join(destination, 'refs'))
+  }
+  const bareWithLink = (name: string) => (destination: string, victim: string) => {
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination])
+    rmSync(join(destination, name), { recursive: true, force: true })
+    symlinkSync(join(victim, name), join(destination, name))
+  }
+
+  it.each<[string, (destination: string, victim: string) => void]>([
+    ['a .git file naming another repository', (destination, victim) => writeFileSync(join(destination, '.git'), `gitdir: ${victim}\n`)],
+    ['a .git symbolic link', (destination, victim) => symlinkSync(victim, join(destination, '.git'))],
+    ['a commondir file in a bare-shaped destination', (destination, victim) => {
+      bareShaped(destination)
+      writeFileSync(join(destination, 'commondir'), `${victim}\n`)
+    }],
+    ['a commondir file in its .git directory', (destination, victim) => {
+      mkdirSync(join(destination, '.git'))
+      bareShaped(join(destination, '.git'))
+      writeFileSync(join(destination, '.git', 'commondir'), `${victim}\n`)
+    }],
+    ['an objects symbolic link', bareWithLink('objects')],
+    ['a HEAD symbolic link', bareWithLink('HEAD')],
+    ['a refs/heads symbolic link', (destination, victim) => {
+      execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination])
+      rmSync(join(destination, 'refs', 'heads'), { recursive: true, force: true })
+      symlinkSync(join(victim, 'refs', 'heads'), join(destination, 'refs', 'heads'))
+    }],
+  ])('refuses a destination with %s before any git runs in it, and the other repository is untouched', async (_, shape) => {
+    const { victim, destination, repository, before } = redirected(shape)
+    const calls: ProcessRequest[] = []
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: recording(calls) }))
+      .rejects.toThrow(new RegExp(`^${destination.replaceAll('/', '\\/')}.*permission rules never judged; push to the real repository by its own path`))
+    expect(calls.filter(request => request.args[0] === 'push' || request.cwd?.startsWith(destination))).toEqual([])
+    expect(filesUnder(victim)).toEqual(before)
+  })
+
+  it('refuses a directory git does not read as a repository, which receive-pack would trade for <dest>.git beside it', async () => {
+    const { destination, repository } = redirected(() => undefined)
+    const beside = `${destination}.git`
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', beside])
+    const calls: ProcessRequest[] = []
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: recording(calls) }))
+      .rejects.toThrow(/git does not resolve .* to its own git directory .*push to the real repository by its own path/)
+    expect(calls.some(request => request.args[0] === 'push')).toBe(false)
+    expect(git(beside, 'for-each-ref').trim()).toBe('')
+  })
+
+  it.each<[string, (destination: string) => void]>([
+    ['bare', destination => execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination])],
+    ['non-bare, on another branch', destination => execFileSync('git', ['init', '-q', '-b', 'trunk', destination])],
+  ])('still pushes to a plain %s destination', async (_, shape) => {
+    const { destination, repository } = redirected(shape)
+    const output = await call({ repository, tool: 'git_push', args: { branch: 'main' } }) as JsonObject
+    expect(output).toMatchObject({ branch: 'main', remote: destination })
+    expect(git(destination, 'rev-parse', 'refs/heads/main').trim()).toBe(output.headSha)
+  })
+
+  it.each<[string, (repository: string, victim: string) => void]>([
+    ['a .git file', (repository, victim) => writeFileSync(join(repository, '.git'), `gitdir: ${join(victim, '.git')}\n`)],
+    ['a .git symbolic link', (repository, victim) => symlinkSync(join(victim, '.git'), join(repository, '.git'))],
+  ])('refuses a commit in a repository whose %s names another one, before any git runs', async (_, shape) => {
+    const root = temporaryRoot('commit-redirect')
+    const victim = join(root, 'victim')
+    execFileSync('git', ['init', '-q', '-b', 'main', victim])
+    const repository = join(root, 'work')
+    mkdirSync(repository)
+    shape(repository, victim)
+    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+    const before = filesUnder(join(victim, '.git'))
+    const calls: ProcessRequest[] = []
+    await expect(call({ repository, tool: 'git_commit', args: { message: 'redirected', paths: ['kept.txt'] }, runner: recording(calls) }))
+      .rejects.toThrow(/permission rules never judged; commit in the real repository by its own path/)
+    expect(calls).toEqual([])
+    expect(filesUnder(join(victim, '.git'))).toEqual(before)
+  })
+
+  it('refuses, through a node, a gitfile the agent planted in a scratch root, where a write needs no ask', async () => {
+    const root = temporaryRoot('scratch-redirect')
+    const victim = join(root, 'victim.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', victim])
+    const repository = join(root, 'work')
+    execFileSync('git', ['init', '-q', '-b', 'main', repository])
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    const scratch = join(repository, 'scratch')
+    const destination = join(scratch, 'dest')
+    mkdirSync(destination, { recursive: true })
+    git(repository, 'remote', 'add', 'origin', destination)
+    const runtime = await createRuntime({ config: loadConfig({
+      BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
+      BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl, BUCKLE_SCRATCH_ROOTS: scratch,
+    }) })
+    try {
+      const planted = await runtime.invoke({ sessionId: 's', request: { requestId: 'plant', tool: 'fs_write', args: { path: join(destination, '.git'), content: `gitdir: ${victim}\n` }, approvalTokens: [] } })
+      expect(planted).toMatchObject({ outcome: 'ok' })
+      const pushed = await runtime.invoke({ sessionId: 's', request: { requestId: 'push', tool: 'git_push', args: { branch: 'main' }, approvalTokens: [] } })
+      expect(pushed).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('push to the real repository by its own path') } })
+      expect(git(victim, 'for-each-ref').trim()).toBe('')
+    } finally {
+      await runtime.approvalService.close()
+      await runtime.history.close()
+    }
+  })
+})
+
+/** Every file below `root` with its size, so a write anywhere in it shows up as a difference. */
+function filesUnder(root: string): string[] {
+  return readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter(entry => !entry.isDirectory())
+    .map(entry => join(entry.parentPath, entry.name))
+    .sort()
+}
 
 // Review M4: git is handed the judged URL without its userinfo, and isolation leaves it no helper or prompt, so
 // a push to an approved non-forge origin that authenticates with userinfo failed where it worked before.

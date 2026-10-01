@@ -1,5 +1,5 @@
-import { isShellWrapper, parseArgv, shellStatements, shownCommand, statementWords } from '../../argv.js'
-import type { CommandGlob } from '../../command-glob.js'
+import { isShellWrapper, parseArgv, shellStatements, shownCommand } from '../../argv.js'
+import { allForms, commandForms } from '../../command-forms.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
 import { deny } from '../decision.js'
@@ -27,6 +27,10 @@ const SELF_ADMINISTRATION = /(^|[\s/\\'"])buckle['"]?\s+(approvals|approve|check
  * A shell wrapper is the exception to needing no allow list: `bash -c` carries a script body
  * rather than argv, so the globs cannot read what it runs and the wrapper itself has to be
  * named before it runs at all.
+ *
+ * The deny list and the wrapper requirement also meet the command behind a prefix such as `env` or
+ * `timeout 5` (the continuation review, "Seen outside this range"). The allow list admits only the call as
+ * typed, so a prefix never carries a command past it; the refusal names the raw argv (owner decision D17).
  */
 export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean } = {}): PermissionRule {
   return {
@@ -37,6 +41,7 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       const words = [argv.command, ...effect.args]
       const line = words.join(' ')
       const statements = shellStatements(argv)
+      const forms = commandForms(effect.command, effect.args)
       // What the refusal names, as an approval shows a command: whole, quoted and redacted (owner decision D17).
       const subject = shownCommand(effect.command, effect.args)
 
@@ -44,13 +49,14 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
         return deny('command_policy', subject, 'A tool cannot administer the Buckle that runs it')
       }
 
-      const denied = findDenied({ globs: policy.commands.deny, words, statements })
+      const denied = policy.commands.deny.find(glob => allForms(forms).some(form => glob.matchesPrefix(form)))
       if (denied) return deny('command_policy', subject, `Refused by the workspace command policy: ${denied.source}`)
 
       const allow = policy.commands.allow
       const admitted = allow.some(glob => glob.matchesLine(words))
-      if (options.enforceWrapperAllow !== false && isShellWrapper(argv) && !admitted) {
-        return deny('command_policy', subject, `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${argv.command} -c *'`)
+      const wrapper = forms.chain.find(([command = '', ...args]) => isShellWrapper(parseArgv(command, args)))
+      if (options.enforceWrapperAllow !== false && wrapper && !admitted) {
+        return deny('command_policy', subject, `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapper[0]} -c *'`)
       }
       if (allow.length > 0 && !admitted) {
         return deny('command_policy', subject, `Not on the workspace command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
@@ -58,10 +64,4 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       return null
     },
   }
-}
-
-/** A deny glob meets the line and every statement of a script body, so a wrapper hides nothing. */
-function findDenied(input: { globs: CommandGlob[]; words: string[]; statements: string[] }): CommandGlob | null {
-  const statements = input.statements.map(statementWords)
-  return input.globs.find(glob => glob.matchesPrefix(input.words) || statements.some(statement => glob.matchesPrefix(statement))) ?? null
 }
