@@ -19,6 +19,7 @@ import { describeProcessFailure } from '../process-failure.js'
 import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, receivePackCommand, transportConfig, type GitConfig } from '../git-isolation.js'
 import { assertNoFilters, assertNoFilterPrograms } from './isolation.js'
 import { assertGitAgrees, GIT_DIRECTORY_QUERY, ownGitDirectory } from './own-git-directory.js'
+import { ensureReceiveGuard, guardRefusal, receiveGuardEnvironment } from './receive-pack-guard.js'
 import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
 const PACK_ID = 'forge'
@@ -103,8 +104,11 @@ export function createForgePack(options: ForgePackOptions): Pack {
     return value
   }
 
-  const gitOutput = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; secrets?: readonly string[]; context: ToolContext }): Promise<string> => {
+  /** `refusedBy` reads a permission refusal out of a failed call's stderr, which is then raised as one. */
+  const gitOutput = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; secrets?: readonly string[]; refusedBy?: (stderr: string) => string | null; context: ToolContext }): Promise<string> => {
     const result = await runGit(input)
+    const refused = result.exitCode === 0 ? null : input.refusedBy?.(result.stderr) ?? null
+    if (refused !== null) throw new ToolInputError(scrub(refused, input.secrets), { code: 'PERMISSION_DENIED' })
     if (result.exitCode !== 0) throw new ToolExecutionError(scrub(describeProcessFailure('git', result), input.secrets), { code: 'GIT_FAILED' })
     return scrub(result.stdout, input.secrets)
   }
@@ -214,6 +218,20 @@ export function createForgePack(options: ForgePackOptions): Pack {
     assertGitAgrees({ ...input, answer })
   }
 
+  /**
+   * How a push reaches `repository` on this filesystem, once its git directory is its own (review H1 of the
+   * continuation review): the receiving git's command, pointed at Buckle's guard as its only hook, and what the
+   * guard is told so it can test the repository git really opened before any ref is written (slice 7 review F3).
+   */
+  const guardedReceivePack = async (input: { repository: string; context: ToolContext }): Promise<{ command: string; environment: Record<string, string> }> => {
+    const gitDirectory = ownGitDirectory({ repository: input.repository, remedy: PUSH_REMEDY })
+    await assertGitResolvesOwn({ repository: input.repository, gitDirectory, remedy: PUSH_REMEDY, context: input.context })
+    return {
+      command: receivePackCommand(ensureReceiveGuard(options.stateDirectory)),
+      environment: receiveGuardEnvironment({ repository: input.repository, gitDirectory, remedy: PUSH_REMEDY }),
+    }
+  }
+
   const forgeRepository = (repository: string): ForgeRepository => {
     const remote = classifyRemote(readOriginUrl(repository))
     assertForgeHost({ remote, gitHost: forge.gitHost })
@@ -275,19 +293,16 @@ export function createForgePack(options: ForgePackOptions): Pack {
         await assertPushTarget({ repository, pinned: destination, context })
         await assertDestinationUnaliased({ repository, destination, context })
         assertDestinationAllowed({ remote: destination, gitHost: forge.gitHost, approved: options.approved, context })
-        if (destination.kind === 'local') {
-          const gitDirectory = ownGitDirectory({ repository: destination.path, remedy: PUSH_REMEDY })
-          await assertGitResolvesOwn({ repository: destination.path, gitDirectory, remedy: PUSH_REMEDY, context })
-        }
         // To the judged destination by name, never the symbolic origin, which a config change could move
         // after the check. `remote.origin.receivepack` is first-wins in git, so only the command line resets it.
         // A local destination is its absolute real path, which git never reads as a remote name (git refuses a
         // remote named with a leading `/`); an https one has no such spelling, so a remote named by it is refused above.
         // The git receiving a local push runs in the destination without the isolation above, so it is handed its
-        // own on its command line (review H1 of the slice 5 re-review).
+        // own on its command line (review H1 of the slice 5 re-review), with Buckle's guard as its only hook, which
+        // tests the repository it opened before any ref is written (slice 7 review F3).
         const refspec = `refs/heads/${branch}:refs/heads/${branch}`
-        const receivePack = destination.kind === 'local' ? receivePackCommand(ensureHooksDirectory(options.stateDirectory)) : 'git-receive-pack'
-        await gitOutput({ repository, args: ['push', `--receive-pack=${receivePack}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), secrets: userinfoForms(destination), context })
+        const receiving = destination.kind === 'local' ? await guardedReceivePack({ repository: destination.path, context }) : { command: 'git-receive-pack', environment: {} }
+        await gitOutput({ repository, args: ['push', `--receive-pack=${receiving.command}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), extra: receiving.environment, secrets: userinfoForms(destination), refusedBy: guardRefusal, context })
         const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
         // A push to a URL moves no remote-tracking ref; origin named this destination at launch, so its ref follows.
         await gitOutput({ repository, args: ['update-ref', `refs/remotes/origin/${branch}`, headSha], context })

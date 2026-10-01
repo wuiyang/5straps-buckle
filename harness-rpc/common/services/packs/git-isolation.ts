@@ -118,6 +118,9 @@ const TRANSPORTS = ['file', 'git', 'ssh', 'http', 'https', 'ftp', 'ftps', 'ext',
  * (`receivePackCommand`), last, so the destination's config cannot win them back, and hands them on through
  * GIT_CONFIG_PARAMETERS to every git it starts (unpack-objects, index-pack, rev-list, gc).
  *
+ * `hooksDirectory` is the only place the receiving git finds hooks: a push names Buckle's own guard directory there
+ * (forge/receive-pack-guard.ts), so none of the destination's hooks runs.
+ *
  * Everything `isolationConfig` resets, then what receive-pack itself honours:
  * - `core.alternateRefsCommand` lists an alternate's refs; `true` lists none, so none is advertised.
  * - `receive.autogc`, `gc.auto` and `maintenance.auto`: no gc or maintenance runs in the destination afterwards.

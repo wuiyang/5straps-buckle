@@ -801,6 +801,64 @@ describe('a local push or a commit writes only the repository its permission che
     expect(filesUnder(victim)).toEqual(before)
   })
 
+  // Slice 7 review F3: the checks above hold only the pushing workspace's lock, so a write from another workspace
+  // could plant a pointer after them (1 of 40 races landed in the repository it named). A test hook plants it right
+  // before git push starts; the receiving git's guard tests the repository it really opened and refuses.
+  const REFUSED = /so git would write somewhere the permission rules never judged; push to the real repository by its own path \(set origin to it\)/
+  it.each<[string, (destination: string, victim: string) => void, RegExp]>([
+    ['a .git file naming another repository', (destination, victim) => writeFileSync(join(destination, '.git'), `gitdir: ${victim}\n`), /^receive-pack opened \/.*\/victim\.git, not the git directory \/.*\/dest checked before the push/],
+    ['a .git symbolic link', (destination, victim) => symlinkSync(victim, join(destination, '.git')), /^receive-pack opened \/.*\/victim\.git, not the git directory/],
+    ['a commondir file', (destination, victim) => writeFileSync(join(destination, 'commondir'), `${victim}\n`), /^receive-pack stores the pushed objects in \/.*\/victim\.git\/(\.\/)?objects, outside \/.*\/dest/],
+    ['a refs/heads symbolic link', (destination, victim) => {
+      rmSync(join(destination, 'refs', 'heads'), { recursive: true, force: true })
+      symlinkSync(join(victim, 'refs', 'heads'), join(destination, 'refs', 'heads'))
+    }, /^\/.*\/dest\/refs\/heads is a symbolic link/],
+    ['a .git directory that is not the one checked', (destination) => {
+      mkdirSync(join(destination, '.git'))
+      execFileSync('git', ['init', '--bare', '-q', '-b', 'main', join(destination, '.git')])
+    }, /^receive-pack opened \/.*\/dest\/\.git, not the git directory \/.*\/dest checked/],
+  ])('refuses %s planted after the checks, in the receiving git, and no repository gets the ref', async (_, plant, reason) => {
+    const { victim, destination, repository, before } = redirected(destination => execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination]))
+    spawnHook.beforePush = async () => {
+      spawnHook.beforePush = null
+      plant(destination, victim)
+    }
+    const refused = await call({ repository, tool: 'git_push', args: { branch: 'main' } }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(refused?.code).toBe('PERMISSION_DENIED')
+    expect(refused?.message).toMatch(reason)
+    expect(refused?.message).toMatch(REFUSED)
+    expect(filesUnder(victim)).toEqual(before)
+    expect(execFileSync('git', ['--git-dir', destination, 'for-each-ref'], { encoding: 'utf8' }).trim()).toBe('')
+    expect(existsSync(join(destination, 'refs', 'heads', 'main'))).toBe(false)
+  })
+
+  it('refuses a destination git no longer reads as a repository by the time it receives, rather than the <dest>.git beside it', async () => {
+    const { destination, repository } = redirected(destination => execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination]))
+    const beside = `${destination}.git`
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', beside])
+    const before = filesUnder(beside)
+    spawnHook.beforePush = async () => {
+      spawnHook.beforePush = null
+      rmSync(join(destination, 'HEAD'))
+    }
+    const refused = await call({ repository, tool: 'git_push', args: { branch: 'main' } }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(refused?.code).toBe('PERMISSION_DENIED')
+    expect(refused?.message).toMatch(/^receive-pack opened \/.*\/dest\.git, not the git directory \/.*\/dest checked/)
+    expect(git(beside, 'for-each-ref').trim()).toBe('')
+    expect(filesUnder(beside)).toEqual(before)
+  })
+
+  it('writes Buckle\'s guard as the receiving git\'s only hook, run by this node', async () => {
+    const { destination, repository } = redirected(destination => execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination]))
+    const calls: ProcessRequest[] = []
+    await call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: recording(calls) })
+    const push = calls.find(request => request.args[0] === 'push')!
+    const hooks = push.args.find(word => word.startsWith('--receive-pack='))?.match(/'core\.hooksPath=([^']*)'/)?.[1] ?? ''
+    expect(readdirSync(hooks)).toEqual(['pre-receive'])
+    expect(readFileSync(join(hooks, 'pre-receive'), 'utf8')).toMatch(new RegExp(`^#!/bin/sh\\nexec '${process.execPath.replaceAll('/', '\\/')}' -e `))
+    expect(push.environment).toMatchObject({ BUCKLE_RECEIVE_REPOSITORY: destination, BUCKLE_RECEIVE_GIT_DIRECTORY: destination })
+  })
+
   it('refuses a directory git does not read as a repository, which receive-pack would trade for <dest>.git beside it', async () => {
     const { destination, repository } = redirected(() => undefined)
     const beside = `${destination}.git`

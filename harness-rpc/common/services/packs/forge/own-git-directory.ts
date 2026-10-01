@@ -3,11 +3,11 @@ import { join } from 'node:path'
 import { ToolInputError } from '../../../domain/tool.js'
 
 /** A linked worktree's pointers, which send git's objects and refs to another repository. */
-const POINTER_FILES = ['commondir', 'gitdir']
+export const POINTER_FILES = ['commondir', 'gitdir']
 /** Where a push or commit writes refs and their logs; a link anywhere below sends one elsewhere. */
-const REF_DIRECTORIES = ['refs', 'logs']
+export const REF_DIRECTORIES = ['refs', 'logs']
 /** Entries read in the git directory before the repository is refused as too large to check. */
-const MAX_ENTRIES = 65_536
+export const MAX_ENTRIES = 65_536
 
 /**
  * The git directory a push to, or a commit in, `repository` writes, read from the disk before any git runs
@@ -15,7 +15,8 @@ const MAX_ENTRIES = 65_536
  * follows a `.git` file (`gitdir:`), a `.git` link, a `commondir` file or a linked `objects`, `refs` or `HEAD`
  * into a repository nothing judged, so each is refused: the git directory is `<repository>/.git` as a real
  * directory, or the repository itself when it is bare, with no pointer file and no link in it. `remedy` says
- * what the caller can do instead.
+ * what the caller can do instead. A local push repeats it in the receiving git, before any ref is written
+ * (receive-pack-guard.ts).
  */
 export function ownGitDirectory(input: { repository: string; remedy: string }): string {
   const refuse = (problem: string): never => {
