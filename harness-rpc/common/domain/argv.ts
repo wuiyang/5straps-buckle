@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { redactShownText } from './redact.js'
+import { redactCredentials } from '@5straps/runtime'
 
 /** Interpreters whose positional is a script body rather than an argument list. */
 export const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'])
@@ -138,12 +138,51 @@ export function argvIdentity(command: string, args: readonly string[]): string {
 }
 
 /**
- * A command as a person reads it: each word redacted as the shown arguments are (redactShownText), then
- * quoted as a POSIX shell would need it, so its boundaries show (`rm -f 'a b'` is not `rm -f a b`).
- * Display only: the grant matches on argvIdentity.
+ * A command as a person reads it: each word redacted by its context (owner decision D21), the script body of a shell's
+ * `-c` as a shell body and every other word as one word, then quoted as a POSIX shell would need it, so its
+ * boundaries show (`rm -f 'a b'` is not `rm -f a b`). Display only: the grant matches on argvIdentity.
  */
 export function shownCommand(command: string, args: readonly string[]): string {
-  return [command, ...args].map((word, index) => shellQuote(redactShownText(word), index === 0)).join(' ')
+  const words = [command, ...args]
+  const bodies = shellBodyIndexes(words)
+  return words.map((word, index) => shellQuote(redactCredentials(word, bodies.has(index) ? 'shell' : 'word'), index === 0)).join(' ')
+}
+
+/** Shell options before the script that take the next word as their value (`-o pipefail`, `--rcfile <file>`). */
+const SHELL_VALUE_OPTIONS = new Set(['o', 'O'])
+const SHELL_LONG_VALUE_OPTIONS = new Set(['--rcfile', '--init-file'])
+
+/**
+ * Which words of a command line are a shell's `-c` script body: after any word naming a shell (SHELL_COMMANDS), so
+ * one behind `env`, `sudo` or `timeout` counts, the first word past that shell's options when they include `c`.
+ * The body is shown and redacted as a shell reads it, every other word as one word.
+ */
+export function shellBodyIndexes(words: readonly string[]): Set<number> {
+  const bodies = new Set<number>()
+  for (let index = 0; index < words.length; index++) {
+    if (!SHELL_COMMANDS.has(baseCommand(words[index]!))) continue
+    let script = false
+    let cursor = index + 1
+    for (; cursor < words.length; cursor++) {
+      const word = words[cursor]!
+      if (word === '--' || word === '-') {
+        cursor++
+        break
+      }
+      if (word.length < 2 || (word[0] !== '-' && word[0] !== '+')) break
+      if (word.startsWith('--')) {
+        if (SHELL_LONG_VALUE_OPTIONS.has(word)) cursor++
+        continue
+      }
+      if (word[0] === '-' && word.includes('c')) script = true
+      if ([...word.slice(1)].some(flag => SHELL_VALUE_OPTIONS.has(flag))) cursor++
+    }
+    if (script && cursor < words.length) {
+      bodies.add(cursor)
+      index = cursor
+    }
+  }
+  return bodies
 }
 
 /**

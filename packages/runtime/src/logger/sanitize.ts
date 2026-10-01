@@ -1,3 +1,5 @@
+import { REDACTED, redactCredentials } from './credential-context.js'
+import { isCredentialKey, keyWords } from './credential-names.js'
 import type { NormalizedError } from './types.js'
 
 export interface SanitizeOptions {
@@ -9,21 +11,8 @@ export interface SanitizeOptions {
   omitKeys: ReadonlySet<string>
 }
 
-const REDACTED = '[redacted]'
 // Longest string scanned; the rest is dropped with a truncation marker. Shared by the logger and redactText.
 export const DEFAULT_MAX_STRING_BYTES = 8_192
-// Credential words, matched inside each key word so plurals and run-together names (accesstoken, PGPASSWORD) count.
-const CREDENTIAL_WORDS = ['authorization', 'bearer', 'secret', 'passw(?:or)?d', 'passphrase', 'cookie', 'credential', 'signature', 'apikey', 'privatekey']
-const SECRET_WORD = new RegExp(['token', ...CREDENTIAL_WORDS].join('|'))
-const CREDENTIAL_WORD = new RegExp(CREDENTIAL_WORDS.join('|'))
-const SECRET_WHOLE_WORDS = new Set(['auth'])
-// Two-word names such as 'api key' and 'private keys'.
-const KEY_PREFIXES = new Set(['api', 'private'])
-const KEY_WORD = /^keys?$/
-// A token count is a numeric value under a key ending in a count word (inputTokens, tokenCount, max_tokens, tokensUsed).
-// A key ending in singular 'token' (inputToken, cacheToken) is always a credential.
-const COUNT_KEY_END = /(?:tokens|count|total|limit|usage|budget|used)$/
-const NUMERIC_TEXT = /^\d+$/
 // Keys whose values are file contents, full tool payloads, prompts or replies; also any key whose last word is one of
 // CONTENT_LAST_WORDS (requestBody, systemPrompt, chatMessages). A singular 'message' stays: it is usually a diagnostic.
 const CONTENT_KEY = /^(content|contents|file[-_]?contents?|body|payload|arguments|args|tool[-_]?(input|output)|stdin|stdout|stderr|data)$/i
@@ -55,74 +44,13 @@ const HASH_SUFFIX = /[-_][\w-]{1,12}$/
 const GIT_SHA = /^[a-f0-9]{40}$/
 const SHA_CONTEXT_CHARS = 32
 const CREDENTIAL_NEARBY = /token|secret|passw(?:or)?d|passphrase|credential|cookie|signature|bearer|api[-_ ]?key|private[-_ ]?key|\b(?:pat|key|auth)\b|=\s*$/i
-// A URL with any scheme, or a request target starting with '/', up to whitespace or a quote. The scheme is capped
-// at 64 characters: '.', '+' and '-' give a word boundary inside a run, and an uncapped scheme rescanned the rest
-// of the run from each one.
-const URL_LIKE = /(?:\b[a-z][a-z0-9+.-]{0,63}:\/\/|(?<=^|[\s("'=<>])\/)[^\s"'<>]*/gi
-// A URL's userinfo, judged by the text around it (owner decision D21). Outside quotes its authority ends at URL
-// punctuation, whitespace and the shell's own characters, so a match never crosses from a URL into the text after
-// it (`https://docs.example.com; curl x | sh; echo ok@done` holds no credential); the last `@` before that end
-// closes the userinfo, which may hold a quote (`https://o'brien:pw@host`) or another `@`.
-const USERINFO = /\b([a-z][a-z0-9+.-]{0,63}:\/\/)[^\s/?#;&|`$()<>]*@/gi
-// A URL that opens right after a single or double quote closed again on its line: that closing quote ends its
-// authority instead, so a quoted password may hold a space or a shell character (`'https://user:a b@host'`).
-// The closing quote is looked for once per URL, before the userinfo is scanned, so the scan stays linear.
-const QUOTED_USERINFO = /(['"])([a-z][a-z0-9+.-]{0,63}:\/\/)(?=(?:(?!\1)[^\r\n])*\1)(?:(?!\1)[^\r\n/?#])*@/gi
-// name=value in a query or fragment; the value stops at the next separator.
-const URL_PARAM = /([?&#;])([^=&#;?]+)=([^&#;]*)/g
-const TRAILING_PUNCTUATION = new Set([')', '.', ',', ';', ':', '!', '?'])
-// Credential parameters whose names are not credential words: Google API keys, SAS signatures, OAuth codes.
-const SECRET_QUERY_NAMES = new Set(['key', 'sig', 'code'])
-
 const HAS_DIGIT = /\d/
 const HAS_LETTER = /[A-Za-z]/
 // Slack beyond the byte limit so a secret straddling the cut is still matched whole before truncation.
 const REDACTION_SLACK_BYTES = 512
 
-function keyWords(key: string): string[] {
-  return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z])([A-Z][a-z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
-}
-
-/**
- * Whether a key names a credential: a credential word inside any of its words (Authorization, Bearer,
- * Cookie, Set-Cookie, X-Api-Key, api key, private key, auth, passphrase, signature, secret, password,
- * token), whatever its case or nesting; a number under a count key (max_tokens) is not one. One matcher
- * for every redaction by name, so the process log and what else redacts by it agree.
- */
-export function isCredentialKey(key: string, value?: unknown): boolean {
-  return isSecretKey(key, value)
-}
-
-// A word and the next one are judged joined too, so a camel-case split of one credential word (passWord,
-// PassWord, passPhrase) still names it (review L7 of the second re-review).
-function isSecretKey(key: string, value: unknown): boolean {
-  const words = keyWords(key)
-  const secretWord = isTokenCount({ words, value }) ? CREDENTIAL_WORD : SECRET_WORD
-  return words.some((word, index) => isSecretWord({ word, next: words[index + 1], secretWord }) || (index + 1 < words.length && secretWord.test(`${word}${words[index + 1]}`)))
-}
-
-/**
- * Whether a URL query or fragment parameter carries a credential: a credential-named key
- * (isCredentialKey), or a name services give keys, signatures and codes (key, sig, code). One matcher
- * for the log and for what else redacts a URL.
- */
-export function isCredentialParameter(name: string, value?: string): boolean {
-  return isSecretKey(name, value) || SECRET_QUERY_NAMES.has(name.toLowerCase())
-}
-
 function isContentKey(key: string): boolean {
   return CONTENT_KEY.test(key) || CONTENT_LAST_WORDS.has(keyWords(key).at(-1) ?? '')
-}
-
-function isSecretWord({ word, next, secretWord }: { word: string; next?: string; secretWord: RegExp }): boolean {
-  if (SECRET_WHOLE_WORDS.has(word)) return true
-  if (KEY_PREFIXES.has(word) && next !== undefined && KEY_WORD.test(next)) return true
-  return secretWord.test(word)
-}
-
-function isTokenCount({ words, value }: { words: string[]; value: unknown }): boolean {
-  const numeric = typeof value === 'number' || (typeof value === 'string' && NUMERIC_TEXT.test(value))
-  return numeric && COUNT_KEY_END.test(words.at(-1) ?? '')
 }
 
 // Capped at DEFAULT_MAX_STRING_BYTES like a logged string, so no caller can make it scan an unbounded input.
@@ -152,8 +80,9 @@ function redactSecrets(text: string): string {
   return redacted + redactValues(judged.slice(from))
 }
 
+// A JSON message is judged string by string, any other text as free text (owner decision D21, "context").
 function redactContext(text: string): string {
-  return redactUrls(text)
+  return redactCredentials(text, 'json')
     .replace(JWT_CANDIDATE, (match: string, header: string, rest: string | undefined) => (header && rest ? REDACTED : match))
     .replace(AUTHORIZATION_VALUE, REDACTED)
 }
@@ -189,38 +118,6 @@ function isOpaque(text: string): boolean {
   return text.length >= OPAQUE_MIN_LENGTH && !GIT_SHA.test(text) && HAS_LETTER.test(text) && (HAS_DIGIT.test(text) || !readsAsWords(text))
 }
 
-// Userinfo and secret-named query or fragment parameters in any URL or request target.
-// Only the secret value is rewritten, so the rest stays exactly as written.
-function redactUrls(text: string): string {
-  return redactUrlUserinfo(text).replace(URL_LIKE, redactUrlParameters)
-}
-
-/**
- * Every URL userinfo in `text` redacted where its context makes it one (owner decision D21): a quoted URL's up to
- * the last `@` before its closing quote, any other URL's up to the last `@` before its authority ends. One matcher
- * for the log and for Buckle's approval displays. Uncapped for those displays; the logger applies its own byte
- * limit before calling it.
- */
-export function redactUrlUserinfo(text: string): string {
-  return text.replace(QUOTED_USERINFO, `$1$2${REDACTED}@`).replace(USERINFO, `$1${REDACTED}@`)
-}
-
-/** One URL with the value of each credential parameter in its query or fragment redacted (isCredentialParameter), the rest as written. */
-export function redactUrlParameters(url: string): string {
-  return url.replace(URL_PARAM, (pair, separator: string, name: string, value: string) => {
-    const trailing = trailingPunctuation(value)
-    if (!isCredentialParameter(name, value.slice(0, value.length - trailing.length))) return pair
-    return `${separator}${name}=${REDACTED}${trailing}`
-  })
-}
-
-// A backward scan: an anchored regex such as /[).]+$/ retries from every position of a long punctuation run.
-function trailingPunctuation(value: string): string {
-  let end = value.length
-  while (end > 0 && TRAILING_PUNCTUATION.has(value[end - 1]!)) end -= 1
-  return value.slice(end)
-}
-
 export function truncateText(text: string, maxBytes: number): string {
   const totalBytes = Buffer.byteLength(text)
   return totalBytes <= maxBytes ? text : `${sliceBytes(text, maxBytes)}...[truncated ${totalBytes - maxBytes} bytes]`
@@ -240,7 +137,7 @@ export function sanitizeFields(fields: Record<string, unknown>, options: Sanitiz
 
 function sanitizeValue(key: string, value: unknown, options: SanitizeOptions, depth: number, seen: WeakSet<object>): unknown {
   // No configuration lifts a credential key: allowKeys only exempts content and omitted keys.
-  if (isSecretKey(key, value)) return REDACTED
+  if (isCredentialKey(key, value)) return REDACTED
   if (!options.allowKeys.has(key) && (isContentKey(key) || options.omitKeys.has(key)) && value !== undefined && value !== null) return `[omitted ${describeSize(value)}]`
   if (typeof value === 'string') return sanitizeString(value, options)
   if (typeof value === 'bigint') return value.toString()

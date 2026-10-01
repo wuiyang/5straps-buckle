@@ -2,13 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
+import { redactCredentials } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
-import { redactShownText } from '../../domain/redact.js'
 import { RECORDED_BEFORE_NOTE } from '../../domain/approval-instruction.js'
 import { logger } from '../../runtime/log.js'
 
@@ -509,10 +509,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) }, record: recordCall, shownWhole: entry => withCall(entry).call?.complete === true })
         if (joined) return joined
         assertRoomFor({ state, workspace, sessionId, actor, asked: asks.length })
-        // Every field a person or a relay reads is redacted as the shown arguments are (owner decision D17);
-        // a subject is already what its rule asks under, which holds no credential the display redacts.
+        // Every field a person or a relay reads is redacted (owner decision D17), a reason as the free text it is
+        // (owner decision D21); a subject is already what its rule asks under, which holds no credential the display redacts.
         const requests = asks.map(item => ({
-          token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactShownText(item.reason),
+          token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.reason, 'text'),
           tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),
         }))
         const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }) }))

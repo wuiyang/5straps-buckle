@@ -1,5 +1,6 @@
-import { isCredentialKey, redactUrlParameters, redactUrlUserinfo } from '@5straps/runtime'
+import { isCredentialKey, redactCredentials, type CredentialContext } from '@5straps/runtime'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
+import { baseCommand, shellBodyIndexes, SHELL_COMMANDS } from './argv.js'
 import { isSecretName } from './environment.js'
 
 const MAX_STRING_LENGTH = 200
@@ -63,41 +64,91 @@ export function stripSecret(value: string, secret: string | undefined): string {
   return value.split(secret).join('[redacted]')
 }
 
-/** A URL with a scheme, up to whitespace or a quote: where a query can carry a credential parameter. */
-const SCHEME_URL = /\b[a-z][a-z0-9+.-]{0,63}:\/\/[^\s"'<>]*/gi
-
-/**
- * A string as a person reviewing a call may see it: every URL's userinfo, and the value of every
- * credential parameter in its query or fragment (the logger's matcher), redacted. The shown arguments,
- * the description Buckle writes, a command's shown words and effects, and every approval reason pass
- * through it, so none shows what another hides (review M2 of the second proof-of-possession re-review;
- * owner decision D17). Userinfo is judged by its context (owner decision D21): an unquoted URL's ends with its
- * authority, at whitespace or a shell character, and a quoted URL's at its closing quote, so nothing after a URL
- * is hidden up to a later `@` (review H2 of the continuation review). Display only: identity stays the raw call.
- */
-export function redactShownText(value: string): string {
-  return redactUrlUserinfo(value).replace(SCHEME_URL, redactUrlParameters)
-}
-
 /**
  * A call's arguments as an approval challenge shows them (owner decisions D9 and D17): canonical, every
- * value under a credential-named key, every URL's userinfo and credential parameter redacted, with the
- * logger's own matcher (review item 8), and nothing else changed: no string, path or list is cut, and no
- * size stands in for the call. Display only: a decision binds the call's whole arguments through its
+ * value under a credential-named key redacted, every other string's credentials redacted by the context it
+ * sits in (owner decision D21; redactCredentials), and nothing else changed: no string, path or list is cut,
+ * and no size stands in for the call. Display only: a decision binds the call's whole arguments through its
  * fingerprint, not this.
+ *
+ * A string's context comes from where it sits: a `command` with its `args` is an argv, each word read as one
+ * word and a shell's `-c` script as a shell body; `env` values are words; a `script` beside a shell `runtime`
+ * is a shell body and any other script free text; a file's `content`, or an edit's `oldText` and `newText`,
+ * beside its `path` is a shell body for a shell script, else read by its shape. A string read by its shape is
+ * a JSON document when it parses as an object or array, one word when it holds no whitespace, and free text
+ * otherwise (slice 7 review R7-H1 to R7-H4).
  */
 export function reviewableArguments(args: JsonObject): JsonValue {
-  return review(args)
+  return reviewObject(args)
 }
 
-function review(value: JsonValue): JsonValue {
-  if (typeof value === 'string') return redactShownText(value)
-  if (Array.isArray(value)) return value.map(review)
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => {
-      const item = value[key] ?? null
-      return [key, isCredentialKey(key, item) ? '[redacted]' : review(item)]
-    }))
-  }
+/** How a string is read: by a context, or by its shape. */
+type Reading = CredentialContext | 'shape'
+
+function review(value: JsonValue, reading: Reading): JsonValue {
+  if (typeof value === 'string') return redactCredentials(value, reading === 'shape' ? shapeOf(value) : reading)
+  if (Array.isArray(value)) return value.map(item => review(item, reading))
+  if (value !== null && typeof value === 'object') return reading === 'shape' ? reviewObject(value) : reviewRecord(value, reading)
   return value
+}
+
+function reviewObject(value: JsonObject): JsonValue {
+  return Object.fromEntries(Object.keys(value).sort().map((key) => {
+    const item = value[key] ?? null
+    if (isCredentialKey(key, item)) return [key, '[redacted]']
+    if (key === 'args' && typeof value.command === 'string' && Array.isArray(item)) return [key, reviewArgv(value.command, item)]
+    return [key, review(item, readingOf(value, key))]
+  }))
+}
+
+/** An object whose values are all read in one context (`env`'s values are words), credential-named keys still redacted. */
+function reviewRecord(value: JsonObject, reading: CredentialContext): JsonValue {
+  return Object.fromEntries(Object.keys(value).sort().map((key) => {
+    const item = value[key] ?? null
+    return [key, isCredentialKey(key, item) ? '[redacted]' : review(item, reading)]
+  }))
+}
+
+/** An argv's words, the shell's `-c` script body (shellBodyIndexes) read as a shell body and every other word as one word. */
+function reviewArgv(command: string, args: JsonValue[]): JsonValue {
+  const bodies = shellBodyIndexes([command, ...args.map(item => (typeof item === 'string' ? item : ''))])
+  return args.map((item, index) => review(item, bodies.has(index + 1) ? 'shell' : 'word'))
+}
+
+function readingOf(owner: JsonObject, key: string): Reading {
+  if (key === 'command' && Array.isArray(owner.args)) return 'word'
+  if (key === 'env') return 'word'
+  if (key === 'script' && typeof owner.runtime === 'string') return SHELL_COMMANDS.has(baseCommand(owner.runtime)) ? 'shell' : 'text'
+  if ((key === 'content' || key === 'edits') && typeof owner.path === 'string') return isShellScript(owner.path, owner.content) ? 'shell' : 'shape'
+  return 'shape'
+}
+
+/** Script files a shell runs: a shell extension or rc file, or a `#!` line naming a shell. */
+const SHELL_SCRIPT_NAME = /(?:\.(?:sh|bash|zsh|ksh|dash|command)|(?:^|\/)\.(?:bashrc|bash_profile|bash_login|bash_logout|profile|zshrc|zprofile|zshenv|zlogin|kshrc))$/i
+const SHEBANG = /^#!\s*(\S+)(?:\s+(\S+))?/
+
+function isShellScript(path: string, content: JsonValue | undefined): boolean {
+  if (SHELL_SCRIPT_NAME.test(path)) return true
+  const shebang = typeof content === 'string' ? SHEBANG.exec(content) : null
+  if (!shebang) return false
+  const interpreter = baseCommand(shebang[1]!)
+  return SHELL_COMMANDS.has(interpreter === 'env' ? baseCommand(shebang[2] ?? '') : interpreter)
+}
+
+const JSON_DOCUMENT = /^\s*[[{]/
+const WHITESPACE = /\s/
+
+/** How a string with no context of its own is read: a JSON document, one word, or free text. */
+function shapeOf(value: string): CredentialContext {
+  if (JSON_DOCUMENT.test(value) && parses(value)) return 'json'
+  return WHITESPACE.test(value) ? 'text' : 'word'
+}
+
+function parses(value: string): boolean {
+  try {
+    JSON.parse(value)
+    return true
+  } catch {
+    return false
+  }
 }

