@@ -10,6 +10,12 @@ const MAX_DEPTH = 8
  */
 export const READ_BUDGET = { characters: 8_000_000, words: 1_000_000, commands: 100_000 } as const
 
+/** The limit a reading stopped at, as a reason names it: the destructive floor asks there, and a deny list refuses there. */
+export const READ_LIMITS = {
+  depth: `Wrappers or shell bodies nest deeper than Buckle reads (MAX_DEPTH: ${MAX_DEPTH} levels)`,
+  budget: `Shell text runs past what Buckle reads in one check (READ_BUDGET: ${READ_BUDGET.characters.toLocaleString('en-US')} characters, ${READ_BUDGET.words.toLocaleString('en-US')} words or ${READ_BUDGET.commands.toLocaleString('en-US')} commands across every level)`,
+} as const
+
 /**
  * A program that runs the command named after its own options and operands. Only the options that take a
  * value are listed: getopt reads every other one as a flag, and each of these stops at its first operand.
@@ -141,6 +147,12 @@ export function commandFormsOf(effect: { command: string; args: readonly string[
   const forms = commandForms(effect.command, effect.args)
   formsByEffect.set(effect, forms)
   return forms
+}
+
+/** The limit a reading stopped at, or null when the call was read whole. */
+export function readLimitOf(forms: CommandForms): string | null {
+  if (forms.unread) return READ_LIMITS.depth
+  return forms.overBudget ? READ_LIMITS.budget : null
 }
 
 /** Every form, in the order a rule should meet them: the call as typed first. */

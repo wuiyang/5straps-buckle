@@ -4,6 +4,7 @@ import type { ResolvedEffect } from '../common/domain/effect.js'
 import { commandFormsOf } from '../common/domain/command-forms.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
+import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
 import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
 import { compilePolicy } from '../common/domain/policy.js'
 
@@ -235,12 +236,14 @@ describe('a shell body the reader now reads whole', () => {
   })
 })
 
+/** Text as one double-quoted shell word. */
+const doubleQuoted = (text: string) => `"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$').replaceAll('`', '\\`')}"`
+
 // Slice 7b review W7B-1 and W7B-8: each rule read every nested eval or `bash -c` level again, and each level twice, so
 // one check of a 1 MB script took 2 to 6 s, and a body of 140,000 quoted statements threw RangeError. A check now
 // reads each level once within a budget and asks past it.
 describe('a check of a large nested body', () => {
   const commands = { allow: ['bash -c *'], deny: ['git push *', 'git clean *', 'git reset *', 'rm *'] }
-  const doubleQuoted = (text: string) => `"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$').replaceAll('`', '\\`')}"`
   /** A script_run bash script of about 999,180 bytes: `levels` nested `eval "..."` or `bash -c "..."` around filler. */
   const nested = (runner: string, levels: number, tail = '') => {
     let body = `${'a '.repeat(levels === 8 ? 499_000 : 499_400)}${tail}`
@@ -286,6 +289,66 @@ describe('a check of a large nested body', () => {
     const outcome = evaluate('bash', ['-c', body], { allow: ['bash -c *'] })
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks[0]?.reason).toMatch(/^Shell text runs past what Buckle reads in one check \(READ_BUDGET/)
+  })
+})
+
+// Slice 7c review R7C-CR-1: past READ_BUDGET, or nested past MAX_DEPTH, the deny globs met nothing, so a denied `git push`
+// after 100,001 statements was asked about, and the dangerously-allow switch allowed it with no click (owner decision
+// D7). A call Buckle cannot read whole is refused whenever a deny glob exists (default D30), on the node ceiling too.
+describe('a call Buckle cannot read whole', () => {
+  const push = 'git push origin main'
+  const statements = (count: number) => `${Array.from({ length: count }, (_, index) => `:${index.toString(36)}`).join(';')}; ${push}`
+  const evalNested = (levels: number) => Array.from({ length: levels }).reduce<string>(body => `eval ${doubleQuoted(body)}`, push)
+  const policyOf = (commands: { allow?: string[]; deny?: string[] }) => {
+    const policy = emptyWorkspacePolicy()
+    policy.commands.allow = commands.allow ?? []
+    policy.commands.deny = commands.deny ?? []
+    return compilePolicy(policy)
+  }
+  const engines = {
+    workspace: () => [createCommandPolicyRule(policyOf({ allow: ['bash -c *'], deny: ['git push *'] })), createDestructiveCommandRule()],
+    ceiling: () => [
+      createCommandPolicyRule(policyOf({ deny: ['git push *'] }), { enforceWrapperAllow: false }),
+      createCommandPolicyRule(policyOf({ allow: ['bash -c *'] })),
+      createDestructiveCommandRule(),
+    ],
+    'no deny glob': () => [createCommandPolicyRule(policyOf({ allow: ['bash -c *'] })), createDestructiveCommandRule()],
+  }
+  const check = (engine: keyof typeof engines, switched: boolean, body: string) =>
+    withDangerouslyAllow(createPermissionEngine(engines[engine]()), { enabled: () => switched, root: () => '/workspace' })
+      .evaluate({ tool: 'script_run', effects: [{ kind: 'exec', command: 'bash', args: ['-c', body] }], grants: { subjectsFor: () => [] } })
+  const overBudget = statements(100_001)
+  const eightDeep = evalNested(8)
+  const cases = (['workspace', 'ceiling'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
+
+  it.each(cases)('refuses git push after 100,001 statements past READ_BUDGET, %s deny, switch on: %s', (engine, switched) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', overBudget] }).overBudget).toBe(true)
+    const outcome = check(engine, switched, overBudget)
+    if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
+    expect(outcome.denial.rule).toBe('command_policy')
+    expect(outcome.denial.reason).toMatch(/^Shell text runs past what Buckle reads in one check \(READ_BUDGET: 8,000,000 characters, 1,000,000 words or 100,000 commands across every level\), so the workspace command policy's deny list cannot meet all of it; refused rather than asked$/)
+  })
+
+  it.each(cases)('refuses git push eight eval levels down, past MAX_DEPTH, %s deny, switch on: %s', (engine, switched) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', eightDeep] }).unread).toBe(true)
+    const outcome = check(engine, switched, eightDeep)
+    if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
+    expect(outcome.denial.reason).toMatch(/^Wrappers or shell bodies nest deeper than Buckle reads \(MAX_DEPTH: 8 levels\), so the workspace command policy's deny list cannot meet all of it/)
+  })
+
+  it.each(cases)('still refuses git push after 99,998 statements by matching it, %s deny, switch on: %s', (engine, switched) => {
+    const outcome = check(engine, switched, statements(99_998))
+    if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
+    expect(outcome.denial.reason).toBe('Refused by the workspace command policy: git push *')
+  })
+
+  it.each([
+    [overBudget, /^Shell text runs past what Buckle reads in one check \(READ_BUDGET: .*\); asked rather than guessed at$/],
+    [eightDeep, /^Wrappers or shell bodies nest deeper than Buckle reads \(MAX_DEPTH: 8 levels\); asked rather than guessed at$/],
+  ])('still asks, naming the limit, with no deny glob', (body, reason) => {
+    const outcome = check('no deny glob', false, body)
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(reason)]])
   })
 })
 

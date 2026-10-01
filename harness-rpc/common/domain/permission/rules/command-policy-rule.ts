@@ -1,5 +1,5 @@
 import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
-import { allForms, commandFormsOf } from '../../command-forms.js'
+import { allForms, commandFormsOf, readLimitOf } from '../../command-forms.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
 import { deny } from '../decision.js'
@@ -35,6 +35,8 @@ const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve
  * The deny list and the wrapper requirement also meet the command behind a prefix such as `env` or
  * `timeout 5` (the continuation review, "Seen outside this range"). The allow list admits only the call as
  * typed, so a prefix never carries a command past it; the refusal names the raw argv (owner decision D17).
+ * A call Buckle cannot read whole, nested past MAX_DEPTH or past READ_BUDGET, is refused whenever a deny glob
+ * exists, the limit named, since the glob might have met the part left unread.
  */
 export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean } = {}): PermissionRule {
   return {
@@ -52,6 +54,10 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
 
       const denied = policy.commands.deny.find(glob => allForms(forms).some(form => glob.matchesPrefix(form)))
       if (denied) return deny('command_policy', subject(), `Refused by the workspace command policy: ${denied.source}`)
+      // What was not read cannot be matched, so a deny list refuses it rather than leave the floor's ask to an
+      // approval or the dangerously-allow switch (slice 7c review R7C-CR-1; owner decision D7, default D30).
+      const limit = policy.commands.deny.length > 0 ? readLimitOf(forms) : null
+      if (limit) return deny('command_policy', subject(), `${limit}, so the workspace command policy's deny list cannot meet all of it; refused rather than asked`)
 
       const allow = policy.commands.allow
       const admitted = allow.some(glob => glob.matchesLine(words))
