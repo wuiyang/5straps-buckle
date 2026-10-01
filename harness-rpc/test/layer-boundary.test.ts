@@ -160,7 +160,9 @@ describe('the layer boundary', () => {
       `Object.defineProperty(Object.getPrototypeOf(app), 'fetch', {})`, `Reflect.set(Object.getPrototypeOf(app), 'fetch', wrapped)`,
       // Review L8: the spellings the comment claimed and the scan missed.
       '(app).handler = wrapped', '(app.config).onRequest = wrapped', '[app.handler] = [wrapped]', 'for (app.handler of handlers) run()',
-      `event.context['matchedRoute'].handler = wrapped`, 'Object.getPrototypeOf(Object.getPrototypeOf(app)).fetch = wrapped', 'app.hits++', '--app.config.depth']
+      `event.context['matchedRoute'].handler = wrapped`, 'Object.getPrototypeOf(Object.getPrototypeOf(app)).fetch = wrapped', 'app.hits++', '--app.config.depth',
+      // Review L9 of the continuation review: one-level array destructuring whose target carries a bracket index.
+      `[app['handler']] = [wrapped]`, `[other, app.config['onRequest']] = pair`]
     expect(evasions.filter(evasion => appWrites(evasion).length === 0)).toEqual([])
     expect(appWrites('if (app.handler === wrapped) run(app, matchedRoute)')).toEqual([])
     expect(appWrites('const routes = [app.handler, other]; for (const handler of [app.handler]) run(handler, counts[app.id] + 1)')).toEqual([])
@@ -211,8 +213,10 @@ const PLUGINS = ['layers/common/server/plugins/10.context.ts', 'layers/common/se
 const GUARDED_BUILDER = /^export default define(Operation|Workbench|Setup|Registry)Handler\(/m
 const RE_EXPORT = /^(?:\s*\/\/[^\n]*\n)*\s*export \{ default \} from '([^']+)'\s*$/
 
-// Flags direct member/index writes, simple destructuring and loop targets, and the Object/Reflect mutations below.
-// Complete parenthesised targets, nested array destructuring, TypeScript assertions and aliases can escape this scan.
+// Flags direct member/index writes, simple destructuring (an array target may carry one bracket index, as in
+// `[app['handler']] = [w]`) and loop targets, and the Object/Reflect mutations below. Complete parenthesised targets,
+// nested destructuring (`({ a: { b: app.x } } = o)`, `[[app.x]] = [[w]]`), an array target with a bracket index
+// inside a bracket index, TypeScript assertions and aliases can escape this scan (review L9 of the continuation review).
 // 20.head.ts locks app config, methods, lists and matched route data; h3 dispatcher fields remain mutable.
 function appWrites(text: string): string[] {
   const target = String.raw`(?:\b(?:app|matchedRoute)\b|\[\s*['"\`](?:app|matchedRoute)['"\`]\s*\])`
@@ -224,7 +228,7 @@ function appWrites(text: string): string[] {
     new RegExp(String.raw`${written}${assigned}`, 'g'),
     new RegExp(String.raw`${written}\s*(?:\+\+|--)|(?:\+\+|--)\s*${written}`, 'g'),
     new RegExp(String.raw`\{[^{}]*${target}[^{}]*\}\s*=(?![=>])`, 'g'),
-    new RegExp(String.raw`(?<![\w$\])])\s*\[[^\[\]]*${target}[^\[\]]*\]\s*=(?![=>])`, 'g'),
+    new RegExp(String.raw`(?<![\w$\])])\s*\[(?:[^\[\]]|\[[^\[\]]*\])*${target}(?:[^\[\]]|\[[^\[\]]*\])*\]\s*=(?![=>])`, 'g'),
     new RegExp(String.raw`\bfor\s*(?:await\s*)?\(\s*${written}\s+(?:of|in)\b`, 'g'),
     new RegExp(String.raw`\b(?:Object\.(?:assign|defineProperty|defineProperties|setPrototypeOf)|Reflect\.(?:set|defineProperty|setPrototypeOf))\s*\(\s*[\w$.?\[\]'"\`~(]*(?:${target}|${prototype})`, 'g'),
   ]

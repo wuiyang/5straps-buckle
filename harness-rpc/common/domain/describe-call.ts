@@ -39,6 +39,7 @@ export function describeCall(input: { tool: string; args: JsonObject; cwd: strin
 
 interface Facts {
   fact(value: string, limit?: number): string
+  command(command: string, args: string[]): string
   paths(values: string[]): string
   names(prefix: string, value: JsonValue | undefined): string
 }
@@ -59,11 +60,11 @@ function describeAction(tool: string, args: JsonObject, facts: Facts): string {
     case 'fs_list': return `List ${path()}`
     case 'fs_find_names': return `Find names matching ${fact(text(args.pattern) ?? '')} under ${path()}`
     case 'fs_search_content': return `Search file contents for ${fact(text(args.pattern) ?? '')} under ${path()}`
-    case 'shell_exec': return `Run ${fact(shownCommand(text(args.command) ?? '', strings(args.args)))}${shellExtras(args, facts)}`
+    case 'shell_exec': return `Run ${facts.command(text(args.command) ?? '', strings(args.args))}${shellExtras(args, facts)}`
     case 'script_run': return `Run a ${fact(text(args.runtime) ?? 'shell')} script of ${bytes(args.script)}${shellExtras(args, facts)}`
     case 'web_fetch': return `Send ${fact(text(args.method) ?? 'GET')} to ${fact(text(args.url) ?? '')}${args.body === undefined ? '' : ` with a body of ${bytes(args.body)}`}${names(' with headers', args.headers)}`
     case 'web_search': return `Search the web for ${fact(text(args.query) ?? '')}`
-    case 'browser_command': return `Run the browser command ${fact(shownCommand(text(args.command) ?? '', strings(args.args)))}`
+    case 'browser_command': return `Run the browser command ${facts.command(text(args.command) ?? '', strings(args.args))}`
     case 'git_commit': return `Commit ${count(strings(args.paths).length, 'path')} in ${path('repo')}: ${paths(strings(args.paths))}`
     case 'git_push': return `Push branch ${fact(text(args.branch) ?? '')} of ${path('repo')}${args.force === true ? ', forced' : ''}${args.setUpstream === true ? ', setting its upstream' : ''}`
     case 'pr_open': return `Open a pull request from ${fact(text(args.head) ?? '')} into ${fact(text(args.base) ?? '')} for ${path('repo')}`
@@ -83,15 +84,25 @@ function shellExtras(args: JsonObject, facts: Facts): string {
 
 /** The fact quoting of one description, which records whether it cut any fact. */
 function factsOf(cut: { truncated: boolean }): Facts {
-  /** One fact as a person reads it: redacted, quoted, escaped, and when cut, its length named outside the quote. */
-  const fact = (value: string, limit = FACT_LENGTH): string => {
-    const shown = redactShownText(value)
+  /** Shown text quoted and escaped, and when cut, its length named outside the quote. */
+  const show = (shown: string, length: number, limit: number): string => {
     if (shown.length <= limit) return quote(shown)
     cut.truncated = true
-    return `${quote(wholeCharacters(shown, limit))} (cut from ${value.length} characters)`
+    return `${quote(wholeCharacters(shown, limit))} (cut from ${length} characters)`
   }
+  /** One fact as a person reads it: redacted, quoted, escaped, and when cut, its length named outside the quote. */
+  const fact = (value: string, limit = FACT_LENGTH): string => show(redactShownText(value), value.length, limit)
   return {
     fact,
+    /**
+     * A command as shownCommand shows it, each word redacted on its own and quoted for a shell. It is not redacted
+     * again as one text: the quotes it adds around a word would read as a quoted URL there (owner decision D21), so
+     * a script body that starts with a URL would hide up to a later `@` (review H2 of the continuation review).
+     */
+    command(command, args) {
+      const shown = shownCommand(command, args)
+      return show(shown, shown.length, FACT_LENGTH)
+    },
     paths(values) {
       const listed = values.slice(0, LISTED_PATHS).map(value => fact(value, PATH_LENGTH)).join(', ')
       return values.length > LISTED_PATHS ? `${listed} and ${values.length - LISTED_PATHS} more` : listed

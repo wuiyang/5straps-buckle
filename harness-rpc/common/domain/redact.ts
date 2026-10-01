@@ -71,7 +71,9 @@ const SCHEME_URL = /\b[a-z][a-z0-9+.-]{0,63}:\/\/[^\s"'<>]*/gi
  * credential parameter in its query or fragment (the logger's matcher), redacted. The shown arguments,
  * the description Buckle writes, a command's shown words and effects, and every approval reason pass
  * through it, so none shows what another hides (review M2 of the second proof-of-possession re-review;
- * owner decision D17).
+ * owner decision D17). Userinfo is judged by its context (owner decision D21): an unquoted URL's ends with its
+ * authority, at whitespace or a shell character, and a quoted URL's at its closing quote, so nothing after a URL
+ * is hidden up to a later `@` (review H2 of the continuation review). Display only: identity stays the raw call.
  */
 export function redactShownText(value: string): string {
   return redactUrlUserinfo(value).replace(SCHEME_URL, redactUrlParameters)

@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ApprovalDecisionSchema } from '@5straps/protocol'
@@ -436,6 +436,66 @@ describe('buckle approve shows the whole action before it decides (owner decisio
     expect(json[0]).not.toHaveProperty('approveCommand')
     expect(json[0]).not.toHaveProperty('callRef')
   })
+
+  // Review L5 of the continuation review: builds 077ca3e to f931286 kept an ask's complete call inline, with no call
+  // file. The listings dropped that call and --json offered only a denial, while buckle approve approved the ask.
+  async function inlineCallRequest(config: BuckleConfig): Promise<string> {
+    const token = await preBuildRequest(config)
+    const state = JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as { pending: Array<Record<string, unknown>> }
+    state.pending[0]!.call = { arguments: { path: '/outside/old.md', content: 'INLINE-WHOLE-CALL' }, cwd: '/workspace', description: 'Write "/outside/old.md"', effects: ['write /outside/old.md'], complete: true }
+    writeFileSync(approvalsPath(config), JSON.stringify(state))
+    return token
+  }
+
+  it('lists an ask whose complete call is kept inline whole, in text and JSON, and offers it for approval as buckle approve does', async () => {
+    const config = node()
+    const token = await inlineCallRequest(config)
+    const json = JSON.parse((await capture({ argv: ['approvals', '--json'], config })).stdout) as Array<Record<string, unknown>>
+    expect(json).toEqual([expect.objectContaining({ token, approveCommand: expect.stringContaining(`buckle approve ${token} --scope`), call: { arguments: { content: 'INLINE-WHOLE-CALL', path: '/outside/old.md' }, cwd: '/workspace', description: 'Write "/outside/old.md"', effects: ['write /outside/old.md'] } })])
+    expect(json[0]).not.toHaveProperty('denyCommand')
+    const text = await capture({ argv: ['approvals'], config })
+    expect(text.stdout).toContain('INLINE-WHOLE-CALL')
+    expect(text.stdout).toContain(`buckle approve ${token} --scope`)
+    expect((await runCli({ argv: ['approve', token, '--scope', 'session'], config, confirm: async () => true })).exitCode).toBe(0)
+    expect(pendingTokens(config)).toEqual([])
+  })
+
+  // Review L2 of the continuation review: --watch checked stdin alone, so with stdout redirected the action and its
+  // prompt went to the file while a key typed at the terminal still granted.
+  it.runIf(runsNativeTerminal)('refuses to watch when stdout hides the action even though stdin is a terminal, and no key grants', async () => {
+    const config = node()
+    const token = await pendingRequest(config)
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-hidden-watch-'))
+    const hidden = join(directory, 'watch.log')
+    writeFileSync(hidden, '')
+    const script = join(directory, 'watch.mts')
+    writeFileSync(script, `
+      import { openSync } from 'node:fs';
+      import { spawn } from 'node:child_process';
+      const child = spawn(process.execPath, ['--import', ${JSON.stringify(import.meta.resolve('tsx'))}, '--input-type=module', '-e', ${JSON.stringify(`import { runCli } from ${JSON.stringify(new URL('../cli/main.ts', import.meta.url).href)}; const result = await runCli({ argv: ['approvals', '--watch'], config: ${JSON.stringify(config)} }); process.exitCode = result.exitCode;`)}], { stdio: [0, openSync(${JSON.stringify(hidden)}, 'w'), 2] });
+      child.on('exit', code => { process.exitCode = code ?? 1 });
+    `)
+    const pty = await import('node-pty')
+    const child = pty.spawn(process.execPath, ['--import', import.meta.resolve('tsx'), script], { name: 'xterm-256color', cwd: tmpdir(), env: { PATH: process.env.PATH ?? '/usr/bin:/bin', TERM: 'xterm-256color' }, cols: 120, rows: 24 })
+    let shown = ''
+    child.onData(data => { shown += data })
+    const exited = new Promise<{ exitCode: number; signal?: number }>(resolve => child.onExit(resolve))
+    // Were the watch asking into the file, a person told to press s at the terminal would grant from there.
+    const pressing = setInterval(() => { if (readFileSync(hidden, 'utf8').includes('skip > ')) child.write('s') }, 250)
+    try {
+      const result = await Promise.race([exited, new Promise<null>(resolve => setTimeout(() => resolve(null), SPAWN_TEST_TIMEOUT_MS / 2))])
+      expect(result).not.toBeNull()
+      expect(result!.exitCode).toBe(1)
+      expect(shown).toContain('needs a terminal to ask in, on both its input and its output')
+      expect(shown).toContain('buckle approve <token> --deny')
+      expect(readFileSync(hidden, 'utf8')).toBe('')
+      expect(pendingTokens(config)).toEqual([token])
+      expect(grantStore(config).list()).toEqual([])
+    } finally {
+      clearInterval(pressing)
+      child.kill('SIGKILL')
+    }
+  }, SPAWN_TEST_TIMEOUT_MS)
 
   it.runIf(runsNativeTerminal)('refuses approval when stdout hides the action even though stdin is a terminal', async () => {
     const config = node()

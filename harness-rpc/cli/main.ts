@@ -62,8 +62,10 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig; conf
 
   // One command is one process owner: its common runtime closes when the command ends.
   const common = initializeCommon({ config: input.config, role: 'cli' })
-  // A terminal answers a gated call in place; without one the call reports back at once (exit 3).
-  const cli = setupCli({ terminal: process.stdin.isTTY ? { input: process.stdin, output: process.stderr } : null })
+  // A terminal answers a gated call in place; without one the call reports back at once (exit 3). The question is
+  // shown on stderr, so both ends must be a terminal: with stderr redirected a key would answer an unseen action
+  // (review L2 of the continuation review).
+  const cli = setupCli({ terminal: process.stdin.isTTY && process.stderr.isTTY ? { input: process.stdin, output: process.stderr } : null })
   common.bindRequester(cli.requestCli)
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   try {
@@ -284,7 +286,9 @@ async function approvals(input: CommandInput): Promise<CliResult> {
   if (values.json) {
     return print(runtime.approvalService.listing().map((entry) => {
       const { callRef, call, ...request } = entry
-      const command = callRef === undefined ? { denyCommand: denyCommand({ request, workspaceId: runtime.workspaceId }) } : { approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }) }
+      // An ask whose whole call is listed, inline or by its group's callRef, is approvable (review L5 of the continuation review).
+      const shown = callRef !== undefined || call !== undefined
+      const command = shown ? { approveCommand: approveCommand({ request, workspaceId: runtime.workspaceId }) } : { denyCommand: denyCommand({ request, workspaceId: runtime.workspaceId }) }
       return { ...request, workspaceId: runtime.workspaceId, ...command, ...(callRef === undefined ? {} : { callRef }), ...(call === undefined ? {} : { call }) }
     }))
   }
@@ -323,7 +327,9 @@ async function approvals(input: CommandInput): Promise<CliResult> {
  * Each answer is audited in the node's log, where `buckle approve` records its own.
  */
 async function watch(runtime: BuckleRuntime, node: BuckleRuntime): Promise<CliResult> {
-  if (!process.stdin.isTTY) return fail(`buckle approvals --watch needs a terminal to ask in. ${noTerminal(runtime.workspaceId)}`)
+  // The action and the prompt go to stdout, so both ends must be a terminal, as terminalConfirm requires for buckle
+  // approve: with stdout redirected a key would grant an action never seen (review L2 of the continuation review).
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return fail(`buckle approvals --watch needs a terminal to ask in, on both its input and its output. ${noTerminal(runtime.workspaceId)}`)
   const interrupted = new AbortController()
   const interrupt = () => interrupted.abort()
   process.once('SIGINT', interrupt)

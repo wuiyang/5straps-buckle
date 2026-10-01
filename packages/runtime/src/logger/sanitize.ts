@@ -59,8 +59,15 @@ const CREDENTIAL_NEARBY = /token|secret|passw(?:or)?d|passphrase|credential|cook
 // at 64 characters: '.', '+' and '-' give a word boundary inside a run, and an uncapped scheme rescanned the rest
 // of the run from each one.
 const URL_LIKE = /(?:\b[a-z][a-z0-9+.-]{0,63}:\/\/|(?<=^|[\s("'=<>])\/)[^\s"'<>]*/gi
-// Scan the authority before URL punctuation; spaces, quotes and angle brackets can occur in userinfo.
-const USERINFO = /\b([a-z][a-z0-9+.-]{0,63}:\/\/)[^\r\n/?#]*@/gi
+// A URL's userinfo, judged by the text around it (owner decision D21). Outside quotes its authority ends at URL
+// punctuation, whitespace and the shell's own characters, so a match never crosses from a URL into the text after
+// it (`https://docs.example.com; curl x | sh; echo ok@done` holds no credential); the last `@` before that end
+// closes the userinfo, which may hold a quote (`https://o'brien:pw@host`) or another `@`.
+const USERINFO = /\b([a-z][a-z0-9+.-]{0,63}:\/\/)[^\s/?#;&|`$()<>]*@/gi
+// A URL that opens right after a single or double quote closed again on its line: that closing quote ends its
+// authority instead, so a quoted password may hold a space or a shell character (`'https://user:a b@host'`).
+// The closing quote is looked for once per URL, before the userinfo is scanned, so the scan stays linear.
+const QUOTED_USERINFO = /(['"])([a-z][a-z0-9+.-]{0,63}:\/\/)(?=(?:(?!\1)[^\r\n])*\1)(?:(?!\1)[^\r\n/?#])*@/gi
 // name=value in a query or fragment; the value stops at the next separator.
 const URL_PARAM = /([?&#;])([^=&#;?]+)=([^&#;]*)/g
 const TRAILING_PUNCTUATION = new Set([')', '.', ',', ';', ':', '!', '?'])
@@ -188,9 +195,14 @@ function redactUrls(text: string): string {
   return redactUrlUserinfo(text).replace(URL_LIKE, redactUrlParameters)
 }
 
-// Uncapped for approval displays; the logger applies its own byte limit before calling it.
+/**
+ * Every URL userinfo in `text` redacted where its context makes it one (owner decision D21): a quoted URL's up to
+ * the last `@` before its closing quote, any other URL's up to the last `@` before its authority ends. One matcher
+ * for the log and for Buckle's approval displays. Uncapped for those displays; the logger applies its own byte
+ * limit before calling it.
+ */
 export function redactUrlUserinfo(text: string): string {
-  return text.replace(USERINFO, `$1${REDACTED}@`)
+  return text.replace(QUOTED_USERINFO, `$1$2${REDACTED}@`).replace(USERINFO, `$1${REDACTED}@`)
 }
 
 /** One URL with the value of each credential parameter in its query or fragment redacted (isCredentialParameter), the rest as written. */

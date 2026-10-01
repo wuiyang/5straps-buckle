@@ -118,9 +118,11 @@ async function startService(input: { kind: ServiceKind; config: BuckleConfig; co
   return serveMcpStdio(input)
 }
 
-// A terminal running `buckle serve` can answer directly; under mcp, stdin carries the protocol.
+// A terminal running `buckle serve` can answer directly; under mcp, stdin carries the protocol. The question is
+// shown on stderr, so both ends must be a terminal: with stderr redirected a key would answer an action never seen
+// (review L2 of the continuation review).
 function terminalFor(kind: ServiceKind): TerminalOptions | null {
-  return kind === 'serve' && process.stdin.isTTY ? { input: process.stdin, output: process.stderr } : null
+  return kind === 'serve' && process.stdin.isTTY && process.stderr.isTTY ? { input: process.stdin, output: process.stderr } : null
 }
 
 function closeOnSignals(input: { common: BuckleCommon; logging: LoggerRoot }): Shutdown {

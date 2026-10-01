@@ -22,8 +22,10 @@ export interface WebhookNotifierOptions {
 /**
  * Posts pending approvals to an operator-supplied URL so a person can be reached wherever they
  * are: Rings, a Telegram bot, a chat relay, a phone notification. Buckle deliberately knows
- * nothing about the destination. Whatever receives this decides how to present it, then
- * approves by posting back to /v1/approvals or running `buckle approve`.
+ * nothing about the destination. Whatever receives this decides how to present it. Only a person
+ * approves: with `buckle approve` at the node's terminal, or with an enrolled device's signed decision
+ * over the node's challenge (`buckle client approve`, posted to `/setup/approvals`, which the node serves
+ * only under BUCKLE_EXPERIMENTAL_ADMIN_HTTP). A relay's token or a Rings-sealed body can only deny there.
  *
  * The URL is operator configuration rather than model input, so it is not held to the egress
  * rules that judge a tool's own network access; a relay on the local network is a normal setup.
