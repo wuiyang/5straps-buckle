@@ -1,15 +1,19 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import type { ApprovalNotice } from '@5straps/protocol'
+import { emptyWorkspacePolicy, type ApprovalNotice } from '@5straps/protocol'
 import { callDigestOf, generateSigningKey, shownCallDigestOf, signChallenge, signingKeyFromPem } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { createApprovalRegistry, MAX_PENDING_BYTES_PER_SESSION, MAX_PENDING_PER_SESSION, type AskedCall } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
+import { createPermissionEngine } from '../common/domain/permission/engine.js'
+import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
+import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
+import { compilePolicy } from '../common/domain/policy.js'
 import { logger } from '../common/runtime/log.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
@@ -185,6 +189,71 @@ describe('a re-send of a large waiting group stays cheap under the approvals loc
       await service.close()
     }
   })
+})
+
+// Slice 7b review W7B-1: a re-send of a call approved once, with no token, checks it four times inside the approvals
+// lock; each check of a 1 MB script of nested evals took 5 s, so the lock was held about 20 s and a cancel from
+// another process failed at the lock's 5 s deadline. The forms are read once per effect and within a budget.
+describe('a re-send of a large nested script approved once', () => {
+  const doubleQuoted = (text: string) => `"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$').replaceAll('`', '\\`')}"`
+  const nested = (levels: number, tail: string) => {
+    let body = `${'a '.repeat(levels === 8 ? 499_000 : 499_400)}${tail}`
+    for (let level = 0; level < levels; level++) body = `eval ${doubleQuoted(`${body} ; true`)}`
+    return body
+  }
+
+  it.each([[8, ''], [3, '; git clean -fdx']] as const)('holds the lock well under 5 s for %i levels while another process cancels', async (levels, tail) => {
+    const { root, registry, service } = queue()
+    const policy = emptyWorkspacePolicy()
+    policy.commands.allow = ['bash -c *']
+    const compiled = compilePolicy(policy)
+    const engine = createPermissionEngine([createCommandPolicyRule(compiled), createDestructiveCommandRule({ added: compiled.commands.destructive })])
+    const effects = [{ kind: 'exec' as const, command: 'bash', args: ['-c', nested(levels, tail)] }]
+    const check = (subjects: Array<{ rule: string; subject: string }>) => engine.evaluate({ tool: 'script_run', effects, grants: { subjectsFor: rule => subjects.filter(entry => entry.rule === rule).map(entry => entry.subject) } })
+    const asked = check([])
+    if (asked.kind !== 'ask') throw new Error(`expected an ask, got ${asked.kind}`)
+    const sent = { tool: 'script_run', sessionId: 'mcp', requestId: 'nested-1', fingerprint: 'nested-call', asks: asked.asks, call: whole() }
+    const marker = join(root, 'in-lock')
+    const script = join(root, 'cancel.mts')
+    writeFileSync(script, `
+      import { existsSync } from 'node:fs';
+      import { createFileGrantStore } from ${JSON.stringify(new URL('../common/adapters/grant-store/file-grant-store.ts', import.meta.url).href)};
+      import { createApprovalRegistry } from ${JSON.stringify(new URL('../common/services/approvals/approval-registry.ts', import.meta.url).href)};
+      const [root, marker] = process.argv.slice(2);
+      const registry = createApprovalRegistry(createFileGrantStore({ filePath: root + '/grants-other.json', workspace: root }), root + '/approvals.json', root);
+      console.log('ready');
+      while (!existsSync(marker)) await new Promise(resolve => setTimeout(resolve, 5));
+      const started = Date.now();
+      try { await registry.cancel(['another-token']); console.log(JSON.stringify({ ok: true, ms: Date.now() - started })) }
+      catch (error) { console.log(JSON.stringify({ ok: false, ms: Date.now() - started, name: error?.constructor?.name })) }
+    `)
+    try {
+      const { requests } = await registry.ask(sent)
+      expect(await registry.resolve({ token: requests[0]!.token, approved: true, scope: 'once' }, 'admin')).toMatchObject({ ok: true })
+      const other = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), script, root, marker], { stdio: ['ignore', 'pipe', 'inherit'] })
+      let output = ''
+      const ready = new Promise<void>(resolve => other.stdout.on('data', (chunk) => { output += String(chunk); if (output.includes('ready')) resolve() }))
+      const exited = new Promise(resolve => other.on('exit', resolve))
+      await ready
+      let checks = 0
+      let locked = 0
+      const outcome = await registry.evaluate({
+        tokens: [], sessionId: 'mcp', tool: 'script_run', fingerprint: 'nested-call', admit: () => true,
+        check: (subjects) => {
+          checks += 1
+          // The first check runs before the lock; the ones after it run inside the update that holds it.
+          if (checks === 2) { locked = performance.now(); writeFileSync(marker, 'x') }
+          return check(subjects)
+        },
+      })
+      const held = performance.now() - locked
+      expect(outcome.kind).toBe('allow')
+      expect(checks).toBeGreaterThanOrEqual(4)
+      expect(held).toBeLessThan(2_000)
+      await exited
+      expect(JSON.parse(output.slice(output.indexOf('{')))).toMatchObject({ ok: true })
+    } finally { await service.close() }
+  }, SPAWN_TEST_TIMEOUT_MS)
 })
 
 // Review L3 of the continuation review: an ordinary call read the index to learn the next expiry, so a damaged

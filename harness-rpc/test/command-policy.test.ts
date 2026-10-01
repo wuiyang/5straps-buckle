@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import type { ResolvedEffect } from '../common/domain/effect.js'
+import { commandFormsOf } from '../common/domain/command-forms.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
 import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
@@ -194,6 +195,97 @@ describe('a shell body that hands its command on', () => {
   it('needs the wrapper allowed when flock or xargs hands a body to a shell, as env does', () => {
     expect(reasonOf(evaluate('flock', ['/tmp/lock', '-c', 'pnpm build']))).toContain("allow-command 'sh -c *'")
     expect(reasonOf(evaluate('xargs', ['-n', '1', 'bash', '-c', 'pnpm build']))).toContain("allow-command 'bash -c *'")
+  })
+})
+
+// Slice 7b review W7B-2 to W7B-6: with `bash -c *` allowed and git's history commands and rm denied, `eval --`, a
+// one-line `function` or `coproc`, ANSI-C `$'\''`, an apostrophe in an earlier comment or heredoc line, and a find
+// primary's value spelled `-exec` each passed the deny list (real bash ran every one).
+describe('a shell body the reader now reads whole', () => {
+  const commands = { allow: ['bash -c *'], deny: ['git push *', 'git clean *', 'git reset *', 'rm *'] }
+
+  it.each([
+    'eval -- git push --force origin main',
+    "eval -- 'git clean -fdx'",
+    'eval -- rm -rf build',
+    'function f { git clean -fdx; }; f',
+    'coproc git push --force origin main; wait',
+    'coproc NAME { git reset --hard; }; wait',
+    'coproc { git reset --hard; }; wait',
+    "rm $'\\'' -rf build",
+    "git push $'\\'' --force origin main",
+    "git clean -e $'\\'' -f",
+    "rm $'a\\'b' -rf build",
+    "# don't keep build output\ngit clean -e ';' -fdx",
+    "echo done # it's\nrm '|' -rf build",
+    "cat <<EOF\nit's done\nEOF\ngit clean -e ';' -f",
+    'find . -name -exec -exec git clean -f \;',
+    'find . -path -exec -exec rm -rf {} +',
+    'find . -maxdepth 1 -name -exec -o -exec git clean -f \;',
+  ])('refuses bash -c %s by the deny list', (body) => {
+    const outcome = evaluate('bash', ['-c', body], commands)
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toMatch(/Refused by the workspace command policy: (git (push|clean|reset)|rm) \*/)
+  })
+
+  it('leaves the ordinary forms of the same constructs alone', () => {
+    for (const body of ['eval -- echo hi', 'function g { ls; }; g', 'coproc sleep 1; wait', "echo $'it\\'s'; ls", "cat <<EOF\nit's\nEOF\nls"]) {
+      expect(evaluate('bash', ['-c', body], commands).kind).toBe('allow')
+    }
+  })
+})
+
+// Slice 7b review W7B-1 and W7B-8: each rule read every nested eval or `bash -c` level again, and each level twice, so
+// one check of a 1 MB script took 2 to 6 s, and a body of 140,000 quoted statements threw RangeError. A check now
+// reads each level once within a budget and asks past it.
+describe('a check of a large nested body', () => {
+  const commands = { allow: ['bash -c *'], deny: ['git push *', 'git clean *', 'git reset *', 'rm *'] }
+  const doubleQuoted = (text: string) => `"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$').replaceAll('`', '\\`')}"`
+  /** A script_run bash script of about 999,180 bytes: `levels` nested `eval "..."` or `bash -c "..."` around filler. */
+  const nested = (runner: string, levels: number, tail = '') => {
+    let body = `${'a '.repeat(levels === 8 ? 499_000 : 499_400)}${tail}`
+    for (let level = 0; level < levels; level++) body = `${runner} ${doubleQuoted(`${body} ; true`)}`
+    return body
+  }
+
+  it.each([
+    ['eval', 8, '', /READ_BUDGET: 8,000,000 characters, 1,000,000 words or 100,000 commands/],
+    ['bash -c', 8, '', /READ_BUDGET: 8,000,000 characters, 1,000,000 words or 100,000 commands/],
+    ['eval', 3, '; git clean -fdx', /git clean deletes untracked files/],
+  ] as const)('checks %s nested %i levels deep in a 1 MB script within a second, and asks', (runner, levels, tail, reason) => {
+    const body = nested(runner, levels, tail)
+    expect(body.length).toBeGreaterThan(998_000)
+    const started = performance.now()
+    const outcome = evaluate('bash', ['-c', body], { allow: ['bash -c *'] })
+    expect(performance.now() - started).toBeLessThan(1_000)
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks[0]?.reason).toMatch(reason)
+  })
+
+  it.each(['eval', 'bash -c'])('reads a 1 MB body three %s levels deep whole, each level once, and allows it', (runner) => {
+    const started = performance.now()
+    expect(evaluate('bash', ['-c', nested(runner, 3)], { allow: ['bash -c *'] }).kind).toBe('allow')
+    expect(performance.now() - started).toBeLessThan(1_000)
+  })
+
+  it('still refuses by the deny list what a 1 MB body three levels down runs', () => {
+    expect(reasonOf(evaluate('bash', ['-c', nested('eval', 3, '; git clean -fdx')], commands))).toMatch(/git clean \*/)
+  })
+
+  it('reads the forms of one effect once for every rule and every check of the call', () => {
+    const effect = { command: 'bash', args: ['-c', 'eval -- git push --force origin main'] }
+    const forms = commandFormsOf(effect)
+    expect(commandFormsOf(effect)).toBe(forms)
+    expect(commandFormsOf({ ...effect })).not.toBe(forms)
+    expect(commandFormsOf({ ...effect })).toEqual(forms)
+  })
+
+  it('asks about a body of 140,000 quoted statements past the budget, where it threw RangeError', () => {
+    const body = `bash -c '"${Array.from({ length: 140_000 }, (_, index) => `a${index}`).join(';')}"'`
+    expect(body.length).toBeGreaterThan(960_000)
+    const outcome = evaluate('bash', ['-c', body], { allow: ['bash -c *'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks[0]?.reason).toMatch(/^Shell text runs past what Buckle reads in one check \(READ_BUDGET/)
   })
 })
 

@@ -1,5 +1,5 @@
-import { isShellWrapper, parseArgv, shellStatements, shownCommand } from '../../argv.js'
-import { allForms, commandForms } from '../../command-forms.js'
+import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
+import { allForms, commandFormsOf } from '../../command-forms.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
 import { deny } from '../decision.js'
@@ -15,8 +15,12 @@ import { deny } from '../decision.js'
  * refused the same way. The subcommand must end the word, so `mcp-probe` or `policy.json` after a
  * directory named `buckle` is not taken for one. This is a speed bump: the real guard is the hidden
  * state directory and the sandbox.
+ *
+ * It is matched once on the whole command line, a shell's separators counting as word boundaries, which meets
+ * every statement and every piece of a script body the old per-statement match met, without splitting the body
+ * again on each check (slice 7b review W7B-1).
  */
-const SELF_ADMINISTRATION = /(^|[\s/\\'"])buckle['"]?\s+(approvals|approve|check-url|grants|policy|init|settings|plugin|serve|mcp|workspaces?|history)(?=$|[\s'"])/
+const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve|check-url|grants|policy|init|settings|plugin|serve|mcp|workspaces?|history)(?=$|[\s'";&|()`])/
 
 /**
  * The owner's command globs, judged one shell word at a time on the parsed command line. Deny
@@ -39,27 +43,24 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       if (effect.kind !== 'exec') return null
       const argv = parseArgv(effect.command, effect.args)
       const words = [argv.command, ...effect.args]
-      const line = words.join(' ')
-      const statements = shellStatements(argv)
-      const forms = commandForms(effect.command, effect.args)
+      const forms = commandFormsOf(effect)
       // What the refusal names, as an approval shows a command: whole, quoted and redacted (owner decision D17).
-      const subject = shownCommand(effect.command, effect.args)
+      // Written only for a refusal, so a call the policy admits is not redacted on every check (slice 7b review W7B-1).
+      const subject = () => shownCommand(effect.command, effect.args)
 
-      if ([line, ...statements].some(candidate => SELF_ADMINISTRATION.test(candidate))) {
-        return deny('command_policy', subject, 'A tool cannot administer the Buckle that runs it')
-      }
+      if (SELF_ADMINISTRATION.test(words.join(' '))) return deny('command_policy', subject(), 'A tool cannot administer the Buckle that runs it')
 
       const denied = policy.commands.deny.find(glob => allForms(forms).some(form => glob.matchesPrefix(form)))
-      if (denied) return deny('command_policy', subject, `Refused by the workspace command policy: ${denied.source}`)
+      if (denied) return deny('command_policy', subject(), `Refused by the workspace command policy: ${denied.source}`)
 
       const allow = policy.commands.allow
       const admitted = allow.some(glob => glob.matchesLine(words))
       const wrapper = forms.chain.find(([command = '', ...args]) => isShellWrapper(parseArgv(command, args)))
       if (options.enforceWrapperAllow !== false && wrapper && !admitted) {
-        return deny('command_policy', subject, `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapper[0]} -c *'`)
+        return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapper[0]} -c *'`)
       }
       if (allow.length > 0 && !admitted) {
-        return deny('command_policy', subject, `Not on the workspace command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
+        return deny('command_policy', subject(), `Not on the workspace command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
       }
       return null
     },

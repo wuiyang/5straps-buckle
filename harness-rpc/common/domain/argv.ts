@@ -208,48 +208,156 @@ export function isShellWrapper(argv: ParsedArgv): boolean {
   return SHELL_COMMANDS.has(argv.command) && argv.shortFlags.has('c')
 }
 
-/**
- * The statements of a shell script body, split where a shell would start a new command, so a
- * pattern written for a command line also meets `curl` inside `bash -c "... | curl ..."`. A single
- * `&`, a subshell's parentheses, `$(` and a backtick start one too (`true & git push -f`, `$(git clean -f)`).
- */
-export function shellStatements(argv: ParsedArgv): string[] {
-  if (!SHELL_COMMANDS.has(argv.command)) return []
-  return statementsOf(argv.positionals.join('\n'))
-}
-
 /** Where a shell starts a new command: a newline, `;`, `&`, `|`, a parenthesis, a backtick or `$(`. */
 const STATEMENT_BREAK = /\n|;|&|\||`|\$\(|\(|\)/
 const BREAK_CHARACTERS = new Set(['\n', ';', '&', '|', '`', '(', ')'])
+/** Characters before which a `#` starts a word, and so a comment. */
+const WORD_BOUNDARY = new Set([' ', '\t', '\r', ...BREAK_CHARACTERS])
+/**
+ * How many `$(...)` or backtick bodies inside double quotes nest before the rest is called unread. Each level is one
+ * more statement holding the levels inside it, so this stays small.
+ */
+const MAX_SUBSTITUTIONS = 4
 
 /**
- * The statements of shell text, read twice: split outside quotes, as a shell splits it, so `git clean -e ';' -f`
- * keeps its `-f` (slice 7 review F2); then split at every separator, quoted or not, so a command inside a quoted
- * `$(...)` or an eval'd string is met too. The second reading only adds candidates to judge.
+ * The statements of shell text, split where a shell would start a new command, so a pattern written for a command
+ * line also meets `curl` inside `bash -c "... | curl ..."`: a newline, `;`, `&`, `|`, a parenthesis, a backtick and
+ * `$(` start one, outside quotes, so `git clean -e ';' -f` keeps its `-f` (slice 7 review F2). Each `$(...)` or
+ * backtick body inside double quotes is read as statements of its own. A `#` that starts a word comments out its
+ * line, and a heredoc body is read line by line, its quotes ending with the line (slice 7b review W7B-4). `deep` says
+ * substitutions nest past MAX_SUBSTITUTIONS, so some text was read only as part of the statement around it.
  */
-export function statementsOf(text: string): string[] {
-  const statements = [...unquotedSplit(text), ...text.split(STATEMENT_BREAK)].map(statement => statement.trim()).filter(Boolean)
-  return [...new Set(statements)]
+export function shellStatementList(text: string): { statements: string[]; deep: boolean } {
+  const { statements, deep } = unquotedSplit(text)
+  return { statements: [...new Set(statements.map(statement => statement.trim()).filter(Boolean))], deep }
 }
 
-/** Text split at each separator outside quotes; a backslash outside single quotes escapes the next character. */
-function unquotedSplit(text: string): string[] {
+/**
+ * A statement split at every separator, quoted or not, so a command inside a quoted string another program runs is
+ * met too: candidates to judge besides the statement. Empty when it holds no separator.
+ */
+export function statementPieces(statement: string): string[] {
+  if (!STATEMENT_BREAK.test(statement)) return []
+  return statement.split(STATEMENT_BREAK).map(piece => piece.trim()).filter(piece => piece !== '' && piece !== statement)
+}
+
+type Quote = null | "'" | "$'" | '"'
+
+/** One level of unquoted shell text: the text itself, or a `$(...)` or backtick body inside double quotes. */
+interface SplitLevel {
+  start: number
+  closer: ')' | '`' | null
+  parens: number
+  quote: Quote
+}
+
+/**
+ * Text split at each separator outside quotes. A backslash outside single quotes escapes the next character, and
+ * in `$'...'` too (slice 7b review W7B-5). Inside double quotes a `$(...)` or backtick body is split as text of its
+ * own, its statements added to the rest.
+ */
+function unquotedSplit(text: string): { statements: string[]; deep: boolean } {
   const statements: string[] = []
-  let start = 0
-  let quote: string | null = null
+  const levels: SplitLevel[] = [{ start: 0, closer: null, parens: 0, quote: null }]
+  const heredocs: Heredoc[] = []
+  let deep = false
+  const end = (level: SplitLevel, at: number, next: number) => {
+    statements.push(text.slice(level.start, at))
+    level.start = next
+  }
   for (let index = 0; index < text.length; index++) {
+    const level = levels.at(-1)!
     const character = text[index]!
-    if (character === '\\' && quote !== "'") index++
-    else if (quote !== null) {
-      if (character === quote) quote = null
-    } else if (character === '"' || character === "'") quote = character
-    else if (BREAK_CHARACTERS.has(character)) {
-      statements.push(text.slice(start, index))
-      start = index + 1
+    if (level.quote === "'") {
+      if (character === "'") level.quote = null
+      continue
+    }
+    if (level.quote === "$'") {
+      if (character === '\\') index++
+      else if (character === "'") level.quote = null
+      continue
+    }
+    if (level.quote === '"') {
+      if (character === '\\') index++
+      else if (character === '"') level.quote = null
+      else if (character === '`' || (character === '$' && text[index + 1] === '(')) {
+        if (levels.length > MAX_SUBSTITUTIONS) deep = true
+        else {
+          if (character === '$') index++
+          levels.push({ start: index + 1, closer: character === '`' ? '`' : ')', parens: 0, quote: null })
+        }
+      }
+      continue
+    }
+    if (character === '\\') index++
+    else if (character === level.closer && (character === '`' || level.parens === 0)) {
+      end(level, index, index + 1)
+      levels.pop()
+    } else if (character === "'") level.quote = text[index - 1] === '$' ? "$'" : "'"
+    else if (character === '"') level.quote = '"'
+    else if (character === '#' && (index === 0 || WORD_BOUNDARY.has(text[index - 1]!))) {
+      const line = text.indexOf('\n', index)
+      const stop = line < 0 ? text.length : line
+      end(level, index, stop)
+      index = stop - 1
+    } else if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
+      const heredoc = heredocAt(text, index + 2)
+      if (heredoc) heredocs.push(heredoc.heredoc)
+      index = (heredoc?.next ?? index + 2) - 1
+    } else if (BREAK_CHARACTERS.has(character)) {
+      if (level.closer === ')' && character === '(') level.parens++
+      if (level.closer === ')' && character === ')') level.parens--
+      end(level, index, index + 1)
+      if (character === '\n' && heredocs.length > 0) {
+        index = heredocBodies({ text, from: index + 1, heredocs: heredocs.splice(0), statements }) - 1
+        level.start = index + 1
+      }
     }
   }
-  statements.push(text.slice(start))
-  return statements
+  while (levels.length > 0) end(levels.pop()!, text.length, text.length)
+  return { statements, deep }
+}
+
+interface Heredoc { delimiter: string; tabs: boolean }
+
+/** The heredoc whose `<<` ends just before `at`: its delimiter word with quotes removed, and where the word ends. */
+function heredocAt(text: string, at: number): { heredoc: Heredoc; next: number } | null {
+  const tabs = text[at] === '-'
+  let index = tabs ? at + 1 : at
+  while (text[index] === ' ' || text[index] === '\t') index++
+  const start = index
+  let quote: string | null = null
+  while (index < text.length) {
+    const character = text[index]!
+    if (quote !== null) {
+      if (character === quote) quote = null
+    } else if (character === '"' || character === "'") quote = character
+    else if (character === '\\') index++
+    else if (/[\s;&|()<>]/.test(character)) break
+    index++
+  }
+  const delimiter = unquote(text.slice(start, index))
+  return delimiter === '' ? null : { heredoc: { delimiter, tabs }, next: index }
+}
+
+/**
+ * Each heredoc body after a line, up to each delimiter line, every line split on its own, so a quote in a body ends
+ * with its line; where the text goes on. A `<<` that was no heredoc (`$((1<<2))`) only reads the lines after it
+ * one at a time.
+ */
+function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[]; statements: string[] }): number {
+  let index = input.from
+  for (const heredoc of input.heredocs) {
+    while (index < input.text.length) {
+      const newline = input.text.indexOf('\n', index)
+      const lineEnd = newline < 0 ? input.text.length : newline
+      const line = input.text.slice(index, lineEnd)
+      index = lineEnd + 1
+      if ((heredoc.tabs ? line.replace(/^\t+/, '') : line) === heredoc.delimiter) break
+      for (const statement of unquotedSplit(line).statements) input.statements.push(statement)
+    }
+  }
+  return Math.min(index, input.text.length)
 }
 
 /** A word of shell text as written (`raw`, quotes kept) and as the command receives it (`word`, quotes removed). */
@@ -260,13 +368,33 @@ export interface ShellToken {
 
 /**
  * Splits on whitespace outside quotes. A quoted run joins the word it touches (`--force'>'` is one word), and an
- * unclosed quote runs to the end. Each alternative starts with a different character, so the scan is linear.
+ * unclosed quote runs to the end; in `$'...'` a backslash escapes the quote (slice 7b review W7B-5). Only `$'` and a
+ * plain `$` share a first character, and `$'` is tried first; each run inside an alternative stops at a character
+ * that starts another, so the scan stays linear.
  */
-const STATEMENT_TOKEN = /(?:"(?:[^"\\]|\\.)*"?|'[^']*'?|\\.?|[^\s"'\\])+/g
+const STATEMENT_TOKEN = /(?:"(?:[^"\\]+|\\.)*"?|\$'(?:[^'\\]+|\\.)*'?|'[^']*'?|\\.?|[^\s"'\\$]+|\$)+/g
+
+/** One scanner for shellTokensUpTo, which never calls itself, rewound before each use. */
+const TOKEN_SCAN = new RegExp(STATEMENT_TOKEN.source, STATEMENT_TOKEN.flags)
 
 /** Text as a shell would split it into words, roughly, each as written and as the command receives it. */
 export function shellTokens(text: string): ShellToken[] {
   return (text.match(STATEMENT_TOKEN) ?? []).map(raw => ({ raw, word: unquote(raw) }))
+}
+
+/**
+ * The first words of text as a shell would split it, at most `limit` of them; `more` says whether a word was left
+ * unread. Reads only as far as it returns.
+ */
+export function shellTokensUpTo(text: string, limit: number): { tokens: ShellToken[]; more: boolean } {
+  const tokens: ShellToken[] = []
+  const pattern = TOKEN_SCAN
+  pattern.lastIndex = 0
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    if (tokens.length >= limit) return { tokens, more: true }
+    tokens.push({ raw: match[0], word: unquote(match[0]) })
+  }
+  return { tokens, more: false }
 }
 
 /** Text as a shell would split it into words, roughly: whitespace separates, quotes and backslashes are removed. */
@@ -274,21 +402,28 @@ export function shellWords(text: string): string[] {
   return shellTokens(text).map(token => token.word)
 }
 
-/** Quote removal as a shell does it: single quotes keep everything; in double quotes a backslash escapes `"`, `\\`, `$` and a backtick; outside, a backslash escapes any character. */
+/**
+ * Quote removal as a shell does it: single quotes keep everything; in double quotes a backslash escapes `"`, `\\`,
+ * `$` and a backtick; in `$'...'` a backslash escape is decoded (`\'`, `\n`, `\x2d`); outside, a backslash escapes
+ * any character.
+ */
 function unquote(raw: string): string {
   let word = ''
   for (let index = 0; index < raw.length; index++) {
     const character = raw[index]!
-    if (character === "'") {
+    if (character === '$' && raw[index + 1] === "'") {
+      const decoded = ansiC(raw, index + 2)
+      word += decoded.text
+      index = decoded.end
+    } else if (character === "'") {
       const end = raw.indexOf("'", index + 1)
       const stop = end < 0 ? raw.length : end
       word += raw.slice(index + 1, stop)
       index = stop
     } else if (character === '"') {
-      for (index++; index < raw.length && raw[index] !== '"'; index++) {
-        if (raw[index] === '\\' && DOUBLE_QUOTE_ESCAPES.has(raw[index + 1] ?? '')) index++
-        word += raw[index]
-      }
+      const quoted = doubleQuoted(raw, index + 1)
+      word += quoted.text
+      index = quoted.end
     } else if (character === '\\') {
       index++
       word += raw[index] ?? ''
@@ -298,6 +433,62 @@ function unquote(raw: string): string {
 }
 
 const DOUBLE_QUOTE_ESCAPES = new Set(['"', '\\', '$', '`'])
+
+/** The text of a double-quoted run whose body starts at `from`, escapes removed, copied a run at a time, and the index of its closing quote. */
+function doubleQuoted(raw: string, from: number): { text: string; end: number } {
+  let text = ''
+  let run = from
+  let index = from
+  for (; index < raw.length && raw[index] !== '"'; index++) {
+    if (raw[index] !== '\\') continue
+    const escaped = raw[index + 1] ?? ''
+    // A backslash before any other character stays, with that character, in the run.
+    if (DOUBLE_QUOTE_ESCAPES.has(escaped)) {
+      text += raw.slice(run, index) + escaped
+      run = index + 2
+    }
+    index++
+  }
+  return { text: text + raw.slice(run, Math.min(index, raw.length)), end: index }
+}
+
+const ANSI_C_ESCAPES: Readonly<Record<string, string>> = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+const HEX_DIGITS: Readonly<Record<string, number>> = { x: 2, u: 4, U: 8 }
+
+/** The text of a `$'...'` run whose body starts at `from`, escapes decoded as bash decodes them, and the index of its closing quote. */
+function ansiC(raw: string, from: number): { text: string; end: number } {
+  let text = ''
+  let index = from
+  for (; index < raw.length && raw[index] !== "'"; index++) {
+    if (raw[index] !== '\\' || index + 1 >= raw.length) {
+      text += raw[index]
+      continue
+    }
+    const escape = raw[index + 1]!
+    if (Object.hasOwn(ANSI_C_ESCAPES, escape)) {
+      text += ANSI_C_ESCAPES[escape]
+      index++
+      continue
+    }
+    const width = escape >= '0' && escape <= '7' ? 3 : HEX_DIGITS[escape]
+    const digits = width === undefined ? '' : digitRun(raw, escape >= '0' && escape <= '7' ? index + 1 : index + 2, width, escape >= '0' && escape <= '7' ? /[0-7]/ : /[0-9a-fA-F]/)
+    if (digits === '') {
+      text += `\\${escape}`
+      index++
+      continue
+    }
+    const code = Number.parseInt(digits, escape >= '0' && escape <= '7' ? 8 : 16)
+    text += code <= 0x10ffff ? String.fromCodePoint(code) : ''
+    index += digits.length + (escape >= '0' && escape <= '7' ? 0 : 1)
+  }
+  return { text, end: index }
+}
+
+function digitRun(raw: string, from: number, width: number, digit: RegExp): string {
+  let end = from
+  while (end < raw.length && end - from < width && digit.test(raw[end]!)) end++
+  return raw.slice(from, end)
+}
 
 /** A command word as the rules compare it: its basename, lowercased, so a path to a binary is the binary. */
 export function baseCommand(command: string): string {

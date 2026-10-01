@@ -334,6 +334,59 @@ describe('destructive commands', () => {
     expect(outcome.asks.find(entry => entry.rule === 'destructive_command')?.reason).toMatch(reason)
   })
 
+  // Slice 7b review W7B-2 to W7B-6: `eval --`, a one-line `function` or `coproc`, ANSI-C `$'\''`, an apostrophe in an
+  // earlier comment or heredoc line, and a find primary's value spelled `-exec` each hid the command from the floor.
+  it.each([
+    ['eval -- git push --force origin main', /Force push/],
+    ["eval -- 'git clean -fdx'", /git clean/],
+    ['eval -- rm -rf build', /Recursive delete/],
+    ['function f { git clean -fdx; }; f', /git clean/],
+    ['coproc git push --force origin main; wait', /Force push/],
+    ['coproc NAME { git reset --hard; }; wait', /reset --hard/],
+    ['coproc { git reset --hard; }; wait', /reset --hard/],
+    ["rm $'\\'' -rf build", /Recursive delete/],
+    ["git push $'\\'' --force origin main", /Force push/],
+    ["git clean -e $'\\'' -f", /git clean/],
+    ["rm $'a\\'b' -rf build", /Recursive delete/],
+    ["# don't keep build output\ngit clean -e ';' -fdx", /git clean/],
+    ["echo done # it's\nrm '|' -rf build", /Recursive delete/],
+    ["cat <<EOF\nit's done\nEOF\ngit clean -e ';' -f", /git clean/],
+    ["cat <<-'EOF'\n\tit's done\n\tEOF\ngit clean -e ';' -f", /git clean/],
+    ['find . -name -exec -exec git clean -f \;', /git clean/],
+    ['find . -path -exec -exec rm -rf {} +', /Recursive delete/],
+    ['find . -maxdepth 1 -name -exec -o -exec git clean -f \;', /git clean/],
+    ['echo "$(eval \'git push --force origin main\')"', /Force push/],
+  ])('gates bash -c %s, whose reader gap is closed', (body, reason) => {
+    const outcome = evaluate([exec('bash', ['-c', body])], { write_scope: ['/'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.find(ask => ask.rule === 'destructive_command')?.reason).toMatch(reason)
+  })
+
+  it('gates eval -- inside find -exec bash -c, which ran with no ask under the default policy', () => {
+    const outcome = evaluate([exec('find', ['.', '-maxdepth', '0', '-exec', 'bash', '-c', 'eval -- git push --force origin main', ';'])], { write_scope: ['/'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.find(ask => ask.rule === 'destructive_command')?.reason).toMatch(/Force push/)
+  })
+
+  it('asks about a find -exec command that is itself a primary, which it does not read', () => {
+    const outcome = evaluate([exec('find', ['.', '-exec', '-name', 'x', ';'])], { write_scope: ['/'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.find(ask => ask.rule === 'destructive_command')?.reason).toMatch(/nest deeper than Buckle reads/)
+  })
+
+  it.each([
+    'eval -- echo hi',
+    'function g { ls; }; g',
+    'coproc sleep 1; wait',
+    "echo $'it\\'s'; ls",
+    "# rm -rf build; git push --force\nls",
+    "cat <<EOF\nnotes only\nEOF\nls",
+    'find . -name -exec -print',
+    'find . -newermt 2026-01-01 -exec grep -l TODO {} +',
+  ])('allows bash -c %s, whose read command is ordinary', (body) => {
+    expect(evaluate([exec('bash', ['-c', body])], { write_scope: ['/'] }).kind).toBe('allow')
+  })
+
   it.each([
     'A=1 git status',
     'A=1',

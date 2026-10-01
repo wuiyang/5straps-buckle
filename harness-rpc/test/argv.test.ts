@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shellTokens, shownCommand, statementsOf } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shellStatementList, shellTokens, shownCommand, statementPieces } from '../common/domain/argv.js'
 
 describe('parseArgv', () => {
   it('expands clustered short flags', () => {
@@ -105,6 +105,12 @@ describe('a command\'s identity and display (owner decision D17)', () => {
   })
 })
 
+/** Every statement of shell text as a shell splits it, then every piece of each: the candidates the rules judge. */
+function statementsOf(text: string): string[] {
+  const { statements } = shellStatementList(text)
+  return [...new Set([...statements, ...statements.flatMap(statementPieces)])]
+}
+
 // Slice 7 review F2: the rules read a quoted operator as the word a shell hands on, so a token keeps its raw form.
 describe('shell text as a shell splits it', () => {
   it('joins a quoted run to the word it touches and removes quotes and backslashes as a shell does', () => {
@@ -119,6 +125,24 @@ describe('shell text as a shell splits it', () => {
       { raw: '2>out', word: '2>out' },
       { raw: '"unclosed', word: 'unclosed' },
     ])
+  })
+
+  // Slice 7b review W7B-5: `$'\''` read as `$`, a closed `'\'` and an unclosed quote that took the rest of the statement.
+  it('reads ANSI-C quoting with its backslash escapes as one word, as bash does', () => {
+    expect(shellTokens("rm $'\\'' -rf build").map(token => token.word)).toEqual(['rm', "'", '-rf', 'build'])
+    expect(shellTokens("x$'a\\'b' $'\\x2drf\\n' \"$'\"").map(token => token.word)).toEqual(["xa'b", '-rf\n', "$'"])
+    expect(statementsOf("git clean -e $'\\'' -f; ls")).toEqual(["git clean -e $'\\'' -f", 'ls'])
+  })
+
+  // Slice 7b review W7B-4: an apostrophe in a comment or a heredoc body opened a quote that took the lines after it.
+  it('drops a comment and reads a heredoc body line by line, so its quotes end with the line', () => {
+    expect(statementsOf("# don't\ngit clean -e ';' -f")).toEqual(["git clean -e ';' -f", "git clean -e '", "' -f"])
+    expect(statementsOf("echo a#b # it's\nls")).toEqual(['echo a#b', 'ls'])
+    expect(statementsOf("cat <<'EOF' > notes\nit's\nEOF\nrm '|' -rf x")).toEqual(['cat <<\'EOF\' > notes', "it's", "rm '|' -rf x", "rm '", "' -rf x"])
+  })
+
+  it('reads each $(...) or backtick body inside double quotes as statements of its own', () => {
+    expect(statementsOf('echo "$(git push -f; ls)" `id`')).toEqual(['git push -f', 'ls', 'echo "$(git push -f; ls)"', 'id', 'echo "', '"'])
   })
 
   it('keeps a quoted separator inside its statement and still offers the textual split as candidates', () => {

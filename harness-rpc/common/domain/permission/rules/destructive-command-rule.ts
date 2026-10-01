@@ -1,7 +1,7 @@
 import type { ParsedArgv } from '../../argv.js'
 import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, SHELL_COMMANDS } from '../../argv.js'
 import type { CommandGlob } from '../../command-glob.js'
-import { allForms, commandForms } from '../../command-forms.js'
+import { allForms, commandFormsOf, READ_BUDGET } from '../../command-forms.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
 
@@ -26,8 +26,8 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
  * Every command the call runs is judged: the call as typed, the command behind a wrapper prefix such as `env`,
  * `nice`, `timeout 5`, `xargs` or a NAME=value assignment, each statement of a shell body or of eval's text, and
  * each find -exec command (the continuation review, "Seen outside this range"; slice 7 review F1; owner decision
- * D25). An eval whose text Buckle cannot know asks. The subject asked and granted stays the call's own argv (owner
- * decision D17).
+ * D25). An eval whose text Buckle cannot know asks, and so does a call whose text runs past the read budget (slice
+ * 7b review W7B-1). The subject asked and granted stays the call's own argv (owner decision D17).
  */
 export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[] } = {}): PermissionRule {
   const added = input.added ?? []
@@ -35,13 +35,13 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
     id: 'destructive_command',
     evaluate({ effect, grants }) {
       if (effect.kind !== 'exec') return null
-      const forms = commandForms(effect.command, effect.args)
-      const reason = firstReason(allForms(forms)) ?? (forms.unread ? UNREAD_REASON : null) ?? (forms.unknownEval ? UNKNOWN_EVAL_REASON : null) ?? classifyAdded({ added, forms: allForms(forms) })
+      const forms = commandFormsOf(effect)
+      const reason = firstReason(allForms(forms)) ?? (forms.unread ? UNREAD_REASON : null) ?? (forms.overBudget ? OVER_BUDGET_REASON : null) ?? (forms.unknownEval ? UNKNOWN_EVAL_REASON : null) ?? classifyAdded({ added, forms: allForms(forms) })
       if (!reason) return null
 
       // The shown command and its lossless identity (owner decision D17): never joined, never cut, no
       // credential the display redacts; a grant made before this form matches nothing.
-      const subject = commandSubject(effect.command, effect.args)
+      const subject = subjectOf(effect)
       if (grants.subjectsFor('destructive_command').includes(subject)) return allowedVia('destructive_command', subject)
       // No 'always': a standing grant for a destructive signature defeats the gate.
       return ask('destructive_command', subject, reason, ['once', 'session'])
@@ -49,8 +49,20 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
   }
 }
 
+const subjects = new WeakMap<object, string>()
+
+/** An effect's subject, written once per effect, since every check of a call asks under the same one (slice 7b review W7B-1). */
+function subjectOf(effect: { command: string; args: readonly string[] }): string {
+  const known = subjects.get(effect)
+  if (known !== undefined) return known
+  const subject = commandSubject(effect.command, effect.args)
+  subjects.set(effect, subject)
+  return subject
+}
+
 const UNREAD_REASON = 'Wrappers or shell bodies nest deeper than Buckle reads; asked rather than guessed at'
 const UNKNOWN_EVAL_REASON = 'eval runs text that only exists once the shell has run (eval "$x"); asked rather than guessed at'
+const OVER_BUDGET_REASON = `Shell text runs past what Buckle reads in one check (READ_BUDGET: ${READ_BUDGET.characters.toLocaleString('en-US')} characters, ${READ_BUDGET.words.toLocaleString('en-US')} words or ${READ_BUDGET.commands.toLocaleString('en-US')} commands across every level); asked rather than guessed at`
 
 function firstReason(forms: readonly string[][]): string | null {
   for (const [command = '', ...args] of forms) {
