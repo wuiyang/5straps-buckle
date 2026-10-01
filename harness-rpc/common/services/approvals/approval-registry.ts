@@ -403,10 +403,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   const notifies = (entry: PendingEntry): boolean => entry.notify === true || (durableNotices && entry.workspace === workspace)
 
   /** Reads the queue without the lock, and notes when its earliest waiting ask expires. */
-  function read(): State {
+  function read(options?: { quiet?: boolean }): State {
     // Capture before reading: a concurrent atomic rename is noticed on the next check.
     const version = currentQueueVersion()
-    const state = store.read()
+    const state = store.read(options)
     queueVersion = version
     nextExpiry = earliestExpiry(state)
     return state
@@ -473,11 +473,13 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   /**
    * Reads the index for pruneWhenDue. A damaged one fails the calls that need the queue, never an ordinary call the
    * rules settled (review L3 of the continuation review): it is logged once for each version of the file, with the
-   * error's name and own message and never its cause, which quotes the file (slice 7 review R7-RR-3).
+   * error's name and own message and never its cause, which quotes the file (slice 7 review R7-RR-3). The timed
+   * retry of a version already found unreadable reads it quietly, so the store does not log it again every
+   * PRUNE_RETRY_MS (slice 7b review RRL-2).
    */
   function readForPrune(version: string): boolean {
     try {
-      read()
+      read({ quiet: version === unreadableVersion })
       unreadableVersion = undefined
       return true
     } catch (error) {

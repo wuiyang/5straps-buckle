@@ -203,6 +203,25 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     expect(isCredentialParameter('page', '2')).toBe(false)
   })
 
+  // Slice 7b review R7B-CR-8: `pwd` named no credential, so a password passed as `?pwd=` showed in every context.
+  it('redacts a pwd query parameter in a log line and in a URL', () => {
+    expect(redactText('GET https://h.example/?pwd=p5ecret failed')).toBe('GET https://h.example/?pwd=[redacted] failed')
+    expect(redactUrlParameters('https://h.example/?pwd=p5ecret&page=2')).toBe('https://h.example/?pwd=[redacted]&page=2')
+    expect(isCredentialParameter('pwd', 'p5ecret')).toBe(true)
+  })
+
+  // Slice 7b review R7B-CR-5 (owner default N2 (a)): a comma ends a URL's authority in a log line, so a CSV row's
+  // fields after a URL show; a `;` before other text still continues it.
+  it.each([
+    'payee,amount,account\nhttps://pay.example.com,1000000,x@y.com\n',
+    'rows: https://h,amount=5,acct=me@x.com',
+  ])('leaves %j whole in a log line and a logged field', async (text) => {
+    expect(redactText(text)).toBe(text)
+    const event = await logOnce({ note: text }, { message: text })
+    expect(event.message).toBe(text)
+    expect(event.fields).toEqual({ note: text })
+  })
+
   it.each([
     "o'brien:short-password",
     'user:short"password',

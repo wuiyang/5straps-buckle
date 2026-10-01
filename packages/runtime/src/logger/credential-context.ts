@@ -10,10 +10,12 @@ export const REDACTED = '[redacted]'
  *   Quotes and shell characters inside it are content, so `https://u:p$1&x(y)!;z@host` hides its whole userinfo.
  * - `shell`: a shell script body. It is split into words where a shell splits them (outside quotes: whitespace, `;`,
  *   `&`, `|`, `(`, `)`, `<`, `>`, a newline, `$(` and a backtick; inside double quotes: `$(` and a backtick), and
- *   each word is read as `word`, so nothing is hidden across a word or a statement.
+ *   each word is read as `word`, so nothing is hidden across a word or a statement. A backslash before a newline
+ *   joins two lines of a word, as the shell joins them, and is dropped before the word is read.
  * - `text`: free text, such as a log line or a reason. A URL no quote opened also ends at `<`, `>`, `|`, a backtick,
  *   `$(`, a bracket it did not open and a `,` or `;` before whitespace; one a quote opened ends at its closing quote,
- *   and its userinfo may hold a space (`'https://user:short password@host'`).
+ *   and its userinfo may hold a space (`'https://user:short password@host'`). Its authority also ends at any `,`, so
+ *   a CSV row's fields after a URL show; a `;` before other text continues it (owner default N2 (a)).
  * - `json`: a JSON document; every string in it is read as `word`, and the rest is kept as written. Text that is
  *   not a JSON object or array is read as `text`.
  *
@@ -22,8 +24,11 @@ export const REDACTED = '[redacted]'
  * nothing. A quote opens a URL only when it sits at the start or after whitespace, `=`, `:`, `(`, `[`, `{` or `,`
  * (`''https://...` and `'abc'https://...` are not opened); the URL then ends at the closing quote on its line. A
  * bracket right before a scheme ends the URL where it closes. A credential parameter's value (isCredentialParameter)
- * ends at `&`, `#`, `;`, `|`, a backtick, `$(`, `<`, `>`, a parenthesis, a line end and the end of its URL, so
- * `?token=x|sh` shows `|sh`, and `'https://h/?token=a b&x=1'` hides `a b`. Every scan is linear in the text.
+ * ends where the URL's unit ends it (owner decision D24): in `word` at `&`, `#` or the end of the URL, which is
+ * whitespace unless a quote opened it, so `?token=ab(c)d` hides all of `ab(c)d`; in `shell` and `text` also at `;`,
+ * `|`, a backtick, `$(`, `<`, `>`, a parenthesis and a line end, so `?token=x|sh` shows `|sh`, and
+ * `'https://h/?token=a b&x=1'` hides `a b`. A parameter that names no credential is read through, so a `;` or `?`
+ * inside its value still starts one that may. Every scan is linear in the text.
  */
 export type CredentialContext = 'word' | 'shell' | 'text' | 'json'
 
@@ -45,7 +50,7 @@ export function redactUrlUserinfo(text: string): string {
 /** One URL with the value of each credential parameter in its query or fragment redacted (isCredentialParameter), the rest as written. */
 export function redactUrlParameters(url: string): string {
   const ranges: Range[] = []
-  parameterRanges({ text: url, from: 0, end: url.length, ranges })
+  parameterRanges({ text: url, from: 0, end: url.length, ranges, context: 'word' })
   return redactRanges(url, ranges)
 }
 
@@ -64,7 +69,9 @@ const QUOTES = new Set(['"', "'"])
 const SPACE = /\s/
 const PARAMETER_SEPARATORS = new Set(['?', '&', '#', ';'])
 const NAME_ENDS = new Set(['=', '?', '&', '#', ';'])
+/** Where a credential parameter's value ends in `shell` and `text`; in `word` only `&` and `#` end it (D24). */
 const VALUE_ENDS = new Set(['&', '#', ';', '|', '`', '<', '>', '(', ')', '\n', '\r'])
+const WORD_VALUE_ENDS = new Set(['&', '#'])
 const TRAILING_PUNCTUATION = new Set([')', '.', ',', ';', ':', '!', '?'])
 /** Outside quotes, what ends a shell word; `$(` ends one too. */
 const SHELL_BREAKS = new Set([' ', '\t', '\n', '\r', ';', '&', '|', '(', ')', '<', '>', '`'])
@@ -109,7 +116,7 @@ function urlRanges(unit: string, context: UnitContext, options: { parameters: bo
     }
     if (!options.parameters || at < covered) continue
     covered = scanRest({ unit, from, opening, context, ends })
-    parameterRanges({ text: unit, from, end: covered, ranges })
+    parameterRanges({ text: unit, from, end: covered, ranges, context })
   }
   return ranges
 }
@@ -156,6 +163,8 @@ function scanAuthority(input: { unit: string; from: number; opening: Opening; co
   for (; index < opening.limit; index++) {
     const character = unit[index]!
     if (character === '/' || character === '?' || character === '#') break
+    // Owner default N2 (a): in free text a `,` ends the authority, so `https://pay.example.com,1000000,x@y.com` shows.
+    if (character === ',' && input.context === 'text') break
     if (opening.quoted ? SPACE.test(character) && input.context === 'word' : input.ends(index)) break
     if (character === '@') lastAt = index
   }
@@ -171,9 +180,21 @@ function scanRest(input: { unit: string; from: number; opening: Opening; context
   return index
 }
 
-/** The value of each credential parameter (`?`, `&`, `#` or `;`, a name, `=`) between `from` and `end`. */
-function parameterRanges(input: { text: string; from: number; end: number; ranges: Range[] }): void {
+/**
+ * The value of each credential parameter (`?`, `&`, `#` or `;`, a name, `=`) between `from` and `end`, ended as its
+ * context ends it (VALUE_ENDS, WORD_VALUE_ENDS). A parameter that names no credential is read through, so one inside
+ * its value is still met; the end found for one value is kept for the next that starts before it, so the scan stays
+ * linear.
+ */
+function parameterRanges(input: { text: string; from: number; end: number; ranges: Range[]; context: UnitContext }): void {
   const { text, end } = input
+  if (input.from >= end) return
+  const ends = input.context === 'word' ? WORD_VALUE_ENDS : VALUE_ENDS
+  const substitutionEnds = input.context !== 'word'
+  // The last value end found, and where the scan for it began: a value starting between them ends there too.
+  let knownFrom = -1
+  let knownEnd = -1
+  const named = new Map<string, boolean>()
   let index = input.from
   while (index < end) {
     if (!PARAMETER_SEPARATORS.has(text[index]!)) {
@@ -186,13 +207,26 @@ function parameterRanges(input: { text: string; from: number; end: number; range
       index = cursor
       continue
     }
+    const name = text.slice(index + 1, cursor)
     const start = cursor + 1
-    let valueEnd = start
-    while (valueEnd < end && !VALUE_ENDS.has(text[valueEnd]!) && !(text[valueEnd] === '$' && text[valueEnd + 1] === '(')) valueEnd++
+    let credential = named.get(name)
+    if (credential === undefined) named.set(name, credential = isCredentialParameter(name))
+    if (!credential) {
+      index = start
+      continue
+    }
+    if (!(knownFrom <= start && start <= knownEnd)) {
+      knownFrom = start
+      knownEnd = start
+      while (knownEnd < end && !ends.has(text[knownEnd]!) && !(substitutionEnds && text[knownEnd] === '$' && text[knownEnd + 1] === '(')) knownEnd++
+    }
+    const valueEnd = knownEnd
     const value = text.slice(start, valueEnd)
     const kept = value.length - trailingPunctuation(value).length
-    if (isCredentialParameter(text.slice(index + 1, cursor), value.slice(0, kept))) input.ranges.push({ start, end: start + kept })
-    index = valueEnd
+    if (isCredentialParameter(name, value.slice(0, kept))) {
+      input.ranges.push({ start, end: start + kept })
+      index = valueEnd
+    } else index = start
   }
 }
 
@@ -203,13 +237,51 @@ function trailingPunctuation(value: string): string {
   return value.slice(end)
 }
 
-/** Each word of a shell body judged as `word`, at its place in the body. */
+/**
+ * Each word of a shell body judged as `word`, at its place in the body. A backslash before a newline outside single
+ * quotes joins the word's lines as the shell joins them, so it is dropped before the word is read, and each range
+ * found is mapped back onto the body (slice 7b review R7B-CR-9).
+ */
 function shellRanges(script: string): Range[] {
   const ranges: Range[] = []
   for (const [start, end] of shellWordSpans(script)) {
-    for (const range of urlRanges(script.slice(start, end), 'word', { parameters: true })) ranges.push({ start: range.start + start, end: range.end + start })
+    const raw = script.slice(start, end)
+    if (!raw.includes('\\\n')) {
+      for (const range of urlRanges(raw, 'word', { parameters: true })) ranges.push({ start: range.start + start, end: range.end + start })
+      continue
+    }
+    const word = joinedLines(script, start, end)
+    const at = (index: number) => word.positions[index] ?? end
+    for (const range of urlRanges(word.text, 'word', { parameters: true })) ranges.push({ start: at(range.start), end: range.end > range.start ? at(range.end - 1) + 1 : at(range.start) })
   }
   return ranges
+}
+
+/** A shell word with each backslash-newline outside single quotes dropped, and where each of its characters sits in the body. */
+function joinedLines(script: string, start: number, end: number): { text: string; positions: number[] } {
+  let text = ''
+  const positions: number[] = []
+  let quote: string | null = null
+  for (let index = start; index < end; index++) {
+    const character = script[index]!
+    if (quote === "'") {
+      if (character === "'") quote = null
+    } else if (character === "'" || character === '"') quote = quote === character ? null : quote ?? character
+    else if (character === '\\' && script[index + 1] === '\n') {
+      index++
+      continue
+    } else if (character === '\\' && index + 1 < end) {
+      text += character
+      positions.push(index)
+      index++
+      text += script[index]
+      positions.push(index)
+      continue
+    }
+    text += character
+    positions.push(index)
+  }
+  return { text, positions }
 }
 
 /**

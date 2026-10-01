@@ -28,8 +28,11 @@ const LOCK_DEADLINE_MS = 5_000
 const LOCK_POLL_MS = 25
 
 export interface JsonFileStore<T> {
-  /** Lock-free: every write is an atomic rename. */
-  read(): T
+  /**
+   * Lock-free: every write is an atomic rename. `quiet` leaves an unreadable file's error line to a caller that logs
+   * the failure itself, once (slice 7b review RRL-2).
+   */
+  read(options?: { quiet?: boolean }): T
   write(value: T): Promise<void>
   /** Read, change and persist under the file lock. A change that awaits keeps the lock meanwhile, so keep it short. */
   update<R>(change: (state: T) => R | Promise<R>): Promise<R>
@@ -62,14 +65,16 @@ function inTurn<R>(key: string, operation: () => Promise<R>): Promise<R> {
 }
 
 export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodType<T>; fallback: T; lockDeadlineMs?: number }): JsonFileStore<T> {
-  function read(): T {
+  function read(options: { quiet?: boolean } = {}): T {
     try {
       return input.schema.parse(JSON.parse(readFileSync(input.filePath, 'utf8')))
     } catch (error) {
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return structuredClone(input.fallback)
       const fields = invalidFields(error)
-      logger.error('State file cannot be read safely', { filePath: input.filePath, ...(fields ? { fields } : {}) })
-      throw new StateFileError(`State file is unreadable or invalid: ${input.filePath}${fields ? ` at ${fields}` : ''}; owner repair is required`, { cause: error })
+      if (!options.quiet) logger.error('State file cannot be read safely', { filePath: input.filePath, reason: failureKind(error), ...(fields ? { fields } : {}) })
+      // No cause: a parse error's message quotes the file around the fault, and every log site that meets this error
+      // would follow it (slice 7b review RRL-1). This line and the one above name the file, the kind and the fields.
+      throw new StateFileError(`State file is unreadable or invalid: ${input.filePath}${fields ? ` at ${fields}` : ''}; owner repair is required`)
     }
   }
 
@@ -113,6 +118,12 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
       return result
     }),
   }
+}
+
+/** What kind of failure an unreadable state file is, naming no part of it: a system error code, or the error's name. */
+function failureKind(error: unknown): string {
+  if (!(error instanceof Error)) return 'unknown'
+  return 'code' in error && typeof error.code === 'string' ? error.code : error.name
 }
 
 // Field paths only: a value in a state file can be a credential.

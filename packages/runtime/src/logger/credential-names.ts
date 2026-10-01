@@ -10,8 +10,9 @@ const KEY_WORD = /^keys?$/
 // A key ending in singular 'token' (inputToken, cacheToken) is always a credential.
 const COUNT_KEY_END = /(?:tokens|count|total|limit|usage|budget|used)$/
 const NUMERIC_TEXT = /^\d+$/
-// Credential parameters whose names are not credential words: Google API keys, SAS signatures, OAuth codes.
-const SECRET_QUERY_NAMES = new Set(['key', 'sig', 'code'])
+// Credential parameters whose names are not credential words: Google API keys, SAS signatures, OAuth codes, and the
+// `pwd` some services take a password in (slice 7b review R7B-CR-8).
+const SECRET_QUERY_NAMES = new Set(['key', 'sig', 'code', 'pwd'])
 
 /** A key split into lowercase words at camel case, digits and punctuation (`PGPassword` is `pg password`). */
 export function keyWords(key: string): string[] {
@@ -34,8 +35,8 @@ export function isCredentialKey(key: string, value?: unknown): boolean {
 
 /**
  * Whether a URL query or fragment parameter carries a credential: a credential-named key
- * (isCredentialKey), or a name services give keys, signatures and codes (key, sig, code). One matcher
- * for the log and for what else redacts a URL.
+ * (isCredentialKey), or a name services give keys, signatures, codes and passwords in (key, sig, code,
+ * pwd). One matcher for the log and for what else redacts a URL.
  */
 export function isCredentialParameter(name: string, value?: string): boolean {
   return isCredentialKey(name, value) || SECRET_QUERY_NAMES.has(name.toLowerCase())

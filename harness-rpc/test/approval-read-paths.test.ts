@@ -315,6 +315,30 @@ describe('an index unreadable for a while, then repaired in place', () => {
     }
   })
 
+  // Slice 7b review RRL-2: the timed retry read the unreadable index every 5 s, and the store logged its error line on
+  // each read, about 720 an hour until the owner repaired it.
+  it.skipIf(process.getuid?.() === 0)('logs an index unreadable across 30 s of ordinary calls once, from the store and the registry each', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const { filePath, registry, service } = queue()
+    await issue(registry)
+    const warn = vi.spyOn(logger, 'warn')
+    const error = vi.spyOn(logger, 'error')
+    try {
+      chmodSync(filePath, 0o000)
+      for (let second = 0; second <= 30; second++) {
+        expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+        vi.setSystemTime(Date.now() + 1_000)
+      }
+      expect(unreadableWarnings(warn)).toHaveLength(1)
+      expect(error.mock.calls.filter(([message]) => message === 'State file cannot be read safely')).toHaveLength(1)
+    } finally {
+      chmodSync(filePath, 0o600)
+      warn.mockRestore()
+      error.mockRestore()
+      await service.close()
+    }
+  })
+
   it('names the error and the file in its warning, and no part of the damaged text', async () => {
     const { filePath, registry, service } = queue()
     const warn = vi.spyOn(logger, 'warn')

@@ -6,7 +6,8 @@ import { callDigestOf, shownCallDigestOf, generateSigningKey, publicKeyFrom, rea
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clientCommand, CLIENT_KEY_FILE } from '../../cli/client.js'
 import { keysCommand } from '../../cli/keys.js'
-import { nodeKeyPath } from '../../common/runtime/config.js'
+import { approvalsPath, nodeKeyPath } from '../../common/runtime/config.js'
+import { flushLogs } from '../../common/runtime/log.js'
 import { reviewableArguments } from '../../common/domain/redact.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
@@ -639,3 +640,22 @@ async function pinnedDevice(buckle: Node, url: string): Promise<{ BUCKLE_CLIENT_
   vi.restoreAllMocks()
   return environment
 }
+
+// Slice 7b review RRL-1: a damaged approvals.json failed the admin approvals and challenges routes, and the unhandled
+// request error's log line carried the StateFileError's cause, whose V8 message quotes the file around the fault.
+describe('a damaged approvals index behind the admin routes', () => {
+  it('logs the failure of the approvals and challenges routes without any part of the damaged file', async () => {
+    const buckle = await node()
+    writeFileSync(approvalsPath(buckle.config), '{"version":1,"pending":[{"request":{"subject": MARKERSUBJ psql -c DROP TABLE accounts}}]}')
+    let logged = ''
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { logged += String(chunk); return true })
+    const listing = await buckle.request('/setup/approvals', { headers: { authorization: `Bearer ${ADMIN}` } })
+    const path = '/setup/approvals/challenges'
+    const challenges = await buckle.request(path, { headers: { authorization: signed(buckle, { method: 'GET', path, body: '' }) } })
+    await flushLogs()
+    vi.mocked(process.stderr.write).mockRestore()
+    expect([listing.status, challenges.status]).toEqual([500, 500])
+    expect(logged).toMatch(/Unhandled Buckle request error[^\n]*StateFileError/)
+    expect(logged).not.toMatch(/MARKERSUBJ|psql|DROP|accounts/)
+  })
+})

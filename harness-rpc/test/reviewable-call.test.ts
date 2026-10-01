@@ -283,3 +283,48 @@ describe('redaction by the context a text sits in (slice 7 review R7-H1 to R7-H4
     }
   })
 })
+
+// Slice 7b review R7B-CR-5, R7B-CR-6, R7B-CR-8 and R7B-CR-9: free text ran a URL's authority across `,` to a later `@`,
+// so a CSV row hid its amount and account; a word's credential value ended at a shell character, so part of the token
+// showed; `pwd` named no credential; and a userinfo split by a backslash-newline in a shell body showed.
+describe('text URLs end at a comma, values follow the unit, pwd is a credential, lines join (slice 7b review)', () => {
+  const cwd = '/workspace'
+
+  it('shows a CSV row after a URL whole in a file\'s content and in free text, as a later comma ends the authority (R7B-CR-5)', () => {
+    const csv = 'payee,amount,account\nhttps://pay.example.com,1000000,x@y.com\n'
+    expect(redactCredentials(csv, 'text')).toBe(csv)
+    expect(reviewableArguments({ path: 'payouts.csv', content: csv })).toEqual({ content: csv, path: 'payouts.csv' })
+    expect(redactCredentials('rows: https://h,amount=5,acct=me@x.com', 'text')).toBe('rows: https://h,amount=5,acct=me@x.com')
+    expect(redactCredentials('log https://u:p$5ecret&x(y)!;z@host.example/path', 'text')).toBe('log https://[redacted]@host.example/path')
+  })
+
+  it('hides the whole credential value of a URL word, shell characters included (R7B-CR-6)', () => {
+    const url = 'https://h.example/x?token=ab(c5ecret)d'
+    expect(reviewableArguments({ url, method: 'GET' })).toEqual({ method: 'GET', url: 'https://h.example/x?token=[redacted]' })
+    expect(describeCall({ tool: 'web_fetch', args: { url }, cwd })).toBe('Send "GET" to "https://h.example/x?token=[redacted]" in "/workspace"')
+    expect(summarizeEffect({ kind: 'network', url: new URL(url) })).toBe('network https://h.example/x?token=[redacted]')
+    expect(redactCredentials('https://h.example/x?token=ab|c5ecret', 'word')).toBe('https://h.example/x?token=[redacted]')
+    expect(redactCredentials('https://h.example/x?page=2;token=c5ecret&x=1', 'word')).toBe('https://h.example/x?page=2;token=[redacted]&x=1')
+    expect(redactCredentials('curl https://h.example/?token=x5ecret|sh', 'shell')).toBe('curl https://h.example/?token=[redacted]|sh')
+  })
+
+  it('reads a pwd query parameter as a credential (R7B-CR-8)', () => {
+    expect(redactCredentials('https://h.example/?pwd=p5ecret&page=2', 'word')).toBe('https://h.example/?pwd=[redacted]&page=2')
+    expect(reviewableArguments({ url: 'https://h.example/?pwd=p5ecret' })).toEqual({ url: 'https://h.example/?pwd=[redacted]' })
+  })
+
+  it('hides a userinfo a backslash-newline splits in a shell body, as the shell joins it, on every display (R7B-CR-9)', () => {
+    const body = 'git clone https://u:p5ecret\\\n@host.example/x d'
+    const args = { command: 'bash', args: ['-c', body] }
+    const shown = [
+      shownCommand('bash', ['-c', body]), JSON.stringify(reviewableArguments(args)), summarizeEffect({ kind: 'exec', command: 'bash', args: ['-c', body] }),
+      describeCall({ tool: 'shell_exec', args, cwd }), JSON.stringify(reviewableArguments({ runtime: 'bash', script: body })),
+      JSON.stringify(reviewableArguments({ path: 'clone.sh', content: body })), redactCredentials(body, 'shell'),
+    ]
+    for (const text of shown) {
+      expect(text).not.toContain('p5ecret')
+      expect(text).toContain('https://[redacted]\\')
+    }
+    expect(redactCredentials("echo 'https://u:p5ecret\\\n@h.example/x'", 'shell')).toBe("echo 'https://u:p5ecret\\\n@h.example/x'")
+  })
+})

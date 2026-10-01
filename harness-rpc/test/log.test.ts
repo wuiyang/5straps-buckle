@@ -94,14 +94,16 @@ describe('an error in a log line', () => {
       })()
       const lines = await captureStderr(() => {
         logger.warn('kept', { error: withoutCause(failure) })
-        // The control: the error object itself carries the quoted text through its cause.
+        // The error itself, as the sites slice 7b review RRL-1 named log it: the store throws it without the cause.
         logger.warn('whole', { error: failure })
       })
       const kept = lines.find(line => line.message === 'kept')
       expect(kept?.error).toMatchObject({ name: 'StateFileError', message: `State file is unreadable or invalid: ${filePath}; owner repair is required` })
       expect(kept?.error).not.toHaveProperty('cause')
       expect(JSON.stringify(kept)).not.toMatch(/psql|DROP|accounts/)
-      expect(JSON.stringify(lines.find(line => line.message === 'whole'))).toMatch(/psql/)
+      const whole = lines.find(line => line.message === 'whole')
+      expect(whole?.error).toMatchObject({ name: 'StateFileError' })
+      expect(JSON.stringify(whole)).not.toMatch(/psql|DROP|accounts/)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

@@ -458,6 +458,43 @@ describe('every approval route reads a call by the context each text sits in (sl
     }
   })
 
+  // Slice 7b review R7B-CR-9: the shell joins a word's lines at a backslash-newline, so git got the credential URL
+  // whole while every route showed its password.
+  it('hides a userinfo a backslash-newline splits on every route, webhook included, and binds the raw call (R7B-CR-9)', async () => {
+    const webhook = await captureWebhook()
+    try {
+      const { runtime, config } = await node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url })
+      await allowShellWrapper(runtime)
+      const body = 'git clone https://u:p5ecret\\\n@host.example/x d && rm -rf build'
+      const response = await run(runtime, 'bash', ['-c', body])
+      expectRawIdentity(runtime, response, ['bash', '-c', body])
+      await vi.waitFor(() => expect(webhook.bodies.some(posted => posted.approvals)).toBe(true))
+      const seen = { ...await routes({ runtime, config, response }), webhook: JSON.stringify(webhook.bodies) }
+      for (const [where, value] of Object.entries(seen)) {
+        expect(value, where).not.toMatch(/p5ecret/)
+        expect(value, where).toContain('https://[redacted]')
+        expect(value, where).toContain('rm -rf build')
+      }
+    } finally {
+      await webhook.close()
+    }
+  })
+
+  // Slice 7b review R7B-CR-5 (owner default N2 (a)): free text ran the URL's authority across the commas to the
+  // account's `@`, so the ask for this file hid its amount and account.
+  it('keeps a CSV row after a URL whole in the arguments and the kept call file of an fs_write ask (R7B-CR-5)', async () => {
+    const { root, runtime, config } = await node()
+    const csv = 'payee,amount,account\nhttps://pay.example.com,1000000,x@y.com\n'
+    const response = await runtime.invoke({ sessionId: 'chat-1', request: { requestId: 'csv-1', tool: 'fs_write', args: { path: join(root, 'payouts.csv'), content: csv }, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
+    if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${response.outcome}`)
+    const waiting = runtime.approvalService.waiting().find(entry => entry.request.token === response.approvals[0]!.token)!
+    expect((waiting.call!.arguments as { content: string }).content).toBe(csv)
+    const callFiles = join(dirname(approvalsPath(config)), 'approval-calls')
+    const kept = readdirSync(callFiles).map(name => readFileSync(join(callFiles, name), 'utf8')).join('\n')
+    expect(kept).toContain(JSON.stringify(csv).slice(1, -1))
+    expect(kept).not.toContain('[redacted]')
+  })
+
   it('redacts a whole URL password holding shell characters in an argv word on every route, and binds the raw call (R7-H3)', async () => {
     const { runtime, config } = await node()
     const url = 'https://deploy:p$5ecret&x(y)!;z@git.example/org/repo.git'
