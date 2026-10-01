@@ -24,11 +24,15 @@ export const REDACTED = '[redacted]'
  * nothing. A quote opens a URL only when it sits at the start or after whitespace, `=`, `:`, `(`, `[`, `{` or `,`
  * (`''https://...` and `'abc'https://...` are not opened); the URL then ends at the closing quote on its line. A
  * bracket right before a scheme ends the URL where it closes. A credential parameter's value (isCredentialParameter)
- * ends where the URL's unit ends it (owner decision D24): in `word` at `&`, `#` or the end of the URL, which is
- * whitespace unless a quote opened it, so `?token=ab(c)d` hides all of `ab(c)d`; in `shell` and `text` also at `;`,
- * `|`, a backtick, `$(`, `<`, `>`, a parenthesis and a line end, so `?token=x|sh` shows `|sh`, and
- * `'https://h/?token=a b&x=1'` hides `a b`. A parameter that names no credential is read through, so a `;` or `?`
- * inside its value still starts one that may. Every scan is linear in the text.
+ * ends at `&`, `#` or the end of the URL, which is whitespace unless a quote opened it, when the URL is its whole unit
+ * (owner decision D24): a word that is the URL, or holds it after a prefix with no whitespace, quote, shell character,
+ * `$`, brace or backslash (`--url=`), and runs to the word's end, or a quoted URL, so `?token=ab(c)d` there hides all
+ * of `ab(c)d`; a `$(` or a backtick still ends it in double quotes. Anywhere else, in `shell` words that are not a URL
+ * alone and in `text`, it also ends at `;`, `|`, a backtick, `$(`, `<`, `>`, a parenthesis and a line end (default
+ * D31; slice 7c review R7C-TL-1), so `?token=x|sh` shows `|sh` and `eval "curl https://h/?token=x;rm -rf b"` shows
+ * the rm, and `'https://h/?token=a b&x=1'` hides `a b`. In `text` a `,` ends it too (owner default N2 (a); slice 7c
+ * review R7C-TL-2). A parameter that names no credential is read through, so a `;` or `?` inside its value still
+ * starts one that may. Every scan is linear in the text.
  */
 export type CredentialContext = 'word' | 'shell' | 'text' | 'json'
 
@@ -50,7 +54,7 @@ export function redactUrlUserinfo(text: string): string {
 /** One URL with the value of each credential parameter in its query or fragment redacted (isCredentialParameter), the rest as written. */
 export function redactUrlParameters(url: string): string {
   const ranges: Range[] = []
-  parameterRanges({ text: url, from: 0, end: url.length, ranges, context: 'word' })
+  parameterRanges({ text: url, from: 0, end: url.length, ranges, rule: VALUE_RULES.url })
   return redactRanges(url, ranges)
 }
 
@@ -69,9 +73,22 @@ const QUOTES = new Set(['"', "'"])
 const SPACE = /\s/
 const PARAMETER_SEPARATORS = new Set(['?', '&', '#', ';'])
 const NAME_ENDS = new Set(['=', '?', '&', '#', ';'])
-/** Where a credential parameter's value ends in `shell` and `text`; in `word` only `&` and `#` end it (D24). */
-const VALUE_ENDS = new Set(['&', '#', ';', '|', '`', '<', '>', '(', ')', '\n', '\r'])
-const WORD_VALUE_ENDS = new Set(['&', '#'])
+
+/** Where a credential parameter's value ends: the characters, and whether a `$(` ends it too. */
+interface ValueRule { ends: ReadonlySet<string>; substitution: boolean }
+const SHELL_VALUE_ENDS = new Set(['&', '#', ';', '|', '`', '<', '>', '(', ')', '\n', '\r'])
+const VALUE_RULES = {
+  /** A URL that is its whole unit (owner decision D24). */
+  url: { ends: new Set(['&', '#']), substitution: false },
+  /** A double-quoted URL, where a shell still runs a `$(` or a backtick. */
+  doubleQuoted: { ends: new Set(['&', '#', '`']), substitution: true },
+  /** A URL in a word that holds more than the URL (default D31). */
+  shell: { ends: SHELL_VALUE_ENDS, substitution: true },
+  /** Free text, where a `,` ends the value as it ends the authority (owner default N2 (a)). */
+  text: { ends: new Set([...SHELL_VALUE_ENDS, ',']), substitution: true },
+} as const satisfies Record<string, ValueRule>
+/** What before a URL in its word makes the word more than a URL field: whitespace, a quote, a shell character, `$`, a brace or a backslash. */
+const BEFORE_URL_FIELD = /[\s'"`;&|()<>${}\\]/
 const TRAILING_PUNCTUATION = new Set([')', '.', ',', ';', ':', '!', '?'])
 /** Outside quotes, what ends a shell word; `$(` ends one too. */
 const SHELL_BREAKS = new Set([' ', '\t', '\n', '\r', ';', '&', '|', '(', ')', '<', '>', '`'])
@@ -102,6 +119,8 @@ function urlRanges(unit: string, context: UnitContext, options: { parameters: bo
   const ranges: Range[] = []
   const next = nextIndexIn(unit)
   const pattern = new RegExp(URL_START.source, URL_START.flags)
+  // Found once, so judging whether each URL is its word's whole unit stays linear.
+  const beforeField = context === 'word' ? unit.search(BEFORE_URL_FIELD) : -1
   // A URL inside another's query was scanned with it; its own userinfo is still judged.
   let covered = 0
   for (let match = pattern.exec(unit); match; match = pattern.exec(unit)) {
@@ -116,9 +135,21 @@ function urlRanges(unit: string, context: UnitContext, options: { parameters: bo
     }
     if (!options.parameters || at < covered) continue
     covered = scanRest({ unit, from, opening, context, ends })
-    parameterRanges({ text: unit, from, end: covered, ranges, context })
+    const whole = covered === unit.length && (beforeField < 0 || beforeField >= at)
+    parameterRanges({ text: unit, from, end: covered, ranges, rule: valueRule({ unit, at, opening, context, whole }) })
   }
   return ranges
+}
+
+/**
+ * How a URL's credential values end (owner decision D24, default D31): free text by its own rule; a quoted URL, or a
+ * word's URL that is the whole unit, at `&` or `#` only; any other word's URL as a shell word ends it, so a credential
+ * value never hides a statement after it (slice 7c review R7C-TL-1).
+ */
+function valueRule(input: { unit: string; at: number; opening: Opening; context: UnitContext; whole: boolean }): ValueRule {
+  if (input.context === 'text') return VALUE_RULES.text
+  if (input.opening.quoted) return input.unit[input.at - 1] === '"' ? VALUE_RULES.doubleQuoted : VALUE_RULES.url
+  return input.whole ? VALUE_RULES.url : VALUE_RULES.shell
 }
 
 function openingAt(unit: string, at: number, next: NextIndex): Opening {
@@ -182,15 +213,13 @@ function scanRest(input: { unit: string; from: number; opening: Opening; context
 
 /**
  * The value of each credential parameter (`?`, `&`, `#` or `;`, a name, `=`) between `from` and `end`, ended as its
- * context ends it (VALUE_ENDS, WORD_VALUE_ENDS). A parameter that names no credential is read through, so one inside
- * its value is still met; the end found for one value is kept for the next that starts before it, so the scan stays
- * linear.
+ * rule ends it (valueRule). A parameter that names no credential is read through, so one inside its value is still
+ * met; the end found for one value is kept for the next that starts before it, so the scan stays linear.
  */
-function parameterRanges(input: { text: string; from: number; end: number; ranges: Range[]; context: UnitContext }): void {
+function parameterRanges(input: { text: string; from: number; end: number; ranges: Range[]; rule: ValueRule }): void {
   const { text, end } = input
   if (input.from >= end) return
-  const ends = input.context === 'word' ? WORD_VALUE_ENDS : VALUE_ENDS
-  const substitutionEnds = input.context !== 'word'
+  const { ends, substitution: substitutionEnds } = input.rule
   // The last value end found, and where the scan for it began: a value starting between them ends there too.
   let knownFrom = -1
   let knownEnd = -1

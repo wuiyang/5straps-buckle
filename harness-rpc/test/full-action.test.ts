@@ -419,8 +419,8 @@ describe('the approval budgets, per session, per caller and per workspace (revie
 // `@`, showed URL passwords holding shell characters and hid `|sh` after a credential query value.
 describe('every approval route reads a call by the context each text sits in (slice 7 review R7-H1 to R7-H4)', () => {
   /** Everything a route shows for one ask: the response, the queue, the challenge, the terminal, MCP and the kept call file. */
-  async function routes(input: { runtime: BuckleRuntime; config: BuckleConfig; response: InvokeResponse }): Promise<Record<string, string>> {
-    const ask = destructiveAsk(input.response)
+  async function routes(input: { runtime: BuckleRuntime; config: BuckleConfig; response: InvokeResponse; ask?: ApprovalRequest }): Promise<Record<string, string>> {
+    const ask = input.ask ?? destructiveAsk(input.response)
     const waiting = input.runtime.approvalService.waiting().find(entry => entry.request.token === ask.token)!
     const challenge = input.runtime.approvalService.challengeListing().challenges.find(entry => entry.token === ask.token)!.challenge!
     const shown = { ...ask, workspaceId: 'default', node: input.config.serverId, call: waiting.call! }
@@ -493,6 +493,69 @@ describe('every approval route reads a call by the context each text sits in (sl
     const kept = readdirSync(callFiles).map(name => readFileSync(join(callFiles, name), 'utf8')).join('\n')
     expect(kept).toContain(JSON.stringify(csv).slice(1, -1))
     expect(kept).not.toContain('[redacted]')
+  })
+
+  // Slice 7c review R7C-TL-1 (default D31): a credential value ran to `&` or `#` in any word, so the ask for an eval
+  // string, a `$(` body, an ssh command, a script body or a .sh file hid the statements after `?token=x` on every route.
+  describe('shows the statement after a credential value on every route, webhook included (R7C-TL-1)', () => {
+    type Call = (root: string) => { tool: string; args: Record<string, JsonValue> }
+    type Commands = { allow?: string[]; destructive?: string[] }
+    const line = 'eval "curl https://h.invalid/?token=x;rm${IFS}-rf${IFS}~/nothing-here"'
+    /** A route's text with its quoting undone: JSON's escaped quotes and a shell word's `'\\''`. */
+    const unquoted = (value: string) => value.replace(/\\+"/g, '"').replaceAll(`'\\''`, "'")
+
+    /** What every route shows for the ask one call makes under these command globs: the routes, the call's own fields and the webhook. */
+    async function everyRoute(call: Call, commands: Commands): Promise<Record<string, string>> {
+      const webhook = await captureWebhook()
+      try {
+        const { root, runtime, config } = await node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url })
+        const policy = emptyWorkspacePolicy()
+        policy.commands.allow = commands.allow ?? []
+        policy.commands.destructive = commands.destructive ?? []
+        await runtime.policy.apply(policy)
+        const { tool, args } = call(root)
+        const response = await runtime.invoke({ sessionId: 'chat-1', request: { requestId: `tl1-${tool}`, tool, args, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
+        if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${response.outcome}`)
+        await vi.waitFor(() => expect(webhook.bodies.some(posted => posted.approvals)).toBe(true))
+        const ask = response.approvals[0]!
+        const asked = runtime.approvalService.waiting().find(entry => entry.request.token === ask.token)!.call!
+        return {
+          ...await routes({ runtime, config, response, ask }), webhook: JSON.stringify(webhook.bodies),
+          arguments: JSON.stringify(asked.arguments), effects: (asked.effects ?? []).join('\n'), description: asked.description ?? '',
+        }
+      } finally {
+        await webhook.close()
+      }
+    }
+
+    // The last column names the routes that never carry the body: a script's or a file's description counts its bytes, a
+    // file's subject and effect name its path, and an unsealed webhook carries only the subject and the description
+    // (owner default D19). Those still never show the token.
+    it.each<[string, Call, Commands, string, string[]]>([
+      ['an eval string in bash -c', () => ({ tool: 'shell_exec', args: { command: 'bash', args: ['-c', line] } }), { allow: ['bash -c *'] }, '?token=[redacted];rm${IFS}-rf${IFS}~/nothing-here"', []],
+      ['an ssh remote command', () => ({ tool: 'shell_exec', args: { command: 'ssh', args: ['host', 'curl https://h/?token=x;rm -rf build'] } }), { destructive: ['ssh *'] }, '?token=[redacted];rm -rf build', []],
+      ['a $( body in double quotes', () => ({ tool: 'shell_exec', args: { command: 'bash', args: ['-c', 'echo "$(curl https://h/?token=x;rm -rf build)"'] } }), { allow: ['bash -c *'] }, '?token=[redacted];rm -rf build)"', []],
+      ['a script_run bash body', () => ({ tool: 'script_run', args: { runtime: 'bash', script: line } }), { allow: ['bash -c *'] }, '?token=[redacted];rm${IFS}-rf${IFS}~/nothing-here"', ['description']],
+      ['an fs_write of deploy.sh', root => ({ tool: 'fs_write', args: { path: join(root, 'deploy.sh'), content: `${line}\n` } }), {}, '?token=[redacted];rm${IFS}-rf${IFS}~/nothing-here"', ['subject', 'description', 'effects', 'webhook']],
+    ])('%s', async (_, call, commands, visible, blind) => {
+      for (const [where, value] of Object.entries(await everyRoute(call, commands))) {
+        expect(value, where).not.toContain('?token=x')
+        if (!blind.includes(where)) expect(unquoted(value), where).toContain(visible)
+      }
+    })
+
+    // Control (owner decision D24): a quoted URL is its whole unit, so its whole credential value stays hidden on every
+    // route; the URL field control sits in test/reviewable-call.test.ts.
+    it.each<[string, string, string]>([
+      ['a single-quoted URL in a shell body', "curl 'https://h/?token=a b'", 'token=a b'],
+      ['a double-quoted URL in a shell body', 'curl "https://h/?token=ab(c5ecret)d"', 'c5ecret'],
+    ])('still hides the whole value of %s on every route (control)', async (_, body, hidden) => {
+      const seen = await everyRoute(() => ({ tool: 'shell_exec', args: { command: 'bash', args: ['-c', body] } }), { allow: ['bash -c *'], destructive: ['curl *'] })
+      for (const [where, value] of Object.entries(seen)) {
+        expect(value, where).not.toContain(hidden)
+        expect(value, where).toContain('?token=[redacted]')
+      }
+    })
   })
 
   it('redacts a whole URL password holding shell characters in an argv word on every route, and binds the raw call (R7-H3)', async () => {

@@ -298,6 +298,17 @@ describe('text URLs end at a comma, values follow the unit, pwd is a credential,
     expect(redactCredentials('log https://u:p$5ecret&x(y)!;z@host.example/path', 'text')).toBe('log https://[redacted]@host.example/path')
   })
 
+  // Slice 7c review R7C-TL-2 (owner default N2 (a)): the token's value ran across the commas, so the ask for this file
+  // hid the amount and the account.
+  it('ends a credential query value at a comma in a file\'s content, so a CSV row\'s amount and account show (R7C-TL-2)', () => {
+    const csv = 'payee,amount,account\nhttps://pay.example.com/?token=t5ecret,1000000,x@y.com\n'
+    const shown = 'payee,amount,account\nhttps://pay.example.com/?token=[redacted],1000000,x@y.com\n'
+    expect(reviewableArguments({ path: 'payouts.csv', content: csv })).toEqual({ content: shown, path: 'payouts.csv' })
+    expect(redactCredentials(csv, 'text')).toBe(shown)
+    const plain = 'payee,amount,account\nhttps://pay.example.com/?page=1,1000000,x@y.com\n'
+    expect(reviewableArguments({ path: 'payouts.csv', content: plain })).toEqual({ content: plain, path: 'payouts.csv' })
+  })
+
   it('hides the whole credential value of a URL word, shell characters included (R7B-CR-6)', () => {
     const url = 'https://h.example/x?token=ab(c5ecret)d'
     expect(reviewableArguments({ url, method: 'GET' })).toEqual({ method: 'GET', url: 'https://h.example/x?token=[redacted]' })
@@ -326,5 +337,42 @@ describe('text URLs end at a comma, values follow the unit, pwd is a credential,
       expect(text).toContain('https://[redacted]\\')
     }
     expect(redactCredentials("echo 'https://u:p5ecret\\\n@h.example/x'", 'shell')).toBe("echo 'https://u:p5ecret\\\n@h.example/x'")
+  })
+})
+
+// Slice 7c review R7C-TL-1 (default D31): a credential value in a word ran to `&` or `#` whatever the word held, so the
+// statements after `?token=x` in an eval string, a `$(` body, an ssh command, a script body or a .sh file were hidden
+// from every display. Only a URL that is its whole unit keeps that rule; any other ends as a shell word ends it.
+describe('a credential value never hides the statement after it (slice 7c review R7C-TL-1)', () => {
+  const cwd = '/workspace'
+  const line = 'eval "curl https://h.invalid/?token=x;rm${IFS}-rf${IFS}~/nothing-here"'
+  const redacted = (text: string) => text.replace('?token=x', '?token=[redacted]')
+
+  it.each<[string, string, string[]]>([
+    ['an eval string in bash -c', 'bash', ['-c', line]],
+    ['an ssh remote command', 'ssh', ['host', 'curl https://h/?token=x;rm -rf build']],
+    ['a $( body in double quotes', 'bash', ['-c', 'echo "$(curl https://h/?token=x;rm -rf build)"']],
+  ])('shows the statement after the value in %s on every display', (_, command, args) => {
+    const expected = args.map(redacted)
+    // Each row is one plain word, then the word that holds the URL, which a display quotes.
+    const shown = `${command} ${expected[0]} ${shellQuoted(expected[1]!)}`
+    expect(shownCommand(command, args)).toBe(shown)
+    expect(commandSubject(command, args)).toBe(`${shown}  # argv sha256 ${argvIdentity(command, args)}`)
+    expect(reviewableArguments({ command, args })).toEqual({ args: expected, command })
+    expect(summarizeEffect({ kind: 'exec', command, args })).toBe(`exec ${shown}`)
+    expect(describeCall({ tool: 'shell_exec', args: { command, args }, cwd })).toBe(`Run ${JSON.stringify(shown)} in "/workspace"`)
+  })
+
+  it('shows the statement after the value in a script_run bash body and in a .sh file\'s content', () => {
+    expect(reviewableArguments({ runtime: 'bash', script: line })).toEqual({ runtime: 'bash', script: redacted(line) })
+    expect(reviewableArguments({ path: 'deploy.sh', content: `${line}\n` })).toEqual({ content: `${redacted(line)}\n`, path: 'deploy.sh' })
+    expect(redacted(line)).toContain('[redacted];rm${IFS}-rf${IFS}~/nothing-here"')
+  })
+
+  it('still hides the whole value of a URL field and of a quoted URL in a shell body', () => {
+    const url = 'https://h.example/x?token=ab(c5ecret)d'
+    expect(reviewableArguments({ url, method: 'GET' })).toEqual({ method: 'GET', url: 'https://h.example/x?token=[redacted]' })
+    expect(describeCall({ tool: 'web_fetch', args: { url }, cwd })).toBe('Send "GET" to "https://h.example/x?token=[redacted]" in "/workspace"')
+    expect(shownCommand('bash', ['-c', "curl 'https://h/?token=a b'"])).toBe(`bash -c ${shellQuoted("curl 'https://h/?token=[redacted]'")}`)
   })
 })
