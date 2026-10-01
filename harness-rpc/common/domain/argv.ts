@@ -212,30 +212,92 @@ export function isShellWrapper(argv: ParsedArgv): boolean {
  * The statements of a shell script body, split where a shell would start a new command, so a
  * pattern written for a command line also meets `curl` inside `bash -c "... | curl ..."`. A single
  * `&`, a subshell's parentheses, `$(` and a backtick start one too (`true & git push -f`, `$(git clean -f)`).
- * Splitting is textual, so a separator inside quotes splits too: that only adds candidates to judge.
  */
 export function shellStatements(argv: ParsedArgv): string[] {
   if (!SHELL_COMMANDS.has(argv.command)) return []
-  return argv.positionals
-    .join('\n')
-    .split(/\n|;|&|\||`|\$\(|\(|\)/)
-    .map(statement => statement.trim())
-    .filter(Boolean)
+  return statementsOf(argv.positionals.join('\n'))
 }
 
-/** Splits on whitespace, keeping a quoted run together and dropping the quotes. */
-const STATEMENT_WORD = /"[^"]*"|'[^']*'|\S+/g
+/** Where a shell starts a new command: a newline, `;`, `&`, `|`, a parenthesis, a backtick or `$(`. */
+const STATEMENT_BREAK = /\n|;|&|\||`|\$\(|\(|\)/
+const BREAK_CHARACTERS = new Set(['\n', ';', '&', '|', '`', '(', ')'])
 
-/** Text as a shell would split it into words, roughly: whitespace separates, a quoted run stays one word. */
+/**
+ * The statements of shell text, read twice: split outside quotes, as a shell splits it, so `git clean -e ';' -f`
+ * keeps its `-f` (slice 7 review F2); then split at every separator, quoted or not, so a command inside a quoted
+ * `$(...)` or an eval'd string is met too. The second reading only adds candidates to judge.
+ */
+export function statementsOf(text: string): string[] {
+  const statements = [...unquotedSplit(text), ...text.split(STATEMENT_BREAK)].map(statement => statement.trim()).filter(Boolean)
+  return [...new Set(statements)]
+}
+
+/** Text split at each separator outside quotes; a backslash outside single quotes escapes the next character. */
+function unquotedSplit(text: string): string[] {
+  const statements: string[] = []
+  let start = 0
+  let quote: string | null = null
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index]!
+    if (character === '\\' && quote !== "'") index++
+    else if (quote !== null) {
+      if (character === quote) quote = null
+    } else if (character === '"' || character === "'") quote = character
+    else if (BREAK_CHARACTERS.has(character)) {
+      statements.push(text.slice(start, index))
+      start = index + 1
+    }
+  }
+  statements.push(text.slice(start))
+  return statements
+}
+
+/** A word of shell text as written (`raw`, quotes kept) and as the command receives it (`word`, quotes removed). */
+export interface ShellToken {
+  raw: string
+  word: string
+}
+
+/**
+ * Splits on whitespace outside quotes. A quoted run joins the word it touches (`--force'>'` is one word), and an
+ * unclosed quote runs to the end. Each alternative starts with a different character, so the scan is linear.
+ */
+const STATEMENT_TOKEN = /(?:"(?:[^"\\]|\\.)*"?|'[^']*'?|\\.?|[^\s"'\\])+/g
+
+/** Text as a shell would split it into words, roughly, each as written and as the command receives it. */
+export function shellTokens(text: string): ShellToken[] {
+  return (text.match(STATEMENT_TOKEN) ?? []).map(raw => ({ raw, word: unquote(raw) }))
+}
+
+/** Text as a shell would split it into words, roughly: whitespace separates, quotes and backslashes are removed. */
 export function shellWords(text: string): string[] {
-  return (text.match(STATEMENT_WORD) ?? []).map(unquote)
+  return shellTokens(text).map(token => token.word)
 }
 
-function unquote(word: string): string {
-  const quote = word.charAt(0)
-  if (word.length >= 2 && (quote === '"' || quote === "'") && word.endsWith(quote)) return word.slice(1, -1)
+/** Quote removal as a shell does it: single quotes keep everything; in double quotes a backslash escapes `"`, `\\`, `$` and a backtick; outside, a backslash escapes any character. */
+function unquote(raw: string): string {
+  let word = ''
+  for (let index = 0; index < raw.length; index++) {
+    const character = raw[index]!
+    if (character === "'") {
+      const end = raw.indexOf("'", index + 1)
+      const stop = end < 0 ? raw.length : end
+      word += raw.slice(index + 1, stop)
+      index = stop
+    } else if (character === '"') {
+      for (index++; index < raw.length && raw[index] !== '"'; index++) {
+        if (raw[index] === '\\' && DOUBLE_QUOTE_ESCAPES.has(raw[index + 1] ?? '')) index++
+        word += raw[index]
+      }
+    } else if (character === '\\') {
+      index++
+      word += raw[index] ?? ''
+    } else word += character
+  }
   return word
 }
+
+const DOUBLE_QUOTE_ESCAPES = new Set(['"', '\\', '$', '`'])
 
 /** A command word as the rules compare it: its basename, lowercased, so a path to a binary is the binary. */
 export function baseCommand(command: string): string {

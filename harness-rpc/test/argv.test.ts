@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shownCommand } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shellTokens, shownCommand, statementsOf } from '../common/domain/argv.js'
 
 describe('parseArgv', () => {
   it('expands clustered short flags', () => {
@@ -102,5 +102,27 @@ describe('a command\'s identity and display (owner decision D17)', () => {
       expect(subject).not.toMatch(/tok-(first|second)/)
       expect(subject).toMatch(/^git push --force 'https:\/\/\[redacted\]@github.com\/org\/repo.git' main  # argv sha256 [a-f0-9]{64}$/)
     }
+  })
+})
+
+// Slice 7 review F2: the rules read a quoted operator as the word a shell hands on, so a token keeps its raw form.
+describe('shell text as a shell splits it', () => {
+  it('joins a quoted run to the word it touches and removes quotes and backslashes as a shell does', () => {
+    const text = `--force'>' a\\ b "x\\"y\\$" 'it''s' '' \\> 2>out "unclosed`
+    expect(shellTokens(text)).toEqual([
+      { raw: `--force'>'`, word: '--force>' },
+      { raw: 'a\\ b', word: 'a b' },
+      { raw: '"x\\"y\\$"', word: 'x"y$' },
+      { raw: `'it''s'`, word: 'its' },
+      { raw: `''`, word: '' },
+      { raw: '\\>', word: '>' },
+      { raw: '2>out', word: '2>out' },
+      { raw: '"unclosed', word: 'unclosed' },
+    ])
+  })
+
+  it('keeps a quoted separator inside its statement and still offers the textual split as candidates', () => {
+    expect(statementsOf("git clean -e ';' -f && echo ok")).toEqual(["git clean -e ';' -f", 'echo ok', "git clean -e '", "' -f"])
+    expect(statementsOf('find . -exec rm {} \x5c; ; ls')).toEqual(['find . -exec rm {} \x5c;', 'ls', 'find . -exec rm {} \x5c'])
   })
 })

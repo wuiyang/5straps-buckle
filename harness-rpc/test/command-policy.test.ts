@@ -157,6 +157,46 @@ describe('a prefix that runs another command', () => {
   })
 })
 
+// Slice 7 review F1 and owner decision D25: with `bash -c *` allowed and git's history commands denied, an
+// assignment prefix, eval, builtin or a runner inside the body passed the deny list (real bash rewrote a branch).
+describe('a shell body that hands its command on', () => {
+  const commands = { allow: ['bash -c *'], deny: ['git push *', 'git clean *', 'git reset *'] }
+
+  it.each([
+    'A=b git push --force origin main',
+    'GIT_TRACE=1 git clean -fdx',
+    'cd sub && GIT_DIR=.git git reset --hard',
+    'eval git push --force origin main',
+    "eval 'git push --force origin main'",
+    'builtin command git push --force origin main',
+    '\\git reset --hard',
+    'xargs git push --force dest main',
+    'find . -maxdepth 0 -exec git push --force dest main \\;',
+    'setsid git push --force dest main',
+    'flock /tmp/lock git push --force dest main',
+    "git clean -e ';' -f",
+  ])('refuses bash -c %s by the deny list', (body) => {
+    const outcome = evaluate('bash', ['-c', body], commands)
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toMatch(/Refused by the workspace command policy: git (push|clean|reset) \*/)
+  })
+
+  it('asks about an eval whose text it cannot know, since no glob can meet it', () => {
+    const outcome = evaluate('bash', ['-c', 'x="git push --force origin main"; eval "$x"'], commands)
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks[0]?.reason).toMatch(/^eval runs text/)
+  })
+
+  it('leaves an ordinary command behind an assignment alone', () => {
+    expect(evaluate('bash', ['-c', 'A=1 git status'], commands).kind).toBe('allow')
+  })
+
+  it('needs the wrapper allowed when flock or xargs hands a body to a shell, as env does', () => {
+    expect(reasonOf(evaluate('flock', ['/tmp/lock', '-c', 'pnpm build']))).toContain("allow-command 'sh -c *'")
+    expect(reasonOf(evaluate('xargs', ['-n', '1', 'bash', '-c', 'pnpm build']))).toContain("allow-command 'bash -c *'")
+  })
+})
+
 describe('the destructive floor the owner raised', () => {
   const destructive = ['terraform destroy *']
 
