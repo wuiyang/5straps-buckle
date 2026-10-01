@@ -24,6 +24,21 @@ export function configureRootLogger(config: LoggerConfig): LoggerRoot {
   return root
 }
 
+/**
+ * An error as a log line may carry it: its name, its own message and its own stack, never its cause, which the logger
+ * would follow (slice 7 review R7-RR-3: a StateFileError's cause is the SyntaxError JSON.parse raised, and V8's
+ * message quotes the state file around the fault). A SyntaxError's own message and stack quote the text it failed
+ * on, so only its name is kept.
+ */
+export function withoutCause(error: unknown): Error | string {
+  if (!(error instanceof Error)) return 'Unknown error'
+  const quotes = error instanceof SyntaxError
+  const kept = new Error(quotes ? '' : error.message)
+  kept.name = error.name
+  kept.stack = quotes ? `${error.name}` : error.stack
+  return kept
+}
+
 /** Log events are written asynchronously; a caller about to read stderr or exit flushes first. */
 export function flushLogs(): Promise<void> {
   return root?.flush() ?? Promise.resolve()

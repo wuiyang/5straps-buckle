@@ -10,7 +10,7 @@ import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
 import { RECORDED_BEFORE_NOTE } from '../../domain/approval-instruction.js'
-import { logger } from '../../runtime/log.js'
+import { logger, withoutCause } from '../../runtime/log.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
@@ -167,7 +167,10 @@ function assertBytesFor(input: { waiting: readonly PendingEntry[]; group: readon
  */
 interface CallFiles {
   write(id: string, text: string): void
-  read(id: string): AskedCall | undefined
+  /** The group's whole call, or why its file could not be read; logs nothing, so a pass says it once (callsRead). */
+  read(id: string): { call: AskedCall } | { failure: string }
+  /** The file's size in bytes, or undefined when it is missing: one stat, no read. */
+  size(id: string): number | undefined
   remove(ids: Iterable<string>): void
   /** Removes every call file no waiting ask names; run under the queue's lock. */
   prune(named: ReadonlySet<string>): void
@@ -196,13 +199,13 @@ function createCallFiles(directory: string): CallFiles {
     },
     read(id) {
       try {
-        return callSchema.parse(JSON.parse(readFileSync(pathOf(id), 'utf8')))
+        return { call: callSchema.parse(JSON.parse(readFileSync(pathOf(id), 'utf8'))) }
       } catch (error) {
         // Shown as recorded before this build: denied or re-sent, never approved from a part.
-        logger.warn('A waiting ask\'s call file is missing or unreadable', { id, error: error instanceof Error ? error.name : 'Unknown error' })
-        return undefined
+        return { failure: error instanceof Error ? error.name : 'Unknown error' }
       }
     },
+    size: id => statSync(pathOf(id), { throwIfNoEntry: false })?.size,
     remove(ids) {
       for (const id of ids) rmSync(pathOf(id), { force: true })
     },
@@ -430,7 +433,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       const value = await change(state)
       const after = namedCalls(state)
       released = [...before].filter(id => !after.has(id))
-      queued = state.outbox.some(entry => entry.workspace === workspace && !outboxBefore.has(entry.id))
+      const added = state.outbox.filter(entry => !outboxBefore.has(entry.id))
+      queued = added.some(entry => entry.workspace === workspace)
+      // Said once per update, not once per end it kept: one sweep may expire hundreds of unreserved asks.
+      if (added.length > 0 && pastDeliveryLimits(state.outbox)) logger.warn('Approval outcome delivery is past its limits; the asks\' ends were kept anyway, and new asks wait until the receiver drains it', { entries: state.outbox.length, added: added.length, events: [...new Set(added.map(entry => entry.notice.event))] })
       nextExpiry = earliestExpiry(state)
       return value
     })
@@ -450,20 +456,24 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   function pruneWhenDue(): Promise<void> | undefined {
     if (pruning) return pruning
     const version = currentQueueVersion()
-    if (version === unreadableVersion) return undefined
-    if (version !== queueVersion && !readForPrune(version)) return undefined
+    // An index found unreadable is read again once the file changes or the retry delay passes, since a repair in
+    // place (a mode put back) keeps its version (slice 7 review R7-RR-2).
+    const unreadable = version === unreadableVersion
+    if (unreadable && Date.now() < nextExpiry) return undefined
+    if ((unreadable || version !== queueVersion) && !readForPrune(version)) return undefined
     if (Date.now() < nextExpiry) return undefined
     nextExpiry = Number.POSITIVE_INFINITY
     pruning = update(() => undefined).catch((error: unknown) => {
       nextExpiry = Date.now() + PRUNE_RETRY_MS
-      logger.warn('Could not drop the approvals that expired', { error })
+      logger.warn('Could not drop the approvals that expired', { error: withoutCause(error) })
     }).finally(() => { pruning = undefined })
     return pruning
   }
 
   /**
    * Reads the index for pruneWhenDue. A damaged one fails the calls that need the queue, never an ordinary call the
-   * rules settled (review L3 of the continuation review): it is logged once, and read again once the file changes.
+   * rules settled (review L3 of the continuation review): it is logged once for each version of the file, with the
+   * error's name and own message and never its cause, which quotes the file (slice 7 review R7-RR-3).
    */
   function readForPrune(version: string): boolean {
     try {
@@ -472,7 +482,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       return true
     } catch (error) {
       if (!(error instanceof StateFileError)) throw error
-      logger.warn('The approvals index is unreadable; ordinary calls go on, while asks and decisions wait for its repair', { error })
+      if (version !== unreadableVersion) logger.warn('The approvals index is unreadable; ordinary calls go on, while asks and decisions wait for its repair', { error: withoutCause(error) })
       unreadableVersion = version
       nextExpiry = Date.now() + PRUNE_RETRY_MS
       return false
@@ -486,7 +496,39 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 
   /** A waiting ask with its whole call: read from the group's file, or inline for an ask recorded before this build. */
   function withCall(entry: PendingEntry): PendingAsk {
-    return withCallFrom(entry, id => calls.read(id))
+    return callsRead(callOf => withCallFrom(entry, callOf))
+  }
+
+  /**
+   * One pass over call files: each file read and parsed once, and one warning for all those missing or unreadable,
+   * never one per waiting ask (slice 7 review, notes: a 50-ask group warned 50 times per re-send).
+   */
+  function callsRead<R>(pass: (callOf: (id: string) => AskedCall | undefined) => R): R {
+    const results = new Map<string, { call: AskedCall } | { failure: string }>()
+    const value = pass((id) => {
+      if (!results.has(id)) results.set(id, calls.read(id))
+      const result = results.get(id)!
+      return 'call' in result ? result.call : undefined
+    })
+    const failures = [...results.values()].flatMap(result => 'failure' in result ? [result.failure] : [])
+    if (failures.length > 0) logger.warn('Waiting asks\' call files are missing or unreadable; their asks show as recorded before this build until the call is re-sent', { files: failures.length, errors: [...new Set(failures)] })
+    return value
+  }
+
+  /**
+   * Whether a waiting ask's call file still holds the whole call, for one pass: the index says the call was whole when
+   * written, and the file is there at the size written (review L4 of the continuation review: a deleted or cut file
+   * is partial). One stat per file and no parse, so a re-send of a large group stays cheap under the lock (slice 7
+   * review R7-RR-1); a file damaged at its own size is found when a decision reads it, and approves nothing (D17).
+   */
+  function keptWhole(): (entry: PendingEntry) => boolean {
+    const sizes = new Map<string, number | undefined>()
+    return (entry) => {
+      if (!entry.callFile) return entry.call?.complete === true
+      const { id, bytes, complete } = entry.callFile
+      if (!sizes.has(id)) sizes.set(id, calls.size(id))
+      return complete === true && sizes.get(id) === bytes
+    }
   }
 
   /**
@@ -506,7 +548,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   const registry: ApprovalRegistry = {
     ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs }) {
       return update(state => {
-        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) }, record: recordCall, shownWhole: entry => withCall(entry).call?.complete === true })
+        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) }, record: recordCall, shownWhole: keptWhole() })
         if (joined) return joined
         assertRoomFor({ state, workspace, sessionId, actor, asked: asks.length })
         // Every field a person or a relay reads is redacted (owner decision D17), a reason as the free text it is
@@ -700,14 +742,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 
     // Each group's call file is read and parsed once, and its asks share the one call (review M1 of the slice 5 re-review).
     waiting() {
-      const parsed = new Map<string, AskedCall | undefined>()
-      const once = (id: string) => {
-        if (!parsed.has(id)) parsed.set(id, calls.read(id))
-        return parsed.get(id)
-      }
-      return read().pending
-        .filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now())
-        .map(entry => withCallFrom(entry, once))
+      const pending = read().pending.filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now())
+      return callsRead(callOf => pending.map(entry => withCallFrom(entry, callOf)))
     },
 
     waitingAsk(token) {
@@ -755,8 +791,9 @@ function joinWaiting(input: { state: State; workspace: string; key: JoinKey; cal
   // An ask recorded before this build, or whose call file is missing or damaged, names the same call (its fingerprint
   // matched): the re-send records it whole, in a file of its own and within the budgets, so a person's device can
   // decide it (owner decision D17, review M5; review L4 of the continuation review).
+  // The fingerprint and the re-sent call's completeness first, so a call file is judged only when it could be repaired.
   const { recorded: whole } = input.call
-  const partial = pending.filter(entry => !input.shownWhole(entry) && entry.fingerprint !== undefined && entry.fingerprint === input.call.fingerprint)
+  const partial = whole?.complete ? pending.filter(entry => entry.fingerprint !== undefined && entry.fingerprint === input.call.fingerprint && !input.shownWhole(entry)) : []
   if (whole?.complete && partial.length > 0) {
     const recorded = input.record({ state: input.state, group: partial.map(({ call: _call, callFile: _callFile, ...entry }) => entry), call: whole, replacing: partial })
     input.state.pending = input.state.pending.map(entry => { const index = partial.indexOf(entry); return index === -1 ? entry : recorded[index]! })
@@ -883,15 +920,14 @@ function pastDeliveryLimits(entries: readonly unknown[]): boolean {
 /**
  * Queues an ask's end or its wait notice, and never refuses (review M2 of the continuation review): an expiry,
  * a decision, a cancel or an acknowledgement must commit whatever the outbox holds. Admission keeps the outbox
- * within its limits for every reserved ask; an end nothing reserved room for may pass them, which is logged, and
- * new asks then wait until the receiver drains it.
+ * within its limits for every reserved ask; an end nothing reserved room for may pass them, which the update logs
+ * once, and new asks then wait until the receiver drains it.
  */
 function enqueueOutcome(state: State, workspace: string, notice: ApprovalNotice): void {
   const previous = state.outbox.find(entry => entry.workspace === workspace && entry.notice.token === notice.token)
   if (previous && (previous.notice.event !== 'skipped' || notice.event === 'skipped')) return
   state.outbox = state.outbox.filter(entry => entry !== previous)
   state.outbox.push({ id: randomUUID(), workspace, notice, expiresAt: new Date(Date.now() + APPROVAL_OUTBOX_RETENTION_MS).toISOString() })
-  if (pastDeliveryLimits(state.outbox)) logger.warn('Approval outcome delivery is past its limits; an ask\'s end was kept anyway, and new asks wait until the receiver drains it', { entries: state.outbox.length, event: notice.event })
 }
 
 export function subjectsByRule(subjects: GrantSubject[], rule: PermissionRuleId): string[] {

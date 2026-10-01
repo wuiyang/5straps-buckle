@@ -3,7 +3,11 @@ import { defineSetupHandler } from '../../../utils/setup.js'
 
 /** What the listing says in place of a challenge the node could not sign; it names no field and no value. */
 const UNSIGNABLE = 'The node could not sign this ask\'s challenge, so no device can decide it; answer it at the node (buckle approve) or withdraw the call'
-/** What it says for an ask recorded before this build, whose whole call the node never kept (owner decision D17). */
+/**
+ * What it says for an ask whose whole call the node does not hold (owner decision D17): one recorded before this
+ * build, or whose kept call is missing or damaged (slice 7 review R7-RR-4). The text stays as it is, since every
+ * client maps it to its own words and reads any other as an unrecognised entry.
+ */
 const RECORDED_BEFORE = 'recorded before this build: decide at the node or re-send'
 
 // The approval guard: each waiting ask as the node signs it (B24; approval-proofs.md, Signed

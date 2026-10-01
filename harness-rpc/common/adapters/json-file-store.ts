@@ -12,7 +12,10 @@ import type { ServiceFailure } from '../types/service-failure.js'
 export const STATE_BUSY = 'STATE_BUSY'
 
 /** A state file that exists but cannot be used; the message names the file and the invalid fields, never a value. */
-export class StateFileError extends Error {}
+export class StateFileError extends Error {
+  // Named, so a log line that keeps only an error's name and own message says which failure it was.
+  override readonly name = 'StateFileError'
+}
 
 /** Another process held the state file's lock past the wait; HTTP answers 503, the CLI exits 1. */
 export class StateBusyError extends Error implements ServiceFailure {

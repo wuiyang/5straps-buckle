@@ -10,6 +10,7 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalNotices, type ApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { APPROVAL_OUTBOX_BYTES_MAX, APPROVAL_OUTBOX_COUNT_MAX, APPROVAL_OUTBOX_RETENTION_MS, createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { logger } from '../common/runtime/log.js'
 
 const at = new Date('2026-10-01T12:00:00.000Z').getTime()
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
@@ -262,6 +263,24 @@ describe('an ask\'s end is recorded whatever the outbox holds', () => {
       expect.objectContaining({ token: legacy.request.token, event: 'expired' }),
       expect.objectContaining({ token: live.request.token, event: 'denied' }),
     ]))
+  })
+
+  // Slice 7 review, notes: past the limits each kept end warned on its own, so one sweep of 500 unreserved asks wrote
+  // 499 identical warnings. The update that keeps them warns once.
+  it('warns once for a sweep that keeps many unreserved ends past the limits, not once for each', async () => {
+    const q = queue()
+    const legacy = Array.from({ length: 20 }, () => entry(q, Date.now() - 1_000, false))
+    writeFileSync(q.file, JSON.stringify({ version: 1, pending: legacy, once: [], resolved: [], outbox: outcomes(q, APPROVAL_OUTBOX_COUNT_MAX - 2) }))
+    const registry = q.open()
+    const warn = vi.spyOn(logger, 'warn')
+    try {
+      await registry.sweep()
+      expect(registry.pendingDeliveries().filter(item => item.notice.event === 'expired')).toHaveLength(20)
+      expect(warn.mock.calls.filter(([message]) => message.startsWith('Approval outcome delivery is past its limits')))
+        .toEqual([[expect.any(String), { entries: APPROVAL_OUTBOX_COUNT_MAX - 2 + 20, added: 20, events: ['expired'] }]])
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('still refuses a new ask while reserved asks hold the outbox at its maximum (control)', async () => {

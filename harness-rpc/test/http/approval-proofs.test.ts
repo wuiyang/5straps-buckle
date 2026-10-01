@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
 import type { InvokeRequest } from '@5straps/protocol'
@@ -319,7 +319,7 @@ describe('a challenge listing with an ask too long to describe whole', () => {
     const output = capture()
     expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
     // In the client's own words, never the listing's (review L5).
-    expect(output.stdout).toContain(`${legacy}  not signed by the node: recorded before the node's current build, which kept no whole call for it`)
+    expect(output.stdout).toContain(`${legacy}  not signed by the node: recorded before the node's current build, or its kept call is missing or damaged, so the node holds no whole call for it`)
     expect(output.stdout).toContain(`${unsignable}  not signed by the node: the node could not sign its challenge`)
     expect(output.stdout).not.toContain('decide at the node or re-send')
     expect(output.stdout).toContain(`${other}  fs_write asks write_scope`)
@@ -330,6 +330,22 @@ describe('a challenge listing with an ask too long to describe whole', () => {
     }
     expect((await clientCommand(['approve', url, other], environment, { confirm: async () => true })).exitCode).toBe(0)
     expect(buckle.runtime.approvals.pending().map(request => request.token).sort()).toEqual([legacy, unsignable].sort())
+  })
+
+  // Slice 7 review R7-RR-4: an ask this build recorded whole whose call file is then lost is listed with the same
+  // fixed reason, which older clients key on; this client's words now name that case too.
+  it('lists an ask whose kept call file is missing with the same reason, in words that name the missing call', async () => {
+    const buckle = await node()
+    const token = await ask(buckle, { ...write(buckle.root, 'lost-call'), context: { approvalWait: { mode: 'none' } } })
+    const calls = join(buckle.config.stateDirectory, 'approval-calls')
+    for (const name of readdirSync(calls)) rmSync(join(calls, name))
+    expect((await challenges(buckle)).challenges).toEqual([{ token, error: 'recorded before this build: decide at the node or re-send' }])
+    const url = await buckle.listen()
+    const environment = await pinnedDevice(buckle, url)
+    const output = capture()
+    expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
+    expect(output.stdout).toContain(`${token}  not signed by the node: recorded before the node's current build, or its kept call is missing or damaged`)
+    expect(output.stdout).not.toContain('decide at the node or re-send')
   })
 
   it('records the whole call when a re-send joins an ask recorded before this build, so a device can then decide it', async () => {

@@ -1,6 +1,8 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import type { ApprovalNotice } from '@5straps/protocol'
 import { callDigestOf, generateSigningKey, shownCallDigestOf, signChallenge, signingKeyFromPem } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +10,8 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { createApprovalRegistry, MAX_PENDING_BYTES_PER_SESSION, MAX_PENDING_PER_SESSION, type AskedCall } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
+import { logger } from '../common/runtime/log.js'
+import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -115,6 +119,74 @@ describe('a re-send repairs an ask whose kept call is lost', () => {
   })
 })
 
+// Slice 7 review R7-RR-1: the L4 repair parsed the group's call file once per waiting ask inside the approvals lock,
+// so one same-requestId re-send of 50 asks sharing a 960 KB call held the lock 6.5 to 11 s, and a decision from
+// another process failed at the lock's 5 s deadline. A re-send now judges each call file by one stat.
+describe('a re-send of a large waiting group stays cheap under the approvals lock', () => {
+  /** fs_write_batch as an agent may send it: 50 paths outside the scope, each with dense JSON the tool's schema strips. */
+  const dense = (root: string): AskedCall => ({
+    arguments: { files: Array.from({ length: 50 }, (_, index) => ({ path: `/outside/${index}`, content: 'x', meta: Array.from({ length: 1_400 }, (_, key) => [key, { a: 1 }]) })) },
+    cwd: root, description: null, complete: true,
+  })
+
+  it('re-sends in well under a second while another process decides one of the asks', async () => {
+    const { root, registry, service } = queue()
+    const call = dense(root)
+    expect(Buffer.byteLength(JSON.stringify(call.arguments))).toBeGreaterThan(900_000)
+    const sent = { tool: 'fs_write_batch', sessionId: 'mcp', requestId: 'batch-1', fingerprint: 'call-1', asks: asks(50), call }
+    const warn = vi.spyOn(logger, 'warn')
+    try {
+      const { requests } = await registry.ask(sent)
+      const script = join(root, 'decide.mts')
+      writeFileSync(script, `
+        import { createFileGrantStore } from ${JSON.stringify(new URL('../common/adapters/grant-store/file-grant-store.ts', import.meta.url).href)};
+        import { createApprovalRegistry } from ${JSON.stringify(new URL('../common/services/approvals/approval-registry.ts', import.meta.url).href)};
+        const [root, token] = process.argv.slice(2);
+        const registry = createApprovalRegistry(createFileGrantStore({ filePath: root + '/grants.json', workspace: root }), root + '/approvals.json', root);
+        const started = Date.now();
+        const decided = await registry.resolve({ token, approved: false, scope: 'once' }, 'admin');
+        console.log(JSON.stringify({ ok: decided.ok, ms: Date.now() - started }));
+      `)
+      const started = Date.now()
+      const resend = registry.ask(sent)
+      const other = promisify(execFile)(process.execPath, ['--import', import.meta.resolve('tsx'), script, root, requests[1]!.token])
+      expect(await resend).toMatchObject({ joined: true, requests: requests.map(request => ({ token: request.token })) })
+      expect(Date.now() - started).toBeLessThan(1_000)
+      expect(JSON.parse((await other).stdout)).toMatchObject({ ok: true })
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const again = Date.now()
+        await registry.ask(sent)
+        expect(Date.now() - again).toBeLessThan(1_000)
+      }
+      expect(warn.mock.calls.filter(([message]) => /call file/.test(message))).toEqual([])
+    } finally {
+      warn.mockRestore()
+      await service.close()
+    }
+  }, SPAWN_TEST_TIMEOUT_MS)
+
+  it('warns once, not once per ask, when a waiting group\'s call file is missing, and repairs it on the re-send', async () => {
+    const { root, registry, service } = queue()
+    const sent = { tool: 'fs_write_batch', sessionId: 'mcp', requestId: 'batch-2', fingerprint: 'call-2', asks: asks(50), call: whole() }
+    const warn = vi.spyOn(logger, 'warn')
+    try {
+      const { requests } = await registry.ask(sent)
+      const calls = join(root, 'approval-calls')
+      rmSync(join(calls, readdirSync(calls)[0]!))
+      expect(registry.waiting().filter(ask => ask.call === undefined)).toHaveLength(50)
+      expect(warn.mock.calls.filter(([message]) => /call files are missing or unreadable/.test(message))).toHaveLength(1)
+      expect(await registry.ask(sent)).toMatchObject({ joined: true })
+      expect(readdirSync(calls)).toHaveLength(1)
+      expect(registry.waiting().every(ask => ask.call?.complete === true)).toBe(true)
+      expect(await registry.resolve({ token: requests[0]!.token, approved: true, scope: 'once' }, 'admin')).toMatchObject({ ok: true })
+      expect(warn.mock.calls.filter(([message]) => /call files are missing or unreadable/.test(message))).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+      await service.close()
+    }
+  })
+})
+
 // Review L3 of the continuation review: an ordinary call read the index to learn the next expiry, so a damaged
 // approvals.json made every allowed or denied call throw until the owner repaired it.
 describe('an unreadable approvals index fails the calls that need it, not ordinary ones', () => {
@@ -138,6 +210,57 @@ describe('an unreadable approvals index fails the calls that need it, not ordina
       expect(JSON.parse(readFileSync(filePath, 'utf8')).pending).toEqual([])
       expect(registry.pending().map(entry => entry.token)).not.toContain(request!.token)
     } finally { await service.close() }
+  })
+})
+
+// Slice 7 review R7-RR-2: after an unreadable index, ordinary calls read it again only when its version changed, so
+// one repaired in place (its mode put back, same mtime and size) never pruned again. Slice 7 review R7-RR-3: the
+// warning carried the StateFileError with its cause, whose V8 message quotes the file around the fault.
+describe('an index unreadable for a while, then repaired in place', () => {
+  const allowed = (registry: ReturnType<typeof createApprovalRegistry>) => registry.evaluate({ tokens: [], sessionId: 'reader', tool: 'fs_read', check: () => ({ kind: 'allow', allowedBy: [] }) })
+  const unreadableWarnings = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter(([message]) => String(message).startsWith('The approvals index is unreadable'))
+
+  it.skipIf(process.getuid?.() === 0)('prunes an expired ask from another process at the first ordinary call after the retry delay, and warns once', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const { root, filePath, grants, registry, service } = queue()
+    const other = createApprovalRegistry(grants, filePath, root)
+    const warn = vi.spyOn(logger, 'warn')
+    try {
+      expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+      const [request] = (await issue(other)).requests
+      vi.setSystemTime(Date.now() + 11 * 60_000)
+      chmodSync(filePath, 0o000)
+      expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+      expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+      chmodSync(filePath, 0o600)
+      expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+      expect(JSON.parse(readFileSync(filePath, 'utf8')).pending).toHaveLength(1)
+      vi.setSystemTime(Date.now() + 6_000)
+      expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+      expect(JSON.parse(readFileSync(filePath, 'utf8')).pending).toEqual([])
+      expect(registry.pending().map(entry => entry.token)).not.toContain(request!.token)
+      expect(unreadableWarnings(warn)).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+      await service.close()
+    }
+  })
+
+  it('names the error and the file in its warning, and no part of the damaged text', async () => {
+    const { filePath, registry, service } = queue()
+    const warn = vi.spyOn(logger, 'warn')
+    try {
+      writeFileSync(filePath, '{"version":1,"pending":[{"request":{"subject": psql -c DROP TABLE accounts}}]}')
+      expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+      const [warning] = unreadableWarnings(warn)
+      const logged = (warning?.[1] as { error?: Error } | undefined)?.error
+      expect(logged).toMatchObject({ name: 'StateFileError', message: `State file is unreadable or invalid: ${filePath}; owner repair is required` })
+      expect(logged?.cause).toBeUndefined()
+      expect(`${logged?.message} ${logged?.stack}`).not.toMatch(/psql|DROP|accounts/)
+    } finally {
+      warn.mockRestore()
+      await service.close()
+    }
   })
 })
 

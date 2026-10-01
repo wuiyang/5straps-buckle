@@ -1,5 +1,10 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from '../common/runtime/log.js'
+import { z } from 'zod'
+import { createJsonFileStore } from '../common/adapters/json-file-store.js'
+import { configureRootLogger, flushLogs, logger, loggerConfigFrom, withoutCause } from '../common/runtime/log.js'
 
 // The root logger writes asynchronously, so every stderr capture flushes before reading.
 async function captureStderr(write: () => void): Promise<Array<Record<string, unknown>>> {
@@ -67,5 +72,54 @@ describe('the Buckle root logger', () => {
       logger.warn('loud')
     })
     expect(lines.map(line => line.message)).toEqual(['loud'])
+  })
+})
+
+// Slice 7 review R7-RR-3: a state file's parse failure carries V8's SyntaxError as its cause, whose message quotes the
+// file around the fault, and the logger follows a cause. A log line keeps the failure's name, own message and stack.
+describe('an error in a log line', () => {
+  it('keeps the name and own message of a state file failure, and none of the text its cause quotes', async () => {
+    configureRootLogger(loggerConfigFrom({}))
+    const root = mkdtempSync(join(tmpdir(), 'buckle-logged-error-'))
+    try {
+      const filePath = join(root, 'approvals.json')
+      writeFileSync(filePath, '{"pending":[{"subject": psql -c DROP TABLE accounts}]}')
+      const failure = (() => {
+        try {
+          createJsonFileStore({ filePath, schema: z.object({ pending: z.array(z.unknown()) }), fallback: { pending: [] } }).read()
+        } catch (error) {
+          return error
+        }
+        throw new Error('expected the damaged file to fail')
+      })()
+      const lines = await captureStderr(() => {
+        logger.warn('kept', { error: withoutCause(failure) })
+        // The control: the error object itself carries the quoted text through its cause.
+        logger.warn('whole', { error: failure })
+      })
+      const kept = lines.find(line => line.message === 'kept')
+      expect(kept?.error).toMatchObject({ name: 'StateFileError', message: `State file is unreadable or invalid: ${filePath}; owner repair is required` })
+      expect(kept?.error).not.toHaveProperty('cause')
+      expect(JSON.stringify(kept)).not.toMatch(/psql|DROP|accounts/)
+      expect(JSON.stringify(lines.find(line => line.message === 'whole'))).toMatch(/psql/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps only the name of a SyntaxError, whose own message quotes its input, and names a thrown non-error', () => {
+    const failure = (() => {
+      try {
+        JSON.parse('{"subject": psql -c DROP}')
+      } catch (error) {
+        return error
+      }
+      throw new Error('expected a syntax error')
+    })()
+    const kept = withoutCause(failure) as Error
+    expect([kept.name, kept.message, kept.stack]).toEqual(['SyntaxError', '', 'SyntaxError'])
+    expect(withoutCause('a string')).toBe('Unknown error')
+    const ranged = withoutCause(new RangeError('out of range', { cause: new Error('inner') })) as Error
+    expect([ranged.name, ranged.message, ranged.cause]).toEqual(['RangeError', 'out of range', undefined])
   })
 })

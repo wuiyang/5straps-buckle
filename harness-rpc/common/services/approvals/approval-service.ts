@@ -8,7 +8,7 @@ import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand } from '../../domain/approval-instruction.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
-import { logger } from '../../runtime/log.js'
+import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
 import { listedApprovals, type ListedApproval } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
@@ -238,7 +238,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const waiting = new Set<Promise<unknown>>()
   let unreadable = false
   // What expired, or a call file left over, while no process of this node ran is dropped now (review L1 of the slice 5 re-review).
-  track(options.registry.sweepIfDue().catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error }) }))
+  track(options.registry.sweepIfDue().catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error: withoutCause(error) }) }))
 
   const service: ApprovalService = {
     async request(input) {
@@ -390,7 +390,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     if (remaining === Infinity || closing.signal.aborted) return
     const sweep = setTimeout(() => {
       sweeps.delete(sweep)
-      track(Promise.resolve().then(() => options.registry.sweep()).catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error }) }))
+      track(Promise.resolve().then(() => options.registry.sweep()).catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error: withoutCause(error) }) }))
     }, Math.min(remaining + SWEEP_MARGIN_MS, MAX_TIMER_MS))
     // A one-shot command does not stay open for it; the next update anywhere reports the expiry instead.
     sweep.unref()
@@ -432,7 +432,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       return state
     } catch (error) {
       // Retried at the next poll, and the hold still ends the call; said once until a read succeeds.
-      if (!unreadable) logger.warn('Could not read the approval queue', { error })
+      if (!unreadable) logger.warn('Could not read the approval queue', { error: withoutCause(error) })
       unreadable = true
       return null
     }
@@ -449,7 +449,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
   function startQuestions(input: { ask: OpenAsk; interaction: Interaction; context: QuestionContext }): Promise<void> {
     return askInTurn(input)
-      .catch((error: unknown) => { logger.warn('A terminal approval question failed; the request stays waiting', { error }) })
+      .catch((error: unknown) => { logger.warn('A terminal approval question failed; the request stays waiting', { error: withoutCause(error) }) })
       .finally(() => { input.ask.promptEnded = true })
   }
 

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
 import { describeApprovalRequest, describeAsk, describeAskOfShownCall, describeCallAsks, reviewCommand } from '../common/domain/approval-instruction.js'
-import { logger } from '../common/runtime/log.js'
+import { logger, withoutCause } from '../common/runtime/log.js'
 import { agentFailureMessage } from '../common/services/agent-failure.js'
 import type { ApprovalAuthority, PendingAsk } from '../common/services/approvals/approval-registry.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -287,10 +287,11 @@ function registerSkills(server: McpServer, runtime: BuckleRuntime): void {
 /**
  * A failure that escaped the invoker, such as an audit or approval write that could not be made: the
  * SDK would hand its message to the agent, so the agent gets path-free text and the owner's log the
- * cause (review M1 of B15-B17).
+ * failure's name, own message and stack (review M1 of B15-B17), never a cause that quotes a state file (slice 7 review
+ * R7-RR-3).
  */
 function failedCall(error: unknown) {
-  logger.error('MCP tool call failed before it had an outcome', { error })
+  logger.error('MCP tool call failed before it had an outcome', { error: withoutCause(error) })
   return { isError: true, content: [{ type: 'text' as const, text: agentFailureMessage(error) }] }
 }
 

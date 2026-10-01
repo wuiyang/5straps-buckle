@@ -262,7 +262,8 @@ function verifiedSharedCall(input: { reference: string; calls: Record<string, un
  * nothing it says is printed: a reason not among these reads "unrecognised entry" (review L5).
  */
 const UNSIGNED_REASONS: ReadonlyMap<string, string> = new Map([
-  ['recorded before this build: decide at the node or re-send', 'recorded before the node\'s current build, which kept no whole call for it, so no device decides it; deny it at the node, or have the agent re-send the call'],
+  // Also listed for an ask whose kept call is missing or damaged (slice 7 review R7-RR-4); the node's text is unchanged.
+  ['recorded before this build: decide at the node or re-send', 'recorded before the node\'s current build, or its kept call is missing or damaged, so the node holds no whole call for it and no device decides it; deny it at the node, or have the agent re-send the call'],
   ['The node could not sign this ask\'s challenge, so no device can decide it; answer it at the node (buckle approve) or withdraw the call', 'the node could not sign its challenge, so no device decides it; decide it at the node, where buckle approve shows the action first, or withdraw the call'],
 ])
 
