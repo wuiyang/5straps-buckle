@@ -502,6 +502,58 @@ describe('a call Buckle cannot read whole', () => {
     expect(check('workspace', false, body).kind).toBe('allow')
   })
 
+  // Slice 7f review R7F-HR-3 and R7F-HR-4: every heredoc body is read whole as shell text, its nested bodies whole in
+  // turn, so a quoted body fed to bash, a double quote spanning body lines and a substitution spanning a nested body
+  // no longer hide a denied command. Real bash pushed to a throwaway remote.
+  const findWhole = 'find . -maxdepth 0 -exec true'
+  const wholeShapes = {
+    'a quoted body fed to bash with an inner unquoted heredoc': (command: string) => `bash <<'EOF'\ncat <<X\n${findWhole} '$(${command})' ${B};\nX\nEOF`,
+    'a double quote spanning body lines': (command: string) => `bash <<'EOF'\n${findWhole} "\n${findWhole} ' $(${command}) ' ${B};\n" ${B};\nEOF`,
+    'a substitution spanning a nested unquoted heredoc': (command: string) => `cat <<EOF\n$(cat <<X\nx '$("\n${findWhole} " ;${command}; " ${B};\n")'\nX\n)\nEOF`,
+  } as const
+  const wholeCases = Object.entries(wholeShapes)
+
+  it.each(cases.flatMap(([engine, switched]) => wholeCases.map(([shape, make]) => [engine, switched, shape, make(push)] as const)))('refuses %s deny, switch on: %s, a git push a whole-body reading reveals with %s', (engine, switched, _shape, body) => {
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => wholeCases.map(([shape, make]) => [engine, shape, make('git push --force origin main')] as const)))('asks at the floor, %s with no deny glob, about a force push a whole-body reading reveals with %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
+  // A heredoc nested inside a whole reading is read whole in turn, up to MAX_DEPTH; a thousand nested one in another
+  // are left unread 'depth', refused under a deny glob and asked about without one, within a second (bounded passes).
+  const nestedHeredocs = (count: number) => {
+    const open = Array.from({ length: count }, (_, index) => `bash <<'D${index}'`).join('\n')
+    const close = Array.from({ length: count }, (_, index) => `D${count - 1 - index}`).join('\n')
+    return `${open}\necho deep\n${close}`
+  }
+
+  it.each(cases)('refuses a thousand nested heredocs, %s deny, switch on: %s, naming the depth limit, within a second', (engine, switched) => {
+    const body = nestedHeredocs(1_000)
+    const started = performance.now()
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('depth')
+    expect(refusal(check(engine, switched, body))).toBe(`Wrappers or shell bodies nest deeper than Buckle reads (MAX_DEPTH: 8 levels), so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+    expect(performance.now() - started).toBeLessThan(1_000)
+  })
+
+  it('asks about a thousand nested heredocs with no deny glob, naming the depth limit', () => {
+    const outcome = check('workspace', false, nestedHeredocs(1_000), [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Wrappers or shell bodies nest deeper than Buckle reads \(MAX_DEPTH: 8 levels\)/)]])
+  })
+
+  it('reads a 1 MB quoted heredoc body whole as shell text within a second', () => {
+    const notes = Array.from({ length: 40_000 }, (_, index) => `note ${index} of the release`).join('\n')
+    expect(notes.length).toBeGreaterThan(1_000_000)
+    const started = performance.now()
+    expect(check('workspace', false, heredocLine(notes, "bash <<'EOF'")).kind).toBe('allow')
+    expect(refusal(check('workspace', false, heredocLine(`${notes}\n${push}`, "bash <<'EOF'")))).toBe('Refused by the workspace command policy: git push *')
+    expect(performance.now() - started).toBeLessThan(1_000)
+  })
+
   // Slice 7e review R7E-LW-3: the node ceiling's rule runs first, so with deny lists in both policies it refused at a
   // reading limit naming itself although the workspace glob had matched the push. A glob that matched in any policy is
   // named first; the limit is named, ceiling first, only when none matched. The call is refused either way.

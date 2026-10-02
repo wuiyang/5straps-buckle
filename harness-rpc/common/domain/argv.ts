@@ -220,17 +220,25 @@ const WORD_BOUNDARY = new Set([' ', '\t', '\r', ...BREAK_CHARACTERS])
 export const MAX_SUBSTITUTIONS = 4
 
 /**
+ * How many wrappers, shell bodies inside shell bodies, or heredoc bodies read whole inside one another nest before the
+ * rest is called unread 'depth'. One reading of a 1 MB request at every level fits, and the whole-body passes stay
+ * bounded. command-forms reads this same limit for the wrapper and shell-body chain.
+ */
+export const MAX_DEPTH = 8
+
+/**
  * The statements of shell text, split where a shell would start a new command, so a pattern written for a command
  * line also meets `curl` inside `bash -c "... | curl ..."`: a newline, `;`, `&`, `|`, a parenthesis, a backtick and
  * `$(` start one, outside quotes, so `git clean -e ';' -f` keeps its `-f` (slice 7 review F2). Each `$(...)` or
  * backtick body inside double quotes is read as statements of its own. A `#` that starts a word comments out its
  * line, and a heredoc body is read line by line, its quotes ending with the line (slice 7b review W7B-4), and under
  * an unquoted delimiter as heredoc text too (heredocBodies). `deep` says substitutions nest past MAX_SUBSTITUTIONS
- * anywhere in the text, a heredoc body included, so some text was read only as part of the statement around it.
+ * anywhere in the text, a heredoc body included, so some text was read only as part of the statement around it, and
+ * `overDepth` that heredoc bodies read whole nest past MAX_DEPTH, so one was left unread (slice 7f review R7F-HR-4).
  */
-export function shellStatementList(text: string): { statements: string[]; deep: boolean } {
-  const { statements, deep } = unquotedSplit(text, SHELL_TEXT)
-  return { statements: [...new Set(statements.map(statement => statement.trim()).filter(Boolean))], deep }
+export function shellStatementList(text: string): { statements: string[]; deep: boolean; overDepth: boolean } {
+  const { statements, deep, overDepth } = unquotedSplit(text, SHELL_TEXT, 0)
+  return { statements: [...new Set(statements.map(statement => statement.trim()).filter(Boolean))], deep, overDepth }
 }
 
 /**
@@ -257,7 +265,7 @@ interface SplitLevel {
 interface SplitMode {
   /** Heredoc text: `'` and `"` are literal, and only each `$(...)` or backtick body in it is statements. */
   heredocText: boolean
-  /** Whether a heredoc body under an unquoted delimiter is also read whole; never inside a whole body, so each text is read whole once. */
+  /** Whether a heredoc body is also read whole as shell text, its own nested bodies whole in turn up to MAX_DEPTH. */
   wholeBodies: boolean
 }
 
@@ -271,11 +279,12 @@ const HEREDOC_TEXT: SplitMode = { heredocText: true, wholeBodies: false }
  * as text of its own, its statements added to the rest; heredoc text itself is no statement, since the command it
  * is handed reads it, not the shell.
  */
-function unquotedSplit(text: string, mode: SplitMode): { statements: string[]; deep: boolean } {
+function unquotedSplit(text: string, mode: SplitMode, depth: number): { statements: string[]; deep: boolean; overDepth: boolean } {
   const statements: string[] = []
   const levels: SplitLevel[] = [{ start: 0, closer: null, parens: 0, quote: mode.heredocText ? 'heredoc' : null }]
   const heredocs: Heredoc[] = []
   let deep = false
+  let overDepth = false
   const end = (level: SplitLevel, at: number, next: number) => {
     statements.push(text.slice(level.start, at))
     level.start = next
@@ -324,15 +333,16 @@ function unquotedSplit(text: string, mode: SplitMode): { statements: string[]; d
       if (level.closer === ')' && character === ')') level.parens--
       end(level, index, index + 1)
       if (character === '\n' && heredocs.length > 0) {
-        const bodies = heredocBodies({ text, from: index + 1, heredocs: heredocs.splice(0), statements, whole: mode.wholeBodies })
+        const bodies = heredocBodies({ text, from: index + 1, heredocs: heredocs.splice(0), statements, whole: mode.wholeBodies, depth })
         deep ||= bodies.deep
+        overDepth ||= bodies.overDepth
         index = bodies.next - 1
         level.start = index + 1
       }
     }
   }
   while (levels.length > (mode.heredocText ? 1 : 0)) end(levels.pop()!, text.length, text.length)
-  return { statements, deep }
+  return { statements, deep, overDepth }
 }
 
 /** `quoted` when any part of the delimiter word is quoted, so bash expands nothing in the body. */
@@ -371,17 +381,22 @@ function heredocAt(text: string, at: number): { heredoc: Heredoc; next: number }
  * unquoted delimiter the delimiter test runs on the body as bash reads it, after a backslash-newline joins a line to
  * the next, so a delimiter line that ends an odd run of backslashes is body text, not the end (slice 7f review
  * R7F-HR-2); and the body is also read as the fed shell receives it, `\\`, `\$` and an escaped backtick reduced and
- * the lines joined, so a substitution the raw body's backslashes hid is read (slice 7f review R7F-HR-1). `deep` says
- * substitutions nested past MAX_SUBSTITUTIONS in any of these readings (slice 7e review R7E-LW-1). A `<<` that was no
- * heredoc (`$((1<<2))`) only reads the lines after it one at a time.
+ * the lines joined, so a substitution the raw body's backslashes hid is read (slice 7f review R7F-HR-1). When `whole`
+ * allows, every body is also read whole as shell text, its quotes spanning lines, since a quoted body too may be fed
+ * to a shell (`bash <<'EOF'`); a heredoc nested in a whole reading is read whole in turn, each level counting against
+ * MAX_DEPTH, past which the call is left unread (slice 7f review R7F-HR-3, R7F-HR-4). `deep` says substitutions nested
+ * past MAX_SUBSTITUTIONS in any of these readings (slice 7e review R7E-LW-1), `overDepth` that a nested whole reading
+ * passed MAX_DEPTH. A `<<` that was no heredoc (`$((1<<2))`) only reads the lines after it one at a time.
  */
-function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[]; statements: string[]; whole: boolean }): { next: number; deep: boolean } {
+function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[]; statements: string[]; whole: boolean; depth: number }): { next: number; deep: boolean; overDepth: boolean } {
   let index = input.from
   let deep = false
-  const read = (text: string, mode: SplitMode) => {
-    const split = unquotedSplit(text, mode)
+  let overDepth = false
+  const read = (text: string, mode: SplitMode, depth: number) => {
+    const split = unquotedSplit(text, mode, depth)
     for (const statement of split.statements) input.statements.push(statement)
     deep ||= split.deep
+    overDepth ||= split.overDepth
   }
   for (const heredoc of input.heredocs) {
     const bodyStart = index
@@ -398,13 +413,13 @@ function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[];
       const bodyLine = heredoc.tabs ? line.replace(/^\t+/, '') : line
       if (!continues && bodyLine === heredoc.delimiter) break
       bodyEnd = lineEnd
-      read(line, SHELL_LINE)
-      if (!heredoc.quoted) read(line, HEREDOC_TEXT)
+      read(line, SHELL_LINE, input.depth)
+      if (!heredoc.quoted) read(line, HEREDOC_TEXT, input.depth)
       const joining = joiningBackslashes(bodyLine, heredoc.quoted)
       if (joined !== null || joining !== 0) {
         joined = (joined ?? '') + bodyLine.slice(0, bodyLine.length - joining)
         if (joining === 0) {
-          read(joined, SHELL_LINE)
+          read(joined, SHELL_LINE, input.depth)
           joined = null
         }
       }
@@ -413,19 +428,22 @@ function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[];
       continues = !heredoc.quoted && trailingBackslashRun(bodyLine) % 2 === 1
     }
     // A run still open at the delimiter line, or at the end of the text, is read as it stands.
-    if (joined !== null) read(joined, SHELL_LINE)
-    if (bodyEnd > bodyStart && !heredoc.quoted && input.whole) {
+    if (joined !== null) read(joined, SHELL_LINE, input.depth)
+    if (bodyEnd > bodyStart && input.whole) {
       const body = input.text.slice(bodyStart, bodyEnd)
-      read(body.replace(CONTINUED_LINE, joinLine), HEREDOC_TEXT)
-      if (body.includes('\\')) {
-        // A `<<-` delimiter strips the leading tabs of each line before the shell receives the body. The view is read
-        // as shell text, so its own line continuations join and its quotes span lines, as the fed shell reads them.
-        const fed = heredoc.tabs ? body.replace(/^\t+/gm, '') : body
-        read(fedShellView(fed), SHELL_LINE)
+      if (!heredoc.quoted) read(body.replace(CONTINUED_LINE, joinLine), HEREDOC_TEXT, input.depth)
+      // The fed shell may run the whole body (`bash <<EOF`, `bash <<'EOF'`), its quotes spanning lines; an unquoted
+      // body is read as the shell receives it, a quoted one as the raw body, and each nested heredoc read whole in
+      // turn counts one level against MAX_DEPTH, past which the call is left unread (slice 7f review R7F-HR-3, R7F-HR-4).
+      if (input.depth >= MAX_DEPTH) overDepth = true
+      else {
+        // A `<<-` delimiter strips the leading tabs of each line before the shell receives the body.
+        const stripped = heredoc.tabs ? body.replace(/^\t+/gm, '') : body
+        read(heredoc.quoted || !stripped.includes('\\') ? stripped : fedShellView(stripped), SHELL_TEXT, input.depth + 1)
       }
     }
   }
-  return { next: Math.min(index, input.text.length), deep }
+  return { next: Math.min(index, input.text.length), deep, overDepth }
 }
 
 /** How many backslashes end a body line, so a caller can tell an odd run (a continuation) from an even one. */

@@ -155,7 +155,8 @@ describe('shell text as a shell splits it', () => {
   // `--force origin main` fed to bash showed no force push, although real bash force-pushed.
   it('reads heredoc body lines a backslash-newline joins as one statement too, under either delimiter', () => {
     const statements = (text: string) => shellStatementList(text).statements
-    expect(statements("bash <<'EOF'\ngit push \\\n--force \\\norigin main\nEOF")).toEqual(["bash <<'EOF'", 'git push \\', '--force \\', 'origin main', 'git push --force origin main'])
+    // A quoted body fed to a shell is also read whole as shell text, so its line continuations join across lines.
+    expect(statements("bash <<'EOF'\ngit push \\\n--force \\\norigin main\nEOF")).toEqual(["bash <<'EOF'", 'git push \\', '--force \\', 'origin main', 'git push --force origin main', 'git push \\\n--force \\\norigin main'])
     expect(statements('bash <<-EOF\n\tgit push \\\n\t--force origin main\n\tEOF')).toEqual(['bash <<-EOF', 'git push \\', '--force origin main', 'git push --force origin main'])
     // A run still open at the delimiter line is read as it stands, and the delimiter line still ends the body.
     expect(statements("bash <<'EOF'\ngit push --force \\\nEOF\necho after")).toEqual(["bash <<'EOF'", 'git push --force \\', 'git push --force', 'echo after'])
@@ -184,6 +185,22 @@ describe('shell text as a shell splits it', () => {
     const swallow = 'cat <<EOF\nx \\\nEOF\nfind . -maxdepth 0 -exec true \'$(git push origin main)\' \\;\nEOF'
     expect(statements(swallow)).toEqual(['cat <<EOF', 'x \\', 'EOF', 'x EOF', "find . -maxdepth 0 -exec true '$(git push origin main)' \\;", 'git push origin main'])
     expect(statements("cat <<'EOF'\nx \\\nEOF\nfind . -maxdepth 0 -exec true '$(git push origin main)' \\;\nEOF")).not.toContain('git push origin main')
+  })
+
+  // Slice 7f review R7F-HR-3 and R7F-HR-4: every body is read whole as shell text, since a quoted body too may be fed
+  // to a shell; a heredoc nested in a whole reading is read whole in turn, up to MAX_DEPTH, past which it is unread.
+  it('reads every heredoc body whole as shell text, its nested bodies whole too up to the depth limit', () => {
+    const statements = (text: string) => shellStatementList(text).statements
+    // R7F-HR-3: a quoted body fed to bash, with an inner unquoted heredoc that expands; and a double quote spanning
+    // body lines with the substitution on the middle line. The per-line readings miss both; the whole reading does not.
+    expect(statements("bash <<'EOF'\ncat <<X\nfind . -maxdepth 0 -exec true '$(git push origin main)' \\;\nX\nEOF")).toContain('git push origin main')
+    expect(statements("bash <<'EOF'\nfind . -maxdepth 0 -exec true \"\nfind . -maxdepth 0 -exec true ' $(git push origin main) ' \\;\n\" \\;\nEOF")).toContain('git push origin main')
+    // R7F-HR-4: a heredoc nested inside the whole reading of an unquoted body, its substitution spanning its lines.
+    expect(statements("cat <<EOF\n$(cat <<X\nx '$(\"\nfind . -maxdepth 0 -exec true \" ;git push origin main; \" \\;\n\")'\nX\n)\nEOF")).toContain('git push origin main')
+    // Nested whole readings up to MAX_DEPTH leave the deepest unread; a body nested one level deeper is overDepth.
+    const nest = (depth: number) => `${Array.from({ length: depth }, (_, index) => `bash <<'E${index}'`).join('\n')}\necho x\n${Array.from({ length: depth }, (_, index) => `E${depth - 1 - index}`).join('\n')}`
+    expect(shellStatementList(nest(8)).overDepth).toBe(false)
+    expect(shellStatementList(nest(9)).overDepth).toBe(true)
   })
 
   it('says a heredoc body nests substitutions past MAX_SUBSTITUTIONS, whatever its delimiter', () => {

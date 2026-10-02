@@ -1,7 +1,4 @@
-import { baseCommand, MAX_SUBSTITUTIONS, parseArgv, SHELL_COMMANDS, shellStatementList, shellTokensUpTo, shellWords, statementPieces } from './argv.js'
-
-/** How many wrappers, or shell bodies inside shell bodies, are read before the rest is called unread. */
-const MAX_DEPTH = 8
+import { baseCommand, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, SHELL_COMMANDS, shellStatementList, shellTokensUpTo, shellWords, statementPieces } from './argv.js'
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
@@ -267,14 +264,14 @@ function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; u
     budget.spent = true
     return { groups: [], unread: null }
   }
-  const { statements, deep } = shellStatementList(text)
+  const { statements, deep, overDepth } = shellStatementList(text)
   const groups: CommandGroup[] = []
   for (const statement of statements) {
     const command = statementForm(statement, budget)
     if (command === null) break
     groups.push({ command, statement })
   }
-  return { groups, unread: deep ? 'substitutions' : null }
+  return { groups, unread: overDepth ? 'depth' : deep ? 'substitutions' : null }
 }
 
 /**
