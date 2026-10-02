@@ -10,7 +10,7 @@ import { z } from 'zod'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createJsonFileStore } from '../common/adapters/json-file-store.js'
 import { createApprovalNotices, type ApprovalNotices } from '../common/services/approvals/approval-notices.js'
-import { createApprovalRegistry, MAX_PENDING_BYTES_PER_SESSION, MAX_PENDING_PER_SESSION, type AskedCall } from '../common/services/approvals/approval-registry.js'
+import { AmbiguousWithdrawError, createApprovalRegistry, MAX_PENDING_BYTES_PER_SESSION, MAX_PENDING_PER_SESSION, type AskedCall } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
@@ -612,7 +612,9 @@ describe('an index unreadable for a while, then repaired in place', () => {
       it.skipIf(process.getuid?.() === 0)('logs each outage once when only a decision updates the repair', async () => {
         vi.useFakeTimers({ toFake: ['Date'] })
         const { root, registry, service } = queue()
-        await issue(registry)
+        // One waiting ask for each episode's decision, each its own call.
+        const tokens: string[] = []
+        for (const session of ['first', 'second', 'third']) tokens.push((await registry.ask({ tool: 'fs_write', sessionId: session, asks: asks(1), call: whole() })).requests[0]!.token)
         const warn = vi.spyOn(logger, 'warn')
         const error = vi.spyOn(logger, 'error')
         try {
@@ -622,7 +624,36 @@ describe('an index unreadable for a while, then repaired in place', () => {
             await twelveSeconds(registry)
             expect([stored(error), index(warn)]).toEqual([episode, episode])
             chmodSync(root, 0o700)
-            await registry.sweep()
+            expect(await registry.resolve({ token: tokens[episode - 1]!, approved: false, scope: 'once' })).toMatchObject({ ok: true })
+          }
+        } finally {
+          chmodSync(root, 0o700)
+          warn.mockRestore()
+          error.mockRestore()
+          await service.close()
+        }
+      })
+
+      // Slice 7g review R7G-RG-1: an update whose change threw after the store read the index whole kept the mark, though
+      // the store forgot its report, so the next outage logged the store line and no index warning. A withdraw naming
+      // the calls of two actors throws AmbiguousWithdrawError after that read; the mark is now cleared all the same.
+      it.skipIf(process.getuid?.() === 0)('logs each outage once when only an update that then throws reads the repair', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        const { root, registry, service } = queue()
+        for (const actor of ['agent:one', 'agent:two']) await registry.ask({ tool: 'fs_write', sessionId: 'mcp', requestId: 'shared', actor, asks: asks(1), call: whole() })
+        const warn = vi.spyOn(logger, 'warn')
+        const error = vi.spyOn(logger, 'error')
+        try {
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          for (const episode of [1, 2, 3]) {
+            chmodSync(root, 0o000)
+            await twelveSeconds(registry)
+            // An update that never read the index keeps the mark, so the ordinary calls after it stay quiet.
+            await expect(registry.cancelGroup({ requestId: 'shared', sessionId: 'mcp' })).rejects.toThrow()
+            await twoSeconds(registry)
+            expect([stored(error), index(warn)]).toEqual([episode, episode])
+            chmodSync(root, 0o700)
+            await expect(registry.cancelGroup({ requestId: 'shared', sessionId: 'mcp' })).rejects.toBeInstanceOf(AmbiguousWithdrawError)
           }
         } finally {
           chmodSync(root, 0o700)
@@ -648,7 +679,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
           for (const episode of [1, 2, 3]) {
             chmodSync(root, 0o000)
             await twelveSeconds(registry)
-            expect(index(warn)).toBe(episode)
+            expect([stored(error), index(warn)]).toEqual([episode, episode])
             chmodSync(root, 0o700)
             await senderReads()
           }

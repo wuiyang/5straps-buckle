@@ -424,7 +424,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     let expired: ApprovalRequest[] = []
     let released: string[] = []
     let queued = false
+    // Set once the store has read the index whole, before the change runs, so a change that throws still counts it.
+    let readable = false
     const result = await store.update(async (state) => {
+      readable = true
       const before = namedCalls(state)
       const outboxBefore = new Set(state.outbox.map(entry => entry.id))
       const expiredEntries = prune(state)
@@ -443,9 +446,11 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       if (added.length > 0 && pastDeliveryLimits(state.outbox)) logger.warn('Approval outcome delivery is past its limits; the asks\' ends were kept anyway, and new asks wait until the receiver drains it', { entries: state.outbox.length, added: added.length, events: [...new Set(added.map(entry => entry.notice.event))] })
       nextExpiry = earliestExpiry(state)
       return value
+    }).finally(() => {
+      // The update read the index whole, so a version marked unreadable is readable again: forget it once the lock is
+      // released, even when the change then threw, as the store forgot its own report (slice 7g review R7G-RG-1).
+      if (readable) unreadableVersion = undefined
     })
-    // The update read the index whole before it wrote, so a version marked unreadable is readable again: forget it.
-    unreadableVersion = undefined
     queueVersion = undefined
     calls.remove(released)
     if (expired.length > 0) options.onExpired?.(expired)
