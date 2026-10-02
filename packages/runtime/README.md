@@ -22,5 +22,5 @@ optional peers, needed only for `@5straps/runtime/nitro`.
 
 ## License
 
-Apache-2.0. Copyright 2026 5straps. See [LICENSE](https://github.com/wuiyang/buckle/blob/main/LICENSE)
+Apache-2.0. Copyright 2026 The 5straps Authors. See [LICENSE](https://github.com/wuiyang/buckle/blob/main/LICENSE)
 and [NOTICE](https://github.com/wuiyang/buckle/blob/main/NOTICE).
