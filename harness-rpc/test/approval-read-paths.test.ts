@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -359,7 +359,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
       let notices: ApprovalNotices | undefined
       const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), filePath, root, 0, { durableNotices: true, onNoticeQueued: () => { void notices?.flush() } })
       notices = createApprovalNotices(async (batch) => { sent.push(...batch) }, { registry, retryMs: 20 })
-      return { filePath, registry, notices, sent }
+      return { root, filePath, registry, notices, sent }
     }
 
     /** Thirty seconds of ordinary calls, one a second; with a webhook, the sender retries between them. */
@@ -465,6 +465,72 @@ describe('an index unreadable for a while, then repaired in place', () => {
         error.mockRestore()
         await notices.settle()
       }
+    })
+
+    // Slice 7d review R7D-GR-1: with the state directory's search permission gone, the queue's version stat threw a raw
+    // EACCES, not a StateFileError, so the outcome sender warned at every retry (every 5 s in production) and an
+    // ordinary call threw it. The version is now `unknown:EACCES`, as the store names it, so the sender warns once.
+    describe('a state directory that cannot be searched (R7D-GR-1)', () => {
+      /** Every logged line's text, so a raw system error in any field shows. */
+      const lines = (...spies: Array<{ mock: { calls: unknown[][] } }>) => spies.flatMap(spy => spy.mock.calls.map(call => JSON.stringify(call)))
+
+      it.skipIf(process.getuid?.() === 0)('warns once across 30 sender retries and 30 s of ordinary calls, with no raw EACCES, and delivers after the repair', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        const { root, registry, notices, sent } = withWebhook()
+        const reads = vi.spyOn(registry, 'pendingDeliveries')
+        const warn = vi.spyOn(logger, 'warn')
+        const error = vi.spyOn(logger, 'error')
+        try {
+          const [request] = (await issue(registry)).requests
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          chmodSync(root, 0o000)
+          const before = reads.mock.calls.length
+          await vi.waitFor(() => expect(reads.mock.calls.length - before).toBeGreaterThanOrEqual(30), { timeout: 10_000, interval: 20 })
+          expect(warned(warn, 'Approval lifecycle delivery will be retried')).toBe(1)
+          vi.setSystemTime(Date.now() + 11 * 60_000)
+          await thirtySeconds(registry)
+          expect(stored(error)).toBe(1)
+          expect(warned(warn, 'Approval lifecycle delivery will be retried')).toBe(1)
+          expect(warn.mock.calls.filter(([message]) => String(message).startsWith('The approvals index is unreadable'))).toHaveLength(1)
+          expect(lines(warn, error).filter(line => line.includes('EACCES: permission denied'))).toEqual([])
+          chmodSync(root, 0o700)
+          vi.setSystemTime(Date.now() + 6_000)
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          await vi.waitFor(() => expect(sent.map(notice => [notice.token, notice.event])).toEqual([[request!.token, 'expired']]))
+          expect(warned(warn, 'Approval lifecycle delivery will be retried')).toBe(1)
+        } finally {
+          chmodSync(root, 0o700)
+          warn.mockRestore()
+          error.mockRestore()
+          await notices.settle()
+        }
+      })
+
+      it('reads a missing state directory as an empty queue, as before, and delivers once it is back', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        const { root, registry, notices, sent } = withWebhook()
+        const reads = vi.spyOn(registry, 'pendingDeliveries')
+        const warn = vi.spyOn(logger, 'warn')
+        const error = vi.spyOn(logger, 'error')
+        try {
+          const [request] = (await issue(registry)).requests
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          renameSync(root, `${root}.gone`)
+          const before = reads.mock.calls.length
+          await vi.waitFor(() => expect(reads.mock.calls.length - before).toBeGreaterThanOrEqual(30), { timeout: 10_000, interval: 20 })
+          vi.setSystemTime(Date.now() + 11 * 60_000)
+          await thirtySeconds(registry)
+          expect(lines(warn, error)).toEqual([])
+          renameSync(`${root}.gone`, root)
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          await vi.waitFor(() => expect(sent.map(notice => [notice.token, notice.event])).toEqual([[request!.token, 'expired']]))
+        } finally {
+          if (existsSync(`${root}.gone`)) renameSync(`${root}.gone`, root)
+          warn.mockRestore()
+          error.mockRestore()
+          await notices.settle()
+        }
+      })
     })
   })
 

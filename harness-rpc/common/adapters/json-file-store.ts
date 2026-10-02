@@ -149,8 +149,12 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
   }
 }
 
-/** A file's device, inode, modification time and size, so a file replaced or rewritten reads as another version. */
-function fileVersion(filePath: string): string {
+/**
+ * A file's device, inode, modification time and size, so a file replaced or rewritten reads as another version;
+ * `missing` when it does not exist, and `unknown:<code>` when it cannot be stat'ed (a directory that lost its search
+ * permission), never a throw. Shared with the approvals queue's version (slice 7d review R7D-GR-1).
+ */
+export function fileVersion(filePath: string): string {
   try {
     const stats = statSync(filePath, { throwIfNoEntry: false })
     return stats ? `${stats.dev}:${stats.ino}:${stats.mtimeMs}:${stats.size}` : 'missing'

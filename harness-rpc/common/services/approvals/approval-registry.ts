@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
-import { alreadyReported, createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
+import { alreadyReported, createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
@@ -493,9 +493,13 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     }
   }
 
+  /**
+   * The index's version as the store names it: an index that cannot be stat'ed gives `unknown:<code>`, never a raw
+   * throw, so the store's failure is reported once per version and the sender retries quietly (slice 7d review
+   * R7D-GR-1).
+   */
   function currentQueueVersion(): string {
-    const stats = statSync(filePath, { throwIfNoEntry: false })
-    return stats ? `${stats.dev}:${stats.ino}:${stats.mtimeMs}:${stats.size}` : 'missing'
+    return fileVersion(filePath)
   }
 
   /** A waiting ask with its whole call: read from the group's file, or inline for an ask recorded before this build. */
