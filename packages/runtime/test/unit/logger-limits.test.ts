@@ -138,6 +138,19 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     expect(readable.map(redactText)).toEqual(readable)
   })
 
+  // Not yet ruled on: whether a path should be blanked whole for one segment that does not read as words. This
+  // records what the redaction does today, so a ruling that changes it changes this test. A segment like macOS,
+  // janeD or a temp directory named bfcT, in a path of 40 characters or more, blanks the whole path, repair
+  // hints included; short paths and true camel case (JohnSmith) stay readable.
+  it('blanks a whole long path when one segment, such as macOS or bfcT, does not read as words (current behaviour)', () => {
+    expect(redactText('/home/janeD/projects/buckle-state-dir/state')).toBe('[redacted]')
+    expect(redactText('/Users/macOS-dev/work/buckle-state/state')).toBe('[redacted]')
+    expect(redactText('Directory /tmp/ci-runner/bfcT/runtime-test-dHXHKp/state is accessible to other users (mode 755); chmod 700 /tmp/ci-runner/bfcT/runtime-test-dHXHKp/state'))
+      .toBe('Directory [redacted] is accessible to other users (mode 755); chmod 700 [redacted]')
+    const kept = ['/home/alice/projects/buckle-state-dir/state', '/home/JohnSmith/projects/buckle-state-dir/state', '/tmp/bfcT/x']
+    expect(kept.map(redactText)).toEqual(kept)
+  })
+
   // Review H4 of B23-B25: the process log names the key that signed a setup change or an approval.
   it('keeps a public key fingerprint readable after SHA256:, and still redacts the same run anywhere else', async () => {
     const fingerprint = 'SHA256:q3Xz_9-kLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsT'

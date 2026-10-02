@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { TestProject } from 'vitest/node'
 import { PACKAGE_ROOT } from './sources.js'
+import { plainTempRoot } from './plain-temp.js'
 
 const run = promisify(execFile)
 /** What the package's build reads: the sources, their configs and the build scripts. */
@@ -32,7 +33,7 @@ declare module 'vitest' {
  * reads a half-written file. node_modules is linked, so @5straps/runtime resolves to one copy.
  */
 export default async function setup(project: TestProject): Promise<() => void> {
-  const temp = mkdtempSync(join(process.env.BUCKLE_TEST_SYSTEM_TMPDIR ?? tmpdir(), 'buckle-build-'))
+  const temp = mkdtempSync(join(plainTempRoot(process.env.BUCKLE_TEST_SYSTEM_TMPDIR ?? tmpdir()), 'buckle-build-'))
   const remove = () => rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   try {
     const root = copyPackage(temp)

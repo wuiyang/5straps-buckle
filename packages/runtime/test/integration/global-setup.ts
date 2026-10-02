@@ -5,6 +5,7 @@ import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { TestProject } from 'vitest/node'
 import { buildVariant, fixtureRoot, packageRoot, type FixtureBuild } from './support/paths.js'
+import { plainTempRoot } from '../support/plain-temp.js'
 
 const run = promisify(execFile)
 // Source-only entries: dependencies come from the linked node_modules, and the fixture tsconfig maps imports to src/ for typechecking.
@@ -21,7 +22,7 @@ declare module 'vitest' {
 // tree are never written, so a concurrent test run or release gate never reads a half-written file.
 // main.ts (run from the copied fixture) and the bundle both resolve <root>/node_modules/@5straps/runtime.
 export default async function setup(project: TestProject): Promise<() => void> {
-  const root = mkdtempSync(join(process.env.RUNTIME_TEST_SYSTEM_TMPDIR ?? tmpdir(), 'runtime-fixture-build-'))
+  const root = mkdtempSync(join(plainTempRoot(process.env.RUNTIME_TEST_SYSTEM_TMPDIR ?? tmpdir()), 'runtime-fixture-build-'))
   const remove = () => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   try {
     linkDependencies(root)
