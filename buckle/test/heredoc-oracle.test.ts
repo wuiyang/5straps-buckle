@@ -262,6 +262,28 @@ function backtickCommentShapes(): Shape[] {
 }
 
 /**
+ * Slice 7h probes: a run of 1 to 8 backslashes before a newline, on a body line of every delimiter kind under cat and
+ * bash: after the sentinel, after its argument, and inside a word. Under `<<-EOF` bash strips the leading tabs of each
+ * logical line only, so a line an odd run joins on keeps its tabs (five backslashes ran `\` and `mark`).
+ */
+function continuationRunShapes(): Shape[] {
+  const shapes: Shape[] = []
+  for (let run = 1; run <= 8; run++) {
+    const placements = {
+      'after the sentinel': [`${SENTINEL} ${backslashes(run)}`, 'mark'],
+      'after its argument': [`${PAYLOAD} ${backslashes(run)}`, 'echo done'],
+      'inside a word': [`${SENTINEL} --for${backslashes(run)}`, 'ce mark'],
+    }
+    for (const command of COMMANDS) {
+      for (const delimiter of DELIMITERS) {
+        for (const [place, lines] of Object.entries(placements)) shapes.push({ label: `continuation run ${run} ${place}, ${command} ${delimiter.dash ? '<<-' : '<<'}${delimiter.open}`, body: shapeBody(command, delimiter, lines) })
+      }
+    }
+  }
+  return shapes
+}
+
+/**
  * Slice 7h probes: a shell whose script arrives as data, piped in, redirected, or handed over by xargs, runs what no
  * reading sees, so the call is unread (script as data); a heredoc on the shell's own statement and a -c string are
  * still read. Each shape ran the sentinel under real bash in scratch first.
@@ -316,7 +338,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA]
+  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes()]
 }
 
 /**

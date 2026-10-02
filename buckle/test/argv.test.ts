@@ -196,7 +196,8 @@ describe('shell text as a shell splits it', () => {
     const statements = (text: string) => shellStatementList(text).statements
     // A quoted body fed to a shell is also read whole as shell text, so its line continuations join across lines.
     expect(statements("bash <<'EOF'\ngit push \\\n--force \\\norigin main\nEOF")).toEqual(["bash <<'EOF'", 'git push \\', '--force \\', 'origin main', 'git push --force origin main', 'git push \\\n--force \\\norigin main'])
-    expect(statements('bash <<-EOF\n\tgit push \\\n\t--force origin main\n\tEOF')).toEqual(['bash <<-EOF', 'git push \\', '--force origin main', 'git push --force origin main'])
+    // The joined line keeps the tab bash keeps (a continued line is part of the line before it under <<-).
+    expect(statements('bash <<-EOF\n\tgit push \\\n\t--force origin main\n\tEOF')).toEqual(['bash <<-EOF', 'git push \\', '--force origin main', 'git push --force origin main', 'git push \t--force origin main'])
     // A run still open at the delimiter line is read as it stands, and the delimiter line still ends the body.
     expect(statements("bash <<'EOF'\ngit push --force \\\nEOF\necho after")).toEqual(["bash <<'EOF'", 'git push --force \\', 'git push --force', 'echo after'])
     // An escaped backslash ends no line under a quoted delimiter; under an unquoted one bash halves it first, so it does.
@@ -224,6 +225,16 @@ describe('shell text as a shell splits it', () => {
     const swallow = 'cat <<EOF\nx \\\nEOF\nfind . -maxdepth 0 -exec true \'$(git push origin main)\' \\;\nEOF'
     expect(statements(swallow)).toEqual(['cat <<EOF', 'x \\', 'EOF', 'x EOF', "find . -maxdepth 0 -exec true '$(git push origin main)' \\;", 'git push origin main'])
     expect(statements("cat <<'EOF'\nx \\\nEOF\nfind . -maxdepth 0 -exec true '$(git push origin main)' \\;\nEOF")).not.toContain('git push origin main')
+  })
+
+  // Slice 7h probes: under `<<-EOF` bash strips the leading tabs of each logical line only, so the line five
+  // backslashes join on keeps its tab: the fed shell receives `git push \\`, a tab, then `--force`, a force push whose
+  // `\` is a word of its own. Stripping every line read `git push \--force`, which is no flag. A quoted delimiter joins
+  // nothing in the heredoc, so each line loses its tabs before the fed shell joins them.
+  it('keeps the tabs of a line a continuation joins on under <<-, as bash feeds it', () => {
+    const statements = (text: string) => shellStatementList(text).statements
+    expect(statements('bash <<-EOF\n\tgit push \\\\\\\\\\\n\t--force origin main\n\tEOF')).toContain('git push \\\\\t--force origin main')
+    expect(statements("bash <<-'EOF'\n\tgit push \\\n\t--force origin main\n\tEOF")).toContain('git push \\\n--force origin main')
   })
 
   // Slice 7f review R7F-HR-3 and R7F-HR-4: every body is read whole as shell text, since a quoted body too may be fed

@@ -688,6 +688,24 @@ describe('a call Buckle cannot read whole', () => {
     expect(check('workspace', false, 'git commit -m "fix the build; bash; source"', ['terraform destroy *']).kind).toBe('allow')
   })
 
+  // Slice 7h probes: under `<<-EOF` a line an odd run of backslashes joins on keeps its tabs, so five backslashes
+  // before the newline leave a `\` word and a tab before `--force`: real bash passed `\`, `--force`, `origin` and
+  // `main` as four words (seven leave one word, `\` and a tab and `--force`, so no flag). The reader stripped every
+  // line and read `\--force`, so the floor let the force push run.
+  const tabbedRuns = [[5, `bash <<-EOF\n\tgit push ${B.repeat(5)}\n\t--force origin main\n\tEOF`]] as const
+
+  it.each(['workspace', 'ceiling'] as const)('asks at the floor, %s with no deny glob, about a force push a <<- continuation joins on with its tab', (engine) => {
+    for (const [, body] of tabbedRuns) {
+      const outcome = check(engine, false, body, [])
+      if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+      expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+    }
+  })
+
+  it.each(cases)('refuses %s deny, switch on: %s, a git push a <<- continuation joins on with its tab', (engine, switched) => {
+    for (const [, body] of tabbedRuns) expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
   // A continuation between words joins no word and leaves none, so `git push \<newline> --force` reads as `git push
   // --force` and a word glob on it still matches; an empty word between push and the flag would misalign it.
   it.each(cases)('refuses a force push with a space-surrounded continuation, %s deny, switch on: %s, by the force glob', (engine, switched) => {

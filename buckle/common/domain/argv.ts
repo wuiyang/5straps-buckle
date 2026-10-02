@@ -533,9 +533,10 @@ function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[];
       // turn counts one level against MAX_DEPTH, past which the call is left unread (slice 7f review R7F-HR-3, R7F-HR-4).
       if (input.depth >= MAX_DEPTH) overDepth = true
       else {
-        // A `<<-` delimiter strips the leading tabs of each line before the shell receives the body.
-        const stripped = heredoc.tabs ? body.replace(/^\t+/gm, '') : body
-        read(heredoc.quoted || !stripped.includes('\\') ? stripped : fedShellView(stripped), SHELL_TEXT, input.depth + 1)
+        // A `<<-` delimiter strips leading tabs before the shell receives the body: of every line under a quoted
+        // delimiter, of each logical line under an unquoted one (fedShellView). With no backslash the two agree.
+        const fed = heredoc.quoted || !body.includes('\\') ? (heredoc.tabs ? body.replace(/^\t+/gm, '') : body) : fedShellView(body, heredoc.tabs)
+        read(fed, SHELL_TEXT, input.depth + 1)
       }
     }
   }
@@ -564,12 +565,19 @@ function joiningBackslashes(line: string, quoted: boolean): number {
  * A heredoc body under an unquoted delimiter as the command it is fed to receives it: a backslash before `$`, a
  * backtick or a backslash leaves only that character, a backslash before a newline removes both (the lines join), and
  * every other backslash stays. One left-to-right pass, so three trailing backslashes are one backslash and a
- * continuation, and four are two literal backslashes.
+ * continuation, and four are two literal backslashes. Under `<<-` (`tabs`) bash strips the leading tabs of each line
+ * it reads, and a line a continuation joins on is part of the line before it, so it keeps its tabs (slice 7h probes:
+ * five backslashes before a newline under `<<-EOF` ran `\` and `mark`, where stripping every line read `\mark`).
  */
-function fedShellView(body: string): string {
+function fedShellView(body: string, tabs: boolean): string {
   let view = ''
+  let lineStart = true
   for (let index = 0; index < body.length; index++) {
+    if (lineStart && tabs) while (body[index] === '\t') index++
+    lineStart = false
+    if (index >= body.length) break
     const character = body[index]!
+    if (character === '\n') lineStart = true
     if (character === '\\' && index + 1 < body.length) {
       const next = body[index + 1]!
       if (next === '$' || next === '`' || next === '\\') {
