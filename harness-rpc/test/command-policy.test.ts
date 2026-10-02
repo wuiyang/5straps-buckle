@@ -295,10 +295,17 @@ describe('a check of a large nested body', () => {
 // Slice 7c review R7C-CR-1: past READ_BUDGET, or nested past MAX_DEPTH, the deny globs met nothing, so a denied `git push`
 // after 100,001 statements was asked about, and the dangerously-allow switch allowed it with no click (owner decision
 // D7). A call Buckle cannot read whole is refused whenever a deny glob exists (default D30), on the node ceiling too.
+// Slice 7d review R7D-BD-1 and R7D-BD-2: substitutions nested past MAX_SUBSTITUTIONS and a find primary were refused
+// as "MAX_DEPTH", and a refusal by the node ceiling blamed the workspace policy. Each reason now names the limit that
+// stopped the reading and the policy that refused; every limit still refuses under a deny glob (default D33).
 describe('a call Buckle cannot read whole', () => {
   const push = 'git push origin main'
   const statements = (count: number) => `${Array.from({ length: count }, (_, index) => `:${index.toString(36)}`).join(';')}; ${push}`
   const evalNested = (levels: number) => Array.from({ length: levels }).reduce<string>(body => `eval ${doubleQuoted(body)}`, push)
+  /** The repo-root idiom of the slice 7d review (rrm0qfZp): five `$(...)` levels inside double quotes, one past MAX_SUBSTITUTIONS. */
+  const repoRoot = 'ROOT="$(cd "$(dirname "$(dirname "$(dirname "$(dirname "$0")")")")" && pwd)"; echo "$ROOT"'
+  /** The find primary shape of the slice 7d review (0SQC4zdm): a find -exec command that is itself a primary. */
+  const findPrimary = 'find . -exec -print \\;'
   const policyOf = (commands: { allow?: string[]; deny?: string[] }) => {
     const policy = emptyWorkspacePolicy()
     policy.commands.allow = commands.allow ?? []
@@ -306,47 +313,62 @@ describe('a call Buckle cannot read whole', () => {
     return compilePolicy(policy)
   }
   const engines = {
-    workspace: () => [createCommandPolicyRule(policyOf({ allow: ['bash -c *'], deny: ['git push *'] })), createDestructiveCommandRule()],
-    ceiling: () => [
-      createCommandPolicyRule(policyOf({ deny: ['git push *'] }), { enforceWrapperAllow: false }),
+    workspace: (deny: string[]) => [createCommandPolicyRule(policyOf({ allow: ['bash -c *'], deny })), createDestructiveCommandRule()],
+    ceiling: (deny: string[]) => [
+      createCommandPolicyRule(policyOf({ deny }), { enforceWrapperAllow: false, source: 'node ceiling' }),
       createCommandPolicyRule(policyOf({ allow: ['bash -c *'] })),
       createDestructiveCommandRule(),
     ],
-    'no deny glob': () => [createCommandPolicyRule(policyOf({ allow: ['bash -c *'] })), createDestructiveCommandRule()],
   }
-  const check = (engine: keyof typeof engines, switched: boolean, body: string) =>
-    withDangerouslyAllow(createPermissionEngine(engines[engine]()), { enabled: () => switched, root: () => '/workspace' })
+  const named = { workspace: 'the workspace command policy', ceiling: 'the node ceiling command policy' } as const
+  const check = (engine: keyof typeof engines, switched: boolean, body: string, deny = ['git push *']) =>
+    withDangerouslyAllow(createPermissionEngine(engines[engine](deny)), { enabled: () => switched, root: () => '/workspace' })
       .evaluate({ tool: 'script_run', effects: [{ kind: 'exec', command: 'bash', args: ['-c', body] }], grants: { subjectsFor: () => [] } })
+  const refusal = (outcome: ReturnType<typeof check>) => {
+    if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
+    expect(outcome.denial.rule).toBe('command_policy')
+    return outcome.denial.reason
+  }
   const overBudget = statements(100_001)
   const eightDeep = evalNested(8)
   const cases = (['workspace', 'ceiling'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
 
   it.each(cases)('refuses git push after 100,001 statements past READ_BUDGET, %s deny, switch on: %s', (engine, switched) => {
     expect(commandFormsOf({ command: 'bash', args: ['-c', overBudget] }).overBudget).toBe(true)
-    const outcome = check(engine, switched, overBudget)
-    if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
-    expect(outcome.denial.rule).toBe('command_policy')
-    expect(outcome.denial.reason).toMatch(/^Shell text runs past what Buckle reads in one check \(READ_BUDGET: 8,000,000 characters, 1,000,000 words or 100,000 commands across every level\), so the workspace command policy's deny list cannot meet all of it; refused rather than asked$/)
+    expect(refusal(check(engine, switched, overBudget))).toBe(`Shell text runs past what Buckle reads in one check (READ_BUDGET: 8,000,000 characters, 1,000,000 words or 100,000 commands across every level), so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
   it.each(cases)('refuses git push eight eval levels down, past MAX_DEPTH, %s deny, switch on: %s', (engine, switched) => {
-    expect(commandFormsOf({ command: 'bash', args: ['-c', eightDeep] }).unread).toBe(true)
-    const outcome = check(engine, switched, eightDeep)
-    if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
-    expect(outcome.denial.reason).toMatch(/^Wrappers or shell bodies nest deeper than Buckle reads \(MAX_DEPTH: 8 levels\), so the workspace command policy's deny list cannot meet all of it/)
+    expect(commandFormsOf({ command: 'bash', args: ['-c', eightDeep] }).unread).toBe('depth')
+    expect(refusal(check(engine, switched, eightDeep))).toBe(`Wrappers or shell bodies nest deeper than Buckle reads (MAX_DEPTH: 8 levels), so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
   it.each(cases)('still refuses git push after 99,998 statements by matching it, %s deny, switch on: %s', (engine, switched) => {
-    const outcome = check(engine, switched, statements(99_998))
-    if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
-    expect(outcome.denial.reason).toBe('Refused by the workspace command policy: git push *')
+    expect(refusal(check(engine, switched, statements(99_998)))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => [
+    [engine, switched, 'the repo-root idiom', repoRoot, 'substitutions', 'Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels)'],
+    [engine, switched, 'the find primary shape', findPrimary, 'findPrimary', 'A find -exec command starts with a word find reads as a primary, which Buckle does not read as a command (find primary)'],
+  ] as const))('refuses %s deny, switch on: %s, %s under terraform destroy *, naming its own limit', (engine, switched, _shape, body, limit, reason) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] })).toMatchObject({ unread: limit, overBudget: false })
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${reason}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => [
+    [engine, switched, 'echo $(a $(b $(c $(d $(git push origin main)))))'],
+    [engine, switched, 'echo "$(a "$(b "$(c "$(d "$(git push origin main)")")")")"'],
+  ] as const))('refuses %s deny, switch on: %s, a git push five substitutions down: %s', (engine, switched, body) => {
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
   it.each([
     [overBudget, /^Shell text runs past what Buckle reads in one check \(READ_BUDGET: .*\); asked rather than guessed at$/],
     [eightDeep, /^Wrappers or shell bodies nest deeper than Buckle reads \(MAX_DEPTH: 8 levels\); asked rather than guessed at$/],
+    [repoRoot, /^Command substitutions inside double quotes nest deeper than Buckle splits into statements \(MAX_SUBSTITUTIONS: 4 levels\); asked rather than guessed at$/],
+    [findPrimary, /^A find -exec command starts with a word find reads as a primary, which Buckle does not read as a command \(find primary\); asked rather than guessed at$/],
   ])('still asks, naming the limit, with no deny glob', (body, reason) => {
-    const outcome = check('no deny glob', false, body)
+    const outcome = check('workspace', false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(reason)]])
   })

@@ -1,5 +1,5 @@
 import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
-import { allForms, commandFormsOf, readLimitOf } from '../../command-forms.js'
+import { allForms, commandFormsOf, READ_LIMITS, readLimitOf } from '../../command-forms.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
 import { deny } from '../decision.js'
@@ -35,10 +35,14 @@ const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve
  * The deny list and the wrapper requirement also meet the command behind a prefix such as `env` or
  * `timeout 5` (the continuation review, "Seen outside this range"). The allow list admits only the call as
  * typed, so a prefix never carries a command past it; the refusal names the raw argv (owner decision D17).
- * A call Buckle cannot read whole, nested past MAX_DEPTH or past READ_BUDGET, is refused whenever a deny glob
- * exists, the limit named, since the glob might have met the part left unread.
+ * A call Buckle cannot read whole, past READ_BUDGET, MAX_DEPTH or MAX_SUBSTITUTIONS or at a find -exec command that
+ * is a primary, is refused whenever a deny glob exists, naming the limit that stopped the reading, since the glob
+ * might have met the part left unread (defaults D30 and D33).
+ *
+ * `source` names whose policy this is, so a refusal by the node's ceiling says so (slice 7d review R7D-BD-2).
  */
-export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean } = {}): PermissionRule {
+export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean; source?: CommandPolicySource } = {}): PermissionRule {
+  const source = options.source ?? 'workspace'
   return {
     id: 'command_policy',
     evaluate({ effect }) {
@@ -53,11 +57,11 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       if (SELF_ADMINISTRATION.test(words.join(' '))) return deny('command_policy', subject(), 'A tool cannot administer the Buckle that runs it')
 
       const denied = policy.commands.deny.find(glob => allForms(forms).some(form => glob.matchesPrefix(form)))
-      if (denied) return deny('command_policy', subject(), `Refused by the workspace command policy: ${denied.source}`)
+      if (denied) return deny('command_policy', subject(), `Refused by the ${source} command policy: ${denied.source}`)
       // What was not read cannot be matched, so a deny list refuses it rather than leave the floor's ask to an
       // approval or the dangerously-allow switch (slice 7c review R7C-CR-1; owner decision D7, default D30).
       const limit = policy.commands.deny.length > 0 ? readLimitOf(forms) : null
-      if (limit) return deny('command_policy', subject(), `${limit}, so the workspace command policy's deny list cannot meet all of it; refused rather than asked`)
+      if (limit) return deny('command_policy', subject(), `${READ_LIMITS[limit]}, so the ${source} command policy's deny list cannot meet all of it; refused rather than asked`)
 
       const allow = policy.commands.allow
       const admitted = allow.some(glob => glob.matchesLine(words))
@@ -66,9 +70,12 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
         return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapper[0]} -c *'`)
       }
       if (allow.length > 0 && !admitted) {
-        return deny('command_policy', subject(), `Not on the workspace command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
+        return deny('command_policy', subject(), `Not on the ${source} command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
       }
       return null
     },
   }
 }
+
+/** Whose command policy a rule applies: a workspace's own, or the node's ceiling over every registered workspace. */
+export type CommandPolicySource = 'workspace' | 'node ceiling'

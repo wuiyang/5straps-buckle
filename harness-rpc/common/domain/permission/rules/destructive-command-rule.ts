@@ -1,7 +1,7 @@
 import type { ParsedArgv } from '../../argv.js'
 import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, SHELL_COMMANDS } from '../../argv.js'
 import type { CommandGlob } from '../../command-glob.js'
-import { allForms, commandFormsOf, readLimitOf } from '../../command-forms.js'
+import { allForms, commandFormsOf, READ_LIMITS, readLimitOf } from '../../command-forms.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
 
@@ -26,9 +26,10 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
  * Every command the call runs is judged: the call as typed, the command behind a wrapper prefix such as `env`,
  * `nice`, `timeout 5`, `xargs` or a NAME=value assignment, each statement of a shell body or of eval's text, and
  * each find -exec command (the continuation review, "Seen outside this range"; slice 7 review F1; owner decision
- * D25). An eval whose text Buckle cannot know asks, and so does a call nested past MAX_DEPTH or whose text runs past
- * the read budget (slice 7b review W7B-1); with a command deny list, the command policy refuses such a call first
- * (slice 7c review R7C-CR-1). The subject asked and granted stays the call's own argv (owner decision D17).
+ * D25). An eval whose text Buckle cannot know asks, and so does a call Buckle cannot read whole, naming the limit
+ * that stopped the reading (READ_LIMITS; slice 7b review W7B-1); with a command deny list, the command policy refuses
+ * such a call first (slice 7c review R7C-CR-1). The subject asked and granted stays the call's own argv (owner
+ * decision D17).
  */
 export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[] } = {}): PermissionRule {
   const added = input.added ?? []
@@ -38,7 +39,7 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       if (effect.kind !== 'exec') return null
       const forms = commandFormsOf(effect)
       const limit = readLimitOf(forms)
-      const reason = firstReason(allForms(forms)) ?? (limit ? `${limit}; asked rather than guessed at` : null) ?? (forms.unknownEval ? UNKNOWN_EVAL_REASON : null) ?? classifyAdded({ added, forms: allForms(forms) })
+      const reason = firstReason(allForms(forms)) ?? (limit ? `${READ_LIMITS[limit]}; asked rather than guessed at` : null) ?? (forms.unknownEval ? UNKNOWN_EVAL_REASON : null) ?? classifyAdded({ added, forms: allForms(forms) })
       if (!reason) return null
 
       // The shown command and its lossless identity (owner decision D17): never joined, never cut, no

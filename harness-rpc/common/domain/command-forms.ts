@@ -1,4 +1,4 @@
-import { baseCommand, parseArgv, SHELL_COMMANDS, shellStatementList, shellTokensUpTo, shellWords, statementPieces } from './argv.js'
+import { baseCommand, MAX_SUBSTITUTIONS, parseArgv, SHELL_COMMANDS, shellStatementList, shellTokensUpTo, shellWords, statementPieces } from './argv.js'
 
 /** How many wrappers, or shell bodies inside shell bodies, are read before the rest is called unread. */
 const MAX_DEPTH = 8
@@ -10,11 +10,22 @@ const MAX_DEPTH = 8
  */
 export const READ_BUDGET = { characters: 8_000_000, words: 1_000_000, commands: 100_000 } as const
 
-/** The limit a reading stopped at, as a reason names it: the destructive floor asks there, and a deny list refuses there. */
+/**
+ * Each limit a reading can stop at, as a reason names it, in the order a reason picks one when a call met several:
+ * the destructive floor asks at any of them, and a command deny list refuses at any of them, since the part left
+ * unread may hold a denied command (owner decision D7, defaults D30 and D33). The reason names the limit that stopped
+ * the reading, so a substitution or a find primary is never called MAX_DEPTH (slice 7d review R7D-BD-1).
+ */
 export const READ_LIMITS = {
   depth: `Wrappers or shell bodies nest deeper than Buckle reads (MAX_DEPTH: ${MAX_DEPTH} levels)`,
   budget: `Shell text runs past what Buckle reads in one check (READ_BUDGET: ${READ_BUDGET.characters.toLocaleString('en-US')} characters, ${READ_BUDGET.words.toLocaleString('en-US')} words or ${READ_BUDGET.commands.toLocaleString('en-US')} commands across every level)`,
+  substitutions: `Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: ${MAX_SUBSTITUTIONS} levels)`,
+  findPrimary: 'A find -exec command starts with a word find reads as a primary, which Buckle does not read as a command (find primary)',
 } as const
+
+export type ReadLimit = keyof typeof READ_LIMITS
+/** A limit that leaves a command unread; the budget is kept apart, in `overBudget`. */
+type UnreadLimit = Exclude<ReadLimit, 'budget'>
 
 /**
  * A program that runs the command named after its own options and operands. Only the options that take a
@@ -115,8 +126,11 @@ export interface CommandForms {
   chain: string[][]
   /** Every command the last of the chain runs inside itself (a shell body's statements, eval's text, a find -exec command), each with its own chain and bodies, flattened. */
   nested: string[][]
-  /** Wrappers or shell bodies nested deeper than Buckle reads, or a find -exec command that is a primary, so a command was left unread. */
-  unread: boolean
+  /**
+   * Why a command was left unread, or null: wrappers or shell bodies nested past MAX_DEPTH, substitutions nested past
+   * MAX_SUBSTITUTIONS, or a find -exec command that is a primary; the first in READ_LIMITS order when several were met.
+   */
+  unread: UnreadLimit | null
   /** An eval whose text holds an expansion (`eval "$x"`), or that statement splitting left empty, so what it runs is unknown. */
   unknownEval: boolean
   /** The read budget (READ_BUDGET) ran out, so the commands past it were left unread. */
@@ -149,10 +163,18 @@ export function commandFormsOf(effect: { command: string; args: readonly string[
   return forms
 }
 
-/** The limit a reading stopped at, or null when the call was read whole. */
-export function readLimitOf(forms: CommandForms): string | null {
-  if (forms.unread) return READ_LIMITS.depth
-  return forms.overBudget ? READ_LIMITS.budget : null
+/** The limit a reading stopped at, the first in READ_LIMITS order, or null when the call was read whole. */
+export function readLimitOf(forms: CommandForms): ReadLimit | null {
+  if (forms.unread === 'depth') return 'depth'
+  return forms.overBudget ? 'budget' : forms.unread
+}
+
+const UNREAD_ORDER = Object.keys(READ_LIMITS) as ReadLimit[]
+
+/** Of two unread limits, the one READ_LIMITS lists first, so one reading names one limit whatever order it met them in. */
+function firstLimit(known: UnreadLimit | null, met: UnreadLimit | null): UnreadLimit | null {
+  if (known === null || met === null) return known ?? met
+  return UNREAD_ORDER.indexOf(met) < UNREAD_ORDER.indexOf(known) ? met : known
 }
 
 /** Every form, in the order a rule should meet them: the call as typed first. */
@@ -174,16 +196,16 @@ interface Reading extends CommandForms { rereads: boolean }
 function formsOf(words: readonly string[], depth: number, budget: Budget): Reading {
   const { chain, unread } = wrapperChain(words)
   const inner = innerCommands(chain.at(-1)!, budget)
-  const forms: Reading = { chain, nested: [], unread: unread || inner.unread, unknownEval: inner.unknownEval, overBudget: false, rereads: inner.rereads }
+  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), unknownEval: inner.unknownEval, overBudget: false, rereads: inner.rereads }
   const read = (command: string[]): Reading | null => {
     if (depth >= MAX_DEPTH) {
-      forms.unread = true
+      forms.unread = 'depth'
       return null
     }
     const nested = formsOf(command, depth + 1, budget)
     keep(forms.nested, nested.chain, budget)
     keep(forms.nested, nested.nested, budget)
-    forms.unread ||= nested.unread
+    forms.unread = firstLimit(forms.unread, nested.unread)
     forms.unknownEval ||= nested.unknownEval
     return nested
   }
@@ -220,30 +242,30 @@ function keep(into: string[][], forms: readonly string[][], budget: Budget): voi
 /** A command a statement runs, and the statement as written, whose pieces are read too unless the command reads its own text again. */
 interface CommandGroup { command: string[]; statement: string }
 
-interface InnerCommands { groups: CommandGroup[]; unknownEval: boolean; unread: boolean; rereads: boolean }
+interface InnerCommands { groups: CommandGroup[]; unknownEval: boolean; unread: UnreadLimit | null; rereads: boolean }
 
 /** The commands a command runs inside itself: each statement of a shell's script body or of eval's text, and each find -exec command. */
 function innerCommands(runs: readonly string[], budget: Budget): InnerCommands {
   const [command = '', ...args] = runs
   if (command === 'find') {
     const found = findCommands(args)
-    return { groups: found.commands.map(form => ({ command: form, statement: '' })), unknownEval: false, unread: found.unread, rereads: found.commands.length > 0 }
+    return { groups: found.commands.map(form => ({ command: form, statement: '' })), unknownEval: false, unread: found.primary ? 'findPrimary' : null, rereads: found.commands.length > 0 }
   }
   if (command === 'eval') {
     // eval joins its words with spaces and runs the result as shell text; one leading `--` ends its options (slice 7b review W7B-2).
     const text = (args[0] === '--' ? args.slice(1) : args).join(' ')
     return { ...textCommands(text, budget), unknownEval: UNKNOWN_TEXT.test(text) || text.trim() === '', rereads: true }
   }
-  if (!SHELL_COMMANDS.has(command)) return { groups: [], unknownEval: false, unread: false, rereads: false }
+  if (!SHELL_COMMANDS.has(command)) return { groups: [], unknownEval: false, unread: null, rereads: false }
   return { ...textCommands(parseArgv(command, args).positionals.join('\n'), budget), unknownEval: false, rereads: true }
 }
 
 /** The commands of shell text, within the budget: each statement's form, beside the statement as written. */
-function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; unread: boolean } {
+function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; unread: UnreadLimit | null } {
   budget.characters -= text.length
   if (budget.characters < 0) {
     budget.spent = true
-    return { groups: [], unread: false }
+    return { groups: [], unread: null }
   }
   const { statements, deep } = shellStatementList(text)
   const groups: CommandGroup[] = []
@@ -252,7 +274,7 @@ function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; u
     if (command === null) break
     groups.push({ command, statement })
   }
-  return { groups, unread: deep }
+  return { groups, unread: deep ? 'substitutions' : null }
 }
 
 /**
@@ -260,9 +282,9 @@ function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; u
  * primary's value is skipped, so `-name -exec` names a file; a command whose first word is itself a primary is not
  * one find would run as written, so it is called unread (slice 7b review W7B-6).
  */
-function findCommands(args: readonly string[]): { commands: string[][]; unread: boolean } {
+function findCommands(args: readonly string[]): { commands: string[][]; primary: boolean } {
   const commands: string[][] = []
-  let unread = false
+  let primary = false
   for (let index = 0; index < args.length; index++) {
     const word = args[index]!
     if (FIND_VALUE_PRIMARIES.has(word) || FIND_NEWER.test(word)) {
@@ -273,22 +295,22 @@ function findCommands(args: readonly string[]): { commands: string[][]; unread: 
     let end = index + 1
     while (end < args.length && args[end] !== ';' && !(args[end] === '+' && args[end - 1] === '{}')) end++
     if (end > index + 1) {
-      if (FIND_PRIMARY.test(args[index + 1]!)) unread = true
+      if (FIND_PRIMARY.test(args[index + 1]!)) primary = true
       else commands.push(args.slice(index + 1, end))
     }
     index = end
   }
-  return { commands, unread }
+  return { commands, primary }
 }
 
-function wrapperChain(words: readonly string[]): { chain: string[][]; unread: boolean } {
+function wrapperChain(words: readonly string[]): { chain: string[][]; unread: UnreadLimit | null } {
   const chain = [reduced(words)]
   let current = words
   for (let depth = 0; ; depth++) {
     const inner = unwrapped(current)
-    if (inner === undefined) return { chain, unread: false }
-    if (depth >= MAX_DEPTH) return { chain, unread: true }
-    if (!inner?.[0]) return { chain, unread: false }
+    if (inner === undefined) return { chain, unread: null }
+    if (depth >= MAX_DEPTH) return { chain, unread: 'depth' }
+    if (!inner?.[0]) return { chain, unread: null }
     current = inner
     chain.push(reduced(current))
   }

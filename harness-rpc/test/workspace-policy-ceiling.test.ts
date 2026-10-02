@@ -77,6 +77,22 @@ describe('immutable installation policy on child workspaces', () => {
     expect((await effect(runtime, command('bash', ['-c', 'echo hello']))).execute).not.toHaveBeenCalled()
   })
 
+  // Slice 7d review R7D-BD-2: a call the node ceiling's deny list refused, by a glob or past a reading limit, was
+  // blamed on the workspace command policy.
+  it.each([
+    ['node ceiling', policy({ deny: ['git push *'] }), policy({ allow: ['bash -c *'] })],
+    ['workspace', policy({ allow: ['bash -c *'] }), policy({ deny: ['git push *'] })],
+  ] as const)('names the %s command policy whose deny list refused the call', async (source, node, child) => {
+    const runtime = await workspace(node, child)
+    const repoRoot = 'ROOT="$(cd "$(dirname "$(dirname "$(dirname "$(dirname "$0")")")")" && pwd)"; echo "$ROOT"'
+    const pushed = await effect(runtime, command('bash', ['-c', 'git push origin main']))
+    expect(pushed.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: `Refused by the ${source} command policy: git push *` } })
+    const unread = await effect(runtime, command('bash', ['-c', repoRoot]))
+    expect(unread.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: `Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so the ${source} command policy's deny list cannot meet all of it; refused rather than asked` } })
+    expect(pushed.execute).not.toHaveBeenCalled()
+    expect(unread.execute).not.toHaveBeenCalled()
+  })
+
   it('keeps the managed filesystem mount when child setup tries to remove or replace it', async () => {
     const runtime = await workspace(policy())
     await runtime.policy.apply({ ...policy(), mount: null })

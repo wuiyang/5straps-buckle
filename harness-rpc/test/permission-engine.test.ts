@@ -371,7 +371,7 @@ describe('destructive commands', () => {
   it('asks about a find -exec command that is itself a primary, which it does not read', () => {
     const outcome = evaluate([exec('find', ['.', '-exec', '-name', 'x', ';'])], { write_scope: ['/'] })
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
-    expect(outcome.asks.find(ask => ask.rule === 'destructive_command')?.reason).toMatch(/nest deeper than Buckle reads/)
+    expect(outcome.asks.find(ask => ask.rule === 'destructive_command')?.reason).toMatch(/^A find -exec command starts with a word find reads as a primary, which Buckle does not read as a command \(find primary\); asked/)
   })
 
   it.each([

@@ -217,7 +217,7 @@ const WORD_BOUNDARY = new Set([' ', '\t', '\r', ...BREAK_CHARACTERS])
  * How many `$(...)` or backtick bodies inside double quotes nest before the rest is called unread. Each level is one
  * more statement holding the levels inside it, so this stays small.
  */
-const MAX_SUBSTITUTIONS = 4
+export const MAX_SUBSTITUTIONS = 4
 
 /**
  * The statements of shell text, split where a shell would start a new command, so a pattern written for a command
