@@ -214,8 +214,8 @@ const BREAK_CHARACTERS = new Set(['\n', ';', '&', '|', '`', '(', ')'])
 /** Characters before which a `#` starts a word, and so a comment. */
 const WORD_BOUNDARY = new Set([' ', '\t', '\r', ...BREAK_CHARACTERS])
 /**
- * How many `$(...)` or backtick bodies inside double quotes nest before the rest is called unread. Each level is one
- * more statement holding the levels inside it, so this stays small.
+ * How many `$(...)` or backtick bodies inside double quotes or heredoc text nest before the rest is called unread. Each
+ * level is one more statement holding the levels inside it, so this stays small.
  */
 export const MAX_SUBSTITUTIONS = 4
 
@@ -224,11 +224,12 @@ export const MAX_SUBSTITUTIONS = 4
  * line also meets `curl` inside `bash -c "... | curl ..."`: a newline, `;`, `&`, `|`, a parenthesis, a backtick and
  * `$(` start one, outside quotes, so `git clean -e ';' -f` keeps its `-f` (slice 7 review F2). Each `$(...)` or
  * backtick body inside double quotes is read as statements of its own. A `#` that starts a word comments out its
- * line, and a heredoc body is read line by line, its quotes ending with the line (slice 7b review W7B-4). `deep` says
- * substitutions nest past MAX_SUBSTITUTIONS, so some text was read only as part of the statement around it.
+ * line, and a heredoc body is read line by line, its quotes ending with the line (slice 7b review W7B-4), and under
+ * an unquoted delimiter as heredoc text too (heredocBodies). `deep` says substitutions nest past MAX_SUBSTITUTIONS
+ * anywhere in the text, a heredoc body included, so some text was read only as part of the statement around it.
  */
 export function shellStatementList(text: string): { statements: string[]; deep: boolean } {
-  const { statements, deep } = unquotedSplit(text)
+  const { statements, deep } = unquotedSplit(text, SHELL_TEXT)
   return { statements: [...new Set(statements.map(statement => statement.trim()).filter(Boolean))], deep }
 }
 
@@ -241,9 +242,10 @@ export function statementPieces(statement: string): string[] {
   return statement.split(STATEMENT_BREAK).map(piece => piece.trim()).filter(piece => piece !== '' && piece !== statement)
 }
 
-type Quote = null | "'" | "$'" | '"'
+/** `heredoc` is the text of a heredoc body under an unquoted delimiter: like `"`, but no quote ends it. */
+type Quote = null | "'" | "$'" | '"' | 'heredoc'
 
-/** One level of unquoted shell text: the text itself, or a `$(...)` or backtick body inside double quotes. */
+/** One level of unquoted shell text: the text itself, or a `$(...)` or backtick body inside double quotes or heredoc text. */
 interface SplitLevel {
   start: number
   closer: ')' | '`' | null
@@ -251,14 +253,27 @@ interface SplitLevel {
   quote: Quote
 }
 
+/** How unquotedSplit reads its text. */
+interface SplitMode {
+  /** Heredoc text: `'` and `"` are literal, and only each `$(...)` or backtick body in it is statements. */
+  heredocText: boolean
+  /** Whether a heredoc body under an unquoted delimiter is also read whole; never inside a whole body, so each text is read whole once. */
+  wholeBodies: boolean
+}
+
+const SHELL_TEXT: SplitMode = { heredocText: false, wholeBodies: true }
+const SHELL_LINE: SplitMode = { heredocText: false, wholeBodies: false }
+const HEREDOC_TEXT: SplitMode = { heredocText: true, wholeBodies: false }
+
 /**
  * Text split at each separator outside quotes. A backslash outside single quotes escapes the next character, and
- * in `$'...'` too (slice 7b review W7B-5). Inside double quotes a `$(...)` or backtick body is split as text of its
- * own, its statements added to the rest.
+ * in `$'...'` too (slice 7b review W7B-5). Inside double quotes or heredoc text a `$(...)` or backtick body is split
+ * as text of its own, its statements added to the rest; heredoc text itself is no statement, since the command it
+ * is handed reads it, not the shell.
  */
-function unquotedSplit(text: string): { statements: string[]; deep: boolean } {
+function unquotedSplit(text: string, mode: SplitMode): { statements: string[]; deep: boolean } {
   const statements: string[] = []
-  const levels: SplitLevel[] = [{ start: 0, closer: null, parens: 0, quote: null }]
+  const levels: SplitLevel[] = [{ start: 0, closer: null, parens: 0, quote: mode.heredocText ? 'heredoc' : null }]
   const heredocs: Heredoc[] = []
   let deep = false
   const end = (level: SplitLevel, at: number, next: number) => {
@@ -277,9 +292,9 @@ function unquotedSplit(text: string): { statements: string[]; deep: boolean } {
       else if (character === "'") level.quote = null
       continue
     }
-    if (level.quote === '"') {
+    if (level.quote === '"' || level.quote === 'heredoc') {
       if (character === '\\') index++
-      else if (character === '"') level.quote = null
+      else if (character === '"' && level.quote === '"') level.quote = null
       else if (character === '`' || (character === '$' && text[index + 1] === '(')) {
         if (levels.length > MAX_SUBSTITUTIONS) deep = true
         else {
@@ -309,16 +324,19 @@ function unquotedSplit(text: string): { statements: string[]; deep: boolean } {
       if (level.closer === ')' && character === ')') level.parens--
       end(level, index, index + 1)
       if (character === '\n' && heredocs.length > 0) {
-        index = heredocBodies({ text, from: index + 1, heredocs: heredocs.splice(0), statements }) - 1
+        const bodies = heredocBodies({ text, from: index + 1, heredocs: heredocs.splice(0), statements, whole: mode.wholeBodies })
+        deep ||= bodies.deep
+        index = bodies.next - 1
         level.start = index + 1
       }
     }
   }
-  while (levels.length > 0) end(levels.pop()!, text.length, text.length)
+  while (levels.length > (mode.heredocText ? 1 : 0)) end(levels.pop()!, text.length, text.length)
   return { statements, deep }
 }
 
-interface Heredoc { delimiter: string; tabs: boolean }
+/** `quoted` when any part of the delimiter word is quoted, so bash expands nothing in the body. */
+interface Heredoc { delimiter: string; tabs: boolean; quoted: boolean }
 
 /** The heredoc whose `<<` ends just before `at`: its delimiter word with quotes removed, and where the word ends. */
 function heredocAt(text: string, at: number): { heredoc: Heredoc; next: number } | null {
@@ -336,29 +354,50 @@ function heredocAt(text: string, at: number): { heredoc: Heredoc; next: number }
     else if (/[\s;&|()<>]/.test(character)) break
     index++
   }
-  const delimiter = unquote(text.slice(start, index))
-  return delimiter === '' ? null : { heredoc: { delimiter, tabs }, next: index }
+  const word = text.slice(start, index)
+  const delimiter = unquote(word)
+  return delimiter === '' ? null : { heredoc: { delimiter, tabs, quoted: /['"\\]/.test(word) }, next: index }
 }
 
 /**
- * Each heredoc body after a line, up to each delimiter line, every line split on its own, so a quote in a body ends
- * with its line; where the text goes on. A `<<` that was no heredoc (`$((1<<2))`) only reads the lines after it
- * one at a time.
+ * Each heredoc body after a line, up to each delimiter line, and where the text goes on. Every line is split as shell
+ * text on its own, as a shell the body is fed to reads it, so a quote in a body ends with its line (slice 7b review
+ * W7B-4). Under an unquoted delimiter bash also expands the body as heredoc text, `'` and `"` literal and every
+ * `$(...)` and backtick body run, over lines and across them once its backslash-newline pairs are removed (slice 7e
+ * review R7E-LW-2): each line is read that way too, and so is the whole body when `whole` allows. A quoted delimiter
+ * expands nothing, so its lines are read as shell text only. `deep` says substitutions nested past MAX_SUBSTITUTIONS
+ * in any of these readings (slice 7e review R7E-LW-1). A `<<` that was no heredoc (`$((1<<2))`) only reads the lines
+ * after it one at a time.
  */
-function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[]; statements: string[] }): number {
+function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[]; statements: string[]; whole: boolean }): { next: number; deep: boolean } {
   let index = input.from
+  let deep = false
+  const read = (text: string, mode: SplitMode) => {
+    const split = unquotedSplit(text, mode)
+    for (const statement of split.statements) input.statements.push(statement)
+    deep ||= split.deep
+  }
   for (const heredoc of input.heredocs) {
+    const bodyStart = index
+    let bodyEnd = index
     while (index < input.text.length) {
       const newline = input.text.indexOf('\n', index)
       const lineEnd = newline < 0 ? input.text.length : newline
       const line = input.text.slice(index, lineEnd)
       index = lineEnd + 1
       if ((heredoc.tabs ? line.replace(/^\t+/, '') : line) === heredoc.delimiter) break
-      for (const statement of unquotedSplit(line).statements) input.statements.push(statement)
+      bodyEnd = lineEnd
+      read(line, SHELL_LINE)
+      if (!heredoc.quoted) read(line, HEREDOC_TEXT)
     }
+    if (!heredoc.quoted && input.whole && bodyEnd > bodyStart) read(input.text.slice(bodyStart, bodyEnd).replace(CONTINUED_LINE, joinLine), HEREDOC_TEXT)
   }
-  return Math.min(index, input.text.length)
+  return { next: Math.min(index, input.text.length), deep }
 }
+
+/** A backslash and the character it escapes: a newline after it is removed with it, as bash joins a heredoc body's lines. */
+const CONTINUED_LINE = /\\[\s\S]/g
+const joinLine = (escape: string) => (escape === '\\\n' ? '' : escape)
 
 /** A word of shell text as written (`raw`, quotes kept) and as the command receives it (`word`, quotes removed). */
 export interface ShellToken {

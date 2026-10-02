@@ -372,6 +372,74 @@ describe('a call Buckle cannot read whole', () => {
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(reason)]])
   })
+
+  // Slice 7e review R7E-LW-1 and R7E-LW-2: a heredoc body line dropped its MAX_SUBSTITUTIONS flag, and was read with
+  // shell quoting, although under an unquoted delimiter bash runs every `$(...)` and backtick body in it whatever the
+  // quotes around it. A git push nested in a heredoc ran under a git push * deny glob with no refusal and no ask, on
+  // both engines and both switches (real bash pushed to a throwaway remote).
+  const findLine = (substitution: string) => `find . -maxdepth 0 -exec true ${substitution} \\;`
+  /** The nested find shape of the slice 7e review (zSZt25Yl/probe3.out): a find at every level, so each statement reads its text again. */
+  const nestedFind = (command: string) => `cat <<EOF\n$(${findLine(Array.from({ length: 5 }).reduce<string>(text => `"$(${findLine(text)})"`, `$(${command})`))})\nEOF`
+  const heredocLine = (line: string, opener = 'cat <<EOF', closer = 'EOF') => `${opener}\n${line}\n${closer}`
+  const quotedPush = findLine("'$(git push origin main)'")
+
+  it.each(cases)('refuses the nested find heredoc of R7E-LW-1, %s deny, switch on: %s, by the push glob, or by its limit when no glob matches', (engine, switched) => {
+    const body = nestedFind(push)
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('substitutions')
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each([
+    ['the nested find heredoc', nestedFind(push), /^Command substitutions inside double quotes nest deeper than Buckle splits into statements \(MAX_SUBSTITUTIONS: 4 levels\); asked rather than guessed at$/],
+    ['the nested find heredoc with git push --force', nestedFind('git push --force origin main'), /^Force push rewrites remote history/],
+    ['the nested find heredoc with rm -rf', nestedFind('rm -rf build'), /^Recursive delete/],
+    ['a single-quoted git push --force on a find line', heredocLine(findLine("'$(git push --force origin main)'")), /^Force push rewrites remote history/],
+    ['a single-quoted backtick git push --force on a find line', heredocLine(findLine("'`git push --force origin main`'")), /^Force push rewrites remote history/],
+  ])('asks at the floor with no deny glob, never allows: %s', (_shape, body, reason) => {
+    const outcome = check('workspace', false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(reason)]])
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => [
+    [engine, switched, 'a single-quoted $(...) on a find line', heredocLine(quotedPush)],
+    [engine, switched, 'a single-quoted backtick body on a find line', heredocLine(findLine("'`git push origin main`'"))],
+    [engine, switched, 'a double-quoted $(...) on a find line', heredocLine(findLine('"$(git push origin main)"'))],
+    [engine, switched, 'a <<- body with tabs', heredocLine(`\t${quotedPush}`, 'cat <<-EOF', '\tEOF')],
+    [engine, switched, 'a substitution continued past a backslash-newline', heredocLine("find . -maxdepth 0 -exec true '$(git push \\\norigin main)' \\;")],
+    [engine, switched, 'a substitution over two lines', heredocLine(`$(echo "a\n${findLine(`"; ${push})"`)}`)],
+    [engine, switched, 'a quoted delimiter fed to bash', heredocLine(push, "bash <<'EOF'")],
+    // bash stops at the quote that never closes; each line is still read on its own, so no line hides the next.
+    [engine, switched, 'a line after one whose quote never closes', heredocLine(`$(echo it's)\n${quotedPush}`)],
+  ] as const))('refuses %s deny, switch on: %s, a heredoc whose body runs git push: %s', (engine, switched, _shape, body) => {
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each(["cat <<'EOF'", 'cat <<"EOF"', 'cat <<\\EOF'])('reads the find line of %s as shell text only, as before, since bash expands nothing in it', (opener) => {
+    const body = heredocLine(quotedPush, opener)
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).nested).toContainEqual(['find', '.', '-maxdepth', '0', '-exec', 'true', '$(git push origin main)', ';'])
+    expect(check('workspace', false, body).kind).toBe('allow')
+  })
+
+  it('reads a 1 MB heredoc body as shell text and as heredoc text within a second', () => {
+    const notes = Array.from({ length: 40_000 }, (_, index) => `note ${index} of the release`).join('\n')
+    expect(notes.length).toBeGreaterThan(1_000_000)
+    let started = performance.now()
+    expect(check('workspace', false, heredocLine(notes)).kind).toBe('allow')
+    expect(performance.now() - started).toBeLessThan(1_000)
+    started = performance.now()
+    expect(refusal(check('workspace', false, heredocLine(`${notes}\n${quotedPush}`)))).toBe('Refused by the workspace command policy: git push *')
+    expect(performance.now() - started).toBeLessThan(1_000)
+  })
+
+  it('reads a thousand heredocs nested in substitutions within a second, each body whole once', () => {
+    const opened = Array.from({ length: 1_000 }, (_, index) => `$(cat <<D${index}`).join('\n')
+    const closed = Array.from({ length: 1_000 }, (_, index) => `D${999 - index}\n)`).join('\n')
+    const started = performance.now()
+    expect(check('workspace', false, heredocLine(`${opened}\n${quotedPush}\n${closed}`))).toMatchObject({ kind: 'deny' })
+    expect(performance.now() - started).toBeLessThan(1_000)
+  })
 })
 
 describe('the destructive floor the owner raised', () => {

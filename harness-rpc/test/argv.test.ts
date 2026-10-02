@@ -141,6 +141,23 @@ describe('shell text as a shell splits it', () => {
     expect(statementsOf("cat <<'EOF' > notes\nit's\nEOF\nrm '|' -rf x")).toEqual(['cat <<\'EOF\' > notes', "it's", "rm '|' -rf x", "rm '", "' -rf x"])
   })
 
+  // Slice 7e review R7E-LW-1 and R7E-LW-2: a heredoc body line dropped its MAX_SUBSTITUTIONS flag, and its quotes were
+  // read as shell quotes, although under an unquoted delimiter bash runs every substitution in the body, quoted or not.
+  it('reads a heredoc body under an unquoted delimiter as heredoc text too, its quotes and comments literal', () => {
+    expect(statementsOf("cat <<EOF\nfind . -exec true '$(git push origin main)' \\;\nEOF")).toEqual(['cat <<EOF', "find . -exec true '$(git push origin main)' \\;", 'git push origin main', "find . -exec true '", "' \\"])
+    expect(statementsOf("cat <<EOF\necho '`id`' \"it's\" # $(ls)\nEOF")).toEqual(['cat <<EOF', "echo '`id`' \"it's\"", 'id', 'ls', "echo '", "' \"it's\""])
+    expect(statementsOf("cat <<EOF\necho '$(git push \\\norigin main)'\nEOF")).toContain('git push origin main')
+    expect(statementsOf("cat <<'EOF'\necho '$(id)'\nEOF")).toEqual(["cat <<'EOF'", "echo '$(id)'", "echo '", 'id', "'"])
+    expect(shellStatementList("cat <<'EOF'\nfind . -exec true '$(git push origin main)' \\;\nEOF").statements).toEqual(["cat <<'EOF'", "find . -exec true '$(git push origin main)' \\;"])
+  })
+
+  it('says a heredoc body nests substitutions past MAX_SUBSTITUTIONS, whatever its delimiter', () => {
+    for (const opener of ['cat <<EOF', "cat <<'EOF'", 'bash <<-EOF']) {
+      expect(shellStatementList(`${opener}\necho "$(a "$(b "$(c "$(d "$(git push)")")")")"\nEOF`).deep).toBe(true)
+      expect(shellStatementList(`${opener}\necho "$(a "$(b "$(c "$(git push)")")")"\nEOF`).deep).toBe(false)
+    }
+  })
+
   it('reads each $(...) or backtick body inside double quotes as statements of its own', () => {
     expect(statementsOf('echo "$(git push -f; ls)" `id`')).toEqual(['git push -f', 'ls', 'echo "$(git push -f; ls)"', 'id', 'echo "', '"'])
   })
