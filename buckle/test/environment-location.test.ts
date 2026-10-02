@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit } from '../cli/init.js'
@@ -75,6 +76,19 @@ describe('where the environment file is', () => {
 })
 
 describe('loading it', () => {
+  // The shipped .env.example is meant to be copied into the state directory as buckle.env and edited. It must load
+  // from there, so no setting it carries may name the state directory or another environment file, which the file
+  // cannot do from inside the state directory (public docs review).
+  it('loads the shipped .env.example when it is copied into the state directory as buckle.env', () => {
+    const example = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '.env.example')
+    mkdirSync(join(home, '.5straps', 'buckle'), { recursive: true })
+    copyFileSync(example, stateFile())
+    expect(loadEnvironmentFile()).toEqual({ file: stateFile(), openToOthers: expect.any(Boolean) })
+    const set = parseEnv(readFileSync(example, 'utf8'))
+    expect(set.BUCKLE_ENV_FILE).toBeUndefined()
+    expect(set.BUCKLE_STATE_DIR).toBeUndefined()
+  })
+
   it('reads the state directory file and never a file in the working directory', async () => {
     expect((await runInit(['--root', root, '--name', 'State node', '--yes'], prompt)).exitCode).toBe(0)
     writeFileSync(join(root, 'buckle.env'), 'BUCKLE_SERVER_NAME=from-the-project\n')

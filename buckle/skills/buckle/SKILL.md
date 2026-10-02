@@ -75,6 +75,7 @@ and that is the path to use. Relative paths work the same either way.
 | `fs` | read, write, patch, list, find, search | `buckle-fs` |
 | `shell` | run programs and scripts, sandboxed | `buckle-shell` |
 | `git` | status, diff, log, blame, branches as structured data | `buckle-git` |
+| `forge` | commit, push, and open or read pull requests under the owner's credential | `buckle-forge` |
 | `web` | fetch and search, with SSRF filtering | `buckle-web` |
 | `lsp` | definitions, references, hover, diagnostics, rename | `buckle-dev` |
 | `browser` | drive a real browser via agent-browser | `buckle-browser` |

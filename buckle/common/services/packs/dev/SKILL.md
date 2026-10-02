@@ -9,11 +9,11 @@ Language-server queries. Far more precise than text search: `lsp_references` fin
 references, not every string that happens to match a name.
 
 ```
-buckle dev definition src/app.ts --language typescript --line 42 --character 8
-buckle dev references src/app.ts --language typescript --line 42
-buckle dev hover src/app.ts --language typescript --line 42
-buckle dev diagnostics src/app.ts --language typescript
-buckle dev rename src/app.ts --language typescript --line 42 --new-name createInvoker
+buckle lsp definition src/app.ts --language typescript --line 42 --character 8
+buckle lsp references src/app.ts --language typescript --line 42
+buckle lsp hover src/app.ts --language typescript --line 42
+buckle lsp diagnostics src/app.ts --language typescript
+buckle lsp rename src/app.ts --language typescript --line 42 --new-name createInvoker
 ```
 
 Lines are 1-based on the way in and converted to the LSP's 0-based positions for you.

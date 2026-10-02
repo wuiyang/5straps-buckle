@@ -181,6 +181,10 @@ function printUsage(): CliResult {
   buckle plugin list | add <id> <specifier> | remove <id>
   buckle policy show | allow-command | deny-command | allow-url | mount | ...
   buckle policy deny-tool <tool> | allow-tool <tool>   Refuse a tool outright, or lift that
+  buckle policy dangerously-allow on|off [--workspace <id>]
+                                   DANGEROUS: allow every ask in the workspace without a person,
+                                   sensitive files and file writes included; each use is audited,
+                                   and deny rules still refuse. See buckle policy --help
   buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
   buckle keys enroll <public-key> --purpose <p> --workspace <w> | list | revoke <key-id>
                                    Client keys trusted for signed setup and approvals, by scope

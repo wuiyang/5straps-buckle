@@ -94,6 +94,12 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
         return { exitCode: 0 }
       case 'dangerously-allow':
         return await dangerouslyAllow({ runtime, workspaces, argv: rest })
+      case 'help':
+      case '--help':
+      case '-h':
+        // Asking for the usage is not an error, so it prints to stdout and exits 0, as the other command groups do.
+        process.stdout.write(USAGE)
+        return { exitCode: 0 }
       default:
         process.stderr.write(USAGE)
         return { exitCode: 1 }

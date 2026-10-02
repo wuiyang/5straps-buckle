@@ -18,7 +18,7 @@ buckle shell exec -- git status --porcelain
 `script_run` takes a script body when you genuinely need pipes, redirection, or loops.
 
 ```
-buckle shell script --runtime bash --script 'for f in *.log; do wc -l "$f"; done'
+buckle script run --runtime bash --script 'for f in *.log; do wc -l "$f"; done'
 ```
 
 ## What gets gated

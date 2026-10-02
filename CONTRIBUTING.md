@@ -36,7 +36,10 @@ them, and audits the production dependencies, including the code bundled into th
   deprecated aliases, dual writes, migration bridges, or release-long compatibility fallbacks
   unless the maintainer asks for compatibility. Update affected code, tests, and docs together.
 - Documentation pages stay at or under 1100 words. Split a long page into numbered pages.
-- Write every id with its title, for example "BUCKLE-D01 (its title)", never the bare id.
+- A design decision that shapes the code is recorded in the developer docs: the reasoning lives in
+  [docs/dev/architecture.md](docs/dev/architecture.md) or a research record under
+  [docs/dev/research/](docs/dev/research/), and the code and its tests point to it in prose, not by a
+  bare identifier.
 - No em-dashes in code, docs, or commit messages.
 - Commits are scoped by path and use conventional subjects. The subject says what changed and
   the body says why.
