@@ -23,7 +23,7 @@ function copyRepositoryPinInputs(edit: (manifest: Manifest) => void, editLock: (
   const root = mkdtempSync(join(tmpdir(), 'pins-'))
   cpSync(join(repository, 'package.json'), join(root, 'package.json'))
   writeFileSync(join(root, 'pnpm-lock.yaml'), editLock(readFileSync(join(repository, 'pnpm-lock.yaml'), 'utf8')))
-  for (const [importer, change] of [['packages/runtime', edit], ['harness-rpc', editBuckle]] as const) {
+  for (const [importer, change] of [['packages/runtime', edit], ['buckle', editBuckle]] as const) {
     const manifest = JSON.parse(readFileSync(join(repository, importer, 'package.json'), 'utf8')) as Manifest
     change(manifest)
     mkdirSync(join(root, importer), { recursive: true })
@@ -61,14 +61,14 @@ describe('F57 runtime pin guard', () => {
   it('holds Buckle to the same pins: h3 exact in production, nitro and srvx exact for the build only', () => {
     const caret = runCheck(copyRepositoryPinInputs(() => {}, undefined, manifest => { manifest.dependencies!.h3 = '^2.0.1-rc.32' }))
     expect(caret.status).toBe(1)
-    expect(caret.output).toContain('harness-rpc: h3 must be a production dependency pinned exactly to 2.0.1-rc.32')
-    expect(runCheck(copyRepositoryPinInputs(() => {}, undefined, manifest => { manifest.dependencies!.nitro = '3.0.260903-beta' })).output).toContain('harness-rpc: nitro builds .output and must not be a production dependency')
-    expect(runCheck(copyRepositoryPinInputs(() => {}, undefined, manifest => { manifest.devDependencies!.srvx = '1.0.4' })).output).toContain('harness-rpc: srvx must be a devDependency pinned exactly to 1.0.5')
+    expect(caret.output).toContain('buckle: h3 must be a production dependency pinned exactly to 2.0.1-rc.32')
+    expect(runCheck(copyRepositoryPinInputs(() => {}, undefined, manifest => { manifest.dependencies!.nitro = '3.0.260903-beta' })).output).toContain('buckle: nitro builds .output and must not be a production dependency')
+    expect(runCheck(copyRepositoryPinInputs(() => {}, undefined, manifest => { manifest.devDependencies!.srvx = '1.0.4' })).output).toContain('buckle: srvx must be a devDependency pinned exactly to 1.0.5')
   })
 
   it('rejects a Buckle lockfile entry that resolves another nitro', () => {
-    const root = copyRepositoryPinInputs(() => {}, lock => lock.replace(/(\n {2}harness-rpc:\n[\s\S]*?\n {6}nitro:\n {8}specifier: 3\.0\.260903-beta\n {8}version: )3\.0\.260903-beta/, '$13.0.260801-beta'))
-    expect(runCheck(root).output).toContain('lockfile resolves harness-rpc nitro to 3.0.260801-beta, expected 3.0.260903-beta')
+    const root = copyRepositoryPinInputs(() => {}, lock => lock.replace(/(\n {2}buckle:\n[\s\S]*?\n {6}nitro:\n {8}specifier: 3\.0\.260903-beta\n {8}version: )3\.0\.260903-beta/, '$13.0.260801-beta'))
+    expect(runCheck(root).output).toContain('lockfile resolves buckle nitro to 3.0.260801-beta, expected 3.0.260903-beta')
   })
 
   it('rejects better-sqlite3 because the runtime uses node:sqlite', () => {

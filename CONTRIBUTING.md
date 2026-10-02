@@ -24,7 +24,7 @@ them, and audits the production dependencies, including the code bundled into th
 
 | Path | Package | What it is |
 |---|---|---|
-| `harness-rpc/` | `@5straps/buckle` | Buckle: the CLI, the MCP server, and the HTTP server |
+| `buckle/` | `@5straps/buckle` | Buckle: the CLI, the MCP server, and the HTTP server |
 | `packages/protocol/` | `@5straps/protocol` | The wire schemas Buckle speaks |
 | `packages/runtime/` | `@5straps/runtime` | Runtime primitives: service lifetimes, logging, SQLite, and Nitro adapters |
 | `scripts/` | - | Release checks |

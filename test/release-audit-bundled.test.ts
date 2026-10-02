@@ -17,7 +17,7 @@ function audit(advisories: Array<{ id: number; module_name: string; versions: st
     actions: [], muted: [],
     advisories: Object.fromEntries(advisories.map(item => [String(item.id), {
       id: item.id, module_name: item.module_name, severity: item.severity ?? 'high', title: `${item.module_name} fixture advisory`,
-      url: `https://github.com/advisories/GHSA-fixture-${item.id}`, vulnerable_versions: '<99', findings: item.versions.map(version => ({ version, paths: ['harness-rpc>nitro'] })),
+      url: `https://github.com/advisories/GHSA-fixture-${item.id}`, vulnerable_versions: '<99', findings: item.versions.map(version => ({ version, paths: ['buckle>nitro'] })),
     }])),
     metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: advisories.length, critical: 0 } },
   }

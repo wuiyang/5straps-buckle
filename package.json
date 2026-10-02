@@ -22,7 +22,7 @@
     "test:package": "node scripts/release/packaged-smoke.mjs && node scripts/release/runtime-fixture-smoke.mjs",
     "audit:release": "pnpm audit --prod --audit-level=low && node scripts/release/audit-bundled.mjs",
     "check:runtime-pins": "node scripts/check-runtime-pins.mjs",
-    "check:routes": "node scripts/check-duplicate-routes.mjs packages/runtime/test/fixture && node scripts/check-duplicate-routes.mjs packages/runtime/test/package-smoke && node scripts/check-duplicate-routes.mjs harness-rpc"
+    "check:routes": "node scripts/check-duplicate-routes.mjs packages/runtime/test/fixture && node scripts/check-duplicate-routes.mjs packages/runtime/test/package-smoke && node scripts/check-duplicate-routes.mjs buckle"
   },
   "devDependencies": {
     "@types/node": "24.10.1",

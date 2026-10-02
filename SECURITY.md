@@ -27,7 +27,7 @@ The maintainers may ask for more time when a fix needs a data or schema migratio
 
 In scope, as built in this repository:
 
-- Buckle, the approval and sandbox runtime for AI agents (`harness-rpc/`, published as
+- Buckle, the approval and sandbox runtime for AI agents (`buckle/`, published as
   `@5straps/buckle`)
 - The protocol package (`packages/protocol/`, published as `@5straps/protocol`)
 - The runtime package (`packages/runtime/`, published as `@5straps/runtime`)

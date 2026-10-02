@@ -25,6 +25,8 @@ const CLOSE_BOUND_MS = 15_000
 // The Nitro build lands here first, so the running node never lazily loads a half-written .output.
 const STAGED_OUTPUT = join(PACKAGE_ROOT, 'node_modules', '.cache', 'buckle-dev', 'output')
 const OUTPUT = join(PACKAGE_ROOT, '.output')
+// The settings file the repository root's .env.example documents; serve starts without it when absent.
+const ENV_FILE = join(PACKAGE_ROOT, '..', '.env')
 
 let child = null
 // One cycle at a time, from the build through stopping the old node to starting the new one, so a
@@ -93,7 +95,7 @@ function run(args) {
 // The same bootstrap as an installed node: dist/main.js finds .output from the package root.
 function start() {
   if (existsSync(STAGED_OUTPUT)) replaceOutput()
-  child = spawn(process.execPath, ['--env-file-if-exists=../.env', 'dist/main.js', 'serve'], { cwd: PACKAGE_ROOT, stdio: 'inherit' })
+  child = spawn(process.execPath, [`--env-file-if-exists=${ENV_FILE}`, 'dist/main.js', 'serve'], { cwd: PACKAGE_ROOT, stdio: 'inherit' })
   const current = child
   say(`started buckle serve (pid ${current.pid})`)
   current.once('exit', (code, signal) => {

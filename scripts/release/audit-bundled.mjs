@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const DEFAULT_BUNDLED = [join(repository, 'harness-rpc', '.output', 'bundled-packages.json')]
+const DEFAULT_BUNDLED = [join(repository, 'buckle', '.output', 'bundled-packages.json')]
 
 /**
  * The advisories that name a bundled package at a bundled version. `audit` is `pnpm audit --json`

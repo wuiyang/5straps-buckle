@@ -63,7 +63,7 @@ function prepareInstallation() {
     run('pnpm', ['--filter', `@5straps/${name}`, 'pack', '--pack-destination', packageDirectory], { cwd: repository })
   }
   // A global `buckle` symlink points straight at the build, so the build itself must leave an executable bin.
-  assertExecutableBin(join(repository, 'harness-rpc', 'dist', 'main.js'))
+  assertExecutableBin(join(repository, 'buckle', 'dist', 'main.js'))
   const tarball = name => {
     const matches = readdirSync(packageDirectory).filter(file => file.startsWith(`5straps-${name}-`) && file.endsWith('.tgz'))
     assert.equal(matches.length, 1, `Expected one ${name} package`)

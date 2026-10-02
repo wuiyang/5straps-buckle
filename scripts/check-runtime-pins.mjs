@@ -10,7 +10,7 @@ const FORBIDDEN = ['better-sqlite3']
 const RUNTIME_IMPORTER = 'packages/runtime'
 // Buckle builds with nitro and srvx (development only) and serves through h3 at run time, one copy
 // shared with @5straps/runtime/nitro (Buckle phase plan, section B).
-const BUCKLE_IMPORTER = 'harness-rpc'
+const BUCKLE_IMPORTER = 'buckle'
 const BUCKLE_BUILD_ONLY = ['nitro', 'srvx']
 
 export function checkRuntimePins({ root }) {
