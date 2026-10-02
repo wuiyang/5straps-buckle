@@ -161,8 +161,29 @@ describe('shell text as a shell splits it', () => {
     expect(statements("bash <<'EOF'\ngit push --force \\\nEOF\necho after")).toEqual(["bash <<'EOF'", 'git push --force \\', 'git push --force', 'echo after'])
     // An escaped backslash ends no line under a quoted delimiter; under an unquoted one bash halves it first, so it does.
     expect(statements("bash <<'EOF'\ngit push \\\\\n--force origin main\nEOF")).toEqual(["bash <<'EOF'", 'git push \\\\', '--force origin main'])
-    expect(statements('bash <<EOF\ngit push \\\\\n--force origin main\nEOF')).toEqual(['bash <<EOF', 'git push \\\\', '--force origin main', 'git push --force origin main'])
-    expect(statements('bash <<EOF\ngit push \\\\\\\\\n--force origin main\nEOF')).toEqual(['bash <<EOF', 'git push \\\\\\\\', '--force origin main'])
+    // The unquoted body is also read as the fed shell receives it: `\\` halves to `\`, which then continues the line.
+    expect(statements('bash <<EOF\ngit push \\\\\n--force origin main\nEOF')).toEqual(['bash <<EOF', 'git push \\\\', '--force origin main', 'git push --force origin main', 'git push \\\n--force origin main'])
+    // Four backslashes halve to two, which escape each other, so the line does not continue in the fed shell.
+    expect(statements('bash <<EOF\ngit push \\\\\\\\\n--force origin main\nEOF')).toEqual(['bash <<EOF', 'git push \\\\\\\\', '--force origin main', 'git push \\\\'])
+  })
+
+  // Slice 7f review R7F-HR-1 and R7F-HR-2: an unquoted heredoc body is read as the fed shell receives it, so a
+  // substitution a backslash hid is read; and the delimiter test runs after a backslash-newline joins a line to the
+  // next, so a delimiter line that ends a continuation is body text. A quoted delimiter unescapes and joins nothing.
+  it('reads an unquoted heredoc body as the fed shell receives it, escapes resolved and continuations joined first', () => {
+    const statements = (text: string) => shellStatementList(text).statements
+    // R7F-HR-1: `\$` and an escaped backtick in a double-quoted find argument become `$` and a backtick, so the
+    // substitution they hid is read; a quoted delimiter leaves them literal and reads no git push.
+    expect(statements('bash <<EOF\nfind . -maxdepth 0 -exec true "\\$(git push origin main)" \\;\nEOF')).toContain('git push origin main')
+    expect(statements('bash <<EOF\nfind . -maxdepth 0 -exec true "\\`git push origin main\\`" \\;\nEOF')).toContain('git push origin main')
+    expect(statements("bash <<'EOF'\nfind . -maxdepth 0 -exec true \"\\$(git push origin main)\" \\;\nEOF")).not.toContain('git push origin main')
+    // `git push \\--force` reaches the fed shell as `git push \--force`, which is `git push --force`.
+    expect(statements('bash <<EOF\ngit push \\\\--force origin main\nEOF')).toContain('git push \\--force origin main')
+    // R7F-HR-2: `x \` continues into the delimiter line, which is swallowed, so the body runs to the next delimiter
+    // and its find line expands; under a quoted delimiter the first delimiter line ends the body and nothing expands.
+    const swallow = 'cat <<EOF\nx \\\nEOF\nfind . -maxdepth 0 -exec true \'$(git push origin main)\' \\;\nEOF'
+    expect(statements(swallow)).toEqual(['cat <<EOF', 'x \\', 'EOF', 'x EOF', "find . -maxdepth 0 -exec true '$(git push origin main)' \\;", 'git push origin main'])
+    expect(statements("cat <<'EOF'\nx \\\nEOF\nfind . -maxdepth 0 -exec true '$(git push origin main)' \\;\nEOF")).not.toContain('git push origin main')
   })
 
   it('says a heredoc body nests substitutions past MAX_SUBSTITUTIONS, whatever its delimiter', () => {

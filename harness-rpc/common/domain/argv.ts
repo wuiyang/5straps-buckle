@@ -367,7 +367,11 @@ function heredocAt(text: string, at: number): { heredoc: Heredoc; next: number }
  * review R7E-LW-2): each line is read that way too, and so is the whole body when `whole` allows. A quoted delimiter
  * expands nothing, so its lines are read as shell text only. Lines a backslash-newline joins for the shell the body
  * is fed to (`bash <<'EOF'`) are also read together as one statement, under either delimiter, so `git push \` then
- * `--force origin main` is a force push (slice 7f residual 1); the delimiter line still ends the body. `deep` says
+ * `--force origin main` is a force push (slice 7f residual 1); the delimiter line still ends the body. Under an
+ * unquoted delimiter the delimiter test runs on the body as bash reads it, after a backslash-newline joins a line to
+ * the next, so a delimiter line that ends an odd run of backslashes is body text, not the end (slice 7f review
+ * R7F-HR-2); and the body is also read as the fed shell receives it, `\\`, `\$` and an escaped backtick reduced and
+ * the lines joined, so a substitution the raw body's backslashes hid is read (slice 7f review R7F-HR-1). `deep` says
  * substitutions nested past MAX_SUBSTITUTIONS in any of these readings (slice 7e review R7E-LW-1). A `<<` that was no
  * heredoc (`$((1<<2))`) only reads the lines after it one at a time.
  */
@@ -384,28 +388,51 @@ function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[];
     let bodyEnd = index
     // The lines joined so far, each without the backslash-newline that joins it to the next.
     let joined: string | null = null
+    // Whether the previous physical line continues into this one, so this one is not tested as the delimiter.
+    let continues = false
     while (index < input.text.length) {
       const newline = input.text.indexOf('\n', index)
       const lineEnd = newline < 0 ? input.text.length : newline
       const line = input.text.slice(index, lineEnd)
       index = lineEnd + 1
       const bodyLine = heredoc.tabs ? line.replace(/^\t+/, '') : line
-      if (bodyLine === heredoc.delimiter) break
+      if (!continues && bodyLine === heredoc.delimiter) break
       bodyEnd = lineEnd
       read(line, SHELL_LINE)
       if (!heredoc.quoted) read(line, HEREDOC_TEXT)
       const joining = joiningBackslashes(bodyLine, heredoc.quoted)
-      if (joined === null && joining === 0) continue
-      joined = (joined ?? '') + bodyLine.slice(0, bodyLine.length - joining)
-      if (joining > 0) continue
-      read(joined, SHELL_LINE)
-      joined = null
+      if (joined !== null || joining !== 0) {
+        joined = (joined ?? '') + bodyLine.slice(0, bodyLine.length - joining)
+        if (joining === 0) {
+          read(joined, SHELL_LINE)
+          joined = null
+        }
+      }
+      // Only an odd run of backslashes joins a line to the next for the heredoc reader (bash does not halve `\\`
+      // before it recognises the delimiter), and a quoted delimiter joins nothing.
+      continues = !heredoc.quoted && trailingBackslashRun(bodyLine) % 2 === 1
     }
     // A run still open at the delimiter line, or at the end of the text, is read as it stands.
     if (joined !== null) read(joined, SHELL_LINE)
-    if (!heredoc.quoted && input.whole && bodyEnd > bodyStart) read(input.text.slice(bodyStart, bodyEnd).replace(CONTINUED_LINE, joinLine), HEREDOC_TEXT)
+    if (bodyEnd > bodyStart && !heredoc.quoted && input.whole) {
+      const body = input.text.slice(bodyStart, bodyEnd)
+      read(body.replace(CONTINUED_LINE, joinLine), HEREDOC_TEXT)
+      if (body.includes('\\')) {
+        // A `<<-` delimiter strips the leading tabs of each line before the shell receives the body. The view is read
+        // as shell text, so its own line continuations join and its quotes span lines, as the fed shell reads them.
+        const fed = heredoc.tabs ? body.replace(/^\t+/gm, '') : body
+        read(fedShellView(fed), SHELL_LINE)
+      }
+    }
   }
   return { next: Math.min(index, input.text.length), deep }
+}
+
+/** How many backslashes end a body line, so a caller can tell an odd run (a continuation) from an even one. */
+function trailingBackslashRun(line: string): number {
+  let count = 0
+  while (count < line.length && line[line.length - 1 - count] === '\\') count++
+  return count
 }
 
 /**
@@ -414,10 +441,36 @@ function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[];
  * shell reads the body, so a run of 2 (mod 4) ends in one too, and those two backslashes go with the newline.
  */
 function joiningBackslashes(line: string, quoted: boolean): number {
-  let count = 0
-  while (count < line.length && line[line.length - 1 - count] === '\\') count++
+  const count = trailingBackslashRun(line)
   if (count % 2 === 1) return 1
   return !quoted && count % 4 === 2 ? 2 : 0
+}
+
+/**
+ * A heredoc body under an unquoted delimiter as the command it is fed to receives it: a backslash before `$`, a
+ * backtick or a backslash leaves only that character, a backslash before a newline removes both (the lines join), and
+ * every other backslash stays. One left-to-right pass, so three trailing backslashes are one backslash and a
+ * continuation, and four are two literal backslashes.
+ */
+function fedShellView(body: string): string {
+  let view = ''
+  for (let index = 0; index < body.length; index++) {
+    const character = body[index]!
+    if (character === '\\' && index + 1 < body.length) {
+      const next = body[index + 1]!
+      if (next === '$' || next === '`' || next === '\\') {
+        view += next
+        index++
+        continue
+      }
+      if (next === '\n') {
+        index++
+        continue
+      }
+    }
+    view += character
+  }
+  return view
 }
 
 /** A backslash and the character it escapes: a newline after it is removed with it, as bash joins a heredoc body's lines. */

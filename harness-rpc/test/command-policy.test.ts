@@ -461,6 +461,47 @@ describe('a call Buckle cannot read whole', () => {
     expect(check('workspace', false, body, []).kind).toBe(kind)
   })
 
+  // Slice 7f review R7F-HR-1: an unquoted heredoc body fed to a shell is read as the shell receives it, so a git push
+  // a backslash-dollar or an escaped backtick hid is read; R7F-HR-2: a body line ending in an odd run of backslashes
+  // joins the delimiter line into the body, so the find line past it expands. Real bash pushed to a throwaway remote.
+  const escapeShapes = {
+    'a backslash-dollar substitution': (command: string) => heredocLine(findLine(`"\\$(${command})"`), 'bash <<EOF'),
+    'an escaped backtick substitution': (command: string) => heredocLine(findLine(`"\\\`${command}\\\`"`), 'bash <<EOF'),
+    'a delimiter line swallowed by a continuation': (command: string) => `cat <<EOF\nx ${B}\nEOF\n${findLine(`'$(${command})'`)}\nEOF`,
+  } as const
+  const escapeCases = Object.entries(escapeShapes)
+
+  it.each(cases.flatMap(([engine, switched]) => escapeCases.map(([shape, make]) => [engine, switched, shape, make(push)] as const)))('refuses %s deny, switch on: %s, a git push an unquoted heredoc body hides with %s', (engine, switched, _shape, body) => {
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => escapeCases.map(([shape, make]) => [engine, shape, make('git push --force origin main')] as const)))('asks at the floor, %s with no deny glob, about a force push an unquoted body hides with %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
+  // `git push \\--force` reaches the fed shell as `git push \--force`, which is `git push --force`, so the force glob
+  // and the force-push floor both meet it although the raw body carries no `--force` word.
+  const halvedForce = `bash <<EOF\ngit push ${B}${B}--force origin main\nEOF`
+
+  it.each(cases)('refuses a halved force push, %s deny, switch on: %s, by the force glob', (engine, switched) => {
+    expect(refusal(check(engine, switched, halvedForce, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
+  })
+
+  it('asks at the floor about a halved force push with no deny glob', () => {
+    const outcome = check('workspace', false, halvedForce, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
+  it.each([
+    ['a double-quoted backslash-dollar fed to bash', heredocLine(findLine('"\\$(git push origin main)"'), "bash <<'EOF'")],
+    ['a continuation that joins nothing under a quoted delimiter', `cat <<'EOF'\nx ${B}\nEOF\n${findLine("'$(git push origin main)'")}\nEOF`],
+  ] as const)('leaves a quoted-delimiter body unexpanded as at eaf4e05, so it allows: %s', (_shape, body) => {
+    expect(check('workspace', false, body).kind).toBe('allow')
+  })
+
   // Slice 7e review R7E-LW-3: the node ceiling's rule runs first, so with deny lists in both policies it refused at a
   // reading limit naming itself although the workspace glob had matched the push. A glob that matched in any policy is
   // named first; the limit is named, ceiling first, only when none matched. The call is refused either way.
