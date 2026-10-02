@@ -325,6 +325,23 @@ describe('text URLs end at a comma, values follow the unit, pwd is a credential,
     expect(reviewableArguments({ url: row })).toEqual({ url: 'https://pay.example.com/?token=[redacted]' })
   })
 
+  // Slice 7e review R7E-FS-1: a JSON file that starts with a byte order mark failed JSON.parse, so it was read as text,
+  // and the part of a credential value after a comma showed. One leading mark is skipped, and shown as written.
+  it('reads a JSON file after a byte order mark as JSON, as it reads the file without one (R7E-FS-1)', () => {
+    const mark = '\uFEFF'
+    const body = JSON.stringify({ url: 'https://h.example/?token=ab5,cd5ecret', amount: 1 })
+    const shown = '{"url":"https://h.example/?token=[redacted]","amount":1}'
+    expect(reviewableArguments({ path: 'c.json', content: body })).toEqual({ content: shown, path: 'c.json' })
+    expect(reviewableArguments({ path: 'c.json', content: `${mark}${body}` })).toEqual({ content: `${mark}${shown}`, path: 'c.json' })
+    expect(reviewableArguments({ path: 'c.json', edits: [{ oldText: '{}', newText: `${mark}${body}`, replaceAll: false }] })).toEqual({ edits: [{ newText: `${mark}${shown}`, oldText: '{}', replaceAll: false }], path: 'c.json' })
+    expect(reviewableArguments({ files: [{ path: 'c.json', content: `${mark}${body}` }] })).toEqual({ files: [{ content: `${mark}${shown}`, path: 'c.json' }] })
+    expect(reviewableArguments({ settings: `${mark}${body}` })).toEqual({ settings: `${mark}${shown}` })
+    // Controls: after the mark, CSV and text that is not JSON are still read as text, the fields after a comma shown.
+    expect(reviewableArguments({ path: 'c.csv', content: `${mark}name,url\nx,https://h.example/?token=ab5,cd5ecret` })).toEqual({ content: `${mark}name,url\nx,https://h.example/?token=[redacted],cd5ecret`, path: 'c.csv' })
+    expect(reviewableArguments({ path: 'c.json', content: `${mark}{url: https://h.example/?token=ab5,cd5ecret}` })).toEqual({ content: `${mark}{url: https://h.example/?token=[redacted],cd5ecret}`, path: 'c.json' })
+    expect(reviewableArguments({ path: 'c.json', content: `${mark}${mark}${body}` })).toEqual({ content: `${mark}${mark}{"url":"https://h.example/?token=[redacted],cd5ecret","amount":1}`, path: 'c.json' })
+  })
+
   it('hides the whole credential value of a URL word, shell characters included (R7B-CR-6)', () => {
     const url = 'https://h.example/x?token=ab(c5ecret)d'
     expect(reviewableArguments({ url, method: 'GET' })).toEqual({ method: 'GET', url: 'https://h.example/x?token=[redacted]' })

@@ -567,6 +567,9 @@ describe('every approval route reads a call by the context each text sits in (sl
       ['an fs_write_batch entry', root => ({ tool: 'fs_write_batch', args: { files: [{ path: join(root, 'one.csv'), content: row }] } }), '?token=[redacted],1000000,x@y.com', null],
       ['a JSON file (control)', root => ({ tool: 'fs_write', args: { path: join(root, 'pay.json'), content: JSON.stringify({ url: row }) } }), '{"url":"https://pay.example.com/?token=[redacted]"}', '1000000'],
       ['a one-line text file with no URL (control)', root => ({ tool: 'fs_write', args: { path: join(root, 'note.txt'), content: 'amount=1000000,to=x@y.com' } }), 'amount=1000000,to=x@y.com', null],
+      // Slice 7e review R7E-FS-1: a byte order mark before a JSON document read it as text, so the value after a comma showed.
+      ['a JSON file after a byte order mark', root => ({ tool: 'fs_write', args: { path: join(root, 'pay.json'), content: `\uFEFF${JSON.stringify({ url: row })}` } }), '{"url":"https://pay.example.com/?token=[redacted]"}', '1000000'],
+      ['a CSV file after a byte order mark (control)', root => ({ tool: 'fs_write', args: { path: join(root, 'one.csv'), content: `\uFEFF${row}` } }), '?token=[redacted],1000000,x@y.com', null],
     ])('reads %s as file content on every route (R7D-WV-3)', async (_, call, visible, hidden) => {
       for (const [where, value] of Object.entries(await everyRoute(call, {}))) {
         expect(value, where).not.toContain('t5ecret')

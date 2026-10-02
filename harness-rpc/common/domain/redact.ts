@@ -87,10 +87,19 @@ export function reviewableArguments(args: JsonObject): JsonValue {
 type Reading = CredentialContext | 'shape' | 'file'
 
 function review(value: JsonValue, reading: Reading): JsonValue {
-  if (typeof value === 'string') return redactCredentials(value, contextOf(value, reading))
+  if (typeof value === 'string') return reviewString(value, contextOf(value, reading))
   if (Array.isArray(value)) return value.map(item => review(item, reading))
   if (value !== null && typeof value === 'object') return reading === 'shape' ? reviewObject(value) : reviewRecord(value, reading)
   return value
+}
+
+/**
+ * A string redacted in its context. A JSON document after one byte order mark is read as the JSON its consumers
+ * parse, and the mark is shown as written (slice 7e review R7E-FS-1).
+ */
+function reviewString(value: string, context: CredentialContext): string {
+  if (context === 'json' && value.startsWith(BYTE_ORDER_MARK)) return BYTE_ORDER_MARK + redactCredentials(value.slice(BYTE_ORDER_MARK.length), 'json')
+  return redactCredentials(value, context)
 }
 
 function contextOf(value: string, reading: Reading): CredentialContext {
@@ -144,6 +153,8 @@ function isShellScript(path: string, content: JsonValue | undefined): boolean {
 
 const JSON_DOCUMENT = /^\s*[[{]/
 const WHITESPACE = /\s/
+/** U+FEFF, which some editors write at the start of a UTF-8 file and many JSON readers skip; JSON.parse refuses it. */
+const BYTE_ORDER_MARK = '\uFEFF'
 
 /** How a string with no context of its own is read: a JSON document, one word, or free text. */
 function shapeOf(value: string): CredentialContext {
@@ -151,8 +162,10 @@ function shapeOf(value: string): CredentialContext {
   return WHITESPACE.test(value) ? 'text' : 'word'
 }
 
+/** A JSON object or array, after one leading byte order mark when it has one. */
 function isJsonDocument(value: string): boolean {
-  return JSON_DOCUMENT.test(value) && parses(value)
+  const document = value.startsWith(BYTE_ORDER_MARK) ? value.slice(BYTE_ORDER_MARK.length) : value
+  return JSON_DOCUMENT.test(document) && parses(document)
 }
 
 function parses(value: string): boolean {
