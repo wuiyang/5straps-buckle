@@ -26,8 +26,27 @@
   },
   "devDependencies": {
     "@types/node": "24.10.1",
+    "changelogen": "0.6.2",
     "tsx": "4.23.12",
     "typescript": "5.9.3",
     "vitest": "4.1.11"
+  },
+  "changelog": {
+    "repo": "wuiyang/buckle",
+    "noAuthors": true,
+    "excludeAuthors": [
+      ""
+    ],
+    "types": {
+      "buckle": {
+        "title": "Earlier Buckle changes"
+      },
+      "workbench": {
+        "title": "Earlier workbench changes"
+      },
+      "tools": {
+        "title": "Earlier tool changes"
+      }
+    }
   }
 }
