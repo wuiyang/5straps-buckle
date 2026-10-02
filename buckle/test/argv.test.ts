@@ -134,6 +134,17 @@ describe('shell text as a shell splits it', () => {
     expect(statementsOf("git clean -e $'\\'' -f; ls")).toEqual(["git clean -e $'\\'' -f", 'ls'])
   })
 
+  // Slice 7h probe: bash removes a backslash-newline outside single quotes before it splits words, so a continuation
+  // inside a command name or a flag (`gi\` then `t push`, `--for\` then `ce`) ran a git push or a force push that every
+  // rule read as two words.
+  it('joins the word a backslash-newline continues, outside single quotes, as bash does', () => {
+    const words = (text: string) => shellTokens(text).map(token => token.word)
+    expect(words('gi\\\nt push --for\\\nce origin main')).toEqual(['git', 'push', '--force', 'origin', 'main'])
+    expect(words('git push \\\n--force \\\n\\\n main')).toEqual(['git', 'push', '--force', 'main'])
+    expect(words('git "--for\\\nce" x\\\\\\\ny')).toEqual(['git', '--force', 'x\\y'])
+    expect(words("git '--for\\\nce'")).toEqual(['git', '--for\\\nce'])
+  })
+
   // Slice 7b review W7B-4: an apostrophe in a comment or a heredoc body opened a quote that took the lines after it.
   it('drops a comment and reads a heredoc body line by line, so its quotes end with the line', () => {
     expect(statementsOf("# don't\ngit clean -e ';' -f")).toEqual(["git clean -e ';' -f", "git clean -e '", "' -f"])

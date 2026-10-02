@@ -505,16 +505,21 @@ export interface ShellToken {
  * Splits on whitespace outside quotes. A quoted run joins the word it touches (`--force'>'` is one word), and an
  * unclosed quote runs to the end; in `$'...'` a backslash escapes the quote (slice 7b review W7B-5). Only `$'` and a
  * plain `$` share a first character, and `$'` is tried first; each run inside an alternative stops at a character
- * that starts another, so the scan stays linear.
+ * that starts another, so the scan stays linear. A backslash-newline outside single quotes is a line continuation,
+ * which bash removes before it splits words, so it joins the word it sits in (`--for\` then `ce` is `--force`) and
+ * separates nothing (slice 7h probe: a continuation inside a word or a command name hid it from every rule).
  */
-const STATEMENT_TOKEN = /(?:"(?:[^"\\]+|\\.)*"?|\$'(?:[^'\\]+|\\.)*'?|'[^']*'?|\\.?|[^\s"'\\$]+|\$)+/g
+const STATEMENT_TOKEN = /(?:"(?:[^"\\]+|\\[\s\S])*"?|\$'(?:[^'\\]+|\\[\s\S])*'?|'[^']*'?|\\[\s\S]?|[^\s"'\\$]+|\$)+/g
 
 /** One scanner for shellTokensUpTo, which never calls itself, rewound before each use. */
 const TOKEN_SCAN = new RegExp(STATEMENT_TOKEN.source, STATEMENT_TOKEN.flags)
 
+/** A run of line continuations between words, which bash removes and which is no word. */
+const CONTINUATIONS_ONLY = /^(?:\\\n)+$/
+
 /** Text as a shell would split it into words, roughly, each as written and as the command receives it. */
 export function shellTokens(text: string): ShellToken[] {
-  return (text.match(STATEMENT_TOKEN) ?? []).map(raw => ({ raw, word: unquote(raw) }))
+  return (text.match(STATEMENT_TOKEN) ?? []).filter(raw => !CONTINUATIONS_ONLY.test(raw)).map(raw => ({ raw, word: unquote(raw) }))
 }
 
 /**
@@ -526,6 +531,7 @@ export function shellTokensUpTo(text: string, limit: number): { tokens: ShellTok
   const pattern = TOKEN_SCAN
   pattern.lastIndex = 0
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    if (CONTINUATIONS_ONLY.test(match[0])) continue
     if (tokens.length >= limit) return { tokens, more: true }
     tokens.push({ raw: match[0], word: unquote(match[0]) })
   }
@@ -540,7 +546,7 @@ export function shellWords(text: string): string[] {
 /**
  * Quote removal as a shell does it: single quotes keep everything; in double quotes a backslash escapes `"`, `\\`,
  * `$` and a backtick; in `$'...'` a backslash escape is decoded (`\'`, `\n`, `\x2d`); outside, a backslash escapes
- * any character.
+ * any character. Outside single quotes a backslash-newline is a line continuation and leaves nothing.
  */
 function unquote(raw: string): string {
   let word = ''
@@ -561,7 +567,7 @@ function unquote(raw: string): string {
       index = quoted.end
     } else if (character === '\\') {
       index++
-      word += raw[index] ?? ''
+      if (raw[index] !== '\n') word += raw[index] ?? ''
     } else word += character
   }
   return word
@@ -577,9 +583,9 @@ function doubleQuoted(raw: string, from: number): { text: string; end: number } 
   for (; index < raw.length && raw[index] !== '"'; index++) {
     if (raw[index] !== '\\') continue
     const escaped = raw[index + 1] ?? ''
-    // A backslash before any other character stays, with that character, in the run.
-    if (DOUBLE_QUOTE_ESCAPES.has(escaped)) {
-      text += raw.slice(run, index) + escaped
+    // A backslash before any other character stays, with that character, in the run; a backslash-newline leaves nothing.
+    if (DOUBLE_QUOTE_ESCAPES.has(escaped) || escaped === '\n') {
+      text += raw.slice(run, index) + (escaped === '\n' ? '' : escaped)
       run = index + 2
     }
     index++

@@ -554,6 +554,34 @@ describe('a call Buckle cannot read whole', () => {
     expect(performance.now() - started).toBeLessThan(1_000)
   })
 
+  // Slice 7h probe: a backslash-newline outside single quotes is a line continuation bash removes before it splits
+  // words, so one inside a command name or a flag ran a git push, or a force push, that every rule read as two words.
+  // Real bash ran the sentinel in each shape.
+  const continuedShapes = {
+    'the command name': `gi${B}\nt push origin main`,
+    'a word inside a double-quoted substitution': `echo "$(git pu${B}\nsh origin main)"`,
+    'a double-quoted shell body': `bash -c "gi${B}\nt push origin main"`,
+    'a word inside a backtick substitution': `echo \`git pu${B}\nsh origin main\``,
+  } as const
+
+  it.each(cases.flatMap(([engine, switched]) => Object.entries(continuedShapes).map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a git push a backslash-newline splits in %s', (engine, switched, _shape, body) => {
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each(['workspace', 'ceiling'] as const)('asks at the floor, %s with no deny glob, about a force push whose flag a backslash-newline splits', (engine) => {
+    for (const body of [`git push --for${B}\nce origin main`, `echo \`git push "--for${B}\nce" origin main\``]) {
+      const outcome = check(engine, false, body, [])
+      if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+      expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+    }
+  })
+
+  // A continuation between words joins no word and leaves none, so `git push \<newline> --force` reads as `git push
+  // --force` and a word glob on it still matches; an empty word between push and the flag would misalign it.
+  it.each(cases)('refuses a force push with a space-surrounded continuation, %s deny, switch on: %s, by the force glob', (engine, switched) => {
+    expect(refusal(check(engine, switched, `git push ${B}\n --force origin main`, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
+  })
+
   // Slice 7e review R7E-LW-3: the node ceiling's rule runs first, so with deny lists in both policies it refused at a
   // reading limit naming itself although the workspace glob had matched the push. A glob that matched in any policy is
   // named first; the limit is named, ceiling first, only when none matched. The call is refused either way.
