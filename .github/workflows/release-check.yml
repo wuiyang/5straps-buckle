@@ -1,0 +1,65 @@
+name: Release checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Nothing here pushes; install scripts of native dependencies must not find a token.
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify release artifacts
+        run: pnpm release:check
+
+  package-arm64:
+    # Linux ARM64 runs the package suites and the packaged installs, and blocks a release as verify
+    # does: scripts/release/require-ci.mjs checks both jobs on the released commit. node-pty builds
+    # from source here through onlyBuiltDependencies (pnpm-workspace.yaml); it is an optional
+    # dependency, so a failed build still installs, and the next step proves it loads.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Nothing here pushes; install scripts of native dependencies must not find a token.
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Prove the node-pty addon built
+        run: pnpm --filter @5straps/buckle exec node -e "require('node-pty')"
+      - name: Package test suites
+        run: pnpm test
+      - name: Build the packages the installs pack
+        run: pnpm -r build
+      - name: Verify packaged installs
+        run: pnpm test:package

@@ -1,0 +1,7 @@
+packages:
+  - packages/protocol
+  - packages/runtime
+  - harness-rpc
+
+onlyBuiltDependencies:
+  - node-pty
