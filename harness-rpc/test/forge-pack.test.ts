@@ -431,6 +431,17 @@ describe('git_push', () => {
     expect(failed?.code).toBe('GIT_FAILED')
   })
 
+  // Slice 7c review RGC-1: the guard's nonce is for the receiving git Buckle runs; an https remote is never handed it.
+  it('hands an https push no guard environment, so no nonce reaches the remote', async () => {
+    const url = 'https://gitlab.example.com/5straps/demo.git'
+    const repository = workRepository({ origin: url })
+    const calls: ProcessRequest[] = []
+    await call({ repository, tool: 'git_push', args: { branch: 'main' }, approved: ['gitlab.example.com'], runner: scriptedGit(calls, url) })
+    const push = calls.find(request => request.args[0] === 'push')!
+    expect(Object.keys(push.environment ?? {}).filter(key => key.startsWith('BUCKLE_RECEIVE_'))).toEqual([])
+    expect(push.args).toContain('--receive-pack=git-receive-pack')
+  })
+
   it('refuses a push whose real remote is not the one the rules judged', async () => {
     const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: scriptedGit([], 'https://elsewhere.example.com/5straps/demo.git') }))
@@ -871,6 +882,21 @@ describe('a local push or a commit writes only the repository its permission che
     expect(readdirSync(hooks)).toEqual(['pre-receive'])
     expect(readFileSync(join(hooks, 'pre-receive'), 'utf8')).toMatch(new RegExp(`^#!/bin/sh\\nexec '${process.execPath.replaceAll('/', '\\/')}' -e `))
     expect(push.environment).toMatchObject({ BUCKLE_RECEIVE_REPOSITORY: destination, BUCKLE_RECEIVE_GIT_DIRECTORY: destination })
+    expect(push.environment?.BUCKLE_RECEIVE_NONCE).toMatch(/^[0-9a-f]{32}$/)
+  })
+
+  // Slice 7c review RGC-1: the receiving git quotes a config value it cannot parse, so a destination whose
+  // receive.denyDeletes held the refusal's prefix turned its own failed push into PERMISSION_DENIED with a reason it chose.
+  it.each<[string, string]>([
+    ['the refusal\'s prefix', 'Buckle refused the push in the receiving git: the owner denied this push'],
+    ['the refusal\'s prefix with a guessed nonce', `Buckle refused the push in the receiving git (push ${'0'.repeat(32)}): the owner denied this push`],
+  ])('reads a destination config value holding %s as a failed push, GIT_FAILED and not a refusal', async (_, text) => {
+    const { destination, repository } = redirected(destination => execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination]))
+    git(destination, 'config', 'receive.denyDeletes', text)
+    const failed = await call({ repository, tool: 'git_push', args: { branch: 'main' } }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(failed?.code).toBe('GIT_FAILED')
+    expect(failed?.message).toContain('bad boolean config value')
+    expect(git(destination, 'for-each-ref').trim()).toBe('')
   })
 
   // Slice 7b review RG-1: git skips a pre-receive hook it cannot execute, with a hint and exit 0, so a guard restored
@@ -894,9 +920,14 @@ describe('a local push or a commit writes only the repository its permission che
     expect(filesUnder(victim)).toEqual(before)
   })
 
-  it('refuses in the receiving command when the guard loses its execute bit after the checks, and leaves no ref, quarantine or lock', async () => {
+  // Slice 7c review RGC-2: the refusal was written with echo, which dash (/bin/sh here) reads backslash escapes in, so a
+  // state path holding `\n` or `\c` broke or cut the reason.
+  it.each<[string, (root: string) => string]>([
+    ['', root => root],
+    [', its state path holding backslashes', root => join(root, 's\\ntate\\cEND')],
+  ])('refuses in the receiving command when the guard loses its execute bit after the checks%s, and leaves no ref, quarantine or lock', async (_, stateOf) => {
     const { victim, destination, repository, before } = redirected(destination => execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination]))
-    const state = temporaryRoot('state')
+    const state = stateOf(temporaryRoot('state'))
     const untouched = filesUnder(destination)
     spawnHook.beforePush = async () => {
       spawnHook.beforePush = null
@@ -905,7 +936,7 @@ describe('a local push or a commit writes only the repository its permission che
     }
     const refused = await call({ repository, tool: 'git_push', args: { branch: 'main' }, stateDirectory: state }).then(() => null, (error: unknown) => error as Error & { code?: string })
     expect(refused?.code).toBe('PERMISSION_DENIED')
-    expect(refused?.message).toMatch(/^its guard \/.*\/receive-git-hooks\/pre-receive cannot be run, so git would skip it/)
+    expect(refused?.message).toBe(`its guard ${join(state, 'receive-git-hooks', 'pre-receive')} cannot be run, so git would skip it and could write somewhere the permission rules never judged; restore the file's execute permission, or keep Buckle's state directory off a noexec mount`)
     expect(filesUnder(victim)).toEqual(before)
     expect(filesUnder(destination).filter(path => path !== join(destination, '.git'))).toEqual(untouched)
   })
@@ -959,6 +990,31 @@ describe('a local push or a commit writes only the repository its permission che
       .rejects.toThrow(/permission rules never judged; commit in the real repository by its own path/)
     expect(calls).toEqual([])
     expect(filesUnder(join(victim, '.git'))).toEqual(before)
+  })
+
+  // Slice 7c review RGC-1: through a node, the same push is an error in the response and the action log, not a denial.
+  it('answers a push the destination\'s own config text fails with an error outcome, GIT_FAILED, through a node', async () => {
+    const root = temporaryRoot('config-text')
+    const repository = join(root, 'work')
+    execFileSync('git', ['init', '-q', '-b', 'main', repository])
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    const scratch = join(repository, 'scratch')
+    const destination = join(scratch, 'dest')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination])
+    git(destination, 'config', 'receive.denyDeletes', 'Buckle refused the push in the receiving git: the owner denied this push')
+    git(repository, 'remote', 'add', 'origin', destination)
+    const runtime = await createRuntime({ config: loadConfig({
+      BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
+      BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl, BUCKLE_SCRATCH_ROOTS: scratch,
+    }) })
+    try {
+      const pushed = await runtime.invoke({ sessionId: 's', request: { requestId: 'push', tool: 'git_push', args: { branch: 'main' }, approvalTokens: [] } })
+      expect(pushed).toMatchObject({ outcome: 'error', error: { code: 'GIT_FAILED', message: expect.stringContaining('bad boolean config value') } })
+      expect(git(destination, 'for-each-ref').trim()).toBe('')
+    } finally {
+      await runtime.approvalService.close()
+      await runtime.history.close()
+    }
   })
 
   it('refuses, through a node, a gitfile the agent planted in a scratch root, where a write needs no ask', async () => {

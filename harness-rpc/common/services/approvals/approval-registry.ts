@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
-import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
+import { alreadyReported, createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
@@ -403,10 +403,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   const notifies = (entry: PendingEntry): boolean => entry.notify === true || (durableNotices && entry.workspace === workspace)
 
   /** Reads the queue without the lock, and notes when its earliest waiting ask expires. */
-  function read(options?: { quiet?: boolean }): State {
+  function read(): State {
     // Capture before reading: a concurrent atomic rename is noticed on the next check.
     const version = currentQueueVersion()
-    const state = store.read(options)
+    const state = store.read()
     queueVersion = version
     nextExpiry = earliestExpiry(state)
     return state
@@ -465,7 +465,9 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     nextExpiry = Number.POSITIVE_INFINITY
     pruning = update(() => undefined).catch((error: unknown) => {
       nextExpiry = Date.now() + PRUNE_RETRY_MS
-      logger.warn('Could not drop the approvals that expired', { error: withoutCause(error) })
+      // A damaged index the store already reported is retried quietly, not warned about every PRUNE_RETRY_MS (slice 7c
+      // review R7C-TL-3).
+      if (!alreadyReported(error)) logger.warn('Could not drop the approvals that expired', { error: withoutCause(error) })
     }).finally(() => { pruning = undefined })
     return pruning
   }
@@ -473,13 +475,13 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   /**
    * Reads the index for pruneWhenDue. A damaged one fails the calls that need the queue, never an ordinary call the
    * rules settled (review L3 of the continuation review): it is logged once for each version of the file, with the
-   * error's name and own message and never its cause, which quotes the file (slice 7 review R7-RR-3). The timed
-   * retry of a version already found unreadable reads it quietly, so the store does not log it again every
-   * PRUNE_RETRY_MS (slice 7b review RRL-2).
+   * error's name and own message and never its cause, which quotes the file (slice 7 review R7-RR-3). The store logs
+   * its own line once for each version, so the timed retry of a version already found unreadable adds none (slice 7b
+   * review RRL-2, slice 7c review R7C-TL-3).
    */
   function readForPrune(version: string): boolean {
     try {
-      read({ quiet: version === unreadableVersion })
+      read()
       unreadableVersion = undefined
       return true
     } catch (error) {

@@ -1,5 +1,6 @@
 import type { ApprovalNotice, ApprovalRequest, ApprovalSkipReason, GrantScope } from '@5straps/protocol'
 import type { ApprovalRegistry } from './approval-registry.js'
+import { alreadyReported } from '../../adapters/json-file-store.js'
 import { logger } from '../../runtime/log.js'
 
 export interface ApprovalNotices {
@@ -82,7 +83,9 @@ function createDurableNotices(input: {
     } catch (error: unknown) {
       requested = false
       backingOff = true
-      logger.warn('Approval lifecycle delivery will be retried', { message: error instanceof Error ? error.message : 'Unknown error' })
+      // A damaged index the store already reported is retried quietly, not warned about at every retry (slice 7c
+      // review R7C-TL-3).
+      if (!alreadyReported(error)) logger.warn('Approval lifecycle delivery will be retried', { message: error instanceof Error ? error.message : 'Unknown error' })
     }
   }
 

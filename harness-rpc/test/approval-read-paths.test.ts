@@ -6,8 +6,10 @@ import { promisify } from 'node:util'
 import { emptyWorkspacePolicy, type ApprovalNotice } from '@5straps/protocol'
 import { callDigestOf, generateSigningKey, shownCallDigestOf, signChallenge, signingKeyFromPem } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
+import { createJsonFileStore } from '../common/adapters/json-file-store.js'
+import { createApprovalNotices, type ApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { createApprovalRegistry, MAX_PENDING_BYTES_PER_SESSION, MAX_PENDING_PER_SESSION, type AskedCall } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
@@ -337,6 +339,133 @@ describe('an index unreadable for a while, then repaired in place', () => {
       error.mockRestore()
       await service.close()
     }
+  })
+
+  // Slice 7c review R7C-TL-3: an index read before it went unreadable kept its version, so pruning an expired ask went
+  // straight to the update, whose read logged the store's line and a warning every 5 s; with a webhook, the outcome
+  // sender's retry read logged both lines again every 5 s, calls or not.
+  describe('an index unreadable after an ask expired, read by the prune retry and the outcome sender (R7C-TL-3)', () => {
+    const stored = (error: { mock: { calls: unknown[][] } }) => error.mock.calls.filter(([message]) => message === 'State file cannot be read safely').length
+    const warned = (warn: { mock: { calls: unknown[][] } }, message: string) => warn.mock.calls.filter(([logged]) => logged === message).length
+    /** The prune's and the sender's warnings together: whichever reads the damage first warns, and the other stays quiet. */
+    const retries = (warn: { mock: { calls: unknown[][] } }) => warned(warn, 'Could not drop the approvals that expired') + warned(warn, 'Approval lifecycle delivery will be retried')
+
+    /** A queue whose ends go to an outcome receiver through the durable outbox, retried every 20 ms. */
+    function withWebhook() {
+      const root = mkdtempSync(join(tmpdir(), 'buckle-read-paths-'))
+      roots.push(root)
+      const filePath = join(root, 'approvals.json')
+      const sent: ApprovalNotice[] = []
+      let notices: ApprovalNotices | undefined
+      const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), filePath, root, 0, { durableNotices: true, onNoticeQueued: () => { void notices?.flush() } })
+      notices = createApprovalNotices(async (batch) => { sent.push(...batch) }, { registry, retryMs: 20 })
+      return { filePath, registry, notices, sent }
+    }
+
+    /** Thirty seconds of ordinary calls, one a second; with a webhook, the sender retries between them. */
+    async function thirtySeconds(registry: ReturnType<typeof createApprovalRegistry>): Promise<void> {
+      for (let second = 0; second <= 30; second++) {
+        expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+        vi.setSystemTime(Date.now() + 1_000)
+        await new Promise(resolve => setTimeout(resolve, 30))
+      }
+    }
+
+    it.skipIf(process.getuid?.() === 0)('logs a file\'s failure once per version until a read succeeds, so a damage after a repair in place logs again', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'buckle-read-paths-'))
+      roots.push(root)
+      const filePath = join(root, 'state.json')
+      writeFileSync(filePath, '{"value":1}\n')
+      const store = createJsonFileStore({ filePath, schema: z.object({ value: z.number() }), fallback: { value: 0 } })
+      const error = vi.spyOn(logger, 'error')
+      const failure = () => { try { store.read(); return null } catch (thrown) { return thrown as { repeated?: boolean } } }
+      try {
+        chmodSync(filePath, 0o000)
+        expect([failure(), failure(), failure()].map(thrown => thrown?.repeated)).toEqual([false, true, true])
+        expect(stored(error)).toBe(1)
+        chmodSync(filePath, 0o600)
+        expect(store.read()).toEqual({ value: 1 })
+        chmodSync(filePath, 0o000)
+        expect([failure(), failure()].map(thrown => thrown?.repeated)).toEqual([false, true])
+        expect(stored(error)).toBe(2)
+        chmodSync(filePath, 0o600)
+        writeFileSync(filePath, '{"value":')
+        expect(failure()?.repeated).toBe(false)
+        expect(stored(error)).toBe(3)
+      } finally {
+        chmodSync(filePath, 0o600)
+        error.mockRestore()
+      }
+    })
+
+    it.skipIf(process.getuid?.() === 0)('logs the store error once across 30 s of ordinary calls, prunes after the repair, and logs a new damage once more', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      const { filePath, registry, service } = queue()
+      const warn = vi.spyOn(logger, 'warn')
+      const error = vi.spyOn(logger, 'error')
+      try {
+        await issue(registry)
+        expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+        chmodSync(filePath, 0o000)
+        vi.setSystemTime(Date.now() + 11 * 60_000)
+        await thirtySeconds(registry)
+        expect(stored(error)).toBe(1)
+        expect(warned(warn, 'Could not drop the approvals that expired')).toBe(1)
+        chmodSync(filePath, 0o600)
+        vi.setSystemTime(Date.now() + 6_000)
+        expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+        expect(JSON.parse(readFileSync(filePath, 'utf8')).pending).toEqual([])
+        await issue(registry)
+        expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+        chmodSync(filePath, 0o000)
+        vi.setSystemTime(Date.now() + 11 * 60_000)
+        await thirtySeconds(registry)
+        expect(stored(error)).toBe(2)
+        expect(warned(warn, 'Could not drop the approvals that expired')).toBe(2)
+      } finally {
+        chmodSync(filePath, 0o600)
+        warn.mockRestore()
+        error.mockRestore()
+        await service.close()
+      }
+    })
+
+    it.skipIf(process.getuid?.() === 0)('logs it once with a webhook too, whose sender retries meanwhile, and delivers the expiry after the repair', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      const { filePath, registry, notices, sent } = withWebhook()
+      const warn = vi.spyOn(logger, 'warn')
+      const error = vi.spyOn(logger, 'error')
+      try {
+        const [request] = (await issue(registry)).requests
+        expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+        chmodSync(filePath, 0o000)
+        vi.setSystemTime(Date.now() + 11 * 60_000)
+        await thirtySeconds(registry)
+        expect(stored(error)).toBe(1)
+        expect(retries(warn)).toBe(1)
+        chmodSync(filePath, 0o600)
+        vi.setSystemTime(Date.now() + 6_000)
+        expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+        await vi.waitFor(() => expect(sent.map(notice => [notice.token, notice.event])).toEqual([[request!.token, 'expired']]))
+        expect(JSON.parse(readFileSync(filePath, 'utf8'))).toMatchObject({ pending: [], outbox: [] })
+        const [again] = (await issue(registry)).requests
+        expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+        chmodSync(filePath, 0o000)
+        vi.setSystemTime(Date.now() + 11 * 60_000)
+        await thirtySeconds(registry)
+        expect(stored(error)).toBe(2)
+        expect(retries(warn)).toBe(2)
+        chmodSync(filePath, 0o600)
+        vi.setSystemTime(Date.now() + 6_000)
+        expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+        await vi.waitFor(() => expect(sent.map(notice => notice.token)).toContain(again!.token))
+      } finally {
+        chmodSync(filePath, 0o600)
+        warn.mockRestore()
+        error.mockRestore()
+        await notices.settle()
+      }
+    })
   })
 
   it('names the error and the file in its warning, and no part of the damaged text', async () => {

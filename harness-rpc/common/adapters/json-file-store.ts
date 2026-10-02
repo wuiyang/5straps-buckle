@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { withFileLock } from '@5straps/runtime/sqlite'
@@ -15,6 +15,21 @@ export const STATE_BUSY = 'STATE_BUSY'
 export class StateFileError extends Error {
   // Named, so a log line that keeps only an error's name and own message says which failure it was.
   override readonly name = 'StateFileError'
+  /** The store already logged this failure of this version of the file, so a caller's own warning need not repeat it. */
+  readonly repeated: boolean
+
+  constructor(message: string, options: { repeated: boolean }) {
+    super(message)
+    this.repeated = options.repeated
+  }
+}
+
+/**
+ * Whether a failure is a state file the store already reported unreadable, unchanged since: a timed retry that meets it
+ * again stays quiet (slice 7c review R7C-TL-3).
+ */
+export function alreadyReported(error: unknown): boolean {
+  return error instanceof StateFileError && error.repeated
 }
 
 /** Another process held the state file's lock past the wait; HTTP answers 503, the CLI exits 1. */
@@ -29,10 +44,11 @@ const LOCK_POLL_MS = 25
 
 export interface JsonFileStore<T> {
   /**
-   * Lock-free: every write is an atomic rename. `quiet` leaves an unreadable file's error line to a caller that logs
-   * the failure itself, once (slice 7b review RRL-2).
+   * Lock-free: every write is an atomic rename. An unreadable file's error line is logged once for each failure of each
+   * version of the file, until a read succeeds, whichever caller reads it (slice 7b review RRL-2, slice 7c review
+   * R7C-TL-3).
    */
-  read(options?: { quiet?: boolean }): T
+  read(): T
   write(value: T): Promise<void>
   /** Read, change and persist under the file lock. A change that awaits keeps the lock meanwhile, so keep it short. */
   update<R>(change: (state: T) => R | Promise<R>): Promise<R>
@@ -65,16 +81,29 @@ function inTurn<R>(key: string, operation: () => Promise<R>): Promise<R> {
 }
 
 export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodType<T>; fallback: T; lockDeadlineMs?: number }): JsonFileStore<T> {
-  function read(options: { quiet?: boolean } = {}): T {
+  // The failure last logged, with the file's version: met again, it is thrown without a second line. A mode put back
+  // keeps the version, so only a read that succeeds forgets it, and a new damage after that is logged again.
+  let reported: string | undefined
+
+  function read(): T {
     try {
-      return input.schema.parse(JSON.parse(readFileSync(input.filePath, 'utf8')))
+      const value = input.schema.parse(JSON.parse(readFileSync(input.filePath, 'utf8')))
+      reported = undefined
+      return value
     } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return structuredClone(input.fallback)
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+        reported = undefined
+        return structuredClone(input.fallback)
+      }
       const fields = invalidFields(error)
-      if (!options.quiet) logger.error('State file cannot be read safely', { filePath: input.filePath, reason: failureKind(error), ...(fields ? { fields } : {}) })
+      const reason = failureKind(error)
+      const failure = `${fileVersion(input.filePath)} ${reason} ${fields ?? ''}`
+      const repeated = failure === reported
+      if (!repeated) logger.error('State file cannot be read safely', { filePath: input.filePath, reason, ...(fields ? { fields } : {}) })
+      reported = failure
       // No cause: a parse error's message quotes the file around the fault, and every log site that meets this error
       // would follow it (slice 7b review RRL-1). This line and the one above name the file, the kind and the fields.
-      throw new StateFileError(`State file is unreadable or invalid: ${input.filePath}${fields ? ` at ${fields}` : ''}; owner repair is required`)
+      throw new StateFileError(`State file is unreadable or invalid: ${input.filePath}${fields ? ` at ${fields}` : ''}; owner repair is required`, { repeated })
     }
   }
 
@@ -117,6 +146,16 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
       persist(state)
       return result
     }),
+  }
+}
+
+/** A file's device, inode, modification time and size, so a file replaced or rewritten reads as another version. */
+function fileVersion(filePath: string): string {
+  try {
+    const stats = statSync(filePath, { throwIfNoEntry: false })
+    return stats ? `${stats.dev}:${stats.ino}:${stats.mtimeMs}:${stats.size}` : 'missing'
+  } catch (error) {
+    return `unknown:${failureKind(error)}`
   }
 }
 

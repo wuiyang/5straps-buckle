@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { accessSync, chmodSync, constants, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ToolExecutionError } from '../../../domain/tool.js'
@@ -6,8 +7,13 @@ import { MAX_ENTRIES, POINTER_FILES, REF_DIRECTORIES } from './own-git-directory
 
 /** Buckle-owned, and where the receiving git of a local push finds its hooks: the guard below, and nothing else. */
 const RECEIVE_HOOKS_DIRECTORY = 'receive-git-hooks'
-/** What the guard writes before its reason, so its refusal is told apart from any other failed push. */
-const REFUSAL = 'Buckle refused the push in the receiving git: '
+/**
+ * What the guard and the receiving command write before their reason, around the push's nonce: `<BEFORE_NONCE><nonce>
+ * <AFTER_NONCE><reason>`. Only Buckle knows the nonce, so a destination's own text (a config value git quotes when it
+ * fails to parse it) is never read as Buckle's refusal (slice 7c review RGC-1).
+ */
+const BEFORE_NONCE = 'Buckle refused the push in the receiving git (push '
+const AFTER_NONCE = '): '
 
 /**
  * The receiving git's pre-receive hook (slice 7 review F3). The checks before a local push hold only the pushing
@@ -23,14 +29,14 @@ const GUARD_SOURCE = `'use strict'
 const { lstatSync, readdirSync, realpathSync } = require('node:fs')
 const { dirname, join } = require('node:path')
 const NEWLINE = String.fromCharCode(10)
-const { BUCKLE_RECEIVE_REPOSITORY: repository, BUCKLE_RECEIVE_GIT_DIRECTORY: gitDirectory, BUCKLE_RECEIVE_REMEDY: remedy, GIT_QUARANTINE_PATH: quarantine } = process.env
+const { BUCKLE_RECEIVE_REPOSITORY: repository, BUCKLE_RECEIVE_GIT_DIRECTORY: gitDirectory, BUCKLE_RECEIVE_REMEDY: remedy, BUCKLE_RECEIVE_NONCE: nonce, GIT_QUARANTINE_PATH: quarantine } = process.env
 const refuse = (problem) => {
-  process.stderr.write(${JSON.stringify(REFUSAL)} + problem + ', so git would write somewhere the permission rules never judged; ' + (remedy || 'push to the real repository by its own path') + NEWLINE)
+  process.stderr.write(${JSON.stringify(BEFORE_NONCE)} + nonce + ${JSON.stringify(AFTER_NONCE)} + problem + ', so git would write somewhere the permission rules never judged; ' + (remedy || 'push to the real repository by its own path') + NEWLINE)
   process.exit(1)
 }
 const statOf = (path) => { try { return lstatSync(path) } catch { return null } }
 const realPathOf = (path) => { try { return realpathSync.native(path) } catch { return null } }
-if (!repository || !gitDirectory) refuse('the push named no checked destination')
+if (!repository || !gitDirectory || !nonce) refuse('the push named no checked destination')
 const opened = realPathOf(process.cwd())
 if (opened !== gitDirectory) refuse('receive-pack opened ' + opened + ', not the git directory ' + gitDirectory + ' checked before the push')
 if (quarantine && realPathOf(dirname(quarantine)) !== realPathOf(join(gitDirectory, 'objects'))) refuse('receive-pack stores the pushed objects in ' + dirname(quarantine) + ', outside ' + gitDirectory)
@@ -71,13 +77,16 @@ for (const [path, depth] of scans) {
  * isolation and Buckle's guard as its only hook (ensureReceiveGuard), started only while that hook can run. Git skips
  * a hook it cannot execute with a hint and no failure, so the command tests the execute bit itself first and refuses
  * without it (slice 7b review RG-1): a hook that lost its mode after the checks, or a state directory on a noexec
- * mount, fails the push closed. Git runs the command through a shell and appends the destination's path to it.
+ * mount, fails the push closed. Git runs the command through a shell and appends the destination's path to it. The
+ * refusal carries the push's nonce from the environment, and is written with printf, since dash's echo reads a
+ * backslash in the state path as an escape and cut the text (slice 7c review RGC-2).
  */
 export function guardedReceivePackCommand(stateDirectory: string): string {
   const directory = ensureReceiveGuard(stateDirectory)
   const hook = join(directory, 'pre-receive')
-  const refusal = `${REFUSAL}its guard ${hook} cannot be run, so git would skip it and could write somewhere the permission rules never judged; restore the file's execute permission, or keep Buckle's state directory off a noexec mount`
-  return `test -x ${shellQuoted(hook)} || { echo ${shellQuoted(refusal)} >&2; exit 1; }; exec ${receivePackCommand(directory)}`
+  const reason = `its guard ${hook} cannot be run, so git would skip it and could write somewhere the permission rules never judged; restore the file's execute permission, or keep Buckle's state directory off a noexec mount`
+  const refusal = `${shellQuoted(BEFORE_NONCE)}"$BUCKLE_RECEIVE_NONCE"${shellQuoted(`${AFTER_NONCE}${reason}`)}`
+  return `test -x ${shellQuoted(hook)} || { printf '%s\\n' ${refusal} >&2; exit 1; }; exec ${receivePackCommand(directory)}`
 }
 
 /**
@@ -123,17 +132,26 @@ function executable(path: string): boolean {
   }
 }
 
-/** What the guard is told about the push, through the environment git hands the receiving git and its hooks. */
-export function receiveGuardEnvironment(input: { repository: string; gitDirectory: string; remedy: string }): Record<string, string> {
-  return { BUCKLE_RECEIVE_REPOSITORY: input.repository, BUCKLE_RECEIVE_GIT_DIRECTORY: input.gitDirectory, BUCKLE_RECEIVE_REMEDY: input.remedy }
+/**
+ * One local push's guard: what it is told, through the environment git hands the receiving git and its hooks, with a
+ * nonce made for this push alone, and how its refusal is read back out of the failed push's stderr: only a line that
+ * carries that nonce is Buckle's (slice 7c review RGC-1).
+ */
+export function receiveGuard(input: { repository: string; gitDirectory: string; remedy: string }): { environment: Record<string, string>; refusedBy: (stderr: string) => string | null } {
+  const nonce = randomBytes(16).toString('hex')
+  return {
+    environment: { BUCKLE_RECEIVE_REPOSITORY: input.repository, BUCKLE_RECEIVE_GIT_DIRECTORY: input.gitDirectory, BUCKLE_RECEIVE_REMEDY: input.remedy, BUCKLE_RECEIVE_NONCE: nonce },
+    refusedBy: stderr => guardRefusal(stderr, nonce),
+  }
 }
 
-/** The guard's reason when a failed push's stderr carries one, or null for any other failure. */
-export function guardRefusal(stderr: string): string | null {
-  const at = stderr.indexOf(REFUSAL)
+/** The guard's reason when a failed push's stderr carries its refusal with this push's nonce, or null for any other failure. */
+function guardRefusal(stderr: string, nonce: string): string | null {
+  const start = `${BEFORE_NONCE}${nonce}${AFTER_NONCE}`
+  const at = stderr.indexOf(start)
   if (at < 0) return null
   const end = stderr.indexOf('\n', at)
-  return stderr.slice(at + REFUSAL.length, end < 0 ? stderr.length : end).trim()
+  return stderr.slice(at + start.length, end < 0 ? stderr.length : end).trim()
 }
 
 function readOrNull(path: string): string | null {

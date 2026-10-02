@@ -19,7 +19,7 @@ import { describeProcessFailure } from '../process-failure.js'
 import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
 import { assertNoFilters, assertNoFilterPrograms } from './isolation.js'
 import { assertGitAgrees, GIT_DIRECTORY_QUERY, ownGitDirectory } from './own-git-directory.js'
-import { guardedReceivePackCommand, guardRefusal, receiveGuardEnvironment } from './receive-pack-guard.js'
+import { guardedReceivePackCommand, receiveGuard } from './receive-pack-guard.js'
 import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
 const PACK_ID = 'forge'
@@ -229,16 +229,13 @@ export function createForgePack(options: ForgePackOptions): Pack {
    * How a push reaches `repository` on this filesystem, once its git directory is its own (review H1 of the
    * continuation review): the receiving git's command, pointed at Buckle's guard as its only hook, and what the
    * guard is told so it can test the repository git really opened before any ref is written (slice 7 review F3).
-   * Only this receiving git is Buckle's, so only its refusal is read as one (slice 7b review RG-2).
+   * Only this receiving git is Buckle's, so only its refusal is read as one (slice 7b review RG-2), and only a line with
+   * this push's nonce, which the destination's own text cannot carry (slice 7c review RGC-1).
    */
   const guardedReceivePack = async (input: { repository: string; context: ToolContext }): Promise<ReceivingGit> => {
     const gitDirectory = ownGitDirectory({ repository: input.repository, remedy: PUSH_REMEDY })
     await assertGitResolvesOwn({ repository: input.repository, gitDirectory, remedy: PUSH_REMEDY, context: input.context })
-    return {
-      command: guardedReceivePackCommand(options.stateDirectory),
-      environment: receiveGuardEnvironment({ repository: input.repository, gitDirectory, remedy: PUSH_REMEDY }),
-      refusedBy: guardRefusal,
-    }
+    return { command: guardedReceivePackCommand(options.stateDirectory), ...receiveGuard({ repository: input.repository, gitDirectory, remedy: PUSH_REMEDY }) }
   }
 
   const forgeRepository = (repository: string): ForgeRepository => {
