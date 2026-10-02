@@ -24,6 +24,12 @@ const hasBash = (() => {
 
 if (!hasBash) console.info('heredoc oracle: bash is not on PATH, so the real-bash differential is skipped')
 
+/**
+ * One shape: its body, run as `bash -c`. `written` is the invocation Buckle reads where bash runs it expanded (an
+ * over-read, see BACKTICK_EXTRA).
+ */
+interface Shape { label: string; body: string; written?: string }
+
 /** The dangerous command each shape carries, a sentinel that only records that it ran. `mark` shows its argument too. */
 const SENTINEL = 'sentinel'
 const PAYLOAD = `${SENTINEL} mark`
@@ -75,7 +81,7 @@ const PLACEMENTS: Record<string, string[]> = {
 }
 
 /** Heredocs nested one in another, one to three deep, the payload at the bottom; the outer fed to a shell. */
-const NESTED: Array<{ label: string; body: string }> = [
+const NESTED: Shape[] = [
   { label: 'nest1 quoted bash body, inner unquoted cat', body: `bash <<'EOF'\ncat <<X\necho "$(${PAYLOAD})"\nX\nEOF` },
   { label: 'nest2 cat in cat in bash', body: `bash <<'EOF'\ncat <<X\ncat <<Y\necho "$(${PAYLOAD})"\nY\nX\nEOF` },
   { label: 'nest3 four heredocs deep', body: `bash <<'EOF'\ncat <<W\ncat <<X\ncat <<Y\necho "$(${PAYLOAD})"\nY\nX\nW\nEOF` },
@@ -87,7 +93,7 @@ const NESTED: Array<{ label: string; body: string }> = [
  * the generated table does not already hold, the sentinel in place of their `git push`. Rows where bash runs nothing
  * stay: they pin the over-reads, the safe direction.
  */
-const REVIEW_SHAPES: Array<{ label: string; body: string }> = [
+const REVIEW_SHAPES: Shape[] = [
   { label: '7e review: find five substitutions deep, the innermost double-quoted', body: `cat <<EOF\n$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(${PAYLOAD})" \\;)" \\;)" \\;)" \\;)" \\;)" \\;)\nEOF` },
   { label: '7e review: find five substitutions deep, an unescaped semicolon', body: `cat <<EOF\n$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(${PAYLOAD})" ;)" ;)" ;)" ;)" ;)" ;)\nEOF` },
   { label: '7f review: find five substitutions deep, the innermost unquoted', body: `cat <<EOF\n$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true $(${PAYLOAD}) \\;)" \\;)" \\;)" \\;)" \\;)" \\;)\nEOF` },
@@ -156,7 +162,7 @@ const CONTROL = `bash <<'EOF'\nfind . -maxdepth 0 -exec ${SENTINEL} control \\;\
  * NUL byte or invalid UTF-8 (which the exec harness cannot pass) were confirmed in scratch only; the reader does not
  * crash on the latter and reads the command.
  */
-const ADVERSARIAL: Array<{ label: string; body: string }> = [
+const ADVERSARIAL: Shape[] = [
   { label: 'adversarial: escaped dollar, 1 backslashes', body: `bash <<EOF\nfind . -maxdepth 0 -exec true "\\$(${PAYLOAD})" \\;\nEOF` },
   { label: 'adversarial: unquoted substitution, 1 backslashes', body: `bash <<EOF\necho \\$(${PAYLOAD})\nEOF` },
   { label: 'adversarial: escaped command, 1 backslashes', body: `bash <<EOF\n\\${PAYLOAD}\nEOF` },
@@ -186,6 +192,45 @@ const ADVERSARIAL: Array<{ label: string; body: string }> = [
   { label: 'adversarial: CRLF find, bash', body: `bash <<EOF\r\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\r\nEOF\r\n` },
 ]
 
+const backslashes = (count: number): string => '\\'.repeat(count)
+
+/**
+ * Slice 7h probes: inside a backtick body bash removes a backslash before `\`, a backtick or `$`, and before `"` when
+ * double quotes hold the body, before it parses the body as commands, so `\\--force` there runs `--force`. Runs of 1 to
+ * 8 backslashes before a flag and ending a word, in a backtick body at top level, in double quotes, under bash -c and
+ * on a heredoc body line of every delimiter kind under cat and bash.
+ */
+function backtickShapes(): Shape[] {
+  const shapes: Shape[] = []
+  for (let run = 1; run <= 8; run++) {
+    for (const [place, inner] of [['before a flag', `${SENTINEL} ${backslashes(run)}--force mark`], ['ending a word', `${SENTINEL} --force${backslashes(run)} mark`]] as const) {
+      const substitution = `\`${inner}\``
+      shapes.push({ label: `backtick run ${run} ${place}, top level`, body: `echo ${substitution}` })
+      shapes.push({ label: `backtick run ${run} ${place}, in double quotes`, body: `echo "${substitution}"` })
+      shapes.push({ label: `backtick run ${run} ${place}, under bash -c`, body: `bash -c 'echo ${substitution}'` })
+      for (const command of COMMANDS) {
+        for (const delimiter of DELIMITERS) shapes.push({ label: `backtick run ${run} ${place}, ${command} ${delimiter.dash ? '<<-' : '<<'}${delimiter.open}`, body: shapeBody(command, delimiter, [`echo ${substitution}`]) })
+      }
+    }
+  }
+  return shapes
+}
+
+/** Backtick bodies nested, holding an escaped double quote, or ending in a backslash, each run under real bash in scratch first. */
+const BACKTICK_EXTRA: Shape[] = [
+  { label: 'backtick nested in a backtick, an escaped backslash before a flag', body: `echo \`echo \\\`${SENTINEL} \\\\\\\\--force mark\\\`\`` },
+  { label: 'backtick in double quotes nested in one, an escaped backslash before a flag', body: `echo "\`echo \\"\\\`${SENTINEL} \\\\\\\\--force mark\\\`\\"\`"` },
+  { label: 'backtick in double quotes, escaped double quotes around a flag', body: `echo "\`${SENTINEL} \\"--force\\" mark\`"` },
+  { label: 'backtick in double quotes, an escaped backslash then an escaped double quote', body: `echo "\`${SENTINEL} \\\\\\"--force mark\`"` },
+  { label: 'backtick fed to bash, escaped double quotes around a flag', body: `bash <<'EOF'\necho "\`${SENTINEL} \\"--force\\" mark\`"\nEOF` },
+  { label: 'backtick as heredoc text, escaped double quotes stay', body: `cat <<EOF\necho "\`${SENTINEL} \\"--force\\" mark\`"\nEOF` },
+  { label: 'backtick, four backslashes ending its body', body: `echo \`${SENTINEL} mark\\\\\\\\\`` },
+  { label: 'bash -c, a backslash ending its body', body: `bash -c '${SENTINEL} --force\\'` },
+  // Buckle expands no variable: it reads `$HOME` as written where bash runs the home directory. The command word is
+  // read either way, so a deny glob on it still meets the call; the row counts as an over-read, never as a miss.
+  { label: 'backtick, an escaped dollar (read as written)', body: `echo \`${SENTINEL} \\$HOME\``, written: '$HOME' },
+]
+
 function shapeBody(command: string, delimiter: { open: string; dash: boolean }, lines: string[]): string {
   const tab = delimiter.dash ? '\t' : ''
   const redirect = delimiter.dash ? '<<-' : '<<'
@@ -193,8 +238,8 @@ function shapeBody(command: string, delimiter: { open: string; dash: boolean }, 
   return `${command} ${redirect}${delimiter.open}\n${indented}\n${tab}EOF`
 }
 
-function allShapes(): Array<{ label: string; body: string }> {
-  const shapes: Array<{ label: string; body: string }> = []
+function allShapes(): Shape[] {
+  const shapes: Shape[] = []
   for (const command of COMMANDS) {
     for (const delimiter of DELIMITERS) {
       for (const [name, lines] of Object.entries(PLACEMENTS)) {
@@ -203,7 +248,7 @@ function allShapes(): Array<{ label: string; body: string }> {
       }
     }
   }
-  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL]
+  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA]
 }
 
 /**
@@ -320,9 +365,14 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     const missed: string[] = []
     let ranShapes = 0
     let overRead = 0
-    for (const { label, body } of shapes) {
+    for (const { label, body, written } of shapes) {
       const ran = bashRan(body)
       const read = buckleRan(body)
+      if (written !== undefined) {
+        if (ran.size === 0 || !read.has(written)) missed.push(`${label}: Buckle did not read [sentinel ${written}] as written`)
+        overRead++
+        continue
+      }
       for (const invocation of ran) if (!read.has(invocation)) missed.push(`${label}: bash ran [sentinel ${invocation}] that Buckle did not read`)
       if (ran.size > 0) ranShapes++
       else if (read.size > 0) overRead++

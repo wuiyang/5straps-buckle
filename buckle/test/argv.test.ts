@@ -221,6 +221,24 @@ describe('shell text as a shell splits it', () => {
     }
   })
 
+  // Slice 7h probes: bash removes a backslash before `\`, a backtick or `$` in a backtick body before it parses the
+  // body, and before `"` too when double quotes hold it, so `\\--force` there runs `--force`; the reader read `\--force`.
+  it('reads a backtick body as bash runs it too, its escapes removed first and each nested body in turn', () => {
+    const statements = (text: string) => shellStatementList(text).statements
+    expect(statements('echo `git push \\\\--force origin main`')).toEqual(['echo', 'git push \\\\--force origin main', 'git push \\--force origin main'])
+    expect(statements('echo "`git push \\"--force\\" origin main`"')).toContain('git push "--force" origin main')
+    expect(statements('echo `echo \\`git push \\\\\\\\--force origin main\\``')).toContain('git push \\--force origin main')
+    expect(statements("cat <<EOF\necho `git push \\\\--force`\nEOF")).toContain('git push \\--force')
+    // A body with no backslash reads the same either way, so it is read once.
+    expect(statements('echo `git push --force`')).toEqual(['echo', 'git push --force'])
+  })
+
+  // A backslash that ends the text escapes nothing and bash keeps it; an escaped space ending a statement is a word.
+  it('keeps a backslash that ends the text, and an escaped space that ends a statement', () => {
+    expect(shellTokens('git push --force\\').map(token => token.word)).toEqual(['git', 'push', '--force\\'])
+    expect(shellStatementList('git push \\ \nls\\\n').statements).toEqual(['git push \\ ', 'ls'])
+  })
+
   it('reads each $(...) or backtick body inside double quotes as statements of its own', () => {
     expect(statementsOf('echo "$(git push -f; ls)" `id`')).toEqual(['git push -f', 'ls', 'echo "$(git push -f; ls)"', 'id', 'echo "', '"'])
   })

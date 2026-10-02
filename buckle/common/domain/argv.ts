@@ -238,7 +238,21 @@ export const MAX_DEPTH = 8
  */
 export function shellStatementList(text: string): { statements: string[]; deep: boolean; overDepth: boolean } {
   const { statements, deep, overDepth } = unquotedSplit(text, SHELL_TEXT, 0)
-  return { statements: [...new Set(statements.map(statement => statement.trim()).filter(Boolean))], deep, overDepth }
+  return { statements: [...new Set(statements.map(trimmed).filter(Boolean))], deep, overDepth }
+}
+
+/**
+ * A statement without the whitespace around it. A space, tab or carriage return a backslash escapes is part of a word
+ * (`\ `), so it stays; a backslash before a newline that ends the statement continues the line into nothing, so both go.
+ */
+function trimmed(statement: string): string {
+  const text = statement.trimStart()
+  let end = text.length
+  while (end > 0 && /\s/.test(text[end - 1]!)) end--
+  let backslashes = 0
+  while (backslashes < end && text[end - 1 - backslashes] === '\\') backslashes++
+  if (end === text.length || backslashes % 2 === 0) return text.slice(0, end)
+  return text[end] === '\n' ? text.slice(0, end - 1) : text.slice(0, end + 1)
 }
 
 /**
@@ -259,6 +273,11 @@ interface SplitLevel {
   closer: ')' | '`' | null
   parens: number
   quote: Quote
+  /** Where a backtick level's body starts, and whether double quotes hold it, so `\"` in it is an escape too. */
+  body: number
+  doubleQuoted: boolean
+  /** Where the body of a backtick met at this level outside quotes starts, until its closing backtick; null when none is open. */
+  backtick: number | null
 }
 
 /** How unquotedSplit reads its text. */
@@ -281,13 +300,26 @@ const HEREDOC_TEXT: SplitMode = { heredocText: true, wholeBodies: false }
  */
 function unquotedSplit(text: string, mode: SplitMode, depth: number): { statements: string[]; deep: boolean; overDepth: boolean } {
   const statements: string[] = []
-  const levels: SplitLevel[] = [{ start: 0, closer: null, parens: 0, quote: mode.heredocText ? 'heredoc' : null }]
+  const levels: SplitLevel[] = [{ start: 0, closer: null, parens: 0, quote: mode.heredocText ? 'heredoc' : null, body: 0, doubleQuoted: false, backtick: null }]
   const heredocs: Heredoc[] = []
   let deep = false
   let overDepth = false
   const end = (level: SplitLevel, at: number, next: number) => {
     statements.push(text.slice(level.start, at))
     level.start = next
+  }
+  // A backtick body is also read as bash runs it, its escapes removed first (backtickView), and each body that removal
+  // reveals is read the same way in turn, each level counting against MAX_DEPTH (slice 7h probes).
+  const readBacktick = (body: string, doubleQuoted: boolean) => {
+    if (!body.includes('\\')) return
+    if (depth >= MAX_DEPTH) {
+      overDepth = true
+      return
+    }
+    const split = unquotedSplit(backtickView(body, doubleQuoted), mode.wholeBodies ? SHELL_TEXT : SHELL_LINE, depth + 1)
+    for (const statement of split.statements) statements.push(statement)
+    deep ||= split.deep
+    overDepth ||= split.overDepth
   }
   for (let index = 0; index < text.length; index++) {
     const level = levels.at(-1)!
@@ -308,7 +340,7 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
         if (levels.length > MAX_SUBSTITUTIONS) deep = true
         else {
           if (character === '$') index++
-          levels.push({ start: index + 1, closer: character === '`' ? '`' : ')', parens: 0, quote: null })
+          levels.push({ start: index + 1, closer: character === '`' ? '`' : ')', parens: 0, quote: null, body: index + 1, doubleQuoted: level.quote === '"', backtick: null })
         }
       }
       continue
@@ -317,6 +349,15 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
     else if (character === level.closer && (character === '`' || level.parens === 0)) {
       end(level, index, index + 1)
       levels.pop()
+      if (character === '`') readBacktick(text.slice(level.body, index), level.doubleQuoted)
+    } else if (character === '`') {
+      // A backtick outside quotes opens a body or closes the one open at this level; either way it splits a statement.
+      end(level, index, index + 1)
+      if (level.backtick === null) level.backtick = index + 1
+      else {
+        readBacktick(text.slice(level.backtick, index), false)
+        level.backtick = null
+      }
     } else if (character === "'") level.quote = text[index - 1] === '$' ? "$'" : "'"
     else if (character === '"') level.quote = '"'
     else if (character === '#' && (index === 0 || WORD_BOUNDARY.has(text[index - 1]!))) {
@@ -491,6 +532,26 @@ function fedShellView(body: string): string {
   return view
 }
 
+/**
+ * A backtick body as bash runs it: before it parses the body as commands, bash removes a backslash before `\`, a
+ * backtick or `$`, and before `"` too when double quotes hold the body; every other backslash stays (de_backslash). One
+ * left-to-right pass, so `\\--force` becomes `\--force`, which runs `--force`, and four backslashes leave two.
+ */
+function backtickView(body: string, doubleQuoted: boolean): string {
+  let view = ''
+  for (let index = 0; index < body.length; index++) {
+    const character = body[index]!
+    const next = body[index + 1]
+    if (character === '\\' && (next === '\\' || next === '`' || next === '$' || (doubleQuoted && next === '"'))) {
+      view += next
+      index++
+      continue
+    }
+    view += character
+  }
+  return view
+}
+
 /** A backslash and the character it escapes: a newline after it is removed with it, as bash joins a heredoc body's lines. */
 const CONTINUED_LINE = /\\[\s\S]/g
 const joinLine = (escape: string) => (escape === '\\\n' ? '' : escape)
@@ -546,7 +607,8 @@ export function shellWords(text: string): string[] {
 /**
  * Quote removal as a shell does it: single quotes keep everything; in double quotes a backslash escapes `"`, `\\`,
  * `$` and a backtick; in `$'...'` a backslash escape is decoded (`\'`, `\n`, `\x2d`); outside, a backslash escapes
- * any character. Outside single quotes a backslash-newline is a line continuation and leaves nothing.
+ * any character, and one with nothing after it stays. Outside single quotes a backslash-newline is a line
+ * continuation and leaves nothing.
  */
 function unquote(raw: string): string {
   let word = ''
@@ -567,7 +629,9 @@ function unquote(raw: string): string {
       index = quoted.end
     } else if (character === '\\') {
       index++
-      if (raw[index] !== '\n') word += raw[index] ?? ''
+      // A backslash that ends the text escapes nothing, and bash keeps it (`bash -c 'echo a\'` prints `a\`).
+      if (index >= raw.length) word += '\\'
+      else if (raw[index] !== '\n') word += raw[index]
     } else word += character
   }
   return word

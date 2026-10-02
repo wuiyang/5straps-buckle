@@ -576,6 +576,29 @@ describe('a call Buckle cannot read whole', () => {
     }
   })
 
+  // Slice 7h probes: inside a backtick body bash removes a backslash before `\`, a backtick or `$` (and `"` in double
+  // quotes) before it parses the body, so `\\--force` there force-pushes; the reader read `\--force`, which neither the
+  // force glob nor the force-push floor met, at top level, in double quotes, under bash -c and in every heredoc body.
+  // Real bash ran the sentinel in each shape.
+  const backtickForce = {
+    'top level': `echo \`git push ${B}${B}--force origin main\``,
+    'double quotes': `echo "\`git push ${B}${B}--force origin main\`"`,
+    'bash -c': `bash -c 'echo \`git push ${B}${B}--force origin main\`'`,
+    'a quoted heredoc fed to bash': heredocLine(`echo \`git push ${B}${B}--force origin main\``, "bash <<'EOF'"),
+    'a nested backtick': `echo \`echo ${B}\`git push ${B}${B}${B}${B}--force origin main${B}\`\``,
+    'escaped double quotes in double quotes': `echo "\`git push ${B}"--force${B}" origin main\`"`,
+  } as const
+
+  it.each(cases.flatMap(([engine, switched]) => Object.entries(backtickForce).map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a force push a backtick body escapes in %s, by the force glob', (engine, switched, _shape, body) => {
+    expect(refusal(check(engine, switched, body, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => Object.entries(backtickForce).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push a backtick body escapes in %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
   // A continuation between words joins no word and leaves none, so `git push \<newline> --force` reads as `git push
   // --force` and a word glob on it still matches; an empty word between push and the flag would misalign it.
   it.each(cases)('refuses a force push with a space-surrounded continuation, %s deny, switch on: %s, by the force glob', (engine, switched) => {
