@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shellStatementList, shellTokens, shownCommand, statementPieces } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shellScriptSource, shellStatementList, shellTokens, shownCommand, statementPieces } from '../common/domain/argv.js'
 
 describe('parseArgv', () => {
   it('expands clustered short flags', () => {
@@ -26,6 +26,34 @@ describe('parseArgv', () => {
 
   it('reduces a path to its base command', () => {
     expect(parseArgv('/usr/bin/rm', []).command).toBe('rm')
+  })
+})
+
+// Slice 7h probes: a shell whose script arrives as data (a pipe, a redirection, xargs) runs what no reading sees, so
+// where a shell takes its script from is read as its options say.
+describe('shellScriptSource', () => {
+  it.each<[string[], ReturnType<typeof shellScriptSource>]>([
+    [['-c', 'git push'], 'command'],
+    [['-ec', 'git push'], 'command'],
+    [['-o', 'pipefail', '-c', 'git push'], 'command'],
+    [['-c', '--', 'git push'], 'command'],
+    [['-c'], 'missingCommand'],
+    [['-x', '-c'], 'missingCommand'],
+    [[], 'input'],
+    [['-s', 'one', 'two'], 'input'],
+    [['-'], 'input'],
+    [['--'], 'input'],
+    [['/dev/stdin'], 'input'],
+    [['-x', '/dev/fd/0'], 'input'],
+    [['--norc', '-i'], 'input'],
+    [['build.sh'], 'file'],
+    [['-o', 'pipefail', 'build.sh', 'arg'], 'file'],
+    [['--rcfile', 'rc', 'build.sh'], 'file'],
+    [['--', '-script'], 'file'],
+    [['--version'], 'none'],
+    [['--help'], 'none'],
+  ])('reads a shell given %j as taking its script from: %s', (args, source) => {
+    expect(shellScriptSource(args)).toBe(source)
   })
 })
 

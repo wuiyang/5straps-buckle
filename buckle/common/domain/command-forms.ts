@@ -1,4 +1,4 @@
-import { baseCommand, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, SHELL_COMMANDS, shellStatementList, shellTokensUpTo, shellWords, statementPieces } from './argv.js'
+import { baseCommand, INPUT_PATHS, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, SHELL_COMMANDS, shellScriptSource, shellStatementList, shellTokensUpTo, shellWords, statementPieces } from './argv.js'
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
@@ -18,11 +18,12 @@ export const READ_LIMITS = {
   budget: `Shell text runs past what Buckle reads in one check (READ_BUDGET: ${READ_BUDGET.characters.toLocaleString('en-US')} characters, ${READ_BUDGET.words.toLocaleString('en-US')} words or ${READ_BUDGET.commands.toLocaleString('en-US')} commands across every level)`,
   substitutions: `Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: ${MAX_SUBSTITUTIONS} levels)`,
   findPrimary: 'A find -exec command starts with a word find reads as a primary, which Buckle does not read as a command (find primary)',
+  scriptData: 'A shell takes its script from a pipe, a redirection, or xargs, so the script arrives as data, which Buckle cannot read (script as data)',
 } as const
 
 export type ReadLimit = keyof typeof READ_LIMITS
-/** A limit that leaves a command unread; the budget is kept apart, in `overBudget`. */
-type UnreadLimit = Exclude<ReadLimit, 'budget'>
+/** A limit that leaves a command unread; the budget is kept apart, in `overBudget`, and a script that arrives as data in `scriptData`. */
+type UnreadLimit = Exclude<ReadLimit, 'budget' | 'scriptData'>
 
 /**
  * A program that runs the command named after its own options and operands. Only the options that take a
@@ -132,6 +133,8 @@ export interface CommandForms {
   unknownEval: boolean
   /** The read budget (READ_BUDGET) ran out, so the commands past it were left unread. */
   overBudget: boolean
+  /** A shell or `source` the call runs takes its script as data, from its input or from xargs (scriptArrivesAsData). */
+  scriptData: boolean
 }
 
 /**
@@ -141,7 +144,7 @@ export interface CommandForms {
  * identity never use these forms; a rule shows and binds the raw argv (owner decision D17).
  */
 export function commandForms(command: string, args: readonly string[]): CommandForms {
-  const { rereads: _rereads, ...forms } = formsOf([command, ...args], 0, { ...READ_BUDGET, spent: false })
+  const { rereads: _rereads, ...forms } = formsOf([command, ...args], 0, { ...READ_BUDGET, spent: false }, CALL)
   return forms
 }
 
@@ -163,7 +166,8 @@ export function commandFormsOf(effect: { command: string; args: readonly string[
 /** The limit a reading stopped at, the first in READ_LIMITS order, or null when the call was read whole. */
 export function readLimitOf(forms: CommandForms): ReadLimit | null {
   if (forms.unread === 'depth') return 'depth'
-  return forms.overBudget ? 'budget' : forms.unread
+  if (forms.overBudget) return 'budget'
+  return forms.unread ?? (forms.scriptData ? 'scriptData' : null)
 }
 
 const UNREAD_ORDER = Object.keys(READ_LIMITS) as ReadLimit[]
@@ -186,30 +190,40 @@ interface Budget { characters: number; words: number; commands: number; spent: b
 interface Reading extends CommandForms { rereads: boolean }
 
 /**
+ * Where the words being read stand: the call itself, whose input Buckle's exec leaves empty, or a statement of shell
+ * text (a shell body, eval text, a find -exec command), whose input may be a pipe, a redirection or the input of a
+ * pipeline around it; `heredoc` when a heredoc on that statement feeds its input, which Buckle reads.
+ */
+interface Place { statement: boolean; heredoc: boolean }
+const CALL: Place = { statement: false, heredoc: false }
+
+/**
  * `words` as written: the command word is reduced to its basename only after an assignment prefix is read. Each
  * statement of an inner text is read, and its pieces too unless the statement reads its own text again (eval, a
- * shell, find -exec), which covers them, so no text is read twice per level (slice 7b review W7B-1).
+ * shell, find -exec), which covers them, so no text is read twice per level (slice 7b review W7B-1). A piece is a
+ * split no shell makes, read only so a glob meets a command quoted for another program, so it marks no script as data.
  */
-function formsOf(words: readonly string[], depth: number, budget: Budget): Reading {
+function formsOf(words: readonly string[], depth: number, budget: Budget, place: Place): Reading {
   const { chain, unread } = wrapperChain(words)
   const inner = innerCommands(chain.at(-1)!, budget)
-  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), unknownEval: inner.unknownEval, overBudget: false, rereads: inner.rereads }
-  const read = (command: string[]): Reading | null => {
+  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), unknownEval: inner.unknownEval, overBudget: false, scriptData: scriptArrivesAsData(chain, place), rereads: inner.rereads }
+  const read = (command: string[], at: Place, piece = false): Reading | null => {
     if (depth >= MAX_DEPTH) {
       forms.unread = 'depth'
       return null
     }
-    const nested = formsOf(command, depth + 1, budget)
+    const nested = formsOf(command, depth + 1, budget, at)
     keep(forms.nested, nested.chain, budget)
     keep(forms.nested, nested.nested, budget)
     forms.unread = firstLimit(forms.unread, nested.unread)
     forms.unknownEval ||= nested.unknownEval
+    if (!piece) forms.scriptData ||= nested.scriptData
     return nested
   }
   for (const group of inner.groups) {
     if (budget.spent) break
     if (group.command.length > 0) {
-      const nested = read(group.command)
+      const nested = read(group.command, { statement: true, heredoc: group.heredoc })
       if (nested === null) break
       if (nested.rereads) continue
     }
@@ -217,11 +231,38 @@ function formsOf(words: readonly string[], depth: number, budget: Budget): Readi
     for (const piece of statementPieces(group.statement)) {
       const form = budget.spent ? null : statementForm(piece, budget)
       if (form === null) break
-      if (form.length > 0) read(form)
+      if (form.words.length > 0) read(form.words, { statement: true, heredoc: form.heredoc }, true)
     }
   }
   forms.overBudget = budget.spent
   return forms
+}
+
+/** `source file` and `. file`, which run a script in the shell that reads them. */
+const SOURCE_COMMANDS = new Set(['source', '.'])
+
+/**
+ * Whether the command a chain ends in runs a script that arrives as data, which no reading can see: a shell or `source`
+ * behind xargs, which hands it the items it reads; a shell's `-c` with no command string; and, in shell text, a shell
+ * that reads its script from its input (no script operand, `-s`, `-`, or /dev/stdin) or a `source` of its input or of
+ * a process substitution, unless a heredoc on its own statement feeds that input. The input may be a pipe, a
+ * redirection, or the input of a pipeline around the statement, so the place decides, not a `|` before it. The call
+ * itself (`bash` with no operand) reads the input Buckle's exec leaves empty.
+ */
+function scriptArrivesAsData(chain: readonly string[][], place: Place): boolean {
+  const [command = '', ...args] = chain.at(-1)!
+  const fromInput = place.statement && !place.heredoc
+  if (SHELL_COMMANDS.has(command)) {
+    if (chain.some(form => form[0] === 'xargs')) return true
+    const source = shellScriptSource(args)
+    return source === 'missingCommand' || (source === 'input' && fromInput)
+  }
+  if (SOURCE_COMMANDS.has(command)) {
+    if (chain.some(form => form[0] === 'xargs')) return true
+    const file = args[0] === '--' ? args[1] : args[0]
+    return fromInput && (file === undefined || INPUT_PATHS.has(file))
+  }
+  return false
 }
 
 /** Forms appended one at a time, never spread into one call (slice 7b review W7B-8), up to the budget's command count. */
@@ -236,8 +277,11 @@ function keep(into: string[][], forms: readonly string[][], budget: Budget): voi
   }
 }
 
-/** A command a statement runs, and the statement as written, whose pieces are read too unless the command reads its own text again. */
-interface CommandGroup { command: string[]; statement: string }
+/**
+ * A command a statement runs, the statement as written, whose pieces are read too unless the command reads its own text
+ * again, and whether a heredoc on the statement feeds the command's input.
+ */
+interface CommandGroup { command: string[]; statement: string; heredoc: boolean }
 
 interface InnerCommands { groups: CommandGroup[]; unknownEval: boolean; unread: UnreadLimit | null; rereads: boolean }
 
@@ -246,7 +290,7 @@ function innerCommands(runs: readonly string[], budget: Budget): InnerCommands {
   const [command = '', ...args] = runs
   if (command === 'find') {
     const found = findCommands(args)
-    return { groups: found.commands.map(form => ({ command: form, statement: '' })), unknownEval: false, unread: found.primary ? 'findPrimary' : null, rereads: found.commands.length > 0 }
+    return { groups: found.commands.map(form => ({ command: form, statement: '', heredoc: false })), unknownEval: false, unread: found.primary ? 'findPrimary' : null, rereads: found.commands.length > 0 }
   }
   if (command === 'eval') {
     // eval joins its words with spaces and runs the result as shell text; one leading `--` ends its options (slice 7b review W7B-2).
@@ -267,9 +311,9 @@ function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; u
   const { statements, deep, overDepth } = shellStatementList(text)
   const groups: CommandGroup[] = []
   for (const statement of statements) {
-    const command = statementForm(statement, budget)
-    if (command === null) break
-    groups.push({ command, statement })
+    const form = statementForm(statement, budget)
+    if (form === null) break
+    groups.push({ command: form.words, statement, heredoc: form.heredoc })
   }
   return { groups, unread: overDepth ? 'depth' : deep ? 'substitutions' : null }
 }
@@ -394,23 +438,33 @@ function readShort(wrapper: Wrapper, words: readonly string[], index: number): R
   return { next: index + 1 }
 }
 
+/** A redirection of a statement's input (`<file`, `0<<<text`, `<&3`); STDIN_HEREDOC when it is a heredoc. */
+const STDIN_REDIRECTION = /^0?</
+const STDIN_HEREDOC = /^0?<<(?!<)/
+
 /**
  * A statement's words without its redirections, so `make > /dev/null` is judged as `make`. Only an unquoted
- * operator redirects: `git clean -e '>' -f` hands git a `>` and keeps its `-f` (slice 7 review F2). Null when the
- * budget's words ran out before the statement was read whole.
+ * operator redirects: `git clean -e '>' -f` hands git a `>` and keeps its `-f` (slice 7 review F2). `heredoc` says
+ * the last redirection of its input is a heredoc, which Buckle reads. Null when the budget's words ran out before the
+ * statement was read whole.
  */
-function statementForm(statement: string, budget: Budget): string[] | null {
+function statementForm(statement: string, budget: Budget): { words: string[]; heredoc: boolean } | null {
   const { tokens, more } = shellTokensUpTo(statement, Math.max(0, budget.words))
   budget.words -= tokens.length
   if (more) {
     budget.spent = true
     return null
   }
-  const kept: string[] = []
+  const words: string[] = []
+  let heredoc = false
   for (let index = 0; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
-    if (!REDIRECTION.test(raw)) kept.push(word)
-    else if (BARE_REDIRECTION.test(raw)) index++
+    if (!REDIRECTION.test(raw)) {
+      words.push(word)
+      continue
+    }
+    if (STDIN_REDIRECTION.test(raw)) heredoc = STDIN_HEREDOC.test(raw)
+    if (BARE_REDIRECTION.test(raw)) index++
   }
-  return kept
+  return { words, heredoc }
 }

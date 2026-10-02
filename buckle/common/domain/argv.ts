@@ -185,6 +185,44 @@ export function shellBodyIndexes(words: readonly string[]): Set<number> {
   return bodies
 }
 
+/** Where a shell takes its script from: a `-c` string, a file, its own input, or nowhere (`bash -c` with no string, `bash --version`). */
+export type ShellScriptSource = 'command' | 'missingCommand' | 'file' | 'input' | 'none'
+
+/** Script operands through which a shell reads its own input. */
+export const INPUT_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0'])
+/** Long options after which a shell prints and runs nothing. */
+const SHELL_INFO_OPTIONS = new Set(['--version', '--help'])
+
+/**
+ * Where a shell call takes its script from, its options read as shellBodyIndexes reads them: with `c` among its
+ * options the first operand is the script, and with none the call has no script (`missingCommand`); with `s`, with no
+ * operand, or with an operand naming its own input, the script is that input; any other operand is a script file.
+ */
+export function shellScriptSource(args: readonly string[]): ShellScriptSource {
+  let command = false
+  let input = false
+  let index = 0
+  for (; index < args.length; index++) {
+    const word = args[index]!
+    if (word === '--' || word === '-') {
+      index++
+      break
+    }
+    if (word.length < 2 || (word[0] !== '-' && word[0] !== '+')) break
+    if (word.startsWith('--')) {
+      if (SHELL_INFO_OPTIONS.has(word)) return 'none'
+      if (SHELL_LONG_VALUE_OPTIONS.has(word)) index++
+      continue
+    }
+    if (word[0] === '-' && word.includes('c')) command = true
+    if (word[0] === '-' && word.includes('s')) input = true
+    if ([...word.slice(1)].some(flag => SHELL_VALUE_OPTIONS.has(flag))) index++
+  }
+  const operand = args[index]
+  if (command) return operand === undefined ? 'missingCommand' : 'command'
+  return input || operand === undefined || INPUT_PATHS.has(operand) ? 'input' : 'file'
+}
+
 /**
  * The subject a destructive command is asked and granted under: the shown command, then its identity as
  * a shell comment. It never holds a credential the display redacts, and two commands share it only when

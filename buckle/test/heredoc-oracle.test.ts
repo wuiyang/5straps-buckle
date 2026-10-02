@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { baseCommand } from '../common/domain/argv.js'
-import { allForms, commandForms } from '../common/domain/command-forms.js'
+import { allForms, commandForms, type CommandForms, type ReadLimit, readLimitOf } from '../common/domain/command-forms.js'
 
 /**
  * Slice 7f review and the slice reading rule: Buckle must read a superset of the commands a shell runs, so a denied
@@ -26,9 +26,11 @@ if (!hasBash) console.info('heredoc oracle: bash is not on PATH, so the real-bas
 
 /**
  * One shape: its body, run as `bash -c`. `written` is the invocation Buckle reads where bash runs it expanded (an
- * over-read, see BACKTICK_EXTRA).
+ * over-read, see BACKTICK_EXTRA). `unread` is the limit the reading must name: the call is one Buckle cannot read
+ * whole, so it is refused under any deny glob and asked at the floor (default D33 (b)), and what bash ran need not be
+ * among the commands read.
  */
-interface Shape { label: string; body: string; written?: string }
+interface Shape { label: string; body: string; written?: string; unread?: ReadLimit }
 
 /** The dangerous command each shape carries, a sentinel that only records that it ran. `mark` shows its argument too. */
 const SENTINEL = 'sentinel'
@@ -259,6 +261,44 @@ function backtickCommentShapes(): Shape[] {
   return shapes
 }
 
+/**
+ * Slice 7h probes: a shell whose script arrives as data, piped in, redirected, or handed over by xargs, runs what no
+ * reading sees, so the call is unread (script as data); a heredoc on the shell's own statement and a -c string are
+ * still read. Each shape ran the sentinel under real bash in scratch first.
+ */
+const SCRIPT_DATA: Shape[] = [
+  { label: 'script as data: echo piped into bash', body: `echo '${PAYLOAD}' | bash`, unread: 'scriptData' },
+  { label: 'script as data: printf piped into xargs -d newline bash -c', body: `printf '%s\\n' '${PAYLOAD}' | xargs -d '\\n' bash -c`, unread: 'scriptData' },
+  { label: 'script as data: xargs -0 bash -c', body: `printf '%s\\0' '${PAYLOAD}' | xargs -0 bash -c`, unread: 'scriptData' },
+  { label: 'script as data: xargs bash -c, a double-quoted item', body: `xargs bash -c <<'EOF'\n"${PAYLOAD}"\nEOF`, unread: 'scriptData' },
+  { label: 'script as data: xargs bash -c, a single-quoted item', body: `xargs bash -c <<'EOF'\n'${PAYLOAD}'\nEOF`, unread: 'scriptData' },
+  { label: 'script as data: xargs sh -c, an escaped space', body: `xargs sh -c <<'EOF'\n${SENTINEL}\\ mark\nEOF`, unread: 'scriptData' },
+  { label: 'script as data: xargs bash -c, a bare word', body: `xargs bash -c <<'EOF'\n${SENTINEL}\nEOF`, unread: 'scriptData' },
+  { label: 'script as data: xargs -I bash -c', body: `xargs -I{} bash -c {} <<'EOF'\n${PAYLOAD}\nEOF`, unread: 'scriptData' },
+  { label: 'script as data: xargs -d newline bash -c, a heredoc', body: `xargs -d '\\n' bash -c <<'EOF'\n${PAYLOAD}\nEOF`, unread: 'scriptData' },
+  { label: 'script as data: xargs env bash -c', body: `printf '%s\\n' '${PAYLOAD}' | xargs -d '\\n' env bash -c`, unread: 'scriptData' },
+  { label: 'script as data: a heredoc piped to bash', body: `cat <<'A' | bash\n${PAYLOAD}\nA`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into sh -s', body: `echo '${PAYLOAD}' | sh -s`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into bash -', body: `echo '${PAYLOAD}' | bash -`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into bash /dev/stdin', body: `echo '${PAYLOAD}' | bash /dev/stdin`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into env bash', body: `echo '${PAYLOAD}' | env bash`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into a subshell running bash', body: `echo '${PAYLOAD}' | (bash)`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into a group running bash', body: `echo '${PAYLOAD}' | { bash; }`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into bash -c bash', body: `echo '${PAYLOAD}' | bash -c bash`, unread: 'scriptData' },
+  { label: 'script as data: bash from a redirected file', body: `printf '%s\\n' '${PAYLOAD}' > s.sh; bash < s.sh`, unread: 'scriptData' },
+  { label: 'script as data: bash from a here-string', body: `bash <<< '${PAYLOAD}'`, unread: 'scriptData' },
+  { label: 'script as data: bash from a process substitution', body: `bash <(echo '${PAYLOAD}')`, unread: 'scriptData' },
+  { label: 'script as data: source from a process substitution', body: `source <(echo '${PAYLOAD}')`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into source /dev/stdin', body: `echo '${PAYLOAD}' | source /dev/stdin`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into . /dev/stdin', body: `echo '${PAYLOAD}' | . /dev/stdin`, unread: 'scriptData' },
+  { label: 'script as data: a pipe into bash with a heredoc on descriptor 3', body: `echo '${PAYLOAD}' | bash 3<<'EOF'\nx\nEOF`, unread: 'scriptData' },
+  { label: 'script as data: echo piped into dash -s', body: `echo '${PAYLOAD}' | dash -s`, unread: 'scriptData' },
+  { label: 'script read: a heredoc feeding bash after a pipe', body: `echo x | bash <<'EOF'\n${PAYLOAD}\nEOF` },
+  { label: 'script read: bash -s fed by its heredoc', body: `bash -s <<'EOF'\n${PAYLOAD}\nEOF` },
+  { label: 'script read: bash -c with a string after a pipe', body: `echo x | bash -c '${PAYLOAD}'` },
+  { label: 'script read: bash --version after a pipe runs nothing', body: `echo '${PAYLOAD}' | bash --version` },
+]
+
 function shapeBody(command: string, delimiter: { open: string; dash: boolean }, lines: string[]): string {
   const tab = delimiter.dash ? '\t' : ''
   const redirect = delimiter.dash ? '<<-' : '<<'
@@ -276,7 +316,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes()]
+  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA]
 }
 
 /**
@@ -287,10 +327,9 @@ function allShapes(): Shape[] {
 const invocation = (args: string): string => args.replace(/\s+/g, ' ').trim()
 
 /** The sentinel invocations Buckle read on the body: every command form whose name is the sentinel, by its arguments. */
-function buckleRan(body: string): Set<string> {
-  const forms = allForms(commandForms('bash', ['-c', body]))
+function buckleRan(forms: CommandForms): Set<string> {
   const ran = new Set<string>()
-  for (const form of forms) if (baseCommand(form[0] ?? '') === SENTINEL) ran.add(invocation(form.slice(1).join(' ')))
+  for (const form of allForms(forms)) if (baseCommand(form[0] ?? '') === SENTINEL) ran.add(invocation(form.slice(1).join(' ')))
   return ran
 }
 
@@ -393,9 +432,16 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     const missed: string[] = []
     let ranShapes = 0
     let overRead = 0
-    for (const { label, body, written } of shapes) {
+    let unreadShapes = 0
+    for (const { label, body, written, unread } of shapes) {
       const ran = bashRan(body)
-      const read = buckleRan(body)
+      const forms = commandForms('bash', ['-c', body])
+      const read = buckleRan(forms)
+      if (unread !== undefined) {
+        if (readLimitOf(forms) !== unread) missed.push(`${label}: Buckle did not mark the call unread (${unread}), so nothing refuses or asks about what bash ran`)
+        unreadShapes++
+        continue
+      }
       if (written !== undefined) {
         if (ran.size === 0 || !read.has(written)) missed.push(`${label}: Buckle did not read [sentinel ${written}] as written`)
         overRead++
@@ -405,7 +451,7 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
       if (ran.size > 0) ranShapes++
       else if (read.size > 0) overRead++
     }
-    console.info(`heredoc oracle: ${shapes.length} shapes, bash ran the sentinel in ${ranShapes}, ${overRead} read the sentinel where bash did not (over-reads, allowed)`)
+    console.info(`heredoc oracle: ${shapes.length} shapes, bash ran the sentinel in ${ranShapes}, ${overRead} read the sentinel where bash did not (over-reads, allowed), ${unreadShapes} unread as expected`)
     expect(missed).toEqual([])
   }, 20_000)
 })

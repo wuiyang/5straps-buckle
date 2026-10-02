@@ -618,6 +618,76 @@ describe('a call Buckle cannot read whole', () => {
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
   })
 
+  // Slice 7h probes: a shell whose script arrives as data, piped in, redirected, or handed over by xargs, ran the
+  // payload with nothing read; the floor asked only about `| bash`, so under the dangerously-allow switch a deny glob
+  // was bypassed (owner decision D7). Such a call is now unread: refused naming the limit under any deny glob, on both
+  // engines and both switches, and asked at the floor with none (default D33 (b)). Real bash ran the sentinel in each.
+  const scriptData = 'A shell takes its script from a pipe, a redirection, or xargs, so the script arrives as data, which Buckle cannot read (script as data)'
+  const piped = /^Pipes a downloaded payload into a shell/
+  const asData = new RegExp(`^${scriptData.replace(/[()]/g, '\\$&')}; asked rather than guessed at$`)
+  const dataShapes = [
+    ['echo piped into bash', `echo '${push}' | bash`, piped],
+    ['printf piped into xargs -d newline bash -c', `printf '%s\\n' '${push}' | xargs -d '\\n' bash -c`, asData],
+    ['xargs -0 bash -c', `printf '%s\\0' '${push}' | xargs -0 bash -c`, asData],
+    ['xargs bash -c with a double-quoted item', heredocLine(`"${push}"`, "xargs bash -c <<'EOF'"), asData],
+    ['xargs bash -c with a single-quoted item', heredocLine(`'${push}'`, "xargs bash -c <<'EOF'"), asData],
+    ['xargs sh -c with escaped spaces', heredocLine(`git${B} push${B} origin${B} main`, "xargs sh -c <<'EOF'"), asData],
+    ['xargs -I bash -c', heredocLine(push, "xargs -I{} bash -c {} <<'EOF'"), asData],
+    ['xargs env bash -c', `printf '%s\\n' '${push}' | xargs -d '\\n' env bash -c`, asData],
+    ['echo piped into sh -s', `echo '${push}' | sh -s`, piped],
+    ['echo piped into bash /dev/stdin', `echo '${push}' | bash /dev/stdin`, piped],
+    ['echo piped into a group running bash', `echo '${push}' | { bash; }`, asData],
+    ['echo piped into bash -c bash', `echo '${push}' | bash -c bash`, piped],
+    ['a pipe into bash with a heredoc on descriptor 3', heredocLine('x', `echo '${push}' | bash 3<<'EOF'`), piped],
+    ['bash from a redirected file', 'bash < deploy.sh', asData],
+    ['bash from a here-string', `bash <<< '${push}'`, asData],
+    ['bash from a process substitution', `bash <(echo '${push}')`, asData],
+    ['source from a process substitution', `source <(echo '${push}')`, asData],
+    ['echo piped into source /dev/stdin', `echo '${push}' | source /dev/stdin`, /^Targets a device node/],
+    ['bash -c with no command string', 'bash -c', asData],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => dataShapes.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a script that arrives as data: %s, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).scriptData).toBe(true)
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${scriptData}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => dataShapes.map(([shape, body, reason]) => [engine, shape, body, reason] as const)))('asks at the floor, %s with no deny glob, about a script that arrives as data: %s', (engine, _shape, body, reason) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(reason)]])
+  })
+
+  it.each(cases)('refuses xargs handing items to bash -c as the call itself, %s deny, switch on: %s, naming the limit', (engine, switched) => {
+    const outcome = withDangerouslyAllow(createPermissionEngine(engines[engine](['terraform destroy *'])), { enabled: () => switched, root: () => '/workspace' })
+      .evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command: 'xargs', args: ['-0', 'bash', '-c'] }], grants: { subjectsFor: () => [] } })
+    expect(refusal(outcome)).toBe(`${scriptData}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  // A heredoc on the shell's own statement feeds its input, and Buckle reads that body; a -c string is read too; and a
+  // shell with no operand as the call itself reads the input Buckle's exec leaves empty. These stay read as before.
+  it.each(cases.flatMap(([engine, switched]) => [
+    [engine, switched, 'a heredoc feeding bash after a pipe', heredocLine(push, "echo x | bash <<'EOF'")],
+    [engine, switched, 'bash -s fed by its heredoc', heredocLine(push, "bash -s <<'EOF'")],
+    [engine, switched, 'bash -c with a string after a pipe', `echo x | bash -c '${push}'`],
+  ] as const))('refuses %s deny, switch on: %s, by the push glob, a git push read through %s', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).scriptData).toBe(false)
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it('reads no script as data in bash with no operand as the call itself, or in bash --version after a pipe', () => {
+    expect(commandFormsOf({ command: 'bash', args: [] }).scriptData).toBe(false)
+    expect(commandFormsOf({ command: 'env', args: ['bash'] }).scriptData).toBe(false)
+    expect(commandFormsOf({ command: 'bash', args: ['-c', `echo '${push}' | bash --version`] }).scriptData).toBe(false)
+  })
+
+  // A statement's pieces are a split no shell makes, read only so a glob meets a command quoted for another program,
+  // so a shell named inside a quoted message marks no script as data.
+  it('reads no script as data in a shell named inside a quoted argument', () => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', 'git commit -m "fix the build; bash; source"'] }).scriptData).toBe(false)
+    expect(check('workspace', false, 'git commit -m "fix the build; bash; source"', ['terraform destroy *']).kind).toBe('allow')
+  })
+
   // A continuation between words joins no word and leaves none, so `git push \<newline> --force` reads as `git push
   // --force` and a word glob on it still matches; an empty word between push and the flag would misalign it.
   it.each(cases)('refuses a force push with a space-surrounded continuation, %s deny, switch on: %s, by the force glob', (engine, switched) => {
