@@ -4,8 +4,8 @@ Buckle is an approval and sandbox runtime for AI agents: a tool-execution node t
 harness can drive over CLI, MCP, or HTTP, which runs what its owner allows, asks a person
 before anything else runs, and refuses the rest.
 
-It gives an agent files, a shell, Git, web fetch, a browser, and language tools inside one
-workspace, and keeps a log of what it actually did.
+It gives an agent files, a shell, Git, web fetch, a browser (once agent-browser is installed),
+and language tools inside one workspace, and keeps a log of what it actually did.
 
 ## Install
 
@@ -39,8 +39,10 @@ workspace settings. The current directory becomes the workspace root, shown to t
 `/workspace`. In a terminal it asks which packs to enable and about the shell, host Git, and the
 network lists; `--yes` takes the defaults. `buckle settings set` changes any of them later.
 
-The state directory also holds grants, the policy, pending approvals, and the action log. No
-tool can read it, and a process sandbox hides it from commands.
+The state directory also holds grants, the policy, pending approvals, and the action log.
+Buckle's file tools refuse to read it. Only a process sandbox, bubblewrap on Linux or Seatbelt on
+macOS, hides it from shell commands: with `BUCKLE_SANDBOX=none`, a shell command can read
+`buckle.env` without an ask.
 
 ## Three faces
 
@@ -76,10 +78,11 @@ commands never offer always. The approver sees the full action before anything r
 credentials are redacted from what is shown, and the decision binds the whole call.
 
 The answer can come from wherever the person is: a prompt in the terminal running `buckle
-serve`, MCP elicitation where the host supports it, or `buckle approve <token>` from another
-terminal. Buckle can also post each pending approval to the relay `BUCKLE_APPROVAL_WEBHOOK`
-names, so a person can be reached away from the machine. A call waits 15 seconds by default
-(`BUCKLE_APPROVAL_TIMEOUT_MS`) before handing the agent a token to retry with.
+serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
+`buckle approve <token>` from another terminal. Buckle can also post each pending approval to
+the relay `BUCKLE_APPROVAL_WEBHOOK` names, so a person can be reached away from the machine. A
+call waits 15 seconds by default (`BUCKLE_APPROVAL_TIMEOUT_MS`) before handing the agent a token
+to retry with.
 
 ```bash
 buckle approvals --watch
@@ -96,6 +99,13 @@ buckle policy allow-command 'pnpm {build,test} *'
 buckle policy allow-url localhost:3000
 buckle policy mount /workspace
 ```
+
+`buckle policy dangerously-allow on` removes the person: every ask in that workspace becomes an
+allow, destructive commands included. Explicit deny rules, the node's policy over a registered
+workspace, and the mount boundary still refuse, and a path outside the workspace root still asks.
+It is off by default, and
+[Approvals](https://github.com/wuiyang/buckle/blob/main/docs/approvals.md#dangerously-allow)
+documents it.
 
 ## Sandbox
 

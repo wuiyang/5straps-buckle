@@ -115,5 +115,5 @@ directory still refuse.
 Only the local CLI sets it; `buckle policy import` refuses a file that names it. A running node
 reads it on every call, so `off` applies at once. Each use is logged as
 `policy_dangerously_allowed`. `buckle policy clear` leaves it on, and a registered workspace's
-switch works only while the node's is on too. `buckle --help` does not list it; `buckle policy
---help` prints the full usage, which does, and exits 1.
+switch works only while the node's is on too. `buckle --help` and `buckle policy --help` both
+list it.

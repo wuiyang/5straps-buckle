@@ -26,8 +26,8 @@ Buckle decides what needs a human's permission. Not you, and not the harness you
 in. A gated call returns `approval_required` and exits with code 3:
 
 ```
-Approval required: /etc/hostname is outside the sandbox
-  subject: /etc
+Approval required: Writing to /workspace is not yet approved
+  subject: /home/you/code/my-project
   expires in 9m 59s (...)
   waiting on workspace default
   see the whole action with: buckle approvals
@@ -44,7 +44,9 @@ Scopes are `once`, `session`, and `always`. Some gates deliberately do not offer
 
 Four things are gated:
 
-1. **Reading outside the workspace.** Approval adds that directory to the sandbox.
+1. **Reading outside the workspace**, on a node with no mount. Approval adds that directory to
+   the sandbox. Under a mount, such as the `/workspace` mount `buckle init` writes, such a read
+   is refused instead.
 2. **Writing.** The first write to any directory asks. Remembered afterwards.
 3. **Credential files.** `.env`, `.ssh/`, `*.pem`, `.aws/credentials` and similar. Asked every
    time until granted for that exact file. A granted directory never unlocks these.
@@ -109,9 +111,9 @@ As an MCP server, where tools appear natively:
 claude mcp add buckle -- buckle mcp
 ```
 
-Both drive the same registry and the same permission engine. In MCP hosts that support
-elicitation, approvals appear as an inline prompt. Elsewhere they come back as the same relay
-text.
+Both drive the same registry and the same permission engine. Over stdio (`buckle mcp`), in
+hosts that support elicitation, approvals appear as an inline prompt. Elsewhere, HTTP `/mcp`
+included, they come back as the same relay text.
 
 ## Running a node
 

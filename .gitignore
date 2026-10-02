@@ -12,10 +12,16 @@ coverage
 .env
 .env.*
 !.env.example
+buckle.env
+.npmrc
 
-# Runtime state: SQLite stores and their journals, local data.
+# Runtime state: SQLite stores and their journals, the action log, local data.
 *.db
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+actions.jsonl
 data/
 rings-data/
