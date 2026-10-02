@@ -556,6 +556,24 @@ describe('every approval route reads a call by the context each text sits in (sl
         expect(value, where).toContain('?token=[redacted]')
       }
     })
+
+    // Slice 7d review R7D-WV-3: a file's content with no whitespace was read as one word, whose credential value ran
+    // across the commas, so the ask for a one-line CSV hid its amount and account. File content is now text unless it
+    // is JSON or a shell script; a JSON file still hides the whole value its URL string holds.
+    const row = 'https://pay.example.com/?token=t5ecret,1000000,x@y.com'
+    it.each<[string, Call, string, string | null]>([
+      ['an fs_write of one.csv', root => ({ tool: 'fs_write', args: { path: join(root, 'one.csv'), content: row } }), '?token=[redacted],1000000,x@y.com', null],
+      ['an fs_patch newText', root => ({ tool: 'fs_patch', args: { path: join(root, 'one.csv'), edits: [{ oldText: 'x', newText: row }] } }), '?token=[redacted],1000000,x@y.com', null],
+      ['an fs_write_batch entry', root => ({ tool: 'fs_write_batch', args: { files: [{ path: join(root, 'one.csv'), content: row }] } }), '?token=[redacted],1000000,x@y.com', null],
+      ['a JSON file (control)', root => ({ tool: 'fs_write', args: { path: join(root, 'pay.json'), content: JSON.stringify({ url: row }) } }), '{"url":"https://pay.example.com/?token=[redacted]"}', '1000000'],
+      ['a one-line text file with no URL (control)', root => ({ tool: 'fs_write', args: { path: join(root, 'note.txt'), content: 'amount=1000000,to=x@y.com' } }), 'amount=1000000,to=x@y.com', null],
+    ])('reads %s as file content on every route (R7D-WV-3)', async (_, call, visible, hidden) => {
+      for (const [where, value] of Object.entries(await everyRoute(call, {}))) {
+        expect(value, where).not.toContain('t5ecret')
+        if (hidden !== null) expect(value, where).not.toContain(hidden)
+        if (!['subject', 'description', 'effects', 'webhook'].includes(where)) expect(unquoted(value), where).toContain(visible)
+      }
+    })
   })
 
   it('redacts a whole URL password holding shell characters in an argv word on every route, and binds the raw call (R7-H3)', async () => {

@@ -74,22 +74,29 @@ export function stripSecret(value: string, secret: string | undefined): string {
  * A string's context comes from where it sits: a `command` with its `args` is an argv, each word read as one
  * word and a shell's `-c` script as a shell body; `env` values are words; a `script` beside a shell `runtime`
  * is a shell body and any other script free text; a file's `content`, or an edit's `oldText` and `newText`,
- * beside its `path` is a shell body for a shell script, else read by its shape. A string read by its shape is
- * a JSON document when it parses as an object or array, one word when it holds no whitespace, and free text
- * otherwise (slice 7 review R7-H1 to R7-H4).
+ * beside its `path` is a shell body for a shell script, a JSON document when it parses as an object or array,
+ * and free text otherwise, whatever its whitespace, so a one-line CSV row shows its fields (slice 7d review
+ * R7D-WV-3). Any other string is read by its shape: a JSON document when it parses as an object or array, one
+ * word when it holds no whitespace, and free text otherwise (slice 7 review R7-H1 to R7-H4).
  */
 export function reviewableArguments(args: JsonObject): JsonValue {
   return reviewObject(args)
 }
 
-/** How a string is read: by a context, or by its shape. */
-type Reading = CredentialContext | 'shape'
+/** How a string is read: by a context, by its shape, or as a file's content. */
+type Reading = CredentialContext | 'shape' | 'file'
 
 function review(value: JsonValue, reading: Reading): JsonValue {
-  if (typeof value === 'string') return redactCredentials(value, reading === 'shape' ? shapeOf(value) : reading)
+  if (typeof value === 'string') return redactCredentials(value, contextOf(value, reading))
   if (Array.isArray(value)) return value.map(item => review(item, reading))
   if (value !== null && typeof value === 'object') return reading === 'shape' ? reviewObject(value) : reviewRecord(value, reading)
   return value
+}
+
+function contextOf(value: string, reading: Reading): CredentialContext {
+  if (reading === 'shape') return shapeOf(value)
+  if (reading === 'file') return isJsonDocument(value) ? 'json' : 'text'
+  return reading
 }
 
 function reviewObject(value: JsonObject): JsonValue {
@@ -101,8 +108,8 @@ function reviewObject(value: JsonObject): JsonValue {
   }))
 }
 
-/** An object whose values are all read in one context (`env`'s values are words), credential-named keys still redacted. */
-function reviewRecord(value: JsonObject, reading: CredentialContext): JsonValue {
+/** An object whose values are all read in one context (`env`'s values are words, an edit's texts are file content), credential-named keys still redacted. */
+function reviewRecord(value: JsonObject, reading: Exclude<Reading, 'shape'>): JsonValue {
   return Object.fromEntries(Object.keys(value).sort().map((key) => {
     const item = value[key] ?? null
     return [key, isCredentialKey(key, item) ? '[redacted]' : review(item, reading)]
@@ -119,7 +126,7 @@ function readingOf(owner: JsonObject, key: string): Reading {
   if (key === 'command' && Array.isArray(owner.args)) return 'word'
   if (key === 'env') return 'word'
   if (key === 'script' && typeof owner.runtime === 'string') return SHELL_COMMANDS.has(baseCommand(owner.runtime)) ? 'shell' : 'text'
-  if ((key === 'content' || key === 'edits') && typeof owner.path === 'string') return isShellScript(owner.path, owner.content) ? 'shell' : 'shape'
+  if ((key === 'content' || key === 'edits') && typeof owner.path === 'string') return isShellScript(owner.path, owner.content) ? 'shell' : 'file'
   return 'shape'
 }
 
@@ -140,8 +147,12 @@ const WHITESPACE = /\s/
 
 /** How a string with no context of its own is read: a JSON document, one word, or free text. */
 function shapeOf(value: string): CredentialContext {
-  if (JSON_DOCUMENT.test(value) && parses(value)) return 'json'
+  if (isJsonDocument(value)) return 'json'
   return WHITESPACE.test(value) ? 'text' : 'word'
+}
+
+function isJsonDocument(value: string): boolean {
+  return JSON_DOCUMENT.test(value) && parses(value)
 }
 
 function parses(value: string): boolean {

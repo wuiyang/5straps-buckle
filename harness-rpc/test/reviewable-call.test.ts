@@ -309,6 +309,22 @@ describe('text URLs end at a comma, values follow the unit, pwd is a credential,
     expect(reviewableArguments({ path: 'payouts.csv', content: plain })).toEqual({ content: plain, path: 'payouts.csv' })
   })
 
+  // Slice 7d review R7D-WV-3: content with no whitespace was read as one word, so a one-line CSV hid its amount and
+  // account. A file's content is text unless it parses as JSON or is a shell script; whitespace no longer decides.
+  it('reads a one-line file as text in fs_write, fs_patch and fs_write_batch, so its fields show (R7D-WV-3)', () => {
+    const row = 'https://pay.example.com/?token=t5ecret,1000000,x@y.com'
+    const shown = 'https://pay.example.com/?token=[redacted],1000000,x@y.com'
+    expect(reviewableArguments({ path: 'one.csv', content: row })).toEqual({ content: shown, path: 'one.csv' })
+    expect(reviewableArguments({ path: 'one.csv', edits: [{ oldText: row, newText: row, replaceAll: false }] })).toEqual({ edits: [{ newText: shown, oldText: shown, replaceAll: false }], path: 'one.csv' })
+    expect(reviewableArguments({ files: [{ path: 'one.csv', content: row }, { path: 'b.csv', content: `${row}\n` }] })).toEqual({ files: [{ content: shown, path: 'one.csv' }, { content: `${shown}\n`, path: 'b.csv' }] })
+    // Controls: a JSON file is a JSON document, its URL string one word; a shell script is a shell body; text with no URL shows whole.
+    expect(reviewableArguments({ path: 'pay.json', content: JSON.stringify({ url: row }) })).toEqual({ content: '{"url":"https://pay.example.com/?token=[redacted]"}', path: 'pay.json' })
+    expect(reviewableArguments({ path: 'pay.sh', content: 'curl https://h/?token=t5ecret,1;rm -rf b' })).toEqual({ content: 'curl https://h/?token=[redacted];rm -rf b', path: 'pay.sh' })
+    expect(reviewableArguments({ path: 'note.txt', content: 'amount=1000000,to=x@y.com' })).toEqual({ content: 'amount=1000000,to=x@y.com', path: 'note.txt' })
+    // A string beside no path is still read by its shape: a URL field is one word.
+    expect(reviewableArguments({ url: row })).toEqual({ url: 'https://pay.example.com/?token=[redacted]' })
+  })
+
   it('hides the whole credential value of a URL word, shell characters included (R7B-CR-6)', () => {
     const url = 'https://h.example/x?token=ab(c5ecret)d'
     expect(reviewableArguments({ url, method: 'GET' })).toEqual({ method: 'GET', url: 'https://h.example/x?token=[redacted]' })
