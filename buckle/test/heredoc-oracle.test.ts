@@ -330,24 +330,130 @@ const INTERPRETERS: Shape[] = [
   { label: 'interpreter: python -c os.system', body: `python3 -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter' },
 ]
 
-function shapeBody(command: string, delimiter: { open: string; dash: boolean }, lines: string[]): string {
-  const tab = delimiter.dash ? '\t' : ''
-  const redirect = delimiter.dash ? '<<-' : '<<'
-  const indented = lines.map(line => tab + line).join('\n')
-  return `${command} ${redirect}${delimiter.open}\n${indented}\n${tab}EOF`
+/**
+ * The 7h probes, folded in so they stay the regression: escape runs of 1 to 6 before a substitution, around a backtick
+ * body, before a command and inside a continued substitution, and parameter expansions and arithmetic carrying a
+ * substitution, each on a body line of every delimiter kind under cat and bash.
+ */
+const PROBE_PLACEMENTS: Record<string, string[]> = (() => {
+  const placements: Record<string, string[]> = {}
+  for (let run = 1; run <= 6; run++) {
+    placements[`escapeRun${run}Dollar`] = [`find . -maxdepth 0 -exec true "${backslashes(run)}$(${PAYLOAD})" \\;`]
+    placements[`escapeRun${run}Backtick`] = [`find . -maxdepth 0 -exec true "${backslashes(run)}\`${PAYLOAD}${backslashes(run)}\`" \\;`]
+    placements[`escapeRun${run}Unquoted`] = [`echo ${backslashes(run)}$(${PAYLOAD})`]
+    placements[`escapeRun${run}Command`] = [`${backslashes(run)}${PAYLOAD}`]
+    placements[`escapeRun${run}FindContinuation`] = [`find . -maxdepth 0 -exec true '$(${SENTINEL} ${backslashes(run)}`, `mark)' \\;`]
+  }
+  return {
+    ...placements,
+    defaultSubstitution: [`echo "\${x:-$(${PAYLOAD})}"`],
+    assignSubstitution: [`echo "\${x=$(${PAYLOAD})}"`],
+    nestedDefaultSubstitution: [`echo "\${x:-\${y:-$(${PAYLOAD})}}"`],
+    arithmeticSubstitution: [`echo $((1 + $(${PAYLOAD}) 0))`],
+    findDefaultSubstitution: [`find . -maxdepth 0 -exec true '\${x:-$(${PAYLOAD})}' \\;`],
+    findAssignSubstitution: [`find . -maxdepth 0 -exec true '\${x=$(${PAYLOAD})}' \\;`],
+    findArithmeticSubstitution: [`find . -maxdepth 0 -exec true '$((1 + $(${PAYLOAD}) 0))' \\;`],
+    findAlternateSubstitution: [`find . -maxdepth 0 -exec true '\${PWD:+$(${PAYLOAD})}' \\;`],
+    findErrorSubstitution: [`find . -maxdepth 0 -exec true '\${PWD:?$(${PAYLOAD})}' \\;`],
+  }
+})()
+
+/** 7h probes: CRLF line endings throughout, and CRLF body lines before an LF delimiter, for three placements of every kind. */
+function crlfShapes(): Shape[] {
+  const shapes: Shape[] = []
+  const placements: Record<string, string[]> = { plain: [PAYLOAD], findExec: [FIND_SINGLE_QUOTED], continuation: [`${SENTINEL} \\`, 'mark'] }
+  for (const command of COMMANDS) {
+    for (const delimiter of DELIMITERS) {
+      const kind = `${delimiter.dash ? '<<-' : '<<'}${delimiter.open}`
+      for (const [name, lines] of Object.entries(placements)) {
+        shapes.push({ label: `crlf ${command} ${kind} ${name}`, body: `${shapeBody(command, delimiter, lines, '\r\n')}\r\n` })
+        shapes.push({ label: `crlf-delimiter-lf ${command} ${kind} ${name}`, body: shapeBody(command, delimiter, lines.map(line => `${line}\r`)) })
+      }
+    }
+  }
+  return shapes
 }
 
+/**
+ * 7h probes: heredocs fed to other consumers, two on one line, and nested in substitutions. `ssh` is a stand-in the
+ * oracle puts on the PATH, which drops the host and runs the rest here as the remote shell would, so nothing reaches the
+ * network; `dash` and `python3` rows run nothing where those are absent, which hides no miss.
+ */
+const PROBE_CONSUMERS: Shape[] = [
+  { label: 'probe: two heredocs, bash runs the second', body: `bash <<A <<B\necho a\nA\n${PAYLOAD}\nB` },
+  { label: 'probe: two heredocs, bash, payload expanded in the first', body: `bash <<A <<B\n$(${PAYLOAD})\nA\necho b\nB` },
+  { label: 'probe: two heredocs, unquoted first, quoted second fed to bash', body: `bash <<A <<'B'\n$(echo a)\nA\n${PAYLOAD}\nB` },
+  { label: 'probe: two heredocs on two commands of one line', body: `cat <<A; bash <<'B'\na\nA\n${PAYLOAD}\nB` },
+  { label: 'probe: two heredocs, the second swallows its delimiter', body: `cat <<A <<B\na\nA\nx \\\nB\n${FIND_SINGLE_QUOTED}\nB` },
+  { label: 'probe: cat in $() in bash in $(), quoted', body: `echo "$(bash <<'A'\necho "$(cat <<B\n${FIND_SINGLE_QUOTED}\nB\n)"\nA\n)"` },
+  { label: 'probe: cat in backticks in cat in $()', body: `echo "$(cat <<A\n\`cat <<B\n${FIND_SINGLE_QUOTED}\nB\n\`\nA\n)"` },
+  { label: 'probe: sh, quoted, nested cat', body: `sh <<'EOF'\ncat <<X\n${FIND_SINGLE_QUOTED}\nX\nEOF` },
+  { label: 'probe: dash -s, quoted', body: `dash -s <<'EOF'\n${PAYLOAD}\nEOF` },
+  { label: 'probe: source <(cat)', body: `source <(cat <<'EOF'\n${PAYLOAD}\nEOF\n)`, unread: 'scriptData' },
+  { label: 'probe: ssh host bash, quoted', body: `ssh host bash <<'EOF'\n${PAYLOAD}\nEOF` },
+  { label: 'probe: ssh host bash -s, unquoted escape', body: `ssh host bash -s <<EOF\nfind . -maxdepth 0 -exec true "\\$(${PAYLOAD})" \\;\nEOF` },
+  { label: 'probe: ssh host, no command', body: `ssh host <<'EOF'\n${PAYLOAD}\nEOF` },
+  { label: 'probe: python -c of a shell body', body: `python3 -c "$(cat <<'EOF'\n${PAYLOAD}\nEOF\n)"`, unread: 'interpreter' },
+  { label: 'probe: python stdin of a shell body', body: `python3 <<'EOF'\n${PAYLOAD}\nEOF`, unread: 'interpreter' },
+]
+
+/** 7h probes at top level: backtick escapes, an escaped backslash in $(), and a backslash-newline inside a word or a name. */
+const PROBE_TOP_LEVEL: Shape[] = [
+  { label: 'probe: top backtick, escaped backtick inside', body: `echo \`echo \\\`${PAYLOAD}\\\`\`` },
+  { label: 'probe: top $(), escaped backslash before a flag', body: `echo $(${SENTINEL} \\\\--force mark)` },
+  { label: 'probe: heredoc cat backtick, escaped backslash before a flag', body: `cat <<EOF\n\`${SENTINEL} \\\\\\\\--force mark\`\nEOF` },
+  { label: 'probe: continuation inside a word', body: `${SENTINEL} --for\\\nce mark` },
+  { label: 'probe: continuation inside the command name', body: `senti\\\nnel mark` },
+  { label: 'probe: escaped backslash then continuation', body: `${SENTINEL} \\\\\\\nmark` },
+  { label: 'probe: continuation after a space', body: `${SENTINEL} \\\nmark` },
+  { label: 'probe: continuation in double quotes', body: `${SENTINEL} "--for\\\nce" mark` },
+  // The single quotes keep the backslash-newline, so the sentinel gets one word holding a newline; it logs one line per
+  // call, the newline as a space, which the invocation comparison already folds.
+  { label: 'probe: continuation in single quotes (kept)', body: `${SENTINEL} '--for\\\nce' mark` },
+  { label: 'probe: $() continuation inside a word', body: `echo $(${SENTINEL} --for\\\nce mark)` },
+  { label: 'probe: backtick continuation inside a word', body: `echo \`${SENTINEL} --for\\\nce mark\`` },
+]
+
+/** `levels` quoted heredocs fed to bash, one in another, around `inner`: past MAX_DEPTH (8) the innermost body is read line by line only. */
+const fedDeep = (levels: number, inner: string): string => {
+  const open = Array.from({ length: levels }, (_, index) => `bash <<'E${index}'`).join('\n')
+  const close = Array.from({ length: levels }, (_, index) => `E${levels - 1 - index}`).join('\n')
+  return `${open}\n${inner}\n${close}`
+}
+
+/**
+ * Rows that pin readings the tables above reach twice (the 7h mutation survivors): a double quote spanning lines in a
+ * body three heredocs deep, which only a nested body read whole sees (M5); and two bodies past MAX_DEPTH, where the call
+ * is unread 'depth' and only the line readings remain, so the run of 2 (mod 4) backslashes that bash halves into a
+ * continuation (M6) and a single-quoted substitution in a heredoc nested in heredoc text (M8) are read by them alone.
+ */
+const READING_PINS: Shape[] = [
+  { label: 'pin: a double quote spanning lines three heredocs deep', body: `bash <<'A'\nbash <<'B'\nbash <<'C'\nfind . -maxdepth 0 -exec true "\nfind . -maxdepth 0 -exec true ' $(${PAYLOAD}) ' \\;\n" \\;\nC\nB\nA` },
+  { label: 'pin: two backslashes before a newline in an unquoted body past MAX_DEPTH', body: fedDeep(8, `bash <<EOF\n${SENTINEL} \\\\\nmark\nEOF`) },
+  { label: 'pin: a single-quoted substitution in a heredoc in heredoc text past MAX_DEPTH', body: fedDeep(8, `cat <<EOF\n$(cat <<X\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nX\n)\nEOF`) },
+]
+
+function shapeBody(command: string, delimiter: { open: string; dash: boolean }, lines: string[], eol = '\n'): string {
+  const tab = delimiter.dash ? '\t' : ''
+  const redirect = delimiter.dash ? '<<-' : '<<'
+  const indented = lines.map(line => tab + line).join(eol)
+  return `${command} ${redirect}${delimiter.open}${eol}${indented}${eol}${tab}EOF`
+}
+
+/** Every shape, each body once: a later table's copy of a body an earlier one holds is dropped, flags and all. */
 function allShapes(): Shape[] {
   const shapes: Shape[] = []
   for (const command of COMMANDS) {
     for (const delimiter of DELIMITERS) {
-      for (const [name, lines] of Object.entries(PLACEMENTS)) {
+      for (const [name, lines] of Object.entries({ ...PLACEMENTS, ...PROBE_PLACEMENTS })) {
         const kind = `${delimiter.dash ? '<<-' : '<<'}${delimiter.open}`
         shapes.push({ label: `${command} ${kind} ${name}`, body: shapeBody(command, delimiter, lines) })
       }
     }
   }
-  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...READING_PINS]
+  const seen = new Set<string>()
+  return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
 
 /**
@@ -446,8 +552,11 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     directory = mkdtempSync(join(tmpdir(), 'buckle-heredoc-oracle-'))
     binary = join(directory, SENTINEL)
     log = join(directory, 'ran.log')
-    writeFileSync(binary, '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$SENTINEL_LOG"\n')
+    writeFileSync(binary, '#!/bin/sh\nprintf \'%s\\n\' "$*" | tr \'\\n\' \' \' >> "$SENTINEL_LOG"\nprintf \'\\n\' >> "$SENTINEL_LOG"\n')
     chmodSync(binary, 0o755)
+    // A stand-in for ssh: it drops the host and runs the rest here, as the remote shell would, so no shape reaches the network.
+    writeFileSync(join(directory, 'ssh'), '#!/bin/sh\nshift\nif [ "$#" -eq 0 ]; then exec bash; fi\nexec "$@"\n')
+    chmodSync(join(directory, 'ssh'), 0o755)
     environment = { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}`, SENTINEL_LOG: log }
     if (!bashRan(CONTROL).has('control')) {
       throw new Error(`heredoc oracle: the control shape ran no sentinel, so no row could fail; ${sentinelFault()}`)
