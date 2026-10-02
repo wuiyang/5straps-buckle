@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -31,7 +31,7 @@ const PAYLOAD = `${SENTINEL} mark`
 /** The command a shape runs the heredoc with: `cat` expands only its substitutions, `bash` runs the whole body. */
 const COMMANDS = ['cat', 'bash'] as const
 
-/** Delimiter kinds: unquoted, the three quoted forms, and `<<` against `<<-` (leading tabs stripped). */
+/** Delimiter kinds: unquoted and the three quoted forms, each under `<<` and `<<-` (leading tabs stripped). */
 const DELIMITERS = [
   { open: 'EOF', dash: false },
   { open: "'EOF'", dash: false },
@@ -39,7 +39,12 @@ const DELIMITERS = [
   { open: '\\EOF', dash: false },
   { open: 'EOF', dash: true },
   { open: "'EOF'", dash: true },
+  { open: '"EOF"', dash: true },
+  { open: '\\EOF', dash: true },
 ] as const
+
+/** A find line whose substitution only heredoc text or a fed shell runs: top-level shell text keeps it quoted. */
+const FIND_SINGLE_QUOTED = `find . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;`
 
 /** Where the payload sits in the body: plain, in substitutions under each quoting, behind escapes, continued, spanning lines, under find. */
 const PLACEMENTS: Record<string, string[]> = {
@@ -54,12 +59,19 @@ const PLACEMENTS: Record<string, string[]> = {
   continuationThree: [`${SENTINEL} \\\\\\`, 'mark'],
   continuationFour: [`${PAYLOAD} \\\\\\\\`, 'echo done'],
   doubleQuoteSpanningLines: ['echo "', `$(${PAYLOAD})`, '"'],
-  findExec: [`find . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;`],
+  findExec: [FIND_SINGLE_QUOTED],
   // find re-reads its -exec command and does not re-split its words, so these reach the sentinel only through the
   // body's own readings, not the statement-piece backstop: they exercise the fed-shell view's escape resolution.
   findExecDoubleQuoted: [`find . -maxdepth 0 -exec true "$(${PAYLOAD})" \\;`],
   findExecEscapedDollar: [`find . -maxdepth 0 -exec true "\\$(${PAYLOAD})" \\;`],
   findExecEscapedBacktick: ['find . -maxdepth 0 -exec true "\\`' + PAYLOAD + '\\`" \\;'],
+  // A continuation swallows the first delimiter line: under an unquoted delimiter bash joins it into the body and
+  // expands the find line as heredoc text; under a quoted one the body ends there and the find line is shell text.
+  swallowedDelimiter: ['x \\', 'EOF', FIND_SINGLE_QUOTED],
+  // A body fed to bash runs the inner heredoc, which expands the single-quoted substitution whatever the outer quoting.
+  nestedSingleQuotedFind: ['cat <<X', FIND_SINGLE_QUOTED, 'X'],
+  // A double quote spanning three body lines: a fed shell runs the middle line's substitution inside it.
+  doubleQuoteSpanningFind: ['find . -maxdepth 0 -exec true "', `find . -maxdepth 0 -exec true ' $(${PAYLOAD}) ' \\;`, '" \\;'],
 }
 
 /** Heredocs nested one in another, one to three deep, the payload at the bottom; the outer fed to a shell. */
@@ -69,6 +81,72 @@ const NESTED: Array<{ label: string; body: string }> = [
   { label: 'nest3 four heredocs deep', body: `bash <<'EOF'\ncat <<W\ncat <<X\ncat <<Y\necho "$(${PAYLOAD})"\nY\nX\nW\nEOF` },
   { label: 'nest unquoted cat, substitution spanning a nested body', body: `cat <<EOF\n$(cat <<X\nx '$("\nfind . -maxdepth 0 -exec true " ;${PAYLOAD}; " \\;\n")'\nX\n)\nEOF` },
 ]
+
+/**
+ * Every heredoc and continuation shape the slice 7e and 7f reviews and the slice 7f report ran under real bash that
+ * the generated table does not already hold, the sentinel in place of their `git push`. Rows where bash runs nothing
+ * stay: they pin the over-reads, the safe direction.
+ */
+const REVIEW_SHAPES: Array<{ label: string; body: string }> = [
+  { label: '7e review: find five substitutions deep, the innermost double-quoted', body: `cat <<EOF\n$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(${PAYLOAD})" \\;)" \\;)" \\;)" \\;)" \\;)" \\;)\nEOF` },
+  { label: '7e review: find five substitutions deep, an unescaped semicolon', body: `cat <<EOF\n$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(${PAYLOAD})" ;)" ;)" ;)" ;)" ;)" ;)\nEOF` },
+  { label: '7f review: find five substitutions deep, the innermost unquoted', body: `cat <<EOF\n$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true $(${PAYLOAD}) \\;)" \\;)" \\;)" \\;)" \\;)" \\;)\nEOF` },
+  { label: '7f review: a backtick in single quotes on a find line', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '\`${PAYLOAD}\`' \\;\nEOF` },
+  { label: '7f review: a quote that ends with its line', body: `bash <<'EOF'\necho 'x\n${PAYLOAD}\nEOF` },
+  { label: '7f review: a body holding another heredoc marker', body: `bash <<'EOF'\ncat <<X\nhello\nX\n${PAYLOAD}\nEOF` },
+  { label: '7f review: << inside arithmetic, no heredoc', body: `echo $((1<<2))\n${PAYLOAD}` },
+  { label: '7f review: a command split over three continued lines, quoted', body: `bash <<'EOF'\n${SENTINEL} \\\npush \\\nmark\nEOF` },
+  { label: '7f review: a backslash on the last body line, quoted', body: `bash <<'EOF'\n${PAYLOAD} \\\nEOF` },
+  { label: '7f review: a backslash on the last body line, unquoted', body: `bash <<EOF\n${PAYLOAD} \\\nEOF` },
+  { label: '7f review: an escaped backslash before a newline, quoted (no join)', body: `bash <<'EOF'\n${SENTINEL} \\\\\nmark\nEOF` },
+  { label: '7f review: an unclosed $( on a body line', body: `cat <<EOF\n$(${PAYLOAD}\nEOF` },
+  { label: '7f review: a backtick in single quotes in double quotes', body: `cat <<EOF\nfind . -maxdepth 0 -exec true "'\`${PAYLOAD}\`'" \\;\nEOF` },
+  { label: '7f review: two heredocs on one line, the payload in the second', body: `cat <<A <<B\na\nA\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nB` },
+  { label: '7f review: a delimiter with a quoted middle, E\'O\'F', body: `bash <<E'O'F\n${PAYLOAD}\nEOF` },
+  { label: '7f review: a <<- delimiter line with a space after the tabs', body: `cat <<-EOF\n\t EOF\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nEOF` },
+  { label: '7f review: a line the delimiter only prefixes', body: `cat <<EOF\nEOFX\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nEOF` },
+  { label: '7f review: ${x:-$(...)} on a find line', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '\${x:-$(${PAYLOAD})}' \\;\nEOF` },
+  { label: '7f review: ${x=$(...)} on a find line', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '\${x=$(${PAYLOAD})}' \\;\nEOF` },
+  { label: '7f review: a heredoc inside single-quoted bash -c', body: `bash -c 'cat <<EOF\nfind . -maxdepth 0 -exec true "$(${PAYLOAD})" \\;\nEOF'` },
+  { label: '7f review: a substitution spanning body lines', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '$(\n${PAYLOAD}\n)' \\;\nEOF` },
+  { label: '7f review: a substitution continued by a backslash-newline', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '$(${SENTINEL} \\\nmark)' \\;\nEOF` },
+  { label: '7f review: an escaped backslash before the command, unquoted', body: `bash <<EOF\n\\\\${PAYLOAD}\nEOF` },
+  { label: '7f review: an escaped backslash before the command, unquoted, --force', body: `bash <<EOF\n\\\\${SENTINEL} --force mark\nEOF` },
+  { label: '7f review: an escaped backslash before the command, quoted', body: `bash <<'EOF'\n\\\\${PAYLOAD}\nEOF` },
+  { label: '7f review: an escaped backslash before the command, quoted, --force', body: `bash <<'EOF'\n\\\\${SENTINEL} --force mark\nEOF` },
+  { label: '7f review: an escaped dollar on a find line, --force', body: `bash <<EOF\nfind . -maxdepth 0 -exec true "\\$(${SENTINEL} --force mark)" \\;\nEOF` },
+  { label: '7f review: an escaped backtick on a find line, --force', body: `bash <<EOF\nfind . -maxdepth 0 -exec true "\\\`${SENTINEL} --force mark\\\`" \\;\nEOF` },
+  { label: '7f review: an escaped backslash before --force, unquoted', body: `bash <<EOF\n${SENTINEL} \\\\--force mark\nEOF` },
+  { label: '7f review: three trailing backslashes then --force, unquoted', body: `bash <<EOF\n${SENTINEL} \\\\\\\n--force mark\nEOF` },
+  { label: '7f review: three trailing backslashes then --force, quoted', body: `bash <<'EOF'\n${SENTINEL} \\\\\\\n--force mark\nEOF` },
+  { label: '7f report: find five substitutions deep, --force', body: `cat <<EOF\n$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true $(${SENTINEL} --force mark) \\;)" \\;)" \\;)" \\;)" \\;)" \\;)\nEOF` },
+  { label: '7f report: $ and ( split by a backslash-newline', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '$\\\n(${PAYLOAD})' \\;\nEOF` },
+  { label: '7f report: a double quote in a substitution spanning a find line', body: `cat <<EOF\n$(echo "a\nfind . -maxdepth 0 -exec true "; ${PAYLOAD})" \\;\nEOF` },
+  { label: '7f report: a quoted newline in a substitution before the payload', body: `cat <<EOF\n$(echo "a\nb"; ${PAYLOAD})\nEOF` },
+  { label: '7f report: an apostrophe in an earlier substitution', body: `cat <<EOF\n$(echo it's)\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nEOF` },
+  { label: '7f report: an escaped dollar in single quotes on a find line', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '\\$(${PAYLOAD})' \\;\nEOF` },
+  { label: '7f report: find five substitutions deep, quoted delimiter', body: `cat <<'EOF'\n$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true "$(find . -maxdepth 0 -exec true $(${PAYLOAD}) \\;)" \\;)" \\;)" \\;)" \\;)" \\;)\nEOF` },
+  { label: '7f report: a single-quoted substitution on a find line, --force', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '$(${SENTINEL} --force mark)' \\;\nEOF` },
+  { label: '7f report: a continuation before --force, quoted', body: `bash <<'EOF'\n${SENTINEL} \\\n--force mark\nEOF` },
+  { label: '7f report: a continuation before --force, unquoted', body: `bash <<EOF\n${SENTINEL} \\\n--force mark\nEOF` },
+  { label: '7f report: two backslashes before --force, quoted', body: `bash <<'EOF'\n${SENTINEL} \\\\\n--force mark\nEOF` },
+  { label: '7f report: two backslashes before --force, unquoted', body: `bash <<EOF\n${SENTINEL} \\\\\n--force mark\nEOF` },
+  { label: '7f report: four backslashes before --force, unquoted', body: `bash <<EOF\n${SENTINEL} \\\\\\\\\n--force mark\nEOF` },
+  { label: '7f report: two continuations around --force, quoted', body: `bash <<'EOF'\n${SENTINEL} \\\n--force \\\nmark\nEOF` },
+  { label: '7f report: two continuations around --force, unquoted', body: `bash <<EOF\n${SENTINEL} \\\n--force \\\nmark\nEOF` },
+  { label: '7f report: a <<- continuation before --force, quoted', body: `bash <<-'EOF'\n\t${SENTINEL} \\\n\t--force mark\n\tEOF` },
+  { label: '7f report: a <<- continuation before --force, unquoted', body: `bash <<-EOF\n\t${SENTINEL} \\\n\t--force mark\n\tEOF` },
+  { label: '7f report: a continuation into the delimiter line, quoted', body: `bash <<'EOF'\n${SENTINEL} --force \\\nEOF\necho after` },
+  { label: '7f report: a continuation into the delimiter line, unquoted', body: `bash <<EOF\n${SENTINEL} --force \\\nEOF\necho after` },
+  { label: '7f report: two backslashes on the line before the payload, quoted', body: `bash <<'EOF'\necho done \\\\\n${PAYLOAD}\nEOF` },
+  { label: '7f report: two backslashes on the line before the payload, unquoted', body: `bash <<EOF\necho done \\\\\n${PAYLOAD}\nEOF` },
+]
+
+/**
+ * The positive control: bash feeds the body to bash, which runs find, which runs the sentinel. If it records nothing,
+ * no row can fail, so the oracle stops and names the cause rather than pass on nothing compared.
+ */
+const CONTROL = `bash <<'EOF'\nfind . -maxdepth 0 -exec ${SENTINEL} control \\;\nEOF`
 
 function shapeBody(command: string, delimiter: { open: string; dash: boolean }, lines: string[]): string {
   const tab = delimiter.dash ? '\t' : ''
@@ -87,7 +165,7 @@ function allShapes(): Array<{ label: string; body: string }> {
       }
     }
   }
-  return [...shapes, ...NESTED]
+  return [...shapes, ...NESTED, ...REVIEW_SHAPES]
 }
 
 /**
@@ -107,21 +185,9 @@ function buckleRan(body: string): Set<string> {
 
 describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of what real bash runs', () => {
   let directory = ''
+  let binary = ''
   let log = ''
   let environment: NodeJS.ProcessEnv = process.env
-
-  beforeAll(() => {
-    directory = mkdtempSync(join(tmpdir(), 'buckle-heredoc-oracle-'))
-    const binary = join(directory, SENTINEL)
-    log = join(directory, 'ran.log')
-    writeFileSync(binary, '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$SENTINEL_LOG"\n')
-    chmodSync(binary, 0o755)
-    environment = { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}`, SENTINEL_LOG: log }
-  })
-
-  afterAll(() => {
-    if (directory) rmSync(directory, { recursive: true, force: true })
-  })
 
   /** The sentinel invocations real bash ran on the body, by their joined arguments; empty when bash ran it none. */
   const bashRan = (body: string): Set<string> => {
@@ -134,17 +200,61 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     return new Set(readFileSync(log, 'utf8').split('\n').slice(0, -1).map(invocation))
   }
 
+  /** Where bash finds a command on the test PATH, or '' when it finds none. */
+  const resolved = (name: string): string => {
+    try {
+      return execFileSync('bash', ['-c', `command -v ${name}`], { env: environment, encoding: 'utf8' }).trim()
+    } catch {
+      return ''
+    }
+  }
+
+  /** Why the control recorded nothing, checked in the order its run needs each part. */
+  const sentinelFault = (): string => {
+    if (!existsSync('/bin/sh')) return 'there is no /bin/sh, the interpreter the sentinel script names'
+    try {
+      execFileSync(binary, ['probe'], { env: environment, stdio: 'ignore' })
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EACCES') return `the sentinel ${binary} cannot execute (EACCES): ${directory} is mounted noexec or the file lost its execute bit`
+      if (code === 'ENOENT') return `the sentinel ${binary} cannot start (ENOENT): its interpreter /bin/sh cannot be run`
+      return `the sentinel ${binary} failed when run directly (${code ?? (error as Error).message})`
+    }
+    if (resolved('find') === '') return 'find is not on PATH, and the control reaches the sentinel through find -exec'
+    const found = resolved(SENTINEL)
+    if (found !== binary) return `bash resolves ${SENTINEL} to "${found}" rather than ${binary}: a PATH problem`
+    return `the sentinel ran but its log ${log} stayed empty`
+  }
+
+  beforeAll(() => {
+    directory = mkdtempSync(join(tmpdir(), 'buckle-heredoc-oracle-'))
+    binary = join(directory, SENTINEL)
+    log = join(directory, 'ran.log')
+    writeFileSync(binary, '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$SENTINEL_LOG"\n')
+    chmodSync(binary, 0o755)
+    environment = { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}`, SENTINEL_LOG: log }
+    if (!bashRan(CONTROL).has('control')) {
+      throw new Error(`heredoc oracle: the control shape ran no sentinel, so no row could fail; ${sentinelFault()}`)
+    }
+  })
+
+  afterAll(() => {
+    if (directory) rmSync(directory, { recursive: true, force: true })
+  })
+
   it('reads every sentinel command bash runs, for every shape, within the time budget', () => {
     const shapes = allShapes()
     const missed: string[] = []
+    let ranShapes = 0
     let overRead = 0
     for (const { label, body } of shapes) {
       const ran = bashRan(body)
       const read = buckleRan(body)
       for (const invocation of ran) if (!read.has(invocation)) missed.push(`${label}: bash ran [sentinel ${invocation}] that Buckle did not read`)
-      if (ran.size === 0 && read.size > 0) overRead++
+      if (ran.size > 0) ranShapes++
+      else if (read.size > 0) overRead++
     }
-    console.info(`heredoc oracle: ${shapes.length} shapes, ${overRead} read the sentinel where bash did not (over-reads, allowed)`)
+    console.info(`heredoc oracle: ${shapes.length} shapes, bash ran the sentinel in ${ranShapes}, ${overRead} read the sentinel where bash did not (over-reads, allowed)`)
     expect(missed).toEqual([])
   }, 20_000)
 })
