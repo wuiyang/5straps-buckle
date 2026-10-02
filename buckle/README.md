@@ -128,6 +128,31 @@ not a tamper-proof record.
 Rings, the 5straps agent control plane, can optionally pair with Buckle nodes to push policy,
 relay approvals, and collect refused-call reports; Buckle runs without it.
 
+## Documentation
+
+For users:
+
+- [Installing Buckle](https://github.com/wuiyang/buckle/blob/main/docs/install.md): requirements, platform status, upgrading, and the
+  state directory.
+- [First run](https://github.com/wuiyang/buckle/blob/main/docs/first-run.md): `buckle init`, the two credentials, and the CLI, MCP, and
+  HTTP faces.
+- [Approvals](https://github.com/wuiyang/buckle/blob/main/docs/approvals.md): what asks, the scopes, the destructive floor, where to
+  answer, and the dangerously-allow switch.
+- [Policy](https://github.com/wuiyang/buckle/blob/main/docs/policy.md): command globs, reading limits, network lists, files, and when a
+  restart is needed.
+- [Sandbox and tools](https://github.com/wuiyang/buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, and shell
+  isolation.
+- [The audit log](https://github.com/wuiyang/buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
+- [Rings](https://github.com/wuiyang/buckle/blob/main/docs/rings.md): the optional pairing and its settings.
+- [Troubleshooting](https://github.com/wuiyang/buckle/blob/main/docs/troubleshooting.md): the first failures, with their messages.
+
+For developers:
+
+- [Architecture](https://github.com/wuiyang/buckle/blob/main/docs/dev/architecture.md), [Building and testing](https://github.com/wuiyang/buckle/blob/main/docs/dev/building-and-testing.md),
+  and [Releasing](https://github.com/wuiyang/buckle/blob/main/docs/dev/releasing.md).
+- Research records: [command matching](https://github.com/wuiyang/buckle/blob/main/docs/dev/research/command-matching.md) and
+  [transport and terminal packages](https://github.com/wuiyang/buckle/blob/main/docs/dev/research/packages.md).
+
 ## Packages
 
 | Path | Package | What it is |
