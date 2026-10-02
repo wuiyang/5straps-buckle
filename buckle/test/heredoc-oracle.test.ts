@@ -148,6 +148,44 @@ const REVIEW_SHAPES: Array<{ label: string; body: string }> = [
  */
 const CONTROL = `bash <<'EOF'\nfind . -maxdepth 0 -exec ${SENTINEL} control \\;\nEOF`
 
+/**
+ * Adversarial heredoc shapes the slice 7g review could not run, each confirmed under real bash in scratch first:
+ * fed-shell escape runs, parameter expansions and arithmetic carrying a substitution, two heredocs on one line, a
+ * heredoc nested in a substitution nested in a heredoc nested in a substitution, bodies fed to sh, eval and source,
+ * and CRLF line endings. Shapes needing an interpreter the test does not provide (dash, ssh) and bodies holding a
+ * NUL byte or invalid UTF-8 (which the exec harness cannot pass) were confirmed in scratch only; the reader does not
+ * crash on the latter and reads the command.
+ */
+const ADVERSARIAL: Array<{ label: string; body: string }> = [
+  { label: 'adversarial: escaped dollar, 1 backslashes', body: `bash <<EOF\nfind . -maxdepth 0 -exec true "\\$(${PAYLOAD})" \\;\nEOF` },
+  { label: 'adversarial: unquoted substitution, 1 backslashes', body: `bash <<EOF\necho \\$(${PAYLOAD})\nEOF` },
+  { label: 'adversarial: escaped command, 1 backslashes', body: `bash <<EOF\n\\${PAYLOAD}\nEOF` },
+  { label: 'adversarial: continuation, 1 backslashes', body: `bash <<EOF\n${SENTINEL} \\\nmark\nEOF` },
+  { label: 'adversarial: escaped dollar, 2 backslashes', body: `bash <<EOF\nfind . -maxdepth 0 -exec true "\\\\$(${PAYLOAD})" \\;\nEOF` },
+  { label: 'adversarial: unquoted substitution, 2 backslashes', body: `bash <<EOF\necho \\\\$(${PAYLOAD})\nEOF` },
+  { label: 'adversarial: escaped command, 2 backslashes', body: `bash <<EOF\n\\\\${PAYLOAD}\nEOF` },
+  { label: 'adversarial: continuation, 2 backslashes', body: `bash <<EOF\n${SENTINEL} \\\\\nmark\nEOF` },
+  { label: 'adversarial: continuation, 3 backslashes', body: `bash <<EOF\n${SENTINEL} \\\\\\\nmark\nEOF` },
+  { label: 'adversarial: default-value substitution', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '\${x:-$(${PAYLOAD})}' \\;\nEOF` },
+  { label: 'adversarial: assign-default substitution', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '\${x=$(${PAYLOAD})}' \\;\nEOF` },
+  { label: 'adversarial: nested default substitution', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '\${x:-\${y:-$(${PAYLOAD})}}' \\;\nEOF` },
+  { label: 'adversarial: arithmetic with a substitution', body: `cat <<EOF\nfind . -maxdepth 0 -exec true '$((1 + $(${PAYLOAD}) 0))' \\;\nEOF` },
+  { label: 'adversarial: two heredocs, payload in the first', body: `cat <<A <<B\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nA\nb\nB` },
+  { label: 'adversarial: two heredocs, payload in the second', body: `cat <<A <<B\na\nA\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nB` },
+  { label: 'adversarial: two heredocs fed to bash, payload in the second', body: `bash <<A <<'B'\necho a\nA\n${PAYLOAD}\nB` },
+  { label: 'adversarial: two heredocs, quoted first and unquoted second', body: `cat <<'A' <<B\n$(${PAYLOAD})\nA\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nB` },
+  { label: 'adversarial: cat in $() in cat in $()', body: `echo "$(cat <<A\n$(cat <<B\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nB\n)\nA\n)"` },
+  { label: 'adversarial: bash in $() in cat in $()', body: `echo "$(cat <<A\n$(bash <<'B'\n${PAYLOAD}\nB\n)\nA\n)"` },
+  { label: 'adversarial: fed to bash: cat in $() in cat in $()', body: `bash <<'EOF'\necho "$(cat <<A\n$(cat <<B\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nB\n)\nA\n)"\nEOF` },
+  { label: 'adversarial: sh, quoted body', body: `sh <<'EOF'\n${PAYLOAD}\nEOF` },
+  { label: 'adversarial: sh, unquoted, escaped dollar', body: `sh <<EOF\nfind . -maxdepth 0 -exec true "\\$(${PAYLOAD})" \\;\nEOF` },
+  { label: 'adversarial: eval of cat', body: `eval "$(cat <<'EOF'\n${PAYLOAD}\nEOF\n)"` },
+  { label: 'adversarial: eval of cat, quote spanning lines', body: `eval "$(cat <<'EOF'\nfind . -maxdepth 0 -exec true "\n$(${PAYLOAD})\n" \\;\nEOF\n)"` },
+  { label: 'adversarial: source /dev/stdin', body: `source /dev/stdin <<'EOF'\n${PAYLOAD}\nEOF` },
+  { label: 'adversarial: . /dev/stdin', body: `. /dev/stdin <<'EOF'\n${PAYLOAD}\nEOF` },
+  { label: 'adversarial: CRLF find, bash', body: `bash <<EOF\r\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\r\nEOF\r\n` },
+]
+
 function shapeBody(command: string, delimiter: { open: string; dash: boolean }, lines: string[]): string {
   const tab = delimiter.dash ? '\t' : ''
   const redirect = delimiter.dash ? '<<-' : '<<'
@@ -165,7 +203,7 @@ function allShapes(): Array<{ label: string; body: string }> {
       }
     }
   }
-  return [...shapes, ...NESTED, ...REVIEW_SHAPES]
+  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL]
 }
 
 /**
@@ -182,6 +220,41 @@ function buckleRan(body: string): Set<string> {
   for (const form of forms) if (baseCommand(form[0] ?? '') === SENTINEL) ran.add(invocation(form.slice(1).join(' ')))
   return ran
 }
+
+/**
+ * The reader stays linear on adversarial bulk, needing no bash: a thousand heredocs nested one in another are left
+ * unread at the depth limit, and a 1 MB body, 100,000 one-character lines and 50,000 continuations each read within a
+ * second (slice 7g review coverage probes).
+ */
+describe('the reader is bounded on adversarial bulk', () => {
+  const under = (body: string, limit = 1_000) => {
+    const started = performance.now()
+    const forms = commandForms('bash', ['-c', body])
+    expect(performance.now() - started).toBeLessThan(limit)
+    return forms
+  }
+
+  it('leaves a thousand nested heredocs unread at the depth limit, within a second', () => {
+    const open = Array.from({ length: 1_000 }, (_, index) => `bash <<'D${index}'`).join('\n')
+    const close = Array.from({ length: 1_000 }, (_, index) => `D${999 - index}`).join('\n')
+    expect(under(`${open}\necho "$(${PAYLOAD})"\n${close}`).unread).toBe('depth')
+  })
+
+  it('reads a 1 MB adversarial body within a second', () => {
+    const line = `find . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;`
+    const body = `cat <<EOF\n${Array.from({ length: Math.ceil(1_000_000 / line.length) }, () => line).join('\n')}\nEOF`
+    expect(body.length).toBeGreaterThan(1_000_000)
+    under(body)
+  })
+
+  it('reads 100,000 one-character body lines within a second', () => {
+    under(`cat <<EOF\n${Array.from({ length: 100_000 }, () => 'x').join('\n')}\nEOF`)
+  })
+
+  it('reads 50,000 continuations within a second', () => {
+    under(`bash <<EOF\n${Array.from({ length: 50_000 }, () => 'echo a \\').join('\n')}\ndone\nEOF`)
+  })
+})
 
 describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of what real bash runs', () => {
   let directory = ''
