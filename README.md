@@ -40,7 +40,7 @@ workspace settings. The current directory becomes the workspace root, shown to t
 network lists; `--yes` takes the defaults. `buckle settings set` changes any of them later.
 
 The state directory also holds grants, the policy, pending approvals, and the action log. No
-tool can read it, and the sandbox hides it from every command.
+tool can read it, and a process sandbox hides it from commands.
 
 ## Three faces
 
@@ -66,9 +66,10 @@ proxy in front for anything beyond the local host.
 
 ## Approvals
 
-Every call meets one of three answers: **allow**, **ask**, or **deny**. Reads outside the
-workspace, the first write to a directory, credential files, destructive commands, and
-private-network URLs ask. A granted directory never unlocks a credential file inside it.
+Every call meets one of three answers: **allow**, **ask**, or **deny**. The first write to a
+directory, credential files, destructive commands, and private-network URLs ask. Reads outside
+the workspace ask when no mount is set; the `/workspace` mount `buckle init` writes refuses them.
+A granted directory never unlocks a credential file inside it.
 
 A person answers an ask with a scope: **once**, **session**, or **always**. Destructive
 commands never offer always. The approver sees the full action before anything runs; only
@@ -99,9 +100,11 @@ buckle policy mount /workspace
 ## Sandbox
 
 - Linux: shell commands run under bubblewrap.
-- macOS: shell commands run under Seatbelt.
+- macOS: shell commands run under Seatbelt once `BUCKLE_SHELL_ISOLATION=false` is set and no
+  workspace mount is, since shell isolation and the mount both need bubblewrap.
 - Elsewhere, or with no sandbox available, the shell pack is withheld. `BUCKLE_SANDBOX=none`
-  is the explicit acknowledgement that commands run unsandboxed.
+  is the explicit acknowledgement that commands run unsandboxed; it too needs
+  `BUCKLE_SHELL_ISOLATION=false` and no mount.
 
 On Linux, shell tools work on private copies of the workspace by default and publish
 changes through conflict-checked checkpoints; `BUCKLE_SHELL_ISOLATION=false` selects
@@ -119,14 +122,15 @@ buckle log --limit 20
 buckle log --json
 ```
 
-Arguments are trimmed for the log: a string over 200 characters becomes its length, and any
-value under a credential-named key reads `[redacted]`. The log is a plain append-only file,
+Arguments are trimmed for the log: every string becomes its length, such as
+`[5 characters]`, and any value under a credential-named key reads `[redacted]`. The log is a plain append-only file,
 not a tamper-proof record.
 
 ## Rings
 
-Rings, the 5straps agent control plane, can optionally pair with Buckle nodes to push policy,
-relay approvals, and collect refused-call reports; Buckle runs without it.
+Rings, the 5straps agent control plane, can optionally pair with Buckle nodes to collect their
+action logs and refused calls, relay pending approvals, and, where the experimental admin face is
+on, push policy; Buckle runs without it.
 
 ## Documentation
 
