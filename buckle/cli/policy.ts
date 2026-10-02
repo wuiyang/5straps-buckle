@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
-import { destructivePatterns, emptyWorkspacePolicy, isWorkspaceToolAllowed, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
+import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, isWorkspaceToolAllowed, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
+import { isInterpreter } from '../common/domain/command-forms.js'
 import { compilePolicy, mergePolicies, PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
 import { actionsPath, policyPath, type BuckleConfig } from '../common/runtime/config.js'
 import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
@@ -21,6 +22,9 @@ const USAGE = `Usage:
   buckle policy allow-command <glob>          Only matching command lines may run
   buckle policy deny-command <glob>           Matching command lines are refused; deny wins
   buckle policy destructive-command <glob>    Matching command lines ask first, once or per session
+  buckle policy allow-interpreter <name>      Read calls of this interpreter (python3, node) as ordinary
+                                              commands; any other runs code Buckle cannot read
+  buckle policy remove-interpreter <name>     Read that interpreter as unknown again
   buckle policy allow-url <host|url-prefix>   Only listed hosts and URLs may be reached
   buckle policy mount <path> | unmount        Show the workspace to the agent as this path
   buckle policy deny-tool <tool>              Refuse this tool outright, whatever its pack allows
@@ -63,6 +67,14 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
         return await save(runtime, edit(current(), policy => policy.commands.deny.push(required(rest[0], action))))
       case 'destructive-command':
         return await save(runtime, edit(current(), policy => { policy.commands.destructive = [...destructivePatterns(policy), required(rest[0], action)] }))
+      case 'allow-interpreter': {
+        const name = interpreterName(rest[0], action)
+        return await save(runtime, edit(current(), policy => { policy.commands.allowedInterpreters = [...new Set([...allowedInterpreters(policy), name])] }))
+      }
+      case 'remove-interpreter': {
+        const name = interpreterName(rest[0], action)
+        return await save(runtime, edit(current(), policy => { policy.commands.allowedInterpreters = allowedInterpreters(policy).filter(item => item !== name) }))
+      }
       case 'allow-url':
         return await save(runtime, edit(current(), policy => policy.network.allow.push(required(rest[0], action))))
       case 'mount':
@@ -221,6 +233,13 @@ function remove(policy: WorkspacePolicy, pattern: string): WorkspacePolicy {
   })
 }
 
+/** An interpreter Buckle knows, so a typo is refused rather than stored as an allowance that matches nothing. */
+function interpreterName(value: string | undefined, action: string): string {
+  const name = required(value, action)
+  if (!isInterpreter(name)) throw new UsageError(`${name} is not an interpreter Buckle reads as unknown: python, node, nodejs, deno, bun, perl, ruby, or php, with a version where the program has one (python3.12)`)
+  return name
+}
+
 function toolName(value: string | undefined, action: string): string {
   const parsed = ToolNameSchema.safeParse(required(value, action))
   if (!parsed.success) throw new UsageError(`${value} is not a tool name, such as fs_write or shell_exec`)
@@ -284,6 +303,7 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   section('Command allow list (only these may run)', effective.commands.allow, policy => policy.commands.allow)
   section('Command deny list (refused outright)', effective.commands.deny, policy => policy.commands.deny)
   section('Destructive additions (these ask, on top of the built-in floor)', destructivePatterns(effective), destructivePatterns)
+  section('Allowed interpreters (read as ordinary commands; any other runs unknown code)', allowedInterpreters(effective), allowedInterpreters)
   section('Approved hosts and URLs (only these may be reached)', effective.network.allow, policy => policy.network.allow)
   section('Denied tools (refused outright, whatever the pack allows)', effective.tools?.deny ?? [], policy => policy.tools?.deny ?? [])
   if (effective.tools?.allow !== undefined) section('Tool allow list (only these tools may run)', effective.tools.allow, policy => policy.tools?.allow ?? [])

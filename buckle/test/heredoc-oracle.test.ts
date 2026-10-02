@@ -321,6 +321,15 @@ const SCRIPT_DATA: Shape[] = [
   { label: 'script read: bash --version after a pipe runs nothing', body: `echo '${PAYLOAD}' | bash --version` },
 ]
 
+/**
+ * Owner decision D55: code a non-shell interpreter runs is unknown to Buckle, so the call is unread (unknown
+ * interpreter) until a policy allows that interpreter. The two python shapes of the 7h probes ran the sentinel.
+ */
+const INTERPRETERS: Shape[] = [
+  { label: 'interpreter: python os.system in a heredoc body', body: `python3 <<'EOF'\nimport os; os.system('${PAYLOAD}')\nEOF`, unread: 'interpreter' },
+  { label: 'interpreter: python -c os.system', body: `python3 -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter' },
+]
+
 function shapeBody(command: string, delimiter: { open: string; dash: boolean }, lines: string[]): string {
   const tab = delimiter.dash ? '\t' : ''
   const redirect = delimiter.dash ? '<<-' : '<<'
@@ -338,7 +347,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes()]
+  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS]
 }
 
 /**

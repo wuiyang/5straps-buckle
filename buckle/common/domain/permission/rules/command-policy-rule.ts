@@ -1,6 +1,6 @@
 import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
 import type { CommandForms } from '../../command-forms.js'
-import { allForms, commandFormsOf, READ_LIMITS, readLimitOf } from '../../command-forms.js'
+import { allForms, commandFormsOf, readLimitOf, readLimitReason } from '../../command-forms.js'
 import type { CommandGlob } from '../../command-glob.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
@@ -37,9 +37,11 @@ const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve
  * The deny list and the wrapper requirement also meet the command behind a prefix such as `env` or
  * `timeout 5` (the continuation review, "Seen outside this range"). The allow list admits only the call as
  * typed, so a prefix never carries a command past it; the refusal names the raw argv (owner decision D17).
- * A call Buckle cannot read whole, past READ_BUDGET, MAX_DEPTH or MAX_SUBSTITUTIONS or at a find -exec command that
- * is a primary, is refused whenever a deny glob exists, naming the limit that stopped the reading, since the glob
- * might have met the part left unread (defaults D30 and D33).
+ * A call Buckle cannot read whole, past READ_BUDGET, MAX_DEPTH or MAX_SUBSTITUTIONS, at a find -exec command that
+ * is a primary, at a script that arrives as data, or running code with an interpreter this policy does not allow, is
+ * refused whenever a deny glob exists, naming the limit that stopped the reading, since the glob might have met the
+ * part left unread (defaults D30 and D33, owner decision D55). Each policy judges interpreters by its own list, so the
+ * node ceiling refuses one a workspace allows unless the ceiling allows it too (owner decision D7).
  *
  * `source` names whose policy this is, so a refusal by the node's ceiling says so (slice 7d review R7D-BD-2). `others`
  * are the command policies whose rules run after this one: a glob of theirs that met the parts read is named before
@@ -65,13 +67,14 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       if (denied) return deny('command_policy', subject(), `Refused by the ${source} command policy: ${denied.source}`)
       // What was not read cannot be matched, so a deny list refuses it rather than leave the floor's ask to an
       // approval or the dangerously-allow switch (slice 7c review R7C-CR-1; owner decision D7, default D30).
-      const limit = policy.commands.deny.length > 0 ? readLimitOf(forms) : null
+      const allowed = policy.commands.allowedInterpreters
+      const limit = policy.commands.deny.length > 0 ? readLimitOf(forms, allowed) : null
       if (limit) {
         for (const other of options.others ?? []) {
           const matched = deniedBy(other.policy, forms)
           if (matched) return deny('command_policy', subject(), `Refused by the ${other.source} command policy: ${matched.source}`)
         }
-        return deny('command_policy', subject(), `${READ_LIMITS[limit]}, so the ${source} command policy's deny list cannot meet all of it; refused rather than asked`)
+        return deny('command_policy', subject(), `${readLimitReason(limit, forms, allowed)}, so the ${source} command policy's deny list cannot meet all of it; refused rather than asked`)
       }
 
       const allow = policy.commands.allow

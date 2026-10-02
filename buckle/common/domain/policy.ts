@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { destructivePatterns, emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
+import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
+import { isInterpreter } from './command-forms.js'
 import { compileCommandGlob, CommandGlobError, type CommandGlob } from './command-glob.js'
 import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-pattern.js'
 import type { ServiceFailure } from '../types/service-failure.js'
@@ -10,7 +11,8 @@ import type { ServiceFailure } from '../types/service-failure.js'
  */
 export interface CompiledPolicy {
   policy: WorkspacePolicy
-  commands: { allow: CommandGlob[]; deny: CommandGlob[]; destructive: CommandGlob[] }
+  /** `allowedInterpreters`: the interpreters read as ordinary commands; every other one runs code Buckle reads as unknown (owner decision D55). */
+  commands: { allow: CommandGlob[]; deny: CommandGlob[]; destructive: CommandGlob[]; allowedInterpreters: ReadonlySet<string> }
   /** Null when the owner set no approved list, which leaves the network rule to its defaults. */
   network: UrlMatcher | null
   mount: string | null
@@ -86,6 +88,7 @@ export function compilePolicy(policy: WorkspacePolicy): CompiledPolicy {
       allow: compileGlobs(policy.commands.allow),
       deny: compileGlobs(policy.commands.deny),
       destructive: compileGlobs(destructivePatterns(policy)),
+      allowedInterpreters: compileInterpreters(allowedInterpreters(policy)),
     },
     network: policy.network.allow.length > 0 ? compileNetwork(policy.network.allow) : null,
     mount: validateMount(policy.mount),
@@ -124,6 +127,8 @@ export function mergePolicies(...policies: Array<WorkspacePolicy | null>): Works
     merged.commands.allow = unique([...merged.commands.allow, ...policy.commands.allow])
     merged.commands.deny = unique([...merged.commands.deny, ...policy.commands.deny])
     merged.commands.destructive = unique([...destructivePatterns(merged), ...destructivePatterns(policy)])
+    const interpreters = unique([...allowedInterpreters(merged), ...allowedInterpreters(policy)])
+    if (interpreters.length > 0) merged.commands.allowedInterpreters = interpreters
     merged.network.allow = unique([...merged.network.allow, ...policy.network.allow])
     if (policy.mount) merged.mount = policy.mount
     if (policy.updatedAt && (!merged.updatedAt || policy.updatedAt > merged.updatedAt)) merged.updatedAt = policy.updatedAt
@@ -150,6 +155,14 @@ function compileGlobs(sources: string[]): CommandGlob[] {
       throw error
     }
   })
+}
+
+/** The interpreter names a policy allows, each one Buckle knows as an interpreter, so a typo never stands for one. */
+function compileInterpreters(names: string[]): ReadonlySet<string> {
+  for (const name of names) {
+    if (!isInterpreter(name)) throw new PolicyError(`Invalid interpreter ${JSON.stringify(name)}: python, node, nodejs, deno, bun, perl, ruby, or php, with a version where the program has one (python3.12)`)
+  }
+  return new Set(names)
 }
 
 function compileNetwork(patterns: string[]): UrlMatcher {

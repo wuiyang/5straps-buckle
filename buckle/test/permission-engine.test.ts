@@ -416,9 +416,17 @@ describe('destructive commands', () => {
     ['git', ['reset', '--soft', 'HEAD~1']],
     ['git', ['clean', '--dry-run']],
     ['rm', ['one-file.txt']],
-    ['node', ['script.js']],
+    ['node', ['--version']],
   ])('allows ordinary command %s %s', (command, args) => {
     expect(evaluate([exec(command, args)], { write_scope: ['/'] }).kind).toBe('allow')
+  })
+
+  // Owner decision D55: a script an interpreter runs is code Buckle cannot read as shell, so with no policy allowing
+  // node the floor asks about it rather than allow it as an ordinary command.
+  it('asks about node script.js, whose code Buckle cannot read as shell', () => {
+    const outcome = evaluate([exec('node', ['script.js'])], { write_scope: ['/'] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks[0]?.reason).toMatch(/^Runs code Buckle cannot read as shell, with an interpreter the policy does not allow \(unknown interpreter\): node; asked rather than guessed at$/)
   })
 
   it('gates a shell script that pipes a download into a shell', () => {

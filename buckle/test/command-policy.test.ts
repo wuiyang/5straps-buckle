@@ -756,6 +756,125 @@ describe('a call Buckle cannot read whole', () => {
   })
 })
 
+// Owner decision D55: a body run by python, node, deno, bun, perl, ruby or php is code Buckle cannot read as shell, so
+// such a call is unknown: refused naming the limit under any deny glob, on the workspace and the node ceiling and with
+// the dangerously-allow switch on or off, and asked at the floor otherwise (default D33 (b)), until the policy allows
+// that interpreter, which then reads as an ordinary command under its own globs. The node ceiling judges by its own
+// list, so it refuses an interpreter a workspace allows unless the ceiling allows it too (owner decision D7).
+describe('a call that runs code with an interpreter', () => {
+  const policyOf = (input: { deny?: string[]; interpreters?: string[] }) => {
+    const policy = emptyWorkspacePolicy()
+    policy.commands.deny = input.deny ?? []
+    if (input.interpreters) policy.commands.allowedInterpreters = input.interpreters
+    return compilePolicy(policy)
+  }
+  interface Setting { deny: string[]; workspaceAllows?: string[]; ceilingAllows?: string[] }
+  const engines = {
+    workspace: (setting: Setting) => {
+      const workspace = policyOf({ deny: setting.deny, interpreters: setting.workspaceAllows })
+      return [createCommandPolicyRule(workspace, { enforceWrapperAllow: false }), createDestructiveCommandRule({ allowedInterpreters: workspace.commands.allowedInterpreters })]
+    },
+    ceiling: (setting: Setting) => {
+      const workspace = policyOf({ interpreters: setting.workspaceAllows })
+      return [
+        createCommandPolicyRule(policyOf({ deny: setting.deny, interpreters: setting.ceilingAllows }), { enforceWrapperAllow: false, source: 'node ceiling', others: [{ policy: workspace, source: 'workspace' }] }),
+        createCommandPolicyRule(workspace, { enforceWrapperAllow: false }),
+        createDestructiveCommandRule({ allowedInterpreters: workspace.commands.allowedInterpreters }),
+      ]
+    },
+  }
+  const named = { workspace: 'the workspace command policy', ceiling: 'the node ceiling command policy' } as const
+  const check = (engine: keyof typeof engines, switched: boolean, call: readonly [string, readonly string[]], setting: Setting) =>
+    withDangerouslyAllow(createPermissionEngine(engines[engine](setting)), { enabled: () => switched, root: () => '/workspace' })
+      .evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command: call[0], args: [...call[1]] }], grants: { subjectsFor: () => [] } })
+  const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name}`
+  const engineCases = (['workspace', 'ceiling'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
+  /** Each form runs code: inline code, a script, a module, code on its input, a versioned name, and the same behind a wrapper, a shell body, or xargs. */
+  const forms = [
+    ['python3', ['-c', 'print(1)'], 'python3'],
+    ['python3', ['script.py'], 'python3'],
+    ['python3', ['-m', 'venv', '.venv'], 'python3'],
+    ['python3.12', ['-c', 'print(1)'], 'python3.12'],
+    ['node', ['-e', 'console.log(1)'], 'node'],
+    ['node', ['--eval', 'console.log(1)'], 'node'],
+    ['node', ['-p', '1'], 'node'],
+    ['node', ['script.js'], 'node'],
+    ['deno', ['run', 'main.ts'], 'deno'],
+    ['bun', ['run', 'index.ts'], 'bun'],
+    ['perl', ['-e', 'print 1'], 'perl'],
+    ['ruby', ['-e', 'puts 1'], 'ruby'],
+    ['php', ['-r', 'echo 1;'], 'php'],
+    ['env', ['python3', '-c', 'print(1)'], 'python3'],
+    ['xargs', ['python3', '-c'], 'python3'],
+    ['xargs', ['python3'], 'python3'],
+    ['bash', ['-c', 'python3 -c "print(1)"'], 'python3'],
+    ['bash', ['-c', 'echo "print(1)" | python3'], 'python3'],
+    ['bash', ['-c', 'python3 < job.py'], 'python3'],
+    ['bash', ['-c', "python3 <<'EOF'\nprint(1)\nEOF"], 'python3'],
+  ] as const
+  const refusal = (outcome: ReturnType<typeof check>) => {
+    if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
+    expect(outcome.denial.rule).toBe('command_policy')
+    return outcome.denial.reason
+  }
+
+  it.each(engineCases.flatMap(([engine, switched]) => forms.map(([command, args, name]) => [engine, switched, command, args, name] as const)))('refuses %s deny, switch on: %s, %s %j as an unknown interpreter, naming it', (engine, switched, command, args, name) => {
+    expect(refusal(check(engine, switched, [command, args], { deny: ['terraform destroy *'] }))).toBe(`${unknown(name)}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => forms.map(([command, args, name]) => [engine, command, args, name] as const)))('asks at the floor, %s with no deny glob, about %s %j, naming the interpreter', (engine, command, args, name) => {
+    const outcome = check(engine, false, [command, args], { deny: [] })
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${unknown(name)}; asked rather than guessed at`]])
+  })
+
+  it.each(forms.map(([command, args]) => [command, args] as const))('lets the dangerously-allow switch answer the floor\'s ask about %s %j when no deny glob exists, as it answers every ask', (command, args) => {
+    const outcome = check('workspace', true, [command, args], { deny: [] })
+    if (outcome.kind !== 'allow') throw new Error(`expected an allow, got ${outcome.kind}`)
+    expect(outcome.allowedBy).toEqual([expect.stringMatching(/^dangerously_allow:destructive_command:/)])
+  })
+
+  it.each(engineCases.flatMap(([engine, switched]) => forms.map(([command, args, name]) => [engine, switched, command, args, name] as const)))('reads %s, switch on: %s, %s %j as an ordinary command once the policy allows %s', (engine, switched, command, args, name) => {
+    const setting = { deny: ['terraform destroy *'], workspaceAllows: [name], ceilingAllows: [name] }
+    expect(check(engine, switched, [command, args], setting)).toMatchObject({ kind: 'allow' })
+    expect(check(engine, switched, [command, args], { deny: [], workspaceAllows: [name] })).toMatchObject({ kind: 'allow' })
+  })
+
+  it.each(engineCases)('still refuses an allowed interpreter its own deny glob names, %s deny, switch on: %s', (engine, switched) => {
+    expect(refusal(check(engine, switched, ['python3', ['-m', 'venv', '.venv']], { deny: ['python3 -m *'], workspaceAllows: ['python3'], ceilingAllows: ['python3'] }))).toBe(`Refused by ${named[engine]}: python3 -m *`)
+  })
+
+  it.each([false, true])('refuses on the node ceiling an interpreter only the workspace allows, switch on: %s', (switched) => {
+    expect(refusal(check('ceiling', switched, ['node', ['script.js']], { deny: ['terraform destroy *'], workspaceAllows: ['node'] }))).toBe(`${unknown('node')}, so the node ceiling command policy's deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it('judges an allowance by the exact program name, so python3 allows neither python nor python3.12', () => {
+    for (const command of ['python', 'python3.12']) {
+      expect(refusal(check('workspace', false, [command, ['-c', 'print(1)']], { deny: ['terraform destroy *'], workspaceAllows: ['python3'] }))).toBe(`${unknown(command)}, so the workspace command policy's deny list cannot meet all of it; refused rather than asked`)
+    }
+  })
+
+  it.each(engineCases.flatMap(([engine, switched]) => [
+    [engine, switched, 'node', ['--version']],
+    [engine, switched, 'node', ['-v']],
+    [engine, switched, 'python3', ['--version']],
+    [engine, switched, 'python3', ['-V']],
+    [engine, switched, 'python3', []],
+    [engine, switched, 'php', ['--help']],
+  ] as const))('leaves %s, switch on: %s, %s %j an ordinary command: it prints, or reads the input Buckle leaves empty', (engine, switched, command, args) => {
+    expect(check(engine, switched, [command, args], { deny: ['terraform destroy *'] })).toMatchObject({ kind: 'allow' })
+    expect(check(engine, switched, [command, args], { deny: [] })).toMatchObject({ kind: 'allow' })
+  })
+
+  it('reads a bare interpreter inside shell text as running code from its input, a pipe, a redirection, or a heredoc', () => {
+    for (const body of ['python3', 'cat job.py | python3', "python3 <<'EOF'\nprint(1)\nEOF"]) {
+      expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).interpreters).toEqual(['python3'])
+    }
+    expect(commandFormsOf({ command: 'bash', args: ['-c', 'python3 --version && node -v'] }).interpreters).toEqual([])
+    expect(commandFormsOf({ command: 'bash', args: ['-c', 'git commit -m "fix; python3 -c x"'] }).interpreters).toEqual([])
+  })
+})
+
 describe('the destructive floor the owner raised', () => {
   const destructive = ['terraform destroy *']
 

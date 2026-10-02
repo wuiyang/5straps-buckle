@@ -26,6 +26,12 @@ export const CommandPolicySchema = z.object({
    * Absent in a document written before the list existed, which reads as empty.
    */
   destructive: PatternListSchema.optional(),
+  /**
+   * Interpreters (`python3`, `node`) whose calls Buckle reads as ordinary commands, by program name. A call that runs
+   * code with any other interpreter is unknown to Buckle, which cannot read that code as shell: refused when a deny
+   * glob exists, asked otherwise. Absent in a document written before the list existed, which reads as empty.
+   */
+  allowedInterpreters: z.array(z.string().min(1).max(64).regex(/^[A-Za-z][A-Za-z0-9._-]*$/)).max(50).optional(),
 })
 
 export const NetworkPolicySchema = z.object({
@@ -78,6 +84,11 @@ export function emptyWorkspacePolicy(): WorkspacePolicy {
 /** The owner's destructive additions, absent in a policy document written before they existed. */
 export function destructivePatterns(policy: WorkspacePolicy): string[] {
   return policy.commands.destructive ?? []
+}
+
+/** The interpreters the owner allows as ordinary commands, absent in a policy document written before the list existed. */
+export function allowedInterpreters(policy: WorkspacePolicy): string[] {
+  return policy.commands.allowedInterpreters ?? []
 }
 
 /** Fields every Buckle report carries, whether it is a lone refusal or one action-log entry. */

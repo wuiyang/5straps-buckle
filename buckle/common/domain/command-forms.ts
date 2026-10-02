@@ -19,11 +19,15 @@ export const READ_LIMITS = {
   substitutions: `Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: ${MAX_SUBSTITUTIONS} levels)`,
   findPrimary: 'A find -exec command starts with a word find reads as a primary, which Buckle does not read as a command (find primary)',
   scriptData: 'A shell takes its script from a pipe, a redirection, or xargs, so the script arrives as data, which Buckle cannot read (script as data)',
+  interpreter: 'Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter)',
 } as const
 
 export type ReadLimit = keyof typeof READ_LIMITS
-/** A limit that leaves a command unread; the budget is kept apart, in `overBudget`, and a script that arrives as data in `scriptData`. */
-type UnreadLimit = Exclude<ReadLimit, 'budget' | 'scriptData'>
+/**
+ * A limit that leaves a command unread; the budget is kept apart, in `overBudget`, a script that arrives as data in
+ * `scriptData`, and the interpreters a call runs code with in `interpreters`, which each policy judges by its own list.
+ */
+type UnreadLimit = Exclude<ReadLimit, 'budget' | 'scriptData' | 'interpreter'>
 
 /**
  * A program that runs the command named after its own options and operands. Only the options that take a
@@ -135,6 +139,8 @@ export interface CommandForms {
   overBudget: boolean
   /** A shell or `source` the call runs takes its script as data, from its input or from xargs (scriptArrivesAsData). */
   scriptData: boolean
+  /** The interpreters the call runs code with (interpreterRunningCode), by program name, each once. */
+  interpreters: string[]
 }
 
 /**
@@ -163,11 +169,24 @@ export function commandFormsOf(effect: { command: string; args: readonly string[
   return forms
 }
 
-/** The limit a reading stopped at, the first in READ_LIMITS order, or null when the call was read whole. */
-export function readLimitOf(forms: CommandForms): ReadLimit | null {
+const NO_INTERPRETERS: ReadonlySet<string> = new Set()
+
+/**
+ * The limit a reading stopped at, the first in READ_LIMITS order, or null when the call was read whole. An interpreter
+ * the policy allows (`allowed`) is an ordinary command, so only another one leaves the call unknown (owner decision D55).
+ */
+export function readLimitOf(forms: CommandForms, allowed: ReadonlySet<string> = NO_INTERPRETERS): ReadLimit | null {
   if (forms.unread === 'depth') return 'depth'
   if (forms.overBudget) return 'budget'
-  return forms.unread ?? (forms.scriptData ? 'scriptData' : null)
+  if (forms.unread) return forms.unread
+  if (forms.scriptData) return 'scriptData'
+  return forms.interpreters.some(name => !allowed.has(name)) ? 'interpreter' : null
+}
+
+/** How a reason names a limit: as READ_LIMITS words it, and for an interpreter with the programs the policy does not allow. */
+export function readLimitReason(limit: ReadLimit, forms: CommandForms, allowed: ReadonlySet<string> = NO_INTERPRETERS): string {
+  if (limit !== 'interpreter') return READ_LIMITS[limit]
+  return `${READ_LIMITS.interpreter}: ${forms.interpreters.filter(name => !allowed.has(name)).join(', ')}`
 }
 
 const UNREAD_ORDER = Object.keys(READ_LIMITS) as ReadLimit[]
@@ -206,7 +225,8 @@ const CALL: Place = { statement: false, heredoc: false }
 function formsOf(words: readonly string[], depth: number, budget: Budget, place: Place): Reading {
   const { chain, unread } = wrapperChain(words)
   const inner = innerCommands(chain.at(-1)!, budget)
-  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), unknownEval: inner.unknownEval, overBudget: false, scriptData: scriptArrivesAsData(chain, place), rereads: inner.rereads }
+  const interpreter = interpreterRunningCode(chain, place)
+  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), unknownEval: inner.unknownEval, overBudget: false, scriptData: scriptArrivesAsData(chain, place), interpreters: interpreter ? [interpreter] : [], rereads: inner.rereads }
   const read = (command: string[], at: Place, piece = false): Reading | null => {
     if (depth >= MAX_DEPTH) {
       forms.unread = 'depth'
@@ -217,7 +237,10 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
     keep(forms.nested, nested.nested, budget)
     forms.unread = firstLimit(forms.unread, nested.unread)
     forms.unknownEval ||= nested.unknownEval
-    if (!piece) forms.scriptData ||= nested.scriptData
+    if (!piece) {
+      forms.scriptData ||= nested.scriptData
+      for (const name of nested.interpreters) if (!forms.interpreters.includes(name)) forms.interpreters.push(name)
+    }
     return nested
   }
   for (const group of inner.groups) {
@@ -236,6 +259,44 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   }
   forms.overBudget = budget.spent
   return forms
+}
+
+/**
+ * Programs whose code Buckle cannot read as shell (owner decision D55): each name, alone or with a version
+ * (`python3`, `python3.12`, `node22`, `perl5.36`). A policy names the ones it reads as ordinary commands.
+ */
+const INTERPRETER = /^(?:python|node|nodejs|deno|bun|perl|ruby|php)(?:\d+(?:\.\d+)*)?$/
+
+/** Whether a program name is an interpreter Buckle reads as unknown unless a policy allows it. */
+export function isInterpreter(name: string): boolean {
+  return INTERPRETER.test(name)
+}
+
+/** The one argument with which each interpreter only prints its version or its help and runs no code. */
+const INTERPRETER_INFO: Readonly<Record<string, ReadonlySet<string>>> = {
+  python: new Set(['--version', '-V', '--help', '-h']),
+  node: new Set(['--version', '-v', '--help', '-h']),
+  nodejs: new Set(['--version', '-v', '--help', '-h']),
+  deno: new Set(['--version', '-V', '--help', '-h']),
+  bun: new Set(['--version', '-v', '--help', '-h']),
+  perl: new Set(['--version', '-v', '--help', '-h']),
+  ruby: new Set(['--version', '--help', '-h']),
+  php: new Set(['--version', '-v', '--help', '-h']),
+}
+
+/**
+ * The interpreter the command a chain ends in runs code with, or null (owner decision D55): any call of one with inline
+ * code (`-c`, `-e`, `--eval`, `-r`, `-p`), a script, `-m`, or any other argument, and one behind xargs, whose items
+ * become its code or its script. Its version or its help alone runs nothing; nor does a bare interpreter as the call
+ * itself, whose input is empty. In shell text a bare interpreter reads code from its input, a pipe, a redirection,
+ * or a heredoc Buckle cannot read as shell, so it runs code too.
+ */
+function interpreterRunningCode(chain: readonly string[][], place: Place): string | null {
+  const [command = '', ...args] = chain.at(-1)!
+  if (!INTERPRETER.test(command)) return null
+  if (chain.some(form => form[0] === 'xargs')) return command
+  if (args.length === 1 && INTERPRETER_INFO[command.replace(/[\d.]+$/, '')]?.has(args[0]!)) return null
+  return args.length === 0 && !place.statement ? null : command
 }
 
 /** `source file` and `. file`, which run a script in the shell that reads them. */
