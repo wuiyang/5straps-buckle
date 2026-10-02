@@ -8,9 +8,9 @@ and no tool can read or change it.
 
 Two sources, unioned: every allow and deny from either, and the last mount named. Deny wins.
 
-- The environment: `BUCKLE_COMMAND_ALLOW`, `BUCKLE_COMMAND_DENY` and
-  `BUCKLE_COMMAND_DESTRUCTIVE` (patterns one per line, or separated by `;;`),
-  `BUCKLE_NETWORK_ALLOW` (comma separated) and `BUCKLE_WORKSPACE_MOUNT`.
+- The environment: `BUCKLE_COMMAND_ALLOW`, `BUCKLE_COMMAND_DENY`, and
+  `BUCKLE_COMMAND_DESTRUCTIVE`, with patterns one per line or separated by `;;`; the approved list
+  `BUCKLE_NETWORK_ALLOW`, comma separated; and `BUCKLE_WORKSPACE_MOUNT`.
 - The stored policy: `policy.json` in the state directory, keyed by workspace root, which
   `buckle policy` writes.
 
@@ -39,7 +39,7 @@ command from word globs, so it needs an allow rule of its own, such as
 runtime is one ([Troubleshooting](troubleshooting.md#a-bash-script-is-refused)).
 
 Whatever the patterns say, a tool cannot run Buckle's admin commands, such as `buckle approve`,
-`buckle policy` or `buckle settings`.
+`buckle policy`, or `buckle settings`.
 
 ### What Buckle reads
 
@@ -59,14 +59,12 @@ One reading of a call stops at the first of these:
 - A `find -exec` command that starts with a dash word, which `find` reads as its own option.
 
 Past a limit, the destructive floor asks, naming the limit. When the policy has a deny list, the
-call is refused instead, because the unread part might hold a denied command. That refusal also
-stands with the dangerously-allow switch on.
+call is refused instead, because the unread part might hold a denied command.
 
 ## Network
 
 ```bash
 buckle policy allow-url localhost:3000
-buckle policy allow-url '*.example.com'
 buckle policy allow-url https://app.example.com/admin
 ```
 

@@ -53,8 +53,14 @@ for this start with `BUCKLE_PORT=4321 buckle serve`, or edit the `BUCKLE_PORT` l
 
 ## The state directory has the wrong modes
 
-Buckle creates `~/.5straps/buckle` with mode 700 and its files with mode 600. When the settings
-file is readable by others, it still starts and logs a warning:
+Buckle creates `~/.5straps/buckle` with mode 700 and its files with mode 600. When other users
+can reach the directory, every command, `buckle serve`, and `buckle mcp` refuse to start:
+
+```
+Directory /home/you/.5straps/buckle is accessible to other users (mode 755); it holds credentials and must be owner-only: chmod 700 /home/you/.5straps/buckle
+```
+
+When only the settings file is readable by others, Buckle starts and logs a warning:
 
 ```
 The environment file /home/you/.5straps/buckle/buckle.env can be read by other users; run chmod 600 /home/you/.5straps/buckle/buckle.env
