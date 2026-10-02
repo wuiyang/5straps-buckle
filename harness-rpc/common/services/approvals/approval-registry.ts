@@ -397,7 +397,9 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   let queueVersion: string | undefined
   let pruning: Promise<void> | undefined
   // The index version an ordinary call last found unreadable: it is not read again, nor its failure logged again,
-  // until the file changes (review L3 of the continuation review).
+  // until the file changes (review L3 of the continuation review). Any read that succeeds on any path clears it, as
+  // the store clears its own report, so a repair seen only by an ask, a decision or the sender still lets the next
+  // outage log once (slice 7f review R7F-QV-1).
   let unreadableVersion: string | undefined
   /** Whether an ask's end is told to the webhook: asked with the flag, or waiting in this durable registry's workspace. */
   const notifies = (entry: PendingEntry): boolean => entry.notify === true || (durableNotices && entry.workspace === workspace)
@@ -407,6 +409,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     // Capture before reading: a concurrent atomic rename is noticed on the next check.
     const version = currentQueueVersion()
     const state = store.read()
+    // The read succeeded, so a version marked unreadable is readable again: forget the mark, whichever path read it.
+    unreadableVersion = undefined
     queueVersion = version
     nextExpiry = earliestExpiry(state)
     return state
@@ -440,6 +444,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       nextExpiry = earliestExpiry(state)
       return value
     })
+    // The update read the index whole before it wrote, so a version marked unreadable is readable again: forget it.
+    unreadableVersion = undefined
     queueVersion = undefined
     calls.remove(released)
     if (expired.length > 0) options.onExpired?.(expired)
@@ -483,8 +489,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
    */
   function readForPrune(version: string): boolean {
     try {
+      // A successful read clears unreadableVersion itself, so this path need not clear it again.
       read()
-      unreadableVersion = undefined
       return true
     } catch (error) {
       if (!(error instanceof StateFileError)) throw error

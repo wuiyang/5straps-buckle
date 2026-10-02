@@ -582,6 +582,84 @@ describe('an index unreadable for a while, then repaired in place', () => {
         }
       })
 
+      // Slice 7f review R7F-QV-1: a repair seen only by an ask (a read), a decision (an update) or the sender cleared
+      // the store's report but not the registry's mark, so the registry stayed silent on the next outage. Any read that
+      // succeeds now clears the mark, so each outage logs from the store and the registry each, whichever path saw the
+      // repair. Each episode repairs through one path only, with no ordinary call between the outages.
+      it.skipIf(process.getuid?.() === 0)('logs each outage once when only an ask reads the repair', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        const { root, registry, service } = queue()
+        await issue(registry)
+        const warn = vi.spyOn(logger, 'warn')
+        const error = vi.spyOn(logger, 'error')
+        try {
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          for (const episode of [1, 2, 3]) {
+            chmodSync(root, 0o000)
+            await twelveSeconds(registry)
+            expect([stored(error), index(warn)]).toEqual([episode, episode])
+            chmodSync(root, 0o700)
+            registry.pending()
+          }
+        } finally {
+          chmodSync(root, 0o700)
+          warn.mockRestore()
+          error.mockRestore()
+          await service.close()
+        }
+      })
+
+      it.skipIf(process.getuid?.() === 0)('logs each outage once when only a decision updates the repair', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        const { root, registry, service } = queue()
+        await issue(registry)
+        const warn = vi.spyOn(logger, 'warn')
+        const error = vi.spyOn(logger, 'error')
+        try {
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          for (const episode of [1, 2, 3]) {
+            chmodSync(root, 0o000)
+            await twelveSeconds(registry)
+            expect([stored(error), index(warn)]).toEqual([episode, episode])
+            chmodSync(root, 0o700)
+            await registry.sweep()
+          }
+        } finally {
+          chmodSync(root, 0o700)
+          warn.mockRestore()
+          error.mockRestore()
+          await service.close()
+        }
+      })
+
+      it.skipIf(process.getuid?.() === 0)('logs each outage once when only the sender reads the repair', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        const { root, registry, notices } = withWebhook()
+        const reads = vi.spyOn(registry, 'pendingDeliveries')
+        const warn = vi.spyOn(logger, 'warn')
+        const error = vi.spyOn(logger, 'error')
+        const senderReads = async () => {
+          const before = reads.mock.calls.length
+          await vi.waitFor(() => expect(reads.mock.calls.length - before).toBeGreaterThanOrEqual(10), { timeout: 10_000, interval: 20 })
+        }
+        try {
+          await issue(registry)
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          for (const episode of [1, 2, 3]) {
+            chmodSync(root, 0o000)
+            await twelveSeconds(registry)
+            expect(index(warn)).toBe(episode)
+            chmodSync(root, 0o700)
+            await senderReads()
+          }
+        } finally {
+          chmodSync(root, 0o700)
+          warn.mockRestore()
+          error.mockRestore()
+          await notices.settle()
+        }
+      })
+
       it('reads a missing state directory as an empty queue, as before, and delivers once it is back', async () => {
         vi.useFakeTimers({ toFake: ['Date'] })
         const { root, registry, notices, sent } = withWebhook()
