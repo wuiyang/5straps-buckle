@@ -151,6 +151,20 @@ describe('shell text as a shell splits it', () => {
     expect(shellStatementList("cat <<'EOF'\nfind . -exec true '$(git push origin main)' \\;\nEOF").statements).toEqual(["cat <<'EOF'", "find . -exec true '$(git push origin main)' \\;"])
   })
 
+  // Slice 7f residual 1: heredoc body lines a backslash-newline joins were read one at a time, so `git push \` then
+  // `--force origin main` fed to bash showed no force push, although real bash force-pushed.
+  it('reads heredoc body lines a backslash-newline joins as one statement too, under either delimiter', () => {
+    const statements = (text: string) => shellStatementList(text).statements
+    expect(statements("bash <<'EOF'\ngit push \\\n--force \\\norigin main\nEOF")).toEqual(["bash <<'EOF'", 'git push \\', '--force \\', 'origin main', 'git push --force origin main'])
+    expect(statements('bash <<-EOF\n\tgit push \\\n\t--force origin main\n\tEOF')).toEqual(['bash <<-EOF', 'git push \\', '--force origin main', 'git push --force origin main'])
+    // A run still open at the delimiter line is read as it stands, and the delimiter line still ends the body.
+    expect(statements("bash <<'EOF'\ngit push --force \\\nEOF\necho after")).toEqual(["bash <<'EOF'", 'git push --force \\', 'git push --force', 'echo after'])
+    // An escaped backslash ends no line under a quoted delimiter; under an unquoted one bash halves it first, so it does.
+    expect(statements("bash <<'EOF'\ngit push \\\\\n--force origin main\nEOF")).toEqual(["bash <<'EOF'", 'git push \\\\', '--force origin main'])
+    expect(statements('bash <<EOF\ngit push \\\\\n--force origin main\nEOF')).toEqual(['bash <<EOF', 'git push \\\\', '--force origin main', 'git push --force origin main'])
+    expect(statements('bash <<EOF\ngit push \\\\\\\\\n--force origin main\nEOF')).toEqual(['bash <<EOF', 'git push \\\\\\\\', '--force origin main'])
+  })
+
   it('says a heredoc body nests substitutions past MAX_SUBSTITUTIONS, whatever its delimiter', () => {
     for (const opener of ['cat <<EOF', "cat <<'EOF'", 'bash <<-EOF']) {
       expect(shellStatementList(`${opener}\necho "$(a "$(b "$(c "$(d "$(git push)")")")")"\nEOF`).deep).toBe(true)

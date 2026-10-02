@@ -433,6 +433,34 @@ describe('a call Buckle cannot read whole', () => {
     expect(performance.now() - started).toBeLessThan(1_000)
   })
 
+  // Slice 7f residual 1: heredoc body lines a backslash-newline joins were read one at a time, so `git push \` then
+  // `--force origin main` fed to bash was allowed with no ask (real bash force-pushed); a deny glob still met `git push`.
+  const B = '\\'
+  const continued = [
+    ['a quoted delimiter', `bash <<'EOF'\ngit push ${B}\n--force origin main\nEOF`],
+    ['an unquoted delimiter', `bash <<EOF\ngit push ${B}\n--force origin main\nEOF`],
+    ['three lines joined', `bash <<'EOF'\ngit push ${B}\n--force ${B}\norigin main\nEOF`],
+    ['a <<- body with tabs', `bash <<-'EOF'\n\tgit push ${B}\n\t--force origin main\n\tEOF`],
+    ['an unquoted delimiter and an escaped backslash, which bash halves', `bash <<EOF\ngit push ${B}${B}\n--force origin main\nEOF`],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => continued.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a continued git push under %s', (engine, switched, _shape, body) => {
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => continued.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a continued force push under %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
+  it.each([
+    ['a backslash before the delimiter line', `bash <<'EOF'\ngit push --force ${B}\nEOF\necho after`, 'ask'],
+    ['an escaped backslash under a quoted delimiter, which joins nothing (real bash ran no force push)', `bash <<'EOF'\ngit push ${B}${B}\n--force origin main\nEOF`, 'allow'],
+  ] as const)('reads %s as bash does, with no deny glob', (_shape, body, kind) => {
+    expect(check('workspace', false, body, []).kind).toBe(kind)
+  })
+
   // Slice 7e review R7E-LW-3: the node ceiling's rule runs first, so with deny lists in both policies it refused at a
   // reading limit naming itself although the workspace glob had matched the push. A glob that matched in any policy is
   // named first; the limit is named, ceiling first, only when none matched. The call is refused either way.
@@ -456,6 +484,16 @@ describe('a call Buckle cannot read whole', () => {
     [switched, 'no node ceiling deny list, workspace git push, the idiom alone', repoRoot, [], ['git push *'], "Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so the workspace command policy's deny list cannot meet all of it; refused rather than asked"],
   ] as const))('names the glob that matched before any limit, switch on: %s, %s', (switched, _shape, body, ceilingDeny, workspaceDeny, reason) => {
     expect(refusal(checkBoth(switched, body, [...ceilingDeny], [...workspaceDeny]))).toBe(reason)
+  })
+
+  it('reads a heredoc body of 40,000 lines, every one continued, within a second, joining them in one pass', () => {
+    const notes = Array.from({ length: 40_000 }, (_, index) => `note ${index} of the release ${B}`).join('\n')
+    expect(notes.length).toBeGreaterThan(1_000_000)
+    for (const opener of ["bash <<'EOF'", 'bash <<EOF']) {
+      const started = performance.now()
+      expect(check('workspace', false, heredocLine(notes, opener)).kind).toBe('allow')
+      expect(performance.now() - started).toBeLessThan(1_000)
+    }
   })
 
   it('reads a thousand heredocs nested in substitutions within a second, each body whole once', () => {
