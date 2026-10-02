@@ -12,7 +12,7 @@ interface Run { id: number; name: string; head_sha: string; status: string; conc
 const run = (name: string, conclusion: string | null, extra: Partial<Run> = {}): Run => ({ id: 1, name, head_sha: SHA, status: conclusion === null ? 'in_progress' : 'completed', conclusion, started_at: '2026-09-29T10:00:00Z', ...extra })
 
 /** Answers git and gh as a repository on master whose HEAD is SHA would, recording every gh call. */
-function fake(input: { onOrigin?: boolean; originAt?: string; dirty?: boolean; detached?: boolean; runs?: Run[]; origin?: string }) {
+function fake(input: { onOrigin?: boolean; originAt?: string; dirty?: boolean; detached?: boolean; runs?: Run[]; origin?: string; gh?: Error }) {
   const calls: string[][] = []
   const answer = (command: string, args: string[]): string => {
     calls.push([command, ...args])
@@ -24,6 +24,7 @@ function fake(input: { onOrigin?: boolean; originAt?: string; dirty?: boolean; d
       return `${input.originAt ?? SHA}\n`
     }
     if (command === 'git' && args[0] === 'remote') return `${input.origin ?? 'git@github.com-alias:owner/repo.git'}\n`
+    if (command === 'gh' && input.gh) throw input.gh
     if (command === 'gh') return JSON.stringify({ total_count: input.runs?.length ?? 0, check_runs: input.runs ?? [] })
     throw new Error(`unexpected ${command} ${args.join(' ')}`)
   }
@@ -60,6 +61,17 @@ describe('the CI requirement before publishing', () => {
     const git = fake({ ...input, runs: [run('verify', 'success'), run('package-arm64', 'success')] })
     expect(requireCi({ run: git.run, repository: '' })).toEqual({ ok: false, message: expect.stringContaining(reason) })
     expect(git.calls.filter(call => call[0] === 'gh')).toEqual([])
+  })
+
+  // A machine without gh, or with gh signed out, gets one line naming gh and its login, not a stack trace.
+  it.each([
+    ['gh is not installed', Object.assign(new Error('spawnSync gh ENOENT'), { code: 'ENOENT' }), 'The GitHub CLI, gh, is not installed'],
+    ['gh cannot answer', Object.assign(new Error('Command failed: gh api'), { status: 4 }), 'gh could not read the CI results for owner/repo'],
+  ])('refuses in one line naming gh and its login when %s', (_, failure, reason) => {
+    const result = requireCi({ run: fake({ gh: failure }).run, repository: '' })
+    expect(result).toEqual({ ok: false, message: expect.stringContaining(reason) })
+    expect(result.message).toContain('gh auth login')
+    expect(result.message).not.toContain('\n')
   })
 
   it('counts only the runs GitHub Actions made: a check another app posted under a job\'s name is not that job', () => {

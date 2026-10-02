@@ -60,8 +60,10 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported privately to the maintainers, the community leaders responsible for
-enforcement, through GitHub's "Report content" flow addressed to the 5straps
-organisation, until a 5straps mailbox is published.
+enforcement, through this repository's private reporting form
+(<https://github.com/wuiyang/buckle/security/advisories/new>), the same channel
+SECURITY.md names. It is the only private channel until a dedicated conduct
+address is published; say in the report that it concerns conduct.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the

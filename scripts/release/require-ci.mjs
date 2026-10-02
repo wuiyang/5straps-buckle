@@ -47,12 +47,23 @@ export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY }) {
     return { ok: false, message: `HEAD ${sha} is not what origin/${branch} holds${pushed ? ` (${pushed})` : ''} in this clone: fetch first (git fetch origin; this check compares with the local origin/${branch} and never fetches), then push it and let CI run on it before releasing` }
   }
   const slug = repository || repositoryOf(run('git', ['remote', 'get-url', 'origin']))
-  const response = JSON.parse(run('gh', ['api', `repos/${slug}/commits/${sha}/check-runs?per_page=100`]))
-  const blocking = blockingJobs({ sha, runs: response.check_runs ?? [] })
+  let checks
+  try {
+    checks = run('gh', ['api', `repos/${slug}/commits/${sha}/check-runs?per_page=100`])
+  } catch (error) {
+    return { ok: false, message: ghFailure({ error, slug }) }
+  }
+  const blocking = blockingJobs({ sha, runs: JSON.parse(checks).check_runs ?? [] })
   if (blocking.length > 0) {
     return { ok: false, message: `CI has not passed on ${sha}: ${blocking.map(job => `${job.name} ${job.reason}`).join('; ')}. Both ${REQUIRED_JOBS.join(' and ')} must succeed before publishing.` }
   }
   return { ok: true, message: `CI passed on ${sha}: ${REQUIRED_JOBS.join(' and ')} succeeded.` }
+}
+
+/** One line for a gh call that could not run or answer, in place of its stack trace: the release reads CI through gh. */
+function ghFailure({ error, slug }) {
+  if (error?.code === 'ENOENT') return `The GitHub CLI, gh, is not installed: a release reads CI results through it. Install gh, run gh auth login with an account that can read ${slug}, then release again`
+  return `gh could not read the CI results for ${slug}: run gh auth login with an account that can read it, check gh api works, then release again`
 }
 
 /** The command's trimmed stdout, or null when it fails: `rev-parse --verify` fails for a ref origin does not hold. */
