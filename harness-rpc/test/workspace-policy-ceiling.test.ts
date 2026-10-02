@@ -93,6 +93,20 @@ describe('immutable installation policy on child workspaces', () => {
     expect(unread.execute).not.toHaveBeenCalled()
   })
 
+  // Slice 7e review R7E-LW-3: the node ceiling refused at its reading limit, naming itself, although the workspace's
+  // deny glob had matched the push the call runs.
+  it.each([
+    ["the workspace glob that matched past the node ceiling's limit", policy({ deny: ['terraform destroy *'] }), policy({ allow: ['bash -c *'], deny: ['git push *'] }), '; git push origin main', 'Refused by the workspace command policy: git push *'],
+    ['the node ceiling glob that matched', policy({ deny: ['git push *'] }), policy({ allow: ['bash -c *'], deny: ['terraform destroy *'] }), '; git push origin main', 'Refused by the node ceiling command policy: git push *'],
+    ['the node ceiling limit when no glob matched', policy({ deny: ['terraform destroy *'] }), policy({ allow: ['bash -c *'], deny: ['git push *'] }), '', "Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so the node ceiling command policy's deny list cannot meet all of it; refused rather than asked"],
+  ] as const)('names %s when both policies hold deny lists', async (_case, node, child, tail, message) => {
+    const runtime = await workspace(node, child)
+    const repoRoot = 'ROOT="$(cd "$(dirname "$(dirname "$(dirname "$(dirname "$0")")")")" && pwd)"; echo "$ROOT"'
+    const refused = await effect(runtime, command('bash', ['-c', `${repoRoot}${tail}`]))
+    expect(refused.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message } })
+    expect(refused.execute).not.toHaveBeenCalled()
+  })
+
   it('keeps the managed filesystem mount when child setup tries to remove or replace it', async () => {
     const runtime = await workspace(policy())
     await runtime.policy.apply({ ...policy(), mount: null })

@@ -480,7 +480,7 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
   const { config, compiled, ceiling, paths } = input
   return withDangerouslyAllow(createPermissionEngine([
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config) }),
-    ...(ceiling ? [createCommandPolicyRule(ceiling, { enforceWrapperAllow: false, source: 'node ceiling' })] : []),
+    ...(ceiling ? [createCommandPolicyRule(ceiling, { enforceWrapperAllow: false, source: 'node ceiling', others: [{ policy: compiled, source: 'workspace' }] })] : []),
     createCommandPolicyRule(compiled, { enforceWrapperAllow: !ceiling?.commands.allow.length }),
     createDestructiveCommandRule({ added: [...(ceiling?.commands.destructive ?? []), ...compiled.commands.destructive] }),
     networkEgressRule(compiled, ceiling),

@@ -1,5 +1,7 @@
 import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
+import type { CommandForms } from '../../command-forms.js'
 import { allForms, commandFormsOf, READ_LIMITS, readLimitOf } from '../../command-forms.js'
+import type { CommandGlob } from '../../command-glob.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
 import { deny } from '../decision.js'
@@ -39,9 +41,12 @@ const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve
  * is a primary, is refused whenever a deny glob exists, naming the limit that stopped the reading, since the glob
  * might have met the part left unread (defaults D30 and D33).
  *
- * `source` names whose policy this is, so a refusal by the node's ceiling says so (slice 7d review R7D-BD-2).
+ * `source` names whose policy this is, so a refusal by the node's ceiling says so (slice 7d review R7D-BD-2). `others`
+ * are the command policies whose rules run after this one: a glob of theirs that met the parts read is named before
+ * this policy's reading limit, so the node ceiling's limit never stands in for the workspace glob that matched (slice
+ * 7e review R7E-LW-3). The call is refused either way.
  */
-export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean; source?: CommandPolicySource } = {}): PermissionRule {
+export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean; source?: CommandPolicySource; others?: readonly NamedCommandPolicy[] } = {}): PermissionRule {
   const source = options.source ?? 'workspace'
   return {
     id: 'command_policy',
@@ -56,12 +61,18 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
 
       if (SELF_ADMINISTRATION.test(words.join(' '))) return deny('command_policy', subject(), 'A tool cannot administer the Buckle that runs it')
 
-      const denied = policy.commands.deny.find(glob => allForms(forms).some(form => glob.matchesPrefix(form)))
+      const denied = deniedBy(policy, forms)
       if (denied) return deny('command_policy', subject(), `Refused by the ${source} command policy: ${denied.source}`)
       // What was not read cannot be matched, so a deny list refuses it rather than leave the floor's ask to an
       // approval or the dangerously-allow switch (slice 7c review R7C-CR-1; owner decision D7, default D30).
       const limit = policy.commands.deny.length > 0 ? readLimitOf(forms) : null
-      if (limit) return deny('command_policy', subject(), `${READ_LIMITS[limit]}, so the ${source} command policy's deny list cannot meet all of it; refused rather than asked`)
+      if (limit) {
+        for (const other of options.others ?? []) {
+          const matched = deniedBy(other.policy, forms)
+          if (matched) return deny('command_policy', subject(), `Refused by the ${other.source} command policy: ${matched.source}`)
+        }
+        return deny('command_policy', subject(), `${READ_LIMITS[limit]}, so the ${source} command policy's deny list cannot meet all of it; refused rather than asked`)
+      }
 
       const allow = policy.commands.allow
       const admitted = allow.some(glob => glob.matchesLine(words))
@@ -77,5 +88,13 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
   }
 }
 
+/** The first deny glob of a policy that meets a form of the call, read as far as it was read. */
+function deniedBy(policy: Pick<CompiledPolicy, 'commands'>, forms: CommandForms): CommandGlob | undefined {
+  return policy.commands.deny.find(glob => allForms(forms).some(form => glob.matchesPrefix(form)))
+}
+
 /** Whose command policy a rule applies: a workspace's own, or the node's ceiling over every registered workspace. */
 export type CommandPolicySource = 'workspace' | 'node ceiling'
+
+/** A command policy with the name its refusals give it. */
+export interface NamedCommandPolicy { policy: Pick<CompiledPolicy, 'commands'>; source: CommandPolicySource }

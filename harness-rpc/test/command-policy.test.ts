@@ -433,6 +433,31 @@ describe('a call Buckle cannot read whole', () => {
     expect(performance.now() - started).toBeLessThan(1_000)
   })
 
+  // Slice 7e review R7E-LW-3: the node ceiling's rule runs first, so with deny lists in both policies it refused at a
+  // reading limit naming itself although the workspace glob had matched the push. A glob that matched in any policy is
+  // named first; the limit is named, ceiling first, only when none matched. The call is refused either way.
+  const bothPolicies = (ceilingDeny: string[], workspaceDeny: string[]) => {
+    const workspace = policyOf({ allow: ['bash -c *'], deny: workspaceDeny })
+    return [
+      createCommandPolicyRule(policyOf({ deny: ceilingDeny }), { enforceWrapperAllow: false, source: 'node ceiling', others: [{ policy: workspace, source: 'workspace' }] }),
+      createCommandPolicyRule(workspace),
+      createDestructiveCommandRule(),
+    ]
+  }
+  const checkBoth = (switched: boolean, body: string, ceilingDeny: string[], workspaceDeny: string[]) =>
+    withDangerouslyAllow(createPermissionEngine(bothPolicies(ceilingDeny, workspaceDeny)), { enabled: () => switched, root: () => '/workspace' })
+      .evaluate({ tool: 'script_run', effects: [{ kind: 'exec', command: 'bash', args: ['-c', body] }], grants: { subjectsFor: () => [] } })
+
+  it.each([false, true].flatMap(switched => [
+    [switched, 'node ceiling terraform, workspace git push, the idiom then a push', `${repoRoot}; ${push}`, ['terraform destroy *'], ['git push *'], 'Refused by the workspace command policy: git push *'],
+    [switched, 'node ceiling git push, workspace terraform, the idiom then a push', `${repoRoot}; ${push}`, ['git push *'], ['terraform destroy *'], 'Refused by the node ceiling command policy: git push *'],
+    [switched, 'node ceiling terraform, workspace git push, the idiom alone', repoRoot, ['terraform destroy *'], ['git push *'], "Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so the node ceiling command policy's deny list cannot meet all of it; refused rather than asked"],
+    [switched, 'node ceiling git push, no workspace deny list, the idiom alone', repoRoot, ['git push *'], [], "Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so the node ceiling command policy's deny list cannot meet all of it; refused rather than asked"],
+    [switched, 'no node ceiling deny list, workspace git push, the idiom alone', repoRoot, [], ['git push *'], "Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so the workspace command policy's deny list cannot meet all of it; refused rather than asked"],
+  ] as const))('names the glob that matched before any limit, switch on: %s, %s', (switched, _shape, body, ceilingDeny, workspaceDeny, reason) => {
+    expect(refusal(checkBoth(switched, body, [...ceilingDeny], [...workspaceDeny]))).toBe(reason)
+  })
+
   it('reads a thousand heredocs nested in substitutions within a second, each body whole once', () => {
     const opened = Array.from({ length: 1_000 }, (_, index) => `$(cat <<D${index}`).join('\n')
     const closed = Array.from({ length: 1_000 }, (_, index) => `D${999 - index}\n)`).join('\n')
