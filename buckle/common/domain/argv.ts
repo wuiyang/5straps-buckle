@@ -361,8 +361,7 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
     } else if (character === "'") level.quote = text[index - 1] === '$' ? "$'" : "'"
     else if (character === '"') level.quote = '"'
     else if (character === '#' && (index === 0 || WORD_BOUNDARY.has(text[index - 1]!))) {
-      const line = text.indexOf('\n', index)
-      const stop = line < 0 ? text.length : line
+      const stop = commentEnd(text, index, level.closer === '`' || level.backtick !== null)
       end(level, index, stop)
       index = stop - 1
     } else if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
@@ -384,6 +383,24 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
   }
   while (levels.length > (mode.heredocText ? 1 : 0)) end(levels.pop()!, text.length, text.length)
   return { statements, deep, overDepth }
+}
+
+/**
+ * Where a comment starting at `from` ends: at the end of its line, or, inside a backtick body, at the closing backtick
+ * if that comes first, since bash finds the body's end (the first backtick no backslash escapes) before it reads the
+ * comment in it (slice 7i probes: `echo \`a # c\`; git push` ran the git push with no rule reading it).
+ */
+function commentEnd(text: string, from: number, inBacktick: boolean): number {
+  if (!inBacktick) {
+    const line = text.indexOf('\n', from)
+    return line < 0 ? text.length : line
+  }
+  for (let index = from; index < text.length; index++) {
+    const character = text[index]
+    if (character === '\n' || character === '`') return index
+    if (character === '\\') index++
+  }
+  return text.length
 }
 
 /** `quoted` when any part of the delimiter word is quoted, so bash expands nothing in the body. */

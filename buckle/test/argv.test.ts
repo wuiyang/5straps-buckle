@@ -233,6 +233,15 @@ describe('shell text as a shell splits it', () => {
     expect(statements('echo `git push --force`')).toEqual(['echo', 'git push --force'])
   })
 
+  // Slice 7i probes: bash finds a backtick body's end before it reads a comment in it, so the comment stops there and
+  // the command after the substitution is read; outside a backtick body a comment still runs to the end of its line.
+  it('ends a comment inside a backtick body at its closing backtick', () => {
+    expect(statementsOf('echo `id # c`; git push origin main')).toContain('git push origin main')
+    expect(statementsOf('echo "`id # c`"; git push origin main')).toContain('git push origin main')
+    expect(statementsOf("bash <<'EOF'\necho `id # c \\` x`; git push origin main\nEOF")).toContain('git push origin main')
+    expect(statementsOf('echo $(id # c ); git push origin main\n)')).not.toContain('git push origin main')
+  })
+
   // A backslash that ends the text escapes nothing and bash keeps it; an escaped space ending a statement is a word.
   it('keeps a backslash that ends the text, and an escaped space that ends a statement', () => {
     expect(shellTokens('git push --force\\').map(token => token.word)).toEqual(['git', 'push', '--force\\'])

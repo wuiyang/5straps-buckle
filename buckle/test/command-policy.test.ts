@@ -599,6 +599,25 @@ describe('a call Buckle cannot read whole', () => {
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
   })
 
+  // Slice 7i probes: a comment inside a backtick body ran to the end of the line, so the git push after the
+  // substitution ran with no rule reading it; bash ends the comment at the closing backtick. Real bash ran the sentinel.
+  const commentedBacktick = {
+    'top level': `echo \`id # c\`; ${push}`,
+    'bash -c': `bash -c 'echo \`id # c\`; ${push}'`,
+    'a quoted heredoc fed to bash': heredocLine(`echo \`id # c\`; ${push}`, "bash <<'EOF'"),
+    'heredoc text': heredocLine(`\`id # c\` \`${push}\``),
+  } as const
+
+  it.each(cases.flatMap(([engine, switched]) => Object.entries(commentedBacktick).map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a git push after a commented backtick body in %s', (engine, switched, _shape, body) => {
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each(['workspace', 'ceiling'] as const)('asks at the floor, %s with no deny glob, about a force push after a commented backtick body', (engine) => {
+    const outcome = check(engine, false, `echo \`id # c\`; git push --force origin main`, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
   // A continuation between words joins no word and leaves none, so `git push \<newline> --force` reads as `git push
   // --force` and a word glob on it still matches; an empty word between push and the flag would misalign it.
   it.each(cases)('refuses a force push with a space-surrounded continuation, %s deny, switch on: %s, by the force glob', (engine, switched) => {

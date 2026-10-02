@@ -231,6 +231,34 @@ const BACKTICK_EXTRA: Shape[] = [
   { label: 'backtick, an escaped dollar (read as written)', body: `echo \`${SENTINEL} \\$HOME\``, written: '$HOME' },
 ]
 
+/**
+ * A comment inside a backtick body ends at the closing backtick, which bash finds before it reads the comment, so the
+ * command after the substitution runs: at top level, under bash -c, in a nested body, past an escaped backtick or a
+ * backslash-newline in the comment, and on a heredoc body line of every delimiter kind under cat and bash.
+ */
+function backtickCommentShapes(): Shape[] {
+  const shapes: Shape[] = [
+    { label: 'backtick comment, a statement after', body: `echo \`${PAYLOAD} # c\`; ${SENTINEL} two` },
+    { label: 'backtick comment, a backtick after', body: `echo \`${PAYLOAD} # c\` \`${SENTINEL} two\`` },
+    { label: 'backtick comment in double quotes, a statement after', body: `echo "\`${PAYLOAD} # c\`"; ${SENTINEL} two` },
+    { label: 'backtick comment under bash -c, a statement after', body: `bash -c 'echo \`${PAYLOAD} # c\`; ${SENTINEL} two'` },
+    { label: 'backtick comment holding an escaped backtick, a statement after', body: `echo \`${PAYLOAD} # c \\\` x\`; ${SENTINEL} two` },
+    { label: 'backtick comment ended by a newline in the body', body: `echo \`${PAYLOAD} # c\n${SENTINEL} two\`` },
+    { label: 'backtick comment continued by a backslash-newline, a statement after', body: `echo \`echo a # c \\\n${SENTINEL} two\`; ${SENTINEL} three` },
+    { label: 'nested backtick comment, a statement after in the outer body', body: `echo \`echo \\\`${PAYLOAD} # c\\\`; ${SENTINEL} two\`` },
+    // The escaped backtick in the comment closes nothing, so the second body pairs as bash pairs it and its view is read.
+    { label: 'backtick comment holding an escaped backtick, then an escaped flag in a second body', body: `echo \`a # c \\\` x\`; echo \`${SENTINEL} \\\\--force mark\`` },
+  ]
+  for (const command of COMMANDS) {
+    for (const delimiter of DELIMITERS) {
+      const kind = `${delimiter.dash ? '<<-' : '<<'}${delimiter.open}`
+      shapes.push({ label: `backtick comment, a statement after, ${command} ${kind}`, body: shapeBody(command, delimiter, [`echo \`${PAYLOAD} # c\`; ${SENTINEL} two`]) })
+      shapes.push({ label: `backtick comment, a backtick after, ${command} ${kind}`, body: shapeBody(command, delimiter, [`\`${PAYLOAD} # c\` \`${SENTINEL} two\``]) })
+    }
+  }
+  return shapes
+}
+
 function shapeBody(command: string, delimiter: { open: string; dash: boolean }, lines: string[]): string {
   const tab = delimiter.dash ? '\t' : ''
   const redirect = delimiter.dash ? '<<-' : '<<'
@@ -248,7 +276,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA]
+  return [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes()]
 }
 
 /**
