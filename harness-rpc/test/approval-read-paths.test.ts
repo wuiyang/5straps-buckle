@@ -506,6 +506,82 @@ describe('an index unreadable for a while, then repaired in place', () => {
         }
       })
 
+      // Slice 7e review R7E-QV-1: a repair in place gave back the queue version last read whole, so nothing read the
+      // index again, and neither the registry's mark nor the store's was cleared; a second outage at the same
+      // unknown:EACCES logged nothing. Each outage now logs as the first one did.
+      const index = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter(([message]) => String(message).startsWith('The approvals index is unreadable')).length
+      /** Twelve seconds of ordinary calls, one a second, past the prune's retry delay. */
+      async function twelveSeconds(registry: ReturnType<typeof createApprovalRegistry>): Promise<void> {
+        for (let second = 0; second <= 12; second++) {
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          vi.setSystemTime(Date.now() + 1_000)
+          await new Promise(resolve => setTimeout(resolve, 30))
+        }
+      }
+
+      /** Two seconds of ordinary calls, shorter than the prune's retry delay, so no timed prune reads the index. */
+      async function twoSeconds(registry: ReturnType<typeof createApprovalRegistry>): Promise<void> {
+        for (let step = 0; step < 4; step++) {
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          vi.setSystemTime(Date.now() + 500)
+        }
+      }
+
+      it.skipIf(process.getuid?.() === 0)('logs each of three outages once, from the store and the registry each, after a short repair in place', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        const { root, registry, service } = queue()
+        await issue(registry)
+        const warn = vi.spyOn(logger, 'warn')
+        const error = vi.spyOn(logger, 'error')
+        try {
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          for (const episode of [1, 2, 3]) {
+            chmodSync(root, 0o000)
+            await twelveSeconds(registry)
+            expect([stored(error), index(warn)]).toEqual([episode, episode])
+            chmodSync(root, 0o700)
+            await twoSeconds(registry)
+            expect([stored(error), index(warn)]).toEqual([episode, episode])
+          }
+        } finally {
+          chmodSync(root, 0o700)
+          warn.mockRestore()
+          error.mockRestore()
+          await service.close()
+        }
+      })
+
+      it.skipIf(process.getuid?.() === 0)('with a webhook, logs each of three outages once, from the store, the sender and the registry each', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        const { root, registry, notices } = withWebhook()
+        const reads = vi.spyOn(registry, 'pendingDeliveries')
+        const warn = vi.spyOn(logger, 'warn')
+        const error = vi.spyOn(logger, 'error')
+        const senderRetries = async () => {
+          const before = reads.mock.calls.length
+          await vi.waitFor(() => expect(reads.mock.calls.length - before).toBeGreaterThanOrEqual(10), { timeout: 10_000, interval: 20 })
+        }
+        try {
+          await issue(registry)
+          expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
+          for (const episode of [1, 2, 3]) {
+            chmodSync(root, 0o000)
+            await senderRetries()
+            await twelveSeconds(registry)
+            expect([stored(error), warned(warn, 'Approval lifecycle delivery will be retried'), index(warn)]).toEqual([episode, episode, episode])
+            chmodSync(root, 0o700)
+            await senderRetries()
+            await twelveSeconds(registry)
+            expect([stored(error), warned(warn, 'Approval lifecycle delivery will be retried'), index(warn)]).toEqual([episode, episode, episode])
+          }
+        } finally {
+          chmodSync(root, 0o700)
+          warn.mockRestore()
+          error.mockRestore()
+          await notices.settle()
+        }
+      })
+
       it('reads a missing state directory as an empty queue, as before, and delivers once it is back', async () => {
         vi.useFakeTimers({ toFake: ['Date'] })
         const { root, registry, notices, sent } = withWebhook()

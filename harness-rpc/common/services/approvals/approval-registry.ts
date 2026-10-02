@@ -457,10 +457,12 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     if (pruning) return pruning
     const version = currentQueueVersion()
     // An index found unreadable is read again once the file changes or the retry delay passes, since a repair in
-    // place (a mode put back) keeps its version (slice 7 review R7-RR-2).
+    // place (a mode put back) keeps its version (slice 7 review R7-RR-2). While one is marked unreadable, any other
+    // version is read at once, even the one last read whole, which a repair gives back: that read clears this mark and
+    // the store's, so a second outage logs again (slice 7e review R7E-QV-1).
     const unreadable = version === unreadableVersion
     if (unreadable && Date.now() < nextExpiry) return undefined
-    if ((unreadable || version !== queueVersion) && !readForPrune(version)) return undefined
+    if ((unreadableVersion !== undefined || version !== queueVersion) && !readForPrune(version)) return undefined
     if (Date.now() < nextExpiry) return undefined
     nextExpiry = Number.POSITIVE_INFINITY
     pruning = update(() => undefined).catch((error: unknown) => {
