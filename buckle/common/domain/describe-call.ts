@@ -24,8 +24,8 @@ export const SUMMARY_CUT = '[summary cut; the arguments below are complete]'
  * What a call does, in words Buckle writes for the person who approves it (owner decision D9): built
  * from the tool, the directory the call runs in and facts its arguments state (a path, a size, a
  * command, a URL, a count), never from text the agent chose to explain itself (a commit message, a
- * pull request's title or body, a file's content). Each fact is one value, redacted as one word
- * (redactCredentials, owner decision D21), quoted as a JSON string, so no byte an agent sent can
+ * pull request's title or body, a file's content). Each fact is one value, hidden where owner ruling B
+ * hides one (redactCredentials), quoted as a JSON string, so no byte an agent sent can
  * close its quote and pose as Buckle's words, and escaped by printable(), so what a terminal shows is what the arguments hold
  * (review M2 and L6 of the second re-review). A fact or a description cut to fit says how long it was,
  * outside any quote, and that the arguments shown with it are complete. It rides inside the node-signed
@@ -90,14 +90,13 @@ function factsOf(cut: { truncated: boolean }): Facts {
     cut.truncated = true
     return `${quote(wholeCharacters(shown, limit))} (cut from ${length} characters)`
   }
-  /** One fact as a person reads it: redacted as one word, quoted, escaped, and when cut, its length named outside the quote. */
-  const fact = (value: string, limit = FACT_LENGTH): string => show(redactCredentials(value, 'word'), value.length, limit)
+  /** One fact as a person reads it: read as one value, quoted, escaped, and when cut, its length named outside the quote. */
+  const fact = (value: string, limit = FACT_LENGTH): string => show(redactCredentials(value, 'value'), value.length, limit)
   return {
     fact,
     /**
-     * A command as shownCommand shows it, each word redacted in its own context and quoted for a shell. It is not
-     * redacted again as one text: the quotes it adds around a word would read as a quoted URL there (owner decision
-     * D21), so a script body that starts with a URL would hide up to a later `@` (review H2 of the continuation review).
+     * A command as shownCommand shows it, each word read in its own place and quoted for a shell. It is not read
+     * again as one value: a shell body in it stays as written.
      */
     command(command, args) {
       const shown = shownCommand(command, args)

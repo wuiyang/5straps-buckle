@@ -166,7 +166,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
     const names = (await configEntries({ ...input, pattern: '^remote\\.', nameOnly: true })).map(entry => remoteNameOf(entry.key))
     const named = names.find(name => name.includes(':') || spellings.has(sameRepositoryName(name)))
     if (named !== undefined) {
-      throw new ToolInputError(`this repository names a remote ${JSON.stringify(redactCredentials(named, 'word'))}, which is shaped like a URL or names the push destination; git reads a push destination as a remote name first, so the push to ${input.destination.display} is refused rather than sent where that remote points. Rename or remove that remote`, { code: 'PERMISSION_DENIED' })
+      throw new ToolInputError(`this repository names a remote ${JSON.stringify(redactCredentials(named, 'value'))}, which is shaped like a URL or names the push destination; git reads a push destination as a remote name first, so the push to ${input.destination.display} is refused rather than sent where that remote points. Rename or remove that remote`, { code: 'PERMISSION_DENIED' })
     }
     const rules = await configEntries({ ...input, pattern: '^url\\..*\\.(insteadof|pushinsteadof)$' })
     if (rules.some(rule => target.startsWith(rule.value))) {

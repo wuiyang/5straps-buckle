@@ -123,13 +123,13 @@ describe('a command\'s identity and display (owner decision D17)', () => {
     expect(right).toContain(`${head}-right`)
   })
 
-  it('redacts a credential in the display but keeps two different credentials apart', () => {
+  it('hides a URL password in the display but keeps two different credentials apart (owner ruling B)', () => {
     const first = commandSubject('git', ['push', '--force', 'https://bot:tok-first@github.com/org/repo.git', 'main'])
     const second = commandSubject('git', ['push', '--force', 'https://bot:tok-second@github.com/org/repo.git', 'main'])
     expect(first).not.toBe(second)
     for (const subject of [first, second]) {
       expect(subject).not.toMatch(/tok-(first|second)/)
-      expect(subject).toMatch(/^git push --force 'https:\/\/\[redacted\]@github.com\/org\/repo.git' main  # argv sha256 [a-f0-9]{64}$/)
+      expect(subject).toMatch(/^git push --force 'https:\/\/bot:\[redacted\]@github.com\/org\/repo.git' main  # argv sha256 [a-f0-9]{64}$/)
     }
   })
 })

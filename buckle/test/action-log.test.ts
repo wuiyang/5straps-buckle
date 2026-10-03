@@ -125,10 +125,10 @@ describe('summarizeEffect', () => {
     expect(summarizeEffect({ kind: 'process_probe' })).toBe('process probe')
   })
 
-  // Owner decision D17: an approval shows each effect whole, a command's boundaries quoted, its credentials redacted.
-  it('quotes a command word by word and redacts the credentials an approval redacts', () => {
+  // Owner decision D17: an approval shows each effect whole, a command's boundaries quoted, its credentials hidden by owner ruling B.
+  it('quotes a command word by word and hides the credentials an approval hides', () => {
     expect(summarizeEffect({ kind: 'exec', command: 'rm', args: ['-f', 'a b'] })).toBe("exec rm -f 'a b'")
-    expect(summarizeEffect({ kind: 'exec', command: 'git', args: ['push', 'https://bot:tok-9q@host.example/r.git'] })).toBe("exec git push 'https://[redacted]@host.example/r.git'")
+    expect(summarizeEffect({ kind: 'exec', command: 'git', args: ['push', 'https://bot:tok-9q@host.example/r.git'] })).toBe("exec git push 'https://bot:[redacted]@host.example/r.git'")
     expect(summarizeEffect({ kind: 'network', url: new URL('https://bot:tok-9q@host.example/x?token=tok-9q') })).not.toContain('tok-9q')
   })
 })

@@ -13,6 +13,12 @@ const NUMERIC_TEXT = /^\d+$/
 // Credential parameters whose names are not credential words: Google API keys, SAS signatures, OAuth codes, and the
 // `pwd` some services take a password in (slice 7b review R7B-CR-8).
 const SECRET_QUERY_NAMES = new Set(['key', 'sig', 'code', 'pwd'])
+// Owner ruling B (2026-10-03): the words whose key's value an approval display hides whole, found anywhere in the key.
+const NAMED_KEY = /passw(?:or)?d|secret|token/
+// What else names a credential query value in a whole URL: a signature, or a word that is key, auth, sig or pwd, or ends
+// in key (apikey, accessKey).
+const QUERY_NAME = /signature/
+const QUERY_WORDS = new Set(['key', 'keys', 'auth', 'sig', 'pwd'])
 
 /** A key split into lowercase words at camel case, digits and punctuation (`PGPassword` is `pg password`). */
 export function keyWords(key: string): string[] {
@@ -36,10 +42,30 @@ export function isCredentialKey(key: string, value?: unknown): boolean {
 /**
  * Whether a URL query or fragment parameter carries a credential: a credential-named key
  * (isCredentialKey), or a name services give keys, signatures, codes and passwords in (key, sig, code,
- * pwd). One matcher for the log and for what else redacts a URL.
+ * pwd). The process log's matcher (log-credentials.ts); an approval display uses isCredentialQueryName.
  */
 export function isCredentialParameter(name: string, value?: string): boolean {
   return isCredentialKey(name, value) || SECRET_QUERY_NAMES.has(name.toLowerCase())
+}
+
+/**
+ * Whether an approval display hides a key's value whole (owner ruling B): the key holds password, secret or token,
+ * whatever its case or what comes before or after (api_token, DB_PASSWORD, clientSecret, PGPASSWORD); a number under
+ * a count key (max_tokens) is not one.
+ */
+export function isNamedCredentialKey(key: string, value?: unknown): boolean {
+  return NAMED_KEY.test(squashed(key)) && !isTokenCount({ words: keyWords(key), value })
+}
+
+/** Whether a whole URL's query parameter carries a credential an approval display hides (owner ruling B). */
+export function isCredentialQueryName(name: string, value?: string): boolean {
+  if (isNamedCredentialKey(name, value) || QUERY_NAME.test(squashed(name))) return true
+  return keyWords(name).some(word => QUERY_WORDS.has(word) || word.endsWith('key'))
+}
+
+/** A key in lowercase with everything but letters and digits dropped, so `pass_word` holds `password`. */
+function squashed(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
 function isSecretWord({ word, next, secretWord }: { word: string; next?: string; secretWord: RegExp }): boolean {

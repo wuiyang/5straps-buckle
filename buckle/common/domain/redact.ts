@@ -66,28 +66,27 @@ export function stripSecret(value: string, secret: string | undefined): string {
 
 /**
  * A call's arguments as an approval challenge shows them (owner decisions D9 and D17): canonical, every
- * value under a credential-named key redacted, every other string's credentials redacted by the context it
- * sits in (owner decision D21; redactCredentials), and nothing else changed: no string, path or list is cut,
- * and no size stands in for the call. Display only: a decision binds the call's whole arguments through its
- * fingerprint, not this.
+ * value under a credential-named key redacted, every other string hidden only where owner ruling B hides it
+ * (redactCredentials: a whole URL's password and credential query values, a named key's value), and nothing
+ * else changed: no string, path or list is cut, and no size stands in for the call. Display only: a decision
+ * binds the call's whole arguments through its fingerprint, not this.
  *
- * A string's context comes from where it sits: a `command` with its `args` is an argv, each word read as one
- * word and a shell's `-c` script as a shell body; `env` values are words; a `script` beside a shell `runtime`
- * is a shell body and any other script free text; a file's `content`, or an edit's `oldText` and `newText`,
- * beside its `path` is a shell body for a shell script, a JSON document when it parses as an object or array,
- * and free text otherwise, whatever its whitespace, so a one-line CSV row shows its fields (slice 7d review
- * R7D-WV-3). Any other string is read by its shape: a JSON document when it parses as an object or array, one
- * word when it holds no whitespace, and free text otherwise (slice 7 review R7-H1 to R7-H4).
+ * Where a string sits decides how it is read: a `command` with its `args` is an argv, each word one value and a
+ * shell's `-c` script shown as written; `env` values are values; a `script` beside its `runtime`, and a shell
+ * script's `content` or edit texts beside its `path`, show as written; any other file's content is a JSON
+ * document when it parses as an object or array and free text otherwise, so a one-line CSV row shows its fields
+ * (slice 7d review R7D-WV-3). Any other string is read by its shape: a JSON document when it parses as an object
+ * or array, free text when it holds whitespace, and one value otherwise.
  */
 export function reviewableArguments(args: JsonObject): JsonValue {
   return reviewObject(args)
 }
 
-/** How a string is read: by a context, by its shape, or as a file's content. */
-type Reading = CredentialContext | 'shape' | 'file'
+/** How a string is read: by a context, as a script shown as written, by its shape, or as a file's content. */
+type Reading = CredentialContext | 'script' | 'shape' | 'file'
 
 function review(value: JsonValue, reading: Reading): JsonValue {
-  if (typeof value === 'string') return reviewString(value, contextOf(value, reading))
+  if (typeof value === 'string') return reading === 'script' ? value : reviewString(value, contextOf(value, reading))
   if (Array.isArray(value)) return value.map(item => review(item, reading))
   if (value !== null && typeof value === 'object') return reading === 'shape' ? reviewObject(value) : reviewRecord(value, reading)
   return value
@@ -102,7 +101,7 @@ function reviewString(value: string, context: CredentialContext): string {
   return redactCredentials(value, context)
 }
 
-function contextOf(value: string, reading: Reading): CredentialContext {
+function contextOf(value: string, reading: Exclude<Reading, 'script'>): CredentialContext {
   if (reading === 'shape') return shapeOf(value)
   if (reading === 'file') return isJsonDocument(value) ? 'json' : 'text'
   return reading
@@ -117,7 +116,7 @@ function reviewObject(value: JsonObject): JsonValue {
   }))
 }
 
-/** An object whose values are all read in one context (`env`'s values are words, an edit's texts are file content), credential-named keys still redacted. */
+/** An object whose values are all read one way (`env`'s values are values, an edit's texts are file content), credential-named keys still redacted. */
 function reviewRecord(value: JsonObject, reading: Exclude<Reading, 'shape'>): JsonValue {
   return Object.fromEntries(Object.keys(value).sort().map((key) => {
     const item = value[key] ?? null
@@ -125,17 +124,17 @@ function reviewRecord(value: JsonObject, reading: Exclude<Reading, 'shape'>): Js
   }))
 }
 
-/** An argv's words, the shell's `-c` script body (shellBodyIndexes) read as a shell body and every other word as one word. */
+/** An argv's words, the shell's `-c` script body (shellBodyIndexes) shown as written and every other word read as one value. */
 function reviewArgv(command: string, args: JsonValue[]): JsonValue {
   const bodies = shellBodyIndexes([command, ...args.map(item => (typeof item === 'string' ? item : ''))])
-  return args.map((item, index) => review(item, bodies.has(index + 1) ? 'shell' : 'word'))
+  return args.map((item, index) => review(item, bodies.has(index + 1) ? 'script' : 'value'))
 }
 
 function readingOf(owner: JsonObject, key: string): Reading {
-  if (key === 'command' && Array.isArray(owner.args)) return 'word'
-  if (key === 'env') return 'word'
-  if (key === 'script' && typeof owner.runtime === 'string') return SHELL_COMMANDS.has(baseCommand(owner.runtime)) ? 'shell' : 'text'
-  if ((key === 'content' || key === 'edits') && typeof owner.path === 'string') return isShellScript(owner.path, owner.content) ? 'shell' : 'file'
+  if (key === 'command' && Array.isArray(owner.args)) return 'value'
+  if (key === 'env') return 'value'
+  if (key === 'script' && typeof owner.runtime === 'string') return 'script'
+  if ((key === 'content' || key === 'edits') && typeof owner.path === 'string') return isShellScript(owner.path, owner.content) ? 'script' : 'file'
   return 'shape'
 }
 
@@ -156,10 +155,10 @@ const WHITESPACE = /\s/
 /** U+FEFF, which some editors write at the start of a UTF-8 file and many JSON readers skip; JSON.parse refuses it. */
 const BYTE_ORDER_MARK = '\uFEFF'
 
-/** How a string with no context of its own is read: a JSON document, one word, or free text. */
+/** How a string with no context of its own is read: a JSON document, free text, or one value. */
 function shapeOf(value: string): CredentialContext {
   if (isJsonDocument(value)) return 'json'
-  return WHITESPACE.test(value) ? 'text' : 'word'
+  return WHITESPACE.test(value.trim()) ? 'text' : 'value'
 }
 
 /** A JSON object or array, after one leading byte order mark when it has one. */

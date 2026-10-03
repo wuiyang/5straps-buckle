@@ -1,4 +1,4 @@
-import { redactCredentials } from '@5straps/runtime'
+import { redactUrl } from '@5straps/runtime'
 import { shownCommand } from './argv.js'
 
 /**
@@ -26,13 +26,13 @@ export type ResolvedEffect =
 
 /**
  * One line naming what an effect touches, as an approval shows it (owner decision D17): whole, a command
- * quoted word by word, and redacted by context (owner decision D21): a URL as the one word it is.
+ * quoted word by word, and a URL with its password and credential query values hidden (owner ruling B).
  */
 export function summarizeEffect(effect: ResolvedEffect): string {
   switch (effect.kind) {
     case 'read_path': return `read ${effect.path}`
     case 'write_path': return `write ${effect.path}`
-    case 'network': return `network ${redactCredentials(effect.url.href, 'word')}`
+    case 'network': return `network ${redactUrl(effect.url.href)}`
     case 'exec': return `exec ${shownCommand(effect.command, effect.args)}`
     case 'process_probe': return 'process probe'
   }

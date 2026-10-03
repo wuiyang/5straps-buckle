@@ -1,4 +1,5 @@
-import { REDACTED, redactCredentials } from './credential-context.js'
+import { REDACTED } from './credential-context.js'
+import { redactLogCredentials } from './log-credentials.js'
 import { isCredentialKey, keyWords } from './credential-names.js'
 import type { NormalizedError } from './types.js'
 
@@ -82,7 +83,7 @@ function redactSecrets(text: string): string {
 
 // A JSON message is judged string by string, any other text as free text (owner decision D21, "context").
 function redactContext(text: string): string {
-  return redactCredentials(text, 'json')
+  return redactLogCredentials(text)
     .replace(JWT_CANDIDATE, (match: string, header: string, rest: string | undefined) => (header && rest ? REDACTED : match))
     .replace(AUTHORIZATION_VALUE, REDACTED)
 }

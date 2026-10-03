@@ -58,10 +58,10 @@ arguments, so approving `rm -rf build` does not approve `rm -rf /`.
 
 Every route that decides shows the ask, then the whole action: node, workspace, a summary,
 rule, subject, reason, working directory, every effect, and every argument as JSON. Nothing is
-cut or paged. Only credentials are removed: values under credential-named keys, and credentials
-found inside strings, read `[redacted]`. Control and invisible characters show as escapes.
-Redaction is display only; the decision binds the exact arguments. An ask whose
-whole call was not recorded can be denied, never approved.
+cut or paged. Scripts and free text show as written; only credential-named values, and a URL
+value's password and token-like query values, read `[redacted]`. Control and invisible
+characters show as escapes. Hiding is display only; the decision binds the exact arguments. An
+ask whose whole call was not recorded can be denied, never approved.
 
 ## Where to answer
 
