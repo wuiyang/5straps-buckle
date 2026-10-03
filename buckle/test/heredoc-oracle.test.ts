@@ -614,6 +614,88 @@ const READING_PINS: Shape[] = [
   { label: 'pin: a single-quoted substitution in a heredoc in heredoc text past MAX_DEPTH', body: fedDeep(8, `cat <<EOF\n$(cat <<X\nfind . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;\nX\n)\nEOF`) },
 ]
 
+/**
+ * Slice 7l: a `#` starts a comment only where bash's read_token starts a word, after an unescaped blank, a newline, or
+ * an operator, at the start of a body, and after a `)` that closes a command; after `$(...)`, `$((...))`, `<(...)`, an
+ * array assignment, an extended glob, a backtick body, an escaped character, or a continuation inside a word it is word
+ * text, and the statement after it runs. Where a `)` may close a case pattern or a `!(` extended glob, Buckle cannot
+ * place the `#`, so the call is unread. Rows where bash runs nothing on the line pin a real comment. Each shape ran
+ * under real bash in scratch first.
+ */
+const COMMENTS: Shape[] = [
+  ['after $()', `echo $(true)#; ${PAYLOAD}`],
+  ['after a backtick body', `echo \`true\`#; ${PAYLOAD}`],
+  ['after $(())', `echo $((1))#; ${PAYLOAD}`],
+  ['after an escaped space', `echo x\\ #; ${PAYLOAD}`],
+  ['after an escaped semicolon', `echo \\;#; ${PAYLOAD}`],
+  ['after an escaped parenthesis', `echo \\(#; ${PAYLOAD}`],
+  ['after an escaped ampersand', `echo \\&#; ${PAYLOAD}`],
+  ['after an escaped pipe', `echo \\|#; ${PAYLOAD}`],
+  ['after an escaped tab', `echo x\\\t#; ${PAYLOAD}`],
+  ['after an escaped backtick', `echo \\\`#; ${PAYLOAD}`],
+  ['after a carriage return', `echo x\r#; ${PAYLOAD}`],
+  ['after a semicolon and a carriage return', `echo x;\r#; ${PAYLOAD}`],
+  ['after a continuation inside a word', `echo x\\\n#; ${PAYLOAD}`],
+  ['after <()', `cat <(true)#; ${PAYLOAD}`],
+  ['after >()', `echo >(true)#; ${PAYLOAD}`],
+  ['after an array assignment', `a=(1)#; ${PAYLOAD}`],
+  ['after an array append', `a+=(1)#; ${PAYLOAD}`],
+  ['after an extended glob', `shopt -s extglob\necho @(x)#; ${PAYLOAD}`],
+  ['after nested $()', `echo $(echo $(true))#; ${PAYLOAD}`],
+  ['after a subshell in $()', `echo $( (true) )#; ${PAYLOAD}`],
+  ['after $(()) read as a subshell', `echo $((true))#; ${PAYLOAD}`],
+  ['after $() in double quotes', `echo "$(true)"#; ${PAYLOAD}`],
+  ['inside $(), after an escaped tab', `echo $(echo x\\\t#; ${PAYLOAD})`],
+  ['inside $(), after a continuation inside a word', `echo $(echo x\\\n#; ${PAYLOAD})`],
+  ['inside a backtick body, after an escaped space', `echo \`echo x\\ #; ${PAYLOAD}\``],
+  ['inside a backtick body, after a nested body', `echo \`echo \\\`true\\\`#; ${PAYLOAD}\``],
+  ['on a heredoc line in $(), after an escaped space', `cat <<EOF\n$(echo x\\ #; ${PAYLOAD})\nEOF`],
+  ['in a quoted body fed to bash, after an escaped space', `bash <<'EOF'\necho x\\ #; ${PAYLOAD}\nEOF`],
+  ['a real comment after a function definition, holding an apostrophe', `f()# don't\n{ ${PAYLOAD}; }; f`],
+  ['a real comment after a subshell, holding an apostrophe', `(true)# don't\n${PAYLOAD}`],
+  ['a real comment at the start of $()', `echo $(#c\n${PAYLOAD})`],
+  ['a real comment at the start of a subshell', `(#c\n${PAYLOAD})`],
+  ['a real comment at the start of a backtick body', `echo \`#c\`; ${PAYLOAD}`],
+  ['a real comment after a subshell', `(true)#; ${PAYLOAD}`],
+  ['a real comment after (( ))', `((1))#; ${PAYLOAD}`],
+  ['a real comment after a semicolon', `true;#; ${PAYLOAD}`],
+  ['a real comment after an ampersand', `true&#; ${PAYLOAD}`],
+  ['a real comment after a redirection', `echo x >#; ${PAYLOAD}`],
+  ['a real comment after a blank and a continuation', `echo x \\\n#; ${PAYLOAD}`],
+  ['a real comment after an escaped backslash and a space', `echo x\\\\ #; ${PAYLOAD}`],
+].map(([label, body]) => ({ label: `comment: ${label}`, body: body! }))
+
+/** A `)` a case pattern or a `!(` may close: Buckle cannot tell whether the `#` after it starts a comment, so the call is unread. */
+const UNSURE_COMMENTS: Shape[] = [
+  ['a case in $()', `echo $(case x in x) :;; esac)#; ${PAYLOAD}`],
+  ['a case in $() with an opening parenthesis', `echo $(case x in (x) :;; esac)#; ${PAYLOAD}`],
+  ['a case pattern', `case x in x)#c\n${PAYLOAD};; esac`],
+  ['a case word in an argument', `echo $(echo case)#; ${PAYLOAD}`],
+  ['!( with extglob on', `shopt -s extglob\necho !(x)#; ${PAYLOAD}`],
+  ['!( with extglob off', `!(true)#; ${PAYLOAD}`],
+].map(([label, body]) => ({ label: `comment unsure: ${label}`, body: body!, unread: 'comment' as const }))
+
+/**
+ * Slice 7l: bash splits words only on space, tab, and newline, so a carriage return, vertical tab, form feed, no-break
+ * space, or other Unicode space inside a wrapper's option value is word text, and the command after the value runs.
+ */
+const BLANK_SHAPES: Shape[] = [
+  ['a carriage return in env -u', `env -u A\rB ${PAYLOAD}`],
+  ['a carriage return in exec -a', `exec -a a\rb ${PAYLOAD}`],
+  ['a vertical tab in exec -a', `exec -a a\vb ${PAYLOAD}`],
+  ['a vertical tab in env -u', `env -u A\vB ${PAYLOAD}`],
+  ['a form feed in env -u', `env -u A\fB ${PAYLOAD}`],
+  ['a no-break space in exec -a', `exec -a a\u00a0b ${PAYLOAD}`],
+  ['a no-break space in env -u', `env -u A\u00a0B ${PAYLOAD}`],
+  ['an em space in env -u', `env -u A\u2003B ${PAYLOAD}`],
+  ['a line separator in env -u', `env -u A\u2028B ${PAYLOAD}`],
+  ['a carriage return in xargs -E', `xargs -E a\rb ${PAYLOAD} </dev/null`],
+  ['a carriage return in a flock file name', `flock lock\rfile ${PAYLOAD}`],
+  ['a carriage return in nested wrappers', `nice env -u A\rB nohup ${PAYLOAD}`],
+  ['a carriage return ending the statement', `${PAYLOAD}\r`],
+  ['a carriage return in a heredoc delimiter', `cat <<EOF\r\nx\r\nEOF\r\n${PAYLOAD}`],
+].map(([label, body]) => ({ label: `blank: ${label}`, body: body! }))
+
 function shapeBody(command: string, delimiter: { open: string; dash: boolean }, lines: string[], eol = '\n'): string {
   const tab = delimiter.dash ? '\t' : ''
   const redirect = delimiter.dash ? '<<-' : '<<'
@@ -632,7 +714,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
@@ -783,5 +865,5 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     console.info(`heredoc oracle: ${shapes.length} shapes, bash ran the sentinel in ${ranShapes}, ${overRead} read the sentinel where bash did not (over-reads, allowed), ${unreadShapes} unread as expected, ${skipped.length} skipped`)
     for (const reason of skipped) console.info(`heredoc oracle: skipped ${reason}`)
     expect(missed).toEqual([])
-  }, 20_000)
+  }, 60_000)
 })

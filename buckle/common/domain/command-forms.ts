@@ -18,6 +18,7 @@ export const READ_LIMITS = {
   budget: `Shell text runs past what Buckle reads in one check (READ_BUDGET: ${READ_BUDGET.characters.toLocaleString('en-US')} characters, ${READ_BUDGET.words.toLocaleString('en-US')} words or ${READ_BUDGET.commands.toLocaleString('en-US')} commands across every level)`,
   substitutions: `Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: ${MAX_SUBSTITUTIONS} levels)`,
   findPrimary: 'A find -exec command starts with a word find reads as a primary, which Buckle does not read as a command (find primary)',
+  comment: 'A # follows a ) that a case pattern or an extended glob may have closed, so Buckle cannot tell whether the rest of the line is a comment (comment)',
   session: 'Opens an interactive session Buckle cannot read: ssh or su with no command, or a sudo or doas shell (interactive session)',
   scriptData: 'A shell takes its script from a pipe, a redirection, or xargs, so the script arrives as data, which Buckle cannot read (script as data)',
   interpreter: 'Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter)',
@@ -145,8 +146,8 @@ export interface CommandForms {
   nested: string[][]
   /**
    * Why a command was left unread, or null: wrappers or shell bodies nested past MAX_DEPTH, substitutions nested past
-   * MAX_SUBSTITUTIONS, a find -exec command that is a primary, or an interactive session; the first in READ_LIMITS order
-   * when several were met.
+   * MAX_SUBSTITUTIONS, a find -exec command that is a primary, a `#` Buckle cannot place, or an interactive session; the
+   * first in READ_LIMITS order when several were met.
    */
   unread: UnreadLimit | null
   /** An eval whose text holds an expansion (`eval "$x"`), or that statement splitting left empty, so what it runs is unknown. */
@@ -450,14 +451,14 @@ function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; u
     budget.spent = true
     return { groups: [], unread: null }
   }
-  const { statements, deep, overDepth } = shellStatementList(text)
+  const { statements, deep, overDepth, unsureComment } = shellStatementList(text)
   const groups: CommandGroup[] = []
   for (const statement of statements) {
     const form = statementForm(statement, budget)
     if (form === null) break
     groups.push({ command: form.words, statement, heredoc: form.heredoc })
   }
-  return { groups, unread: overDepth ? 'depth' : deep ? 'substitutions' : null }
+  return { groups, unread: overDepth ? 'depth' : deep ? 'substitutions' : unsureComment ? 'comment' : null }
 }
 
 /**

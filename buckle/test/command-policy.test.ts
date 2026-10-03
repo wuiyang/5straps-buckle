@@ -618,6 +618,46 @@ describe('a call Buckle cannot read whole', () => {
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
   })
 
+  // Slice 7l: a `#` inside a word was read as a comment, and a carriage return, form feed, or no-break space split a
+  // word bash keeps whole, so the git push after it ran past a git push * deny glob with no refusal and no ask, on both
+  // engines and both switches. Real bash ran the sentinel in each shape.
+  const hiddenByLexer = (command: string) => ({
+    'a # after $()': `echo $(true)#; ${command}`,
+    'a # after a backtick body': `echo \`true\`#; ${command}`,
+    'a # after an escaped space': `echo x${B} #; ${command}`,
+    'a # after a carriage return': `echo x\r#; ${command}`,
+    'a # after a continuation inside a word': `echo x${B}\n#; ${command}`,
+    'a # after <()': `cat <(true)#; ${command}`,
+    'a # after an array assignment': `a=(1)#; ${command}`,
+    'a carriage return in env -u': `env -u A\rB ${command}`,
+    'a form feed in env -u': `env -u A\fB ${command}`,
+    'a no-break space in exec -a': `exec -a a\xa0b ${command}`,
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => Object.entries(hiddenByLexer(push)).map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a git push behind %s', (engine, switched, _shape, body) => {
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => Object.entries(hiddenByLexer('git push --force origin main')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push behind %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
+  // A `)` that a case pattern or `!(` may close leaves Buckle unable to place the `#` after it: the call is unread.
+  const unsureComment = "A # follows a ) that a case pattern or an extended glob may have closed, so Buckle cannot tell whether the rest of the line is a comment (comment)"
+  const unsureShapes = [`echo $(case x in x) :;; esac)#; ${push}`, `!(true)#; ${push}`]
+
+  it.each(cases.flatMap(([engine, switched]) => unsureShapes.map(body => [engine, switched, body] as const)))('refuses %s deny, switch on: %s, %j as unread, naming the comment limit', (engine, switched, body) => {
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${unsureComment}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each(unsureShapes)('asks at the floor with no deny glob about %j, naming the comment limit', (body) => {
+    const outcome = check('workspace', false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${unsureComment}; asked rather than guessed at`]])
+  })
+
   // Slice 7h probes: a shell whose script arrives as data, piped in, redirected, or handed over by xargs, ran the
   // payload with nothing read; the floor asked only about `| bash`, so under the dangerously-allow switch a deny glob
   // was bypassed (owner decision D7). Such a call is now unread: refused naming the limit under any deny glob, on both

@@ -373,8 +373,17 @@ export function isShellWrapper(argv: ParsedArgv): boolean {
 /** Where a shell starts a new command: a newline, `;`, `&`, `|`, a parenthesis, a backtick or `$(`. */
 const STATEMENT_BREAK = /\n|;|&|\||`|\$\(|\(|\)/
 const BREAK_CHARACTERS = new Set(['\n', ';', '&', '|', '`', '(', ')'])
-/** Characters before which a `#` starts a word, and so a comment. */
-const WORD_BOUNDARY = new Set([' ', '\t', '\r', ...BREAK_CHARACTERS])
+/** The only characters bash splits words on: a carriage return, a form feed, or a no-break space is word text. */
+const BLANKS = new Set([' ', '\t', '\n'])
+/** Operator characters after which bash starts a new word, so a `#` right after one starts a comment. */
+const OPERATOR_CHARACTERS = new Set([';', '&', '|', '<', '>'])
+/**
+ * Characters before a `(` that make it part of the word around it: `$(`, `<(`, `>(`, an array assignment `a=(`, and the
+ * extended globs `@(`, `?(`, `*(`, `+(` and `!(`. Its `)` then ends no word, so a `#` after it is word text.
+ */
+const WORD_PAREN_BEFORE = new Set(['$', '<', '>', '=', '@', '?', '*', '+', '!'])
+/** A `case` word anywhere in the text: its patterns close with a `)` that no `(` opened, which a count of parentheses cannot place. */
+const CASE_WORD = /(?:^|[^A-Za-z0-9_])case(?:$|[^A-Za-z0-9_])/
 /**
  * How many `$(...)` or backtick bodies inside double quotes or heredoc text nest before the rest is called unread. Each
  * level is one more statement holding the levels inside it, so this stays small.
@@ -397,20 +406,37 @@ export const MAX_DEPTH = 8
  * an unquoted delimiter as heredoc text too (heredocBodies). `deep` says substitutions nest past MAX_SUBSTITUTIONS
  * anywhere in the text, a heredoc body included, so some text was read only as part of the statement around it, and
  * `overDepth` that heredoc bodies read whole nest past MAX_DEPTH, so one was left unread (slice 7f review R7F-HR-4).
+ * `unsureComment` says a `#` followed a `)` that Buckle cannot tell closes a word or a command (CASE_WORD, `!(`), so
+ * whether the rest of its line is a comment is unknown; that `#` is read as word text.
  */
-export function shellStatementList(text: string): { statements: string[]; deep: boolean; overDepth: boolean } {
-  const { statements, deep, overDepth } = unquotedSplit(text, SHELL_TEXT, 0)
-  return { statements: [...new Set(statements.map(trimmed).filter(Boolean))], deep, overDepth }
+export function shellStatementList(text: string): { statements: string[] } & SplitLimits {
+  const { statements, ...limits } = unquotedSplit(text, SHELL_TEXT, 0)
+  return { statements: [...new Set(statements.map(trimmed).filter(Boolean))], ...limits }
+}
+
+/** What a reading of shell text met that it could not read whole, as shellStatementList names each. */
+export interface SplitLimits { deep: boolean; overDepth: boolean; unsureComment: boolean }
+
+const noLimits = (): SplitLimits => ({ deep: false, overDepth: false, unsureComment: false })
+
+/** Adds the limits one reading met to those of the reading around it. */
+function meet(into: SplitLimits, from: SplitLimits): void {
+  into.deep ||= from.deep
+  into.overDepth ||= from.overDepth
+  into.unsureComment ||= from.unsureComment
 }
 
 /**
- * A statement without the whitespace around it. A space, tab or carriage return a backslash escapes is part of a word
- * (`\ `), so it stays; a backslash before a newline that ends the statement continues the line into nothing, so both go.
+ * A statement without the blanks around it, only the space, tab, and newline bash splits on. A blank a backslash escapes
+ * is part of a word (`\ `), so it stays; a backslash before a newline that ends the statement continues the line into
+ * nothing, so both go.
  */
 function trimmed(statement: string): string {
-  const text = statement.trimStart()
+  let start = 0
+  while (start < statement.length && BLANKS.has(statement[start]!)) start++
+  const text = statement.slice(start)
   let end = text.length
-  while (end > 0 && /\s/.test(text[end - 1]!)) end--
+  while (end > 0 && BLANKS.has(text[end - 1]!)) end--
   let backslashes = 0
   while (backslashes < end && text[end - 1 - backslashes] === '\\') backslashes++
   if (end === text.length || backslashes % 2 === 0) return text.slice(0, end)
@@ -440,7 +466,23 @@ interface SplitLevel {
   doubleQuoted: boolean
   /** Where the body of a backtick met at this level outside quotes starts, until its closing backtick; null when none is open. */
   backtick: number | null
+  /**
+   * Whether the next character outside quotes starts a word, so a `#` there starts a comment, as bash's read_token
+   * starts one: after an unescaped blank, a newline, or an operator, at the start of a body, and after a `)` that closes
+   * a command rather than a word. A continuation keeps what was before it. 'unsure' after a `)` Buckle cannot place.
+   */
+  wordStart: boolean | 'unsure'
+  /** Each `(` open at this level outside quotes: part of a word (`$(`, `<(`, `a=(`), a command's, or one that may be either (`!(`). */
+  opens: Array<'word' | 'command' | 'unsure'>
+  /** The last character read at this level outside quotes that no backslash escaped, or '' after an escaped one. */
+  previous: string
+  /** Whether that character started a word. */
+  previousStarted: boolean
 }
+
+/** A level's reading state at its start, where a word starts. */
+const levelStart = (start: number, closer: SplitLevel['closer'], quote: Quote, doubleQuoted: boolean): SplitLevel =>
+  ({ start, closer, parens: 0, quote, body: start, doubleQuoted, backtick: null, wordStart: true, opens: [], previous: '', previousStarted: false })
 
 /** How unquotedSplit reads its text. */
 interface SplitMode {
@@ -460,12 +502,12 @@ const HEREDOC_TEXT: SplitMode = { heredocText: true, wholeBodies: false }
  * as text of its own, its statements added to the rest; heredoc text itself is no statement, since the command it
  * is handed reads it, not the shell.
  */
-function unquotedSplit(text: string, mode: SplitMode, depth: number): { statements: string[]; deep: boolean; overDepth: boolean } {
+function unquotedSplit(text: string, mode: SplitMode, depth: number): { statements: string[] } & SplitLimits {
   const statements: string[] = []
-  const levels: SplitLevel[] = [{ start: 0, closer: null, parens: 0, quote: mode.heredocText ? 'heredoc' : null, body: 0, doubleQuoted: false, backtick: null }]
+  const levels: SplitLevel[] = [levelStart(0, null, mode.heredocText ? 'heredoc' : null, false)]
   const heredocs: Heredoc[] = []
-  let deep = false
-  let overDepth = false
+  const limits = noLimits()
+  let mentionsCase: boolean | null = null
   const end = (level: SplitLevel, at: number, next: number) => {
     statements.push(text.slice(level.start, at))
     level.start = next
@@ -475,13 +517,20 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
   const readBacktick = (body: string, doubleQuoted: boolean) => {
     if (!body.includes('\\')) return
     if (depth >= MAX_DEPTH) {
-      overDepth = true
+      limits.overDepth = true
       return
     }
     const split = unquotedSplit(backtickView(body, doubleQuoted), mode.wholeBodies ? SHELL_TEXT : SHELL_LINE, depth + 1)
     for (const statement of split.statements) statements.push(statement)
-    deep ||= split.deep
-    overDepth ||= split.overDepth
+    meet(limits, split)
+  }
+  // What a `)` leaves: a word goes on after one that closes `$(` or `<(`, a new word starts after one that closes a
+  // subshell, a group or a case pattern, and with a case word in the text or after `!(` Buckle cannot tell which.
+  const afterClose = (level: SplitLevel): boolean | 'unsure' => {
+    const opened = level.opens.pop() ?? 'command'
+    mentionsCase ??= CASE_WORD.test(text)
+    if (opened === 'unsure' || mentionsCase) return 'unsure'
+    return opened === 'command'
   }
   for (let index = 0; index < text.length; index++) {
     const level = levels.at(-1)!
@@ -499,52 +548,72 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
       if (character === '\\') index++
       else if (character === '"' && level.quote === '"') level.quote = null
       else if (character === '`' || (character === '$' && text[index + 1] === '(')) {
-        if (levels.length > MAX_SUBSTITUTIONS) deep = true
+        if (levels.length > MAX_SUBSTITUTIONS) limits.deep = true
         else {
           if (character === '$') index++
-          levels.push({ start: index + 1, closer: character === '`' ? '`' : ')', parens: 0, quote: null, body: index + 1, doubleQuoted: level.quote === '"', backtick: null })
+          levels.push(levelStart(index + 1, character === '`' ? '`' : ')', null, level.quote === '"'))
         }
       }
       continue
     }
-    if (character === '\\') index++
-    else if (character === level.closer && (character === '`' || level.parens === 0)) {
+    // Outside quotes: a character is word text unless it is a blank or an operator, after which a new word starts.
+    const wordStart = level.wordStart
+    const previous = level.previous
+    const previousStarted = level.previousStarted
+    level.wordStart = false
+    level.previous = character
+    level.previousStarted = wordStart !== false
+    if (character === '\\') {
+      // A continuation (backslash-newline) is removed before words are read, so it leaves the reading as it was.
+      const continuation = text[index + 1] === '\n'
+      level.wordStart = continuation ? wordStart : false
+      level.previous = continuation ? previous : ''
+      level.previousStarted = continuation ? previousStarted : false
+      index++
+    } else if (character === level.closer && (character === '`' || level.parens === 0)) {
       end(level, index, index + 1)
       levels.pop()
       if (character === '`') readBacktick(text.slice(level.body, index), level.doubleQuoted)
     } else if (character === '`') {
       // A backtick outside quotes opens a body or closes the one open at this level; either way it splits a statement.
+      // A word starts with the body, and the word around the substitution goes on after it.
       end(level, index, index + 1)
-      if (level.backtick === null) level.backtick = index + 1
-      else {
+      if (level.backtick === null) {
+        level.backtick = index + 1
+        level.wordStart = true
+      } else {
         readBacktick(text.slice(level.backtick, index), false)
         level.backtick = null
       }
-    } else if (character === "'") level.quote = text[index - 1] === '$' ? "$'" : "'"
+    } else if (character === "'") level.quote = previous === '$' ? "$'" : "'"
     else if (character === '"') level.quote = '"'
-    else if (character === '#' && (index === 0 || WORD_BOUNDARY.has(text[index - 1]!))) {
+    else if (character === '#' && wordStart === true) {
       const stop = commentEnd(text, index, level.closer === '`' || level.backtick !== null)
       end(level, index, stop)
       index = stop - 1
-    } else if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
+      level.wordStart = true
+    } else if (character === '#' && wordStart === 'unsure') limits.unsureComment = true
+    else if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
       const heredoc = heredocAt(text, index + 2)
       if (heredoc) heredocs.push(heredoc.heredoc)
       index = (heredoc?.next ?? index + 2) - 1
     } else if (BREAK_CHARACTERS.has(character)) {
       if (level.closer === ')' && character === '(') level.parens++
       if (level.closer === ')' && character === ')') level.parens--
+      // `!(` at a word start is a negated subshell, or an extended glob when extglob is on, which the text need not say.
+      if (character === '(') level.opens.push(!WORD_PAREN_BEFORE.has(previous) ? 'command' : previous === '!' && previousStarted ? 'unsure' : 'word')
+      level.wordStart = character === ')' ? afterClose(level) : true
       end(level, index, index + 1)
       if (character === '\n' && heredocs.length > 0) {
         const bodies = heredocBodies({ text, from: index + 1, heredocs: heredocs.splice(0), statements, whole: mode.wholeBodies, depth })
-        deep ||= bodies.deep
-        overDepth ||= bodies.overDepth
+        meet(limits, bodies)
         index = bodies.next - 1
         level.start = index + 1
       }
-    }
+    } else if (BLANKS.has(character) || OPERATOR_CHARACTERS.has(character)) level.wordStart = true
   }
   while (levels.length > (mode.heredocText ? 1 : 0)) end(levels.pop()!, text.length, text.length)
-  return { statements, deep, overDepth }
+  return { statements, ...limits }
 }
 
 /**
@@ -581,7 +650,7 @@ function heredocAt(text: string, at: number): { heredoc: Heredoc; next: number }
       if (character === quote) quote = null
     } else if (character === '"' || character === "'") quote = character
     else if (character === '\\') index++
-    else if (/[\s;&|()<>]/.test(character)) break
+    else if (BLANKS.has(character) || /[;&|()<>]/.test(character)) break
     index++
   }
   const word = text.slice(start, index)
@@ -608,15 +677,13 @@ function heredocAt(text: string, at: number): { heredoc: Heredoc; next: number }
  * past MAX_SUBSTITUTIONS in any of these readings (slice 7e review R7E-LW-1), `overDepth` that a nested whole reading
  * passed MAX_DEPTH. A `<<` that was no heredoc (`$((1<<2))`) only reads the lines after it one at a time.
  */
-function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[]; statements: string[]; whole: boolean; depth: number }): { next: number; deep: boolean; overDepth: boolean } {
+function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[]; statements: string[]; whole: boolean; depth: number }): { next: number } & SplitLimits {
   let index = input.from
-  let deep = false
-  let overDepth = false
+  const limits = noLimits()
   const read = (text: string, mode: SplitMode, depth: number) => {
     const split = unquotedSplit(text, mode, depth)
     for (const statement of split.statements) input.statements.push(statement)
-    deep ||= split.deep
-    overDepth ||= split.overDepth
+    meet(limits, split)
   }
   for (const heredoc of input.heredocs) {
     const bodyStart = index
@@ -655,7 +722,7 @@ function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[];
       // The fed shell may run the whole body (`bash <<EOF`, `bash <<'EOF'`), its quotes spanning lines; an unquoted
       // body is read as the shell receives it, a quoted one as the raw body, and each nested heredoc read whole in
       // turn counts one level against MAX_DEPTH, past which the call is left unread (slice 7f review R7F-HR-3, R7F-HR-4).
-      if (input.depth >= MAX_DEPTH) overDepth = true
+      if (input.depth >= MAX_DEPTH) limits.overDepth = true
       else {
         // A `<<-` delimiter strips leading tabs before the shell receives the body: of every line under a quoted
         // delimiter, of each logical line under an unquoted one (fedShellView). With no backslash the two agree.
@@ -664,7 +731,7 @@ function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[];
       }
     }
   }
-  return { next: Math.min(index, input.text.length), deep, overDepth }
+  return { next: Math.min(index, input.text.length), ...limits }
 }
 
 /** How many backslashes end a body line, so a caller can tell an odd run (a continuation) from an even one. */
@@ -750,14 +817,16 @@ export interface ShellToken {
 }
 
 /**
- * Splits on whitespace outside quotes. A quoted run joins the word it touches (`--force'>'` is one word), and an
- * unclosed quote runs to the end; in `$'...'` a backslash escapes the quote (slice 7b review W7B-5). Only `$'` and a
- * plain `$` share a first character, and `$'` is tried first; each run inside an alternative stops at a character
- * that starts another, so the scan stays linear. A backslash-newline outside single quotes is a line continuation,
- * which bash removes before it splits words, so it joins the word it sits in (`--for\` then `ce` is `--force`) and
- * separates nothing (slice 7h probe: a continuation inside a word or a command name hid it from every rule).
+ * Splits outside quotes on the blanks bash splits on, space, tab, and newline only: a carriage return, a vertical tab,
+ * a form feed, or a no-break space is word text, so `env -u A<CR>B git push` unsets one name and runs git. A quoted
+ * run joins the word it touches (`--force'>'` is one word), and an unclosed quote runs to the end; in `$'...'` a
+ * backslash escapes the quote (slice 7b review W7B-5). Only `$'` and a plain `$` share a first character, and `$'` is
+ * tried first; each run inside an alternative stops at a character that starts another, so the scan stays linear. A
+ * backslash-newline outside single quotes is a line continuation, which bash removes before it splits words, so it
+ * joins the word it sits in (`--for\` then `ce` is `--force`) and separates nothing (slice 7h probe: a continuation
+ * inside a word or a command name hid it from every rule).
  */
-const STATEMENT_TOKEN = /(?:"(?:[^"\\]+|\\[\s\S])*"?|\$'(?:[^'\\]+|\\[\s\S])*'?|'[^']*'?|\\[\s\S]?|[^\s"'\\$]+|\$)+/g
+const STATEMENT_TOKEN = /(?:"(?:[^"\\]+|\\[\s\S])*"?|\$'(?:[^'\\]+|\\[\s\S])*'?|'[^']*'?|\\[\s\S]?|[^ \t\n"'\\$]+|\$)+/g
 
 /** One scanner for shellTokensUpTo, which never calls itself, rewound before each use. */
 const TOKEN_SCAN = new RegExp(STATEMENT_TOKEN.source, STATEMENT_TOKEN.flags)
