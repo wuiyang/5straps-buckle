@@ -512,15 +512,16 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
     statements.push(text.slice(level.start, at))
     level.start = next
   }
-  // A backtick body is also read as bash runs it, its escapes removed first (backtickView), and each body that removal
-  // reveals is read the same way in turn, each level counting against MAX_DEPTH (slice 7h probes).
+  // A backtick body is also read as bash runs it, its continuations and then its escapes removed first (joinedBacktick,
+  // backtickView), and each body that removal reveals is read the same way in turn, each level counting against
+  // MAX_DEPTH (slice 7h probes).
   const readBacktick = (body: string, doubleQuoted: boolean) => {
     if (!body.includes('\\')) return
     if (depth >= MAX_DEPTH) {
       limits.overDepth = true
       return
     }
-    const split = unquotedSplit(backtickView(body, doubleQuoted), mode.wholeBodies ? SHELL_TEXT : SHELL_LINE, depth + 1)
+    const split = unquotedSplit(backtickView(joinedBacktick(body), doubleQuoted), mode.wholeBodies ? SHELL_TEXT : SHELL_LINE, depth + 1)
     for (const statement of split.statements) statements.push(statement)
     meet(limits, split)
   }
@@ -784,6 +785,29 @@ function fedShellView(body: string, tabs: boolean): string {
     view += character
   }
   return view
+}
+
+/**
+ * A backtick body as bash's parser keeps it while it looks for the closing backtick: it pairs the backslashes, and a
+ * backslash-newline whose backslash ends an odd run is a line continuation it removes, single quotes in the body or
+ * not; an even run is escaped backslashes, and the newline stays. So three backslashes and a newline inside `gi` and
+ * `t` leave `gi\\t`, which backtickView makes `gi\t`, and bash runs git (the 7h to 7k review).
+ */
+function joinedBacktick(body: string): string {
+  if (!body.includes('\\\n')) return body
+  const parts: string[] = []
+  let from = 0
+  let run = 0
+  for (let index = 0; index < body.length; index++) {
+    const character = body[index]
+    if (character === '\n' && run % 2 === 1) {
+      parts.push(body.slice(from, index - 1))
+      from = index + 1
+    }
+    run = character === '\\' ? run + 1 : 0
+  }
+  parts.push(body.slice(from))
+  return parts.join('')
 }
 
 /**

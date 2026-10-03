@@ -599,6 +599,27 @@ describe('a call Buckle cannot read whole', () => {
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
   })
 
+  // Slice 7l: bash removes a backslash-newline that ends an odd run of backslashes while it reads a backtick body, so
+  // three backslashes and a newline inside `gi` and `t` run git; the reader kept the continuation, read `gi\` and `t`,
+  // and the git push ran past the deny glob and the floor. Real bash ran the sentinel in each shape.
+  const continuedBacktick = (command: string) => ({
+    'top level': `echo \`gi${B.repeat(3)}\nt ${command}\``,
+    'double quotes': `echo "\`gi${B.repeat(3)}\nt ${command}\`"`,
+    '$()': `echo $(echo \`gi${B.repeat(3)}\nt ${command}\`)`,
+    'bash -c': `bash -c 'echo \`gi${B.repeat(3)}\nt ${command}\`'`,
+    'a nested body, five backslashes': `echo \`echo ${B}\`gi${B.repeat(5)}\nt ${command}${B}\`\``,
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => Object.entries(continuedBacktick('push origin main')).map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a git push a backtick continuation joins in %s', (engine, switched, _shape, body) => {
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => Object.entries(continuedBacktick('push --force origin main')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push a backtick continuation joins in %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
   // Slice 7i probes: a comment inside a backtick body ran to the end of the line, so the git push after the
   // substitution ran with no rule reading it; bash ends the comment at the closing backtick. Real bash ran the sentinel.
   const commentedBacktick = {

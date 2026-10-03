@@ -219,6 +219,34 @@ function backtickShapes(): Shape[] {
   return shapes
 }
 
+/**
+ * Slice 7l: bash pairs the backslashes of a backtick body while it looks for the closing backtick, and removes a
+ * backslash-newline whose backslash ends an odd run as a line continuation, single quotes in the body or not, before
+ * it removes the escapes; so three backslashes and a newline inside a command word run the joined word. Runs of 1 to 9
+ * before a newline, inside the command word and inside an argument, at top level, in double quotes, in `$()`, under
+ * bash -c, single-quoted in the body, nested, nested in double quotes, and in a quoted body fed to bash. Each shape
+ * ran under real bash in scratch first.
+ */
+function backtickContinuationShapes(): Shape[] {
+  const shapes: Shape[] = []
+  for (let run = 1; run <= 9; run++) {
+    for (const [place, inner] of [['in the command word', `senti${backslashes(run)}\nnel mark`], ['in an argument', `${SENTINEL} a${backslashes(run)}\nmark b`]] as const) {
+      const contexts = {
+        'top level': `echo \`${inner}\``,
+        'in double quotes': `echo "\`${inner}\`"`,
+        'in $()': `echo $(echo \`${inner}\`)`,
+        'under bash -c': `bash -c 'echo \`${inner}\`'`,
+        'single-quoted in the body': `echo \`${inner.replace(`${SENTINEL} `, `${SENTINEL} '`)}'\``,
+        'nested': `echo \`echo \\\`${inner}\\\`\``,
+        'nested in double quotes': `echo "\`echo \\"\\\`${inner}\\\`\\"\`"`,
+        'in a quoted body fed to bash': `bash <<'EOF'\necho \`${inner}\`\nEOF`,
+      }
+      for (const [context, body] of Object.entries(contexts)) shapes.push({ label: `backtick continuation run ${run} ${place}, ${context}`, body })
+    }
+  }
+  return shapes
+}
+
 /** Backtick bodies nested, holding an escaped double quote, or ending in a backslash, each run under real bash in scratch first. */
 const BACKTICK_EXTRA: Shape[] = [
   { label: 'backtick nested in a backtick, an escaped backslash before a flag', body: `echo \`echo \\\`${SENTINEL} \\\\\\\\--force mark\\\`\`` },
@@ -714,7 +742,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes()]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
