@@ -2,6 +2,7 @@ import { parseApprovalTimeout } from '../common/runtime/config.js'
 import { isAbsolute, resolve } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
+import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
 import { compilePolicy, PolicyError, refusedNetworkEntries } from '../common/domain/policy.js'
 import { compileHostPattern, UrlPatternError } from '../common/domain/url-pattern.js'
 
@@ -14,7 +15,7 @@ export interface NodeSetting {
   key: string
   /** The short name `buckle settings set` also accepts. */
   alias: string
-  kind: 'approval-wait' | 'boolean' | 'packs' | 'host-list' | 'url-list' | 'directory' | 'directory-list' | 'mount' | 'name'
+  kind: 'approval-wait' | 'boolean' | 'packs' | 'host-list' | 'url-list' | 'interpreter-list' | 'directory' | 'directory-list' | 'mount' | 'name'
   /** What the node does when the key is unset, as `buckle settings show` prints it. */
   fallback: string
 }
@@ -31,6 +32,8 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_ALLOW_HOST_GIT', alias: 'host-git', kind: 'boolean', fallback: 'false' },
   { key: 'BUCKLE_NETWORK_ALLOW', alias: 'network-allow', kind: 'url-list', fallback: '(none: the default egress rules)' },
   { key: 'BUCKLE_ALLOWED_HOSTS', alias: 'allowed-hosts', kind: 'host-list', fallback: '(none)' },
+  // Default D56: the interpreters the environment policy, the node ceiling over registered workspaces, reads as ordinary.
+  { key: 'BUCKLE_ALLOWED_INTERPRETERS', alias: 'allowed-interpreters', kind: 'interpreter-list', fallback: '(none: every interpreter runs unknown code)' },
   // Owner decision D8: the admin HTTP layer is experimental, off until this is on (and an admin credential is set).
   { key: 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP', alias: 'experimental-admin-http', kind: 'boolean', fallback: 'false' },
 ]
@@ -88,6 +91,12 @@ export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd
         }
       }
       return listValue(input.setting, entries)
+    }
+    case 'interpreter-list': {
+      const names = list(raw)
+      const unknown = names.find(name => !isInterpreter(name))
+      if (unknown !== undefined) return refuse(`Invalid ${input.setting.key} entry ${unknown}: not an interpreter Buckle reads as unknown: ${INTERPRETER_NAMES}`)
+      return listValue(input.setting, names)
     }
     case 'url-list': {
       const entries = list(raw)

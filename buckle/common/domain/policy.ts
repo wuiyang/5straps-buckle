@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, MountPathSchema, type WorkspacePolicy } from '@5straps/protocol'
-import { isInterpreter } from './command-forms.js'
+import { INTERPRETER_NAMES, isInterpreter } from './command-forms.js'
 import { compileCommandGlob, CommandGlobError, type CommandGlob } from './command-glob.js'
 import { compileUrlPatterns, UrlPatternError, type UrlMatcher } from './url-pattern.js'
 import type { ServiceFailure } from '../types/service-failure.js'
@@ -160,7 +160,7 @@ function compileGlobs(sources: string[]): CommandGlob[] {
 /** The interpreter names a policy allows, each one Buckle knows as an interpreter, so a typo never stands for one. */
 function compileInterpreters(names: string[]): ReadonlySet<string> {
   for (const name of names) {
-    if (!isInterpreter(name)) throw new PolicyError(`Invalid interpreter ${JSON.stringify(name)}: python, node, nodejs, deno, bun, perl, ruby, or php, with a version where the program has one (python3.12)`)
+    if (!isInterpreter(name)) throw new PolicyError(`Invalid interpreter ${JSON.stringify(name)}: ${INTERPRETER_NAMES}`)
   }
   return new Set(names)
 }

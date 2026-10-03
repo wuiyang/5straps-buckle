@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
+import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
 import { isInside, isInsideComparable } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 
@@ -262,13 +263,19 @@ function parseRingsApprovalKey(value: string | undefined): ApprovalKey | undefin
 
 /**
  * The environment's share of the policy. Patterns are shell-word globs, one per line or
- * separated by `;;`.
+ * separated by `;;`. BUCKLE_ALLOWED_INTERPRETERS names, comma separated, the interpreters read as
+ * ordinary commands: for the node's own workspace beside what `buckle policy` stores, and as the
+ * node ceiling's list, within which alone a registered workspace's allowance counts (default D56).
  */
 function parsePolicy(environment: NodeJS.ProcessEnv): WorkspacePolicy {
   const policy = emptyWorkspacePolicy()
   policy.commands.allow = parsePatterns(environment.BUCKLE_COMMAND_ALLOW)
   policy.commands.deny = parsePatterns(environment.BUCKLE_COMMAND_DENY)
   policy.commands.destructive = parsePatterns(environment.BUCKLE_COMMAND_DESTRUCTIVE)
+  const interpreters = [...new Set(parseList(environment.BUCKLE_ALLOWED_INTERPRETERS))]
+  const unknown = interpreters.find(name => !isInterpreter(name))
+  if (unknown !== undefined) throw new Error(`Invalid BUCKLE_ALLOWED_INTERPRETERS: ${unknown} is not an interpreter Buckle reads as unknown: ${INTERPRETER_NAMES}`)
+  if (interpreters.length > 0) policy.commands.allowedInterpreters = interpreters
   policy.network.allow = parseList(environment.BUCKLE_NETWORK_ALLOW)
   policy.mount = environment.BUCKLE_WORKSPACE_MOUNT?.trim() || null
   return policy

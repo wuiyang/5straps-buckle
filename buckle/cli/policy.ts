@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util'
 import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, isWorkspaceToolAllowed, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
-import { isInterpreter } from '../common/domain/command-forms.js'
+import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
 import { compilePolicy, mergePolicies, PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
 import { actionsPath, policyPath, type BuckleConfig } from '../common/runtime/config.js'
 import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
@@ -236,7 +236,7 @@ function remove(policy: WorkspacePolicy, pattern: string): WorkspacePolicy {
 /** An interpreter Buckle knows, so a typo is refused rather than stored as an allowance that matches nothing. */
 function interpreterName(value: string | undefined, action: string): string {
   const name = required(value, action)
-  if (!isInterpreter(name)) throw new UsageError(`${name} is not an interpreter Buckle reads as unknown: python, node, nodejs, deno, bun, perl, ruby, or php, with a version where the program has one (python3.12)`)
+  if (!isInterpreter(name)) throw new UsageError(`${name} is not an interpreter Buckle reads as unknown: ${INTERPRETER_NAMES}`)
   return name
 }
 

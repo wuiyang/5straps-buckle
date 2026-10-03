@@ -461,6 +461,16 @@ function compilesAlone(policy: WorkspacePolicy): boolean {
   }
 }
 
+/**
+ * A registered workspace's policy with its allowed interpreters cut to those the node ceiling allows too, so a workspace
+ * never reads as ordinary an interpreter the ceiling reads as unknown, at its own deny list or at the floor (owner
+ * decision D7, default D56: the ceiling's list is BUCKLE_ALLOWED_INTERPRETERS).
+ */
+function withinCeiling(compiled: CompiledPolicy, ceiling: CompiledPolicy): CompiledPolicy {
+  const allowedInterpreters = new Set([...compiled.commands.allowedInterpreters].filter(name => ceiling.commands.allowedInterpreters.has(name)))
+  return { ...compiled, commands: { ...compiled.commands, allowedInterpreters } }
+}
+
 /** The approved list every call meets: the node's over a registered workspace, then the workspace's own. */
 function approvedUrls(compiled: CompiledPolicy, ceiling: CompiledPolicy | null): UrlMatcher | null {
   return intersectUrlMatchers(ceiling?.network, compiled.network)
@@ -478,11 +488,12 @@ function networkEgressRule(compiled: CompiledPolicy, ceiling: CompiledPolicy | n
  */
 function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; ceiling: CompiledPolicy | null; paths: PathView; dangerouslyAllowed: () => boolean }): PermissionEngine {
   const { config, compiled, ceiling, paths } = input
+  const commands = ceiling ? withinCeiling(compiled, ceiling) : compiled
   return withDangerouslyAllow(createPermissionEngine([
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config) }),
-    ...(ceiling ? [createCommandPolicyRule(ceiling, { enforceWrapperAllow: false, source: 'node ceiling', others: [{ policy: compiled, source: 'workspace' }] })] : []),
-    createCommandPolicyRule(compiled, { enforceWrapperAllow: !ceiling?.commands.allow.length }),
-    createDestructiveCommandRule({ added: [...(ceiling?.commands.destructive ?? []), ...compiled.commands.destructive], allowedInterpreters: compiled.commands.allowedInterpreters }),
+    ...(ceiling ? [createCommandPolicyRule(ceiling, { enforceWrapperAllow: false, source: 'node ceiling', others: [{ policy: commands, source: 'workspace' }] })] : []),
+    createCommandPolicyRule(commands, { enforceWrapperAllow: !ceiling?.commands.allow.length }),
+    createDestructiveCommandRule({ added: [...(ceiling?.commands.destructive ?? []), ...compiled.commands.destructive], allowedInterpreters: commands.commands.allowedInterpreters }),
     networkEgressRule(compiled, ceiling),
     createProcessProbeRule(),
     createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy, ceiling: ceiling?.policy }),

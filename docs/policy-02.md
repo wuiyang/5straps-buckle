@@ -34,3 +34,7 @@ Code run by `python`, `node`, `deno`, `bun`, `perl`, `ruby`, or `php` is unknown
 reading limit, until `buckle policy allow-interpreter <name>` makes that program an ordinary
 command; version and help calls stay ordinary. Static grading of such code (safe, warn, danger,
 unknown) comes after the first release.
+
+`BUCKLE_ALLOWED_INTERPRETERS`, comma separated, allows interpreters from the environment, for the
+node's own workspace and as the [node ceiling](policy.md#workspace-and-node-ceiling): a registered
+workspace can allow an interpreter only within the ceiling's list, which is empty by default.

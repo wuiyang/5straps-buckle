@@ -10,7 +10,8 @@ Two sources, unioned: every allow and deny from either, and the last mount named
 
 - The environment: `BUCKLE_COMMAND_ALLOW`, `BUCKLE_COMMAND_DENY`, and
   `BUCKLE_COMMAND_DESTRUCTIVE`, with patterns one per line or separated by `;;`; the approved list
-  `BUCKLE_NETWORK_ALLOW`, comma separated; and `BUCKLE_WORKSPACE_MOUNT`.
+  `BUCKLE_NETWORK_ALLOW` and the [allowed interpreters](policy-02.md#interpreters)
+  `BUCKLE_ALLOWED_INTERPRETERS`, each comma separated; and `BUCKLE_WORKSPACE_MOUNT`.
 - The stored policy: `policy.json` in the state directory, keyed by workspace root, which
   `buckle policy` writes.
 
@@ -90,9 +91,10 @@ approved, 1 denied, 3 asks, 4 not listed, or 2 on bad input.
 `buckle workspace add <id> --root <dir>` registers another workspace, served under
 `/workspaces/<id>/v1` and `/workspaces/<id>/mcp` with its own tokens and state, always mounted
 at `/workspace`, its writes offering only `once`. The node's environment policy, the
-`BUCKLE_COMMAND_*` and `BUCKLE_NETWORK_ALLOW` settings, is a ceiling over it: both command
-policies apply, a URL must pass both approved lists, a tool must pass both tool lists, and a
-filesystem deny in either wins. What `buckle policy` stores governs the node's own workspace.
+`BUCKLE_COMMAND_*`, `BUCKLE_NETWORK_ALLOW`, and `BUCKLE_ALLOWED_INTERPRETERS` settings, is a
+ceiling over it: both command policies apply, an interpreter must be allowed in both, a URL must
+pass both approved lists, a tool must pass both tool lists, and a filesystem deny in either wins.
+What `buckle policy` stores governs the node's own workspace.
 
 ## Inspecting and changing it
 

@@ -148,6 +148,16 @@ describe('buckle settings set', () => {
     expect(entries.map(entry => entry.detail)).toEqual([undefined, 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true', undefined, 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP unset'])
   })
 
+  // Default D56: the node ceiling's interpreter allowance, empty by default, which a registered workspace's own stays within.
+  it('shows, writes, and audits the allowed interpreters, comma separated with no spaces', async () => {
+    expect((await settings(['show'])).out).toMatch(/allowed-interpreters +BUCKLE_ALLOWED_INTERPRETERS +\(none: every interpreter runs unknown code\) +default/)
+    expect((await settings(['set', 'allowed-interpreters', ' node , python3.12,node '])).exitCode).toBe(0)
+    expect(parseEnv(readFileSync(file, 'utf8')).BUCKLE_ALLOWED_INTERPRETERS).toBe('node,python3.12')
+    expect((await settings(['show'])).out).toMatch(/allowed-interpreters +BUCKLE_ALLOWED_INTERPRETERS +node,python3.12 +environment file/)
+    const entries = createFileActionLog(join(state, 'actions.jsonl')).read(10).filter(entry => entry.tool === 'cli_settings' && entry.event === 'result')
+    expect(entries.map(entry => entry.detail)).toContain('BUCKLE_ALLOWED_INTERPRETERS=node,python3.12')
+  })
+
   it('writes directories as absolute paths, resolved from where it runs', async () => {
     await settings(['set', 'root', 'workspace'])
 
@@ -178,6 +188,8 @@ describe('buckle settings set', () => {
     [['set', 'allowed-hosts', '*'], 'Invalid BUCKLE_ALLOWED_HOSTS entry'],
     [['set', 'allowed-hosts', '*.127.0.0.1'], 'Invalid BUCKLE_ALLOWED_HOSTS entry'],
     [['set', 'network-allow', 'not a host'], 'Invalid BUCKLE_NETWORK_ALLOW entry'],
+    [['set', 'allowed-interpreters', 'node,bash'], 'Invalid BUCKLE_ALLOWED_INTERPRETERS entry bash: not an interpreter Buckle reads as unknown'],
+    [['set', 'allowed-interpreters', ','], 'needs at least one entry'],
     [['set', 'root', 'missing-directory'], 'is not an existing directory'],
     [['set', 'scratch-roots', `${workspace},nowhere`], 'is not an existing directory'],
     [['set', 'mount', '/usr'], 'Cannot mount the workspace under /usr'],

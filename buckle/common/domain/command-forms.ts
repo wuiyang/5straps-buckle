@@ -281,7 +281,11 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
  * Programs whose code Buckle cannot read as shell (owner decision D55): each name, alone or with a version
  * (`python3`, `python3.12`, `node22`, `perl5.36`). A policy names the ones it reads as ordinary commands.
  */
-const INTERPRETER = /^(?:python|node|nodejs|deno|bun|perl|ruby|php)(?:\d+(?:\.\d+)*)?$/
+const INTERPRETERS = ['python', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php'] as const
+const INTERPRETER = new RegExp(`^(?:${INTERPRETERS.join('|')})(?:\\d+(?:\\.\\d+)*)?$`)
+
+/** The interpreter names as a refusal of an unknown one lists them, wherever a name is checked. */
+export const INTERPRETER_NAMES = `${INTERPRETERS.slice(0, -1).join(', ')}, or ${INTERPRETERS.at(-1)}, with a version where the program has one (python3.12)`
 
 /** Whether a program name is an interpreter Buckle reads as unknown unless a policy allows it. */
 export function isInterpreter(name: string): boolean {
