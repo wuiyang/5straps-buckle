@@ -224,6 +224,15 @@
 - **buckle:** A thrown update clears the unreadable mark once its read succeeded, so the next outage still logs (slice 7g review R7G-RG-1, R7G-RG-2) ([b564ca5](https://github.com/wuiyang/buckle/commit/b564ca5))
 - **buckle:** A backslash-newline line continuation joins the word it sits in, so a command split across lines is read whole (slice 7g review coverage probes) ([d2728f0](https://github.com/wuiyang/buckle/commit/d2728f0))
 - **buckle:** Shipped skills name the real commands, the pack table lists forge, --help lists the dangerously-allow switch, and the env example works when copied (public docs review) ([456b3d1](https://github.com/wuiyang/buckle/commit/456b3d1))
+- **buckle:** Backslashes inside backticks are read as bash removes them, so an escaped flag or a run of backslashes reads as the command bash runs ([aecd48d](https://github.com/wuiyang/buckle/commit/aecd48d))
+- **buckle:** A comment inside a backtick body ends at its closing backtick, so the command after the substitution is read ([86e4c0e](https://github.com/wuiyang/buckle/commit/86e4c0e))
+- **buckle:** A shell whose script arrives as data is an unread call, so it is refused under a deny glob and asks at the floor ([af8cde1](https://github.com/wuiyang/buckle/commit/af8cde1))
+- **buckle:** An odd run of backslashes before a newline in an unquoted heredoc body is read as the fed shell sees it ([d09331e](https://github.com/wuiyang/buckle/commit/d09331e))
+- **buckle:** A call to a non-shell interpreter is read as unknown, so it is refused under a deny glob and asks at the floor unless the policy allows that interpreter ([6b9cef4](https://github.com/wuiyang/buckle/commit/6b9cef4))
+- **buckle:** Sudo, doas, su -c, ssh, and the plain wrappers are unwrapped, so the policy reads the command they run ([65cd20b](https://github.com/wuiyang/buckle/commit/65cd20b))
+- **buckle:** The node ceiling allows interpreters from BUCKLE_ALLOWED_INTERPRETERS, so a workspace allowance can take effect within it ([2dd5055](https://github.com/wuiyang/buckle/commit/2dd5055))
+- **buckle:** Awk, lua, pwsh, tsx, and ts-node are interpreters too ([faa9295](https://github.com/wuiyang/buckle/commit/faa9295))
+- **runtime:** Credential hiding follows rule B, a whole URL or a named key, and everything else shows raw ([0438ffb](https://github.com/wuiyang/buckle/commit/0438ffb))
 
 ### 💅 Refactors
 
@@ -253,6 +262,8 @@
 - **repo:** README statements match the code on reads, the shell sandbox, the log, and Rings ([218eff7](https://github.com/wuiyang/buckle/commit/218eff7))
 - **repo:** README, the env example, and the root skill say what the code does (readiness review) ([7dff138](https://github.com/wuiyang/buckle/commit/7dff138))
 - **repo:** Conduct reports reach the maintainer through this repository (readiness review) ([2984cb0](https://github.com/wuiyang/buckle/commit/2984cb0))
+- **repo:** Changelog regenerated after the final history rewrite ([94c2056](https://github.com/wuiyang/buckle/commit/94c2056))
+- **repo:** The copyright holder is The 5straps Authors ([2dbcb95](https://github.com/wuiyang/buckle/commit/2dbcb95))
 
 ### 📦 Build
 
@@ -303,6 +314,7 @@
 - **buckle:** The heredoc oracle carries every review shape and a positive control (slice 7g review R7G-OT-1, R7G-OT-2) ([df555be](https://github.com/wuiyang/buckle/commit/df555be))
 - **buckle:** Adversarial heredoc probes the 7g review could not run, as oracle rows and a readings differential (slice 7g review coverage gaps) ([7bb07c5](https://github.com/wuiyang/buckle/commit/7bb07c5))
 - **buckle:** Temp directories in tests use plain lowercase names, so log redaction of name-like segments cannot blank their paths (readiness review) ([8e7d543](https://github.com/wuiyang/buckle/commit/8e7d543))
+- **buckle:** The heredoc oracle carries the 7h probe shapes and kills the surviving mutations ([2320926](https://github.com/wuiyang/buckle/commit/2320926))
 
 ### 🤖 CI
 
