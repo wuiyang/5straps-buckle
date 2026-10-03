@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, gitInvocation, hasFlag, holdsExpansion, parseArgv, shellScriptSource, shellStatementList, shellTokens, shownCommand, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, envSplitWords, gitInvocation, hasFlag, holdsExpansion, parseArgv, shellScriptSource, shellStatementList, shellTokens, shownCommand, sshCommandSetting, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
 import { commandForms, readLimitOf } from '../common/domain/command-forms.js'
 
 describe('parseArgv', () => {
@@ -439,6 +439,51 @@ describe('sshInvocation', () => {
     expect(sshInvocation(['-p', '22', 'host', 'git', "'a b'"]).words).toEqual(['git', "'a b'"])
     expect(sshInvocation(['host']).words).toEqual([])
     expect(sshInvocation(['-V']).words).toEqual([])
+  })
+})
+
+// Slice 7l: an -o setting read as OpenSSH 9.6's configuration reader reads it (real ssh ran each command shape).
+describe('sshCommandSetting', () => {
+  it.each<[string, { keyword: string; command: string } | null]>([
+    ['ProxyCommand=git push', { keyword: 'proxycommand', command: 'git push' }],
+    ['"ProxyCommand" git push', { keyword: 'proxycommand', command: 'git push' }],
+    ['"ProxyCommand"=git push', { keyword: 'proxycommand', command: 'git push' }],
+    ['Proxy"Command" git push', { keyword: 'proxycommand', command: 'git push' }],
+    ['"" ProxyCommand git push', { keyword: 'proxycommand', command: 'git push' }],
+    ['ProxyCommand==git push', { keyword: 'proxycommand', command: 'git push' }],
+    ['ProxyCommand = = git push', { keyword: 'proxycommand', command: 'git push' }],
+    ['  ProxyCommand git push', { keyword: 'proxycommand', command: 'git push' }],
+    ['PROXYCOMMAND\tgit push \f', { keyword: 'proxycommand', command: 'git push' }],
+    ['"RemoteCommand" id', { keyword: 'remotecommand', command: 'id' }],
+    ['User=me', null],
+    ['#ProxyCommand git push', null],
+    ['"ProxyCommand git push', null],
+    ['"" "" ProxyCommand git push', null],
+  ])('reads -o %j as %j', (value, setting) => {
+    expect(sshCommandSetting(value)).toEqual(setting)
+  })
+
+  it('marks a % token other than %% in a command setting, and reads %% as %', () => {
+    expect(sshInvocation(['-l', 'git', '-o', 'ProxyCommand=%r push', 'host', 'true'])).toMatchObject({ local: ['%r push'], tokens: true })
+    expect(sshInvocation(['-o', 'ProxyCommand=git push %%r', 'host', 'true'])).toMatchObject({ local: ['git push %r'], tokens: false })
+    expect(sshInvocation(['-o', 'ProxyCommand=a %%%p', 'host', 'true']).tokens).toBe(true)
+    expect(sshInvocation(['-o', 'User=%r', 'host', 'true']).tokens).toBe(false)
+  })
+})
+
+// Slice 7l: an env -S value with no backslash and no `${`, split as GNU env 9.4 splits it (real env ran each shape).
+describe('envSplitWords', () => {
+  it.each<[string, string[]]>([
+    ['git push', ['git', 'push']],
+    ['git\vpush\fmain\rx', ['git', 'push', 'main', 'x']],
+    ["git 'a b' \"c d\"", ['git', 'a b', 'c d']],
+    ['git push #x y', ['git', 'push']],
+    ['git push#x', ['git', 'push#x']],
+    ["git '' push", ['git', '', 'push']],
+    ['#git push', []],
+    ['git\xa0push', ['git\xa0push']],
+  ])('splits %j as %j', (value, words) => {
+    expect(envSplitWords(value)).toEqual(words)
   })
 })
 

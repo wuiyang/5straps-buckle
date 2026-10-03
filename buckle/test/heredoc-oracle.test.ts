@@ -391,6 +391,67 @@ const UNREAD_INPUTS: Shape[] = [
   { label: 'read: find handing {} to bash -c as $0', body: `find . -maxdepth 0 -exec bash -c '${PAYLOAD}' {} \\;` },
 ]
 
+/** Real ssh with no configuration file and no known hosts: a ProxyCommand runs here before any connection, so nothing reaches the network. */
+const REAL_SSH = '/usr/bin/ssh -F /dev/null -o BatchMode=yes -o UserKnownHostsFile=/dev/null'
+
+/**
+ * Slice 7l: env -S, an ssh command setting, and sudo -s or -i each parse their argument by rules of their own. Where
+ * those rules are small and certain they are read exactly: env -S with no backslash and no `${` (six blanks, quotes, a
+ * `#` comment), ssh's keyword as its configuration reader reads it and `%%` as `%`, and sudo -s words that read as
+ * themselves. Anything else is unread (own parsing): an env escape or `${}`, an ssh `%` token, and a sudo -s word a
+ * shell treats specially. env is the real program, ssh the real one at /usr/bin/ssh (its rows skip where that is
+ * absent), and sudo the stand-in. Each ran the sentinel, or nothing where noted, in scratch first.
+ */
+const OWN_PARSING: Shape[] = [
+  ...[
+    ['env -S plain', `env -S '${PAYLOAD}'`],
+    ['env -S with a vertical tab', `env -S $'${SENTINEL}\\vmark'`],
+    ['env -S with a form feed', `env -S $'${SENTINEL}\\fmark'`],
+    ['env -S with a carriage return', `env -S $'${SENTINEL}\\rmark'`],
+    ['env -S with a comment', `env -S '${PAYLOAD} #x y'`],
+    ['env -S with single quotes', `env -S "${SENTINEL} 'a b' mark"`],
+    ['env -S with double quotes', `env -S '${SENTINEL} "a b" mark'`],
+    ['env -S that is all comment (runs nothing)', `env -S '#x ${PAYLOAD}'`],
+    ['sudo -s with plain words', `sudo -s ${PAYLOAD}`],
+    ['sudo -i with an empty word', `sudo -i '' ${PAYLOAD}`],
+  ].map(([label, body]) => ({ label: `own parsing read: ${label}`, body: body! })),
+  ...[
+    ['ssh -o plain', `${REAL_SSH} -o 'ProxyCommand=${PAYLOAD}' h true`],
+    ['ssh -o with a quoted keyword', `${REAL_SSH} -o '"ProxyCommand" ${PAYLOAD}' h true`],
+    ['ssh -o with a quoted keyword and =', `${REAL_SSH} -o '"ProxyCommand"=${PAYLOAD}' h true`],
+    ['ssh -o with a quote inside the keyword', `${REAL_SSH} -o 'Proxy"Command" ${PAYLOAD}' h true`],
+    ['ssh -o with an empty quoted word first', `${REAL_SSH} -o '"" ProxyCommand ${PAYLOAD}' h true`],
+    ['ssh -o with two = signs', `${REAL_SSH} -o 'ProxyCommand==${PAYLOAD}' h true`],
+    ['ssh -o with = between blanks', `${REAL_SSH} -o 'ProxyCommand = = ${PAYLOAD}' h true`],
+    ['ssh -o with a tab', `${REAL_SSH} -o $'ProxyCommand\\t${PAYLOAD}' h true`],
+    ['ssh -o with a carriage return', `${REAL_SSH} -o $'ProxyCommand\\r${PAYLOAD}' h true`],
+    ['ssh -o in capitals', `${REAL_SSH} -o 'PROXYCOMMAND ${PAYLOAD}' h true`],
+    ['ssh -o attached with a quoted keyword', `${REAL_SSH} '-o"ProxyCommand" ${PAYLOAD}' h true`],
+    ['ssh -o with %%', `${REAL_SSH} -o 'ProxyCommand=${SENTINEL} %%r' h true`],
+    ['ssh -o with trailing blanks', `${REAL_SSH} -o 'ProxyCommand=${PAYLOAD}   ' h true`],
+  ].map(([label, body]) => ({ label: `own parsing read: ${label}`, body: body!, needs: '/usr/bin/ssh' })),
+  ...[
+    ['env -S with \\_', `env -S '${SENTINEL}\\_mark'`],
+    ['env -S with \\c', `env -S '${PAYLOAD}\\c x'`],
+    ['env -S with a leading \\_', `env -S '\\_${PAYLOAD}'`],
+    ['env -S inside env -S', `env -S '-S\\_${SENTINEL}\\_mark'`],
+    ['env -u then -S with \\_', `env -uX -S '${SENTINEL}\\_mark'`],
+    ['nice env -S with \\_', `nice env -S 'nice\\_${SENTINEL}\\_mark'`],
+    ['env -S with ${}', `NAME=${SENTINEL} env -S '\${NAME} mark'`],
+    ['env --split-string= with \\_', `env --split-string='${SENTINEL}\\_mark'`],
+    ['env -S attached with \\_', `env '-S${SENTINEL}\\_mark'`],
+    ['sudo -s with a newline in the command word', `sudo -s $'senti\\nnel' mark`],
+    ['sudo -i with a $', `export NAME=${SENTINEL}; sudo -i '$NAME' mark`],
+  ].map(([label, body]) => ({ label: `own parsing unread: ${label}`, body: body!, unread: 'ownParsing' as const })),
+  ...[
+    ['ssh -o ProxyCommand with %r', `${REAL_SSH} -l ${SENTINEL} -o 'ProxyCommand=%r mark' h true`],
+    ['ssh -o ProxyCommand with %h', `${REAL_SSH} -o 'ProxyCommand=%h mark' ${SENTINEL} true`],
+    ['ssh -o ProxyCommand with %n', `${REAL_SSH} -o 'ProxyCommand=%n mark' ${SENTINEL} true`],
+    ['ssh -o ProxyCommand with %r from user@host', `${REAL_SSH} -o 'ProxyCommand=%r mark' ${SENTINEL}@h true`],
+    ['ssh -o ProxyCommand with %p', `${REAL_SSH} -o 'ProxyCommand=${PAYLOAD} %p' h true`],
+  ].map(([label, body]) => ({ label: `own parsing unread: ${label}`, body: body!, unread: 'ownParsing' as const, needs: '/usr/bin/ssh' })),
+]
+
 /**
  * Owner decision D55: code a non-shell interpreter runs is unknown to Buckle, so the call is unread (unknown
  * interpreter) until a policy allows that interpreter. The two python shapes of the 7h probes ran the sentinel.
@@ -514,7 +575,8 @@ const PROBE_TOP_LEVEL: Shape[] = [
  * Stand-ins the oracle puts on the PATH for the wrappers a test cannot run: sudo and doas need a password or a rule
  * granting the call, su a password, and ssh a remote host. Each skips its program's options as that program's getopt
  * string reads them (sudo 1.9, OpenDoas, util-linux su, which permutes, and OpenSSH, which reads options again after
- * the host), then runs the command here: sudo and doas exec it, su runs the shell with its last -c string, and ssh runs
+ * the host), then runs the command here: sudo and doas exec it (sudo -s and -i hand it to bash as one escaped string, as
+ * sudo's manual says), su runs the shell with its last -c string, and ssh runs
  * the words after the host joined with spaces, as the remote shell would. With no command, sudo -i, sudo -s, doas -s,
  * su, and ssh run an interactive shell on their input. The stand-ins model those programs, so these rows check what
  * bash hands each one and what Buckle reads behind it; the option tables were checked against the real getopt strings,
@@ -543,6 +605,20 @@ const STAND_INS: Record<string, string[]> = {
     '  esac',
     'done',
     'while [ "$#" -gt 0 ]; do case $1 in *=*) export "$1"; shift ;; *) break ;; esac; done',
+    // With -s or -i, the command goes to a shell as one string: each character but a letter, a digit, `_`, `$`, and
+    // `-` escaped with a backslash, the words joined with spaces, as the sudo manual gives it.
+    'if [ "$#" -gt 0 ] && [ -n "$session" ]; then',
+    '  command=',
+    '  for word do',
+    '    rest=$word',
+    '    while [ -n "$rest" ]; do',
+    '      c=${rest%"${rest#?}"}; rest=${rest#?}',
+    '      case $c in [[:alnum:]_\\$-]) command=$command$c ;; *) command=$command\\\\$c ;; esac',
+    '    done',
+    '    command="$command "',
+    '  done',
+    '  exec bash -c "${command% }"',
+    'fi',
     '[ "$#" -gt 0 ] && exec "$@"',
     '[ -n "$session" ] && exec bash',
     'exit 1',
@@ -804,7 +880,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }

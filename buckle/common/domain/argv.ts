@@ -260,8 +260,52 @@ export function shellScriptOperand(args: readonly string[]): { source: ShellScri
 const SSH_VALUE_OPTIONS = 'bceilmopBDEFIJLOPQRSwW'
 /** Options with which ssh opens no session of its own: -N and -W forward, -G prints its configuration, -V its version, -O controls a master, -Q queries. */
 const SSH_NO_SESSION = 'NWGVOQ'
-/** An `-o` setting whose value ssh runs as shell text, here (ProxyCommand, LocalCommand, KnownHostsCommand) or on the host (RemoteCommand). */
-const SSH_COMMAND_SETTING = /^\s*(proxycommand|localcommand|knownhostscommand|remotecommand)(?:\s*=\s*|\s+)([\s\S]*)$/i
+/** The `-o` settings whose value ssh runs as shell text, here (ProxyCommand, LocalCommand, KnownHostsCommand) or on the host (RemoteCommand). */
+const SSH_COMMAND_SETTINGS = new Set(['proxycommand', 'localcommand', 'knownhostscommand', 'remotecommand'])
+/** The characters OpenSSH's configuration reader calls whitespace (misc.h WHITESPACE). */
+const SSH_BLANKS = ' \t\r\n'
+
+/**
+ * The next word of an ssh configuration line from `at`, as OpenSSH's strdelim reads it: up to a blank, an `=`, or a
+ * `"`. A `"` is removed and the word runs on to the next `"`, which ends it, so `"ProxyCommand"` and `Proxy"Command"`
+ * are both ProxyCommand; one `=` and the blanks around it are skipped after the word. Null for a quote that never closes.
+ */
+function sshConfigWord(line: string, at: number): { word: string; next: number } | null {
+  const skipBlanks = (from: number) => {
+    let index = from
+    while (index < line.length && SSH_BLANKS.includes(line[index]!)) index++
+    return index
+  }
+  let index = at
+  while (index < line.length && !SSH_BLANKS.includes(line[index]!) && line[index] !== '"' && line[index] !== '=') index++
+  if (index >= line.length) return { word: line.slice(at), next: line.length }
+  if (line[index] === '"') {
+    const close = line.indexOf('"', index + 1)
+    if (close < 0) return null
+    return { word: line.slice(at, index) + line.slice(index + 1, close), next: skipBlanks(close + 1) }
+  }
+  const equals = line[index] === '='
+  let next = skipBlanks(index + 1)
+  if (!equals && line[next] === '=') next = skipBlanks(next + 1)
+  return { word: line.slice(at, index), next }
+}
+
+/**
+ * The command an `-o` setting hands a shell, as OpenSSH's process_config_line reads it, or null for any other setting:
+ * trailing blanks and form feeds dropped, the keyword read by sshConfigWord (a second word when the first is empty),
+ * matched without case, and the command the rest of the line after any blanks and `=` signs.
+ */
+export function sshCommandSetting(value: string): { keyword: string; command: string } | null {
+  const line = value.replace(/[ \t\r\n\f]+$/, '')
+  let keyword = sshConfigWord(line, 0)
+  if (keyword?.word === '') keyword = sshConfigWord(line, keyword.next)
+  if (!keyword || keyword.word === '' || keyword.word.startsWith('#')) return null
+  const name = keyword.word.toLowerCase()
+  if (!SSH_COMMAND_SETTINGS.has(name)) return null
+  let start = keyword.next
+  while (start < line.length && (SSH_BLANKS.includes(line[start]!) || line[start] === '=')) start++
+  return { keyword: name, command: line.slice(start) }
+}
 
 /** What an ssh call runs: shell text on the remote host, shell text here, or an interactive session. */
 export interface SshInvocation {
@@ -271,6 +315,13 @@ export interface SshInvocation {
   words: string[]
   /** Each ProxyCommand, LocalCommand, and KnownHostsCommand, which ssh runs as shell text on this machine. */
   local: string[]
+  /** Every `-o` value, as written. */
+  settings: string[]
+  /**
+   * A command setting holds a `%` token, which ssh replaces with the host, the user, or the port before a shell runs the
+   * text, and which may come from a configuration file Buckle does not read, so what runs is unknown. `%%` is a `%`.
+   */
+  tokens: boolean
   /** A host with no remote command and none of -N, -W, -G, -V, -O, or -Q: an interactive session. */
   session: boolean
 }
@@ -284,6 +335,8 @@ export interface SshInvocation {
 export function sshInvocation(args: readonly string[]): SshInvocation {
   const remote: string[] = []
   const local: string[] = []
+  const settings: string[] = []
+  let tokens = false
   let noSession = false
   let index = 0
   let terminated = false
@@ -302,21 +355,26 @@ export function sshInvocation(args: readonly string[]): SshInvocation {
         if (SSH_NO_SESSION.includes(flag)) noSession = true
         if (!SSH_VALUE_OPTIONS.includes(flag)) continue
         const value = offset + 1 < word.length ? word.slice(offset + 1) : args[index++]
-        const setting = flag === 'o' && value !== undefined ? SSH_COMMAND_SETTING.exec(value) : null
-        if (setting) (setting[1]!.toLowerCase() === 'remotecommand' ? remote : local).push(setting[2]!)
+        if (flag === 'o' && value !== undefined) settings.push(value)
+        const setting = flag === 'o' && value !== undefined ? sshCommandSetting(value) : null
+        if (setting) {
+          // ssh reads `%%` as a `%` and any other `%` as a token it expands (percent_expand), left to right.
+          tokens ||= setting.command.replaceAll('%%', '').includes('%')
+          ;(setting.keyword === 'remotecommand' ? remote : local).push(setting.command.replaceAll('%%', '%'))
+        }
         break
       }
     }
   }
   options()
-  if (index >= args.length) return { remote, words: [], local, session: false }
+  if (index >= args.length) return { remote, words: [], local, settings, tokens, session: false }
   index++
   if (!terminated) options()
   // ssh sends an empty command as no command, which opens a shell.
   const words = args.slice(index)
   const command = words.join(' ')
   if (command !== '') remote.unshift(command)
-  return { remote, words, local, session: remote.length === 0 && !noSession }
+  return { remote, words, local, settings, tokens, session: remote.length === 0 && !noSession }
 }
 
 /** su's options that take a value, as util-linux's getopt_long reads them (c:fg:G:lmpPs:u:hVw:, with their long names). */
@@ -395,6 +453,41 @@ export function commandSubject(command: string, args: readonly string[]): string
 /** Words a POSIX shell reads as themselves; `=` only after the command word, where it cannot read as an assignment. */
 const PLAIN_WORD = /^[A-Za-z0-9_@%+:,./-]+$/
 const PLAIN_ARGUMENT = /^[A-Za-z0-9_@%+=:,./-]+$/
+
+/** Whether a shell reads a word as itself, escaped or not, whichever shell it is: letters, digits, and `_ @ % + = : , . / -`. */
+export function readsAsItself(word: string): boolean {
+  return PLAIN_ARGUMENT.test(word)
+}
+
+/** The blanks GNU env -S splits on: space, tab, newline, vertical tab, form feed, and carriage return. */
+const ENV_BLANKS = new Set([' ', '\t', '\n', '\v', '\f', '\r'])
+
+/**
+ * An env -S value split as GNU env splits it, for a value holding no backslash and no `${`, which is all env -S reads
+ * as words without its own escapes: the six blanks above separate, single and double quotes group (with no backslash
+ * neither escapes anything), and a `#` that starts a word comments out the rest. An unclosed quote, where env refuses
+ * to run, reads to the end.
+ */
+export function envSplitWords(value: string): string[] {
+  const words: string[] = []
+  let word: string | null = null
+  let quote: string | null = null
+  for (const character of value) {
+    if (quote !== null) {
+      if (character === quote) quote = null
+      else word += character
+    } else if (ENV_BLANKS.has(character)) {
+      if (word !== null) words.push(word)
+      word = null
+    } else if (character === '#' && word === null) break
+    else if (character === "'" || character === '"') {
+      quote = character
+      word ??= ''
+    } else word = (word ?? '') + character
+  }
+  if (word !== null) words.push(word)
+  return words
+}
 
 function shellQuote(word: string, first: boolean): string {
   if ((first ? PLAIN_WORD : PLAIN_ARGUMENT).test(word)) return word

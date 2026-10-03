@@ -1,4 +1,4 @@
-import { baseCommand, holdsExpansion, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, scriptOperandKind, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import { baseCommand, envSplitWords, holdsExpansion, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
@@ -21,6 +21,7 @@ export const READ_LIMITS = {
   comment: 'A # follows a ) that a case pattern or an extended glob may have closed, so Buckle cannot tell whether the rest of the line is a comment (comment)',
   session: 'Opens an interactive session Buckle cannot read: ssh or su with no command, or a sudo or doas shell (interactive session)',
   expansion: 'Runs shell text an expansion supplies, which exists only once the shell has run (eval "$x", bash -c "$(...)"), so Buckle cannot read it (expansion)',
+  ownParsing: 'A program reads an argument by rules of its own that Buckle does not read as shell words: an env -S escape, an ssh % token, or a sudo -s or -i command for a shell Buckle does not know (own parsing)',
   scriptData: 'A shell takes its script from a pipe, a redirection, a descriptor, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)',
   interpreter: 'Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter)',
 } as const
@@ -53,8 +54,13 @@ interface Wrapper {
   dashOption?: true
   /** Options that open an interactive session when no command follows (`sudo -i`, `sudo -s`, `doas -s`), which Buckle cannot read. */
   session?: { short: string; long: readonly string[] }
-  /** An option whose value is split into words and read in its place (`env -S 'git push --force'`). */
+  /** An option whose value is split into words and read in its place (`env -S 'git push --force'`), as splitValue reads it. */
   split?: { short: string; long: string }
+  /**
+   * With a command, a session option hands it to a shell as one string, each character but a letter, a digit, `_`, `-`,
+   * and `$` escaped with a backslash (sudo -s and -i, as the sudo manual says), as shellSessionCommand reads it.
+   */
+  sessionShell?: true
   /** `nice -10`: a number written as an option. */
   numericOption?: true
   /** After the operands, an option whose value a shell runs (`flock <file> -c 'git push -f'`), read as `sh -c <value>`. */
@@ -87,6 +93,7 @@ const WRAPPERS: Readonly<Record<string, Wrapper>> = {
     longValues: ['auth-type', 'close-from', 'login-class', 'chdir', 'group', 'host', 'prompt', 'chroot', 'role', 'type', 'command-timeout', 'other-user', 'user'],
     assignments: true,
     session: { short: 'is', long: ['login', 'shell'] },
+    sessionShell: true,
   },
   doas: { shortValues: 'aCu', session: { short: 's', long: [] } },
   nice: { shortValues: 'n', longValues: ['adjustment'], numericOption: true },
@@ -242,7 +249,7 @@ const CALL: Place = { statement: false, heredoc: false, expanded: NO_WORDS, foun
  * split no shell makes, read only so a glob meets a command quoted for another program, so it marks no script as data.
  */
 function formsOf(words: readonly string[], depth: number, budget: Budget, place: Place): Reading {
-  const { chain, unread } = wrapperChain(words)
+  const { chain, unread } = wrapperChain(words, place.expanded)
   const inner = innerCommands(chain.at(-1)!, budget, place)
   const interpreter = interpreterRunningCode(chain, place)
   const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: scriptArrivesAsData(chain, place), interpreters: interpreter ? [interpreter] : [], rereads: inner.rereads }
@@ -469,7 +476,8 @@ function sshCommands(args: readonly string[], budget: Budget, place: Place): Inn
   const ssh = sshInvocation(args)
   const groups: CommandGroup[] = []
   let unread: UnreadLimit | null = ssh.session ? 'session' : null
-  if (ssh.words.some(word => place.expanded.has(word))) unread = firstLimit(unread, 'expansion')
+  if ([...ssh.words, ...ssh.settings].some(word => place.expanded.has(word))) unread = firstLimit(unread, 'expansion')
+  if (ssh.tokens) unread = firstLimit(unread, 'ownParsing')
   for (const text of [...ssh.remote, ...ssh.local]) {
     const read = textCommands(text, budget)
     groups.push(...read.groups)
@@ -532,34 +540,65 @@ function findCommands(args: readonly string[]): { commands: string[][]; primary:
   return { commands, primary }
 }
 
-function wrapperChain(words: readonly string[]): { chain: string[][]; unread: UnreadLimit | null } {
+/** The words `expanded` names are those an expansion supplies (Place), whose value Buckle cannot know. */
+function wrapperChain(words: readonly string[], expanded: ReadonlySet<string>): { chain: string[][]; unread: UnreadLimit | null } {
   const chain = [reduced(words)]
   let current = words
+  let unread: UnreadLimit | null = null
   for (let depth = 0; ; depth++) {
-    const inner = unwrapped(current)
-    if (inner === undefined) return { chain, unread: null }
+    const inner = unwrapped(current, expanded)
+    if (inner === undefined) return { chain, unread }
     if (depth >= MAX_DEPTH) return { chain, unread: 'depth' }
-    if (inner === 'session') return { chain, unread: 'session' }
-    if (!inner?.[0]) return { chain, unread: null }
-    current = inner
+    unread = firstLimit(unread, inner.unread)
+    if (inner.command === 'session') return { chain, unread: firstLimit(unread, 'session') }
+    if (!inner.command?.[0]) return { chain, unread }
+    current = inner.command
     chain.push(reduced(current))
   }
 }
 
+/** What a prefix runs (null for nothing, 'session' for an interactive session) and why part of it was left unread. */
+interface Unwrapped { command: string[] | null | 'session'; unread: UnreadLimit | null }
+
 /**
  * What the first words run: past NAME=value assignments, a wrapper's options, a shell keyword, `function NAME` or
- * `coproc [NAME]` (slice 7b review W7B-3). Undefined when the first word is none of those, null when nothing runs,
- * 'session' when the wrapper opens an interactive session.
+ * `coproc [NAME]` (slice 7b review W7B-3). Undefined when the first word is none of those.
  */
-function unwrapped(words: readonly string[]): string[] | null | undefined | 'session' {
+function unwrapped(words: readonly string[], expanded: ReadonlySet<string>): Unwrapped | undefined {
+  const runs = (command: string[] | null): Unwrapped => ({ command, unread: null })
   if (ASSIGNMENT.test(words[0] ?? '')) {
     const command = words.findIndex(word => !ASSIGNMENT.test(word))
-    return command < 0 ? null : words.slice(command)
+    return runs(command < 0 ? null : words.slice(command))
   }
-  if (words[0] === 'function') return words.length > 2 ? words.slice(2) : null
-  if (words[0] === 'coproc') return COMPOUND_START.has(words[2] ?? '') ? words.slice(2) : words.length > 1 ? words.slice(1) : null
+  if (words[0] === 'function') return runs(words.length > 2 ? words.slice(2) : null)
+  if (words[0] === 'coproc') return runs(COMPOUND_START.has(words[2] ?? '') ? words.slice(2) : words.length > 1 ? words.slice(1) : null)
   const wrapper = wrapperOf(baseCommand(words[0] ?? ''))
-  return wrapper === undefined ? undefined : innerCommand(wrapper, words.slice(1))
+  return wrapper === undefined ? undefined : innerCommand(wrapper, words.slice(1), expanded)
+}
+
+/**
+ * An env -S value as words. With no backslash and no `${`, GNU env splits it as envSplitWords reads it, exactly. A
+ * backslash starts one of env's own escapes (`\_` separates words, `\c` ends the string) and `${` expands a variable,
+ * so such a value is unread (own parsing), and so is one an expansion supplies; either is still split as shell words,
+ * so a deny glob may yet name what it meets.
+ */
+function splitValue(value: string, expanded: ReadonlySet<string>): { words: string[]; unread: UnreadLimit | null } {
+  if (value.includes('\\') || value.includes('${')) return { words: shellWords(value), unread: 'ownParsing' }
+  if (expanded.has(value)) return { words: shellWords(value), unread: 'expansion' }
+  return { words: envSplitWords(value), unread: null }
+}
+
+/**
+ * The command sudo -s or -i hands the target shell: sudo escapes every character of each word but a letter, a digit,
+ * `_`, `-`, and `$`, and joins the words with spaces, so an empty word is no word and each other word stays whole. That
+ * shell is whatever $SHELL or the password database names, which Buckle cannot know, and a newline becomes a
+ * continuation in a POSIX shell and a blank in a C shell, while a `$` expands. A command whose words all read as
+ * themselves in any shell (readsAsItself) is read as those words; any other is unread (own parsing), and still read.
+ */
+function shellSessionCommand(words: readonly string[]): Unwrapped {
+  const command = words.filter(word => word !== '')
+  if (command.length === 0) return { command: null, unread: null }
+  return { command, unread: command.every(readsAsItself) ? null : 'ownParsing' }
 }
 
 /** A command as a rule compares it: the command word reduced to its basename. */
@@ -572,10 +611,11 @@ function reduced(words: readonly string[]): string[] {
  * The command a wrapper runs, read past its options, assignments and operands; null when it runs none, and 'session'
  * when it runs none but an option opens an interactive session (`sudo -i`).
  */
-function innerCommand(wrapper: Wrapper, args: readonly string[]): string[] | null | 'session' {
+function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: ReadonlySet<string>): Unwrapped {
   const words = [...args]
   let index = 0
   let session = false
+  let unread: UnreadLimit | null = null
   while (index < words.length) {
     const word = words[index]!
     if (word === '--') {
@@ -592,16 +632,24 @@ function innerCommand(wrapper: Wrapper, args: readonly string[]): string[] | nul
       continue
     }
     const option = word.startsWith('--') ? readLong(wrapper, words, index) : readShort(wrapper, words, index)
-    if (option.runsNothing) return null
+    if (option.runsNothing) return { command: null, unread }
     session ||= option.session === true
     index = option.next
-    if (option.split !== undefined) words.splice(index, 0, ...shellWords(option.split))
+    if (option.split !== undefined) {
+      const split = splitValue(option.split, expanded)
+      words.splice(index, 0, ...split.words)
+      unread = firstLimit(unread, split.unread)
+    }
   }
   if (wrapper.assignments) while (index < words.length && words[index]!.includes('=')) index++
   index += wrapper.operands ?? 0
-  if (wrapper.shellCommand?.includes(words[index] ?? '')) return index + 1 < words.length ? ['sh', '-c', words[index + 1]!] : null
-  if (index < words.length) return words.slice(index)
-  return session ? 'session' : null
+  if (wrapper.shellCommand?.includes(words[index] ?? '')) return { command: index + 1 < words.length ? ['sh', '-c', words[index + 1]!] : null, unread }
+  if (index < words.length && session && wrapper.sessionShell) {
+    const shell = shellSessionCommand(words.slice(index))
+    return { command: shell.command, unread: firstLimit(unread, shell.unread) }
+  }
+  if (index < words.length) return { command: words.slice(index), unread }
+  return { command: session ? 'session' : null, unread }
 }
 
 interface ReadOption { next: number; runsNothing?: true; split?: string; session?: true }

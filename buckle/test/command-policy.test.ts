@@ -1140,6 +1140,64 @@ describe('a command behind a wrapper', () => {
   it('needs the wrapper allowed when sudo hands its command to a shell, as env does', () => {
     expect(reasonOf(evaluate('sudo', ['bash', '-c', 'pnpm build']))).toContain("allow-command 'bash -c *'")
   })
+
+  // Slice 7l: env -S, an ssh -o command setting, and sudo -s or -i each parse their argument by rules of their own.
+  // Where those rules are small and certain they are read exactly: env -S splits a value with no backslash and no `${`
+  // on six blanks with quotes and a `#` comment, ssh reads its keyword as readconf does (a quoted keyword, `=` or
+  // blanks) and a `%%` as a `%`, and sudo hands a shell words that read as themselves unchanged. Anything else is
+  // unread (own parsing): refused under any deny glob and asked at the floor with none. GNU env 9.4 and OpenSSH 9.6p1
+  // ran each env and ssh shape with a sentinel; sudo's escaping is the one its manual gives, and bash ran the escaped
+  // text it yields.
+  const ownParsing = READ_LIMITS.ownParsing
+  const modelled: Array<[string, string[]]> = [
+    ['env -S with a vertical tab', ['env', '-S', 'git\vpush origin main']],
+    ['env -S with a form feed', ['env', '-S', 'git push\forigin main']],
+    ['env -S with a comment', ['env', '-S', 'git push origin main #x']],
+    ['env -S with quotes', ['env', '-S', "git 'push' \"origin\" main"]],
+    ['ssh -o with a quoted keyword', ['ssh', '-o', '"ProxyCommand" git push origin main', 'host', 'true']],
+    ['ssh -o with a quoted keyword and =', ['ssh', '-o', '"ProxyCommand"=git push origin main', 'host', 'true']],
+    ['ssh -o with a quote inside the keyword', ['ssh', '-o', 'Proxy"Command" git push origin main', 'host', 'true']],
+    ['ssh -o with an empty quoted word first', ['ssh', '-o', '"" ProxyCommand git push origin main', 'host', 'true']],
+    ['ssh -o with two = signs', ['ssh', '-o', 'ProxyCommand==git push origin main', 'host', 'true']],
+    ['ssh -o attached with a quoted keyword', ['ssh', '-o"ProxyCommand" git push origin main', 'host', 'true']],
+    ['ssh -o with a %%', ['ssh', '-o', 'ProxyCommand=git push origin %%main', 'host', 'true']],
+    ['sudo -s with plain words', ['sudo', '-s', 'git', 'push', 'origin', 'main']],
+    ['sudo -i with an empty word', ['sudo', '-i', '', 'git', 'push', 'origin', 'main']],
+  ]
+
+  it.each(cases.flatMap(([engine, switched]) => modelled.map(([shape, call]) => [engine, switched, shape, call] as const)))('refuses %s deny, switch on: %s, by the push glob, a git push read exactly through %s', (engine, switched, _shape, call) => {
+    expect(commandFormsOf({ command: call[0]!, args: call.slice(1) }).unread).toBe(null)
+    expect(refusal(check(engine, switched, call, ['git push *']))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  const unreadOwn: Array<[string, (command: string) => string[]]> = [
+    ['env -S with \\_ separators', command => ['env', '-S', command.replaceAll(' ', '\\_')]],
+    ['env -S with \\c', command => ['env', '-S', `${command}\\c x`]],
+    ['env --split-string with \\_', command => ['env', `--split-string=${command.replaceAll(' ', '\\_')}`]],
+    ['env -S with ${}', command => ['env', '-S', `\${GIT} ${command.split(' ').slice(1).join(' ')}`]],
+    ['nice env -S with \\_', command => ['nice', 'env', '-S', command.replaceAll(' ', '\\_')]],
+    ['ssh -o ProxyCommand with %r', command => ['ssh', '-l', 'git', '-o', `ProxyCommand=%r ${command.split(' ').slice(1).join(' ')}`, 'host', 'true']],
+    ['ssh -o ProxyCommand with %h', command => ['ssh', '-o', `ProxyCommand=%h ${command.split(' ').slice(1).join(' ')}`, 'git', 'true']],
+    ['ssh -o quoted RemoteCommand with %n', command => ['ssh', '-o', `"RemoteCommand" %n ${command.split(' ').slice(1).join(' ')}`, 'git']],
+    ['sudo -s with a newline in a word', command => ['sudo', '-s', `gi\nt`, ...command.split(' ').slice(1)]],
+    ['sudo -i with a $', command => ['sudo', '-i', '$GIT', ...command.split(' ').slice(1)]],
+  ]
+
+  it.each(cases.flatMap(([engine, switched]) => unreadOwn.map(([shape, wrap]) => [engine, switched, shape, wrap] as const)))('refuses %s deny, switch on: %s, a git push behind %s as unread, naming the limit', (engine, switched, _shape, wrap) => {
+    const call = wrap('git push --force origin main')
+    expect(commandFormsOf({ command: call[0]!, args: call.slice(1) }).unread).toBe('ownParsing')
+    expect(refusal(check(engine, switched, call, ['git push *']))).toMatch(/^(Refused by .*: git push \*|A program reads an argument by rules of its own .*)$/)
+    expect(refusal(check(engine, switched, call, ['terraform destroy *']))).toBe(`${ownParsing}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => unreadOwn.map(([shape, wrap]) => [engine, shape, wrap] as const)))('asks at the floor, %s with no deny glob, about a force push behind %s', (engine, _shape, wrap) => {
+    const call = wrap('git push --force origin main')
+    const outcome = check(engine, false, call, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    // Where the words read still name the force push (env -S with \c), the floor names that first; it asks either way.
+    const reason = privileged(call) ? /^sudo escalates privileges$/ : /^(Force push rewrites remote history|A program reads an argument by rules of its own .*\(own parsing\); asked rather than guessed at$)/
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(reason)]])
+  })
 })
 
 describe('the destructive floor the owner raised', () => {
