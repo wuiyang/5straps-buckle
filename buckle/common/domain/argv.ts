@@ -621,6 +621,9 @@ interface SplitLevel {
 const SPECIAL_OUTSIDE = new Uint8Array(128)
 for (const character of '\\`\'"#<>;&|() \t\n') SPECIAL_OUTSIDE[character.charCodeAt(0)] = 1
 const plainOutside = (code: number): boolean => code >= 128 || SPECIAL_OUTSIDE[code] === 0
+/** Whether text holds a character the reading outside quotes acts on other than a blank, or heredoc text one it acts on. */
+const SPECIAL_ANYWHERE_OUTSIDE = /[\\`'"#<>;&|()\n]/
+const SPECIAL_IN_HEREDOC = /[\\`$]/
 /** Characters the reading inside double quotes or heredoc text acts on: a backslash, a double quote, a backtick, and `$`. */
 const plainInQuotes = (code: number): boolean => code !== 92 && code !== 34 && code !== 96 && code !== 36
 
@@ -653,6 +656,8 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
   const limits = noLimits()
   meter.characters -= text.length
   if (meter.characters < 0) return { statements, ...limits, overBudget: true }
+  // Text no character of which changes the reading is one statement as shell text and none as heredoc text.
+  if (!(mode.heredocText ? SPECIAL_IN_HEREDOC : SPECIAL_ANYWHERE_OUTSIDE).test(text)) return { statements: mode.heredocText ? statements : [text], ...limits }
   let mentionsCase: boolean | null = null
   const end = (level: SplitLevel, at: number, next: number) => {
     statements.push(text.slice(level.start, at))
@@ -1043,6 +1048,9 @@ export function shellTokensUpTo(text: string, limit: number): { tokens: ShellTok
   return { tokens, more: false }
 }
 
+/** The characters with which an expansion starts; a word holding none of them holds none. */
+const EXPANSION_CHARACTERS = /[$`*?[{~]/
+
 /**
  * Whether a word as written holds an expansion the shell makes before the command receives it, so its value is not the
  * text Buckle reads: a `$` (other than `$'`) or a backtick outside single quotes, and outside any quotes a glob
@@ -1050,6 +1058,7 @@ export function shellTokensUpTo(text: string, limit: number): { tokens: ShellTok
  * written.
  */
 export function holdsExpansion(raw: string): boolean {
+  if (!EXPANSION_CHARACTERS.test(raw)) return false
   let quote: null | "'" | "$'" | '"' = null
   for (let index = 0; index < raw.length; index++) {
     const character = raw[index]!

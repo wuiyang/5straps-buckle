@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { baseCommand } from '../common/domain/argv.js'
 import { allForms, commandForms, type CommandForms, type ReadLimit, readLimitOf } from '../common/domain/command-forms.js'
+import { leastProcessorTime } from './support/processor-time.js'
 
 /**
  * Slice 7f review and the slice reading rule: Buckle must read a superset of the commands a shell runs, so a denied
@@ -748,6 +749,28 @@ const SESSIONS: Shape[] = [
   ['sudo -s fed a heredoc', `sudo -s <<'EOF'\n${PAYLOAD}\nEOF`],
 ].map(([label, body]) => ({ label: `session: ${label}`, body: body!, unread: 'session' as const }))
 
+/**
+ * Slice 7l, the 7h to 7k review: the control above proves bash, find, and the sentinel work, but nothing proved the
+ * stand-ins ran their commands, so a broken stand-in turned its rows into ones that pass on nothing (a broken su
+ * dropped 23 rows silently). Each stand-in, sudo's shell form included, must record its marker before any row runs.
+ */
+const STAND_IN_CONTROLS: Record<string, readonly [string, string]> = {
+  sudo: [`sudo -u root ${SENTINEL} sudo-control`, 'sudo-control'],
+  'sudo -s': [`sudo -s ${SENTINEL} 'sudo shell-control'`, 'sudo shell-control'],
+  doas: [`doas -u root ${SENTINEL} doas-control`, 'doas-control'],
+  su: [`su -c '${SENTINEL} su-control' root`, 'su-control'],
+  ssh: [`ssh -p 22 host ${SENTINEL} ssh-control`, 'ssh-control'],
+}
+
+/**
+ * How long one shape may run: bash and the core tools start in milliseconds; a program a row `needs` (tsx, awk, a
+ * shell) may take seconds from a cold cache. The whole table, 2,333 shapes, takes some 16 s here; its budget
+ * leaves room for a loaded machine, and each shape's own timeout still bounds a shape that hangs.
+ */
+const SHAPE_TIMEOUT = 4_000
+const NEEDS_TIMEOUT = 30_000
+const ORACLE_BUDGET = 180_000
+
 /** `levels` quoted heredocs fed to bash, one in another, around `inner`: past MAX_DEPTH (8) the innermost body is read line by line only. */
 const fedDeep = (levels: number, inner: string): string => {
   const open = Array.from({ length: levels }, (_, index) => `bash <<'E${index}'`).join('\n')
@@ -869,6 +892,41 @@ function shapeBody(command: string, delimiter: { open: string; dash: boolean }, 
   return `${command} ${redirect}${delimiter.open}${eol}${indented}${eol}${tab}EOF`
 }
 
+/**
+ * Slice 7l, the 7h to 7k review's surviving mutations: every hand-written row and shapeBody wrote `<<EOF` with no blank
+ * and an exact delimiter line, so a reader that stopped skipping the blank after `<<` (X1), trimmed the delimiter line
+ * before comparing it (X2), or stripped tabs from it under plain `<<` (X3) passed every test, and so did one that
+ * dropped `until` from the shell keywords (X15). These rows, under every delimiter kind and both commands, fail each
+ * of those readers: a blank after `<<` and `<<-`, and a delimiter line with trailing blanks or a tab under plain `<<`
+ * that bash reads as body text, each before a body only a heredoc reading reads right (a single-quoted substitution on
+ * a find line, which an unquoted body expands, and two backslashes before a newline, which an unquoted body fed to
+ * bash halves into a continuation), and `until` around the payload. No other line carries the sentinel, so a reading
+ * that left the body for shell text cannot meet the invocation elsewhere. Each ran under real bash in scratch first.
+ */
+function delimiterShapes(): Shape[] {
+  const shapes: Shape[] = []
+  const bodies = { 'a find line': [FIND_SINGLE_QUOTED], 'a halved continuation': [`${SENTINEL} \\\\`, 'mark'] }
+  for (const command of COMMANDS) {
+    for (const delimiter of DELIMITERS) {
+      const kind = `${delimiter.dash ? '<<-' : '<<'}${delimiter.open}`
+      for (const [name, lines] of Object.entries(bodies)) {
+        const spaced = shapeBody(command, delimiter, lines).replace(/<<(-?)/, '<< $1').replace('<< -', '<<- ')
+        shapes.push({ label: `delimiter: a blank after the operator, ${name}, ${command} ${kind}`, body: spaced })
+        shapes.push({ label: `delimiter: a line with trailing blanks is body text, ${name}, ${command} ${kind}`, body: shapeBody(command, delimiter, ['x', 'EOF  ', ...lines]) })
+        if (!delimiter.dash) shapes.push({ label: `delimiter: a tab-indented line under plain << is body text, ${name}, ${command} ${kind}`, body: shapeBody(command, delimiter, ['x', '\tEOF', ...lines]) })
+      }
+    }
+  }
+  return shapes
+}
+
+/** An `until` loop runs its condition, so the command in it runs as surely as one under `if` or `while`. */
+const KEYWORD_SHAPES: Shape[] = [
+  { label: 'keyword: until around the payload', body: `until ${PAYLOAD}; do :; done` },
+  { label: 'keyword: until in a quoted body fed to bash', body: `bash <<'EOF'\nuntil ${PAYLOAD}; do :; done\nEOF` },
+  { label: 'keyword: until under bash -c', body: `bash -c 'until ${PAYLOAD}; do :; done'` },
+]
+
 /** Every shape, each body once: a later table's copy of a body an earlier one holds is dropped, flags and all. */
 function allShapes(): Shape[] {
   const shapes: Shape[] = []
@@ -880,7 +938,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
@@ -902,14 +960,15 @@ function buckleRan(forms: CommandForms): Set<string> {
 /**
  * The reader stays linear on adversarial bulk, needing no bash: a thousand heredocs nested one in another are left
  * unread at the depth limit, and a 1 MB body, 100,000 one-character lines and 50,000 continuations each read within a
- * second (slice 7g review coverage probes).
+ * second (slice 7g review coverage probes). Each limit is on the reader's own processor time, the least of three warm
+ * readings with no process spawned (leastProcessorTime), so a loaded machine or a cold start does not fail it: here the
+ * rows take about 30 to 220 ms of the 1000 ms allowed (slice 7l, the 7h to 7k review's flaky timing rows).
  */
 describe('the reader is bounded on adversarial bulk', () => {
   const under = (body: string, limit = 1_000) => {
-    const started = performance.now()
-    const forms = commandForms('bash', ['-c', body])
-    expect(performance.now() - started).toBeLessThan(limit)
-    return forms
+    const { milliseconds, result } = leastProcessorTime(() => commandForms('bash', ['-c', body]))
+    expect(milliseconds).toBeLessThan(limit)
+    return result
   }
 
   it('leaves a thousand nested heredocs unread at the depth limit, within a second', () => {
@@ -934,23 +993,6 @@ describe('the reader is bounded on adversarial bulk', () => {
   })
 
   /**
-   * The reader's own processor time on a body, the least of three readings: a loaded machine stretches the wall clock
-   * and a cold start slows the first reading, but neither adds to the processor time of the fastest one. No process
-   * is spawned inside the timed span.
-   */
-  const readerTime = (body: string): { milliseconds: number; forms: CommandForms } => {
-    let milliseconds = Number.POSITIVE_INFINITY
-    let forms = commandForms('bash', ['-c', ''])
-    for (let reading = 0; reading < 3; reading++) {
-      const started = process.cpuUsage()
-      forms = commandForms('bash', ['-c', body])
-      const used = process.cpuUsage(started)
-      milliseconds = Math.min(milliseconds, (used.user + used.system) / 1_000)
-    }
-    return { milliseconds, forms }
-  }
-
-  /**
    * Slice 7l, the 7h to 7k review: a request under the 1 MiB cap of eight heredocs fed to bash, one in another, around
    * backtick bodies took 33.7 s to read, since each pass over a body re-read it whole. Every pass is now charged to
    * the read budget, so the reading stops as 'budget' (refused under any deny glob, asked at the floor). Here it takes
@@ -960,9 +1002,7 @@ describe('the reader is bounded on adversarial bulk', () => {
     let body = `echo ${Array.from({ length: 200_000 }, (_, index) => `w${index % 1000}`).join(' ')} \\\\x`
     for (let level = 0; level < levels; level++) body = `bash <<E${level}\necho \`${body}\`\nE${level}\n`
     expect(JSON.stringify({ command: 'bash', args: ['-c', body] }).length).toBeLessThan(1_048_576)
-    const { milliseconds, forms } = readerTime(body)
-    expect(readLimitOf(forms)).toBe('budget')
-    expect(milliseconds).toBeLessThan(1_000)
+    expect(readLimitOf(under(body))).toBe('budget')
   })
 })
 
@@ -972,11 +1012,15 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
   let log = ''
   let environment: NodeJS.ProcessEnv = process.env
 
-  /** The sentinel invocations real bash ran on the body, by their joined arguments; empty when bash ran it none. */
-  const bashRan = (body: string): Set<string> => {
+  /**
+   * The sentinel invocations real bash ran on the body, by their joined arguments; empty when bash ran it none. A shape
+   * is stopped after `timeout` milliseconds: SHAPE_TIMEOUT for one that runs only bash and the core tools, NEEDS_TIMEOUT
+   * for one that starts a program a cold cache can hold for seconds (a cold tsx took 4.7 s in the 7h to 7k review).
+   */
+  const bashRan = (body: string, timeout = SHAPE_TIMEOUT): Set<string> => {
     writeFileSync(log, '')
     try {
-      execFileSync('bash', ['-c', body], { env: environment, cwd: directory, stdio: 'ignore', timeout: 4000 })
+      execFileSync('bash', ['-c', body], { env: environment, cwd: directory, stdio: 'ignore', timeout })
     } catch {
       // A shape may exit non-zero (the sentinel is no git push); the sentinel still recorded whatever it ran.
     }
@@ -1026,7 +1070,11 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     if (!bashRan(CONTROL).has('control')) {
       throw new Error(`heredoc oracle: the control shape ran no sentinel, so no row could fail; ${sentinelFault()}`)
     }
-  })
+    // Each stand-in must run its command too, or its rows would be ones where bash and Buckle both see nothing.
+    for (const [name, [body, marker]] of Object.entries(STAND_IN_CONTROLS)) {
+      if (!bashRan(body).has(marker)) throw new Error(`heredoc oracle: the ${name} stand-in ran no sentinel for ${JSON.stringify(body)}, so its rows could not fail`)
+    }
+  }, 60_000)
 
   afterAll(() => {
     if (directory) rmSync(directory, { recursive: true, force: true })
@@ -1044,7 +1092,7 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
         skipped.push(`${label} (${needs} is not on PATH)`)
         continue
       }
-      const ran = bashRan(body)
+      const ran = bashRan(body, needs === undefined ? SHAPE_TIMEOUT : NEEDS_TIMEOUT)
       const forms = commandForms('bash', ['-c', body])
       const read = buckleRan(forms)
       if (needs !== undefined && ran.size === 0) missed.push(`${label}: ${needs} ran no sentinel, so the row proves nothing`)
@@ -1065,5 +1113,5 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     console.info(`heredoc oracle: ${shapes.length} shapes, bash ran the sentinel in ${ranShapes}, ${overRead} read the sentinel where bash did not (over-reads, allowed), ${unreadShapes} unread as expected, ${skipped.length} skipped`)
     for (const reason of skipped) console.info(`heredoc oracle: skipped ${reason}`)
     expect(missed).toEqual([])
-  }, 60_000)
+  }, ORACLE_BUDGET)
 })
