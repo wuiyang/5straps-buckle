@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shellScriptSource, shellStatementList, shellTokens, shownCommand, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, gitInvocation, hasFlag, holdsExpansion, parseArgv, shellScriptSource, shellStatementList, shellTokens, shownCommand, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
 import { commandForms, readLimitOf } from '../common/domain/command-forms.js'
 
 describe('parseArgv', () => {
@@ -53,8 +53,31 @@ describe('shellScriptSource', () => {
     [['--', '-script'], 'file'],
     [['--version'], 'none'],
     [['--help'], 'none'],
+    // Slice 7l: the path normalised before it is read, and any other descriptor or device is data too.
+    [['//dev/stdin'], 'input'],
+    [['/dev//stdin'], 'input'],
+    [['/dev/./stdin'], 'input'],
+    [['/proc/thread-self/fd/0'], 'input'],
+    [['../../../dev/stdin'], 'input'],
+    [['/dev/fd/3'], 'descriptor'],
+    [['/proc/self/fd/3'], 'descriptor'],
+    [['/proc/1/fd/0'], 'descriptor'],
+    [['/proc/self/root/dev/stdin'], 'descriptor'],
+    [['scripts/build.sh'], 'file'],
+    [['./stdin'], 'file'],
   ])('reads a shell given %j as taking its script from: %s', (args, source) => {
     expect(shellScriptSource(args)).toBe(source)
+  })
+})
+
+// Slice 7l: a word whose value an expansion supplies, which a shell -c string must not be read as written.
+describe('holdsExpansion', () => {
+  it.each([
+    ['"$(echo x)"', true], ['"$x"', true], ['$x', true], ['`id`', true], ['*.sh', true], ['a?', true], ['[ab]', true], ["{'a b',c}", true],
+    ['{1..3}', true], ['~/bin', true], ["'$x'", false], ["$'a\\'b'", false], ['\\$x', false], ['"\\$x"', false], ['{}', false], ["'*'", false],
+    ['"*"', false], ['plain', false], ['a~b', false],
+  ])('reads %s as holding an expansion: %s', (raw, expanded) => {
+    expect(holdsExpansion(raw)).toBe(expanded)
   })
 })
 
@@ -409,7 +432,13 @@ describe('sshInvocation', () => {
     [['-V'], [], [], false],
     [[], [], [], false],
   ])('reads ssh %j: remote %j, here %j, session %s', (args, remote, local, session) => {
-    expect(sshInvocation(args)).toEqual({ remote, local, session })
+    expect(sshInvocation(args)).toMatchObject({ remote, local, session })
+  })
+
+  it('keeps the words after the host, before ssh joins them', () => {
+    expect(sshInvocation(['-p', '22', 'host', 'git', "'a b'"]).words).toEqual(['git', "'a b'"])
+    expect(sshInvocation(['host']).words).toEqual([])
+    expect(sshInvocation(['-V']).words).toEqual([])
   })
 })
 

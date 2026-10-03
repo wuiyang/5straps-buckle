@@ -183,10 +183,14 @@ describe('a shell body that hands its command on', () => {
     expect(reasonOf(outcome)).toMatch(/Refused by the workspace command policy: git (push|clean|reset) \*/)
   })
 
-  it('asks about an eval whose text it cannot know, since no glob can meet it', () => {
-    const outcome = evaluate('bash', ['-c', 'x="git push --force origin main"; eval "$x"'], commands)
+  // Slice 7l: an eval whose text Buckle cannot know asked, so the dangerously-allow switch let it run past the deny glob;
+  // it is unread now, refused under any deny glob and asked at the floor with none.
+  it('refuses an eval whose text it cannot know under a deny glob, since no glob can meet it, and asks with none', () => {
+    const body = 'x="git push --force origin main"; eval "$x"'
+    expect(reasonOf(evaluate('bash', ['-c', body], commands))).toMatch(/^Runs shell text an expansion supplies, .*\(expansion\), so the workspace command policy's deny list cannot meet all of it; refused rather than asked$/)
+    const outcome = evaluate('bash', ['-c', body], { allow: ['bash -c *'] })
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
-    expect(outcome.asks[0]?.reason).toMatch(/^eval runs text/)
+    expect(outcome.asks[0]?.reason).toMatch(/^Runs shell text an expansion supplies, .*\(expansion\); asked rather than guessed at$/)
   })
 
   it('leaves an ordinary command behind an assignment alone', () => {
@@ -683,8 +687,9 @@ describe('a call Buckle cannot read whole', () => {
   // payload with nothing read; the floor asked only about `| bash`, so under the dangerously-allow switch a deny glob
   // was bypassed (owner decision D7). Such a call is now unread: refused naming the limit under any deny glob, on both
   // engines and both switches, and asked at the floor with none (default D33 (b)). Real bash ran the sentinel in each.
-  const scriptData = 'A shell takes its script from a pipe, a redirection, or xargs, so the script arrives as data, which Buckle cannot read (script as data)'
+  const scriptData = 'A shell takes its script from a pipe, a redirection, a descriptor, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)'
   const piped = /^Pipes a downloaded payload into a shell/
+  const device = /^Targets a device node/
   const asData = new RegExp(`^${scriptData.replace(/[()]/g, '\\$&')}; asked rather than guessed at$`)
   const dataShapes = [
     ['echo piped into bash', `echo '${push}' | bash`, piped],
@@ -704,8 +709,22 @@ describe('a call Buckle cannot read whole', () => {
     ['bash from a here-string', `bash <<< '${push}'`, asData],
     ['bash from a process substitution', `bash <(echo '${push}')`, asData],
     ['source from a process substitution', `source <(echo '${push}')`, asData],
-    ['echo piped into source /dev/stdin', `echo '${push}' | source /dev/stdin`, /^Targets a device node/],
+    ['echo piped into source /dev/stdin', `echo '${push}' | source /dev/stdin`, device],
     ['bash -c with no command string', 'bash -c', asData],
+    // Slice 7l: its own input or another descriptor named by another path, and a file name find hands a shell as its
+    // script. Real bash ran the sentinel in each shape.
+    ['echo piped into bash /dev//stdin', `echo '${push}' | bash /dev//stdin`, piped],
+    ['bash //dev/stdin from a redirected file', 'bash //dev/stdin < deploy.sh', asData],
+    ['bash /proc/thread-self/fd/0 from a redirected file', 'bash /proc/thread-self/fd/0 < deploy.sh', asData],
+    ['bash climbing to /dev/stdin from a redirected file', 'bash ../../../../../../dev/stdin < deploy.sh', asData],
+    ['bash /dev/./stdin from a process substitution', `bash /dev/./stdin < <(echo '${push}')`, device],
+    ['bash /dev/fd/3 from a here-string', `bash /dev/fd/3 3<<<'${push}'`, device],
+    ['bash /proc/self/fd/3 from a process substitution', `bash /proc/self/fd/3 3< <(echo '${push}')`, asData],
+    ['source /dev/fd/3 from a here-string', `source /dev/fd/3 3<<<'${push}'`, device],
+    ['find -exec bash -c {}', `find . -name '*.sh' -exec bash -c {} \\;`, asData],
+    ['find -exec sh -c with {} inside its string', `find . -name x -exec sh -c 'cd /; {}' \\;`, asData],
+    ['find -execdir bash {}', `find . -name '*.sh' -execdir bash {} \\;`, asData],
+    ['find -exec env bash -c {} +', `find . -name x -exec env bash -c {} +`, asData],
   ] as const
 
   it.each(cases.flatMap(([engine, switched]) => dataShapes.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a script that arrives as data: %s, naming the limit', (engine, switched, _shape, body) => {
@@ -733,6 +752,44 @@ describe('a call Buckle cannot read whole', () => {
     [engine, switched, 'bash -c with a string after a pipe', `echo x | bash -c '${push}'`],
   ] as const))('refuses %s deny, switch on: %s, by the push glob, a git push read through %s', (engine, switched, _shape, body) => {
     expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).scriptData).toBe(false)
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  // Slice 7l: a shell's -c string that an expansion supplies runs text Buckle never sees, as eval of the same text does;
+  // the call is unread: refused naming the limit under any deny glob, and asked at the floor with none. A -c string
+  // whose `$` sits in single quotes is text the inner shell reads, and stays read. Real bash ran the sentinel in each.
+  const expansion = 'Runs shell text an expansion supplies, which exists only once the shell has run (eval "$x", bash -c "$(...)"), so Buckle cannot read it (expansion)'
+  const expandedShapes = [
+    ['bash -c of a substitution', `bash -c "$(echo '${push}')"`],
+    ['sh -c of a variable', `x='${push}'; sh -c "$x"`],
+    ['bash -c of printf', `bash -c "$(printf '%s %s' git push)"`],
+    ['bash -c of a variable inside its string', `x=main; bash -c "git push origin $x"`],
+    ['bash -c of a glob', 'bash -c *.sh'],
+    ['bash -c of a brace expansion', `bash -c {'${push}',x}`],
+    ['env bash -c of a variable', 'env bash -c "$x"'],
+    ['su -c of a variable', 'su -c "$x" root'],
+    ['ssh with a remote command of a variable', 'ssh host "$x"'],
+    ['eval of a variable', 'eval "$x"'],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => expandedShapes.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, shell text an expansion supplies: %s, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => expandedShapes.filter(([shape]) => !shape.startsWith('su')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about shell text an expansion supplies: %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => [
+    [engine, switched, 'a single-quoted -c string holding a variable', `x=main; bash -c 'git push origin $x'`],
+    [engine, switched, 'find handing {} to bash -c as $0', `find . -maxdepth 0 -exec bash -c '${push}' {} \\;`],
+    [engine, switched, 'an ssh host from a variable', `ssh "$host" '${push}'`],
+  ] as const))('refuses %s deny, switch on: %s, by the push glob, a git push still read through %s', (engine, switched, _shape, body) => {
+    const forms = commandFormsOf({ command: 'bash', args: ['-c', body] })
+    expect([forms.unread, forms.scriptData]).toEqual([null, false])
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 

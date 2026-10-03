@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { posix } from 'node:path'
 import { redactCredentials } from '@5straps/runtime'
 
 /** Interpreters whose positional is a script body rather than an argument list. */
@@ -185,20 +186,47 @@ export function shellBodyIndexes(words: readonly string[]): Set<number> {
   return bodies
 }
 
-/** Where a shell takes its script from: a `-c` string, a file, its own input, or nowhere (`bash -c` with no string, `bash --version`). */
-export type ShellScriptSource = 'command' | 'missingCommand' | 'file' | 'input' | 'none'
+/**
+ * Where a shell takes its script from: a `-c` string, a file, its own input, another descriptor or device
+ * (`/dev/fd/3`), or nowhere (`bash -c` with no string, `bash --version`).
+ */
+export type ShellScriptSource = 'command' | 'missingCommand' | 'file' | 'input' | 'descriptor' | 'none'
 
-/** Script operands through which a shell reads its own input. */
-export const INPUT_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0'])
+/** A path through which a process reads its own input, once normalised: /dev/stdin, /dev/fd/0, /proc/self/fd/0, /proc/thread-self/fd/0. */
+const OWN_INPUT = /^\/(?:dev\/stdin|dev\/fd\/0|proc\/(?:self|thread-self)\/fd\/0)$/
+/** Paths under /dev or /proc, once normalised: a descriptor, a device, or another process's file, never a script file. */
+const DEVICE_PATH = /^\/(?:dev|proc)(?:\/|$)/
+
+/**
+ * What a script operand names, as the kernel would find it before any symbolic link Buckle cannot see: its own input
+ * (`input`), another descriptor or device (`descriptor`), or a file. The path is normalised first, repeated slashes
+ * collapsed and `.` and `..` segments resolved, so `//dev/stdin` and `/dev/./fd/3` are what they name; a relative path
+ * climbing with `..` may reach the root, so its leading `..` segments are read as the root, and a relative `dev/` or
+ * `proc/` path is read as from the root too.
+ */
+export function scriptOperandKind(operand: string): 'input' | 'descriptor' | 'file' {
+  if (!operand.includes('/')) return 'file'
+  const normal = posix.normalize(operand).replace(/^(?:\.\.\/)+/, '/')
+  const absolute = normal.startsWith('/') ? normal : `/${normal}`
+  if (OWN_INPUT.test(absolute)) return 'input'
+  return DEVICE_PATH.test(absolute) ? 'descriptor' : 'file'
+}
+
 /** Long options after which a shell prints and runs nothing. */
 const SHELL_INFO_OPTIONS = new Set(['--version', '--help'])
 
-/**
- * Where a shell call takes its script from, its options read as shellBodyIndexes reads them: with `c` among its
- * options the first operand is the script, and with none the call has no script (`missingCommand`); with `s`, with no
- * operand, or with an operand naming its own input, the script is that input; any other operand is a script file.
- */
+/** Where a shell call takes its script from (shellScriptOperand). */
 export function shellScriptSource(args: readonly string[]): ShellScriptSource {
+  return shellScriptOperand(args).source
+}
+
+/**
+ * Where a shell call takes its script from, and the operand that names it, its options read as shellBodyIndexes reads
+ * them: with `c` among its options the first operand is the script, and with none the call has no script
+ * (`missingCommand`); with `s`, with no operand, or with an operand naming its own input, the script is that input; an
+ * operand naming another descriptor or a device is `descriptor`; any other operand is a script file.
+ */
+export function shellScriptOperand(args: readonly string[]): { source: ShellScriptSource; operand?: string } {
   let command = false
   let input = false
   let index = 0
@@ -210,7 +238,7 @@ export function shellScriptSource(args: readonly string[]): ShellScriptSource {
     }
     if (word.length < 2 || (word[0] !== '-' && word[0] !== '+')) break
     if (word.startsWith('--')) {
-      if (SHELL_INFO_OPTIONS.has(word)) return 'none'
+      if (SHELL_INFO_OPTIONS.has(word)) return { source: 'none' }
       if (SHELL_LONG_VALUE_OPTIONS.has(word)) index++
       continue
     }
@@ -219,8 +247,10 @@ export function shellScriptSource(args: readonly string[]): ShellScriptSource {
     if ([...word.slice(1)].some(flag => SHELL_VALUE_OPTIONS.has(flag))) index++
   }
   const operand = args[index]
-  if (command) return operand === undefined ? 'missingCommand' : 'command'
-  return input || operand === undefined || INPUT_PATHS.has(operand) ? 'input' : 'file'
+  if (command) return operand === undefined ? { source: 'missingCommand' } : { source: 'command', operand }
+  if (input || operand === undefined) return { source: 'input', operand }
+  const kind = scriptOperandKind(operand)
+  return { source: kind === 'file' ? 'file' : kind, operand }
 }
 
 /** ssh's options that take a value, as OpenSSH's getopt string reads them (1246ab:c:e:fgi:kl:m:no:p:qstvxAB:CD:E:F:GI:J:KL:MNO:P:Q:R:S:TVw:W:XYy). */
@@ -234,6 +264,8 @@ const SSH_COMMAND_SETTING = /^\s*(proxycommand|localcommand|knownhostscommand|re
 export interface SshInvocation {
   /** The words after the host joined with spaces, as ssh sends them for the remote shell to parse, and any RemoteCommand. */
   remote: string[]
+  /** The words after the host, before ssh joins them. */
+  words: string[]
   /** Each ProxyCommand, LocalCommand, and KnownHostsCommand, which ssh runs as shell text on this machine. */
   local: string[]
   /** A host with no remote command and none of -N, -W, -G, -V, -O, or -Q: an interactive session. */
@@ -274,13 +306,14 @@ export function sshInvocation(args: readonly string[]): SshInvocation {
     }
   }
   options()
-  if (index >= args.length) return { remote, local, session: false }
+  if (index >= args.length) return { remote, words: [], local, session: false }
   index++
   if (!terminated) options()
   // ssh sends an empty command as no command, which opens a shell.
-  const command = args.slice(index).join(' ')
+  const words = args.slice(index)
+  const command = words.join(' ')
   if (command !== '') remote.unshift(command)
-  return { remote, local, session: remote.length === 0 && !noSession }
+  return { remote, words, local, session: remote.length === 0 && !noSession }
 }
 
 /** su's options that take a value, as util-linux's getopt_long reads them (c:fg:G:lmpPs:u:hVw:, with their long names). */
@@ -877,6 +910,35 @@ export function shellTokensUpTo(text: string, limit: number): { tokens: ShellTok
     tokens.push({ raw: match[0], word: unquote(match[0]) })
   }
   return { tokens, more: false }
+}
+
+/**
+ * Whether a word as written holds an expansion the shell makes before the command receives it, so its value is not the
+ * text Buckle reads: a `$` (other than `$'`) or a backtick outside single quotes, and outside any quotes a glob
+ * character (`*`, `?`, `[`), a brace expansion, or a leading `~`. Single quotes, `$'...'`, and a backslash keep text as
+ * written.
+ */
+export function holdsExpansion(raw: string): boolean {
+  let quote: null | "'" | "$'" | '"' = null
+  for (let index = 0; index < raw.length; index++) {
+    const character = raw[index]!
+    if (quote === "'") {
+      if (character === "'") quote = null
+    } else if (quote === "$'") {
+      if (character === '\\') index++
+      else if (character === "'") quote = null
+    } else if (character === '\\') index++
+    else if (quote === '"' && character === '"') quote = null
+    else if (character === '$' && quote === null && raw[index + 1] === "'") {
+      quote = "$'"
+      index++
+    } else if (character === '$' || character === '`') return true
+    else if (quote === null && (character === "'" || character === '"')) quote = character
+    else if (quote === null && ('*?['.includes(character) || (character === '~' && index === 0))) return true
+    // A brace expansion needs a comma or a `..` sequence after its `{`; `{}` alone is a word, as find hands it on.
+    else if (quote === null && character === '{' && /,|\.\./.test(raw.slice(index + 1))) return true
+  }
+  return false
 }
 
 /** Text as a shell would split it into words, roughly: whitespace separates, quotes and backslashes are removed. */

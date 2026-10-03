@@ -38,9 +38,10 @@ const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve
  * `timeout 5` (the continuation review, "Seen outside this range"). The allow list admits only the call as
  * typed, so a prefix never carries a command past it; the refusal names the raw argv (owner decision D17).
  * A call Buckle cannot read whole, past READ_BUDGET, MAX_DEPTH or MAX_SUBSTITUTIONS, at a find -exec command that
- * is a primary, at a script that arrives as data, or running code with an interpreter this policy does not allow, is
- * refused whenever a deny glob exists, naming the limit that stopped the reading, since the glob might have met the
- * part left unread (defaults D30 and D33, owner decision D55). Each policy judges interpreters by its own list, so the
+ * is a primary, at a script that arrives as data, at shell text an expansion supplies (an eval or a shell -c string),
+ * or running code with an interpreter this policy does not allow, is refused whenever a deny glob exists, naming the
+ * limit that stopped the reading, since the glob might have met the part left unread (defaults D30 and D33, owner
+ * decision D55). Each policy judges interpreters by its own list, so the
  * node ceiling refuses one a workspace allows unless the ceiling allows it too (owner decision D7).
  *
  * `source` names whose policy this is, so a refusal by the node's ceiling says so (slice 7d review R7D-BD-2). `others`

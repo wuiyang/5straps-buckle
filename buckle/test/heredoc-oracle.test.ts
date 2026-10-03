@@ -351,6 +351,47 @@ const SCRIPT_DATA: Shape[] = [
 ]
 
 /**
+ * Slice 7l: a shell or `source` whose script operand names its own input or another descriptor by any spelling of the
+ * path, and a shell find hands a file name as its script, take the script as data; a shell -c string, a su -c string,
+ * or an ssh remote command that an expansion supplies is text Buckle cannot know (expansion). Each is unread. A -c
+ * string whose `$` sits in single quotes, and `{}` handed on as a positional, stay read. Each shape ran the sentinel
+ * under real bash in scratch first, su and ssh as the stand-ins of STAND_INS.
+ */
+const UNREAD_INPUTS: Shape[] = [
+  ...[
+    ['echo piped into bash /dev//stdin', `echo '${PAYLOAD}' | bash /dev//stdin`],
+    ['bash //dev/stdin from a file', `printf '%s\\n' '${PAYLOAD}' > s.sh; bash //dev/stdin < s.sh`],
+    ['bash /proc/thread-self/fd/0 from a file', `printf '%s\\n' '${PAYLOAD}' > s.sh; bash /proc/thread-self/fd/0 < s.sh`],
+    ['bash climbing to /dev/stdin from a file', `printf '%s\\n' '${PAYLOAD}' > s.sh; bash ../../../../../../../../dev/stdin < s.sh`],
+    ['bash /dev/./stdin from a process substitution', `bash /dev/./stdin < <(echo '${PAYLOAD}')`],
+    ['source //dev/stdin from a file', `printf '%s\\n' '${PAYLOAD}' > s.sh; source //dev/stdin < s.sh`],
+    ['bash /dev/fd/3 from a here-string', `bash /dev/fd/3 3<<<'${PAYLOAD}'`],
+    ['bash /dev/fd/3 from a process substitution', `bash /dev/fd/3 3< <(echo '${PAYLOAD}')`],
+    ['bash /proc/self/fd/3 from a here-string', `bash /proc/self/fd/3 3<<<'${PAYLOAD}'`],
+    ['source /dev/fd/3 from a here-string', `source /dev/fd/3 3<<<'${PAYLOAD}'`],
+    ['. /dev/fd/3 from a here-string', `. /dev/fd/3 3<<<'${PAYLOAD}'`],
+    ['find -exec bash -c {}', `: > '${PAYLOAD}'; find '${PAYLOAD}' -maxdepth 0 -exec bash -c {} \\;`],
+    ['find -exec bash -c with {} inside its string', `: > '${PAYLOAD}'; find '${PAYLOAD}' -maxdepth 0 -exec bash -c 'true; {}' \\;`],
+    ['find -exec bash {}', `printf '%s\\n' '${PAYLOAD}' > s.sh; find s.sh -maxdepth 0 -exec bash {} \\;`],
+    ['find -exec env bash -c {}', `: > '${PAYLOAD}'; find '${PAYLOAD}' -maxdepth 0 -exec env bash -c {} \\;`],
+    ['find -exec bash -c {} +', `: > '${PAYLOAD}'; find '${PAYLOAD}' -maxdepth 0 -exec bash -c {} +`],
+  ].map(([label, body]) => ({ label: `script as data: ${label}`, body: body!, unread: 'scriptData' as const })),
+  ...[
+    ['bash -c of a substitution', `bash -c "$(echo '${PAYLOAD}')"`],
+    ['sh -c of a variable', `x='${PAYLOAD}'; sh -c "$x"`],
+    ['bash -c of printf', `bash -c "$(printf '%s %s' ${SENTINEL} mark)"`],
+    ['bash -c of a variable inside its string', `x=mark; bash -c "${SENTINEL} $x"`],
+    ['bash -c of a glob', `: > '${PAYLOAD}'; bash -c ${SENTINEL}*`],
+    ['bash -c of a brace expansion', `bash -c {'${PAYLOAD}',x}`],
+    ['env bash -c of a variable', `x='${PAYLOAD}'; env bash -c "$x"`],
+    ['su -c of a variable', `x='${PAYLOAD}'; su -c "$x" root`],
+    ['ssh with a remote command of a variable', `x='${PAYLOAD}'; ssh host "$x"`],
+  ].map(([label, body]) => ({ label: `expansion: ${label}`, body: body!, unread: 'expansion' as const })),
+  { label: 'read: a single-quoted -c string holding a variable (read as written)', body: `x=1; bash -c '${PAYLOAD} $x'`, written: 'mark $x' },
+  { label: 'read: find handing {} to bash -c as $0', body: `find . -maxdepth 0 -exec bash -c '${PAYLOAD}' {} \\;` },
+]
+
+/**
  * Owner decision D55: code a non-shell interpreter runs is unknown to Buckle, so the call is unread (unknown
  * interpreter) until a policy allows that interpreter. The two python shapes of the 7h probes ran the sentinel.
  */
@@ -742,7 +783,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes()]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
