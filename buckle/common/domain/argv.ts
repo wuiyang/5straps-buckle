@@ -2,8 +2,11 @@ import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
 import { redactCredentials } from '@5straps/runtime'
 
-/** Interpreters whose positional is a script body rather than an argument list. */
-export const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish'])
+/**
+ * Interpreters whose positional is a script body rather than an argument list. rbash, ash, mksh, yash, and posh are
+ * POSIX shells too (slice 7l); the C shells and busybox's shell applets are interpreters Buckle does not read.
+ */
+export const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'rbash', 'ash', 'mksh', 'yash', 'posh'])
 
 export interface ParsedArgv {
   command: string

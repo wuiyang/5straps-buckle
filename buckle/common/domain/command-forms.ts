@@ -279,22 +279,40 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   return forms
 }
 
+/** CPython and PyPy, whose names may carry a build suffix (PYTHON_BUILD). */
+const PYTHONS: readonly string[] = ['python', 'pypy']
+
 /**
  * Programs whose code Buckle cannot read as shell (owner decision D55): each name, alone or with a version
  * (`python3`, `python3.12`, `node22`, `perl5.36`, `lua5.4`). A policy names the ones it reads as ordinary commands.
  * awk and its variants, lua, PowerShell, and the TypeScript runners joined in slice 7j (default D57); the package
- * runners npx, pnpx, and bunx stay ordinary commands until the owner rules on them (D57 open).
+ * runners npx, pnpx, and bunx stay ordinary commands until the owner rules on them (D57 open). Slice 7l adds PyPy, the
+ * C shells, whose syntax is not the POSIX shell's, and busybox, whose shell applet may be ash or hush.
  */
-const INTERPRETERS = ['python', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'awk', 'gawk', 'mawk', 'nawk', 'lua', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node'] as const
-const INTERPRETER = new RegExp(`^(?:${INTERPRETERS.join('|')})(?:\\d+(?:\\.\\d+)*)?$`)
+const INTERPRETERS = [...PYTHONS, 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'awk', 'gawk', 'mawk', 'nawk', 'lua', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node', 'tcsh', 'csh', 'busybox'] as const
+/**
+ * The CPython builds' names carry a build suffix after the version: `t` for the free-threaded build (python3.13t), `d`
+ * for a debug build, and Debian's `-dbg`; PyPy installs as pypy and pypy3.
+ */
+const PYTHON_BUILD = '(?:t|d|td)?(?:-dbg)?'
+const INTERPRETER = new RegExp(`^(?:(${PYTHONS.join('|')})(?:\\d+(?:\\.\\d+)*)?${PYTHON_BUILD}|(${INTERPRETERS.filter(name => !PYTHONS.includes(name)).join('|')})(?:\\d+(?:\\.\\d+)*)?)$`)
 
 /** The interpreter names as a refusal of an unknown one lists them, wherever a name is checked. */
-export const INTERPRETER_NAMES = `${INTERPRETERS.slice(0, -1).join(', ')}, or ${INTERPRETERS.at(-1)}, with a version where the program has one (python3.12)`
+export const INTERPRETER_NAMES = `${INTERPRETERS.slice(0, -1).join(', ')}, or ${INTERPRETERS.at(-1)}, with a version where the program has one (python3.12), and for python a build suffix (python3.13t, python3-dbg)`
 
 /** Whether a program name is an interpreter Buckle reads as unknown unless a policy allows it. */
 export function isInterpreter(name: string): boolean {
   return INTERPRETER.test(name)
 }
+
+/** The program an interpreter name runs, its version and build suffix dropped (`python3.13t` is python), or null for none. */
+function interpreterProgram(name: string): string | null {
+  const match = INTERPRETER.exec(name)
+  return match ? match[1] ?? match[2]! : null
+}
+
+/** The busybox applets that are a shell: a call of one runs shell text in busybox's own shell, which Buckle does not read. */
+const BUSYBOX_SHELLS = new Set(['sh', 'ash', 'hush', 'bash'])
 
 /** awk's version and help calls across gawk, mawk (`-W version`), and the one true awk (`-version`). */
 const AWK_INFO: ReadonlySet<string> = new Set(['--version', '-V', '-version', '-Wversion', '-Wv', '-W version', '--help', '-h', '--usage', '-Wusage', '-W usage'])
@@ -308,6 +326,7 @@ const CASELESS_INFO = new Set(['pwsh', 'powershell'])
  */
 const INTERPRETER_INFO: Readonly<Record<string, ReadonlySet<string>>> = {
   python: new Set(['--version', '-V', '--help', '-h']),
+  pypy: new Set(['--version', '-V', '--help', '-h']),
   node: new Set(['--version', '-v', '--help', '-h']),
   nodejs: new Set(['--version', '-v', '--help', '-h']),
   deno: new Set(['--version', '-V', '--help', '-h']),
@@ -325,11 +344,14 @@ const INTERPRETER_INFO: Readonly<Record<string, ReadonlySet<string>>> = {
   powershell: POWERSHELL_INFO,
   tsx: new Set(['--version', '-v', '--help', '-h']),
   'ts-node': new Set(['--version', '-v', '--help', '-h']),
+  tcsh: new Set(['--version', '--help']),
+  csh: new Set(),
+  busybox: new Set(['--help', '--list', '--list-full']),
 }
 
 /** Whether these arguments only print the interpreter's version or its help. */
 function printsInfo(command: string, args: readonly string[]): boolean {
-  const program = command.replace(/[\d.]+$/, '')
+  const program = interpreterProgram(command) ?? command
   const typed = args.join(' ')
   return args.length > 0 && args.length <= 2 && INTERPRETER_INFO[program]?.has(CASELESS_INFO.has(program) ? typed.toLowerCase() : typed) === true
 }
@@ -346,6 +368,8 @@ function interpreterRunningCode(chain: readonly string[][], place: Place): strin
   if (!INTERPRETER.test(command)) return null
   if (chain.some(form => form[0] === 'xargs')) return command
   if (printsInfo(command, args)) return null
+  // busybox runs code Buckle cannot read only through a shell applet; its other applets are judged by their own words.
+  if (command === 'busybox') return BUSYBOX_SHELLS.has(baseCommand(args[0] ?? '')) ? command : null
   return args.length === 0 && !place.statement ? null : command
 }
 

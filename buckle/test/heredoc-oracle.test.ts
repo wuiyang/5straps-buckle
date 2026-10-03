@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -415,6 +415,14 @@ const INTERPRETERS: Shape[] = [
   { label: 'interpreter: awk behind sudo', body: `sudo awk 'BEGIN{system("${PAYLOAD}")}'`, unread: 'interpreter', needs: 'awk' },
   { label: 'interpreter: awk in the remote command of ssh', body: `ssh host "awk 'BEGIN{system(\\"${PAYLOAD}\\")}'"`, unread: 'interpreter', needs: 'awk' },
   { label: 'interpreter: tsx -e child_process', body: `tsx -e "require('child_process').execSync('${PAYLOAD}')"`, unread: 'interpreter', needs: 'tsx' },
+  // Slice 7l: the names CPython's free-threaded and debug builds and PyPy install (BUILD_NAMES links each to python3
+  // here), and the C shells and busybox's shell applet, which Buckle does not read as a POSIX shell.
+  { label: 'interpreter: python3.13t -c os.system', body: `python3.13t -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter', needs: 'python3.13t' },
+  { label: 'interpreter: python3-dbg -c os.system', body: `python3-dbg -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter', needs: 'python3-dbg' },
+  { label: 'interpreter: pypy3 -c os.system', body: `pypy3 -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter', needs: 'pypy3' },
+  { label: 'interpreter: tcsh -c', body: `tcsh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'tcsh' },
+  { label: 'interpreter: csh -c', body: `csh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'csh' },
+  { label: 'interpreter: busybox sh -c', body: `busybox sh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'busybox' },
 ]
 
 /**
@@ -672,6 +680,19 @@ const fedDeep = (levels: number, inner: string): string => {
 }
 
 /**
+ * Slice 7l: rbash, ash, mksh, yash, and posh are POSIX shells, read as bash is: a -c string is read, and a script piped
+ * in arrives as data. A row runs only where its shell is installed.
+ */
+const OTHER_SHELLS: Shape[] = ['rbash', 'ash', 'mksh', 'yash', 'posh'].flatMap(shell => [
+  { label: `other shell: ${shell} -c`, body: `${shell} -c '${PAYLOAD}'`, needs: shell },
+  { label: `other shell: echo piped into ${shell}`, body: `echo '${PAYLOAD}' | ${shell}`, unread: 'scriptData' as const, needs: shell },
+  { label: `other shell: ${shell} fed a quoted heredoc`, body: `${shell} <<'EOF'\n${PAYLOAD}\nEOF`, needs: shell },
+])
+
+/** Names an interpreter installs under that a test machine rarely has: each is linked to python3 in the oracle's directory. */
+const BUILD_NAMES = ['python3.13t', 'python3-dbg', 'pypy3']
+
+/**
  * Rows that pin readings the tables above reach twice (the 7h mutation survivors): a double quote spanning lines in a
  * body three heredocs deep, which only a nested body read whole sees (M5); and two bodies past MAX_DEPTH, where the call
  * is unread 'depth' and only the line readings remain, so the run of 2 (mod 4) backslashes that bash halves into a
@@ -783,7 +804,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
@@ -892,6 +913,8 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
       chmodSync(join(directory, name), 0o755)
     }
     environment = { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}`, SENTINEL_LOG: log }
+    const python = resolved('python3')
+    if (python !== '') for (const name of BUILD_NAMES) symlinkSync(python, join(directory, name))
     if (!bashRan(CONTROL).has('control')) {
       throw new Error(`heredoc oracle: the control shape ran no sentinel, so no row could fail; ${sentinelFault()}`)
     }

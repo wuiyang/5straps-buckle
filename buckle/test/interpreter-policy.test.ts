@@ -185,6 +185,6 @@ describe('BUCKLE_ALLOWED_INTERPRETERS, the node ceiling\'s interpreter allowance
   })
 
   it.each(['bash', 'python3,sh', 'Node'])('refuses to load with %s, naming the variable', (value) => {
-    expect(() => node({ BUCKLE_ALLOWED_INTERPRETERS: value })).toThrow(/^Invalid BUCKLE_ALLOWED_INTERPRETERS: \S+ is not an interpreter Buckle reads as unknown: python, node/)
+    expect(() => node({ BUCKLE_ALLOWED_INTERPRETERS: value })).toThrow(/^Invalid BUCKLE_ALLOWED_INTERPRETERS: \S+ is not an interpreter Buckle reads as unknown: python, pypy, node/)
   })
 })

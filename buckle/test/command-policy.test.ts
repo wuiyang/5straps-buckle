@@ -793,6 +793,13 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
+  // Slice 7l: rbash, ash, mksh, yash, and posh are POSIX shells: a -c string is read, and a script piped in is data.
+  // Real rbash ran the sentinel both ways; the others are not installed here.
+  it.each(cases.flatMap(([engine, switched]) => ['rbash', 'ash', 'mksh', 'yash', 'posh'].map(shell => [engine, switched, shell] as const)))('refuses %s deny, switch on: %s, a git push %s -c runs by the push glob, and a script piped into it as data', (engine, switched, shell) => {
+    expect(refusal(check(engine, switched, `${shell} -c '${push}'`))).toBe(`Refused by ${named[engine]}: git push *`)
+    expect(refusal(check(engine, switched, `echo '${push}' | ${shell}`, ['terraform destroy *']))).toBe(`${scriptData}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
   it('reads no script as data in bash with no operand as the call itself, or in bash --version after a pipe', () => {
     expect(commandFormsOf({ command: 'bash', args: [] }).scriptData).toBe(false)
     expect(commandFormsOf({ command: 'env', args: ['bash'] }).scriptData).toBe(false)
@@ -947,6 +954,16 @@ describe('a call that runs code with an interpreter', () => {
     ['tsx', ['-e', 'console.log(1)'], 'tsx'],
     ['ts-node', ['script.ts'], 'ts-node'],
     ['ts-node', ['-e', 'console.log(1)'], 'ts-node'],
+    // Slice 7l: CPython build suffixes, PyPy, the C shells, and busybox's shell applet.
+    ['python3.13t', ['-c', 'print(1)'], 'python3.13t'],
+    ['python3.13d', ['script.py'], 'python3.13d'],
+    ['python3.12-dbg', ['-m', 'venv', '.venv'], 'python3.12-dbg'],
+    ['pypy3', ['-c', 'print(1)'], 'pypy3'],
+    ['pypy', ['script.py'], 'pypy'],
+    ['tcsh', ['-c', 'echo 1'], 'tcsh'],
+    ['csh', ['script.csh'], 'csh'],
+    ['busybox', ['sh', '-c', 'echo 1'], 'busybox'],
+    ['bash', ['-c', 'echo id | busybox ash'], 'busybox'],
   ] as const
   const refusal = (outcome: ReturnType<typeof check>) => {
     if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
@@ -1009,6 +1026,11 @@ describe('a call that runs code with an interpreter', () => {
     [engine, switched, 'powershell', ['-Help']],
     [engine, switched, 'tsx', ['--version']],
     [engine, switched, 'ts-node', ['-h']],
+    [engine, switched, 'python3.13t', ['--version']],
+    [engine, switched, 'pypy3', ['-V']],
+    [engine, switched, 'tcsh', ['--version']],
+    [engine, switched, 'busybox', ['--list']],
+    [engine, switched, 'busybox', ['ls', '-la']],
     // Default D57 (open): package runners stay ordinary commands until the owner rules on them.
     [engine, switched, 'npx', ['tsx', 'script.ts']],
     [engine, switched, 'pnpx', ['ts-node', 'script.ts']],
