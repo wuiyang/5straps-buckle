@@ -328,6 +328,10 @@ const SCRIPT_DATA: Shape[] = [
 const INTERPRETERS: Shape[] = [
   { label: 'interpreter: python os.system in a heredoc body', body: `python3 <<'EOF'\nimport os; os.system('${PAYLOAD}')\nEOF`, unread: 'interpreter' },
   { label: 'interpreter: python -c os.system', body: `python3 -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter' },
+  // Slice 7j: behind sudo, as the shell su -s names, and in the remote command of ssh (the stand-ins of STAND_INS).
+  { label: 'interpreter: sudo python -c os.system', body: `sudo python3 -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter' },
+  { label: 'interpreter: su -s python -c os.system', body: `su -s python3 -c "import os; os.system('${PAYLOAD}')" root`, unread: 'interpreter' },
+  { label: 'interpreter: ssh host python -c os.system', body: `ssh host "python3 -c \\"import os; os.system('${PAYLOAD}')\\""`, unread: 'interpreter' },
 ]
 
 /**
@@ -376,8 +380,9 @@ function crlfShapes(): Shape[] {
 
 /**
  * 7h probes: heredocs fed to other consumers, two on one line, and nested in substitutions. `ssh` is a stand-in the
- * oracle puts on the PATH, which drops the host and runs the rest here as the remote shell would, so nothing reaches the
- * network; `dash` and `python3` rows run nothing where those are absent, which hides no miss.
+ * oracle puts on the PATH (STAND_INS), which runs the remote command here as the remote shell would, so nothing reaches
+ * the network; `dash` and `python3` rows run nothing where those are absent, which hides no miss. An ssh with no
+ * command opens an interactive session, which Buckle leaves unread (slice 7j).
  */
 const PROBE_CONSUMERS: Shape[] = [
   { label: 'probe: two heredocs, bash runs the second', body: `bash <<A <<B\necho a\nA\n${PAYLOAD}\nB` },
@@ -392,7 +397,7 @@ const PROBE_CONSUMERS: Shape[] = [
   { label: 'probe: source <(cat)', body: `source <(cat <<'EOF'\n${PAYLOAD}\nEOF\n)`, unread: 'scriptData' },
   { label: 'probe: ssh host bash, quoted', body: `ssh host bash <<'EOF'\n${PAYLOAD}\nEOF` },
   { label: 'probe: ssh host bash -s, unquoted escape', body: `ssh host bash -s <<EOF\nfind . -maxdepth 0 -exec true "\\$(${PAYLOAD})" \\;\nEOF` },
-  { label: 'probe: ssh host, no command', body: `ssh host <<'EOF'\n${PAYLOAD}\nEOF` },
+  { label: 'probe: ssh host, no command', body: `ssh host <<'EOF'\n${PAYLOAD}\nEOF`, unread: 'session' },
   { label: 'probe: python -c of a shell body', body: `python3 -c "$(cat <<'EOF'\n${PAYLOAD}\nEOF\n)"`, unread: 'interpreter' },
   { label: 'probe: python stdin of a shell body', body: `python3 <<'EOF'\n${PAYLOAD}\nEOF`, unread: 'interpreter' },
 ]
@@ -413,6 +418,168 @@ const PROBE_TOP_LEVEL: Shape[] = [
   { label: 'probe: $() continuation inside a word', body: `echo $(${SENTINEL} --for\\\nce mark)` },
   { label: 'probe: backtick continuation inside a word', body: `echo \`${SENTINEL} --for\\\nce mark\`` },
 ]
+
+/**
+ * Stand-ins the oracle puts on the PATH for the wrappers a test cannot run: sudo and doas need a password or a rule
+ * granting the call, su a password, and ssh a remote host. Each skips its program's options as that program's getopt
+ * string reads them (sudo 1.9, OpenDoas, util-linux su, which permutes, and OpenSSH, which reads options again after
+ * the host), then runs the command here: sudo and doas exec it, su runs the shell with its last -c string, and ssh runs
+ * the words after the host joined with spaces, as the remote shell would. With no command, sudo -i, sudo -s, doas -s,
+ * su, and ssh run an interactive shell on their input. The stand-ins model those programs, so these rows check what
+ * bash hands each one and what Buckle reads behind it; the option tables were checked against the real getopt strings,
+ * and ssh's second pass after the host against real ssh -G (slice 7j probes).
+ */
+const STAND_INS: Record<string, string[]> = {
+  sudo: [
+    '#!/bin/sh',
+    'session=',
+    'while [ "$#" -gt 0 ]; do',
+    '  case $1 in',
+    '    --) shift; break ;;',
+    '    --login|--shell) session=1; shift ;;',
+    '    --auth-type|--close-from|--login-class|--chdir|--group|--host|--prompt|--chroot|--role|--type|--command-timeout|--other-user|--user) shift 2 ;;',
+    '    --*) shift ;;',
+    '    -?*)',
+    '      rest=${1#-}; shift',
+    '      while [ -n "$rest" ]; do',
+    '        flag=${rest%"${rest#?}"}; rest=${rest#?}',
+    '        case $flag in',
+    '          i|s) session=1 ;;',
+    '          a|C|c|D|g|h|p|R|r|T|t|U|u) [ -z "$rest" ] && shift; rest= ;;',
+    '        esac',
+    '      done ;;',
+    '    *) break ;;',
+    '  esac',
+    'done',
+    'while [ "$#" -gt 0 ]; do case $1 in *=*) export "$1"; shift ;; *) break ;; esac; done',
+    '[ "$#" -gt 0 ] && exec "$@"',
+    '[ -n "$session" ] && exec bash',
+    'exit 1',
+  ],
+  doas: [
+    '#!/bin/sh',
+    'session=',
+    'while getopts a:C:Lnsu: flag; do [ "$flag" = s ] && session=1; done',
+    'shift $((OPTIND - 1))',
+    '[ "$#" -gt 0 ] && exec "$@"',
+    '[ -n "$session" ] && exec bash',
+    'exit 1',
+  ],
+  su: [
+    '#!/usr/bin/env bash',
+    'shell=bash; commands=(); operands=()',
+    'while (($#)); do',
+    '  word=$1; shift',
+    '  case $word in',
+    '    --) operands+=("$@"); break ;;',
+    '    --command=*|--session-command=*) commands+=("${word#*=}") ;;',
+    '    --command|--session-command) commands+=("$1"); shift ;;',
+    '    --shell=*) shell=${word#*=} ;;',
+    '    --shell) shell=$1; shift ;;',
+    '    --group|--supp-group|--whitelist-environment) shift ;;',
+    '    --*) ;;',
+    '    -?*)',
+    '      rest=${word#-}',
+    '      while [[ -n $rest ]]; do',
+    '        flag=${rest:0:1}; rest=${rest:1}',
+    '        case $flag in',
+    '          c|s|g|G|u|w)',
+    '            value=$rest; [[ -z $value ]] && { value=$1; shift; }',
+    '            [[ $flag == c ]] && commands+=("$value"); [[ $flag == s ]] && shell=$value',
+    '            rest= ;;',
+    '        esac',
+    '      done ;;',
+    '    *) operands+=("$word") ;;',
+    '  esac',
+    'done',
+    '[[ ${operands[0]} == - ]] && operands=("${operands[@]:1}")',
+    'operands=("${operands[@]:1}")',
+    'if ((${#commands[@]})); then exec "$shell" -c "${commands[-1]}" "${operands[@]}"; fi',
+    'exec "$shell" "${operands[@]}"',
+  ],
+  ssh: [
+    '#!/bin/sh',
+    'spec=1246ab:c:e:fgi:kl:m:no:p:qstvxAB:CD:E:F:GI:J:KL:MNO:P:Q:R:S:TVw:W:XYy',
+    'while getopts "$spec" flag; do :; done',
+    'terminated=; i=1',
+    'for word do [ "$i" -eq $((OPTIND - 1)) ] && [ "$word" = -- ] && terminated=1; i=$((i + 1)); done',
+    'shift $((OPTIND - 1))',
+    '[ "$#" -gt 0 ] || exit 255',
+    'shift',
+    'if [ -z "$terminated" ] && [ "$#" -gt 0 ]; then',
+    '  OPTIND=1',
+    '  while getopts "$spec" flag; do :; done',
+    '  shift $((OPTIND - 1))',
+    'fi',
+    '[ -n "$*" ] && exec bash -c "$*"',
+    'exec bash',
+  ],
+}
+
+/**
+ * Slice 7i residual and owner decision D7: `sudo git push` was read as `sudo` alone, so a deny glob on the command it
+ * runs never met it. The sentinel behind each wrapper and option shape, nested wrappers, wrappers in shell text, su's
+ * -c string and the remote command of ssh as shell text: each ran the sentinel under real bash in scratch first, the
+ * plain wrappers as themselves and sudo, doas, su, and ssh as the stand-ins above.
+ */
+function wrappedShapes(): Shape[] {
+  const prefixes = [
+    'sudo', 'sudo -u root', 'sudo -uroot', 'sudo -n -E', 'sudo -nE -u root', 'sudo -g wheel', 'sudo -h host', 'sudo -p prompt', 'sudo -C 3',
+    'sudo -D /', 'sudo -T 10', 'sudo -U root', 'sudo -r role -t type', 'sudo -a type', 'sudo -c class', 'sudo --user=root', 'sudo --user root',
+    'sudo --preserve-env', 'sudo --preserve-env=PATH', 'sudo --', 'sudo X=1', 'sudo -i', 'sudo -s', 'sudo --login', 'sudo --shell', 'sudo -iu root',
+    'sudo -k', 'sudo -H -P -B -b', 'sudo --chdir /', 'sudo --other-user root', 'sudo --login-class class',
+    'doas', 'doas -u root', 'doas -n', 'doas -nu root', 'doas -a style', 'doas --',
+    'ssh host', 'ssh -p 22 host', 'ssh host -p 22', 'ssh -l user host', 'ssh -i key host', 'ssh -o User=me host', 'ssh -oUser=me host', 'ssh -J jump host',
+    'ssh -t host', 'ssh -T host', 'ssh host --', 'ssh -- host', 'ssh -46 host', 'ssh -P tag host', 'ssh -I lib host', 'ssh -E ssh.log host',
+    'ssh -b 0.0.0.0 host', 'ssh -c aes128-ctr host', 'ssh -m hmac-sha2-256 host', 'ssh -F none host', 'ssh -B lo host', 'ssh -e none host',
+    'ssh -S none host', 'ssh -w any host', 'ssh -D 1080 host', 'ssh -L 1:h:2 host', 'ssh -R 1:h:2 host', 'ssh host -l user -p 22',
+    'ssh -q -v -x -X -Y -C -A -a -k -g -K -M -y host',
+    'env', 'env -u HOME', 'env X=1', 'env --', 'env -C .', 'env --chdir=.', 'env --unset=HOME X=1', 'nice', 'nice -n 5', 'nice -5',
+    'nice --adjustment=5', 'nohup', 'timeout 5', 'timeout -s KILL 5', 'timeout -k 1 5', 'timeout --foreground 5', 'timeout -s TERM -k 1 --foreground 5',
+    'timeout --preserve-status 5', 'time', 'time -p', 'stdbuf -oL', 'stdbuf -i0 -o0 -e0', 'stdbuf --output=L', 'ionice', 'ionice -c 3', 'ionice -c2 -n7',
+    'chrt -o 0', 'chrt --other 0', 'chrt -b 0', 'chrt -i 0', 'chrt -f 1', 'command', 'command -p', 'builtin', 'exec', 'exec -a name', 'setsid', 'setsid -w',
+    'sudo env X=1 nice', 'sudo -u root env X=1 nice -n 5 timeout 5', 'doas sudo', 'ssh host sudo', 'sudo ssh host', 'env sudo -u root', 'nohup sudo',
+    'time sudo', 'command sudo', 'sudo command', 'timeout 5 ssh -p 22 host env X=1', 'X=1 sudo', 'sudo -u root -- env -- nice --',
+  ]
+  const bodies = [
+    `su -c '${PAYLOAD}' root`, `su root -c '${PAYLOAD}'`, `su - root -c '${PAYLOAD}'`, `su -l root -c '${PAYLOAD}'`, `su -lc '${PAYLOAD}' root`,
+    `su --command='${PAYLOAD}' root`, `su --command '${PAYLOAD}' root`, `su --session-command '${PAYLOAD}' root`, `su -s bash -c '${PAYLOAD}' root`,
+    `su root -- -c '${PAYLOAD}'`, `su -c'${PAYLOAD}' root`, `su -m -p -f -P -c '${PAYLOAD}' root`, `su -g wheel -c '${PAYLOAD}' root`,
+    `su -G wheel -c '${PAYLOAD}' root`, `su -w PATH -c '${PAYLOAD}' root`, `su --shell=bash -c '${PAYLOAD}' root`, `su -c 'echo x' -c '${PAYLOAD}' root`,
+    `su -c '${PAYLOAD}; ${SENTINEL} two' root`, `sudo su -c '${PAYLOAD}' root`, `su -c 'sudo ${PAYLOAD}' root`, `ssh host "su -c '${PAYLOAD}' root"`,
+    `su root -c '${PAYLOAD}' extra`,
+    `ssh host '${PAYLOAD}; ${SENTINEL} two'`, `ssh host ${SENTINEL} 'mark;' ${SENTINEL} two`, `ssh host "${SENTINEL} 'a b'"`, `ssh host echo '$(${SENTINEL} inner)'`,
+    `ssh host 'echo "$(${SENTINEL} inner)"'`, `ssh host "${PAYLOAD} | cat"`, `ssh host 'if true; then ${PAYLOAD}; fi'`,
+    `if sudo ${PAYLOAD}; then :; fi`, `true && sudo ${PAYLOAD}`, `echo "$(sudo ${PAYLOAD})"`, `x=1 sudo ${PAYLOAD}`, `bash -c 'sudo ${PAYLOAD}'`,
+    `eval 'sudo ${PAYLOAD}'`, `find . -maxdepth 0 -exec sudo ${PAYLOAD} \\;`, `sudo bash -c '${PAYLOAD}'`, `sudo sh -c '${PAYLOAD}'`,
+  ]
+  return [
+    ...prefixes.map(prefix => ({ label: `wrapper: behind ${prefix}`, body: `${prefix} ${PAYLOAD}` })),
+    ...bodies.map(body => ({ label: `wrapper: ${body}`, body })),
+  ]
+}
+
+/** An ssh or su with no command, and sudo -i, sudo -s, or doas -s with none, run what arrives on their input: an interactive session, unread. */
+const SESSIONS: Shape[] = [
+  ['ssh host, no command, input empty', 'ssh host </dev/null'],
+  ['echo piped into ssh host', `echo '${PAYLOAD}' | ssh host`],
+  ['echo piped into ssh -p 22 host', `echo '${PAYLOAD}' | ssh -p 22 host`],
+  ['echo piped into ssh host with an empty command', `echo '${PAYLOAD}' | ssh host ''`],
+  ['echo piped into su', `echo '${PAYLOAD}' | su`],
+  ['echo piped into su -', `echo '${PAYLOAD}' | su -`],
+  ['echo piped into su - root', `echo '${PAYLOAD}' | su - root`],
+  ['echo piped into sudo -i', `echo '${PAYLOAD}' | sudo -i`],
+  ['echo piped into sudo -s', `echo '${PAYLOAD}' | sudo -s`],
+  ['echo piped into sudo -iu root', `echo '${PAYLOAD}' | sudo -iu root`],
+  ['echo piped into sudo --login', `echo '${PAYLOAD}' | sudo --login`],
+  ['echo piped into sudo -i X=1', `echo '${PAYLOAD}' | sudo -i X=1`],
+  ['echo piped into doas -s', `echo '${PAYLOAD}' | doas -s`],
+  ['echo piped into env ssh host', `echo '${PAYLOAD}' | env ssh host`],
+  ['echo piped into sudo ssh host', `echo '${PAYLOAD}' | sudo ssh host`],
+  ['echo piped into sudo su', `echo '${PAYLOAD}' | sudo su`],
+  ['su - root fed a heredoc', `su - root <<'EOF'\n${PAYLOAD}\nEOF`],
+  ['sudo -s fed a heredoc', `sudo -s <<'EOF'\n${PAYLOAD}\nEOF`],
+].map(([label, body]) => ({ label: `session: ${label}`, body: body!, unread: 'session' as const }))
 
 /** `levels` quoted heredocs fed to bash, one in another, around `inner`: past MAX_DEPTH (8) the innermost body is read line by line only. */
 const fedDeep = (levels: number, inner: string): string => {
@@ -451,7 +618,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...READING_PINS]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
@@ -554,9 +721,11 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     log = join(directory, 'ran.log')
     writeFileSync(binary, '#!/bin/sh\nprintf \'%s\\n\' "$*" | tr \'\\n\' \' \' >> "$SENTINEL_LOG"\nprintf \'\\n\' >> "$SENTINEL_LOG"\n')
     chmodSync(binary, 0o755)
-    // A stand-in for ssh: it drops the host and runs the rest here, as the remote shell would, so no shape reaches the network.
-    writeFileSync(join(directory, 'ssh'), '#!/bin/sh\nshift\nif [ "$#" -eq 0 ]; then exec bash; fi\nexec "$@"\n')
-    chmodSync(join(directory, 'ssh'), 0o755)
+    // Stand-ins for sudo, doas, su, and ssh (STAND_INS): no shape runs as another user or reaches the network.
+    for (const [name, lines] of Object.entries(STAND_INS)) {
+      writeFileSync(join(directory, name), `${lines.join('\n')}\n`)
+      chmodSync(join(directory, name), 0o755)
+    }
     environment = { ...process.env, PATH: `${directory}:${process.env.PATH ?? ''}`, SENTINEL_LOG: log }
     if (!bashRan(CONTROL).has('control')) {
       throw new Error(`heredoc oracle: the control shape ran no sentinel, so no row could fail; ${sentinelFault()}`)

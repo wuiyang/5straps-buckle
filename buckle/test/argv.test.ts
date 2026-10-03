@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shellScriptSource, shellStatementList, shellTokens, shownCommand, statementPieces } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, gitInvocation, hasFlag, parseArgv, shellScriptSource, shellStatementList, shellTokens, shownCommand, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
+import { commandForms, readLimitOf } from '../common/domain/command-forms.js'
 
 describe('parseArgv', () => {
   it('expands clustered short flags', () => {
@@ -294,5 +295,156 @@ describe('shell text as a shell splits it', () => {
   it('keeps a quoted separator inside its statement and still offers the textual split as candidates', () => {
     expect(statementsOf("git clean -e ';' -f && echo ok")).toEqual(["git clean -e ';' -f", 'echo ok', "git clean -e '", "' -f"])
     expect(statementsOf('find . -exec rm {} \x5c; ; ls')).toEqual(['find . -exec rm {} \x5c;', 'ls', 'find . -exec rm {} \x5c'])
+  })
+})
+
+// Slice 7i residual and owner decision D7: `sudo git push` was read as `sudo` alone. Each wrapper's options are read
+// as its getopt string reads them, so the command after them is read as a command of its own.
+describe('the command a wrapper runs', () => {
+  const runs = (command: string, args: string[]) => commandForms(command, args).chain.at(-1)
+
+  it.each<[string, string[]]>([
+    ['sudo', ['git', 'push']],
+    ['sudo', ['-u', 'root', 'git', 'push']],
+    ['sudo', ['-uroot', 'git', 'push']],
+    ['sudo', ['-nE', '-u', 'root', 'git', 'push']],
+    ['sudo', ['-g', 'wheel', '-h', 'host', '-p', 'prompt', '-C', '3', '-D', '/', '-R', '/', '-T', '10', '-U', 'root', 'git', 'push']],
+    ['sudo', ['-r', 'role', '-t', 'type', '-a', 'style', '-c', 'class', 'git', 'push']],
+    ['sudo', ['--user=root', '--user', 'root', '--chdir', '/', '--other-user', 'root', 'git', 'push']],
+    ['sudo', ['--login', 'git', 'push']],
+    ['sudo', ['--login-class', 'class', 'git', 'push']],
+    ['sudo', ['--preserve-env', '--preserve-env=PATH', 'git', 'push']],
+    ['sudo', ['-iu', 'root', 'X=1', 'git', 'push']],
+    ['sudo', ['--', 'git', 'push']],
+    ['doas', ['git', 'push']],
+    ['doas', ['-u', 'root', 'git', 'push']],
+    ['doas', ['-nu', 'root', 'git', 'push']],
+    ['doas', ['-a', 'style', '-C', 'doas.conf', 'git', 'push']],
+    ['env', ['-i', '-u', 'HOME', 'X=1', 'git', 'push']],
+    ['nice', ['-n', '5', 'git', 'push']],
+    ['nohup', ['git', 'push']],
+    ['timeout', ['-s', 'KILL', '-k', '1', '--foreground', '5', 'git', 'push']],
+    ['time', ['-p', 'git', 'push']],
+    ['stdbuf', ['-i0', '-o', 'L', '-e', '0', 'git', 'push']],
+    ['ionice', ['-c', '2', '-n', '7', 'git', 'push']],
+    ['chrt', ['-f', '-r', '-o', '-b', '-i', '0', 'git', 'push']],
+    ['command', ['-p', 'git', 'push']],
+    ['builtin', ['git', 'push']],
+    ['exec', ['-a', 'name', 'git', 'push']],
+    ['sudo', ['env', 'X=1', 'nice', 'git', 'push']],
+  ])('reads %s %j as running git push', (command, args) => {
+    expect(runs(command, args)).toEqual(['git', 'push'])
+  })
+
+  it('reads every wrapper in a nested chain as a command of its own', () => {
+    expect(commandForms('sudo', ['-u', 'root', 'env', 'X=1', 'nice', '-n', '5', 'git', 'push']).chain).toEqual([
+      ['sudo', '-u', 'root', 'env', 'X=1', 'nice', '-n', '5', 'git', 'push'], ['env', 'X=1', 'nice', '-n', '5', 'git', 'push'], ['nice', '-n', '5', 'git', 'push'], ['git', 'push'],
+    ])
+  })
+
+  it.each<[string, string[]]>([
+    ['sudo', ['-i']],
+    ['sudo', ['-s']],
+    ['sudo', ['-iu', 'root']],
+    ['sudo', ['--login']],
+    ['sudo', ['--shell']],
+    ['sudo', ['-i', 'X=1']],
+    ['doas', ['-s']],
+    ['doas', ['-u', 'root', '-s']],
+    ['ssh', ['host']],
+    ['ssh', ['-p', '22', 'host']],
+    ['ssh', ['host', '']],
+    ['su', []],
+    ['su', ['-']],
+    ['su', ['-', 'root']],
+    ['su', ['-l', '-g', 'wheel', 'root']],
+    ['env', ['ssh', 'host']],
+    ['sudo', ['su']],
+  ])('reads %s %j as an interactive session, an unread call', (command, args) => {
+    expect(readLimitOf(commandForms(command, args))).toBe('session')
+  })
+
+  it.each<[string, string[]]>([
+    ['sudo', []],
+    ['sudo', ['-u', 'root']],
+    ['sudo', ['-v']],
+    ['sudo', ['-l']],
+    ['doas', ['-L']],
+    ['ssh', []],
+    ['ssh', ['-V']],
+    ['ssh', ['-N', '-L', '8080:localhost:80', 'host']],
+    ['ssh', ['-G', 'host']],
+    ['ssh', ['-W', 'h:22', 'host']],
+    ['su', ['--help']],
+    ['su', ['-V']],
+  ])('reads %s %j as no session: it prints, forwards, or runs nothing', (command, args) => {
+    expect(readLimitOf(commandForms(command, args))).toBeNull()
+  })
+})
+
+// ssh sends the words after its host joined with spaces, which the remote shell parses as shell text; OpenSSH reads
+// options before the host and again after it (real ssh -G: `ssh host -l bob` logs in as bob, `ssh host cmd -l bob`
+// does not), and runs a ProxyCommand here even with no remote command (real ssh, slice 7j probes).
+describe('sshInvocation', () => {
+  it.each<[string[], string[], string[], boolean]>([
+    [['host'], [], [], true],
+    [['host', 'git', 'push'], ['git push'], [], false],
+    [['-p', '22', 'host', 'git', 'push'], ['git push'], [], false],
+    [['-p22', '-l', 'me', 'host', 'git', 'push'], ['git push'], [], false],
+    [['host', '-p', '22', 'git', 'push'], ['git push'], [], false],
+    [['host', 'git', '-p', '22'], ['git -p 22'], [], false],
+    [['--', 'host', '-l', 'bob'], ['-l bob'], [], false],
+    [['-l', 'amy', 'host', '--', '-x'], ['-x'], [], false],
+    [['-P', 'tag', '-I', 'lib', '-46tTx', 'host', 'ls'], ['ls'], [], false],
+    [['-b', 'a', '-c', 'c', '-e', 'e', '-i', 'i', '-m', 'm', '-B', 'b', '-D', 'd', '-E', 'e', '-F', 'f', '-J', 'j', '-L', 'l', '-R', 'r', '-S', 's', '-w', 'w', 'host', 'ls'], ['ls'], [], false],
+    [['host', "git push; rm -rf build"], ['git push; rm -rf build'], [], false],
+    [['host', 'git', "'a b'"], ["git 'a b'"], [], false],
+    [['host', ''], [], [], true],
+    [['-o', 'ProxyCommand=git push', 'host'], [], ['git push'], true],
+    [['-oProxyCommand git push', 'host', 'ls'], ['ls'], ['git push'], false],
+    [['-o', 'proxycommand = nc %h %p', '-o', 'LocalCommand=git push', '-o', 'KnownHostsCommand=id', 'host', 'ls'], ['ls'], ['nc %h %p', 'git push', 'id'], false],
+    [['-o', 'RemoteCommand=git push', 'host'], ['git push'], [], false],
+    [['-o', 'User=me', 'host'], [], [], true],
+    [['-N', '-L', '8080:h:80', 'host'], [], [], false],
+    [['-V'], [], [], false],
+    [[], [], [], false],
+  ])('reads ssh %j: remote %j, here %j, session %s', (args, remote, local, session) => {
+    expect(sshInvocation(args)).toEqual({ remote, local, session })
+  })
+})
+
+// util-linux su permutes its options, so -c may follow the user; the words after the user go to the shell.
+describe('suInvocation', () => {
+  it.each<[string[], string | null, string[], string[], boolean]>([
+    [[], null, [], [], true],
+    [['-'], null, [], [], true],
+    [['-', 'root'], null, [], [], true],
+    [['--login', 'root'], null, [], [], true],
+    [['-g', 'wheel', 'root'], null, [], [], true],
+    [['-c', 'git push', 'root'], null, ['git push'], [], false],
+    [['root', '-c', 'git push'], null, ['git push'], [], false],
+    [['-', 'root', '-c', 'git push'], null, ['git push'], [], false],
+    [['-lc', 'git push', 'root'], null, ['git push'], [], false],
+    [['-cgit push', 'root'], null, ['git push'], [], false],
+    [['--command=git push', 'root'], null, ['git push'], [], false],
+    [['--command', 'git push', 'root'], null, ['git push'], [], false],
+    [['--com', 'git push', 'root'], null, ['git push'], [], false],
+    [['--session-command', 'git push', 'root'], null, ['git push'], [], false],
+    [['-c', 'id', '-c', 'git push', 'root'], null, ['id', 'git push'], [], false],
+    [['-s', '/bin/zsh', '-c', 'git push', 'root'], '/bin/zsh', ['git push'], [], false],
+    [['--shell=python3', 'root', '-c', 'x'], 'python3', ['x'], [], false],
+    [['-m', '-p', '-f', '-P', '-G', 'wheel', '-w', 'PATH', '-c', 'git push', 'root'], null, ['git push'], [], false],
+    [['root', '--', '-c', 'git push'], null, [], ['-c', 'git push'], false],
+    [['root', 'deploy.sh', 'arg'], null, [], ['deploy.sh', 'arg'], false],
+    [['--help'], null, [], [], false],
+    [['-V'], null, [], [], false],
+  ])('reads su %j: shell %s, commands %j, operands %j, session %s', (args, shell, commands, operands, session) => {
+    expect(suInvocation(args)).toEqual({ shell, commands, operands, session })
+  })
+
+  it('reads the shell su runs as a command of its own, with each -c string or with the words after the user', () => {
+    expect(commandForms('su', ['-c', 'git push --force', 'root']).nested).toEqual([['sh', '-c', 'git push --force'], ['git', 'push', '--force']])
+    expect(commandForms('su', ['-s', '/usr/bin/python3', 'root', '-c', 'import os']).interpreters).toEqual(['python3'])
+    expect(commandForms('su', ['root', '--', '-c', 'git push']).nested).toContainEqual(['git', 'push'])
   })
 })

@@ -41,32 +41,8 @@ even with no allow list; `script_run` with the `bash` runtime is one
 No pattern lets a tool run Buckle's admin commands, such as `buckle approve`, `buckle policy`,
 or `buckle settings`.
 
-### What Buckle reads
-
-The deny list and the destructive floor judge every command a call runs: the call as typed; the
-command behind a prefix such as `env`, `nice`, `timeout`, `flock`, or `xargs`, or behind leading
-`NAME=value` assignments; each statement of a shell body; `eval` text; each `find -exec`,
-`-execdir`, `-ok`, and `-okdir` command; and heredoc bodies. Another program that runs a
-command, such as `watch`, `ssh`, or `su -c`, is judged by its own words only.
-
-### Reading limits
-
-Reading stops at the first of these:
-
-- `READ_BUDGET`: 8,000,000 characters, 1,000,000 words, or 100,000 commands across every level.
-- `MAX_DEPTH`: wrappers or shell bodies nested 8 levels deep.
-- `MAX_SUBSTITUTIONS`: `$(...)` substitutions nested 4 deep in double quotes or heredoc text.
-- A `find -exec` command that starts with a dash word, which `find` reads as its own option.
-
-Past a limit the destructive floor asks, naming it; with a deny list the call is refused, since
-the unread part might hold a denied command.
-
-### Interpreters
-
-Code run by `python`, `node`, `deno`, `bun`, `perl`, `ruby`, or `php` is unknown to Buckle, a
-reading limit, until `buckle policy allow-interpreter <name>` makes that program an ordinary
-command; version and help calls stay ordinary. Static grading of such code (safe, warn, danger,
-unknown) comes after the first release.
+[What Buckle reads](policy-02.md) in a call, where that reading stops, and how interpreters count
+continue on the next page.
 
 ## Network
 

@@ -223,6 +223,130 @@ export function shellScriptSource(args: readonly string[]): ShellScriptSource {
   return input || operand === undefined || INPUT_PATHS.has(operand) ? 'input' : 'file'
 }
 
+/** ssh's options that take a value, as OpenSSH's getopt string reads them (1246ab:c:e:fgi:kl:m:no:p:qstvxAB:CD:E:F:GI:J:KL:MNO:P:Q:R:S:TVw:W:XYy). */
+const SSH_VALUE_OPTIONS = 'bceilmopBDEFIJLOPQRSwW'
+/** Options with which ssh opens no session of its own: -N and -W forward, -G prints its configuration, -V its version, -O controls a master, -Q queries. */
+const SSH_NO_SESSION = 'NWGVOQ'
+/** An `-o` setting whose value ssh runs as shell text, here (ProxyCommand, LocalCommand, KnownHostsCommand) or on the host (RemoteCommand). */
+const SSH_COMMAND_SETTING = /^\s*(proxycommand|localcommand|knownhostscommand|remotecommand)(?:\s*=\s*|\s+)([\s\S]*)$/i
+
+/** What an ssh call runs: shell text on the remote host, shell text here, or an interactive session. */
+export interface SshInvocation {
+  /** The words after the host joined with spaces, as ssh sends them for the remote shell to parse, and any RemoteCommand. */
+  remote: string[]
+  /** Each ProxyCommand, LocalCommand, and KnownHostsCommand, which ssh runs as shell text on this machine. */
+  local: string[]
+  /** A host with no remote command and none of -N, -W, -G, -V, -O, or -Q: an interactive session. */
+  session: boolean
+}
+
+/**
+ * An ssh call read as OpenSSH reads it: options up to the host, the host, options again until the first other word
+ * (ssh parses them a second time after the host unless a `--` ended the first pass), then the remote command. Any
+ * other word starting `--` is an unknown option, after which ssh runs nothing; it is read as `--`, an over-read. A
+ * lone `-` is a word. ssh runs a ProxyCommand here even with no remote command (real ssh, slice 7j probes).
+ */
+export function sshInvocation(args: readonly string[]): SshInvocation {
+  const remote: string[] = []
+  const local: string[] = []
+  let noSession = false
+  let index = 0
+  let terminated = false
+  const options = () => {
+    while (index < args.length) {
+      const word = args[index]!
+      if (word.startsWith('--')) {
+        index++
+        terminated = word === '--'
+        return
+      }
+      if (word.length < 2 || word[0] !== '-') return
+      index++
+      for (let offset = 1; offset < word.length; offset++) {
+        const flag = word[offset]!
+        if (SSH_NO_SESSION.includes(flag)) noSession = true
+        if (!SSH_VALUE_OPTIONS.includes(flag)) continue
+        const value = offset + 1 < word.length ? word.slice(offset + 1) : args[index++]
+        const setting = flag === 'o' && value !== undefined ? SSH_COMMAND_SETTING.exec(value) : null
+        if (setting) (setting[1]!.toLowerCase() === 'remotecommand' ? remote : local).push(setting[2]!)
+        break
+      }
+    }
+  }
+  options()
+  if (index >= args.length) return { remote, local, session: false }
+  index++
+  if (!terminated) options()
+  // ssh sends an empty command as no command, which opens a shell.
+  const command = args.slice(index).join(' ')
+  if (command !== '') remote.unshift(command)
+  return { remote, local, session: remote.length === 0 && !noSession }
+}
+
+/** su's options that take a value, as util-linux's getopt_long reads them (c:fg:G:lmpPs:u:hVw:, with their long names). */
+const SU_VALUE_OPTIONS = 'cgGsuw'
+const SU_LONG_OPTIONS: Readonly<Record<string, string>> = {
+  command: 'c', 'session-command': 'c', group: 'g', 'supp-group': 'G', shell: 's', 'whitelist-environment': 'w',
+  fast: 'f', login: 'l', 'preserve-environment': 'p', pty: 'P', help: 'h', version: 'V',
+}
+
+/** What a su call runs: a shell, with each command string or with the words after the user, or an interactive session. */
+export interface SuInvocation {
+  /** The -s or --shell value, or null for the user's login shell. */
+  shell: string | null
+  /** Each -c, --command, and --session-command string; getopt keeps the last, and every one is read. */
+  commands: string[]
+  /** The words after the user, which su hands to the shell after any command string. */
+  operands: string[]
+  /** No command string, no operands, and no --help or --version: an interactive session. */
+  session: boolean
+}
+
+/**
+ * A su call read as util-linux reads it: getopt_long permutes, so an option may follow the user, and only `--` ends the
+ * options; the first other word is `-` (a login) or the user, and the words after the user go to the shell.
+ */
+export function suInvocation(args: readonly string[]): SuInvocation {
+  let shell: string | null = null
+  const commands: string[] = []
+  const operands: string[] = []
+  let info = false
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index]!
+    if (word === '--') {
+      operands.push(...args.slice(index + 1))
+      break
+    }
+    if (word === '-' || !word.startsWith('-')) {
+      operands.push(word)
+      continue
+    }
+    const separator = word.indexOf('=')
+    const long = word.startsWith('--') ? suLongOption(separator < 0 ? word.slice(2) : word.slice(2, separator)) : null
+    const flags = long ?? word.slice(1)
+    for (let offset = 0; offset < flags.length; offset++) {
+      const flag = flags[offset]!
+      if (flag === 'h' || flag === 'V') info = true
+      if (!SU_VALUE_OPTIONS.includes(flag)) continue
+      const attached = long === null ? flags.slice(offset + 1) : separator < 0 ? '' : word.slice(separator + 1)
+      const value = attached !== '' || (long !== null && separator >= 0) ? attached : args[++index]
+      if (value !== undefined && flag === 'c') commands.push(value)
+      if (value !== undefined && flag === 's') shell = value
+      break
+    }
+  }
+  if (operands[0] === '-') operands.shift()
+  operands.shift()
+  return { shell, commands, operands, session: !info && commands.length === 0 && operands.length === 0 }
+}
+
+/** A long su option as getopt_long matches it, as its short letter: the exact name, else the one name it begins; '' for none or several. */
+function suLongOption(typed: string): string {
+  if (Object.hasOwn(SU_LONG_OPTIONS, typed)) return SU_LONG_OPTIONS[typed]!
+  const matches = Object.keys(SU_LONG_OPTIONS).filter(name => typed !== '' && name.startsWith(typed))
+  return matches.length === 1 ? SU_LONG_OPTIONS[matches[0]!]! : ''
+}
+
 /**
  * The subject a destructive command is asked and granted under: the shown command, then its identity as
  * a shell comment. It never holds a credential the display redacts, and two commands share it only when

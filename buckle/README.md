@@ -152,8 +152,10 @@ For users:
   HTTP faces.
 - [Approvals](https://github.com/wuiyang/buckle/blob/main/docs/approvals.md): what asks, the scopes, the destructive floor, where to
   answer, and the dangerously-allow switch.
-- [Policy](https://github.com/wuiyang/buckle/blob/main/docs/policy.md): command globs, reading limits, network lists, files, and when a
-  restart is needed.
+- [Policy](https://github.com/wuiyang/buckle/blob/main/docs/policy.md): command globs, network lists, files, and when a restart is
+  needed.
+- [Policy: what Buckle reads](https://github.com/wuiyang/buckle/blob/main/docs/policy-02.md): the commands behind wrappers and in
+  shell text, reading limits, and interpreters.
 - [Sandbox and tools](https://github.com/wuiyang/buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, and shell
   isolation.
 - [The audit log](https://github.com/wuiyang/buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.

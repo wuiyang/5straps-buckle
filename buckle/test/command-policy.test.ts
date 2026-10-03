@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import type { ResolvedEffect } from '../common/domain/effect.js'
-import { commandFormsOf } from '../common/domain/command-forms.js'
+import { commandFormsOf, READ_LIMITS } from '../common/domain/command-forms.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
@@ -872,6 +872,99 @@ describe('a call that runs code with an interpreter', () => {
     }
     expect(commandFormsOf({ command: 'bash', args: ['-c', 'python3 --version && node -v'] }).interpreters).toEqual([])
     expect(commandFormsOf({ command: 'bash', args: ['-c', 'git commit -m "fix; python3 -c x"'] }).interpreters).toEqual([])
+  })
+})
+
+// Slice 7i residual and owner decision D7: `sudo git push` was read as `sudo` alone, so the floor asked about sudo and
+// the dangerously-allow switch turned that ask into an allow past a deny glob on `git push *`; `su -c` and `ssh` were
+// judged by their own words only. The command a wrapper runs is now read as a command of its own, beside the wrapper:
+// a deny glob on it refuses on the workspace and the node ceiling with the switch on or off, and the floor asks about a
+// destructive one. An interactive session (ssh or su with no command, a sudo or doas shell) is unread: refused naming
+// the limit under any deny glob, and asked at the floor with none (default D33 (b)).
+describe('a command behind a wrapper', () => {
+  const policyOf = (deny: string[]) => {
+    const policy = emptyWorkspacePolicy()
+    policy.commands.deny = deny
+    return compilePolicy(policy)
+  }
+  const engines = {
+    workspace: (deny: string[]) => [createCommandPolicyRule(policyOf(deny), { enforceWrapperAllow: false }), createDestructiveCommandRule()],
+    ceiling: (deny: string[]) => [
+      createCommandPolicyRule(policyOf(deny), { enforceWrapperAllow: false, source: 'node ceiling' }),
+      createCommandPolicyRule(policyOf([]), { enforceWrapperAllow: false }),
+      createDestructiveCommandRule(),
+    ],
+  }
+  const named = { workspace: 'the workspace command policy', ceiling: 'the node ceiling command policy' } as const
+  const check = (engine: keyof typeof engines, switched: boolean, call: readonly string[], deny: string[]) =>
+    withDangerouslyAllow(createPermissionEngine(engines[engine](deny)), { enabled: () => switched, root: () => '/workspace' })
+      .evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command: call[0]!, args: call.slice(1) }], grants: { subjectsFor: () => [] } })
+  const refusal = (outcome: ReturnType<typeof check>) => {
+    if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
+    expect(outcome.denial.rule).toBe('command_policy')
+    return outcome.denial.reason
+  }
+  const cases = (['workspace', 'ceiling'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
+  /** Each wrapper and option shape around a command: argv wrappers before it, su -c and ssh with it as shell text. */
+  const wrappers: Array<[string, (command: string[]) => string[]]> = [
+    ...[
+      ['sudo'], ['sudo', '-u', 'root'], ['sudo', '-iu', 'root'], ['sudo', '--login'], ['sudo', '-E', 'X=1'], ['/usr/bin/sudo', '--'], ['doas'], ['doas', '-nu', 'root'],
+      ['ssh', 'host'], ['ssh', '-p', '22', 'host'], ['ssh', 'host', '-l', 'me'], ['ssh', '-P', 'tag', 'host'], ['env', '-i', '-u', 'HOME', 'X=1'], ['nice', '-n', '5'],
+      ['nohup'], ['timeout', '-s', 'KILL', '-k', '1', '--foreground', '5'], ['time', '-p'], ['stdbuf', '-oL'], ['ionice', '-c', '3'], ['chrt', '-o', '0'],
+      ['command', '-p'], ['builtin'], ['exec'], ['sudo', 'env', 'X=1', 'nice'], ['ssh', 'host', 'sudo'], ['doas', 'timeout', '5', 'ssh', 'host'],
+    ].map(prefix => [prefix.join(' '), (command: string[]) => [...prefix, ...command]] as [string, (command: string[]) => string[]]),
+    ['su -c', command => ['su', '-c', command.join(' '), 'root']],
+    ['su root -c', command => ['su', 'root', '-c', command.join(' ')]],
+    ['su -s /bin/bash -lc', command => ['su', '-s', '/bin/bash', '-lc', command.join(' '), 'root']],
+    ['sudo su -c', command => ['sudo', 'su', '-c', command.join(' '), 'root']],
+    ['ssh with one quoted word', command => ['ssh', 'host', `echo ok; ${command.join(' ')}`]],
+    ['ssh -o ProxyCommand', command => ['ssh', '-o', `ProxyCommand=${command.join(' ')}`, 'host', 'true']],
+    ['ssh -o RemoteCommand', command => ['ssh', '-o', `RemoteCommand=${command.join(' ')}`, 'host']],
+    ['bash -c with sudo', command => ['bash', '-c', `sudo ${command.join(' ')}`]],
+    ['bash -c with ssh', command => ['bash', '-c', `ssh host '${command.join(' ')}'`]],
+  ]
+  const push = ['git', 'push', 'origin', 'main']
+  const forcePush = ['git', 'push', '--force', 'origin', 'main']
+  /** Whether the call runs sudo, doas, or su anywhere, whose own ask (privilege) the floor names first. */
+  const privileged = (call: readonly string[]) => call.some(word => /(^|[\s/])(sudo|doas|su)(\s|$)/.test(word))
+
+  it.each(cases.flatMap(([engine, switched]) => wrappers.map(([shape, wrap]) => [engine, switched, shape, wrap] as const)))('refuses %s deny, switch on: %s, git push behind %s by the push glob', (engine, switched, _shape, wrap) => {
+    expect(refusal(check(engine, switched, wrap(push), ['git push *']))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => wrappers.map(([shape, wrap]) => [engine, shape, wrap] as const)))('asks at the floor, %s with no deny glob, about a force push behind %s', (engine, _shape, wrap) => {
+    const call = wrap(forcePush)
+    const outcome = check(engine, false, call, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => ask.rule)).toEqual(['destructive_command'])
+    expect(outcome.asks[0]!.reason).toMatch(privileged(call) ? /^(sudo|doas|su) escalates privileges$/ : /^Force push rewrites remote history/)
+  })
+
+  const session = READ_LIMITS.session
+  const sessions = [
+    ['ssh', 'host'], ['ssh', '-p', '22', 'host'], ['ssh', 'host', ''], ['ssh', '-o', 'ProxyCommand=nc %h %p', 'host'], ['su'], ['su', '-'], ['su', '-', 'root'],
+    ['su', '-l', 'root'], ['sudo', '-i'], ['sudo', '-s'], ['sudo', '-iu', 'root'], ['sudo', '--login'], ['sudo', '--shell'], ['doas', '-s'], ['sudo', 'su'],
+    ['env', 'ssh', 'host'], ['bash', '-c', 'echo id | ssh host'],
+  ]
+
+  it.each(cases.flatMap(([engine, switched]) => sessions.map(call => [engine, switched, call] as const)))('refuses %s deny, switch on: %s, the interactive session %j, naming the limit', (engine, switched, call) => {
+    expect(refusal(check(engine, switched, call, ['terraform destroy *']))).toBe(`${session}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => sessions.map(call => [engine, call] as const)))('asks at the floor, %s with no deny glob, about the interactive session %j', (engine, call) => {
+    const outcome = check(engine, false, call, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', privileged(call) ? expect.stringMatching(/^(sudo|doas|su) escalates privileges$/) : `${session}; asked rather than guessed at`]])
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => [
+    ['ssh', 'host', 'git', 'status'], ['ssh', '-N', '-L', '8080:localhost:80', 'host'], ['ssh', '-G', 'host'], ['ssh', '-V'], ['env', 'git', 'status'],
+  ].map(call => [engine, switched, call] as const)))('allows %s deny, switch on: %s, %j, which opens no session and runs nothing denied', (engine, switched, call) => {
+    expect(check(engine, switched, call, ['git push *', 'terraform destroy *'])).toMatchObject({ kind: 'allow' })
+  })
+
+  it('needs the wrapper allowed when sudo hands its command to a shell, as env does', () => {
+    expect(reasonOf(evaluate('sudo', ['bash', '-c', 'pnpm build']))).toContain("allow-command 'bash -c *'")
   })
 })
 
