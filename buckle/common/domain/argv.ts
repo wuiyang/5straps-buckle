@@ -536,23 +536,31 @@ export const MAX_DEPTH = 8
  * anywhere in the text, a heredoc body included, so some text was read only as part of the statement around it, and
  * `overDepth` that heredoc bodies read whole nest past MAX_DEPTH, so one was left unread (slice 7f review R7F-HR-4).
  * `unsureComment` says a `#` followed a `)` that Buckle cannot tell closes a word or a command (CASE_WORD, `!(`), so
- * whether the rest of its line is a comment is unknown; that `#` is read as word text.
+ * whether the rest of its line is a comment is unknown; that `#` is read as word text. Every pass over the text, the
+ * first and each re-reading of a line, a joined run, a heredoc body, or a backtick body, is charged against `meter`,
+ * the characters the caller's read budget has left; a pass that would run past it reads nothing and sets
+ * `overBudget`, so a request under the size cap cannot hold the reader for seconds (the 7h to 7k review: eight
+ * heredocs fed to bash around backtick bodies took 33.7 s to read).
  */
-export function shellStatementList(text: string): { statements: string[] } & SplitLimits {
-  const { statements, ...limits } = unquotedSplit(text, SHELL_TEXT, 0)
+export function shellStatementList(text: string, meter: CharacterMeter = { characters: Number.POSITIVE_INFINITY }): { statements: string[] } & SplitLimits {
+  const { statements, ...limits } = unquotedSplit(text, SHELL_TEXT, 0, meter)
   return { statements: [...new Set(statements.map(trimmed).filter(Boolean))], ...limits }
 }
 
-/** What a reading of shell text met that it could not read whole, as shellStatementList names each. */
-export interface SplitLimits { deep: boolean; overDepth: boolean; unsureComment: boolean }
+/** The characters a reading may still pass over, shared by every pass of one check. */
+export interface CharacterMeter { characters: number }
 
-const noLimits = (): SplitLimits => ({ deep: false, overDepth: false, unsureComment: false })
+/** What a reading of shell text met that it could not read whole, as shellStatementList names each. */
+export interface SplitLimits { deep: boolean; overDepth: boolean; unsureComment: boolean; overBudget: boolean }
+
+const noLimits = (): SplitLimits => ({ deep: false, overDepth: false, unsureComment: false, overBudget: false })
 
 /** Adds the limits one reading met to those of the reading around it. */
 function meet(into: SplitLimits, from: SplitLimits): void {
   into.deep ||= from.deep
   into.overDepth ||= from.overDepth
   into.unsureComment ||= from.unsureComment
+  into.overBudget ||= from.overBudget
 }
 
 /**
@@ -609,6 +617,13 @@ interface SplitLevel {
   previousStarted: boolean
 }
 
+/** Characters the reading outside quotes acts on; every other one is word text, and so is any code point past ASCII. */
+const SPECIAL_OUTSIDE = new Uint8Array(128)
+for (const character of '\\`\'"#<>;&|() \t\n') SPECIAL_OUTSIDE[character.charCodeAt(0)] = 1
+const plainOutside = (code: number): boolean => code >= 128 || SPECIAL_OUTSIDE[code] === 0
+/** Characters the reading inside double quotes or heredoc text acts on: a backslash, a double quote, a backtick, and `$`. */
+const plainInQuotes = (code: number): boolean => code !== 92 && code !== 34 && code !== 96 && code !== 36
+
 /** A level's reading state at its start, where a word starts. */
 const levelStart = (start: number, closer: SplitLevel['closer'], quote: Quote, doubleQuoted: boolean): SplitLevel =>
   ({ start, closer, parens: 0, quote, body: start, doubleQuoted, backtick: null, wordStart: true, opens: [], previous: '', previousStarted: false })
@@ -631,11 +646,13 @@ const HEREDOC_TEXT: SplitMode = { heredocText: true, wholeBodies: false }
  * as text of its own, its statements added to the rest; heredoc text itself is no statement, since the command it
  * is handed reads it, not the shell.
  */
-function unquotedSplit(text: string, mode: SplitMode, depth: number): { statements: string[] } & SplitLimits {
+function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: CharacterMeter): { statements: string[] } & SplitLimits {
   const statements: string[] = []
   const levels: SplitLevel[] = [levelStart(0, null, mode.heredocText ? 'heredoc' : null, false)]
   const heredocs: Heredoc[] = []
   const limits = noLimits()
+  meter.characters -= text.length
+  if (meter.characters < 0) return { statements, ...limits, overBudget: true }
   let mentionsCase: boolean | null = null
   const end = (level: SplitLevel, at: number, next: number) => {
     statements.push(text.slice(level.start, at))
@@ -650,7 +667,7 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
       limits.overDepth = true
       return
     }
-    const split = unquotedSplit(backtickView(joinedBacktick(body), doubleQuoted), mode.wholeBodies ? SHELL_TEXT : SHELL_LINE, depth + 1)
+    const split = unquotedSplit(backtickView(joinedBacktick(body), doubleQuoted), mode.wholeBodies ? SHELL_TEXT : SHELL_LINE, depth + 1, meter)
     for (const statement of split.statements) statements.push(statement)
     meet(limits, split)
   }
@@ -664,11 +681,28 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
   }
   for (let index = 0; index < text.length; index++) {
     const level = levels.at(-1)!
-    const character = text[index]!
+    // Runs of characters that change nothing are passed over in one step, so each pass costs little per character.
     if (level.quote === "'") {
-      if (character === "'") level.quote = null
+      const close = text.indexOf("'", index)
+      if (close < 0) break
+      index = close
+      level.quote = null
       continue
     }
+    if (level.quote === null && plainOutside(text.charCodeAt(index))) {
+      let last = index
+      while (last + 1 < text.length && plainOutside(text.charCodeAt(last + 1))) last++
+      level.previousStarted = last === index && level.wordStart !== false
+      level.wordStart = false
+      level.previous = text[last]!
+      index = last
+      continue
+    }
+    if ((level.quote === '"' || level.quote === 'heredoc') && plainInQuotes(text.charCodeAt(index))) {
+      while (index + 1 < text.length && plainInQuotes(text.charCodeAt(index + 1))) index++
+      continue
+    }
+    const character = text[index]!
     if (level.quote === "$'") {
       if (character === '\\') index++
       else if (character === "'") level.quote = null
@@ -735,7 +769,7 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number): { statemen
       level.wordStart = character === ')' ? afterClose(level) : true
       end(level, index, index + 1)
       if (character === '\n' && heredocs.length > 0) {
-        const bodies = heredocBodies({ text, from: index + 1, heredocs: heredocs.splice(0), statements, whole: mode.wholeBodies, depth })
+        const bodies = heredocBodies({ text, from: index + 1, heredocs: heredocs.splice(0), statements, whole: mode.wholeBodies, depth, meter })
         meet(limits, bodies)
         index = bodies.next - 1
         level.start = index + 1
@@ -807,11 +841,12 @@ function heredocAt(text: string, at: number): { heredoc: Heredoc; next: number }
  * past MAX_SUBSTITUTIONS in any of these readings (slice 7e review R7E-LW-1), `overDepth` that a nested whole reading
  * passed MAX_DEPTH. A `<<` that was no heredoc (`$((1<<2))`) only reads the lines after it one at a time.
  */
-function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[]; statements: string[]; whole: boolean; depth: number }): { next: number } & SplitLimits {
+function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[]; statements: string[]; whole: boolean; depth: number; meter: CharacterMeter }): { next: number } & SplitLimits {
   let index = input.from
   const limits = noLimits()
   const read = (text: string, mode: SplitMode, depth: number) => {
-    const split = unquotedSplit(text, mode, depth)
+    if (limits.overBudget) return
+    const split = unquotedSplit(text, mode, depth, input.meter)
     for (const statement of split.statements) input.statements.push(statement)
     meet(limits, split)
   }

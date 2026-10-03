@@ -932,6 +932,38 @@ describe('the reader is bounded on adversarial bulk', () => {
   it('reads 50,000 continuations within a second', () => {
     under(`bash <<EOF\n${Array.from({ length: 50_000 }, () => 'echo a \\').join('\n')}\ndone\nEOF`)
   })
+
+  /**
+   * The reader's own processor time on a body, the least of three readings: a loaded machine stretches the wall clock
+   * and a cold start slows the first reading, but neither adds to the processor time of the fastest one. No process
+   * is spawned inside the timed span.
+   */
+  const readerTime = (body: string): { milliseconds: number; forms: CommandForms } => {
+    let milliseconds = Number.POSITIVE_INFINITY
+    let forms = commandForms('bash', ['-c', ''])
+    for (let reading = 0; reading < 3; reading++) {
+      const started = process.cpuUsage()
+      forms = commandForms('bash', ['-c', body])
+      const used = process.cpuUsage(started)
+      milliseconds = Math.min(milliseconds, (used.user + used.system) / 1_000)
+    }
+    return { milliseconds, forms }
+  }
+
+  /**
+   * Slice 7l, the 7h to 7k review: a request under the 1 MiB cap of eight heredocs fed to bash, one in another, around
+   * backtick bodies took 33.7 s to read, since each pass over a body re-read it whole. Every pass is now charged to
+   * the read budget, so the reading stops as 'budget' (refused under any deny glob, asked at the floor). Here it takes
+   * about 200 ms of the 1000 ms allowed; one level and four levels too.
+   */
+  it.each([1, 4, 8])('stops at the read budget within a second on the 1 MiB shape of %i heredocs fed to bash around backtick bodies', (levels) => {
+    let body = `echo ${Array.from({ length: 200_000 }, (_, index) => `w${index % 1000}`).join(' ')} \\\\x`
+    for (let level = 0; level < levels; level++) body = `bash <<E${level}\necho \`${body}\`\nE${level}\n`
+    expect(JSON.stringify({ command: 'bash', args: ['-c', body] }).length).toBeLessThan(1_048_576)
+    const { milliseconds, forms } = readerTime(body)
+    expect(readLimitOf(forms)).toBe('budget')
+    expect(milliseconds).toBeLessThan(1_000)
+  })
 })
 
 describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of what real bash runs', () => {

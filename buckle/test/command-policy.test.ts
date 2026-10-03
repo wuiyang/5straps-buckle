@@ -347,6 +347,25 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, eightDeep))).toBe(`Wrappers or shell bodies nest deeper than Buckle reads (MAX_DEPTH: 8 levels), so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
+  // Slice 7l, the 7h to 7k review: eight heredocs fed to bash around backtick bodies, under the 1 MiB request cap, took
+  // 33.7 s to read, blocking the node, since each pass re-read each body whole. Every pass is charged to READ_BUDGET
+  // now, and this shape runs past it: refused naming the budget under any deny glob, and asked at the floor with none.
+  const fedBackticks = (() => {
+    let body = `echo ${Array.from({ length: 200_000 }, (_, index) => `w${index % 1000}`).join(' ')} \\\\x`
+    for (let level = 0; level < 8; level++) body = `bash <<E${level}\necho \`${body}\`\nE${level}\n`
+    return body
+  })()
+
+  it.each(cases)('refuses the 1 MiB shape of eight heredocs around backtick bodies past READ_BUDGET, %s deny, switch on: %s', (engine, switched) => {
+    expect(refusal(check(engine, switched, fedBackticks, ['terraform destroy *']))).toBe(`${READ_LIMITS.budget}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it('asks at the floor with no deny glob about the 1 MiB shape of eight heredocs around backtick bodies, naming the budget', () => {
+    const outcome = check('workspace', false, fedBackticks, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${READ_LIMITS.budget}; asked rather than guessed at`]])
+  })
+
   it.each(cases)('still refuses git push after 99,998 statements by matching it, %s deny, switch on: %s', (engine, switched) => {
     expect(refusal(check(engine, switched, statements(99_998)))).toBe(`Refused by ${named[engine]}: git push *`)
   })

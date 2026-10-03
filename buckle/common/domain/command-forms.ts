@@ -2,8 +2,9 @@ import { baseCommand, envSplitWords, holdsExpansion, MAX_DEPTH, MAX_SUBSTITUTION
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
- * W7B-8): the characters of shell text it splits into statements, the words of those statements, and the commands
- * it keeps. A 1 MB request read at every level MAX_DEPTH allows fits; whatever runs past the budget is unread.
+ * W7B-8): the characters of shell text it passes over, each re-reading of a line, a heredoc body, or a backtick body
+ * counted again (slice 7l), the words of the statements it splits, and the commands it keeps. A 1 MB request read
+ * as a few passes at a few levels fits; whatever runs past the budget is unread.
  */
 export const READ_BUDGET = { characters: 8_000_000, words: 1_000_000, commands: 100_000 } as const
 
@@ -497,15 +498,26 @@ function suCommands(args: readonly string[], place: Place): InnerCommands {
   return { groups: groupsOf(commands, place, place.found), unread: su.session ? 'session' : null, rereads: true }
 }
 
-/** The commands of shell text, within the budget: each statement's form, beside the statement as written. */
+/**
+ * The commands of shell text, within the budget: each statement's form, beside the statement as written. Every pass the
+ * splitter makes over the text and the bodies in it is charged to the budget's characters (shellStatementList), and
+ * past it the text is unread.
+ */
 function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; unread: UnreadLimit | null } {
-  budget.characters -= text.length
-  if (budget.characters < 0) {
+  if (budget.characters < text.length) {
+    budget.characters -= text.length
     budget.spent = true
     return { groups: [], unread: null }
   }
-  const { statements, deep, overDepth, unsureComment } = shellStatementList(text)
+  const meter = { characters: budget.characters }
+  const { statements, deep, overDepth, unsureComment, overBudget } = shellStatementList(text, meter)
+  budget.characters = meter.characters
   const groups: CommandGroup[] = []
+  // Past the budget no form is read (formsOf stops at a spent budget), so the statements are not split into words.
+  if (overBudget) {
+    budget.spent = true
+    return { groups, unread: null }
+  }
   for (const statement of statements) {
     const form = statementForm(statement, budget)
     if (form === null) break
