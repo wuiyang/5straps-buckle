@@ -11,8 +11,9 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 
 /**
- * Owner decision D55: a call that runs code with python, node, deno, bun, perl, ruby or php is unknown to Buckle until
- * the policy allows that interpreter. These drive the CLI verbs and the real permission pipeline of a runtime.
+ * Owner decision D55: a call that runs code with python, node, deno, bun, perl, ruby, php, awk, lua, pwsh, tsx, or
+ * another listed interpreter is unknown to Buckle until the policy allows that interpreter. These drive the CLI verbs
+ * and the real permission pipeline of a runtime.
  */
 function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
   return loadConfig({
@@ -79,7 +80,14 @@ describe('buckle policy allow-interpreter and remove-interpreter', () => {
     expect(JSON.parse((await cli(config, ['policy', 'export'])).out).commands.allowedInterpreters).toEqual(['python3.12'])
   })
 
-  it.each([['bash'], ['python3 -c'], ['Node']])('refuses %s, which is no interpreter Buckle knows, storing nothing', async (name) => {
+  it('allows awk, lua, pwsh, tsx, ts-node, and their kin by name (slice 7j, default D57)', async () => {
+    const config = node()
+    const names = ['awk', 'gawk', 'mawk', 'nawk', 'lua', 'lua5.4', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node']
+    for (const name of names) expect((await cli(config, ['policy', 'allow-interpreter', name])).exitCode).toBe(0)
+    expect(JSON.parse((await cli(config, ['policy', 'export'])).out).commands.allowedInterpreters).toEqual(names)
+  })
+
+  it.each([['bash'], ['python3 -c'], ['Node'], ['npx'], ['bunx']])('refuses %s, which is no interpreter Buckle knows, storing nothing', async (name) => {
     const config = node()
     const result = await cli(config, ['policy', 'allow-interpreter', name])
     expect(result.exitCode).toBe(1)

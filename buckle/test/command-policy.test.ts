@@ -756,7 +756,8 @@ describe('a call Buckle cannot read whole', () => {
   })
 })
 
-// Owner decision D55: a body run by python, node, deno, bun, perl, ruby or php is code Buckle cannot read as shell, so
+// Owner decision D55: a body run by python, node, deno, bun, perl, ruby, php, awk (gawk, mawk, nawk), lua, luajit, pwsh,
+// powershell, tsx or ts-node (the last ten since slice 7j, default D57) is code Buckle cannot read as shell, so
 // such a call is unknown: refused naming the limit under any deny glob, on the workspace and the node ceiling and with
 // the dangerously-allow switch on or off, and asked at the floor otherwise (default D33 (b)), until the policy allows
 // that interpreter, which then reads as an ordinary command under its own globs. The node ceiling judges by its own
@@ -811,6 +812,23 @@ describe('a call that runs code with an interpreter', () => {
     ['bash', ['-c', 'echo "print(1)" | python3'], 'python3'],
     ['bash', ['-c', 'python3 < job.py'], 'python3'],
     ['bash', ['-c', "python3 <<'EOF'\nprint(1)\nEOF"], 'python3'],
+    ['awk', ['BEGIN{system("id")}'], 'awk'],
+    ['awk', ['-f', 'report.awk', 'data.txt'], 'awk'],
+    ['gawk', ['-e', 'BEGIN{}'], 'gawk'],
+    ['mawk', ['{print $1}', 'data.txt'], 'mawk'],
+    ['nawk', ['BEGIN{}'], 'nawk'],
+    ['bash', ['-c', "ps aux | awk '{print $2}'"], 'awk'],
+    ['lua', ['-e', 'os.execute("id")'], 'lua'],
+    ['lua5.4', ['script.lua'], 'lua5.4'],
+    ['luajit', ['script.lua'], 'luajit'],
+    ['pwsh', ['-c', 'Get-Date'], 'pwsh'],
+    ['pwsh', ['-Command', 'Get-Date'], 'pwsh'],
+    ['pwsh', ['-File', 'script.ps1'], 'pwsh'],
+    ['powershell', ['-Command', 'Get-Date'], 'powershell'],
+    ['tsx', ['script.ts'], 'tsx'],
+    ['tsx', ['-e', 'console.log(1)'], 'tsx'],
+    ['ts-node', ['script.ts'], 'ts-node'],
+    ['ts-node', ['-e', 'console.log(1)'], 'ts-node'],
   ] as const
   const refusal = (outcome: ReturnType<typeof check>) => {
     if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
@@ -861,6 +879,22 @@ describe('a call that runs code with an interpreter', () => {
     [engine, switched, 'python3', ['-V']],
     [engine, switched, 'python3', []],
     [engine, switched, 'php', ['--help']],
+    [engine, switched, 'awk', ['--version']],
+    [engine, switched, 'gawk', ['-V']],
+    [engine, switched, 'mawk', ['-W', 'version']],
+    [engine, switched, 'nawk', ['-version']],
+    [engine, switched, 'awk', []],
+    [engine, switched, 'lua', ['-v']],
+    [engine, switched, 'luajit', ['-v']],
+    [engine, switched, 'pwsh', ['-Version']],
+    [engine, switched, 'pwsh', ['-v']],
+    [engine, switched, 'powershell', ['-Help']],
+    [engine, switched, 'tsx', ['--version']],
+    [engine, switched, 'ts-node', ['-h']],
+    // Default D57 (open): package runners stay ordinary commands until the owner rules on them.
+    [engine, switched, 'npx', ['tsx', 'script.ts']],
+    [engine, switched, 'pnpx', ['ts-node', 'script.ts']],
+    [engine, switched, 'bunx', ['cowsay', 'hi']],
   ] as const))('leaves %s, switch on: %s, %s %j an ordinary command: it prints, or reads the input Buckle leaves empty', (engine, switched, command, args) => {
     expect(check(engine, switched, [command, args], { deny: ['terraform destroy *'] })).toMatchObject({ kind: 'allow' })
     expect(check(engine, switched, [command, args], { deny: [] })).toMatchObject({ kind: 'allow' })

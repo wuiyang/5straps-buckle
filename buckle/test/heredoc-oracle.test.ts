@@ -28,9 +28,10 @@ if (!hasBash) console.info('heredoc oracle: bash is not on PATH, so the real-bas
  * One shape: its body, run as `bash -c`. `written` is the invocation Buckle reads where bash runs it expanded (an
  * over-read, see BACKTICK_EXTRA). `unread` is the limit the reading must name: the call is one Buckle cannot read
  * whole, so it is refused under any deny glob and asked at the floor (default D33 (b)), and what bash ran need not be
- * among the commands read.
+ * among the commands read. `needs` names a program the shape runs that a machine may lack: where it is absent the row is
+ * skipped and the reason logged; where it is present the sentinel must have run, so the row proves the program runs it.
  */
-interface Shape { label: string; body: string; written?: string; unread?: ReadLimit }
+interface Shape { label: string; body: string; written?: string; unread?: ReadLimit; needs?: string }
 
 /** The dangerous command each shape carries, a sentinel that only records that it ran. `mark` shows its argument too. */
 const SENTINEL = 'sentinel'
@@ -332,6 +333,19 @@ const INTERPRETERS: Shape[] = [
   { label: 'interpreter: sudo python -c os.system', body: `sudo python3 -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter' },
   { label: 'interpreter: su -s python -c os.system', body: `su -s python3 -c "import os; os.system('${PAYLOAD}')" root`, unread: 'interpreter' },
   { label: 'interpreter: ssh host python -c os.system', body: `ssh host "python3 -c \\"import os; os.system('${PAYLOAD}')\\""`, unread: 'interpreter' },
+  // Slice 7j, default D57: awk runs a command through system() or a pipe, from its program argument, a -f file, or on
+  // its input; tsx runs TypeScript that spawns one. Each ran the sentinel under real bash in scratch first (mawk as
+  // awk, mawk, and nawk; tsx from the repository's own dependencies); where a program is absent its row is skipped.
+  { label: 'interpreter: awk BEGIN system', body: `awk 'BEGIN{system("${PAYLOAD}")}'`, unread: 'interpreter', needs: 'awk' },
+  { label: 'interpreter: mawk BEGIN system', body: `mawk 'BEGIN{system("${PAYLOAD}")}'`, unread: 'interpreter', needs: 'mawk' },
+  { label: 'interpreter: nawk BEGIN system', body: `nawk 'BEGIN{system("${PAYLOAD}")}'`, unread: 'interpreter', needs: 'nawk' },
+  { label: 'interpreter: gawk BEGIN system', body: `gawk 'BEGIN{system("${PAYLOAD}")}'`, unread: 'interpreter', needs: 'gawk' },
+  { label: 'interpreter: awk -f a program file', body: `printf '%s\\n' 'BEGIN{system("${PAYLOAD}")}' > p.awk; awk -f p.awk`, unread: 'interpreter', needs: 'awk' },
+  { label: 'interpreter: awk on piped input', body: `echo x | awk '{system("${PAYLOAD}")}'`, unread: 'interpreter', needs: 'awk' },
+  { label: 'interpreter: awk printing to a pipe', body: `echo x | awk '{print | "${PAYLOAD}"}'`, unread: 'interpreter', needs: 'awk' },
+  { label: 'interpreter: awk behind sudo', body: `sudo awk 'BEGIN{system("${PAYLOAD}")}'`, unread: 'interpreter', needs: 'awk' },
+  { label: 'interpreter: awk in the remote command of ssh', body: `ssh host "awk 'BEGIN{system(\\"${PAYLOAD}\\")}'"`, unread: 'interpreter', needs: 'awk' },
+  { label: 'interpreter: tsx -e child_process', body: `tsx -e "require('child_process').execSync('${PAYLOAD}')"`, unread: 'interpreter', needs: 'tsx' },
 ]
 
 /**
@@ -742,10 +756,16 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     let ranShapes = 0
     let overRead = 0
     let unreadShapes = 0
-    for (const { label, body, written, unread } of shapes) {
+    const skipped: string[] = []
+    for (const { label, body, written, unread, needs } of shapes) {
+      if (needs !== undefined && resolved(needs) === '') {
+        skipped.push(`${label} (${needs} is not on PATH)`)
+        continue
+      }
       const ran = bashRan(body)
       const forms = commandForms('bash', ['-c', body])
       const read = buckleRan(forms)
+      if (needs !== undefined && ran.size === 0) missed.push(`${label}: ${needs} ran no sentinel, so the row proves nothing`)
       if (unread !== undefined) {
         if (readLimitOf(forms) !== unread) missed.push(`${label}: Buckle did not mark the call unread (${unread}), so nothing refuses or asks about what bash ran`)
         unreadShapes++
@@ -760,7 +780,8 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
       if (ran.size > 0) ranShapes++
       else if (read.size > 0) overRead++
     }
-    console.info(`heredoc oracle: ${shapes.length} shapes, bash ran the sentinel in ${ranShapes}, ${overRead} read the sentinel where bash did not (over-reads, allowed), ${unreadShapes} unread as expected`)
+    console.info(`heredoc oracle: ${shapes.length} shapes, bash ran the sentinel in ${ranShapes}, ${overRead} read the sentinel where bash did not (over-reads, allowed), ${unreadShapes} unread as expected, ${skipped.length} skipped`)
+    for (const reason of skipped) console.info(`heredoc oracle: skipped ${reason}`)
     expect(missed).toEqual([])
   }, 20_000)
 })

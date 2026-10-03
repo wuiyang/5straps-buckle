@@ -279,9 +279,11 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
 
 /**
  * Programs whose code Buckle cannot read as shell (owner decision D55): each name, alone or with a version
- * (`python3`, `python3.12`, `node22`, `perl5.36`). A policy names the ones it reads as ordinary commands.
+ * (`python3`, `python3.12`, `node22`, `perl5.36`, `lua5.4`). A policy names the ones it reads as ordinary commands.
+ * awk and its variants, lua, PowerShell, and the TypeScript runners joined in slice 7j (default D57); the package
+ * runners npx, pnpx, and bunx stay ordinary commands until the owner rules on them (D57 open).
  */
-const INTERPRETERS = ['python', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php'] as const
+const INTERPRETERS = ['python', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'awk', 'gawk', 'mawk', 'nawk', 'lua', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node'] as const
 const INTERPRETER = new RegExp(`^(?:${INTERPRETERS.join('|')})(?:\\d+(?:\\.\\d+)*)?$`)
 
 /** The interpreter names as a refusal of an unknown one lists them, wherever a name is checked. */
@@ -292,7 +294,16 @@ export function isInterpreter(name: string): boolean {
   return INTERPRETER.test(name)
 }
 
-/** The one argument with which each interpreter only prints its version or its help and runs no code. */
+/** awk's version and help calls across gawk, mawk (`-W version`), and the one true awk (`-version`). */
+const AWK_INFO: ReadonlySet<string> = new Set(['--version', '-V', '-version', '-Wversion', '-Wv', '-W version', '--help', '-h', '--usage', '-Wusage', '-W usage'])
+/** PowerShell's, matched without case, as PowerShell reads its parameters. */
+const POWERSHELL_INFO: ReadonlySet<string> = new Set(['-version', '-v', '--version', '-help', '-h', '-?', '/?', '--help'])
+const CASELESS_INFO = new Set(['pwsh', 'powershell'])
+
+/**
+ * The arguments, one word or mawk's two (`-W version`), with which each interpreter only prints its version or its help
+ * and runs no code. lua and luajit print their version with -v and run nothing after it, not even their input.
+ */
 const INTERPRETER_INFO: Readonly<Record<string, ReadonlySet<string>>> = {
   python: new Set(['--version', '-V', '--help', '-h']),
   node: new Set(['--version', '-v', '--help', '-h']),
@@ -302,20 +313,37 @@ const INTERPRETER_INFO: Readonly<Record<string, ReadonlySet<string>>> = {
   perl: new Set(['--version', '-v', '--help', '-h']),
   ruby: new Set(['--version', '--help', '-h']),
   php: new Set(['--version', '-v', '--help', '-h']),
+  awk: AWK_INFO,
+  gawk: AWK_INFO,
+  mawk: AWK_INFO,
+  nawk: AWK_INFO,
+  lua: new Set(['-v']),
+  luajit: new Set(['-v']),
+  pwsh: POWERSHELL_INFO,
+  powershell: POWERSHELL_INFO,
+  tsx: new Set(['--version', '-v', '--help', '-h']),
+  'ts-node': new Set(['--version', '-v', '--help', '-h']),
+}
+
+/** Whether these arguments only print the interpreter's version or its help. */
+function printsInfo(command: string, args: readonly string[]): boolean {
+  const program = command.replace(/[\d.]+$/, '')
+  const typed = args.join(' ')
+  return args.length > 0 && args.length <= 2 && INTERPRETER_INFO[program]?.has(CASELESS_INFO.has(program) ? typed.toLowerCase() : typed) === true
 }
 
 /**
  * The interpreter the command a chain ends in runs code with, or null (owner decision D55): any call of one with inline
- * code (`-c`, `-e`, `--eval`, `-r`, `-p`), a script, `-m`, or any other argument, and one behind xargs, whose items
- * become its code or its script. Its version or its help alone runs nothing; nor does a bare interpreter as the call
- * itself, whose input is empty. In shell text a bare interpreter reads code from its input, a pipe, a redirection,
- * or a heredoc Buckle cannot read as shell, so it runs code too.
+ * code (`-c`, `-e`, `--eval`, `-r`, `-p`, pwsh's `-Command`), a script, `-m`, awk's program or `-f`, or any other
+ * argument, and one behind xargs, whose items become its code or its script. Its version or its help alone runs
+ * nothing; nor does a bare interpreter as the call itself, whose input is empty. In shell text a bare interpreter
+ * reads code from its input, a pipe, a redirection, or a heredoc Buckle cannot read as shell, so it runs code too.
  */
 function interpreterRunningCode(chain: readonly string[][], place: Place): string | null {
   const [command = '', ...args] = chain.at(-1)!
   if (!INTERPRETER.test(command)) return null
   if (chain.some(form => form[0] === 'xargs')) return command
-  if (args.length === 1 && INTERPRETER_INFO[command.replace(/[\d.]+$/, '')]?.has(args[0]!)) return null
+  if (printsInfo(command, args)) return null
   return args.length === 0 && !place.statement ? null : command
 }
 
