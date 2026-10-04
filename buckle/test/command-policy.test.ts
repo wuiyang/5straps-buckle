@@ -188,10 +188,10 @@ describe('a shell body that hands its command on', () => {
   // it is unread now, refused under any deny glob and asked at the floor with none.
   it('refuses an eval whose text it cannot know under a deny glob, since no glob can meet it, and asks with none', () => {
     const body = 'x="git push --force origin main"; eval "$x"'
-    expect(reasonOf(evaluate('bash', ['-c', body], commands))).toMatch(/^Runs shell text an expansion supplies, .*\(expansion\), so the workspace command policy's deny list cannot meet all of it; refused rather than asked$/)
+    expect(reasonOf(evaluate('bash', ['-c', body], commands))).toMatch(/^Runs a command word or shell text an expansion supplies, .*\(expansion\), so the workspace command policy's deny list cannot meet all of it; refused rather than asked$/)
     const outcome = evaluate('bash', ['-c', body], { allow: ['bash -c *'] })
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
-    expect(outcome.asks[0]?.reason).toMatch(/^Runs shell text an expansion supplies, .*\(expansion\); asked rather than guessed at$/)
+    expect(outcome.asks[0]?.reason).toMatch(/^Runs a command word or shell text an expansion supplies, .*\(expansion\); asked rather than guessed at$/)
   })
 
   it('leaves an ordinary command behind an assignment alone', () => {
@@ -778,7 +778,7 @@ describe('a call Buckle cannot read whole', () => {
   // Slice 7l: a shell's -c string that an expansion supplies runs text Buckle never sees, as eval of the same text does;
   // the call is unread: refused naming the limit under any deny glob, and asked at the floor with none. A -c string
   // whose `$` sits in single quotes is text the inner shell reads, and stays read. Real bash ran the sentinel in each.
-  const expansion = 'Runs shell text an expansion supplies, which exists only once the shell has run (eval "$x", bash -c "$(...)"), so Buckle cannot read it (expansion)'
+  const expansion = 'Runs a command word or shell text an expansion supplies, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)"), so Buckle cannot read it (expansion)'
   const expandedShapes = [
     ['bash -c of a substitution', `bash -c "$(echo '${push}')"`],
     ['sh -c of a variable', `x='${push}'; sh -c "$x"`],
@@ -811,6 +811,98 @@ describe('a call Buckle cannot read whole', () => {
     const forms = commandFormsOf({ command: 'bash', args: ['-c', body] })
     expect([forms.unread, forms.scriptData]).toEqual([null, false])
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  // A command word the shell supplies, from a variable, a substitution, a pattern, or a brace expansion, from find's `{}`,
+  // or from what xargs hands on, names a command Buckle cannot know until the shell has run, behind each wrapper and in
+  // each text Buckle reads as shell. The call is unread: refused naming the limit under any deny glob, and asked at the
+  // floor with none. Real bash ran the sentinel in each shape (heredoc-oracle.test.ts).
+  const commandWords = [
+    ['a variable', 'x=git; $x push origin main'],
+    ['a double-quoted variable', 'x=git; "$x" push origin main'],
+    ['a braced variable', 'x=git; ${x} push origin main'],
+    ['a substitution', '$(echo git) push origin main'],
+    ['a backtick substitution', '`echo git` push origin main'],
+    ['an array', 'cmd=(git push origin main); "${cmd[@]}"'],
+    ['a brace expansion', '{git,push} origin main'],
+    ['a bracket pattern', 'g[i]t push origin main'],
+    ['a ? pattern', 'gi? push origin main'],
+    ['a path pattern', '/usr/bin/gi? push origin main'],
+    ['an extended glob', 'shopt -s extglob\n@(git) push origin main'],
+    ['a substitution inside the word', 'g$(echo it) push origin main'],
+    ['a substitution after an assignment holding blanks', 'x=$(echo a b) $(echo git) push origin main'],
+    ['a substitution after a double-quoted assignment holding quotes', 'x="$(echo "a b")" $(echo git) push origin main'],
+    ['a variable behind sudo', 'sudo $x push origin main'],
+    ['a variable behind env', 'env $x push origin main'],
+    ['a variable behind timeout', 'timeout 5 $x push origin main'],
+    ['a variable behind xargs', 'echo main | xargs $x push origin'],
+    ['the xargs replace string behind env', 'echo git | xargs -I X env X push origin main'],
+    ['xargs items handed to env', 'echo git push origin main | xargs env'],
+    ['find {} as the command word', 'find /usr/bin -name git -exec {} push origin main \;'],
+    ['find {} behind env', 'find /usr/bin -name git -exec env {} push origin main \;'],
+    ['a variable in a quoted body fed to bash', "bash <<'EOF'\nx=git; $x push origin main\nEOF"],
+    ['a variable in a substitution in heredoc text', 'cat <<EOF\n$($x push origin main)\nEOF'],
+    ['a variable in a -c string', "bash -c '$x push origin main'"],
+    ['a variable in a (( bash reads as a subshell', '(($x push origin main); true)'],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => commandWords.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a command word an expansion supplies: %s, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => commandWords.filter(([, body]) => !body.includes('sudo')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a command word an expansion supplies: %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
+  })
+
+  // A command word the text spells stays read as written: quoted, escaped, behind a tilde or a literal path, or after
+  // assignments that expand. The push glob refuses each by name.
+  it.each(cases.flatMap(([engine, switched]) => [
+    ['a quoted letter', 'g"i"t push origin main'],
+    ['an escaped first letter', '\\git push origin main'],
+    ['single quotes', "'git' push origin main"],
+    ['ANSI-C quotes', "$'git' push origin main"],
+    ['a tilde path', '~/bin/git push origin main'],
+    ['a literal path', '/usr/bin/git push origin main'],
+    ['an assignment holding a variable', 'GIT_DIR=$HOME/.git git push origin main'],
+    ['an assignment holding a substitution with blanks', 'x=$(echo a b) git push origin main'],
+    ['an assignment holding a double-quoted substitution', 'x="$(git rev-parse HEAD)" git push origin main'],
+  ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('refuses %s deny, switch on: %s, by the push glob, a git push whose command word is written: %s', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBeNull()
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  // A heredoc body fed to a program that runs no shell is data, read as shell text only as a safety net: a Makefile or a
+  // script written through cat or tee whose lines start with an expansion stays read, and a deny glob that names none
+  // of its commands lets it run. Fed to bash, the same body runs, and its command word is judged.
+  const makefile = "cat > Makefile <<'EOF'\nall:\n\t$(CC) -o app main.c\n\t\"$PYTHON\" -m pip install -r requirements.txt\nEOF"
+  const script = "cat > run.sh <<'EOF'\n#!/bin/sh\n\"$PYTHON\" -m pytest\n$(dirname \"$0\")/build.sh\n${RUNNER:-sh} deploy.sh\nEOF"
+  it.each(cases.flatMap(([engine, switched]) => [
+    ['a Makefile written through cat', makefile],
+    ['a Makefile written through cat, unquoted', 'cat > Makefile <<EOF\nall:\n\t\\$(CC) -o app main.c\nEOF'],
+    ['a script written through cat', script],
+    ['a script written through tee', script.replace('cat > run.sh', 'tee run.sh >/dev/null')],
+    ['a script written through cat beside a body fed to bash', `${script}\nbash <<'EOF'\nmake\nEOF`],
+  ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('admits %s deny, switch on: %s, %s, whose lines start with an expansion', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBeNull()
+    expect(check(engine, switched, body, ['terraform destroy *']).kind).toBe('allow')
+  })
+
+  it('judges the same lines fed to bash, whose command word an expansion supplies', () => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', makefile.replace('cat > Makefile', 'bash')] }).unread).toBe('expansion')
+    expect(commandFormsOf({ command: 'bash', args: ['-c', script.replace('cat > run.sh', 'sudo -u ci bash')] }).unread).toBe('expansion')
+  })
+
+  // An argument an expansion supplies is read as written, so a deny glob meets the words as typed: `git push*` does not
+  // meet `git $x origin main` even where $x is push, and nothing marks the call unread. A later argument is no matter:
+  // the glob meets `git push $x`.
+  it.each(cases)('reads an argument an expansion supplies as written, %s deny, switch on: %s, so git push* meets git push $x but not git $x origin', (engine, switched) => {
+    const forms = commandFormsOf({ command: 'bash', args: ['-c', 'x=push; git $x origin main'] })
+    expect([forms.unread, forms.nested]).toEqual([null, [['x=push'], ['git', '$x', 'origin', 'main']]])
+    expect(check(engine, switched, 'x=push; git $x origin main', ['git push*']).kind).toBe('allow')
+    expect(refusal(check(engine, switched, 'x=main; git push origin $x', ['git push*']))).toBe(`Refused by ${named[engine]}: git push*`)
   })
 
   // Slice 7l: rbash, ash, mksh, yash, and posh are POSIX shells: a -c string is read, and a script piped in is data.

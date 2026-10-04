@@ -1,4 +1,4 @@
-import { baseCommand, envSplitWords, holdsExpansion, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import { baseCommand, envSplitWords, holdsExpansion, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
@@ -21,7 +21,7 @@ export const READ_LIMITS = {
   findPrimary: 'A find -exec command starts with a word find reads as a primary, which Buckle does not read as a command (find primary)',
   comment: 'A # follows a ) that a case pattern or an extended glob may have closed, so Buckle cannot tell whether the rest of the line is a comment (comment)',
   session: 'Opens an interactive session Buckle cannot read: ssh or su with no command, or a sudo or doas shell (interactive session)',
-  expansion: 'Runs shell text an expansion supplies, which exists only once the shell has run (eval "$x", bash -c "$(...)"), so Buckle cannot read it (expansion)',
+  expansion: 'Runs a command word or shell text an expansion supplies, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)"), so Buckle cannot read it (expansion)',
   ownParsing: 'A program reads an argument by rules of its own that Buckle does not read as shell words: an env -S escape, an ssh % token, or a sudo -s or -i command for a shell Buckle does not know (own parsing)',
   scriptData: 'A shell takes its script from a pipe, a redirection, a descriptor, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)',
   interpreter: 'Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter)',
@@ -233,15 +233,25 @@ interface Budget { characters: number; words: number; commands: number; spent: b
 interface Reading extends CommandForms { rereads: boolean }
 
 /**
+ * The words of a statement an expansion supplies (holdsExpansion), whose value Buckle cannot know, each mapped to whether
+ * the expansion may change the command the word names: false for a word whose only expansion is a leading tilde, which
+ * names a directory, so a command word keeps its basename (`~/bin/tool`).
+ */
+type Expanded = ReadonlyMap<string, boolean>
+const NO_WORDS: Expanded = new Map()
+
+/**
  * Where the words being read stand: the call itself, whose input Buckle's exec leaves empty, or a statement of shell
  * text (a shell body, eval text, a find -exec command), whose input may be a pipe, a redirection or the input of a
  * pipeline around it; `heredoc` when a heredoc on that statement feeds its input, which Buckle reads. `expanded` holds
- * the words of the statement that an expansion supplies (holdsExpansion), whose value Buckle cannot know, and `found`
- * says find runs the words, putting a file name in place of each `{}`.
+ * the words an expansion supplies, and `found` says find runs the words, putting a file name in place of each `{}`.
+ * `sure` says the words run whenever the call does, so a command word an expansion supplies leaves the call unread:
+ * false for a statement piece (a split no shell makes), for a heredoc body read as shell text when no shell is fed one,
+ * and for whatever either holds. `whole` says the words are a whole simple command, so their command word is judged
+ * here; a piece of a command a substitution cut is judged on the command whole (a head, textCommands).
  */
-interface Place { statement: boolean; heredoc: boolean; expanded: ReadonlySet<string>; found: boolean }
-const NO_WORDS: ReadonlySet<string> = new Set()
-const CALL: Place = { statement: false, heredoc: false, expanded: NO_WORDS, found: false }
+interface Place { statement: boolean; heredoc: boolean; expanded: Expanded; found: boolean; sure: boolean; whole: boolean }
+const CALL: Place = { statement: false, heredoc: false, expanded: NO_WORDS, found: false, sure: true, whole: true }
 
 /**
  * `words` as written: the command word is reduced to its basename only after an assignment prefix is read. Each
@@ -250,7 +260,7 @@ const CALL: Place = { statement: false, heredoc: false, expanded: NO_WORDS, foun
  * split no shell makes, read only so a glob meets a command quoted for another program, so it marks no script as data.
  */
 function formsOf(words: readonly string[], depth: number, budget: Budget, place: Place): Reading {
-  const { chain, unread } = wrapperChain(words, place.expanded)
+  const { chain, unread } = wrapperChain(words, place.expanded, place.sure && place.whole ? (place.found ? JUDGED_FOUND : JUDGED) : null)
   const inner = innerCommands(chain.at(-1)!, budget, place)
   const interpreter = interpreterRunningCode(chain, place)
   const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: scriptArrivesAsData(chain, place), interpreters: interpreter ? [interpreter] : [], rereads: inner.rereads }
@@ -272,7 +282,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   for (const group of inner.groups) {
     if (budget.spent) break
     if (group.command.length > 0) {
-      const nested = read(group.command, { statement: true, heredoc: group.heredoc, expanded: group.expanded, found: group.found })
+      const nested = read(group.command, { statement: true, heredoc: group.heredoc, expanded: group.expanded, found: group.found, sure: group.sure, whole: group.whole })
       if (nested === null) break
       if (nested.rereads) continue
     }
@@ -280,7 +290,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
     for (const piece of statementPieces(group.statement)) {
       const form = budget.spent ? null : statementForm(piece, budget)
       if (form === null) break
-      if (form.words.length > 0) read(form.words, { statement: true, heredoc: form.heredoc, expanded: form.expanded, found: false }, true)
+      if (form.words.length > 0) read(form.words, { statement: true, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: false, whole: false }, true)
     }
   }
   forms.overBudget = budget.spent
@@ -429,16 +439,16 @@ function keep(into: string[][], forms: readonly string[][], budget: Budget): voi
 
 /**
  * A command a statement runs, the statement as written, whose pieces are read too unless the command reads its own text
- * again, whether a heredoc on the statement feeds the command's input, the words an expansion supplies (Place), and
- * whether find runs the command.
+ * again, whether a heredoc on the statement feeds the command's input, the words an expansion supplies, whether find runs
+ * the command, and whether it surely runs and is whole (Place).
  */
-interface CommandGroup { command: string[]; statement: string; heredoc: boolean; expanded: ReadonlySet<string>; found: boolean }
+interface CommandGroup { command: string[]; statement: string; heredoc: boolean; expanded: Expanded; found: boolean; sure: boolean; whole: boolean }
 
 interface InnerCommands { groups: CommandGroup[]; unread: UnreadLimit | null; rereads: boolean }
 
 /** Commands a command runs whose words come from the statement around it (find -exec, su), keeping what the place knows of them. */
 const groupsOf = (commands: readonly string[][], place: Place, found: boolean): CommandGroup[] =>
-  commands.map(command => ({ command: [...command], statement: '', heredoc: false, expanded: place.expanded, found }))
+  commands.map(command => ({ command: [...command], statement: '', heredoc: false, expanded: place.expanded, found, sure: place.sure, whole: true }))
 
 /**
  * The commands a command runs inside itself: each statement of a shell's script body, of eval's text, of the remote
@@ -458,11 +468,11 @@ function innerCommands(runs: readonly string[], budget: Budget, place: Place): I
   if (command === 'eval') {
     // eval joins its words with spaces and runs the result as shell text; one leading `--` ends its options (slice 7b review W7B-2).
     const text = (args[0] === '--' ? args.slice(1) : args).join(' ')
-    const read = textCommands(text, budget)
+    const read = textCommands(text, budget, place.sure)
     return { groups: read.groups, unread: UNKNOWN_TEXT.test(text) || text.trim() === '' ? firstLimit(read.unread, 'expansion') : read.unread, rereads: true }
   }
   if (!SHELL_COMMANDS.has(command)) return { groups: [], unread: null, rereads: false }
-  const read = textCommands(parseArgv(command, args).positionals.join('\n'), budget)
+  const read = textCommands(parseArgv(command, args).positionals.join('\n'), budget, place.sure)
   const { source, operand } = shellScriptOperand(args)
   const expanded = source === 'command' && operand !== undefined && place.expanded.has(operand)
   return { groups: read.groups, unread: expanded ? firstLimit(read.unread, 'expansion') : read.unread, rereads: true }
@@ -480,7 +490,7 @@ function sshCommands(args: readonly string[], budget: Budget, place: Place): Inn
   if ([...ssh.words, ...ssh.settings].some(word => place.expanded.has(word))) unread = firstLimit(unread, 'expansion')
   if (ssh.tokens) unread = firstLimit(unread, 'ownParsing')
   for (const text of [...ssh.remote, ...ssh.local]) {
-    const read = textCommands(text, budget)
+    const read = textCommands(text, budget, place.sure)
     groups.push(...read.groups)
     unread = firstLimit(unread, read.unread)
   }
@@ -501,16 +511,21 @@ function suCommands(args: readonly string[], place: Place): InnerCommands {
 /**
  * The commands of shell text, within the budget: each statement's form, beside the statement as written. Every pass the
  * splitter makes over the text and the bodies in it is charged to the budget's characters (shellStatementList), and
- * past it the text is unread.
+ * past it the text is unread. When the text runs whenever the call does (`sure`), a command word an expansion supplies
+ * leaves the call unread: each whole statement's is judged where it is read (formsOf), and each command a substitution
+ * cut is judged here on its head, whose words the cut pieces do not show. What only a safety net read is not judged: a
+ * heredoc body read whole is judged only when the command owning it may feed it to a shell (feedsShell), so a Makefile
+ * line `$(CC) -o x` or a script line `"$PYTHON" x.py` in a body fed to `cat` is read as before, and a body's lines read
+ * one at a time or joined, which no shell runs as such, are never judged.
  */
-function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; unread: UnreadLimit | null } {
+function textCommands(text: string, budget: Budget, sure: boolean): { groups: CommandGroup[]; unread: UnreadLimit | null } {
   if (budget.characters < text.length) {
     budget.characters -= text.length
     budget.spent = true
     return { groups: [], unread: null }
   }
   const meter = { characters: budget.characters }
-  const { statements, deep, overDepth, unsureComment, overBudget } = shellStatementList(text, meter)
+  const { statements, seen, heads, deep, overDepth, unsureComment, overBudget } = shellStatementList(text, meter, feedsShell)
   budget.characters = meter.characters
   const groups: CommandGroup[] = []
   // Past the budget no form is read (formsOf stops at a spent budget), so the statements are not split into words.
@@ -518,12 +533,47 @@ function textCommands(text: string, budget: Budget): { groups: CommandGroup[]; u
     budget.spent = true
     return { groups, unread: null }
   }
+  let unread: UnreadLimit | null = overDepth ? 'depth' : deep ? 'substitutions' : unsureComment ? 'comment' : null
   for (const statement of statements) {
     const form = statementForm(statement, budget)
     if (form === null) break
-    groups.push({ command: form.words, statement, heredoc: form.heredoc, expanded: form.expanded, found: false })
+    const known = seen.get(statement)!
+    groups.push({ command: form.words, statement, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: sure && !known.net, whole: known.whole })
   }
-  return { groups, unread: overDepth ? 'depth' : deep ? 'substitutions' : unsureComment ? 'comment' : null }
+  for (const [head, known] of heads) {
+    if (!sure || known.net) continue
+    const form = budget.spent ? null : statementForm(head, budget)
+    if (form === null) break
+    if (wrapperChain(form.words, form.expanded, JUDGED).unread === 'expansion') unread = firstLimit(unread, 'expansion')
+  }
+  return { groups, unread }
+}
+
+/** Programs that run what a heredoc feeds them as shell text: the shells, `source`, and ssh and su, which hand it to one. */
+const BODY_RUNNERS: ReadonlySet<string> = new Set([...SHELL_COMMANDS, 'source', '.', 'ssh', 'su', 'tcsh', 'csh', 'busybox'])
+
+/**
+ * Whether the command owning a heredoc (its statement, or its head when a substitution cut it) may feed the body to a
+ * shell: its command, or one behind a wrapper prefix, runs its input as shell text, or opens an interactive session
+ * (`sudo -s`); a command whose words a cut left out (`$(...) <<EOF`) may too.
+ */
+function feedsShell(owner: string): boolean {
+  const words = shellWordsWithoutRedirections(owner)
+  if (words.length === 0) return true
+  const { chain, unread } = wrapperChain(words, NO_WORDS, null)
+  return unread === 'session' || chain.some(([command = '']) => BODY_RUNNERS.has(command))
+}
+
+/** A command's words as statementForm reads them, its redirections dropped, with no budget: an owner is one command. */
+function shellWordsWithoutRedirections(text: string): string[] {
+  const words: string[] = []
+  const tokens = shellTokens(text)
+  for (let index = 0; index < tokens.length; index++) {
+    const { raw, word } = tokens[index]!
+    if (!REDIRECTION.test(raw)) words.push(word)
+    else if (BARE_REDIRECTION.test(raw)) index++
+  }
+  return words
 }
 
 /**
@@ -552,31 +602,87 @@ function findCommands(args: readonly string[]): { commands: string[][]; primary:
   return { commands, primary }
 }
 
-/** The words `expanded` names are those an expansion supplies (Place), whose value Buckle cannot know. */
-function wrapperChain(words: readonly string[], expanded: ReadonlySet<string>): { chain: string[][]; unread: UnreadLimit | null } {
+/** How a chain's command words are judged: `found` when find runs the words, putting a file name in place of each `{}`. */
+interface Judged { found: boolean }
+const JUDGED: Judged = { found: false }
+const JUDGED_FOUND: Judged = { found: true }
+
+/**
+ * The call as written, then the command behind each wrapper prefix in turn. The words `expanded` names are those an
+ * expansion supplies (Place), whose value Buckle cannot know. With `judged`, a command word whose value something other
+ * than the text supplies leaves the call unread (expansion), at every step of the chain: an expansion (`$cmd`, `"$(...)"`,
+ * a glob, a brace expansion; a leading tilde alone keeps the basename), the `{}` find replaces, the replace string of an
+ * xargs before it (`xargs -I X env X`), and the items xargs hands a wrapper that names no command (`xargs env`).
+ */
+function wrapperChain(words: readonly string[], expanded: Expanded, judged: Judged | null): { chain: string[][]; unread: UnreadLimit | null } {
   const chain = [reduced(words)]
   let current = words
   let unread: UnreadLimit | null = null
+  // What an xargs earlier in the chain hands on: its items, and the string it replaces with one.
+  let xargs: { replace: string | null } | null = null
   for (let depth = 0; ; depth++) {
+    if (judged && suppliedCommand(current[0], expanded, judged, xargs?.replace ?? null)) unread = firstLimit(unread, 'expansion')
     const inner = unwrapped(current, expanded)
     if (inner === undefined) return { chain, unread }
     if (depth >= MAX_DEPTH) return { chain, unread: 'depth' }
     unread = firstLimit(unread, inner.unread)
     if (inner.command === 'session') return { chain, unread: firstLimit(unread, 'session') }
-    if (!inner.command?.[0]) return { chain, unread }
+    if (!inner.command?.[0]) return { chain, unread: judged && inner.open && xargs ? firstLimit(unread, 'expansion') : unread }
+    if (baseCommand(current[0]!) === 'xargs') xargs = { replace: xargsReplace(current.slice(1, current.length - inner.command.length)) }
     current = inner.command
     chain.push(reduced(current))
   }
 }
 
-/** What a prefix runs (null for nothing, 'session' for an interactive session) and why part of it was left unread. */
-interface Unwrapped { command: string[] | null | 'session'; unread: UnreadLimit | null }
+/** Whether something other than the text supplies a command word: see wrapperChain. An assignment word is no command word. */
+function suppliedCommand(word: string | undefined, expanded: Expanded, judged: Judged, replace: string | null): boolean {
+  if (word === undefined || ASSIGNMENT.test(word)) return false
+  if (expanded.get(word) === true) return true
+  if (judged.found && word.includes('{}')) return true
+  return replace !== null && replace !== '' && word.includes(replace)
+}
+
+/**
+ * The string xargs replaces with each item in the words after it, from its options as findutils reads them: `-I R`,
+ * `-iR` or `-i` (`{}`), `--replace=R` or `--replace` (`{}`), a long name it begins counting; null with none.
+ */
+function xargsReplace(options: readonly string[]): string | null {
+  let replace: string | null = null
+  for (let index = 0; index < options.length; index++) {
+    const word = options[index]!
+    if (word.startsWith('--')) {
+      const separator = word.indexOf('=')
+      const typed = separator < 0 ? word.slice(2) : word.slice(2, separator)
+      if (typed !== '' && 'replace'.startsWith(typed)) replace = separator < 0 ? '{}' : word.slice(separator + 1)
+      else if (separator < 0 && WRAPPERS.xargs!.longValues!.some(name => typed !== '' && name.startsWith(typed))) index++
+      continue
+    }
+    for (let offset = 1; offset < word.length; offset++) {
+      const flag = word[offset]!
+      if (flag === 'i') {
+        replace = word.slice(offset + 1) || '{}'
+        break
+      }
+      if (!WRAPPERS.xargs!.shortValues!.includes(flag)) continue
+      const value = offset + 1 < word.length ? word.slice(offset + 1) : options[++index]
+      if (flag === 'I' && value !== undefined) replace = value
+      break
+    }
+  }
+  return replace
+}
+
+/**
+ * What a prefix runs (null for nothing, 'session' for an interactive session) and why part of it was left unread; `open`
+ * when a wrapper names no command but would run one from more words it is handed (`env`, `timeout 5`), as from xargs.
+ */
+interface Unwrapped { command: string[] | null | 'session'; unread: UnreadLimit | null; open?: true }
 
 /**
  * What the first words run: past NAME=value assignments, a wrapper's options, a shell keyword, `function NAME` or
  * `coproc [NAME]` (slice 7b review W7B-3). Undefined when the first word is none of those.
  */
-function unwrapped(words: readonly string[], expanded: ReadonlySet<string>): Unwrapped | undefined {
+function unwrapped(words: readonly string[], expanded: Expanded): Unwrapped | undefined {
   const runs = (command: string[] | null): Unwrapped => ({ command, unread: null })
   if (ASSIGNMENT.test(words[0] ?? '')) {
     const command = words.findIndex(word => !ASSIGNMENT.test(word))
@@ -594,7 +700,7 @@ function unwrapped(words: readonly string[], expanded: ReadonlySet<string>): Unw
  * so such a value is unread (own parsing), and so is one an expansion supplies; either is still split as shell words,
  * so a deny glob may yet name what it meets.
  */
-function splitValue(value: string, expanded: ReadonlySet<string>): { words: string[]; unread: UnreadLimit | null } {
+function splitValue(value: string, expanded: Expanded): { words: string[]; unread: UnreadLimit | null } {
   if (value.includes('\\') || value.includes('${')) return { words: shellWords(value), unread: 'ownParsing' }
   if (expanded.has(value)) return { words: shellWords(value), unread: 'expansion' }
   return { words: envSplitWords(value), unread: null }
@@ -623,7 +729,7 @@ function reduced(words: readonly string[]): string[] {
  * The command a wrapper runs, read past its options, assignments and operands; null when it runs none, and 'session'
  * when it runs none but an option opens an interactive session (`sudo -i`).
  */
-function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: ReadonlySet<string>): Unwrapped {
+function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expanded): Unwrapped {
   const words = [...args]
   let index = 0
   let session = false
@@ -655,13 +761,13 @@ function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Reado
   }
   if (wrapper.assignments) while (index < words.length && words[index]!.includes('=')) index++
   index += wrapper.operands ?? 0
-  if (wrapper.shellCommand?.includes(words[index] ?? '')) return { command: index + 1 < words.length ? ['sh', '-c', words[index + 1]!] : null, unread }
+  if (wrapper.shellCommand?.includes(words[index] ?? '')) return index + 1 < words.length ? { command: ['sh', '-c', words[index + 1]!], unread } : { command: null, unread, open: true }
   if (index < words.length && session && wrapper.sessionShell) {
     const shell = shellSessionCommand(words.slice(index))
     return { command: shell.command, unread: firstLimit(unread, shell.unread) }
   }
   if (index < words.length) return { command: words.slice(index), unread }
-  return { command: session ? 'session' : null, unread }
+  return session ? { command: 'session', unread } : { command: null, unread, open: true }
 }
 
 interface ReadOption { next: number; runsNothing?: true; split?: string; session?: true }
@@ -714,7 +820,7 @@ const STDIN_HEREDOC = /^0?<<(?!<)/
  * the last redirection of its input is a heredoc, which Buckle reads. Null when the budget's words ran out before the
  * statement was read whole.
  */
-function statementForm(statement: string, budget: Budget): { words: string[]; heredoc: boolean; expanded: ReadonlySet<string> } | null {
+function statementForm(statement: string, budget: Budget): { words: string[]; heredoc: boolean; expanded: Expanded } | null {
   const { tokens, more } = shellTokensUpTo(statement, Math.max(0, budget.words))
   budget.words -= tokens.length
   if (more) {
@@ -723,12 +829,13 @@ function statementForm(statement: string, budget: Budget): { words: string[]; he
   }
   const words: string[] = []
   let heredoc = false
-  let expanded: Set<string> | null = null
+  let expanded: Map<string, boolean> | null = null
   for (let index = 0; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
     if (!REDIRECTION.test(raw)) {
       words.push(word)
-      if (holdsExpansion(raw)) (expanded ??= new Set()).add(word)
+      // A word that expands more than a leading tilde may name another command; a word seen both ways may.
+      if (holdsExpansion(raw)) (expanded ??= new Map()).set(word, expanded.get(word) === true || !raw.startsWith('~') || holdsExpansion(raw.slice(1)))
       continue
     }
     if (STDIN_REDIRECTION.test(raw)) heredoc = STDIN_HEREDOC.test(raw)

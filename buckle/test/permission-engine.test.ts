@@ -312,7 +312,7 @@ describe('destructive commands', () => {
   ])('asks about bash -c %s, whose eval text Buckle cannot know', (body) => {
     const outcome = evaluate([exec('bash', ['-c', body])], { write_scope: ['/'] })
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
-    expect(outcome.asks.find(entry => entry.rule === 'destructive_command')?.reason).toMatch(/^Runs shell text an expansion supplies, .*\(expansion\); asked rather than guessed at$/)
+    expect(outcome.asks.find(entry => entry.rule === 'destructive_command')?.reason).toMatch(/^Runs a command word or shell text an expansion supplies, .*\(expansion\); asked rather than guessed at$/)
   })
 
   // Slice 7 review F2: a quoted redirection or separator character is a word a shell hands on, never an operator,

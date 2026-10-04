@@ -29,10 +29,12 @@ if (!hasBash) console.info('heredoc oracle: bash is not on PATH, so the real-bas
  * One shape: its body, run as `bash -c`. `written` is the invocation Buckle reads where bash runs it expanded (an
  * over-read, see BACKTICK_EXTRA). `unread` is the limit the reading must name: the call is one Buckle cannot read
  * whole, so it is refused under any deny glob and asked at the floor (default D33 (b)), and what bash ran need not be
- * among the commands read. `needs` names a program the shape runs that a machine may lack: where it is absent the row is
- * skipped and the reason logged; where it is present the sentinel must have run, so the row proves the program runs it.
+ * among the commands read. `whole` says the call must be read whole, with no limit, so a reading that marks it unread
+ * fails the row as a miss would. `needs` names a program the shape runs that a machine may lack: where it is absent the
+ * row is skipped and the reason logged; where it is present the sentinel must have run, so the row proves the program
+ * runs it.
  */
-interface Shape { label: string; body: string; written?: string; unread?: ReadLimit; needs?: string }
+interface Shape { label: string; body: string; written?: string; unread?: ReadLimit; whole?: true; needs?: string }
 
 /** The dangerous command each shape carries, a sentinel that only records that it ran. `mark` shows its argument too. */
 const SENTINEL = 'sentinel'
@@ -920,6 +922,105 @@ function delimiterShapes(): Shape[] {
   return shapes
 }
 
+/**
+ * A command word whose value the shell supplies, from a variable, a substitution, a pattern, or a brace expansion, from
+ * find's `{}`, or from what xargs hands on, names a command Buckle cannot know, so the call is unread (expansion): at the
+ * start of a statement, behind each wrapper, after assignments, keywords, and redirections, inside a word, in a body fed
+ * to bash, in a substitution in heredoc text, in a -c string, and in a `((` bash reads as a subshell. The patterns match
+ * the sentinel the oracle's working directory holds. Each ran the sentinel under real bash in scratch first.
+ */
+const EXPANDED_COMMAND_WORDS: Shape[] = [
+  ['a variable', `x=${SENTINEL}; $x mark`],
+  ['a double-quoted variable', `x=${SENTINEL}; "$x" mark`],
+  ['a braced variable', `x=${SENTINEL}; \${x} mark`],
+  ['a substitution', `$(echo ${SENTINEL}) mark`],
+  ['a backtick substitution', `\`echo ${SENTINEL}\` mark`],
+  ['a double-quoted substitution', `"$(echo ${SENTINEL})" mark`],
+  ['an array', `cmd=(${PAYLOAD}); "\${cmd[@]}"`],
+  ['a brace expansion', `{${SENTINEL},mark}`],
+  ['a bracket pattern', 's[e]ntinel mark'],
+  ['a ? pattern', 'sentine? mark'],
+  ['a path pattern', './sentine? mark'],
+  ['a bracket path pattern', './s[e]ntinel mark'],
+  ['an extended glob @()', `shopt -s extglob\n@(${SENTINEL}) mark`],
+  ['an extended glob +()', `shopt -s extglob\n+(${SENTINEL}) mark`],
+  ['an extended glob ?()', `shopt -s extglob\n?(${SENTINEL}) mark`],
+  ['a substitution inside the word', 'sentin$(echo el) mark'],
+  ['a backtick substitution inside the word', 'sentin`echo el` mark'],
+  ['a substitution after an assignment holding blanks', `x=$(echo a b) $(echo ${SENTINEL}) mark`],
+  ['a substitution after a double-quoted assignment holding quotes', `x="$(echo "a b")" $(echo ${SENTINEL}) mark`],
+  ['a variable after a double-quoted assignment holding quotes', `y=${SENTINEL}; x="$(echo "a b")" $y mark`],
+  ['a variable after an assignment', `x=${SENTINEL}; A=1 $x mark`],
+  ['a variable after a redirection', `x=${SENTINEL}; 2>/dev/null $x mark`],
+  ['a variable under if', `x=${SENTINEL}; if $x mark; then :; fi`],
+  ['a variable under !', `x=${SENTINEL}; ! $x mark`],
+  ['a variable behind sudo', `x=${SENTINEL}; sudo $x mark`],
+  ['a variable behind doas', `x=${SENTINEL}; doas $x mark`],
+  ['a variable behind env', `x=${SENTINEL}; env $x mark`],
+  ['a double-quoted variable behind env and an assignment', `x=${SENTINEL}; env X=1 "$x" mark`],
+  ['a variable behind timeout', `x=${SENTINEL}; timeout 5 $x mark`],
+  ['a variable behind nice -n', `x=${SENTINEL}; nice -n 5 $x mark`],
+  ['a variable behind command', `x=${SENTINEL}; command $x mark`],
+  ['a variable behind exec', `x=${SENTINEL}; exec $x mark`],
+  ['a substitution behind sudo', `sudo $(echo ${SENTINEL}) mark`],
+  ['a backtick substitution behind env', `env \`echo ${SENTINEL}\` mark`],
+  ['a variable behind xargs', `x=${SENTINEL}; echo a | xargs $x mark`],
+  ['the xargs -I string behind env', `echo ${SENTINEL} | xargs -I X env X mark`],
+  ['the xargs -I{} string behind sudo', `echo ${SENTINEL} | xargs -I{} sudo {} mark`],
+  ['the xargs -i string behind env', `echo ${SENTINEL} | xargs -i env {} mark`],
+  ['the xargs --replace string behind env', `echo ${SENTINEL} | xargs --replace env {} mark`],
+  ['xargs items handed to env', `echo ${PAYLOAD} | xargs env`],
+  ['xargs items handed to nice', `echo ${PAYLOAD} | xargs nice`],
+  ['xargs items handed to xargs', `echo ${PAYLOAD} | xargs xargs`],
+  ['find {} as the command word', `find . -maxdepth 1 -name ${SENTINEL} -exec {} mark \\;`],
+  ['find -execdir {} as the command word', `find . -maxdepth 1 -name ${SENTINEL} -execdir {} mark \\;`],
+  ['find {} behind env', `find . -maxdepth 1 -name ${SENTINEL} -exec env {} mark \\;`],
+  ['find {} behind sudo', `find . -maxdepth 1 -name ${SENTINEL} -exec sudo {} mark \\;`],
+  ['a variable in a quoted body fed to bash', `bash <<'EOF'\nx=${SENTINEL}; $x mark\nEOF`],
+  ['an exported variable in a quoted body fed to bash', `export PYTHON=${SENTINEL}; bash <<'EOF'\n"$PYTHON" mark\nEOF`],
+  ['a variable in a substitution in heredoc text', `x=${SENTINEL}; cat <<EOF\n$($x mark)\nEOF`],
+  ['a variable in a substitution in double quotes', `x=${SENTINEL}; echo "$($x mark)"`],
+  ['an exported variable in a -c string', `export x=${SENTINEL}; bash -c '$x mark'`],
+  ['a variable in a (( bash reads as a subshell', `x=${SENTINEL}; (($x mark); true)`],
+  ['a variable in a $(( bash reads as a substitution', `x=${SENTINEL}; echo $(($x mark) )`],
+  ['a variable in a substitution in an array', `x=${SENTINEL}; a=($($x mark))`],
+].map(([label, body]) => ({ label: `expanded command word: ${label}`, body: body!, unread: 'expansion' as const }))
+
+/**
+ * A command word the text spells, quoted, escaped, behind a tilde or a literal path, or after assignments that expand,
+ * is read as written, and so are an argument, an array element, and arithmetic an expansion supplies: each call stays
+ * read whole. A Makefile and a script written through `cat` hold lines that start with an expansion; the body is data
+ * to cat, read as shell text only as a safety net, so it stays read too. Each ran under real bash in scratch first.
+ */
+const LITERAL_COMMAND_WORDS: Shape[] = [
+  ...[
+    ['a quoted letter', 's"e"ntinel mark'],
+    ['an escaped first letter', `\\${PAYLOAD}`],
+    ['single quotes', `'${SENTINEL}' mark`],
+    ['double quotes', `"${SENTINEL}" mark`],
+    ['ANSI-C quotes', `$'${SENTINEL}' mark`],
+    ['a tilde path', `HOME="$PWD"; ~/${PAYLOAD}`],
+    ['a literal path', `./${PAYLOAD}`],
+    ['an assignment holding a variable', `A=$HOME ${PAYLOAD}`],
+    ['an assignment holding a substitution with blanks', `x=$(echo a b) ${PAYLOAD}`],
+    ['an assignment holding a double-quoted substitution', `A="$(echo x)" ${PAYLOAD}`],
+    ['arithmetic holding a variable', `x=1; echo $(($x + 1)); ${PAYLOAD}`],
+    ['arithmetic in double quotes holding a variable', `echo "$(( $# - 1 ))"; ${PAYLOAD}`],
+    ['an arithmetic command holding a variable', `x=1; (( $x > 0 )) && ${PAYLOAD}`],
+    ['an arithmetic for loop', `for ((i=0; i<1; i++)); do ${PAYLOAD}; done`],
+    ['an array holding a variable', `x=1; a=($x y); ${PAYLOAD}`],
+    ['an argument after a substitution', `x=1; echo $(echo a)$x b; ${PAYLOAD}`],
+    ['a quoted string spanning lines of a body fed to bash', `bash <<'EOF'\necho "usage:\n  $0 [options]\n"\n${PAYLOAD}\nEOF`],
+    ['a Makefile written through cat', `cat > Makefile <<'EOF'\nall:\n\t$(CC) -o x x.c\n\t"$PYTHON" -m pip install x\n\t${PAYLOAD}\nEOF`],
+    ['a Makefile written through cat, unquoted', `cat > Makefile <<EOF\nall:\n\t\\$(CC) -o x x.c\n\t"\\$PYTHON" -m pip install x\n\t${PAYLOAD}\nEOF`],
+    ['a script written through cat', `cat > run.sh <<'EOF'\n#!/bin/sh\n"$PYTHON" -m pytest\n$(dirname "$0")/build.sh\n\${RUNNER:-sh} x\n${PAYLOAD}\nEOF`],
+    ['a script written through tee', `tee run.sh >/dev/null <<'EOF'\n"$PYTHON" -m pytest\n${PAYLOAD}\nEOF`],
+    ['a script written through cat beside a body fed to bash', `cat > run.sh <<'EOF'\n"$PYTHON" -m pytest\nEOF\nbash <<'EOF'\n${PAYLOAD}\nEOF`],
+  ].map(([label, body]) => ({ label: `literal command word: ${label}`, body: body!, whole: true as const })),
+  { label: 'literal command word: an argument a variable supplies (read as written)', body: `x=mark; ${SENTINEL} $x`, written: '$x', whole: true },
+  { label: 'literal command word: a separator and a variable inside a quoted argument (read as written)', body: `${SENTINEL} "fix; $x mark"`, written: 'fix; $x mark', whole: true },
+]
+
 /** An `until` loop runs its condition, so the command in it runs as surely as one under `if` or `while`. */
 const KEYWORD_SHAPES: Shape[] = [
   { label: 'keyword: until around the payload', body: `until ${PAYLOAD}; do :; done` },
@@ -938,7 +1039,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
@@ -990,6 +1091,11 @@ describe('the reader is bounded on adversarial bulk', () => {
 
   it('reads 50,000 continuations within a second', () => {
     under(`bash <<EOF\n${Array.from({ length: 50_000 }, () => 'echo a \\').join('\n')}\ndone\nEOF`)
+  })
+
+  // Each `((` looks ahead for the `))` that makes it arithmetic; a megabyte of open parentheses stops at the read budget.
+  it.each(['((', '$(('])('stops at the read budget within a second on a megabyte of %s never closed', (opener) => {
+    expect(readLimitOf(under(opener.repeat(Math.ceil(1_000_000 / opener.length))))).toBe('budget')
   })
 
   /**
@@ -1087,7 +1193,7 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     let overRead = 0
     let unreadShapes = 0
     const skipped: string[] = []
-    for (const { label, body, written, unread, needs } of shapes) {
+    for (const { label, body, written, unread, whole, needs } of shapes) {
       if (needs !== undefined && resolved(needs) === '') {
         skipped.push(`${label} (${needs} is not on PATH)`)
         continue
@@ -1096,6 +1202,7 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
       const forms = commandForms('bash', ['-c', body])
       const read = buckleRan(forms)
       if (needs !== undefined && ran.size === 0) missed.push(`${label}: ${needs} ran no sentinel, so the row proves nothing`)
+      if (whole && readLimitOf(forms) !== null) missed.push(`${label}: Buckle marked the call unread (${readLimitOf(forms)}), which it must read whole`)
       if (unread !== undefined) {
         if (readLimitOf(forms) !== unread) missed.push(`${label}: Buckle did not mark the call unread (${unread}), so nothing refuses or asks about what bash ran`)
         unreadShapes++

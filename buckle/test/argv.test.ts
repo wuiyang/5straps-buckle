@@ -321,6 +321,42 @@ describe('shell text as a shell splits it', () => {
   })
 })
 
+// A substitution, an array, an extended glob, or arithmetic cuts the statement it sits in, so no piece shows which word
+// is the command word; the command is also kept whole, as a head, each body replaced by `$()`.
+describe('the commands a substitution cuts, kept whole', () => {
+  const headsOf = (text: string) => [...shellStatementList(text).heads.keys()]
+
+  it.each([
+    ['$(echo git) push origin', ['$$() push origin']],
+    ['`echo git` push origin', ['$() push origin']],
+    ['g$(echo it) push', ['g$$() push']],
+    ['x=$(echo a b) $(echo git) push', ['x=$$() $$() push']],
+    ['x="$(echo "a b")" $y push', ['x="$()" $y push']],
+    ['sudo $(echo git) push; ls', ['sudo $$() push']],
+    ['echo $((1 + $x)); a=($y z); @(x) push', ['echo $$()', 'a=$()', '@$() push']],
+    ['(($x push); true)', []],
+    ['git push', []],
+  ])('keeps %j whole as %j', (text, heads) => {
+    expect(headsOf(text)).toEqual(heads)
+  })
+
+  it('marks the pieces of a cut command, and the words of arithmetic and of an array, as no whole command', () => {
+    const { seen } = shellStatementList('$(echo git) push; echo $(($i + 1)); a=($x y); (( $j > 0 )); $z mark')
+    expect([...seen].filter(([, known]) => !known.whole).map(([statement]) => statement)).toEqual(['$', 'push', 'echo $', '$i + 1', 'a=', '$x y', '$j > 0'])
+    expect([...seen].filter(([, known]) => known.whole).map(([statement]) => statement)).toEqual(['echo git', '$z mark'])
+  })
+
+  // A heredoc body read as shell text is a safety net unless its command may feed it to a shell; its lines read alone
+  // always are.
+  it('marks a body read whole as a safety net when its command feeds no shell, and each line read alone always', () => {
+    const feedsShell = (owner: string) => /^(bash|sh)\b/.test(owner)
+    const net = (text: string) => [...shellStatementList(text, undefined, feedsShell).seen].filter(([, known]) => known.net).map(([statement]) => statement)
+    expect(net("cat > Makefile <<'EOF'\n\t$(CC) -o x\n\"$PYTHON\" x.py\nEOF")).toEqual(['$', 'CC', '-o x', '"$PYTHON" x.py'])
+    expect(net("bash <<'EOF'\necho \"a\n$x b\n\"\nEOF")).toEqual(['echo "a', '$x b', '"'])
+    expect(net("bash <<'EOF'\n$x b\nEOF")).toEqual([])
+  })
+})
+
 // Slice 7i residual and owner decision D7: `sudo git push` was read as `sudo` alone. Each wrapper's options are read
 // as its getopt string reads them, so the command after them is read as a command of its own.
 describe('the command a wrapper runs', () => {
