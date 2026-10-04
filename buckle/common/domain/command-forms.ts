@@ -312,33 +312,10 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   const own = startupOf(words, chain, place)
   const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false }, aliases: { defined: place.sure && definesAlias(chain.at(-1)!), later: place.sure && parsesLater(chain.at(-1)!) } }
   addStartup(forms.startup, inner.startup)
-  const read = (command: string[], at: Place, piece = false): Reading | null => {
-    if (depth >= MAX_DEPTH) {
-      forms.unread = 'depth'
-      return null
-    }
-    const nested = formsOf(command, depth + 1, budget, at)
-    keep(forms.nested, nested.chain, budget)
-    keep(forms.nested, nested.nested, budget)
-    for (const head of nested.heads) forms.heads.push(head)
-    forms.unread = firstLimit(forms.unread, nested.unread)
-    if (!piece) {
-      forms.scriptData ||= nested.scriptData
-      for (const name of nested.interpreters) if (!forms.interpreters.includes(name)) forms.interpreters.push(name)
-      addStartup(forms.startup, nested.startup)
-      forms.aliases.defined ||= nested.aliases.defined
-      forms.aliases.later ||= nested.aliases.later
-      if (SHELL_COMMANDS.has(nested.chain.at(-1)![0] ?? '')) {
-        forms.startup.shell = true
-        forms.startup.fed ||= at.fed
-      }
-    }
-    return nested
-  }
   for (const group of inner.groups) {
     if (budget.spent) break
     if (group.command.length > 0) {
-      const nested = read(group.command, { statement: true, heredoc: group.heredoc, expanded: group.expanded, found: group.found, sure: group.sure, whole: group.whole, fed: group.fed })
+      const nested = readNested(forms, group.command, depth, budget, { statement: true, heredoc: group.heredoc, expanded: group.expanded, found: group.found, sure: group.sure, whole: group.whole, fed: group.fed }, false)
       if (nested === null) break
       if (nested.rereads) continue
     }
@@ -346,11 +323,39 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
     for (const piece of statementPieces(group.statement)) {
       const form = budget.spent ? null : statementForm(piece, budget)
       if (form === null) break
-      if (form.words.length > 0) read(form.words, { statement: true, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: false, whole: false, fed: false }, true)
+      if (form.words.length > 0) readNested(forms, form.words, depth, budget, { statement: true, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: false, whole: false, fed: false }, true)
     }
   }
   forms.overBudget = budget.spent
   return forms
+}
+
+/**
+ * Reads a command `forms` runs inside itself one level down and adds what that reading met to `forms`; a piece adds its
+ * forms and its limits only. Null past MAX_DEPTH, where `forms` is left unread.
+ */
+function readNested(forms: Reading, command: string[], depth: number, budget: Budget, at: Place, piece: boolean): Reading | null {
+  if (depth >= MAX_DEPTH) {
+    forms.unread = 'depth'
+    return null
+  }
+  const nested = formsOf(command, depth + 1, budget, at)
+  keep(forms.nested, nested.chain, budget)
+  keep(forms.nested, nested.nested, budget)
+  for (const head of nested.heads) forms.heads.push(head)
+  forms.unread = firstLimit(forms.unread, nested.unread)
+  if (!piece) {
+    forms.scriptData ||= nested.scriptData
+    for (const name of nested.interpreters) if (!forms.interpreters.includes(name)) forms.interpreters.push(name)
+    addStartup(forms.startup, nested.startup)
+    forms.aliases.defined ||= nested.aliases.defined
+    forms.aliases.later ||= nested.aliases.later
+    if (SHELL_COMMANDS.has(nested.chain.at(-1)![0] ?? '')) {
+      forms.startup.shell = true
+      forms.startup.fed ||= at.fed
+    }
+  }
+  return nested
 }
 
 /** CPython and PyPy, whose names may carry a build suffix (PYTHON_BUILD). */
@@ -1088,18 +1093,20 @@ function xargsReplace(options: readonly string[]): string | null {
  */
 interface Unwrapped { command: string[] | null | 'session'; unread: UnreadLimit | null; open?: true; unsure?: true }
 
+/** A prefix that runs `command`, all of it read. */
+const prefixRuns = (command: string[] | null): Unwrapped => ({ command, unread: null })
+
 /**
  * What the first words run: past NAME=value assignments, a wrapper's options, a shell keyword, `function NAME` or
  * `coproc [NAME]` (slice 7b review W7B-3). Undefined when the first word is none of those.
  */
 function unwrapped(words: readonly string[], expanded: Expanded): Unwrapped | undefined {
-  const runs = (command: string[] | null): Unwrapped => ({ command, unread: null })
   if (ASSIGNMENT.test(words[0] ?? '')) {
     const command = words.findIndex(word => !ASSIGNMENT.test(word))
-    return runs(command < 0 ? null : words.slice(command))
+    return prefixRuns(command < 0 ? null : words.slice(command))
   }
-  if (words[0] === 'function') return runs(words.length > 2 ? words.slice(2) : null)
-  if (words[0] === 'coproc') return runs(COMPOUND_START.has(words[2] ?? '') ? words.slice(2) : words.length > 1 ? words.slice(1) : null)
+  if (words[0] === 'function') return prefixRuns(words.length > 2 ? words.slice(2) : null)
+  if (words[0] === 'coproc') return prefixRuns(COMPOUND_START.has(words[2] ?? '') ? words.slice(2) : words.length > 1 ? words.slice(1) : null)
   const wrapper = wrapperOf(baseCommand(words[0] ?? ''))
   if (wrapper === undefined) return undefined
   const inner = innerCommand(wrapper, words.slice(1), expanded)
@@ -1138,6 +1145,9 @@ function reduced(words: readonly string[]): string[] {
   return [baseCommand(command), ...args]
 }
 
+/** A wrapper's reading, marked `unsure` when an expansion among its words may move the command it runs. */
+const marked = (unsure: boolean, inner: Unwrapped): Unwrapped => (unsure ? { ...inner, unsure: true } : inner)
+
 /**
  * The command a wrapper runs, read past its options, assignments and operands; null when it runs none, and 'session'
  * when it runs none but an option opens an interactive session (`sudo -i`). Bash splits an unquoted expansion and a
@@ -1150,15 +1160,13 @@ function reduced(words: readonly string[]): string[] {
  */
 function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expanded): Unwrapped {
   const words = [...args]
-  const expansionOf = (at: number) => expanded.get(words[at] ?? '')
   let index = 0
   let session = false
   let unread: UnreadLimit | null = null
   let unsure = false
-  const read = (inner: Unwrapped): Unwrapped => (unsure ? { ...inner, unsure: true } : inner)
   while (index < words.length) {
     const word = words[index]!
-    const expansion = expansionOf(index)
+    const expansion = expanded.get(words[index] ?? '')
     if (word === '--') {
       index++
       break
@@ -1177,10 +1185,10 @@ function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expan
     const value = option.value
     unsure ||= expansion !== undefined && !attachedValue(expansion, value?.at ?? null, value?.runs === true)
     if (value !== undefined && value.at === null) {
-      const given = expansionOf(index + 1)
+      const given = expanded.get(words[index + 1] ?? '')
       unsure ||= given !== undefined && (given.splits || value.runs)
     }
-    if (option.runsNothing) return read({ command: null, unread })
+    if (option.runsNothing) return marked(unsure, { command: null, unread })
     session ||= option.session === true
     index = option.next
     if (option.split !== undefined) {
@@ -1190,22 +1198,22 @@ function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expan
     }
   }
   for (; wrapper.assignments && index < words.length && words[index]!.includes('='); index++) {
-    const expansion = expansionOf(index)
+    const expansion = expanded.get(words[index] ?? '')
     unsure ||= expansion !== undefined && (expansion.splits || !ASSIGNMENT.test(expansion.prefix))
   }
   const operands = !wrapper.numericOperand || /^\d+$/.test(words[index] ?? '') ? wrapper.operands ?? 0 : 0
   for (let at = index; at < Math.min(index + operands, words.length); at++) {
-    const expansion = expansionOf(at)
+    const expansion = expanded.get(words[at] ?? '')
     unsure ||= expansion !== undefined && !surelyOperand(expansion)
   }
   index += operands
-  if (wrapper.shellCommand?.includes(words[index] ?? '')) return read(index + 1 < words.length ? { command: ['sh', '-c', words[index + 1]!], unread } : { command: null, unread, open: true })
+  if (wrapper.shellCommand?.includes(words[index] ?? '')) return marked(unsure, index + 1 < words.length ? { command: ['sh', '-c', words[index + 1]!], unread } : { command: null, unread, open: true })
   if (index < words.length && session && wrapper.sessionShell) {
     const shell = shellSessionCommand(words.slice(index))
-    return read({ command: shell.command, unread: firstLimit(unread, shell.unread) })
+    return marked(unsure, { command: shell.command, unread: firstLimit(unread, shell.unread) })
   }
-  if (index < words.length) return read({ command: words.slice(index), unread })
-  return read(session ? { command: 'session', unread } : { command: null, unread, open: true })
+  if (index < words.length) return marked(unsure, { command: words.slice(index), unread })
+  return marked(unsure, session ? { command: 'session', unread } : { command: null, unread, open: true })
 }
 
 /**

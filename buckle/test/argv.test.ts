@@ -442,6 +442,15 @@ describe('the statements whose input the call\'s own text feeds', () => {
     expect(fedOf(text)).toEqual(fed)
   })
 
+  // A body line led by `function` that a backslash continues is read as a definition, as the whole reading reads one, so
+  // once anything is fed every statement is; the same line with no special character is one plain statement.
+  it.each([
+    ["echo x | cat; bash l\ncat <<'EOF'\nfunction f \\\nEOF", ['echo x', 'cat', 'bash l', "cat <<'EOF'", 'function f \\', 'function f']],
+    ["echo x | cat; bash l\ncat <<'EOF'\nfunction f\nEOF", ['cat', "cat <<'EOF'"]],
+  ])('reads %j as feeding %j, by whether a body line defines a function', (text, fed) => {
+    expect(fedOf(text)).toEqual(fed)
+  })
+
   it('reads the line after a here-string as a command, not a heredoc body', () => {
     const { seen } = shellStatementList('cat <<< x\n$y mark', undefined, () => false)
     expect(seen.get('$y mark')?.net).toBe(false)

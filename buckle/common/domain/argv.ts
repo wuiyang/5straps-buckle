@@ -841,6 +841,22 @@ const plainInBraces = (code: number): boolean => code !== 92 && code !== 39 && c
 /** Whether text holds a character the reading outside quotes acts on other than a blank, or heredoc text one it acts on. */
 const SPECIAL_ANYWHERE_OUTSIDE = /[\\`'"#<>;&|()\n]/
 const SPECIAL_IN_HEREDOC = /[\\`$]/
+/** Each such character outside quotes, and a character that opens a body in heredoc text. */
+const EVERY_SPECIAL_OUTSIDE = /[\\`'"#<>;&|()\n]/g
+const SUBSTITUTION_IN_HEREDOC = /[`$]/
+
+/**
+ * Whether the only characters in shell text the reading acts on, blanks aside, are backslashes, each escaping the
+ * character after it (a newline too, which it joins away) or ending the text: such text is word text throughout.
+ */
+function onlyEscapes(text: string): boolean {
+  EVERY_SPECIAL_OUTSIDE.lastIndex = 0
+  for (let match = EVERY_SPECIAL_OUTSIDE.exec(text); match !== null; match = EVERY_SPECIAL_OUTSIDE.exec(text)) {
+    if (match[0] !== '\\') return false
+    EVERY_SPECIAL_OUTSIDE.lastIndex = match.index + 2
+  }
+  return true
+}
 /** Characters the reading inside double quotes or heredoc text acts on: a backslash, a double quote, a backtick, and `$`. */
 const plainInQuotes = (code: number): boolean => code !== 92 && code !== 34 && code !== 96 && code !== 36
 
@@ -969,6 +985,16 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     if (!mode.heredocText) {
       found.statements.push(text)
       found.flags.push(flags)
+    }
+    return limits
+  }
+  // So is shell text whose only such characters are backslashes, each escaping the character after it (a body line
+  // continued onto the next), as the reading below finds it, and heredoc text in which no `$` or backtick opens a body.
+  if (mode.heredocText ? !SUBSTITUTION_IN_HEREDOC.test(text) : onlyEscapes(text)) {
+    if (!mode.heredocText) {
+      found.statements.push(text)
+      found.flags.push(flags)
+      found.defines ||= leadingWords(text, 0, text.length).defines
     }
     return limits
   }
