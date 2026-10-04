@@ -85,6 +85,7 @@
 ### 🔥 Performance
 
 - **runtime:** Linear, capped redaction scans ([8a2e628](https://github.com/wuiyang/buckle/commit/8a2e628))
+- **buckle:** A heredoc body continued line by line is read without the full splitter for each line ([b163378](https://github.com/wuiyang/buckle/commit/b163378))
 
 ### 🩹 Fixes
 
@@ -233,6 +234,22 @@
 - **buckle:** The node ceiling allows interpreters from BUCKLE_ALLOWED_INTERPRETERS, so a workspace allowance can take effect within it ([2dd5055](https://github.com/wuiyang/buckle/commit/2dd5055))
 - **buckle:** Awk, lua, pwsh, tsx, and ts-node are interpreters too ([faa9295](https://github.com/wuiyang/buckle/commit/faa9295))
 - **runtime:** Credential hiding follows rule B, a whole URL or a named key, and everything else shows raw ([0438ffb](https://github.com/wuiyang/buckle/commit/0438ffb))
+- **buckle:** A comment starts only at a real word start, and shell words split only on space, tab, and newline ([9a6dd44](https://github.com/wuiyang/buckle/commit/9a6dd44))
+- **buckle:** Inside a backtick body an odd backslash run before a newline is a continuation ([4450c84](https://github.com/wuiyang/buckle/commit/4450c84))
+- **buckle:** A shell fed by any descriptor, by an expansion, or by find is an unread call ([b06b914](https://github.com/wuiyang/buckle/commit/b06b914))
+- **buckle:** Interpreter and shell names cover the builds and shells that exist ([28c8669](https://github.com/wuiyang/buckle/commit/28c8669))
+- **buckle:** Env -S, ssh -o, and sudo -s are unread where their own parsing cannot be read as shell words ([b4a537f](https://github.com/wuiyang/buckle/commit/b4a537f))
+- **buckle:** Every re-read of a body is charged to the read budget ([9f983d2](https://github.com/wuiyang/buckle/commit/9f983d2))
+- **buckle:** A command word an expansion supplies is an unread call ([0e3b782](https://github.com/wuiyang/buckle/commit/0e3b782))
+- **buckle:** A shell given a script operand and fed from the call's own text is an unread call ([2616734](https://github.com/wuiyang/buckle/commit/2616734))
+- **buckle:** Busybox and toybox run the applet named after them, and chrt may omit its priority ([b4d5a82](https://github.com/wuiyang/buckle/commit/b4d5a82))
+- **buckle:** Text that trap, alias, and mapfile hand the shell to run is read as shell text ([82efacd](https://github.com/wuiyang/buckle/commit/82efacd))
+- **buckle:** A double-quoted substitution that holds quotes is one word ([61c9c3c](https://github.com/wuiyang/buckle/commit/61c9c3c))
+- **buckle:** A shell whose startup file comes from the call's own text is an unread call ([6fcf6f0](https://github.com/wuiyang/buckle/commit/6fcf6f0))
+- **buckle:** An alias is followed into the texts the same call runs, or the call is unread ([90ca230](https://github.com/wuiyang/buckle/commit/90ca230))
+- **buckle:** An expansion among the words a wrapper reads before its command leaves the call unread ([e913e41](https://github.com/wuiyang/buckle/commit/e913e41))
+- **buckle:** Approval displays hide an object key only when it is named password, secret, or token, and never a script body ([6ebc5d8](https://github.com/wuiyang/buckle/commit/6ebc5d8))
+- **buckle:** A refused wrapper call names the rule that admits it ([631cf8d](https://github.com/wuiyang/buckle/commit/631cf8d))
 
 ### 💅 Refactors
 
@@ -264,6 +281,8 @@
 - **repo:** Conduct reports reach the maintainer through this repository (readiness review) ([2984cb0](https://github.com/wuiyang/buckle/commit/2984cb0))
 - **repo:** Changelog regenerated after the final history rewrite ([94c2056](https://github.com/wuiyang/buckle/commit/94c2056))
 - **repo:** The copyright holder is The 5straps Authors ([2dbcb95](https://github.com/wuiyang/buckle/commit/2dbcb95))
+- **repo:** Changelog regenerated after slices 7i, 7j, and 7k ([7e148f7](https://github.com/wuiyang/buckle/commit/7e148f7))
+- **buckle:** Interpreters under a deny rule, how to allow one, and which version flags stay ordinary ([6b85884](https://github.com/wuiyang/buckle/commit/6b85884))
 
 ### 📦 Build
 
@@ -315,6 +334,8 @@
 - **buckle:** Adversarial heredoc probes the 7g review could not run, as oracle rows and a readings differential (slice 7g review coverage gaps) ([7bb07c5](https://github.com/wuiyang/buckle/commit/7bb07c5))
 - **buckle:** Temp directories in tests use plain lowercase names, so log redaction of name-like segments cannot blank their paths (readiness review) ([8e7d543](https://github.com/wuiyang/buckle/commit/8e7d543))
 - **buckle:** The heredoc oracle carries the 7h probe shapes and kills the surviving mutations ([2320926](https://github.com/wuiyang/buckle/commit/2320926))
+- **buckle:** The oracle kills the delimiter and keyword mutations ([e80334e](https://github.com/wuiyang/buckle/commit/e80334e))
+- **buckle:** Timing rows keep a third of their limit in hand and allow for a loaded machine ([8899a56](https://github.com/wuiyang/buckle/commit/8899a56))
 
 ### 🤖 CI
 
