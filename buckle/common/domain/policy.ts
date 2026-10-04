@@ -11,7 +11,7 @@ import type { ServiceFailure } from '../types/service-failure.js'
  */
 export interface CompiledPolicy {
   policy: WorkspacePolicy
-  /** `allowedInterpreters`: the interpreters read as ordinary commands; every other one runs code Buckle reads as unknown (owner decision D55). */
+  /** `allowedInterpreters`: the interpreters read as ordinary commands; every other one runs code Buckle reads as unknown (docs/dev/architecture.md, Interpreters). */
   commands: { allow: CommandGlob[]; deny: CommandGlob[]; destructive: CommandGlob[]; allowedInterpreters: ReadonlySet<string> }
   /** Null when the owner set no approved list, which leaves the network rule to its defaults. */
   network: UrlMatcher | null

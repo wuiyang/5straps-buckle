@@ -3,6 +3,8 @@
 The failures people meet first with Buckle, the approval and sandbox runtime on their machine,
 each with the message it prints and the fix. Buckle logs as JSON lines on stderr; a one-shot
 command prints its reason on one line and exits 1.
+[Refused commands](troubleshooting-02.md), such as a shell wrapper, an interpreter, or a call
+Buckle cannot read whole, continue on the next page.
 
 ## node-pty was not built
 
@@ -100,18 +102,6 @@ Point `origin` at the real repository directory, for example with
 `git remote set-url origin /home/you/repos/app-main`, and push again. If the message instead
 says the guard `cannot be run`, its execute permission was lost or the state directory sits on a
 `noexec` mount: restore the permission, or move the state directory with `BUCKLE_STATE_DIR`.
-
-## A bash script is refused
-
-```
-PERMISSION_DENIED: A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command 'bash -c *'
-```
-
-`script_run` with the `bash` runtime, and any `bash -c`, is refused until a rule allows the
-wrapper. Prefer `shell_exec` with the program and its arguments, or allow the wrapper with the
-rule the message names. An allow rule admits a call only as typed, so behind a prefix the message
-names the prefix too: `sudo bash -c ls` names `sudo bash -c *`, and `env bash -c ls` names
-`env bash -c *`. [Policy](policy.md#commands) explains why.
 
 ## A .env in the project is refused
 

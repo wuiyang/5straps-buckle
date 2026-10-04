@@ -2,40 +2,63 @@
 
 How Buckle, the approval and sandbox runtime on this machine, reads a command call for the
 [command policy](policy.md#commands) and the
-[destructive floor](approvals.md#the-destructive-floor).
+[destructive floor](approvals.md#the-destructive-floor). [What stays unread](policy-03.md), and
+the limits Buckle does not mark, continue on the next page.
 
 ## What Buckle reads
 
-The deny list and the destructive floor judge every command a call runs: the call as typed; the
-command behind a prefix such as `sudo`, `doas`, `env`, `nice`, `timeout`, `flock`, or `xargs`, or
-behind leading `NAME=value` assignments; each statement of a shell body; `eval` text; the string
-`su -c` runs, the remote command `ssh` sends, and its `ProxyCommand`, all read as shell text; each
-`find -exec`, `-execdir`, `-ok`, and `-okdir` command; and heredoc bodies. Another program that
-runs a command, such as `watch`, is judged by its own words only.
+The deny list and the destructive floor judge every command a call runs:
+
+- the call as typed, and the command behind a prefix: `sudo`, `doas`, `env`, `nice`, `nohup`,
+  `time`, `timeout`, `stdbuf`, `ionice`, `chrt`, `setsid`, `flock`, `xargs`, `command`, `exec`,
+  `builtin`, or leading `NAME=value` assignments;
+- the applet `busybox` or `toybox` runs, so `busybox env git push` is read as `env git push`; a
+  shell applet such as `busybox sh` is an [interpreter](#interpreters);
+- each statement of a shell body (`-c` with `bash`, `sh`, `zsh`, `dash`, `ksh`, `fish`, `rbash`,
+  `ash`, `mksh`, `yash`, or `posh`), of a heredoc body, and of `eval` text;
+- the text `trap`, `alias`, and `mapfile -C` keep for the shell to run, and an alias's value where
+  the same text uses its name;
+- the string `su -c` runs and the remote command `ssh` sends, its words or a `RemoteCommand`, read
+  as shell text, and the `ProxyCommand`, `LocalCommand`, or `KnownHostsCommand` an `ssh -o`
+  setting runs locally;
+- an `env -S` value with no backslash and no `${`, and a `sudo -s` or `-i` command of plain words
+  (letters, digits, and `_@%+=:,./-`);
+- each `find -exec`, `-execdir`, `-ok`, and `-okdir` command.
 
 ## Reading limits
 
-Reading stops at the first of these:
+Where reading stops, the call is unread. With a deny list it is refused, since the unread part
+might hold a denied command; with none, the destructive floor asks. The refusal names the limit:
 
-- `READ_BUDGET`: 8,000,000 characters, 1,000,000 words, or 100,000 commands across every level.
-- `MAX_DEPTH`: wrappers or shell bodies nested 8 levels deep.
-- `MAX_SUBSTITUTIONS`: `$(...)` substitutions nested 4 deep in double quotes or heredoc text.
-- A `find -exec` command that starts with a dash word, which `find` reads as its own option.
-- An interactive session: `ssh` or `su` with no command, or `sudo -i`, `sudo -s`, or `doas -s`
-  with none.
-- A shell that takes its script from a pipe, a redirection, or `xargs`.
+| The refusal names | For example | What to do |
+|---|---|---|
+| `MAX_DEPTH` | wrappers or shell bodies nested more than 8 deep | run the inner command directly |
+| `READ_BUDGET` | over 8,000,000 characters, 1,000,000 words, or 100,000 commands | split the work into smaller calls |
+| `MAX_SUBSTITUTIONS` | five `"$(...)"` nested inside double quotes | set the inner value in a statement of its own, `v="$(...)"` |
+| find primary | `find . -exec -name x \;` | start the command with the program it runs |
+| comment | `case $x in a) true;; esac; echo $(true)#x` | put a blank before the `#` |
+| interactive session | `ssh host`, `su deploy`, or `sudo -s` with no command | give it the command, `ssh host uptime` |
+| expansion | `$cmd push`, `eval "$x"`, `bash -c "$(cat job.sh)"`, `timeout $t make` | spell the command out, or quote the value ([expansions](policy-03.md#expansions)) |
+| own parsing | `env -S 'a\_b'`, a `%r` in an `ssh` `ProxyCommand`, `sudo -s $'a\nb'` | write the value with no escape, `%` token, or quoting of its own |
+| script as data | `cat job.sh \| bash`, `bash < job.sh`, `xargs bash`, `BASH_ENV=<(...) bash -c true` | hand the shell its text with `-c` or a heredoc on its own statement |
+| unknown interpreter | `python3 -c 'print(1)'` | allow it, as below |
 
-Past a limit the destructive floor asks, naming it; with a deny list the call is refused, since
-the unread part might hold a denied command.
+[Troubleshooting](troubleshooting-02.md#a-call-buckle-cannot-read-whole-is-refused) shows a
+refusal in full.
 
 ## Interpreters
 
-Code run by `python`, `node`, `deno`, `bun`, `perl`, `ruby`, `php`, `awk` (also `gawk`, `mawk`,
-and `nawk`), `lua`, `luajit`, `pwsh`, `powershell`, `tsx`, or `ts-node` is unknown to Buckle, a
-reading limit, until `buckle policy allow-interpreter <name>` makes that program an ordinary
-command; version and help calls stay ordinary. Static grading of such code (safe, warn, danger,
-unknown) comes after the first release. The package runners `npx`, `pnpx`, and `bunx` stay ordinary
-commands for now, judged by their own words.
+Code run by `python` (and `pypy`), `node` and `nodejs`, `deno`, `bun`, `perl`, `ruby`, `php`, `awk`
+(also `gawk`, `mawk`, and `nawk`), `lua`, `luajit`, `pwsh`, `powershell`, `tsx`, `ts-node`, the C
+shells `tcsh` and `csh`, and a `busybox` or `toybox` shell applet is unknown to Buckle, a reading
+limit, until `buckle policy allow-interpreter <name>` makes that program an ordinary command.
+
+Each name is allowed separately: `python`, `python3`, and `python3.12` are three names, as are
+`node` and `nodejs`, and `buckle policy remove-interpreter <name>` takes one back. `script_run`
+with the `python` runtime runs `python3`, and with `node` it runs `node`. Version and help calls
+stay ordinary, such as `python3 --version`, `python3 -VV`, `perl -V`, `ruby -v`, and `deno -v`.
+Static grading of such code (safe, warn, danger, unknown) comes after the first release. The
+package runners `npx`, `pnpx`, and `bunx` stay ordinary commands for now, judged by their own words.
 
 `BUCKLE_ALLOWED_INTERPRETERS`, comma separated, allows interpreters from the environment, for the
 node's own workspace and as the [node ceiling](policy.md#workspace-and-node-ceiling): a registered

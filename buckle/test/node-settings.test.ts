@@ -148,7 +148,8 @@ describe('buckle settings set', () => {
     expect(entries.map(entry => entry.detail)).toEqual([undefined, 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true', undefined, 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP unset'])
   })
 
-  // Default D56: the node ceiling's interpreter allowance, empty by default, which a registered workspace's own stays within.
+  // The node ceiling's interpreter allowance, empty by default, which a registered workspace's own stays within
+  // (docs/dev/architecture.md, Interpreters).
   it('shows, writes, and audits the allowed interpreters, comma separated with no spaces', async () => {
     expect((await settings(['show'])).out).toMatch(/allowed-interpreters +BUCKLE_ALLOWED_INTERPRETERS +\(none: every interpreter runs unknown code\) +default/)
     expect((await settings(['set', 'allowed-interpreters', ' node , python3.12,node '])).exitCode).toBe(0)

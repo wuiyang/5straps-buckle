@@ -31,6 +31,10 @@ work around it by rephrasing the command.
 
 The first write into any directory also asks, once, and is then remembered.
 
+Code an interpreter runs (`python3`, `node`, `perl`, `ruby`, and the like, a `script_run` with
+the `python` or `node` runtime included) asks, or is refused when the owner has command deny rules,
+until the owner allows that interpreter; a version call such as `python3 --version` runs as usual.
+
 ## Sensitive files
 
 Only `.env.schema` is exempt from the environment-file credential rule. Before executing a

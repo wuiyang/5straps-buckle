@@ -67,6 +67,10 @@ shell does not get past them: `bash -c ...` and `script_run` with the `bash` run
 refused unless the owner allowed the wrapper itself. Run the program directly with
 `shell_exec` instead, one command per call.
 
+Code an interpreter runs (`python3 -c`, `node script.js`, `perl -e`, and the like) is code Buckle
+cannot read: it asks, or is refused when the owner has deny rules, until the owner runs
+`buckle policy allow-interpreter <name>`. Relay the refusal; do not rephrase the call.
+
 A workspace may be mounted: then `buckle manifest` names `/workspace` (or similar) as the root,
 and that is the path to use. Relative paths work the same either way.
 

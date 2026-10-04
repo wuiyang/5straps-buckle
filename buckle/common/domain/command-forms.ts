@@ -224,7 +224,8 @@ const NO_INTERPRETERS: ReadonlySet<string> = new Set()
 
 /**
  * The limit a reading stopped at, the first in READ_LIMITS order, or null when the call was read whole. An interpreter
- * the policy allows (`allowed`) is an ordinary command, so only another one leaves the call unknown (owner decision D55).
+ * the policy allows (`allowed`) is an ordinary command, so only another one leaves the call unknown
+ * (docs/dev/architecture.md, Interpreters).
  */
 export function readLimitOf(forms: CommandForms, allowed: ReadonlySet<string> = NO_INTERPRETERS): ReadLimit | null {
   if (forms.unread === 'depth') return 'depth'
@@ -234,10 +235,15 @@ export function readLimitOf(forms: CommandForms, allowed: ReadonlySet<string> = 
   return forms.interpreters.some(name => !allowed.has(name)) ? 'interpreter' : null
 }
 
-/** How a reason names a limit: as READ_LIMITS words it, and for an interpreter with the programs the policy does not allow. */
+/**
+ * How a reason names a limit: as READ_LIMITS words it, and for an interpreter with the programs the policy does not
+ * allow and how to allow one: the stored policy's list, or the environment's, which is also the node ceiling's.
+ */
 export function readLimitReason(limit: ReadLimit, forms: CommandForms, allowed: ReadonlySet<string> = NO_INTERPRETERS): string {
   if (limit !== 'interpreter') return READ_LIMITS[limit]
-  return `${READ_LIMITS.interpreter}: ${forms.interpreters.filter(name => !allowed.has(name)).join(', ')}`
+  const names = forms.interpreters.filter(name => !allowed.has(name))
+  const fix = names.length === 1 ? `allow it with buckle policy allow-interpreter ${names[0]}` : 'allow each with buckle policy allow-interpreter <name>'
+  return `${READ_LIMITS.interpreter}: ${names.join(', ')} (${fix}, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling)`
 }
 
 const UNREAD_ORDER = Object.keys(READ_LIMITS) as ReadLimit[]
@@ -362,12 +368,11 @@ function readNested(forms: Reading, command: string[], depth: number, budget: Bu
 const PYTHONS: readonly string[] = ['python', 'pypy']
 
 /**
- * Programs whose code Buckle cannot read as shell (owner decision D55): each name, alone or with a version
- * (`python3`, `python3.12`, `node22`, `perl5.36`, `lua5.4`). A policy names the ones it reads as ordinary commands.
- * awk and its variants, lua, PowerShell, and the TypeScript runners joined in slice 7j (default D57); the package
- * runners npx, pnpx, and bunx stay ordinary commands until the owner rules on them (D57 open). Slice 7l adds PyPy, the
- * C shells, whose syntax is not the POSIX shell's, and busybox, whose shell applet may be ash or hush; toybox, whose
- * shell applet is its own toysh, is one too.
+ * Programs whose code Buckle cannot read as shell (docs/dev/architecture.md, Interpreters): each name, alone or with a
+ * version (`python3`, `python3.12`, `node22`, `perl5.36`, `lua5.4`). A policy names the ones it reads as ordinary
+ * commands. awk and its variants, lua, PowerShell, and the TypeScript runners are listed; the package runners npx, pnpx,
+ * and bunx stay ordinary commands until that is decided. So are PyPy, the C shells, whose syntax is not the POSIX
+ * shell's, and busybox, whose shell applet may be ash or hush; toybox, whose shell applet is its own toysh, is one too.
  */
 const INTERPRETERS = [...PYTHONS, 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'awk', 'gawk', 'mawk', 'nawk', 'lua', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node', 'tcsh', 'csh', 'busybox', 'toybox'] as const
 /**
@@ -405,17 +410,20 @@ const CASELESS_INFO = new Set(['pwsh', 'powershell'])
 
 /**
  * The arguments, one word or mawk's two (`-W version`), with which each interpreter only prints its version or its help
- * and runs no code. lua and luajit print their version with -v and run nothing after it, not even their input.
+ * and runs no code. lua and luajit print their version with -v and run nothing after it, not even their input; so do
+ * ruby with -v alone, which prints its version and quits when no script or other option follows, perl with -V, which
+ * prints its build configuration, and python with -VV, which prints its version and build (python 3.12 and perl 5.38
+ * read no code from their input with these). deno takes -v as -V.
  */
 const INTERPRETER_INFO: Readonly<Record<string, ReadonlySet<string>>> = {
-  python: new Set(['--version', '-V', '--help', '-h']),
-  pypy: new Set(['--version', '-V', '--help', '-h']),
+  python: new Set(['--version', '-V', '-VV', '--help', '-h']),
+  pypy: new Set(['--version', '-V', '-VV', '--help', '-h']),
   node: new Set(['--version', '-v', '--help', '-h']),
   nodejs: new Set(['--version', '-v', '--help', '-h']),
-  deno: new Set(['--version', '-V', '--help', '-h']),
+  deno: new Set(['--version', '-V', '-v', '--help', '-h']),
   bun: new Set(['--version', '-v', '--help', '-h']),
-  perl: new Set(['--version', '-v', '--help', '-h']),
-  ruby: new Set(['--version', '--help', '-h']),
+  perl: new Set(['--version', '-v', '-V', '--help', '-h']),
+  ruby: new Set(['--version', '-v', '--help', '-h']),
   php: new Set(['--version', '-v', '--help', '-h']),
   awk: AWK_INFO,
   gawk: AWK_INFO,
@@ -441,11 +449,12 @@ function printsInfo(command: string, args: readonly string[]): boolean {
 }
 
 /**
- * The interpreter the command a chain ends in runs code with, or null (owner decision D55): any call of one with inline
- * code (`-c`, `-e`, `--eval`, `-r`, `-p`, pwsh's `-Command`), a script, `-m`, awk's program or `-f`, or any other
- * argument, and one behind xargs, whose items become its code or its script. Its version or its help alone runs
- * nothing; nor does a bare interpreter as the call itself, whose input is empty. In shell text a bare interpreter
- * reads code from its input, a pipe, a redirection, or a heredoc Buckle cannot read as shell, so it runs code too.
+ * The interpreter the command a chain ends in runs code with, or null (docs/dev/architecture.md, Interpreters): any
+ * call of one with inline code (`-c`, `-e`, `--eval`, `-r`, `-p`, pwsh's `-Command`), a script, `-m`, awk's program or
+ * `-f`, or any other argument, and one behind xargs, whose items become its code or its script. Its version or its
+ * help alone runs nothing; nor does a bare interpreter as the call itself, whose input is empty. In shell text a bare
+ * interpreter reads code from its input, a pipe, a redirection, or a heredoc Buckle cannot read as shell, so it runs
+ * code too.
  */
 function interpreterRunningCode(chain: readonly string[][], place: Place): string | null {
   const [command = '', ...args] = chain.at(-1)!

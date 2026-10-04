@@ -1446,10 +1446,11 @@ describe('a call Buckle cannot read whole', () => {
   }, PROCESSOR_TIME_ROW_TIMEOUT)
 })
 
-// Owner decision D55: a body run by python, node, deno, bun, perl, ruby, php, awk (gawk, mawk, nawk), lua, luajit, pwsh,
-// powershell, tsx or ts-node (the last ten since slice 7j, default D57) is code Buckle cannot read as shell, so
+// The interpreter decision (docs/dev/architecture.md, Interpreters): a body run by python, node, deno, bun, perl, ruby,
+// php, awk (gawk, mawk, nawk), lua, luajit, pwsh, powershell, tsx or ts-node is code Buckle cannot read as shell, so
 // such a call is unknown: refused naming the limit under any deny glob, on the workspace and the node ceiling and with
-// the dangerously-allow switch on or off, and asked at the floor otherwise (default D33 (b)), until the policy allows
+// the dangerously-allow switch on or off, and asked at the floor otherwise, as an unread call is, until the policy
+// allows
 // that interpreter, which then reads as an ordinary command under its own globs. The node ceiling judges by its own
 // list, so it refuses an interpreter a workspace allows unless the ceiling allows it too (owner decision D7).
 describe('a call that runs code with an interpreter', () => {
@@ -1478,7 +1479,7 @@ describe('a call that runs code with an interpreter', () => {
   const check = (engine: keyof typeof engines, switched: boolean, call: readonly [string, readonly string[]], setting: Setting) =>
     withDangerouslyAllow(createPermissionEngine(engines[engine](setting)), { enabled: () => switched, root: () => '/workspace' })
       .evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command: call[0], args: [...call[1]] }], grants: { subjectsFor: () => [] } })
-  const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name}`
+  const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name} (allow it with buckle policy allow-interpreter ${name}, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling)`
   const engineCases = (['workspace', 'ceiling'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
   /** Each form runs code: inline code, a script, a module, code on its input, a versioned name, and the same behind a wrapper, a shell body, or xargs. */
   const forms = [
@@ -1494,6 +1495,7 @@ describe('a call that runs code with an interpreter', () => {
     ['bun', ['run', 'index.ts'], 'bun'],
     ['perl', ['-e', 'print 1'], 'perl'],
     ['ruby', ['-e', 'puts 1'], 'ruby'],
+    ['ruby', ['-v', 'script.rb'], 'ruby'],
     ['php', ['-r', 'echo 1;'], 'php'],
     ['env', ['python3', '-c', 'print(1)'], 'python3'],
     ['xargs', ['python3', '-c'], 'python3'],
@@ -1570,6 +1572,13 @@ describe('a call that runs code with an interpreter', () => {
     expect(refusal(check('ceiling', switched, ['node', ['script.js']], { deny: ['terraform destroy *'], workspaceAllows: ['node'] }))).toBe(`${unknown('node')}, so the node ceiling command policy's deny list cannot meet all of it; refused rather than asked`)
   })
 
+  it('names each interpreter a call runs and how to allow one, by name for one and as <name> for several', () => {
+    expect(refusal(check('workspace', false, ['bash', ['-c', 'python3 -c 1; node -e 1']], { deny: ['terraform destroy *'] }))).toBe(
+      "Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): python3, node (allow each with buckle policy allow-interpreter <name>, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling), so the workspace command policy's deny list cannot meet all of it; refused rather than asked",
+    )
+    expect(refusal(check('workspace', false, ['bash', ['-c', 'python3 -c 1; node -e 1']], { deny: ['terraform destroy *'], workspaceAllows: ['node'] }))).toBe(`${unknown('python3')}, so the workspace command policy's deny list cannot meet all of it; refused rather than asked`)
+  })
+
   it('judges an allowance by the exact program name, so python3 allows neither python nor python3.12', () => {
     for (const command of ['python', 'python3.12']) {
       expect(refusal(check('workspace', false, [command, ['-c', 'print(1)']], { deny: ['terraform destroy *'], workspaceAllows: ['python3'] }))).toBe(`${unknown(command)}, so the workspace command policy's deny list cannot meet all of it; refused rather than asked`)
@@ -1581,6 +1590,10 @@ describe('a call that runs code with an interpreter', () => {
     [engine, switched, 'node', ['-v']],
     [engine, switched, 'python3', ['--version']],
     [engine, switched, 'python3', ['-V']],
+    [engine, switched, 'python3', ['-VV']],
+    [engine, switched, 'perl', ['-V']],
+    [engine, switched, 'ruby', ['-v']],
+    [engine, switched, 'deno', ['-v']],
     [engine, switched, 'python3', []],
     [engine, switched, 'php', ['--help']],
     [engine, switched, 'awk', ['--version']],
@@ -1604,7 +1617,7 @@ describe('a call that runs code with an interpreter', () => {
     [engine, switched, 'toybox', ['ls', '-la']],
     [engine, switched, 'bash', ['-c', 'busybox']],
     [engine, switched, 'bash', ['-c', 'toybox']],
-    // Default D57 (open): package runners stay ordinary commands until the owner rules on them.
+    // Package runners stay ordinary commands until that is decided (docs/dev/architecture.md, Interpreters).
     [engine, switched, 'npx', ['tsx', 'script.ts']],
     [engine, switched, 'pnpx', ['ts-node', 'script.ts']],
     [engine, switched, 'bunx', ['cowsay', 'hi']],

@@ -265,7 +265,8 @@ function parseRingsApprovalKey(value: string | undefined): ApprovalKey | undefin
  * The environment's share of the policy. Patterns are shell-word globs, one per line or
  * separated by `;;`. BUCKLE_ALLOWED_INTERPRETERS names, comma separated, the interpreters read as
  * ordinary commands: for the node's own workspace beside what `buckle policy` stores, and as the
- * node ceiling's list, within which alone a registered workspace's allowance counts (default D56).
+ * node ceiling's list, within which alone a registered workspace's allowance counts (docs/dev/architecture.md,
+ * Interpreters).
  */
 function parsePolicy(environment: NodeJS.ProcessEnv): WorkspacePolicy {
   const policy = emptyWorkspacePolicy()

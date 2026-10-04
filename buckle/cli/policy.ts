@@ -109,7 +109,7 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
       case 'help':
       case '--help':
       case '-h':
-        // Asking for the usage is not an error, so it prints to stdout and exits 0, as the other command groups do.
+        // Asking for the usage is not an error, so it prints to stdout and exits 0.
         process.stdout.write(USAGE)
         return { exitCode: 0 }
       default:

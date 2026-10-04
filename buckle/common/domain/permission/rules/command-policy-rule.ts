@@ -40,9 +40,9 @@ const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve
  * A call Buckle cannot read whole, past READ_BUDGET, MAX_DEPTH or MAX_SUBSTITUTIONS, at a find -exec command that
  * is a primary, at a script that arrives as data, at shell text an expansion supplies (an eval or a shell -c string),
  * or running code with an interpreter this policy does not allow, is refused whenever a deny glob exists, naming the
- * limit that stopped the reading, since the glob might have met the part left unread (defaults D30 and D33, owner
- * decision D55). Each policy judges interpreters by its own list, so the
- * node ceiling refuses one a workspace allows unless the ceiling allows it too (owner decision D7).
+ * limit that stopped the reading, since the glob might have met the part left unread. Each policy judges interpreters
+ * by its own list, so the node ceiling refuses one a workspace allows unless the ceiling allows it too, since a
+ * workspace never exceeds the ceiling (docs/dev/architecture.md, Interpreters).
  *
  * `source` names whose policy this is, so a refusal by the node's ceiling says so (slice 7d review R7D-BD-2). `others`
  * are the command policies whose rules run after this one: a glob of theirs that met the parts read is named before

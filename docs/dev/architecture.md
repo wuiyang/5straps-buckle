@@ -80,35 +80,29 @@ destructive rule can ask and the command policy can refuse. `common/domain/comma
 matches the owner's globs one word at a time: whole-line for an allow list, prefix for deny
 and destructive lists. `test/heredoc-oracle.test.ts` checks the reader against real bash.
 
-## The approval registry and its state files
+## Interpreters
 
-`common/services/approvals/approval-registry.ts` keeps each workspace's queue in its state
-directory:
+Buckle reads shell and nothing else. A call that runs code with an interpreter, inline
+(`python3 -c`, `node -e`), from a script (`python3 job.py`), or from its input in shell text
+(`cat job.py | python3`), is a reading limit, as a body nested past `MAX_DEPTH` is: under any
+command deny glob the command policy refuses it, and with none the destructive floor asks, since
+no glob can meet what that code runs. A version or help call runs no code and stays ordinary, and
+so does a bare interpreter as the call itself, whose input is empty.
 
-| File | Holds |
-|---|---|
-| `approvals.json` | pending asks, recent decisions, unspent `once` approvals, and undelivered webhook notices |
-| `approval-calls/<uuid>.json` | the whole call of each request group, written once however many asks it made |
-| `grants.json` | `session` and `always` grants and remembered denials (`common/adapters/grant-store/file-grant-store.ts`) |
-| `approval-nonces.json` | nonces of sealed decisions, once a Rings key is paired |
+The owner decides which interpreters are ordinary commands, judged by their own words like any
+other: `allowedInterpreters` in the stored policy (`buckle policy allow-interpreter <name>`) and
+`BUCKLE_ALLOWED_INTERPRETERS` in the environment. A name is matched exactly, so `python3` allows
+neither `python` nor `python3.12`. Each policy judges by its own list, and a workspace never
+exceeds the node ceiling: over a registered workspace the ceiling's list, empty by default, is the
+environment's, and the workspace's own allowance counts only within it.
 
-Every file goes through `common/adapters/json-file-store.ts`: a write is an atomic rename,
-and an update holds a cross-process lock in `<file>.lock.sqlite`, waiting up to 5 seconds before
-answering `STATE_BUSY`. `approval-service.ts` is the single answerer every route calls. It polls
-the queue every 400 ms, so an answer `buckle approve` writes from another process wakes the
-waiting call. One session may keep 50 asks waiting and one workspace 500.
+The list (`INTERPRETERS` in `common/domain/command-forms.ts`) holds the Python and PyPy builds,
+node, deno, bun, perl, ruby, php, the awk family, lua, PowerShell, the TypeScript runners, the C
+shells, and the busybox and toybox shell applets. The package runners `npx`, `pnpx`, and `bunx`
+stay ordinary commands, judged by their own words, until that is decided. Static grading of
+interpreter code comes after the first release.
 
-## The pack system
-
-A pack (`common/domain/pack.ts`) has an id, tools, skills, an `unavailableReason`, and an
-optional `close`. A tool comes from `defineTool` (`common/domain/tool.ts`): a name, a
-description, a risk level, a Zod input schema, an `effects` function, and `run`. The manifest's
-JSON Schema and the MCP registration both come from that one Zod schema.
-`common/services/packs/index.ts` is the only place built-in packs are built, each from its own
-directory with a `SKILL.md` beside it; `scripts/build.mjs` copies those into `dist`. A pack with
-an `unavailableReason` contributes no tools, so the registry, the manifest, and MCP list only what
-runs. Plugins load through `common/adapters/plugin-registry.ts` from modules that export
-`createPack(options)`, recorded in `plugins.json`.
+The approval registry and the pack system continue on [Architecture: state and packs](architecture-02.md).
 
 See also: [Building and testing](building-and-testing.md), [Releasing](releasing.md), and the
 research records on [command matching](research/command-matching.md) and

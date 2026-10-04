@@ -11,9 +11,9 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 
 /**
- * Owner decision D55: a call that runs code with python, node, deno, bun, perl, ruby, php, awk, lua, pwsh, tsx, or
- * another listed interpreter is unknown to Buckle until the policy allows that interpreter. These drive the CLI verbs
- * and the real permission pipeline of a runtime.
+ * The interpreter decision (docs/dev/architecture.md, Interpreters): a call that runs code with python, node, deno, bun,
+ * perl, ruby, php, awk, lua, pwsh, tsx, or another listed interpreter is unknown to Buckle until the policy allows that
+ * interpreter. These drive the CLI verbs and the real permission pipeline of a runtime.
  */
 function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
   return loadConfig({
@@ -44,7 +44,7 @@ async function call(config: BuckleConfig, command: string, args: string[]) {
   } finally { prepare.mockRestore() }
 }
 
-const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name}`
+const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name} (allow it with buckle policy allow-interpreter ${name}, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling)`
 
 describe('buckle policy allow-interpreter and remove-interpreter', () => {
   it('refuses an unknown interpreter under a deny glob until the workspace allows it, and again once it is removed', async () => {
@@ -80,7 +80,7 @@ describe('buckle policy allow-interpreter and remove-interpreter', () => {
     expect(JSON.parse((await cli(config, ['policy', 'export'])).out).commands.allowedInterpreters).toEqual(['python3.12'])
   })
 
-  it('allows awk, lua, pwsh, tsx, ts-node, and their kin by name (slice 7j, default D57)', async () => {
+  it('allows awk, lua, pwsh, tsx, ts-node, and their kin by name', async () => {
     const config = node()
     const names = ['awk', 'gawk', 'mawk', 'nawk', 'lua', 'lua5.4', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node']
     for (const name of names) expect((await cli(config, ['policy', 'allow-interpreter', name])).exitCode).toBe(0)
@@ -130,8 +130,8 @@ describe('allowedInterpreters in a policy document', () => {
   })
 })
 
-// Default D56 (owner decision D7: a workspace never exceeds the node ceiling): the node ceiling over a registered
-// workspace, its environment policy, allows the interpreters BUCKLE_ALLOWED_INTERPRETERS names, comma separated,
+// A workspace never exceeds the node ceiling (docs/dev/architecture.md, Interpreters): the node ceiling over a
+// registered workspace, its environment policy, allows the interpreters BUCKLE_ALLOWED_INTERPRETERS names, comma separated,
 // default none. A registered workspace's own allowance counts only within that list, at its own deny list and at the
 // floor as well as at the ceiling's; the node's own workspace gains the environment's list beside what it stores.
 describe('BUCKLE_ALLOWED_INTERPRETERS, the node ceiling\'s interpreter allowance', () => {

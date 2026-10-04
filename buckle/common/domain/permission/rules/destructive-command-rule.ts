@@ -28,7 +28,8 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
  * each find -exec command (the continuation review, "Seen outside this range"; slice 7 review F1; owner decision
  * D25). A call Buckle cannot read whole asks, naming the limit that stopped the reading (READ_LIMITS; slice 7b review
  * W7B-1), an eval or a shell -c string whose text an expansion supplies among them, and a call running code with an
- * interpreter the workspace does not allow (`allowedInterpreters`, owner decision D55); with a command deny list, the
+ * interpreter the workspace does not allow (`allowedInterpreters`; docs/dev/architecture.md, Interpreters); with a
+ * command deny list, the
  * command policy refuses such a call first (slice 7c review R7C-CR-1). The subject asked and granted stays the call's
  * own argv (owner decision D17).
  */

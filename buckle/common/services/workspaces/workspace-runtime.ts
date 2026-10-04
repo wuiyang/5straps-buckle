@@ -463,8 +463,9 @@ function compilesAlone(policy: WorkspacePolicy): boolean {
 
 /**
  * A registered workspace's policy with its allowed interpreters cut to those the node ceiling allows too, so a workspace
- * never reads as ordinary an interpreter the ceiling reads as unknown, at its own deny list or at the floor (owner
- * decision D7, default D56: the ceiling's list is BUCKLE_ALLOWED_INTERPRETERS).
+ * never reads as ordinary an interpreter the ceiling reads as unknown, at its own deny list or at the floor: a
+ * workspace never exceeds the node ceiling, whose list is BUCKLE_ALLOWED_INTERPRETERS (docs/dev/architecture.md,
+ * Interpreters).
  */
 function withinCeiling(compiled: CompiledPolicy, ceiling: CompiledPolicy): CompiledPolicy {
   const allowedInterpreters = new Set([...compiled.commands.allowedInterpreters].filter(name => ceiling.commands.allowedInterpreters.has(name)))

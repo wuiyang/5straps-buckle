@@ -456,8 +456,9 @@ const OWN_PARSING: Shape[] = [
 ]
 
 /**
- * Owner decision D55: code a non-shell interpreter runs is unknown to Buckle, so the call is unread (unknown
- * interpreter) until a policy allows that interpreter. The two python shapes of the 7h probes ran the sentinel.
+ * The interpreter decision (docs/dev/architecture.md, Interpreters): code a non-shell interpreter runs is unknown to
+ * Buckle, so the call is unread (unknown interpreter) until a policy allows that interpreter. The two python shapes of
+ * the first probes ran the sentinel.
  */
 const INTERPRETERS: Shape[] = [
   { label: 'interpreter: python os.system in a heredoc body', body: `python3 <<'EOF'\nimport os; os.system('${PAYLOAD}')\nEOF`, unread: 'interpreter' },
@@ -466,7 +467,7 @@ const INTERPRETERS: Shape[] = [
   { label: 'interpreter: sudo python -c os.system', body: `sudo python3 -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter' },
   { label: 'interpreter: su -s python -c os.system', body: `su -s python3 -c "import os; os.system('${PAYLOAD}')" root`, unread: 'interpreter' },
   { label: 'interpreter: ssh host python -c os.system', body: `ssh host "python3 -c \\"import os; os.system('${PAYLOAD}')\\""`, unread: 'interpreter' },
-  // Slice 7j, default D57: awk runs a command through system() or a pipe, from its program argument, a -f file, or on
+  // awk runs a command through system() or a pipe, from its program argument, a -f file, or on
   // its input; tsx runs TypeScript that spawns one. Each ran the sentinel under real bash in scratch first (mawk as
   // awk, mawk, and nawk; tsx from the repository's own dependencies); where a program is absent its row is skipped.
   { label: 'interpreter: awk BEGIN system', body: `awk 'BEGIN{system("${PAYLOAD}")}'`, unread: 'interpreter', needs: 'awk' },
