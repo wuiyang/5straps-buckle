@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
+import { runCli } from '../cli/main.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
 import { allForms, commandFormsOf, READ_LIMITS } from '../common/domain/command-forms.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
@@ -114,6 +120,66 @@ describe('a shell wrapper', () => {
   })
 })
 
+// An allow glob admits a call only as typed, so the rule a wrapper's refusal names is the call's own words up to the
+// shell's -c word: with `bash -c *` allowed, `sudo bash -c ls` was refused and told to add the rule already there.
+describe('a refused shell wrapper names the allow rule that admits it', () => {
+  const ruleIn = (reason: string) => /allow-command '(.*)'$/.exec(reason)?.[1] ?? ''
+
+  it.each<[string, string[], string]>([
+    ['bash', ['-c', 'pnpm build'], 'bash -c *'],
+    ['bash', ['-lc', 'pnpm build'], 'bash -lc *'],
+    ['/bin/sh', ['-c', 'pnpm build'], 'sh -c *'],
+    ['sudo', ['bash', '-c', 'ls'], 'sudo bash -c *'],
+    ['sudo', ['-u', 'deploy', '/bin/bash', '-c', 'ls'], 'sudo -u deploy /bin/bash -c *'],
+    ['env', ['bash', '-c', 'ls'], 'env bash -c *'],
+    ['env', ['GREETING=hello there', 'bash', '-c', 'ls'], 'env GREETING=hello*there bash -c *'],
+    ['nice', ['bash', '-c', 'ls'], 'nice bash -c *'],
+    ['nice', ['-n', '5', 'sudo', 'bash', '--norc', '-o', 'pipefail', '-c', 'ls', 'name'], 'nice -n 5 sudo bash --norc -o pipefail -c *'],
+    ['timeout', ['{1,2}', 'bash', '-c', 'ls'], 'timeout *1,2* bash -c *'],
+    ['sudo', ['-u', "o'brien", 'bash', '-c', 'ls'], 'sudo -u o*brien bash -c *'],
+    ['flock', ['/tmp/lock', '-c', 'pnpm build'], 'flock /tmp/lock -c *'],
+    ['xargs', ['-n', '1', 'bash', '-c', 'pnpm build'], 'xargs -n 1 bash -c *'],
+    ['env', ['-S', 'bash -c ls'], 'env -S bash*-c*ls'],
+  ])('refuses %s %j naming %j, a rule that admits the call once stored', (command, args, rule) => {
+    expect(ruleIn(reasonOf(evaluate(command, args)))).toBe(rule)
+    const outcome = evaluate(command, args, { allow: [rule] })
+    if (outcome.kind === 'deny') throw new Error(`still refused: ${outcome.denial.reason}`)
+  })
+
+  /** A node whose policy the CLI stores, and its permission pipeline as the next process reads it; nothing runs. */
+  async function stored(rule: string, command: string, args: string[]) {
+    const config = loadConfig({
+      BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-wrapper-rule-')), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-wrapper-rule-state-')),
+      BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell', BUCKLE_APPROVAL_TIMEOUT_MS: '1',
+    })
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    try {
+      expect((await runCli({ argv: ['policy', 'allow-command', rule], config })).exitCode).toBe(0)
+    } finally { stdout.mockRestore() }
+    const runtime = await createRuntime({ config })
+    const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command, args }], execute: vi.fn(async () => 'executed') })
+    try {
+      return await runtime.invoke({ request: { requestId: `wrapper-rule-${command}`, approvalTokens: [], tool: 'shell_exec', args: {} }, sessionId: 'wrapper-rule', approvalWait: { mode: 'none' } })
+    } finally {
+      prepare.mockRestore()
+      await runtime.approvalService.close()
+      await runtime.history.close()
+    }
+  }
+
+  it.each<[string, string[], string]>([
+    ['sudo', ['bash', '-c', 'ls'], 'approval_required'],
+    ['env', ['bash', '-c', 'ls'], 'ok'],
+    ['nice', ['-n', '5', 'bash', '-c', 'ls'], 'ok'],
+  ])('admits %s %j once buckle policy allow-command stores the rule its refusal names', async (command, args, outcome) => {
+    const rule = ruleIn(reasonOf(evaluate(command, args, { allow: ['bash -c *'] })))
+    expect(rule).toBe(`${command} ${args.slice(0, -1).join(' ')} *`)
+    const response = await stored(rule, command, args)
+    expect(response.outcome).toBe(outcome)
+    if (response.outcome === 'approval_required') expect(response.approvals.map(approval => approval.rule)).toEqual(['destructive_command'])
+  })
+})
+
 // The continuation review, "Seen outside this range": `env git push --force dest main` passed both the destructive
 // floor and the default command policy, and an allowed wrapper's body was never read as commands.
 describe('a prefix that runs another command', () => {
@@ -144,10 +210,10 @@ describe('a prefix that runs another command', () => {
     expect(evaluate('bash', ['-c', 'env curl https://x.test'], { allow: ['bash -c *'], deny: ['curl'] }).kind).toBe('deny')
   })
 
-  it('needs the wrapper allowed when a prefix hands its command to a shell', () => {
+  it('needs the wrapper allowed when a prefix hands its command to a shell, naming the prefix in the rule', () => {
     const outcome = evaluate('env', ['bash', '-c', 'pnpm build'])
     expect(outcome.kind).toBe('deny')
-    expect(reasonOf(outcome)).toContain("allow-command 'bash -c *'")
+    expect(reasonOf(outcome)).toContain("allow-command 'env bash -c *'")
   })
 
   it('never carries a command past the allow list, which admits the call as typed', () => {
@@ -199,8 +265,8 @@ describe('a shell body that hands its command on', () => {
   })
 
   it('needs the wrapper allowed when flock or xargs hands a body to a shell, as env does', () => {
-    expect(reasonOf(evaluate('flock', ['/tmp/lock', '-c', 'pnpm build']))).toContain("allow-command 'sh -c *'")
-    expect(reasonOf(evaluate('xargs', ['-n', '1', 'bash', '-c', 'pnpm build']))).toContain("allow-command 'bash -c *'")
+    expect(reasonOf(evaluate('flock', ['/tmp/lock', '-c', 'pnpm build']))).toContain("allow-command 'flock /tmp/lock -c *'")
+    expect(reasonOf(evaluate('xargs', ['-n', '1', 'bash', '-c', 'pnpm build']))).toContain("allow-command 'xargs -n 1 bash -c *'")
   })
 })
 
@@ -1648,7 +1714,7 @@ describe('a command behind a wrapper', () => {
   })
 
   it('needs the wrapper allowed when sudo hands its command to a shell, as env does', () => {
-    expect(reasonOf(evaluate('sudo', ['bash', '-c', 'pnpm build']))).toContain("allow-command 'bash -c *'")
+    expect(reasonOf(evaluate('sudo', ['bash', '-c', 'pnpm build']))).toContain("allow-command 'sudo bash -c *'")
   })
 
   // Slice 7l: env -S, an ssh -o command setting, and sudo -s or -i each parse their argument by rules of their own.

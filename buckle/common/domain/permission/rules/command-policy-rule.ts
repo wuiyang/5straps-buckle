@@ -82,7 +82,7 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       const admitted = allow.some(glob => glob.matchesLine(words))
       const wrapper = forms.chain.find(([command = '', ...args]) => isShellWrapper(parseArgv(command, args)))
       if (options.enforceWrapperAllow !== false && wrapper && !admitted) {
-        return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapper[0]} -c *'`)
+        return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapperRule(words, wrapper)}'`)
       }
       if (allow.length > 0 && !admitted) {
         return deny('command_policy', subject(), `Not on the ${source} command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
@@ -90,6 +90,32 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       return null
     },
   }
+}
+
+/**
+ * The allow rule a shell wrapper's refusal names, one that admits the call: an allow glob meets the call as typed, so
+ * the rule is the call's own words up to the shell's `-c` word, then `*`, a prefix such as `sudo`, `env`, or `nice`
+ * included (`sudo bash -c *`). The shell's words from that `-c` on must end the call as typed; where they do not (an
+ * `env -S` value), the rule is the whole call. Each word is written as a pattern word (patternWord).
+ */
+function wrapperRule(typed: readonly string[], shell: readonly string[]): string {
+  const flag = shell.findIndex((word, index) => index > 0 && SHORT_OPTIONS.test(word) && word.includes('c'))
+  const from = typed.length - (shell.length - flag)
+  const ends = flag > 0 && from >= 0 && shell.slice(flag).every((word, index) => typed[from + index] === word)
+  return ends ? [...typed.slice(0, from + 1).map(patternWord), '*'].join(' ') : typed.map(patternWord).join(' ')
+}
+
+/** A cluster of short options (`-c`, `-lc`), never a long one. */
+const SHORT_OPTIONS = /^-[^-]/
+/**
+ * What a pattern word cannot hold as itself: a blank, which ends a pattern word; a brace, which starts alternatives;
+ * regular-expression syntax, which a pattern refuses; and a single quote, which would end the quoted rule a refusal shows.
+ */
+const UNSPELLABLE = /[\s{}'^$()|\\+?[\]]+/g
+
+/** A typed word as a pattern word that still meets it: each run of characters a pattern cannot hold becomes `*`. */
+function patternWord(word: string): string {
+  return word.replace(UNSPELLABLE, '*').replace(/\*+/g, '*') || '*'
 }
 
 /** The first deny glob of a policy that meets a form of the call, read as far as it was read. */

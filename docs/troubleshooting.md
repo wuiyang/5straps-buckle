@@ -108,8 +108,10 @@ PERMISSION_DENIED: A shell wrapper hides its command from the word globs, so it 
 ```
 
 `script_run` with the `bash` runtime, and any `bash -c`, is refused until a rule allows the
-wrapper. Prefer `shell_exec` with the program and its arguments, or allow the wrapper as the
-message says. [Policy](policy.md#commands) explains why.
+wrapper. Prefer `shell_exec` with the program and its arguments, or allow the wrapper with the
+rule the message names. An allow rule admits a call only as typed, so behind a prefix the message
+names the prefix too: `sudo bash -c ls` names `sudo bash -c *`, and `env bash -c ls` names
+`env bash -c *`. [Policy](policy.md#commands) explains why.
 
 ## A .env in the project is refused
 

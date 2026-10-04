@@ -36,8 +36,9 @@ last. `**` matches any run of words, and `{a,b}` one alternative. Buckle refuses
 
 A shell wrapper (`bash -c`, or `-c` with `sh`, `zsh`, `dash`, `ksh`, or `fish`) hides its command
 from word globs, so it needs its own allow rule, such as `buckle policy allow-command 'bash -c *'`,
-even with no allow list; `script_run` with the `bash` runtime is one
-([Troubleshooting](troubleshooting.md#a-bash-script-is-refused)).
+even with no allow list; `script_run` with the `bash` runtime is one. Behind a prefix the rule
+names the prefix as typed, `sudo bash -c *`, since `bash -c *` alone does not admit `sudo bash -c
+ls`; the refusal names that rule ([Troubleshooting](troubleshooting.md#a-bash-script-is-refused)).
 
 No pattern lets a tool run Buckle's admin commands, such as `buckle approve`, `buckle policy`,
 or `buckle settings`.
