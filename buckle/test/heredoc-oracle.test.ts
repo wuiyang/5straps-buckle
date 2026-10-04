@@ -1159,6 +1159,49 @@ const HELD_TEXT: Shape[] = [
   ].map(([label, body]) => ({ label: `held text: ${label}`, body: body!, unread: 'expansion' as const })),
 ]
 
+/**
+ * Quotes nest as bash nests them: inside double quotes, and outside, a `$(...)` body, a `${...}` parameter expansion, and
+ * a backtick body each start a fresh quoting context, so a word holding one ends where bash ends it. Each word below
+ * holds quotes, a separator, a blank, a comment, a heredoc body, or a case pattern that a reading ignoring the nesting
+ * ends the word at, and stands as an assignment before the sentinel, as an argument before a later statement, behind
+ * env and sudo, and, spelled to name the sentinel, as the command word itself, which an expansion supplies, so the call
+ * is unread. Each ran the sentinel under real bash in scratch first.
+ */
+const NESTED_WORDS: Array<readonly [string, string, string | null]> = [
+  ['a substitution holding a double-quoted string', '"$(echo "a b")"', `"$(echo "${SENTINEL}")"`],
+  ['a default value holding a double-quoted string', '"${q:-"a b"}"', `"\${q:-"${SENTINEL}"}"`],
+  ['a default value holding a quoted separator', '"${q:-"a;b"}"', `"\${q:-"${SENTINEL}"}"`],
+  ['an unquoted default value holding a blank', '${q:-a b}', `\${q:-${SENTINEL}}`],
+  ['an unquoted default value holding a separator', '${q:-a;b}', `\${q:-${SENTINEL}}`],
+  ['a default value holding a single-quoted brace', `"\${q:-'}'}"`, null],
+  ['an unquoted default value holding a single-quoted brace and a separator', `\${q:-'}; a'}`, null],
+  ['an unquoted default value holding a single-quoted brace and a double quote', `\${q:-'}"'}`, null],
+  ['a default value holding a substitution with blanks', '${q:-$(echo a b)}', `\${q:-$(echo ${SENTINEL})}`],
+  ['a substitution two deep, each double-quoted', '"$(echo "$(echo "c d")")"', `"$(echo "$(echo "${SENTINEL}")")"`],
+  ['a substitution holding a double-quoted parenthesis', '"$(echo ")")"', `"$(echo ")" >/dev/null; echo ${SENTINEL})"`],
+  ['a substitution holding a single-quoted parenthesis', `"$(echo ')')"`, `"$(echo ')' >/dev/null; echo ${SENTINEL})"`],
+  ['a substitution holding a case pattern', '"$(case a in a) echo "q; r";; esac)"', `"$(case a in a) echo "${SENTINEL}";; esac)"`],
+  ['a substitution holding a separator after a parenthesized case pattern and an alternative', '"$(case a in (a) :;; b|c) echo "q; r";; esac)"', `"$(case b in (a) :;; b|c) echo "${SENTINEL}";; esac)"`],
+  ['a substitution holding a separator after a second case pattern', '"$(case a in a) :;; b) echo "q; r";; esac)"', `"$(case b in a) :;; b) echo "${SENTINEL}";; esac)"`],
+  ['a substitution holding a case whose in is on the next line', '"$(case a\nin a) echo "q; r";; esac)"', `"$(case a\nin a) echo "${SENTINEL}";; esac)"`],
+  ['a substitution holding a command after a case', '"$(case a in a) :;; esac; echo "q; r")"', `"$(case a in a) :;; esac; echo "${SENTINEL}")"`],
+  ['a backtick body holding escaped double quotes', '"`echo \\"a b\\"`"', `"\`echo \\"${SENTINEL}\\"\`"`],
+  ['arithmetic holding double quotes', '"$(( "1" + (2) ))"', null],
+  ['a substitution holding a heredoc body with a parenthesis', '"$(cat <<EOF\n) "\nEOF\n)"', `"$(cat <<EOF\n${SENTINEL}\nEOF\n)"`],
+  ['a substitution holding a comment with a parenthesis', '"$(echo a # ) "\n)"', `"$(echo ${SENTINEL} # ) "\n)"`],
+]
+
+/** The sentinel with an argument holding a quoted separator, which no statement piece reads whole, so only a statement split as bash splits it meets the invocation. */
+const QUOTED_PAYLOAD = `${SENTINEL} "c;d"`
+
+const QUOTE_NESTING: Shape[] = NESTED_WORDS.flatMap(([name, word, command]) => [
+  { label: `quote nesting: ${name}, an assignment before a command`, body: `x=${word} ${QUOTED_PAYLOAD}`, whole: true as const },
+  { label: `quote nesting: ${name}, an argument before a later statement`, body: `echo ${word}; ${QUOTED_PAYLOAD}`, whole: true as const },
+  { label: `quote nesting: ${name}, behind env`, body: `env X=${word} ${QUOTED_PAYLOAD}`, whole: true as const },
+  { label: `quote nesting: ${name}, behind sudo`, body: `sudo X=${word} ${QUOTED_PAYLOAD}`, whole: true as const },
+  ...(command === null ? [] : [{ label: `quote nesting: ${name}, the command word`, body: `${command} mark`, unread: 'expansion' as const }]),
+])
+
 /** An `until` loop runs its condition, so the command in it runs as surely as one under `if` or `while`. */
 const KEYWORD_SHAPES: Shape[] = [
   { label: 'keyword: until around the payload', body: `until ${PAYLOAD}; do :; done` },
@@ -1177,7 +1220,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT, ...QUOTE_NESTING]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
@@ -1194,6 +1237,22 @@ function buckleRan(forms: CommandForms): Set<string> {
   const ran = new Set<string>()
   for (const form of allForms(forms)) if (baseCommand(form[0] ?? '') === SENTINEL) ran.add(invocation(form.slice(1).join(' ')))
   return ran
+}
+
+/** A word that assigns a variable before a command, which names no command. */
+const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/
+
+/**
+ * The agreement check: each command word the whole-command reading judges (CommandForms `heads`, every command a
+ * substitution cut, read whole) must be the command word of some form, the forms being what every rule matches on; one
+ * no form reads is a command no deny glob and no floor meets (the forms read `x="$(echo "a b")" git push` as the command
+ * `b)` while that reading, and bash, ran git push). An assignment step names no command, and a word holding a body
+ * (`$()`) is one an expansion supplies, which leaves the call unread. The command words it leaves out, each once.
+ */
+function unreadByForms(forms: CommandForms): string[] {
+  const read = new Set(allForms(forms).map(form => form[0]))
+  const judged = new Set(forms.heads.map(head => head[0] ?? ''))
+  return [...judged].filter(word => word !== '' && !ASSIGNMENT_WORD.test(word) && !word.includes('$()') && !read.has(word))
 }
 
 /**
@@ -1339,6 +1398,7 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
       const ran = bashRan(body, needs === undefined ? SHAPE_TIMEOUT : NEEDS_TIMEOUT)
       const forms = commandForms('bash', ['-c', body])
       const read = buckleRan(forms)
+      for (const word of unreadByForms(forms)) missed.push(`${label}: the whole-command reading judges the command [${word}], which no form reads`)
       if (needs !== undefined && ran.size === 0) missed.push(`${label}: ${needs} ran no sentinel, so the row proves nothing`)
       if (whole && readLimitOf(forms) !== null) missed.push(`${label}: Buckle marked the call unread (${readLimitOf(forms)}), which it must read whole`)
       if (unread !== undefined) {

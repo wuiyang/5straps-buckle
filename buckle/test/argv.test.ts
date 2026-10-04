@@ -305,6 +305,43 @@ describe('shell text as a shell splits it', () => {
     expect(statementsOf('echo $(id # c ); git push origin main\n)')).not.toContain('git push origin main')
   })
 
+  // Quotes nest as bash nests them: a `$(...)`, `<(...)`, `${...}`, or backtick body starts a fresh quoting context,
+  // inside double quotes and out, so a word holding one ends where bash ends it, the expansion kept as written. A word
+  // ended at the inner quote read `x="$(echo "a b")" git push` as the command `b)` while bash ran git push.
+  it.each([
+    ['x="$(echo "a b")" git push', ['x=$(echo "a b")', 'git', 'push']],
+    ['x="${q:-"a b"}" git push', ['x=${q:-"a b"}', 'git', 'push']],
+    ['x=${q:-a b} git push', ['x=${q:-a b}', 'git', 'push']],
+    [`x="\${q:-'}'}" git`, [`x=\${q:-'}'}`, 'git']],
+    ['x="$(echo "$(echo "c d")")" git', ['x=$(echo "$(echo "c d")")', 'git']],
+    [`x="$(echo ')')" git`, [`x=$(echo ')')`, 'git']],
+    ['x="$(f() { :; }; echo ")")" git', ['x=$(f() { :; }; echo ")")', 'git']],
+    ['x="$(case a in a) echo "q r";; esac)" git', ['x=$(case a in a) echo "q r";; esac)', 'git']],
+    ['x=$(case a in (a) echo;; esac) git', ['x=$(case a in (a) echo;; esac)', 'git']],
+    ['x="`echo \\"a b\\"`" git', ['x=`echo \\"a b\\"`', 'git']],
+    ['x="$(( "1" + (2) ))" git', ['x=$(( "1" + (2) ))', 'git']],
+    ['x="$(cat <<EOF\n) "\nEOF\n)" git', ['x=$(cat <<EOF\n) "\nEOF\n)', 'git']],
+    ['x="$(echo a # ) "\n)" git', ['x=$(echo a # ) "\n)', 'git']],
+    ['cat <(echo a b) x', ['cat', '<(echo a b)', 'x']],
+    ['echo $(echo "a b") `echo "c d"` x', ['echo', '$(echo "a b")', '`echo "c d"`', 'x']],
+  ])('reads %j as the words %j, each expansion one word', (text, words) => {
+    expect(shellTokens(text).map(token => token.word)).toEqual(words)
+  })
+
+  // The statements split as bash splits them: a parameter expansion's braces hold their separators, and a case pattern's
+  // `)` inside a substitution closes neither the substitution nor the double quotes around it.
+  it.each([
+    ['x=${q:-a;b} git push', ['x=${q:-a;b} git push'], []],
+    ['x="${q:-"a;b"}" git push', ['x="${q:-"a;b"}" git push'], []],
+    ['x="${q:-$(echo "a;b")}" git push', ['echo "a;b"', 'x="${q:-$(echo "a;b")}" git push'], ['x="${q:-$()}" git push']],
+    ['x="$(case a in a) echo "q;r";; esac)" git push', ['case a in a', 'echo "q;r"', 'esac', 'x="$(case a in a) echo "q;r";; esac)" git push'], ['x="$()" git push']],
+    ['echo $(case a in (a) x;; b|c) y;; esac); git push', ['echo $', 'case a in', 'a', 'x', 'b', 'c', 'y', 'esac', 'git push'], ['echo $$()']],
+  ])('splits %j into the statements %j and the heads %j', (text, statements, heads) => {
+    const list = shellStatementList(text)
+    expect(list.statements).toEqual(statements)
+    expect([...list.heads.keys()]).toEqual(heads)
+  })
+
   // A backslash that ends the text escapes nothing and bash keeps it; an escaped space ending a statement is a word.
   it('keeps a backslash that ends the text, and an escaped space that ends a statement', () => {
     expect(shellTokens('git push --force\\').map(token => token.word)).toEqual(['git', 'push', '--force\\'])

@@ -874,6 +874,74 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
+  // Quotes nest as bash nests them: a `$(...)`, a `${...}`, and a backtick body each start a fresh quoting context, in
+  // double quotes and out, so a word holding one ends where bash ends it and the git push after it is the command. The
+  // forms read `x="$(echo "a b")" git push` as the command `b)`, so no glob and no floor met the push bash ran. Real
+  // bash ran the sentinel in each shape (heredoc-oracle.test.ts).
+  const nestedWords = [
+    ['a substitution holding a double-quoted string', '"$(echo "a b")"'],
+    ['a default value holding a double-quoted string', '"${q:-"a b"}"'],
+    ['a default value holding a quoted separator', '"${q:-"a;b"}"'],
+    ['an unquoted default value holding a blank', '${q:-a b}'],
+    ['an unquoted default value holding a separator', '${q:-a;b}'],
+    ['a default value holding a single-quoted brace', `"\${q:-'}'}"`],
+    ['an unquoted default value holding a single-quoted brace and a separator', `\${q:-'}; a'}`],
+    ['an unquoted default value holding a single-quoted brace and a double quote', `\${q:-'}"'}`],
+    ['a default value holding a substitution with blanks', '${q:-$(echo a b)}'],
+    ['a substitution two deep, each double-quoted', '"$(echo "$(echo "c d")")"'],
+    ['a substitution holding a double-quoted parenthesis', '"$(echo ")")"'],
+    ['a substitution holding a single-quoted parenthesis', `"$(echo ')')"`],
+    ['a substitution holding a case pattern', '"$(case a in a) echo "q; r";; esac)"'],
+    ['a substitution holding a separator after a parenthesized case pattern and an alternative', '"$(case a in (a) :;; b|c) echo "q; r";; esac)"'],
+    ['a substitution holding a separator after a second case pattern', '"$(case a in a) :;; b) echo "q; r";; esac)"'],
+    ['a substitution holding a case whose in is on the next line', '"$(case a\nin a) echo "q; r";; esac)"'],
+    ['a substitution holding a command after a case', '"$(case a in a) :;; esac; echo "q; r")"'],
+    ['a backtick body holding escaped double quotes', '"`echo \\"a b\\"`"'],
+    ['arithmetic holding double quotes', '"$(( "1" + (2) ))"'],
+    ['a substitution holding a heredoc body with a parenthesis', '"$(cat <<EOF\n) "\nEOF\n)"'],
+    ['a substitution holding a comment with a parenthesis', '"$(echo a # ) "\n)"'],
+  ] as const
+  const nestedPlaces = (word: string, command: string) => [
+    ['an assignment before the command', `x=${word} ${command}`],
+    ['an argument before a later statement', `echo ${word}; ${command}`],
+    ['behind env', `env X=${word} ${command}`],
+  ] as const
+  const nested = (command: string) => nestedWords.flatMap(([shape, word]) => nestedPlaces(word, command).map(([place, body]) => [`${shape}, ${place}`, body] as const))
+
+  it.each(cases.flatMap(([engine, switched]) => nested(push).map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, by the push glob, a git push after %s', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBeNull()
+    expect(refusal(check(engine, switched, body, ['git push*']))).toBe(`Refused by ${named[engine]}: git push*`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => nested('git push --force origin main').map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push after %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
+  // The same words spelled to name git are a command word an expansion supplies: unread, refused naming the limit.
+  const nestedCommandWords = [
+    ['a substitution holding a double-quoted string', '"$(echo "git")" push origin main'],
+    ['a default value holding a double-quoted string', '"${q:-"git"}" push origin main'],
+    ['an unquoted default value', '${q:-git} push origin main'],
+    ['a substitution two deep, each double-quoted', '"$(echo "$(echo "git")")" push origin main'],
+    ['a substitution holding a double-quoted parenthesis', '"$(echo ")" >/dev/null; echo git)" push origin main'],
+    ['a substitution holding a case pattern', '"$(case a in a) echo "git";; esac)" push origin main'],
+    ['a backtick body holding escaped double quotes', '"`echo \\"git\\"`" push origin main'],
+    ['a substitution holding a heredoc body', '"$(cat <<EOF\ngit\nEOF\n)" push origin main'],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => nestedCommandWords.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a command word %s supplies, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => nestedCommandWords.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a command word %s supplies', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
+  })
+
   // A heredoc body fed to a program that runs no shell is data, read as shell text only as a safety net: a Makefile or a
   // script written through cat or tee whose lines start with an expansion stays read, and a deny glob that names none
   // of its commands lets it run. Fed to bash, the same body runs, and its command word is judged.

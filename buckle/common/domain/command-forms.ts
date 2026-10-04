@@ -177,6 +177,12 @@ export interface CommandForms {
   scriptData: boolean
   /** The interpreters the call runs code with (interpreterRunningCode), by program name, each once. */
   interpreters: string[]
+  /**
+   * The whole-command reading: each command a substitution cut, read whole with each body as `$()` (a head), as the
+   * command behind each wrapper in turn, wherever its command word was judged (textCommands). No rule matches on it; it
+   * is kept so a test can hold the forms to it, since a command word it reads that no form reads is one no glob meets.
+   */
+  heads: string[][]
 }
 
 /**
@@ -277,7 +283,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   const { chain, unread } = wrapperChain(words, place.expanded, place.sure && place.whole ? (place.found ? JUDGED_FOUND : JUDGED) : null)
   const inner = innerCommands(chain.at(-1)!, budget, place)
   const interpreter = interpreterRunningCode(chain, place)
-  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place), interpreters: interpreter ? [interpreter] : [], rereads: inner.rereads }
+  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads }
   const read = (command: string[], at: Place, piece = false): Reading | null => {
     if (depth >= MAX_DEPTH) {
       forms.unread = 'depth'
@@ -286,6 +292,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
     const nested = formsOf(command, depth + 1, budget, at)
     keep(forms.nested, nested.chain, budget)
     keep(forms.nested, nested.nested, budget)
+    for (const head of nested.heads) forms.heads.push(head)
     forms.unread = firstLimit(forms.unread, nested.unread)
     if (!piece) {
       forms.scriptData ||= nested.scriptData
@@ -477,8 +484,11 @@ function keep(into: string[][], forms: readonly string[][], budget: Budget): voi
  */
 interface CommandGroup { command: string[]; statement: string; heredoc: boolean; expanded: Expanded; found: boolean; sure: boolean; whole: boolean; fed: boolean }
 
-/** The commands a command runs inside itself, why part of them was left unread, whether a script there arrives as data, and whether the command reads its own text again. */
-interface InnerCommands { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData?: boolean; rereads: boolean }
+/**
+ * The commands a command runs inside itself, why part of them was left unread, whether a script there arrives as data,
+ * whether the command reads its own text again, and the whole-command reading of its text (CommandForms `heads`).
+ */
+interface InnerCommands { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData?: boolean; rereads: boolean; heads?: string[][] }
 
 /** Commands a command runs whose words come from the statement around it (find -exec, su), keeping what the place knows of them. */
 const groupsOf = (commands: readonly string[][], place: Place, found: boolean): CommandGroup[] =>
@@ -503,7 +513,7 @@ function innerCommands(runs: readonly string[], budget: Budget, place: Place): I
     // eval joins its words with spaces and runs the result as shell text; one leading `--` ends its options (slice 7b review W7B-2).
     const text = (args[0] === '--' ? args.slice(1) : args).join(' ')
     const read = textCommands(text, budget, place)
-    return { groups: read.groups, unread: UNKNOWN_TEXT.test(text) || text.trim() === '' ? firstLimit(read.unread, 'expansion') : read.unread, scriptData: read.scriptData, rereads: true }
+    return { groups: read.groups, unread: UNKNOWN_TEXT.test(text) || text.trim() === '' ? firstLimit(read.unread, 'expansion') : read.unread, scriptData: read.scriptData, rereads: true, heads: read.heads }
   }
   if (command === 'trap') return heldCommands(trapAction(args), budget, place)
   if (command === 'alias') return heldCommands(aliasValues(args), budget, place)
@@ -518,7 +528,7 @@ function innerCommands(runs: readonly string[], budget: Budget, place: Place): I
   const rest = textCommands(positionals.filter((_, index) => index !== script).join('\n'), budget, { sure: false, fed: place.fed })
   const expanded = source === 'command' && operand !== undefined && place.expanded.has(operand)
   const unread = firstLimit(expanded ? firstLimit(read.unread, 'expansion') : read.unread, rest.unread)
-  return { groups: [...read.groups, ...rest.groups], unread, scriptData: read.scriptData || rest.scriptData, rereads: true }
+  return { groups: [...read.groups, ...rest.groups], unread, scriptData: read.scriptData || rest.scriptData, rereads: true, heads: [...read.heads, ...rest.heads] }
 }
 
 /** Shell text a builtin keeps for the shell to run later: the word of the call that carries it, and the text. */
@@ -531,16 +541,18 @@ interface HeldText { word: string; text: string }
  */
 function heldCommands(held: readonly HeldText[], budget: Budget, place: Place): InnerCommands {
   const groups: CommandGroup[] = []
+  const heads: string[][] = []
   let unread: UnreadLimit | null = null
   let scriptData = false
   for (const { word, text } of held) {
     if (place.expanded.has(word)) unread = firstLimit(unread, 'expansion')
     const read = textCommands(text, budget, place)
     groups.push(...read.groups)
+    for (const head of read.heads) heads.push(head)
     unread = firstLimit(unread, read.unread)
     scriptData ||= read.scriptData
   }
-  return { groups, unread, scriptData, rereads: held.length > 0 }
+  return { groups, unread, scriptData, rereads: held.length > 0, heads }
 }
 
 /**
@@ -601,13 +613,15 @@ function sshCommands(args: readonly string[], budget: Budget, place: Place): Inn
   let scriptData = false
   if ([...ssh.words, ...ssh.settings].some(word => place.expanded.has(word))) unread = firstLimit(unread, 'expansion')
   if (ssh.tokens) unread = firstLimit(unread, 'ownParsing')
+  const heads: string[][] = []
   for (const text of [...ssh.remote, ...ssh.local]) {
     const read = textCommands(text, budget, place)
     groups.push(...read.groups)
+    for (const head of read.heads) heads.push(head)
     unread = firstLimit(unread, read.unread)
     scriptData ||= read.scriptData
   }
-  return { groups, unread, scriptData, rereads: true }
+  return { groups, unread, scriptData, rereads: true, heads }
 }
 
 /**
@@ -633,21 +647,22 @@ function suCommands(args: readonly string[], place: Place): InnerCommands {
  * call's own text is what the splitter saw, or what `around` says of the command whose text this is; a command a
  * substitution cut is judged on its head for a script file it is given while so fed (scriptArrivesAsData).
  */
-function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' | 'fed'>): { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData: boolean } {
+function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' | 'fed'>): { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData: boolean; heads: string[][] } {
   const { sure } = around
   if (budget.characters < text.length) {
     budget.characters -= text.length
     budget.spent = true
-    return { groups: [], unread: null, scriptData: false }
+    return { groups: [], unread: null, scriptData: false, heads: [] }
   }
   const meter = { characters: budget.characters }
   const { statements, seen, heads, deep, overDepth, unsureComment, overBudget } = shellStatementList(text, meter, feedsShell)
   budget.characters = meter.characters
   const groups: CommandGroup[] = []
+  const judged: string[][] = []
   // Past the budget no form is read (formsOf stops at a spent budget), so the statements are not split into words.
   if (overBudget) {
     budget.spent = true
-    return { groups, unread: null, scriptData: false }
+    return { groups, unread: null, scriptData: false, heads: judged }
   }
   let unread: UnreadLimit | null = overDepth ? 'depth' : deep ? 'substitutions' : unsureComment ? 'comment' : null
   let scriptData = false
@@ -664,9 +679,10 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
     const { chain, unread: limit } = wrapperChain(form.words, form.expanded, JUDGED)
     if (limit === 'expansion') unread = firstLimit(unread, 'expansion')
     scriptData ||= (around.fed || known.fed) && runsScriptFile(chain)
+    for (const step of chain) judged.push(step)
   }
   for (const use of aliasUses(groups, budget)) groups.push(use)
-  return { groups, unread, scriptData }
+  return { groups, unread, scriptData, heads: judged }
 }
 
 /**

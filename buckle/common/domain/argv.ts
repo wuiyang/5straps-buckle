@@ -691,8 +691,12 @@ export function statementPieces(statement: string): string[] {
   return statement.split(STATEMENT_BREAK).map(piece => piece.trim()).filter(piece => piece !== '' && piece !== statement)
 }
 
-/** `heredoc` is the text of a heredoc body under an unquoted delimiter: like `"`, but no quote ends it. */
-type Quote = null | "'" | "$'" | '"' | 'heredoc'
+/**
+ * `heredoc` is the text of a heredoc body under an unquoted delimiter: like `"`, but no quote ends it. `${` is the
+ * inside of a parameter expansion's braces, where blanks and operators are word text, quotes nest as bash nests them,
+ * and only its `}` ends it.
+ */
+type Quote = null | "'" | "$'" | '"' | 'heredoc' | '${'
 
 /** One level of unquoted shell text: the text itself, or a `$(...)` or backtick body inside double quotes or heredoc text. */
 interface SplitLevel {
@@ -700,6 +704,8 @@ interface SplitLevel {
   closer: ')' | '`' | null
   parens: number
   quote: Quote
+  /** The quote each quote open at this level was opened inside, innermost last, so closing one goes back to it. */
+  quotes: Quote[]
   /** Where a backtick level's body starts, and whether double quotes hold it, so `\"` in it is an escape too. */
   body: number
   doubleQuoted: boolean
@@ -738,12 +744,14 @@ type ParenKind = 'word' | 'command' | 'unsure'
  * arithmetic), whose words are judged as no command word. `feed` once a heredoc, a here-string, or a process
  * substitution feeds it; `statements` and `heads` count what was found before it, and `pieces` lists its own pieces once
  * it was cut. When the command ends, the same object is reset to read the next one; a body that interrupts it gets an
- * object of its own.
+ * object of its own. So `pattern` and `subject`, which outlive a command, belong to the body: `pattern` once a case's
+ * patterns follow (after `case WORD in`, a `|` between patterns, or `;;`, `;&` or `;;&`) until one ends or an `esac`,
+ * and `subject` after a `case WORD` whose `in` is on a later line.
  */
-interface CommandText { text: string; from: number; cut: boolean; runs: boolean; feed: boolean; statements: number; heads: number; pieces: number[] | null }
+interface CommandText { text: string; from: number; cut: boolean; runs: boolean; feed: boolean; statements: number; heads: number; pieces: number[] | null; pattern: boolean; subject: boolean }
 
 const commandAt = (from: number, runs: boolean, found: Found): CommandText =>
-  ({ text: '', from, cut: false, runs, feed: false, statements: found.statements.length, heads: found.heads.length, pieces: null })
+  ({ text: '', from, cut: false, runs, feed: false, statements: found.statements.length, heads: found.heads.length, pieces: null, pattern: false, subject: false })
 
 /** How many statements and heads were found before a point of the reading. */
 interface Mark { statements: number; heads: number }
@@ -761,8 +769,10 @@ const unfed = (): Feeding => ({ fed: null, pipe: null, pipeDepth: 0, compounds: 
 
 /** Characters the reading outside quotes acts on; every other one is word text, and so is any code point past ASCII. */
 const SPECIAL_OUTSIDE = new Uint8Array(128)
-for (const character of '\\`\'"#<>;&|() \t\n') SPECIAL_OUTSIDE[character.charCodeAt(0)] = 1
+for (const character of '\\`\'"#<>;&|() \t\n$') SPECIAL_OUTSIDE[character.charCodeAt(0)] = 1
 const plainOutside = (code: number): boolean => code >= 128 || SPECIAL_OUTSIDE[code] === 0
+/** Characters the reading inside a parameter expansion's braces acts on: a backslash, a quote, `$`, a backtick, and `}`. */
+const plainInBraces = (code: number): boolean => code !== 92 && code !== 39 && code !== 34 && code !== 36 && code !== 96 && code !== 125
 /** Whether text holds a character the reading outside quotes acts on other than a blank, or heredoc text one it acts on. */
 const SPECIAL_ANYWHERE_OUTSIDE = /[\\`'"#<>;&|()\n]/
 const SPECIAL_IN_HEREDOC = /[\\`$]/
@@ -771,7 +781,17 @@ const plainInQuotes = (code: number): boolean => code !== 92 && code !== 34 && c
 
 /** A level's reading state at its start, where a word starts; `runs` false for heredoc text and arithmetic, no command. */
 const levelStart = (start: number, closer: SplitLevel['closer'], quote: Quote, doubleQuoted: boolean, runs: boolean, found: Found): SplitLevel =>
-  ({ start, closer, parens: 0, quote, body: start, doubleQuoted, backtick: null, wordStart: true, opens: [], previous: '', previousStarted: false, command: commandAt(start, runs, found), interrupted: [], feeding: unfed(), feedings: [] })
+  ({ start, closer, parens: 0, quote, quotes: [], body: start, doubleQuoted, backtick: null, wordStart: true, opens: [], previous: '', previousStarted: false, command: commandAt(start, runs, found), interrupted: [], feeding: unfed(), feedings: [] })
+
+/** A quote opens at this level inside the one open there, and closing it goes back to that one. */
+function openQuote(level: SplitLevel, quote: Quote): void {
+  level.quotes.push(level.quote)
+  level.quote = quote
+}
+
+function closeQuote(level: SplitLevel): void {
+  level.quote = level.quotes.pop() ?? null
+}
 
 /** The reserved words that open a compound command, close one, or come before a command inside one. */
 const COMPOUND_OPENERS = new Set(['{', 'if', 'while', 'until', 'for', 'select', 'case'])
@@ -780,16 +800,25 @@ const BEFORE_A_COMMAND = new Set(['then', 'else', 'elif', 'do', '!', 'time'])
 
 /**
  * The reserved words a command's text starts with, as bash reads them only before a command: how many compound
- * commands they open, whether they close one, and whether the command is `exec` or defines a function.
+ * commands they open, whether they close one, and whether the command is `exec` or defines a function. Of a case:
+ * `patterns` when they are `case WORD in`, after which its patterns come; `subject` when they are `case WORD` alone,
+ * whose `in` comes on a later line; `esac` when the command's word is `esac`. `first` is the first word.
  */
-function leadingWords(text: string, from: number, to: number): { opens: number; closes: boolean; exec: boolean; defines: boolean } {
-  const result = { opens: 0, closes: false, exec: false, defines: false }
+function leadingWords(text: string, from: number, to: number): { opens: number; closes: boolean; exec: boolean; defines: boolean; patterns: boolean; subject: boolean; esac: boolean; first: string } {
+  const result = { opens: 0, closes: false, exec: false, defines: false, patterns: false, subject: false, esac: false, first: '' }
   let index = from
   for (let first = true; ; first = false) {
     while (index < to && BLANKS.has(text[index]!)) index++
     const start = index
     while (index < to && !BLANKS.has(text[index]!)) index++
     const word = text.slice(start, index)
+    if (first) result.first = word
+    if (word === 'esac') result.esac = true
+    if (word === 'case') {
+      const [subject, keyword] = shellTokensUpTo(text.slice(index, to), 2).tokens
+      result.patterns = keyword?.raw === 'in'
+      result.subject = subject !== undefined && keyword === undefined
+    }
     if (first && word === 'exec') result.exec = true
     if (first && word === 'function') {
       result.defines = true
@@ -939,6 +968,9 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     feeding.closed = null
     if (words.exec && command.feed) feeding.fed ??= mark()
     found.defines ||= words.defines
+    if (words.esac) command.pattern = false
+    else if (words.patterns || (command.subject && words.first === 'in')) command.pattern = true
+    command.subject = words.subject
     // Each heredoc this command owns keeps the command's text, whose words say whether a shell is fed the body.
     let owner: HeredocOwner | null = null
     for (const heredoc of heredocs) {
@@ -1011,6 +1043,34 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     if (opened === 'unsure' || mentionsCase) return 'unsure'
     return opened === 'command'
   }
+  // Whether a `(` or `)` at `at` opens or ends a case pattern of the body read at this level, as bash parses the body,
+  // rather than a parenthesis, a subshell, or the body itself: the body's command is in a case's pattern list (after
+  // `case WORD in`, a `|`, or `;;`) and its word is no `esac` (a probe under bash 5.2: `x="$(case a in a) echo "q;r";;
+  // esac)" git push` ran git push, which a `)` read as closing the substitution left in a statement led by `r`).
+  const casePattern = (level: SplitLevel, at: number): boolean => {
+    mentionsCase ??= CASE_WORD.test(text)
+    const command = level.command
+    if (!mentionsCase || !command.runs) return false
+    const current = command.cut ? command.text + (command.from >= 0 ? text.slice(command.from, at) : '') : text.slice(level.start, at)
+    const words = leadingWords(current, 0, current.length)
+    return !words.esac && (command.pattern || words.patterns || (command.subject && words.first === 'in'))
+  }
+  // A quote or `$(...)` or backtick body opens at `index` inside double quotes, heredoc text, or a parameter expansion's
+  // braces: a `$(...)` or backtick body is a level of its own, read as commands until its closer. The index to go on
+  // from, or null past the read budget.
+  const quotedSubstitution = (level: SplitLevel, index: number): number | null => {
+    const character = text[index]
+    if (levels.length > MAX_SUBSTITUTIONS) {
+      limits.deep = true
+      return index
+    }
+    cut(level.command, index)
+    const arithmetic = character === '$' && text[index + 2] === '(' && arithmeticAt(text, index + 1, meter)
+    if (meter.characters < 0) return null
+    const at = character === '$' ? index + 1 : index
+    levels.push(levelStart(at + 1, character === '`' ? '`' : ')', null, level.quote === '"', !arithmetic, found))
+    return at
+  }
   for (let index = 0; index < text.length; index++) {
     const level = levels.at(-1)!
     // Runs of characters that change nothing are passed over in one step, so each pass costs little per character.
@@ -1018,7 +1078,7 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       const close = text.indexOf("'", index)
       if (close < 0) break
       index = close
-      level.quote = null
+      closeQuote(level)
       continue
     }
     if (level.quote === null && plainOutside(text.charCodeAt(index))) {
@@ -1034,24 +1094,34 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       while (index + 1 < text.length && plainInQuotes(text.charCodeAt(index + 1))) index++
       continue
     }
+    if (level.quote === '${' && plainInBraces(text.charCodeAt(index))) {
+      while (index + 1 < text.length && plainInBraces(text.charCodeAt(index + 1))) index++
+      continue
+    }
     const character = text[index]!
     if (level.quote === "$'") {
       if (character === '\\') index++
-      else if (character === "'") level.quote = null
+      else if (character === "'") closeQuote(level)
       continue
     }
-    if (level.quote === '"' || level.quote === 'heredoc') {
+    if (level.quote === '"' || level.quote === 'heredoc' || level.quote === '${') {
+      const braces = level.quote === '${'
       if (character === '\\') index++
-      else if (character === '"' && level.quote === '"') level.quote = null
-      else if (character === '`' || (character === '$' && text[index + 1] === '(')) {
-        if (levels.length > MAX_SUBSTITUTIONS) limits.deep = true
-        else {
-          cut(level.command, index)
-          const arithmetic = character === '$' && text[index + 2] === '(' && arithmeticAt(text, index + 1, meter)
-          if (meter.characters < 0) return { ...limits, overBudget: true }
-          if (character === '$') index++
-          levels.push(levelStart(index + 1, character === '`' ? '`' : ')', null, level.quote === '"', !arithmetic, found))
-        }
+      else if (character === '"' && level.quote === '"') closeQuote(level)
+      else if (character === '}' && braces) closeQuote(level)
+      // Inside a parameter expansion's braces quotes nest, in double quotes and heredoc text too (a probe under bash 5.2:
+      // `"${x:-'}'}"` and a heredoc line `${x:-"}"}` each kept the quoted `}` in the value).
+      else if (braces && (character === "'" || character === '"')) openQuote(level, character)
+      else if (braces && character === '$' && text[index + 1] === "'") {
+        openQuote(level, "$'")
+        index++
+      } else if (character === '$' && text[index + 1] === '{') {
+        openQuote(level, '${')
+        index++
+      } else if (character === '`' || (character === '$' && text[index + 1] === '(')) {
+        const next = quotedSubstitution(level, index)
+        if (next === null) return { ...limits, overBudget: true }
+        index = next
       }
       continue
     }
@@ -1069,7 +1139,13 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       level.previous = continuation ? previous : ''
       level.previousStarted = continuation ? previousStarted : false
       index++
-    } else if (character === level.closer && (character === '`' || level.parens === 0)) {
+    } else if (character === '$' && text[index + 1] === '{') {
+      // A parameter expansion is word text up to its closing brace, blanks and operators in it included (a probe under
+      // bash 5.2: `x=${y:-a;b} git push` ran git push, which a split at the `;` left in a statement led by `b}`).
+      openQuote(level, '${')
+      level.previous = '{'
+      index++
+    } else if (character === level.closer && (character === '`' || (level.parens === 0 && !casePattern(level, index)))) {
       endLevel(level, index, index + 1)
       levels.pop()
       levels.at(-1)!.command.from = index + 1
@@ -1086,8 +1162,8 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
         readBacktick(text.slice(level.backtick, index), false)
         level.backtick = null
       }
-    } else if (character === "'") level.quote = previous === '$' ? "$'" : "'"
-    else if (character === '"') level.quote = '"'
+    } else if (character === "'") openQuote(level, previous === '$' ? "$'" : "'")
+    else if (character === '"') openQuote(level, '"')
     else if (character === '#' && wordStart === true) {
       const stop = commentEnd(text, index, level.closer === '`' || level.backtick !== null)
       finish(level, index, stop)
@@ -1101,9 +1177,15 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       if (heredoc) heredocs.push(heredoc.heredoc)
       index = (heredoc?.next ?? index + 2) - 1
     } else if (character === '(') {
-      if (level.closer === ')') level.parens++
       // `!(` at a word start is a negated subshell, or an extended glob when extglob is on, which the text need not say.
       const kind: ParenKind = !WORD_PAREN_BEFORE.has(previous) ? 'command' : previous === '!' && previousStarted ? 'unsure' : 'word'
+      // A case pattern's own opening parenthesis opens no subshell, and the pattern's `)` closes nothing.
+      if (kind === 'command' && casePattern(level, index)) {
+        finish(level, index, index + 1)
+        level.wordStart = true
+        continue
+      }
+      if (level.closer === ')') level.parens++
       // `((` is arithmetic, a command of its own, and `$((` arithmetic inside a word; neither runs the words in it.
       const arithmetic = text[index + 1] === '(' && (kind === 'command' || previous === '$') && arithmeticAt(text, index, meter)
       if (meter.characters < 0) return { ...limits, overBudget: true }
@@ -1127,6 +1209,10 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
         while (text[after] === ' ' || text[after] === '\t') after++
         if (text[after] === ')') found.defines = true
       }
+    } else if (character === ')' && casePattern(level, index)) {
+      level.wordStart = afterClose('command')
+      finish(level, index, index + 1)
+      level.command.pattern = false
     } else if (character === ')') {
       if (level.closer === ')') level.parens--
       const opened = level.opens.pop()
@@ -1140,6 +1226,8 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     } else if (BREAK_CHARACTERS.has(character)) {
       level.wordStart = true
       finish(level, index, index + 1)
+      // `;;`, `;&`, and `;;&` end a case clause: the next words are a pattern.
+      if (character === ';' && (text[index + 1] === ';' || text[index + 1] === '&')) level.command.pattern = true
       // A `|` or `|&` pipes into what follows; `;`, `&`, `&&`, `||`, and a newline end the pipeline.
       if (character === '|' && text[index + 1] !== '|' && previous !== '|') pipeInto(level.feeding)
       else if (character !== '&' || previous !== '|') pipelineEnds(level.feeding)
@@ -1198,6 +1286,12 @@ interface HeredocOwner { text: string; fed: boolean; feeds?: boolean }
 
 /** The heredoc whose `<<` ends just before `at` on the `owner` command: its delimiter word with quotes removed, and where the word ends. */
 function heredocAt(text: string, at: number, owner: CommandText): { heredoc: Heredoc; next: number } | null {
+  const word = heredocWordAt(text, at)
+  return word === null ? null : { heredoc: { delimiter: word.delimiter, tabs: word.tabs, quoted: word.quoted, owner }, next: word.next }
+}
+
+/** The delimiter word of a heredoc whose `<<` ends just before `at` (HeredocWord), and where the word ends; null for none. */
+function heredocWordAt(text: string, at: number): (HeredocWord & { next: number }) | null {
   const tabs = text[at] === '-'
   let index = tabs ? at + 1 : at
   while (text[index] === ' ' || text[index] === '\t') index++
@@ -1214,7 +1308,7 @@ function heredocAt(text: string, at: number, owner: CommandText): { heredoc: Her
   }
   const word = text.slice(start, index)
   const delimiter = unquote(word)
-  return delimiter === '' ? null : { heredoc: { delimiter, tabs, quoted: /['"\\]/.test(word), owner }, next: index }
+  return delimiter === '' ? null : { delimiter, tabs, quoted: /['"\\]/.test(word), next: index }
 }
 
 /**
@@ -1408,27 +1502,12 @@ export interface ShellToken {
   word: string
 }
 
-/**
- * Splits outside quotes on the blanks bash splits on, space, tab, and newline only: a carriage return, a vertical tab,
- * a form feed, or a no-break space is word text, so `env -u A<CR>B git push` unsets one name and runs git. A quoted
- * run joins the word it touches (`--force'>'` is one word), and an unclosed quote runs to the end; in `$'...'` a
- * backslash escapes the quote (slice 7b review W7B-5). Only `$'` and a plain `$` share a first character, and `$'` is
- * tried first; each run inside an alternative stops at a character that starts another, so the scan stays linear. A
- * backslash-newline outside single quotes is a line continuation, which bash removes before it splits words, so it
- * joins the word it sits in (`--for\` then `ce` is `--force`) and separates nothing (slice 7h probe: a continuation
- * inside a word or a command name hid it from every rule).
- */
-const STATEMENT_TOKEN = /(?:"(?:[^"\\]+|\\[\s\S])*"?|\$'(?:[^'\\]+|\\[\s\S])*'?|'[^']*'?|\\[\s\S]?|[^ \t\n"'\\$]+|\$)+/g
-
-/** One scanner for shellTokensUpTo, which never calls itself, rewound before each use. */
-const TOKEN_SCAN = new RegExp(STATEMENT_TOKEN.source, STATEMENT_TOKEN.flags)
-
 /** A run of line continuations between words, which bash removes and which is no word. */
 const CONTINUATIONS_ONLY = /^(?:\\\n)+$/
 
-/** Text as a shell would split it into words, roughly, each as written and as the command receives it. */
+/** Text as a shell would split it into words (wordEnd), each as written and as the command receives it. */
 export function shellTokens(text: string): ShellToken[] {
-  return (text.match(STATEMENT_TOKEN) ?? []).filter(raw => !CONTINUATIONS_ONLY.test(raw)).map(raw => ({ raw, word: unquote(raw) }))
+  return shellTokensUpTo(text, Number.POSITIVE_INFINITY).tokens
 }
 
 /**
@@ -1437,14 +1516,303 @@ export function shellTokens(text: string): ShellToken[] {
  */
 export function shellTokensUpTo(text: string, limit: number): { tokens: ShellToken[]; more: boolean } {
   const tokens: ShellToken[] = []
-  const pattern = TOKEN_SCAN
-  pattern.lastIndex = 0
-  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-    if (CONTINUATIONS_ONLY.test(match[0])) continue
+  let index = 0
+  while (index < text.length) {
+    if (BLANKS.has(text[index]!)) {
+      index++
+      continue
+    }
+    // A word with no quote, escape, or expansion in it ends at the next blank and is its own value.
+    const code = text.charCodeAt(index)
+    const run = code >= 128 || WORD_SPECIAL[code] === 0 ? runEnd(text, index, WORD_SPECIAL) : -1
+    const plain = run >= 0 && (run >= text.length || BLANKS.has(text[run]!))
+    const end = plain ? run : wordEnd(text, index)
+    const raw = text.slice(index, end)
+    index = end
+    if (!plain && CONTINUATIONS_ONLY.test(raw)) continue
     if (tokens.length >= limit) return { tokens, more: true }
-    tokens.push({ raw: match[0], word: unquote(match[0]) })
+    tokens.push({ raw, word: plain ? raw : unquote(raw) })
   }
   return { tokens, more: false }
+}
+
+/**
+ * What a reading of one word is inside, innermost last: the word itself, a double-quoted string, the braces of a
+ * parameter expansion, a backtick body, or the body of a command or process substitution (BodyReading).
+ */
+type WordPart = 'word' | 'double' | 'brace' | 'backtick' | BodyReading
+
+/**
+ * A `$(...)`, `<(...)` or `>(...)` body as bash parses it while it looks for the closing parenthesis: as commands, so a
+ * parenthesis a quote, a comment, a heredoc body, or a nested body holds closes nothing, nor does one that ends a case
+ * pattern. `parens` holds each parenthesis open in it, true for one inside a word (`@(`, `a=(`), after whose `)` the word
+ * goes on. `inWord` says a word is being read; `command` that the next word starts a command, where `case` and the words
+ * before a command are reserved; `subject` counts the words a `case` still awaits (its word, then `in`); `pattern` that
+ * the words are case patterns, so a `)` with no parenthesis open ends one; `heredocs` the heredocs whose bodies start
+ * after the next newline. A `$((` body is read as arithmetic: only its quotes, its expansions, and its parentheses count.
+ */
+interface BodyReading {
+  parens: boolean[]
+  arithmetic: boolean
+  inWord: boolean
+  command: boolean
+  subject: number
+  pattern: boolean
+  heredocs: HeredocWord[]
+}
+
+/** Characters that end a word as bash's reader ends one outside quotes: a blank or an operator character. */
+const WORD_ENDS = new Set([' ', '\t', '\n', ';', '&', '|', '(', ')', '<', '>'])
+
+/** Characters each part acts on; any other one is passed over with the run it begins. */
+const specials = (characters: string): Uint8Array => {
+  const table = new Uint8Array(128)
+  for (const character of characters) table[character.charCodeAt(0)] = 1
+  return table
+}
+const WORD_SPECIAL = specials(' \t\n\\\'"$`<>')
+const DOUBLE_SPECIAL = specials('\\"$`')
+const BRACE_SPECIAL = specials('\\\'"$`}')
+const BACKTICK_SPECIAL = specials('\\`')
+const ARITHMETIC_SPECIAL = specials('\\\'"$`()')
+const BODY_SPECIAL = specials(' \t\n\\\'"$`<>;&|()')
+
+/** Where the run of characters a part passes over, starting with the one at `index`, ends. */
+function runEnd(text: string, index: number, special: Uint8Array): number {
+  let at = index + 1
+  while (at < text.length) {
+    const code = text.charCodeAt(at)
+    if (code < 128 && special[code] === 1) break
+    at++
+  }
+  return at
+}
+
+/** Where a single-quoted or `$'...'` run starting at `index` ends, past its closing quote, or null when none starts there. */
+function literalQuoteEnd(text: string, index: number): number | null {
+  if (text[index] === "'") {
+    const close = text.indexOf("'", index + 1)
+    return close < 0 ? text.length : close + 1
+  }
+  if (text[index] !== '$' || text[index + 1] !== "'") return null
+  let at = index + 2
+  while (at < text.length && text[at] !== "'") at += text[at] === '\\' ? 2 : 1
+  return Math.min(at + 1, text.length)
+}
+
+/**
+ * The part an expansion opening at `index` starts and where its text begins: `$((` (arithmetic), `$(`, `${`, a
+ * backtick, and, where `processes` allows (outside double quotes and braces), `<(` and `>(`. Null for none.
+ */
+function expansionAt(text: string, index: number, processes: boolean): { part: WordPart; next: number } | null {
+  const character = text[index]
+  if (character === '`') return { part: 'backtick', next: index + 1 }
+  if (character === '$') {
+    if (text[index + 1] === '{') return { part: 'brace', next: index + 2 }
+    if (text[index + 1] !== '(') return null
+    const arithmetic = text[index + 2] === '('
+    return { part: bodyReading(arithmetic), next: index + (arithmetic ? 3 : 2) }
+  }
+  if (processes && (character === '<' || character === '>') && text[index + 1] === '(') return { part: bodyReading(false), next: index + 2 }
+  return null
+}
+
+const bodyReading = (arithmetic: boolean): BodyReading =>
+  ({ parens: arithmetic ? [true] : [], arithmetic, inWord: false, command: true, subject: 0, pattern: false, heredocs: [] })
+
+/**
+ * Where the word starting at `from` ends, as bash reads it: at a space, tab, or newline outside every quote and every
+ * expansion the word holds. Single quotes, `$'...'` (whose backslash escapes its quote), and a backslash keep text as
+ * written; a double quote runs to the double quote that closes it. Each expansion starts a fresh quoting context, inside
+ * double quotes as outside, and runs to the end bash finds for it: a `$(...)`, `<(...)` or `>(...)` body to its closing
+ * parenthesis (BodyReading), a `${...}` to its closing brace (quotes inside it nest, a bare `{` does not, as bash 5.2
+ * reads it), and a backtick body to the next backtick no backslash escapes (quotes inside it nest nothing, as bash finds
+ * it). So `x="$(echo "a b")"` is one word and the word after it is the command (a probe under bash 5.2: the reading
+ * that ended the double-quoted word at the inner quote read the command as `b)` while bash ran git push). An unclosed
+ * quote or expansion runs to the end of the text.
+ */
+function wordEnd(text: string, from: number): number {
+  return partEnd(text, from, 'word')
+}
+
+/** Where `first`, whose text starts at `from`, ends: past its closer, at the blank that ends a word, or at the end of the text. */
+function partEnd(text: string, from: number, first: WordPart): number {
+  const parts: WordPart[] = [first]
+  let index = from
+  while (index < text.length) {
+    const part = parts[parts.length - 1]!
+    const character = text[index]!
+    // The innermost part closes at `index` when `closes` is set: the reading goes on in the one around it, or returns.
+    let closes = false
+    let opened: { part: WordPart; next: number } | null = null
+    // A command body reads its own escapes (bodyStep); every other part passes over the escaped character.
+    if (character === '\\' && typeof part === 'object' && !part.arithmetic) index = bodyStep(text, index, part).index
+    else if (character === '\\') index += 2
+    else if (part === 'word') {
+      if (character === ' ' || character === '\t' || character === '\n') return index
+      const quoted = character === "'" || character === '$' ? literalQuoteEnd(text, index) : null
+      if (quoted !== null) index = quoted
+      else if (character === '"') opened = { part: 'double', next: index + 1 }
+      else if ((opened = expansionAt(text, index, true)) === null) index = runEnd(text, index, WORD_SPECIAL)
+    } else if (part === 'double') {
+      if (character === '"') closes = true
+      else if ((opened = expansionAt(text, index, false)) === null) index = runEnd(text, index, DOUBLE_SPECIAL)
+    } else if (part === 'brace') {
+      const quoted = character === "'" || character === '$' ? literalQuoteEnd(text, index) : null
+      if (character === '}') closes = true
+      else if (quoted !== null) index = quoted
+      else if (character === '"') opened = { part: 'double', next: index + 1 }
+      else if ((opened = expansionAt(text, index, false)) === null) index = runEnd(text, index, BRACE_SPECIAL)
+    } else if (part === 'backtick') {
+      if (character === '`') closes = true
+      else index = runEnd(text, index, BACKTICK_SPECIAL)
+    } else if (part.arithmetic) {
+      const quoted = character === "'" || character === '$' ? literalQuoteEnd(text, index) : null
+      if (quoted !== null) index = quoted
+      else if (character === '"') opened = { part: 'double', next: index + 1 }
+      else if (character === '(') {
+        part.parens.push(true)
+        index++
+      } else if (character === ')') {
+        if (part.parens.pop() === undefined) closes = true
+        else index++
+      } else if ((opened = expansionAt(text, index, false)) === null) index = runEnd(text, index, ARITHMETIC_SPECIAL)
+    } else {
+      const next = bodyStep(text, index, part)
+      opened = next.opened ?? null
+      closes = next.closes === true
+      if (!opened && !closes) index = next.index
+    }
+    if (opened) {
+      parts.push(opened.part)
+      index = opened.next
+    } else if (closes) {
+      parts.pop()
+      index++
+      if (parts.length === 0) return index
+    }
+  }
+  return text.length
+}
+
+/**
+ * One step of a command body (BodyReading) at `index`: where the reading goes on, the part an expansion or a double
+ * quote opens there, or that the body's closing parenthesis is there.
+ */
+function bodyStep(text: string, index: number, body: BodyReading): { index: number; opened?: { part: WordPart; next: number }; closes?: true } {
+  const character = text[index]!
+  if (character === ' ' || character === '\t') {
+    body.inWord = false
+    return { index: index + 1 }
+  }
+  if (character === '\n') {
+    body.inWord = false
+    if (!body.pattern) body.command = true
+    return { index: body.heredocs.length > 0 ? heredocBodiesEnd(text, index + 1, body.heredocs.splice(0)) : index + 1 }
+  }
+  if (character === '#' && !body.inWord) {
+    const line = text.indexOf('\n', index)
+    return { index: line < 0 ? text.length : line }
+  }
+  if (character === '\\' && text[index + 1] === '\n') return { index: index + 2 }
+  if (character === ';' || character === '&' || character === '|') {
+    body.inWord = false
+    // `;;`, `;&`, and `;;&` end a case clause, so a case pattern comes next; a `|` inside a pattern separates two.
+    if (character === ';' && (text[index + 1] === ';' || text[index + 1] === '&')) {
+      body.pattern = true
+      body.command = false
+      return { index: index + (text[index + 1] === ';' && text[index + 2] === '&' ? 3 : 2) }
+    }
+    if (!(character === '|' && body.pattern)) body.command = true
+    return { index: index + 1 }
+  }
+  if ((character === '<' || character === '>') && text[index + 1] !== '(') {
+    body.inWord = false
+    body.command = false
+    if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
+      const word = heredocWordAt(text, index + 2)
+      if (word) body.heredocs.push(word)
+      return { index: word?.next ?? index + 2 }
+    }
+    const operator = /^(?:<<<|<>|>>|[<>][&|])/.exec(text.slice(index, index + 3))
+    return { index: index + (operator?.[0].length ?? 1) }
+  }
+  if (character === '(') {
+    // Inside a word a parenthesis belongs to it (an extended glob, an array). At a case pattern's start it is the
+    // pattern's own, read as one a subshell opens: its `)` closes it, and the patterns read on to the next `)`, `;;` or
+    // `esac`, which leaves the reading where the pattern's end would.
+    body.parens.push(body.inWord)
+    if (!body.inWord) body.command = true
+    return { index: index + 1 }
+  }
+  if (character === ')') {
+    const word = body.parens.pop()
+    if (word !== undefined) {
+      body.inWord = word
+      if (!word) body.command = false
+      return { index: index + 1 }
+    }
+    if (!body.pattern) return { index, closes: true }
+    body.pattern = false
+    body.command = true
+    body.inWord = false
+    return { index: index + 1 }
+  }
+  if (!body.inWord) startWord(text, index, body)
+  body.inWord = true
+  if (character === '\\') return { index: index + 2 }
+  const quoted = literalQuoteEnd(text, index)
+  if (quoted !== null) return { index: quoted }
+  if (character === '"') return { index, opened: { part: 'double', next: index + 1 } }
+  const opened = expansionAt(text, index, true)
+  if (opened) return { index, opened }
+  return { index: runEnd(text, index, BODY_SPECIAL) }
+}
+
+/**
+ * What a word starting at `index` of a command body changes, as leadingWords reads the same words of a statement: `case`
+ * at a command's start awaits its word and `in`, after which its patterns come; `esac` ends them; and the reserved words
+ * before a command (`if`, `then`, `do`, `!`, ...) keep the next word at a command's start.
+ */
+function startWord(text: string, index: number, body: BodyReading): void {
+  let end = index
+  while (end < text.length && end - index < 6 && !WORD_ENDS.has(text[end]!)) end++
+  const word = end >= text.length || WORD_ENDS.has(text[end]!) ? text.slice(index, end) : ''
+  if (body.subject === 1) {
+    body.subject = 2
+    body.command = false
+  } else if (body.subject === 2) {
+    body.subject = 0
+    body.pattern = word === 'in'
+    body.command = false
+  } else if (body.pattern) {
+    if (word === 'esac') body.pattern = false
+    body.command = false
+  } else if (body.command) {
+    body.subject = word === 'case' ? 1 : 0
+    body.command = word !== 'case' && ((COMPOUND_OPENERS.has(word) && word !== 'for' && word !== 'select') || BEFORE_A_COMMAND.has(word))
+  }
+}
+
+/** A heredoc's delimiter word, quotes removed, whether any part of it was quoted, and whether `<<-` strips leading tabs. */
+interface HeredocWord { delimiter: string; tabs: boolean; quoted: boolean }
+
+/** Where the bodies of `heredocs`, the first starting at `from`, end: past each one's delimiter line, as heredocBodies finds it. */
+function heredocBodiesEnd(text: string, from: number, heredocs: readonly HeredocWord[]): number {
+  let index = from
+  for (const heredoc of heredocs) {
+    let continues = false
+    while (index < text.length) {
+      const newline = text.indexOf('\n', index)
+      const lineEnd = newline < 0 ? text.length : newline
+      const line = text.slice(index, lineEnd)
+      index = lineEnd + 1
+      const bodyLine = heredoc.tabs ? line.replace(/^\t+/, '') : line
+      if (!continues && bodyLine === heredoc.delimiter) break
+      continues = !heredoc.quoted && trailingBackslashRun(bodyLine) % 2 === 1
+    }
+  }
+  return Math.min(index, text.length)
 }
 
 /** The characters with which an expansion starts; a word holding none of them holds none. */
@@ -1489,13 +1857,19 @@ export function shellWords(text: string): string[] {
  * Quote removal as a shell does it: single quotes keep everything; in double quotes a backslash escapes `"`, `\\`,
  * `$` and a backtick; in `$'...'` a backslash escape is decoded (`\'`, `\n`, `\x2d`); outside, a backslash escapes
  * any character, and one with nothing after it stays. Outside single quotes a backslash-newline is a line
- * continuation and leaves nothing.
+ * continuation and leaves nothing. An expansion (expansionAt), in double quotes or not, is kept as written, its own
+ * quotes with it: its value exists only once the shell has run, and its text is read as a body of its own elsewhere.
  */
 function unquote(raw: string): string {
   let word = ''
   for (let index = 0; index < raw.length; index++) {
     const character = raw[index]!
-    if (character === '$' && raw[index + 1] === "'") {
+    const expansion = character === '$' || character === '`' || character === '<' || character === '>' ? expansionAt(raw, index, true) : null
+    if (expansion) {
+      const end = partEnd(raw, expansion.next, expansion.part)
+      word += raw.slice(index, end)
+      index = end - 1
+    } else if (character === '$' && raw[index + 1] === "'") {
       const decoded = ansiC(raw, index + 2)
       word += decoded.text
       index = decoded.end
@@ -1520,12 +1894,20 @@ function unquote(raw: string): string {
 
 const DOUBLE_QUOTE_ESCAPES = new Set(['"', '\\', '$', '`'])
 
-/** The text of a double-quoted run whose body starts at `from`, escapes removed, copied a run at a time, and the index of its closing quote. */
+/**
+ * The text of a double-quoted run whose body starts at `from`, escapes removed, copied a run at a time, and the index of
+ * its closing quote. An expansion in it is copied as written (unquote).
+ */
 function doubleQuoted(raw: string, from: number): { text: string; end: number } {
   let text = ''
   let run = from
   let index = from
   for (; index < raw.length && raw[index] !== '"'; index++) {
+    const expansion = raw[index] === '$' || raw[index] === '`' ? expansionAt(raw, index, false) : null
+    if (expansion) {
+      index = partEnd(raw, expansion.next, expansion.part) - 1
+      continue
+    }
     if (raw[index] !== '\\') continue
     const escaped = raw[index + 1] ?? ''
     // A backslash before any other character stays, with that character, in the run; a backslash-newline leaves nothing.
