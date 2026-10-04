@@ -905,6 +905,63 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, 'x=main; git push origin $x', ['git push*']))).toBe(`Refused by ${named[engine]}: git push*`)
   })
 
+  // A shell or source given a script operand, while the call's own text feeds its input on any descriptor, may read its
+  // script from that input through a link or a device path: the call is unread (script as data), refused naming the
+  // limit under any deny glob. Real bash ran the sentinel in each shape (heredoc-oracle.test.ts).
+  const fedOperands = [
+    ['a pipe into bash "$x"', `x=/dev/stdin; echo '${push}' | bash "$x"`],
+    ['a pipe into source "$x"', `x=/dev/stdin; echo '${push}' | source "$x"`],
+    ['a heredoc into source "$x"', heredocLine(push, `x=/dev/stdin; source "$x" <<'EOF'`)],
+    ['a here-string into bash "$x"', `x=/dev/stdin; bash "$x" <<< '${push}'`],
+    ['a pipe into bash stdin from /dev', `cd /dev; echo '${push}' | bash stdin`],
+    ['a pipe into bash through a link', `ln -s /dev/stdin l; echo '${push}' | bash l`],
+    ['a process substitution into bash through a link', `bash l < <(echo '${push}')`],
+    ['a here-string on descriptor 3', `bash l3 3<<< '${push}'`],
+    ['a pipe into a group', `echo '${push}' | { true; bash l; }`],
+    ['a pipe into a while loop', `echo '${push}' | while true; do bash l; break; done`],
+    ['a heredoc on a group', heredocLine(push, "{ bash l; } <<'EOF'")],
+    ['a here-string on a subshell', `(bash l) <<< '${push}'`],
+    ['exec redirecting the input', heredocLine(push, "exec <<'EOF'").concat('\nbash l')],
+    ['a function called in a pipeline', `f() { bash l; }; echo '${push}' | f`],
+    ['a pipe into sudo bash', `echo '${push}' | sudo bash l`],
+    ['a pipe into bash -c', `echo '${push}' | bash -c 'bash l'`],
+    ['a |& pipe', `echo '${push}' |& bash l`],
+    ['a pipe into bash cut by a substitution', `echo '${push}' | bash l "$(true)"`],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => fedOperands.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a script operand the call\'s text feeds: %s, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).scriptData).toBe(true)
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${scriptData}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => fedOperands.filter(([, body]) => !body.includes('sudo')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a script operand the call\'s text feeds: %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => ask.rule)).toEqual(['destructive_command'])
+  })
+
+  // With no feed from the call's own text, a script operand stays a script file, and a deny glob that names none of the
+  // call's commands lets it run: after a pipeline that ended, after `&&`, before a pipe, from a file, inside a body fed
+  // to a shell (whose input is that body, which Buckle reads), and a substitution in a command a here-string feeds.
+  it.each(cases.flatMap(([engine, switched]) => [
+    ['source "$NVM_DIR/nvm.sh"', 'source "$NVM_DIR/nvm.sh"'],
+    ['. "$HOME/.cargo/env"', '. "$HOME/.cargo/env"'],
+    ['bash "$script"', 'bash "$script"'],
+    ['bash script.sh < file', 'bash script.sh < input.txt'],
+    ['source before a pipeline', 'source .venv/bin/activate && pytest -x 2>&1 | tail -20'],
+    ['bash after a pipeline ended', 'git status | head -5; bash build.sh'],
+    ['bash after &&', 'make && bash deploy.sh'],
+    ['bash after a piped loop closed', 'ls | while read -r f; do echo "$f"; done; bash build.sh'],
+    ['source in a body fed to bash', "bash <<'EOF'\nsource ./env.sh\nmake\nEOF"],
+    ['a substitution in a command a here-string feeds', 'cat $(bash list.sh) <<< x'],
+    ['a heredoc whose <<- is apart from its delimiter', 'bash <<- EOF\n\tbash build.sh\n\tEOF'],
+    ['sh -c with its arguments', 'sh -c \'echo "$1"\' _ "$@"'],
+  ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('admits %s deny, switch on: %s, a script operand with no feed from the call\'s text: %s', (engine, switched, _shape, body) => {
+    const forms = commandFormsOf({ command: 'bash', args: ['-c', body] })
+    expect([forms.unread, forms.scriptData]).toEqual([null, false])
+    expect(check(engine, switched, body, ['terraform destroy *']).kind).toBe('allow')
+  })
+
   // Slice 7l: rbash, ash, mksh, yash, and posh are POSIX shells: a -c string is read, and a script piped in is data.
   // Real rbash ran the sentinel both ways; the others are not installed here.
   it.each(cases.flatMap(([engine, switched]) => ['rbash', 'ash', 'mksh', 'yash', 'posh'].map(shell => [engine, switched, shell] as const)))('refuses %s deny, switch on: %s, a git push %s -c runs by the push glob, and a script piped into it as data', (engine, switched, shell) => {

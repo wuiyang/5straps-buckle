@@ -1021,6 +1021,85 @@ const LITERAL_COMMAND_WORDS: Shape[] = [
   { label: 'literal command word: a separator and a variable inside a quoted argument (read as written)', body: `${SENTINEL} "fix; $x mark"`, written: 'fix; $x mark', whole: true },
 ]
 
+/** Links in the oracle's working directory to the shell's own input and to descriptor 3, as a script operand may be. */
+const TO_INPUT = 'ln -sfn /dev/stdin in0'
+const TO_FD3 = 'ln -sfn /dev/fd/3 in3'
+
+/**
+ * A shell or `source` given a script operand while the call's own text feeds its input, on any descriptor, by a pipe,
+ * a heredoc, a here-string, or a process substitution, on the command or on a pipeline or compound command around it,
+ * may read its script from that input: the operand may be a link to it or a device path Buckle cannot resolve. The call
+ * is unread (script as data). Each ran the sentinel under real bash in scratch first, sudo and ssh as their stand-ins.
+ */
+const FED_SCRIPT_OPERANDS: Shape[] = [
+  ['a pipe into bash "$x"', `x=/dev/stdin; echo '${PAYLOAD}' | bash "$x"`],
+  ['a pipe into source "$x"', `x=/dev/stdin; echo '${PAYLOAD}' | source "$x"`],
+  ['a pipe into . "$x"', `x=/dev/stdin; echo '${PAYLOAD}' | . "$x"`],
+  ['a heredoc into source "$x"', `x=/dev/stdin; source "$x" <<'EOF'\n${PAYLOAD}\nEOF`],
+  ['a here-string into bash "$x"', `x=/dev/stdin; bash "$x" <<< '${PAYLOAD}'`],
+  ['a pipe into bash stdin from /dev', `cd /dev; echo '${PAYLOAD}' | bash stdin`],
+  ['a pipe into bash through a link', `${TO_INPUT}; echo '${PAYLOAD}' | bash in0`],
+  ['a heredoc into bash through a link', `${TO_INPUT}; bash in0 <<'EOF'\n${PAYLOAD}\nEOF`],
+  ['a here-string into bash through a link', `${TO_INPUT}; bash in0 <<< '${PAYLOAD}'`],
+  ['a process substitution into bash through a link', `${TO_INPUT}; bash in0 < <(echo '${PAYLOAD}')`],
+  ['a here-string on descriptor 3 into bash through a link', `${TO_FD3}; bash in3 3<<< '${PAYLOAD}'`],
+  ['a heredoc on descriptor 3 into bash through a link', `${TO_FD3}; bash in3 3<<'EOF'\n${PAYLOAD}\nEOF`],
+  ['a pipe into a group', `${TO_INPUT}; echo '${PAYLOAD}' | { true; bash in0; }`],
+  ['a pipe into a subshell', `${TO_INPUT}; echo '${PAYLOAD}' | (true; bash in0)`],
+  ['a pipe into if', `${TO_INPUT}; echo '${PAYLOAD}' | if true; then bash in0; fi`],
+  ['a pipe into while', `${TO_INPUT}; echo '${PAYLOAD}' | while true; do bash in0; break; done`],
+  ['a pipe into for', `${TO_INPUT}; echo '${PAYLOAD}' | for i in 1; do bash in0; done`],
+  ['a pipe into case', `${TO_INPUT}; echo '${PAYLOAD}' | case x in x) bash in0;; esac`],
+  ['a heredoc on a group', `${TO_INPUT}; { bash in0; } <<'EOF'\n${PAYLOAD}\nEOF`],
+  ['a here-string on a subshell', `${TO_INPUT}; (bash in0) <<< '${PAYLOAD}'`],
+  ['a heredoc on a while loop', `${TO_INPUT}; while true; do bash in0; break; done <<'EOF'\n${PAYLOAD}\nEOF`],
+  ['a process substitution on if', `${TO_INPUT}; if true; then bash in0; fi < <(echo '${PAYLOAD}')`],
+  ['exec redirecting the input to a heredoc', `${TO_INPUT}; exec <<'EOF'\n${PAYLOAD}\nEOF\nbash in0`],
+  ['exec redirecting descriptor 3 to a here-string', `${TO_FD3}; exec 3<<< '${PAYLOAD}'; bash in3`],
+  ['a function called in a pipeline', `${TO_INPUT}; f() { bash in0; }; echo '${PAYLOAD}' | f`],
+  ['a function keyword called with a here-string', `${TO_INPUT}; function f { bash in0; }; f <<< '${PAYLOAD}'`],
+  ['a pipe into sudo bash', `${TO_INPUT}; echo '${PAYLOAD}' | sudo bash in0`],
+  ['a pipe into env bash', `${TO_INPUT}; echo '${PAYLOAD}' | env bash in0`],
+  ['a pipe into bash -c', `${TO_INPUT}; echo '${PAYLOAD}' | bash -c 'bash in0'`],
+  ['a pipe into eval', `${TO_INPUT}; echo '${PAYLOAD}' | eval 'bash in0'`],
+  ['a pipe into ssh', `${TO_INPUT}; echo '${PAYLOAD}' | ssh host 'bash in0'`],
+  ['a pipe into find -exec', `${TO_INPUT}; echo '${PAYLOAD}' | find . -maxdepth 0 -exec bash in0 \\;`],
+  ['a |& pipe into bash', `${TO_INPUT}; echo '${PAYLOAD}' |& bash in0`],
+  ['a second pipe into bash', `${TO_INPUT}; echo '${PAYLOAD}' | cat | bash in0`],
+  ['a pipe into a substitution', `${TO_INPUT}; echo '${PAYLOAD}' | cat $(bash in0)`],
+  ['a pipe into bash cut by a substitution', `${TO_INPUT}; echo '${PAYLOAD}' | bash in0 "$(true)"`],
+  ['bash of a process substitution of printf', `bash <(printf '${PAYLOAD}')`],
+  ['source of a process substitution of printf', `source <(printf '${PAYLOAD}')`],
+].map(([label, body]) => ({ label: `fed script operand: ${label}`, body: body!, unread: 'scriptData' as const }))
+
+/**
+ * With no feed from the call's own text, a script operand stays a script file, read as before: after a pipeline that
+ * has ended, beside `||`, before a pipe, from a file, and inside a body fed to a shell, whose input is that body,
+ * which Buckle reads. A here-string feeds only its own command, not a substitution in it, and opens no heredoc, so the
+ * line after it is a command. Each ran under real bash in scratch first.
+ */
+const UNFED_SCRIPT_OPERANDS: Shape[] = [
+  ...[
+    ['source "$NVM_DIR/nvm.sh"', `source "$NVM_DIR/nvm.sh"; ${PAYLOAD}`],
+    ['. "$HOME/.cargo/env"', `HOME="$PWD"; mkdir -p .cargo; : > .cargo/env; . "$HOME/.cargo/env"; ${PAYLOAD}`],
+    ['bash "$script"', `printf 'true\\n' > s.sh; script=./s.sh; bash "$script"; ${PAYLOAD}`],
+    ['bash script.sh < file', `printf 'true\\n' > s.sh; : > input; bash s.sh < input; ${PAYLOAD}`],
+    ['source before a pipeline', `printf 'true\\n' > activate; source ./activate && echo x | cat; ${PAYLOAD}`],
+    ['bash after a pipeline ended', `printf 'true\\n' > s.sh; echo x | cat; bash s.sh; ${PAYLOAD}`],
+    ['bash after ||', `printf 'true\\n' > s.sh; false || bash s.sh; ${PAYLOAD}`],
+    ['bash before a pipe', `printf 'true\\n' > s.sh; bash s.sh 2>&1 | cat; ${PAYLOAD}`],
+    ['bash after a piped group closed', `printf 'true\\n' > s.sh; echo x | { cat; }; bash s.sh; ${PAYLOAD}`],
+    ['bash after a piped loop closed', `printf 'true\\n' > s.sh; echo x | while read -r l; do :; done; bash s.sh; ${PAYLOAD}`],
+    ['bash /dev/stdin fed its heredoc', `bash /dev/stdin <<'EOF'\n${PAYLOAD}\nEOF`],
+    ['source in a body fed to bash', `printf 'true\\n' > s.sh; bash <<'EOF'\nsource ./s.sh\n${PAYLOAD}\nEOF`],
+    ['a script written through cat', `cat > setup.sh <<'EOF'\necho x | bash ./build.sh\nsource ~/.profile\n${PAYLOAD}\nEOF`],
+    ['a here-string on a command holding a substitution', `${TO_INPUT}; cat $(bash in0) <<< x; ${PAYLOAD}`],
+    ['a here-string before a substitution in its command', `${TO_INPUT}; cat <<< x $(bash in0); ${PAYLOAD}`],
+    ['a heredoc whose <<- is apart from its delimiter', `printf 'true\\n' > s.sh; bash <<- EOF\n\tbash s.sh\n\t${PAYLOAD}\n\tEOF`],
+  ].map(([label, body]) => ({ label: `unfed script operand: ${label}`, body: body!, whole: true as const })),
+  { label: 'unfed script operand: the line after a here-string is a command', body: `cat <<< x\nx=${SENTINEL}; $x mark`, unread: 'expansion' },
+]
+
 /** An `until` loop runs its condition, so the command in it runs as surely as one under `if` or `while`. */
 const KEYWORD_SHAPES: Shape[] = [
   { label: 'keyword: until around the payload', body: `until ${PAYLOAD}; do :; done` },
@@ -1039,7 +1118,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }

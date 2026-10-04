@@ -543,8 +543,9 @@ export const MAX_DEPTH = 8
  * heredocs fed to bash around backtick bodies took 33.7 s to read).
  */
 export function shellStatementList(text: string, meter: CharacterMeter = { characters: Number.POSITIVE_INFINITY }, feedsShell: (owner: string) => boolean = () => true): StatementList {
-  const found: Found = { statements: [], flags: [], heads: [], headFlags: [], feedsShell }
+  const found: Found = { statements: [], flags: [], heads: [], headFlags: [], feedsShell, fedStatements: [], fedHeads: [], defines: false }
   const limits = unquotedSplit(text, SHELL_TEXT, 0, meter, found, 0)
+  markFed(found)
   const seen = merged(found.statements, found.flags)
   return { statements: [...seen.keys()], seen, heads: merged(found.heads, found.headFlags), ...limits }
 }
@@ -552,9 +553,10 @@ export function shellStatementList(text: string, meter: CharacterMeter = { chara
 /**
  * What the readings of shell text knew of a statement or a command, across every place they met it: `net` when every
  * one was a safety net, a reading of heredoc text no shell is sure to run as such (SAFETY_NET); `whole` when one met it
- * as a whole simple command, not a piece of one a substitution cut nor text that runs none.
+ * as a whole simple command, not a piece of one a substitution cut nor text that runs none; `fed` when, in one, its input
+ * on some descriptor may come from the call's own text (FED).
  */
-export interface Seen { net: boolean; whole: boolean }
+export interface Seen { net: boolean; whole: boolean; fed: boolean }
 
 /**
  * The statements of shell text (shellStatementList), what was seen of each, and each simple command a substitution cut,
@@ -575,11 +577,13 @@ function merged(texts: readonly string[], flags: readonly number[]): Map<string,
     if (text === '') continue
     const net = (flags[index]! & SAFETY_NET) !== 0
     const whole = (flags[index]! & NOT_WHOLE) === 0
+    const fed = (flags[index]! & FED) !== 0
     const known = seen.get(text)
-    if (known === undefined) seen.set(text, { net, whole })
+    if (known === undefined) seen.set(text, { net, whole, fed })
     else {
       known.net &&= net
       known.whole ||= whole
+      known.fed ||= fed
     }
   }
   return seen
@@ -588,8 +592,45 @@ function merged(texts: readonly string[], flags: readonly number[]): Map<string,
 /**
  * What every reading of one text found, in the order it found it: each statement and each head, with its flags; and
  * `feedsShell`, which says whether the command owning a heredoc (its statement or head) may feed the body to a shell.
+ * `fedStatements` and `fedHeads` hold, as start and end pairs, the runs of statements and heads whose input may come
+ * from the call's own text (a pipeline after a `|`, a compound command a feed redirects), marked FED once read; and
+ * `defines` says the text defines a function, which may run anywhere it is called, fed or not.
  */
-interface Found { statements: string[]; flags: number[]; heads: string[]; headFlags: number[]; feedsShell: (owner: string) => boolean }
+interface Found {
+  statements: string[]
+  flags: number[]
+  heads: string[]
+  headFlags: number[]
+  feedsShell: (owner: string) => boolean
+  fedStatements: number[]
+  fedHeads: number[]
+  defines: boolean
+}
+
+/**
+ * Marks FED every statement and head inside a fed run; and, when the text defines a function and anything in it is
+ * fed, every one, since a function runs its body wherever it is called and Buckle does not follow the call.
+ */
+function markFed(found: Found): void {
+  const runs = (flags: number[], spans: readonly number[]) => {
+    if (spans.length === 0) return
+    const depth = new Int32Array(flags.length + 1)
+    for (let index = 0; index < spans.length; index += 2) {
+      depth[spans[index]!]!++
+      depth[spans[index + 1]!]!--
+    }
+    let open = 0
+    for (let index = 0; index < flags.length; index++) {
+      open += depth[index]!
+      if (open > 0) flags[index]! |= FED
+    }
+  }
+  runs(found.flags, found.fedStatements)
+  runs(found.headFlags, found.fedHeads)
+  if (!found.defines || !(found.flags.some(flags => (flags & FED) !== 0) || found.headFlags.some(flags => (flags & FED) !== 0))) return
+  for (let index = 0; index < found.flags.length; index++) found.flags[index]! |= FED
+  for (let index = 0; index < found.headFlags.length; index++) found.headFlags[index]! |= FED
+}
 
 /**
  * Met only by a safety net, a reading of heredoc text that reads more than a shell runs: a body's lines read one at a
@@ -599,6 +640,11 @@ interface Found { statements: string[]; flags: number[]; heads: string[]; headFl
 const SAFETY_NET = 1
 /** No whole command: a piece of a command a substitution cut, or text inside a body that runs none. */
 const NOT_WHOLE = 2
+/**
+ * Its input, on some descriptor, may come from the call's own text: a pipe from a command in it, a heredoc, a here-string,
+ * or a process substitution, on the command itself or on a compound command or a pipeline holding it.
+ */
+const FED = 4
 
 /** What a head holds in place of each substitution or pattern body: a word part a shell expands. */
 const SUBSTITUTED = '$()'
@@ -678,6 +724,9 @@ interface SplitLevel {
   command: CommandText
   /** The commands a body outside quotes (`$(`, a backtick, `a=(`) interrupted at this level, the innermost last. */
   interrupted: CommandText[]
+  /** Where the input of the commands read here may come from the call's own text, and that of each body interrupted. */
+  feeding: Feeding
+  feedings: Feeding[]
 }
 
 type ParenKind = 'word' | 'command' | 'unsure'
@@ -686,12 +735,29 @@ type ParenKind = 'word' | 'command' | 'unsure'
  * A simple command as a reading meets it: `text` holds what was read of it before `from`, each body a substitution,
  * an array, an extended glob, or arithmetic cut out of it replaced by SUBSTITUTED (`from` is -1 while such a body is
  * open); `cut` once one was; `runs` false for text that runs no command (an array's elements, a glob's patterns,
- * arithmetic), whose words are judged as no command word. When the command ends, the same object is reset to read
- * the next one; a body that interrupts it gets an object of its own.
+ * arithmetic), whose words are judged as no command word. `feed` once a heredoc, a here-string, or a process
+ * substitution feeds it; `statements` and `heads` count what was found before it, and `pieces` lists its own pieces once
+ * it was cut. When the command ends, the same object is reset to read the next one; a body that interrupts it gets an
+ * object of its own.
  */
-interface CommandText { text: string; from: number; cut: boolean; runs: boolean }
+interface CommandText { text: string; from: number; cut: boolean; runs: boolean; feed: boolean; statements: number; heads: number; pieces: number[] | null }
 
-const commandAt = (from: number, runs: boolean): CommandText => ({ text: '', from, cut: false, runs })
+const commandAt = (from: number, runs: boolean, found: Found): CommandText =>
+  ({ text: '', from, cut: false, runs, feed: false, statements: found.statements.length, heads: found.heads.length, pieces: null })
+
+/** How many statements and heads were found before a point of the reading. */
+interface Mark { statements: number; heads: number }
+
+/**
+ * Where the input of the commands read in one body (a text, or a substitution inside it) may come from the call's own
+ * text: from `fed` on, after an `exec` a feed redirects; from `pipe` on, after a `|`,
+ * until the pipeline ends outside the compound commands open when it began (`pipeDepth`). `compounds` marks where each
+ * open compound command began (`{`, `(`, if, while, until, for, select, case), so a feed on its closing word reaches
+ * all of it, and `closed` the one a `)` just closed, whose redirections the next command holds.
+ */
+interface Feeding { fed: Mark | null; pipe: Mark | null; pipeDepth: number; compounds: Mark[]; closed: Mark | null }
+
+const unfed = (): Feeding => ({ fed: null, pipe: null, pipeDepth: 0, compounds: [], closed: null })
 
 /** Characters the reading outside quotes acts on; every other one is word text, and so is any code point past ASCII. */
 const SPECIAL_OUTSIDE = new Uint8Array(128)
@@ -704,8 +770,41 @@ const SPECIAL_IN_HEREDOC = /[\\`$]/
 const plainInQuotes = (code: number): boolean => code !== 92 && code !== 34 && code !== 96 && code !== 36
 
 /** A level's reading state at its start, where a word starts; `runs` false for heredoc text and arithmetic, no command. */
-const levelStart = (start: number, closer: SplitLevel['closer'], quote: Quote, doubleQuoted: boolean, runs: boolean): SplitLevel =>
-  ({ start, closer, parens: 0, quote, body: start, doubleQuoted, backtick: null, wordStart: true, opens: [], previous: '', previousStarted: false, command: commandAt(start, runs), interrupted: [] })
+const levelStart = (start: number, closer: SplitLevel['closer'], quote: Quote, doubleQuoted: boolean, runs: boolean, found: Found): SplitLevel =>
+  ({ start, closer, parens: 0, quote, body: start, doubleQuoted, backtick: null, wordStart: true, opens: [], previous: '', previousStarted: false, command: commandAt(start, runs, found), interrupted: [], feeding: unfed(), feedings: [] })
+
+/** The reserved words that open a compound command, close one, or come before a command inside one. */
+const COMPOUND_OPENERS = new Set(['{', 'if', 'while', 'until', 'for', 'select', 'case'])
+const COMPOUND_CLOSERS = new Set(['}', 'fi', 'done', 'esac'])
+const BEFORE_A_COMMAND = new Set(['then', 'else', 'elif', 'do', '!', 'time'])
+
+/**
+ * The reserved words a command's text starts with, as bash reads them only before a command: how many compound
+ * commands they open, whether they close one, and whether the command is `exec` or defines a function.
+ */
+function leadingWords(text: string, from: number, to: number): { opens: number; closes: boolean; exec: boolean; defines: boolean } {
+  const result = { opens: 0, closes: false, exec: false, defines: false }
+  let index = from
+  for (let first = true; ; first = false) {
+    while (index < to && BLANKS.has(text[index]!)) index++
+    const start = index
+    while (index < to && !BLANKS.has(text[index]!)) index++
+    const word = text.slice(start, index)
+    if (first && word === 'exec') result.exec = true
+    if (first && word === 'function') {
+      result.defines = true
+      // `function NAME {`: the name, then the body's opening brace.
+      while (index < to && BLANKS.has(text[index]!)) index++
+      while (index < to && !BLANKS.has(text[index]!)) index++
+      continue
+    }
+    if (COMPOUND_CLOSERS.has(word)) result.closes = true
+    if (COMPOUND_OPENERS.has(word)) result.opens++
+    if (!COMPOUND_OPENERS.has(word) && !BEFORE_A_COMMAND.has(word)) return result
+    // A loop's variable and a case word come next, not a command.
+    if (word === 'for' || word === 'select' || word === 'case') return result
+  }
+}
 
 /**
  * Whether the `((` whose first parenthesis is at `at` is arithmetic, as bash decides: the second parenthesis closes
@@ -779,18 +878,45 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     }
     return limits
   }
-  const levels: SplitLevel[] = [levelStart(0, null, mode.heredocText ? 'heredoc' : null, false, !mode.heredocText)]
+  const levels: SplitLevel[] = [levelStart(0, null, mode.heredocText ? 'heredoc' : null, false, !mode.heredocText, found)]
   const heredocs: Heredoc[] = []
+  const mark = (): Mark => ({ statements: found.statements.length, heads: found.heads.length })
+  const fedRun = (from: Mark, to: Mark) => {
+    found.fedStatements.push(from.statements, to.statements)
+    found.fedHeads.push(from.heads, to.heads)
+  }
+  // Whether what is read next at this level is fed: inside a pipeline, or after an exec a feed redirects.
+  const fedHere = (level: SplitLevel) => level.feeding.fed !== null || level.feeding.pipe !== null
+  // A pipe feeds the commands after it until the pipeline ends outside the compound commands open when it began.
+  const pipeInto = (feeding: Feeding) => {
+    if (feeding.pipe !== null) return
+    feeding.pipe = mark()
+    feeding.pipeDepth = feeding.compounds.length
+  }
+  const pipelineEnds = (feeding: Feeding) => {
+    if (feeding.pipe === null || feeding.compounds.length > feeding.pipeDepth) return
+    fedRun(feeding.pipe, mark())
+    feeding.pipe = null
+  }
+  // A body ends: whatever fed its commands feeds them up to here.
+  const feedingEnds = (feeding: Feeding) => {
+    const now = mark()
+    if (feeding.fed !== null) fedRun(feeding.fed, now)
+    if (feeding.pipe !== null) fedRun(feeding.pipe, now)
+  }
   let mentionsCase: boolean | null = null
   // A piece of the command at this level ends at `at`, and the text goes on at `next`.
   const piece = (level: SplitLevel, at: number, next: number) => {
+    const command = level.command
+    if (command.cut) (command.pieces ??= []).push(found.statements.length)
     found.statements.push(text.slice(level.start, at))
-    found.flags.push(flags | (level.command.cut || !level.command.runs ? NOT_WHOLE : 0))
+    found.flags.push(flags | (command.cut || !command.runs ? NOT_WHOLE : 0))
     level.start = next
   }
   // The command at this level ends at `at`: its last piece, and the command whole when a body cut it.
   const finish = (level: SplitLevel, at: number, next: number) => {
     const command = level.command
+    const feeding = level.feeding
     const start = level.start
     piece(level, at, next)
     if (command.cut && command.from >= 0) command.text += text.slice(command.from, at)
@@ -798,14 +924,35 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       found.heads.push(command.text)
       found.headFlags.push(flags)
     }
+    // A heredoc, a here-string, or a process substitution feeds the command itself, not a substitution inside it.
+    if (command.feed) {
+      found.flags[found.flags.length - 1]! |= FED
+      for (const index of command.pieces ?? []) found.flags[index]! |= FED
+      if (command.cut && command.runs) found.headFlags[found.headFlags.length - 1]! |= FED
+    }
+    // A compound command opens with its reserved word, and a feed on the word that closes one, or on the redirections
+    // after a `)`, feeds all of it; an `exec` a feed redirects feeds every command after it.
+    const words = command.cut ? leadingWords(command.text, 0, command.text.length) : leadingWords(text, start, at)
+    for (let count = 0; count < words.opens; count++) feeding.compounds.push({ statements: command.statements, heads: command.heads })
+    const closed = words.closes ? feeding.compounds.pop() : feeding.closed
+    if (closed && command.feed) fedRun(closed, mark())
+    feeding.closed = null
+    if (words.exec && command.feed) feeding.fed ??= mark()
+    found.defines ||= words.defines
     // Each heredoc this command owns keeps the command's text, whose words say whether a shell is fed the body.
     let owner: HeredocOwner | null = null
     for (const heredoc of heredocs) {
-      if (heredoc.owner === command && heredoc.command === undefined) heredoc.command = owner ??= { text: command.cut ? command.text : text.slice(start, at) }
+      if (heredoc.owner === command && heredoc.command === undefined) {
+        heredoc.command = owner ??= { text: command.cut ? command.text : text.slice(start, at), fed: (flags & FED) !== 0 || fedHere(level) }
+      }
     }
     command.text = ''
     command.from = next
     command.cut = false
+    command.feed = false
+    command.statements = found.statements.length
+    command.heads = found.heads.length
+    command.pieces = null
   }
   // A body opens at `at` inside the command at this level, which a substitution replaces in its head until the body ends.
   const cut = (command: CommandText, at: number) => {
@@ -815,26 +962,35 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
   }
   // A body outside quotes opens at `at` and starts at `next`: the command so far is a piece, and the body is read as
   // commands of its own (`runs`) until it closes.
+  // A body's commands read the input of the command around it, which a fed run around that command already covers.
   const open = (level: SplitLevel, at: number, next: number, runs: boolean) => {
     cut(level.command, at)
     piece(level, at, next)
     level.interrupted.push(level.command)
-    level.command = commandAt(next, runs)
+    level.feedings.push(level.feeding)
+    level.command = commandAt(next, runs, found)
+    level.feeding = unfed()
   }
   // The body open at this level ends at `at`, and the command it interrupted goes on at `next`.
   const close = (level: SplitLevel, at: number, next: number) => {
     finish(level, at, next)
+    feedingEnds(level.feeding)
     const command = level.interrupted.pop()
-    if (command === undefined) return
+    const feeding = level.feedings.pop()
+    if (command === undefined || feeding === undefined) return
     command.from = next
     level.command = command
+    level.feeding = feeding
   }
   // A level ends at `at`: its command, and each one a body still open interrupted, the innermost first.
   const endLevel = (level: SplitLevel, at: number, next: number) => {
     finish(level, at, next)
+    feedingEnds(level.feeding)
     for (let command = level.interrupted.pop(); command !== undefined; command = level.interrupted.pop()) {
       level.command = command
+      level.feeding = level.feedings.pop() ?? unfed()
       finish(level, at, next)
+      feedingEnds(level.feeding)
     }
   }
   // A backtick body is also read as bash runs it, its continuations and then its escapes removed first (joinedBacktick,
@@ -894,7 +1050,7 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
           const arithmetic = character === '$' && text[index + 2] === '(' && arithmeticAt(text, index + 1, meter)
           if (meter.characters < 0) return { ...limits, overBudget: true }
           if (character === '$') index++
-          levels.push(levelStart(index + 1, character === '`' ? '`' : ')', null, level.quote === '"', !arithmetic))
+          levels.push(levelStart(index + 1, character === '`' ? '`' : ')', null, level.quote === '"', !arithmetic, found))
         }
       }
       continue
@@ -938,7 +1094,9 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       index = stop - 1
       level.wordStart = true
     } else if (character === '#' && wordStart === 'unsure') limits.unsureComment = true
-    else if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<') {
+    // A `<<` is a heredoc, but not inside a `<<<` here-string, whose second `<` would otherwise open one.
+    else if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<' && previous !== '<') {
+      level.command.feed = true
       const heredoc = heredocAt(text, index + 2, level.command)
       if (heredoc) heredocs.push(heredoc.heredoc)
       index = (heredoc?.next ?? index + 2) - 1
@@ -951,29 +1109,53 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       if (meter.characters < 0) return { ...limits, overBudget: true }
       level.opens.push({ kind, body: kind !== 'command' || arithmetic })
       level.wordStart = true
-      if (kind !== 'command') open(level, index, index + 1, wordBodyRuns(previous, previousStarted, kind, arithmetic))
-      else if (arithmetic) {
+      if (kind !== 'command') {
+        // A process substitution `<(` feeds the command it sits in the output of a command in the text.
+        if (previous === '<') level.command.feed = true
+        open(level, index, index + 1, wordBodyRuns(previous, previousStarted, kind, arithmetic))
+      } else if (arithmetic) {
         finish(level, index, index + 1)
         level.interrupted.push(level.command)
-        level.command = commandAt(index + 1, false)
-      } else finish(level, index, index + 1)
+        level.feedings.push(level.feeding)
+        level.command = commandAt(index + 1, false, found)
+        level.feeding = unfed()
+      } else {
+        finish(level, index, index + 1)
+        level.feeding.compounds.push(mark())
+        // `name()` defines a function, whose body runs wherever it is called.
+        let after = index + 1
+        while (text[after] === ' ' || text[after] === '\t') after++
+        if (text[after] === ')') found.defines = true
+      }
     } else if (character === ')') {
       if (level.closer === ')') level.parens--
       const opened = level.opens.pop()
       level.wordStart = afterClose(opened?.kind ?? 'command')
       if (opened?.body === true) close(level, index, index + 1)
-      else finish(level, index, index + 1)
+      else {
+        finish(level, index, index + 1)
+        // A subshell's redirections follow its `)`, in the next command.
+        if (opened !== undefined) level.feeding.closed = level.feeding.compounds.pop() ?? null
+      }
     } else if (BREAK_CHARACTERS.has(character)) {
       level.wordStart = true
       finish(level, index, index + 1)
+      // A `|` or `|&` pipes into what follows; `;`, `&`, `&&`, `||`, and a newline end the pipeline.
+      if (character === '|' && text[index + 1] !== '|' && previous !== '|') pipeInto(level.feeding)
+      else if (character !== '&' || previous !== '|') pipelineEnds(level.feeding)
       if (character === '\n' && heredocs.length > 0) {
         const bodies = heredocBodies({ text, from: index + 1, heredocs: heredocs.splice(0), found, flags, whole: mode.wholeBodies, depth, meter })
         meet(limits, bodies)
         index = bodies.next - 1
         level.start = index + 1
         level.command.from = index + 1
+        level.command.statements = found.statements.length
+        level.command.heads = found.heads.length
       }
-    } else if (BLANKS.has(character) || OPERATOR_CHARACTERS.has(character)) level.wordStart = true
+    } else if (BLANKS.has(character) || OPERATOR_CHARACTERS.has(character)) {
+      level.wordStart = true
+      if (character === '<' && text[index + 1] === '<' && text[index + 2] === '<') level.command.feed = true
+    }
   }
   while (levels.length > (mode.heredocText ? 1 : 0)) {
     const level = levels.pop()!
@@ -1008,8 +1190,11 @@ function commentEnd(text: string, from: number, inBacktick: boolean): number {
  */
 interface Heredoc { delimiter: string; tabs: boolean; quoted: boolean; owner: CommandText; command?: HeredocOwner }
 
-/** The text of a command that owns heredocs, and, once asked, whether it may feed them to a shell. */
-interface HeredocOwner { text: string; feeds?: boolean }
+/**
+ * The text of a command that owns heredocs, whether its own input may come from the call's text (a substitution in an
+ * unquoted body runs with that input), and, once asked, whether it may feed the bodies to a shell.
+ */
+interface HeredocOwner { text: string; fed: boolean; feeds?: boolean }
 
 /** The heredoc whose `<<` ends just before `at` on the `owner` command: its delimiter word with quotes removed, and where the word ends. */
 function heredocAt(text: string, at: number, owner: CommandText): { heredoc: Heredoc; next: number } | null {
@@ -1060,7 +1245,8 @@ function heredocBodies(input: { text: string; from: number; heredocs: Heredoc[];
   const read = (text: string, mode: SplitMode, depth: number, heredoc: Heredoc) => {
     if (limits.overBudget) return
     const runs = mode === HEREDOC_TEXT || (mode === SHELL_TEXT && feeds(heredoc.command))
-    meet(limits, unquotedSplit(text, mode, depth, input.meter, input.found, runs ? input.flags : input.flags | SAFETY_NET))
+    const fed = mode === HEREDOC_TEXT && (heredoc.command?.fed ?? true) ? FED : 0
+    meet(limits, unquotedSplit(text, mode, depth, input.meter, input.found, (runs ? input.flags : input.flags | SAFETY_NET) | fed))
   }
   // Asked once per owning command; one a body still open interrupted, so never ended, is taken to feed a shell.
   const feeds = (owner: HeredocOwner | undefined): boolean => {

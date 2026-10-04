@@ -357,6 +357,33 @@ describe('the commands a substitution cuts, kept whole', () => {
   })
 })
 
+// A statement's input may come from the call's own text: after a `|` until the pipeline ends outside the compound
+// commands open when it began, through a feed on a compound's closing word, or a heredoc, a here-string, or a process
+// substitution on the command itself, which reaches no substitution inside it.
+describe('the statements whose input the call\'s own text feeds', () => {
+  const fedOf = (text: string) => [...shellStatementList(text).seen].filter(([, known]) => known.fed).map(([statement]) => statement)
+
+  it.each([
+    ['echo x | bash l; bash m', ['bash l']],
+    ['echo x | { a; bash l; }; bash m', ['{ a', 'bash l', '}']],
+    ['echo x | while read -r v; do bash l; done && bash m', ['while read -r v', 'do bash l', 'done']],
+    ['make && bash l || bash m', []],
+    ['echo x |& bash l', ['bash l']],
+    ['bash l <<< x; bash m', ['bash l <<< x']],
+    ['cat $(bash l) <<< x', ['cat $', '<<< x']],
+    ['{ a; bash l; } < <(echo x); bash m', ['{ a', 'bash l', '} < <', 'echo x']],
+    ['exec 3<<< x; bash l', ['exec 3<<< x', 'bash l']],
+    ['f() { bash l; }; echo x | f', ['f', '{ bash l', '}', 'echo x']],
+  ])('reads %j as feeding %j', (text, fed) => {
+    expect(fedOf(text)).toEqual(fed)
+  })
+
+  it('reads the line after a here-string as a command, not a heredoc body', () => {
+    const { seen } = shellStatementList('cat <<< x\n$y mark', undefined, () => false)
+    expect(seen.get('$y mark')?.net).toBe(false)
+  })
+})
+
 // Slice 7i residual and owner decision D7: `sudo git push` was read as `sudo` alone. Each wrapper's options are read
 // as its getopt string reads them, so the command after them is read as a command of its own.
 describe('the command a wrapper runs', () => {

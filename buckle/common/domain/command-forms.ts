@@ -144,9 +144,9 @@ function wrapperOf(command: string): Wrapper | undefined {
   return SHELL_KEYWORDS.has(command) ? KEYWORD : undefined
 }
 
-/** A redirection word: optional descriptor digits, then `<` or `>`; a bare operator's target is the next word. */
+/** A redirection word: optional descriptor digits, then `<` or `>`; a bare operator's target is the next word (`<<- EOF`). */
 const REDIRECTION = /^\d*[<>]/
-const BARE_REDIRECTION = /^\d*(?:<<?<?|>>?|>\||<>)$/
+const BARE_REDIRECTION = /^\d*(?:<<-|<<?<?|>>?|>\||<>)$/
 
 export interface CommandForms {
   /** The call as typed, then the command behind each wrapper prefix in turn: the last one is what runs. */
@@ -248,10 +248,12 @@ const NO_WORDS: Expanded = new Map()
  * `sure` says the words run whenever the call does, so a command word an expansion supplies leaves the call unread:
  * false for a statement piece (a split no shell makes), for a heredoc body read as shell text when no shell is fed one,
  * and for whatever either holds. `whole` says the words are a whole simple command, so their command word is judged
- * here; a piece of a command a substitution cut is judged on the command whole (a head, textCommands).
+ * here; a piece of a command a substitution cut is judged on the command whole (a head, textCommands). `fed` says the
+ * input of the words, on some descriptor, may come from the call's own text (a pipe from a command in it, a heredoc, a
+ * here-string, or a process substitution, on the statement or on a pipeline or compound command around it).
  */
-interface Place { statement: boolean; heredoc: boolean; expanded: Expanded; found: boolean; sure: boolean; whole: boolean }
-const CALL: Place = { statement: false, heredoc: false, expanded: NO_WORDS, found: false, sure: true, whole: true }
+interface Place { statement: boolean; heredoc: boolean; expanded: Expanded; found: boolean; sure: boolean; whole: boolean; fed: boolean }
+const CALL: Place = { statement: false, heredoc: false, expanded: NO_WORDS, found: false, sure: true, whole: true, fed: false }
 
 /**
  * `words` as written: the command word is reduced to its basename only after an assignment prefix is read. Each
@@ -263,7 +265,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   const { chain, unread } = wrapperChain(words, place.expanded, place.sure && place.whole ? (place.found ? JUDGED_FOUND : JUDGED) : null)
   const inner = innerCommands(chain.at(-1)!, budget, place)
   const interpreter = interpreterRunningCode(chain, place)
-  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: scriptArrivesAsData(chain, place), interpreters: interpreter ? [interpreter] : [], rereads: inner.rereads }
+  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place), interpreters: interpreter ? [interpreter] : [], rereads: inner.rereads }
   const read = (command: string[], at: Place, piece = false): Reading | null => {
     if (depth >= MAX_DEPTH) {
       forms.unread = 'depth'
@@ -282,7 +284,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   for (const group of inner.groups) {
     if (budget.spent) break
     if (group.command.length > 0) {
-      const nested = read(group.command, { statement: true, heredoc: group.heredoc, expanded: group.expanded, found: group.found, sure: group.sure, whole: group.whole })
+      const nested = read(group.command, { statement: true, heredoc: group.heredoc, expanded: group.expanded, found: group.found, sure: group.sure, whole: group.whole, fed: group.fed })
       if (nested === null) break
       if (nested.rereads) continue
     }
@@ -290,7 +292,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
     for (const piece of statementPieces(group.statement)) {
       const form = budget.spent ? null : statementForm(piece, budget)
       if (form === null) break
-      if (form.words.length > 0) read(form.words, { statement: true, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: false, whole: false }, true)
+      if (form.words.length > 0) read(form.words, { statement: true, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: false, whole: false, fed: false }, true)
     }
   }
   forms.overBudget = budget.spent
@@ -403,9 +405,13 @@ const SOURCE_COMMANDS = new Set(['source', '.'])
  * own input such as `//dev/stdin` or /proc/thread-self/fd/0) or a `source` of its input or of a process substitution,
  * unless a heredoc on its own statement feeds that input. The input may be a pipe, a redirection, or the input of a
  * pipeline around the statement, so the place decides, not a `|` before it. The call itself (`bash` with no operand)
- * reads the input Buckle's exec leaves empty.
+ * reads the input Buckle's exec leaves empty. A shell or `source` given a script file, too, while the call's own text
+ * feeds its input on some descriptor (Place `fed`): Buckle cannot prove the operand is no link to that input (`ln -s
+ * /dev/stdin l; echo ... | bash l`, `cd /dev; bash stdin`, `bash "$x"`). With no such feed it stays a script file
+ * (`source "$NVM_DIR/nvm.sh"`, `bash build.sh < input`).
  */
 function scriptArrivesAsData(chain: readonly string[][], place: Place): boolean {
+  if (place.fed && place.sure && place.whole && runsScriptFile(chain)) return true
   const [command = '', ...args] = chain.at(-1)!
   const fromInput = place.statement && !place.heredoc
   if (SHELL_COMMANDS.has(command)) {
@@ -425,6 +431,15 @@ function scriptArrivesAsData(chain: readonly string[][], place: Place): boolean 
   return false
 }
 
+/** Whether the command a chain ends in is a shell or `source` given a script file. */
+function runsScriptFile(chain: readonly string[][]): boolean {
+  const [command = '', ...args] = chain.at(-1)!
+  if (SHELL_COMMANDS.has(command)) return shellScriptOperand(args).source === 'file'
+  if (!SOURCE_COMMANDS.has(command)) return false
+  const file = args[0] === '--' ? args[1] : args[0]
+  return file !== undefined && scriptOperandKind(file) === 'file'
+}
+
 /** Forms appended one at a time, never spread into one call (slice 7b review W7B-8), up to the budget's command count. */
 function keep(into: string[][], forms: readonly string[][], budget: Budget): void {
   for (const form of forms) {
@@ -442,13 +457,14 @@ function keep(into: string[][], forms: readonly string[][], budget: Budget): voi
  * again, whether a heredoc on the statement feeds the command's input, the words an expansion supplies, whether find runs
  * the command, and whether it surely runs and is whole (Place).
  */
-interface CommandGroup { command: string[]; statement: string; heredoc: boolean; expanded: Expanded; found: boolean; sure: boolean; whole: boolean }
+interface CommandGroup { command: string[]; statement: string; heredoc: boolean; expanded: Expanded; found: boolean; sure: boolean; whole: boolean; fed: boolean }
 
-interface InnerCommands { groups: CommandGroup[]; unread: UnreadLimit | null; rereads: boolean }
+/** The commands a command runs inside itself, why part of them was left unread, whether a script there arrives as data, and whether the command reads its own text again. */
+interface InnerCommands { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData?: boolean; rereads: boolean }
 
 /** Commands a command runs whose words come from the statement around it (find -exec, su), keeping what the place knows of them. */
 const groupsOf = (commands: readonly string[][], place: Place, found: boolean): CommandGroup[] =>
-  commands.map(command => ({ command: [...command], statement: '', heredoc: false, expanded: place.expanded, found, sure: place.sure, whole: true }))
+  commands.map(command => ({ command: [...command], statement: '', heredoc: false, expanded: place.expanded, found, sure: place.sure, whole: true, fed: place.fed }))
 
 /**
  * The commands a command runs inside itself: each statement of a shell's script body, of eval's text, of the remote
@@ -468,14 +484,20 @@ function innerCommands(runs: readonly string[], budget: Budget, place: Place): I
   if (command === 'eval') {
     // eval joins its words with spaces and runs the result as shell text; one leading `--` ends its options (slice 7b review W7B-2).
     const text = (args[0] === '--' ? args.slice(1) : args).join(' ')
-    const read = textCommands(text, budget, place.sure)
-    return { groups: read.groups, unread: UNKNOWN_TEXT.test(text) || text.trim() === '' ? firstLimit(read.unread, 'expansion') : read.unread, rereads: true }
+    const read = textCommands(text, budget, place)
+    return { groups: read.groups, unread: UNKNOWN_TEXT.test(text) || text.trim() === '' ? firstLimit(read.unread, 'expansion') : read.unread, scriptData: read.scriptData, rereads: true }
   }
   if (!SHELL_COMMANDS.has(command)) return { groups: [], unread: null, rereads: false }
-  const read = textCommands(parseArgv(command, args).positionals.join('\n'), budget, place.sure)
   const { source, operand } = shellScriptOperand(args)
+  // Only a -c string is shell text the shell runs. A script file's name, and the words after a -c string ($0, $1), are
+  // read as text too, only so a glob meets them, and no command word in them is judged (`bash "$script"`, `sh -c '...' _ "$@"`).
+  const positionals = parseArgv(command, args).positionals
+  const script = source === 'command' && operand !== undefined ? positionals.indexOf(operand) : -1
+  const read = textCommands(script < 0 ? '' : positionals[script]!, budget, place)
+  const rest = textCommands(positionals.filter((_, index) => index !== script).join('\n'), budget, { sure: false, fed: place.fed })
   const expanded = source === 'command' && operand !== undefined && place.expanded.has(operand)
-  return { groups: read.groups, unread: expanded ? firstLimit(read.unread, 'expansion') : read.unread, rereads: true }
+  const unread = firstLimit(expanded ? firstLimit(read.unread, 'expansion') : read.unread, rest.unread)
+  return { groups: [...read.groups, ...rest.groups], unread, scriptData: read.scriptData || rest.scriptData, rereads: true }
 }
 
 /**
@@ -487,14 +509,16 @@ function sshCommands(args: readonly string[], budget: Budget, place: Place): Inn
   const ssh = sshInvocation(args)
   const groups: CommandGroup[] = []
   let unread: UnreadLimit | null = ssh.session ? 'session' : null
+  let scriptData = false
   if ([...ssh.words, ...ssh.settings].some(word => place.expanded.has(word))) unread = firstLimit(unread, 'expansion')
   if (ssh.tokens) unread = firstLimit(unread, 'ownParsing')
   for (const text of [...ssh.remote, ...ssh.local]) {
-    const read = textCommands(text, budget, place.sure)
+    const read = textCommands(text, budget, place)
     groups.push(...read.groups)
     unread = firstLimit(unread, read.unread)
+    scriptData ||= read.scriptData
   }
-  return { groups, unread, rereads: true }
+  return { groups, unread, scriptData, rereads: true }
 }
 
 /**
@@ -516,13 +540,16 @@ function suCommands(args: readonly string[], place: Place): InnerCommands {
  * cut is judged here on its head, whose words the cut pieces do not show. What only a safety net read is not judged: a
  * heredoc body read whole is judged only when the command owning it may feed it to a shell (feedsShell), so a Makefile
  * line `$(CC) -o x` or a script line `"$PYTHON" x.py` in a body fed to `cat` is read as before, and a body's lines read
- * one at a time or joined, which no shell runs as such, are never judged.
+ * one at a time or joined, which no shell runs as such, are never judged. Whether a statement's input comes from the
+ * call's own text is what the splitter saw, or what `around` says of the command whose text this is; a command a
+ * substitution cut is judged on its head for a script file it is given while so fed (scriptArrivesAsData).
  */
-function textCommands(text: string, budget: Budget, sure: boolean): { groups: CommandGroup[]; unread: UnreadLimit | null } {
+function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' | 'fed'>): { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData: boolean } {
+  const { sure } = around
   if (budget.characters < text.length) {
     budget.characters -= text.length
     budget.spent = true
-    return { groups: [], unread: null }
+    return { groups: [], unread: null, scriptData: false }
   }
   const meter = { characters: budget.characters }
   const { statements, seen, heads, deep, overDepth, unsureComment, overBudget } = shellStatementList(text, meter, feedsShell)
@@ -531,22 +558,25 @@ function textCommands(text: string, budget: Budget, sure: boolean): { groups: Co
   // Past the budget no form is read (formsOf stops at a spent budget), so the statements are not split into words.
   if (overBudget) {
     budget.spent = true
-    return { groups, unread: null }
+    return { groups, unread: null, scriptData: false }
   }
   let unread: UnreadLimit | null = overDepth ? 'depth' : deep ? 'substitutions' : unsureComment ? 'comment' : null
+  let scriptData = false
   for (const statement of statements) {
     const form = statementForm(statement, budget)
     if (form === null) break
     const known = seen.get(statement)!
-    groups.push({ command: form.words, statement, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: sure && !known.net, whole: known.whole })
+    groups.push({ command: form.words, statement, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: sure && !known.net, whole: known.whole, fed: around.fed || known.fed })
   }
   for (const [head, known] of heads) {
     if (!sure || known.net) continue
     const form = budget.spent ? null : statementForm(head, budget)
     if (form === null) break
-    if (wrapperChain(form.words, form.expanded, JUDGED).unread === 'expansion') unread = firstLimit(unread, 'expansion')
+    const { chain, unread: limit } = wrapperChain(form.words, form.expanded, JUDGED)
+    if (limit === 'expansion') unread = firstLimit(unread, 'expansion')
+    scriptData ||= (around.fed || known.fed) && runsScriptFile(chain)
   }
-  return { groups, unread }
+  return { groups, unread, scriptData }
 }
 
 /** Programs that run what a heredoc feeds them as shell text: the shells, `source`, and ssh and su, which hand it to one. */
