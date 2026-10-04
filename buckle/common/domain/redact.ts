@@ -1,4 +1,4 @@
-import { isCredentialKey, redactCredentials, type CredentialContext } from '@5straps/runtime'
+import { isNamedCredentialKey, redactCredentials, type CredentialContext } from '@5straps/runtime'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { baseCommand, shellBodyIndexes, SHELL_COMMANDS } from './argv.js'
 import { isSecretName } from './environment.js'
@@ -66,8 +66,8 @@ export function stripSecret(value: string, secret: string | undefined): string {
 
 /**
  * A call's arguments as an approval challenge shows them (owner decisions D9 and D17): canonical, every
- * value under a credential-named key redacted, every other string hidden only where owner ruling B hides it
- * (redactCredentials: a whole URL's password and credential query values, a named key's value), and nothing
+ * value under a key named password, secret, or token redacted, every other string hidden only where owner ruling B
+ * hides it (redactCredentials: a whole URL's password and credential query values, a named key's value), and nothing
  * else changed: no string, path or list is cut, and no size stands in for the call. Display only: a decision
  * binds the call's whole arguments through its fingerprint, not this.
  *
@@ -107,20 +107,26 @@ function contextOf(value: string, reading: Exclude<Reading, 'script'>): Credenti
   return reading
 }
 
+/**
+ * An object's keys in order, a value under a key named password, secret, or token (isNamedCredentialKey) hidden whole.
+ * Only those three words hide a key's value here: an `Authorization` header, a `credentials` object, or an env name such
+ * as AUTH_HOOK or COOKIE_JAR_PATH shows as its value reads, as the approver needs to see it. The process log's broader
+ * matcher (isCredentialKey) stays with the log.
+ */
 function reviewObject(value: JsonObject): JsonValue {
   return Object.fromEntries(Object.keys(value).sort().map((key) => {
     const item = value[key] ?? null
-    if (isCredentialKey(key, item)) return [key, '[redacted]']
+    if (isNamedCredentialKey(key, item)) return [key, '[redacted]']
     if (key === 'args' && typeof value.command === 'string' && Array.isArray(item)) return [key, reviewArgv(value.command, item)]
     return [key, review(item, readingOf(value, key))]
   }))
 }
 
-/** An object whose values are all read one way (`env`'s values are values, an edit's texts are file content), credential-named keys still redacted. */
+/** An object whose values are all read one way (`env`'s values are values, an edit's texts are file content), a key named password, secret, or token still hidden. */
 function reviewRecord(value: JsonObject, reading: Exclude<Reading, 'shape'>): JsonValue {
   return Object.fromEntries(Object.keys(value).sort().map((key) => {
     const item = value[key] ?? null
-    return [key, isCredentialKey(key, item) ? '[redacted]' : review(item, reading)]
+    return [key, isNamedCredentialKey(key, item) ? '[redacted]' : review(item, reading)]
   }))
 }
 

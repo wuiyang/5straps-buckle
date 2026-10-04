@@ -390,7 +390,9 @@ describe('what an approval display hides (owner ruling B)', () => {
     ['an assignment word', 'value', 'API_TOKEN=t5ecret', 'API_TOKEN=[redacted]'],
     ['env lines', 'text', "HOST=db\nexport DB_PASSWORD='p5ecret' # prod\nclientSecret=c5ecret\n", 'HOST=db\nexport DB_PASSWORD=[redacted] # prod\nclientSecret=[redacted]\n'],
     ['an env line holding a URL', 'text', 'DATABASE_URL=postgres://app:p5ecret@db.internal:5432/app', 'DATABASE_URL=postgres://app:[redacted]@db.internal:5432/app'],
-    ['a JSON document', 'json', '{"token":"t5ecret","nested":[{"db_password":{"v":1}}],"url":"https://u:p5ecret@h.example/","max_tokens":1000}', '{"token":"[redacted]","nested":[{"db_password":"[redacted]"}],"url":"https://u:[redacted]@h.example/","max_tokens":1000}'],
+    ['a JSON document', 'json', '{"token":"t5ecret","nested":[{"db_password":"p5ecret"}],"url":"https://u:p5ecret@h.example/","max_tokens":1000}', '{"token":"[redacted]","nested":[{"db_password":"[redacted]"}],"url":"https://u:[redacted]@h.example/","max_tokens":1000}'],
+    ['a number and a quoted word under named keys', 'json', '{"pin_password":5150,"api_token":"\'t5ecret\'","client_secret":null}', '{"pin_password":"[redacted]","api_token":"[redacted]","client_secret":"[redacted]"}'],
+    ['a named key inside an object under a named key', 'json', '{"secrets":{"region":"eu-west-1","deploy_token":"t5ecret"}}', '{"secrets":{"region":"eu-west-1","deploy_token":"[redacted]"}}'],
     ['a whole URL with a CSV row in its token', 'value', 'https://pay.example.com/?token=t5ecret,1000000,x@y.com', 'https://pay.example.com/?token=[redacted]'],
   ])('hides %s', (_, context, text, shown) => {
     expect(redactCredentials(text, context)).toBe(shown)
@@ -405,6 +407,12 @@ describe('what an approval display hides (owner ruling B)', () => {
     ['a user name with no password', 'value', 'https://bot@github.com/org/repo.git'],
     ['a fragment parameter', 'value', 'https://h.example/cb#access_token=t5ecret'],
     ['a key that names none of the three words', 'json', '{"api_key":"k5ecret","Authorization":"Bearer b5ecret"}'],
+    // A named key's value is hidden only as one plain word: a script body npm runs under a token-named key, a value
+    // holding a shell character, and an object, whose own keys are read, show.
+    ['a script body under a token-named package.json key', 'json', '{"scripts":{"rotate-token":"node scripts/rotate.js && git push --force origin main"}}'],
+    ['a one-word script holding a substitution under a token-named key', 'json', '{"scripts":{"rotate-token":"$(./rotate.sh)"}}'],
+    ['an object under a named key', 'json', '{"secrets":{"region":"eu-west-1"},"password":{"min_length":12}}'],
+    ['an empty value under a named key', 'json', '{"password":""}'],
     ['a YAML key', 'text', 'password: p5ecret'],
   ])('shows %s raw', (_, context, text) => {
     expect(redactCredentials(text, context)).toBe(text)

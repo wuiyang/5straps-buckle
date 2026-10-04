@@ -602,6 +602,26 @@ describe('every approval route shows a call as owner ruling B reads it', () => {
       }
     })
 
+    // Only a key named password, secret, or token hides its value. An env name such as AUTH_HOOK or COOKIE_JAR_PATH, a
+    // credentials object, a cookie_jar_path argument, and an Authorization header show as written on every route that
+    // carries the arguments, and so does a script body npm runs under a token-named package.json key.
+    const push = (extra: Record<string, JsonValue>): Call => () => ({ tool: 'shell_exec', args: { command: 'git', args: ['push', '--force', 'origin', 'main'], ...extra } })
+    /** The routes that carry no argument values: the subject and the effect name the command or the address, a description names env and header keys only, and an unsealed webhook carries the subject and the description. */
+    const VALUE_BLIND = ['subject', 'description', 'effects', 'webhook']
+    it.each<[string, Call, string, string[]]>([
+      ['an env value under AUTH_HOOK', push({ env: { AUTH_HOOK: './hooks/fake-auth-hook.sh' } }), './hooks/fake-auth-hook.sh', VALUE_BLIND],
+      ['an env value under COOKIE_JAR_PATH', push({ env: { COOKIE_JAR_PATH: '/tmp/fake-cookie-jar' } }), '/tmp/fake-cookie-jar', VALUE_BLIND],
+      ['a credentials object', push({ credentials: { user: 'deploy', helper: 'fake-credential-helper' } }), 'fake-credential-helper', VALUE_BLIND],
+      ['a cookie_jar_path argument', push({ cookie_jar_path: '/tmp/fake-cookie-jar' }), '/tmp/fake-cookie-jar', VALUE_BLIND],
+      ['an Authorization header', () => ({ tool: 'web_fetch', args: { url: 'http://127.0.0.1:9/x', headers: { Authorization: 'Bearer fake-bearer-value' } } }), 'Bearer fake-bearer-value', VALUE_BLIND],
+      ['a script body under a token-named package.json key', write('package.json', JSON.stringify({ scripts: { 'rotate-token': 'node scripts/rotate.js && git push --force origin main' } })), 'node scripts/rotate.js && git push --force origin main', FILE_BLIND],
+    ])('shows %s whole on every route', async (_, call, visible, blind) => {
+      for (const [where, value] of Object.entries(await everyRoute(call, {}))) {
+        expect(value, where).not.toContain('[redacted]')
+        if (!blind.includes(where)) expect(unquoted(value), where).toContain(visible)
+      }
+    })
+
     // Slice 7d review R7D-WV-3 and slice 7c review R7C-TL-2: a file's content is text, so a CSV row's amount and account
     // show; a JSON file still hides the credential value its URL string holds.
     const row = 'https://pay.example.com/?token=t5ecret,1000000,x@y.com'

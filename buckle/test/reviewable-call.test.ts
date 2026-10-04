@@ -11,11 +11,25 @@ import { reviewableArguments } from '../common/domain/redact.js'
 
 describe('the arguments a challenge shows (review items 7 and 8 of the proof-of-possession fixes)', () => {
   it.each([
-    ['Authorization'], ['Proxy-Authorization'], ['Cookie'], ['Set-Cookie'], ['X-Api-Key'], ['api-key'], ['Bearer'], ['x-auth'],
-    ['NPM_AUTH'], ['PASSPHRASE'], ['SIGNATURE'], ['private-key'], ['GITHUB_TOKEN'], ['PGPASSWORD'], ['client_secret'], ['PrivateKey'],
-  ])('redacts a value under %s, in headers and in env, at any depth and case', (name) => {
+    ['GITHUB_TOKEN'], ['PGPASSWORD'], ['client_secret'], ['X-Auth-Token'], ['db_passwd'], ['clientSecret'],
+  ])('hides a value under %s, a key named password, secret, or token, in headers and in env, at any depth and case', (name) => {
     const shown = reviewableArguments({ url: 'https://api.example.com/', headers: { [name]: 'secret-value-1' }, env: { [name]: 'secret-value-2' }, nested: [{ deeper: { [name.toLowerCase()]: 'secret-value-3' } }] })
     expect(JSON.stringify(shown)).not.toMatch(/secret-value/)
+  })
+
+  // Owner ruling B hides a key's value only when the key is named password, secret, or token; the process log keeps its
+  // broader matcher. Every other credential-like name shows its value as written, so the approver sees what is set.
+  it.each([
+    ['Authorization'], ['Proxy-Authorization'], ['Cookie'], ['Set-Cookie'], ['X-Api-Key'], ['api-key'], ['Bearer'], ['x-auth'],
+    ['NPM_AUTH'], ['AUTH_HOOK'], ['PASSPHRASE'], ['SIGNATURE'], ['private-key'], ['PrivateKey'], ['COOKIE_JAR_PATH'], ['cookie_jar_path'], ['credentials'],
+  ])('shows a value under %s, which names none of the three words, in headers, in env, and at any depth', (name) => {
+    const args = { url: 'https://api.example.com/', headers: { [name]: 'shown-value-1' }, env: { [name]: 'shown-value-2' }, nested: [{ deeper: { [name.toLowerCase()]: 'shown-value-3' } }] }
+    expect(reviewableArguments(args)).toEqual(args)
+  })
+
+  it('reads a credentials object key by key, hiding only a key named password, secret, or token in it', () => {
+    const credentials = { user: 'deploy', cookie_jar_path: '/tmp/jar', password: 'p5ecret' }
+    expect(reviewableArguments({ credentials })).toEqual({ credentials: { cookie_jar_path: '/tmp/jar', password: '[redacted]', user: 'deploy' } })
   })
 
   it('keeps counts and plain names readable', () => {
@@ -109,7 +123,7 @@ describe('the description Buckle writes for a call (owner decision D9)', () => {
   // Review M2 of the second proof-of-possession re-review: the description quoted the URL credentials the shown arguments redact.
   it.each<[string, JsonObject]>([
     ['shell_exec', { command: 'git', args: ['clone', 'https://bot:tok-3n1gma@github.com/org/repo.git', 'https://api.example.com/?access_token=tok-3n1gma'], env: { GITHUB_TOKEN: 'tok-3n1gma' } }],
-    ['web_fetch', { url: 'http://admin:tok-3n1gma@127.0.0.1:9/router?key=tok-3n1gma', method: 'GET', headers: { Authorization: 'Bearer tok-3n1gma', 'X-Api-Key': 'tok-3n1gma' } }],
+    ['web_fetch', { url: 'http://admin:tok-3n1gma@127.0.0.1:9/router?key=tok-3n1gma', method: 'GET', headers: { 'X-Auth-Token': 'tok-3n1gma' } }],
     ['browser_command', { command: 'open', args: ['https://u:tok-3n1gma@app.example.com/login?token=tok-3n1gma'] }],
   ])('never shows in the description of %s a credential the shown arguments redact', (tool, args) => {
     expect(JSON.stringify(reviewableArguments(args))).not.toContain('tok-3n1gma')

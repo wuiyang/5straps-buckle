@@ -11,8 +11,10 @@ export const REDACTED = '[redacted]'
  *   URL keeps all but its password and its credential query values (redactUrl). A named argument or assignment
  *   (`--password=x`, `DB_PASSWORD=x`) whose name holds password, secret or token (isNamedCredentialKey) has its value
  *   replaced whole; any other one's value is read as a URL.
- * - `json`: a JSON object or array. A named key's value is replaced whole, whatever it holds; every other string is
- *   read as a `value`. Text that is not one is read as `text`.
+ * - `json`: a JSON object or array. A named key's value is replaced whole when it is a number or another scalar, or a
+ *   string that is one plain shell word; a longer string (a package.json script body under a token-named key) is read
+ *   as a `value`, and an object or array is read key by key. Every other string is read as a `value`. Text that is not
+ *   one is read as `text`.
  * - `text`: free text, such as a file's content or a reason. Only an env-style line (`DB_PASSWORD=x`,
  *   `export API_TOKEN='x' # comment`) is read, as a `value` is; every other line shows as written.
  *
@@ -149,7 +151,7 @@ function redactAssignment(text: string, line: boolean): string | null {
 const JSON_DOCUMENT = /^\s*[[{]/
 const JSON_SPACE = new Set([' ', '\t', '\n', '\r'])
 
-/** A JSON object or array with each named key's value replaced whole and every other string read as a value; null when the text is not one. */
+/** A JSON object or array with each named key's plain value replaced whole (namedValueEnd) and every other string read as a value; null when the text is not one. */
 function redactJson(text: string): string | null {
   if (!JSON_DOCUMENT.test(text)) return null
   try {
@@ -185,8 +187,8 @@ function redactJsonDocument(text: string): string {
     } else {
       const under = key
       key = null
-      const end = under !== null && isNamedCredentialKey(under) ? valueEnd(text, index) : -1
-      if (end >= 0 && isNamedCredentialKey(under!, scalarOf(text.slice(index, end)))) {
+      const end = under !== null && isNamedCredentialKey(under) ? namedValueEnd(text, index, under) : -1
+      if (end >= 0) {
         shown += `${text.slice(cursor, index)}${JSON.stringify(REDACTED)}`
         cursor = end
         index = end
@@ -209,30 +211,24 @@ function redactJsonDocument(text: string): string {
   return shown + text.slice(cursor)
 }
 
-/** The index after the JSON value that starts at `start`: a string, a container with what it holds, or a scalar. */
-function valueEnd(text: string, start: number): number {
+/**
+ * The index after the value at `start` under a named key when it is hidden whole: a scalar that is no count the key names
+ * (max_tokens), and when a string, one plain shell word (PLAIN_WORD), the test a named argument's value meets; -1 for a
+ * longer string, such as a script body npm runs, and for an object or array, whose own keys are read instead.
+ */
+function namedValueEnd(text: string, start: number, key: string): number {
   const opening = text[start]
-  if (opening === '"') return closingQuote(text, start) + 1
-  if (opening !== '{' && opening !== '[') return scalarEnd(text, start)
-  let depth = 0
-  for (let index = start; index < text.length; index++) {
-    const character = text[index]
-    if (character === '"') index = closingQuote(text, index)
-    else if (character === '{' || character === '[') depth++
-    else if ((character === '}' || character === ']') && --depth === 0) return index + 1
-  }
-  return text.length
+  if (opening === '{' || opening === '[') return -1
+  const end = opening === '"' ? closingQuote(text, start) + 1 : scalarEnd(text, start)
+  const value: unknown = JSON.parse(text.slice(start, end))
+  if (!isNamedCredentialKey(key, value)) return -1
+  return typeof value !== 'string' || PLAIN_WORD.test(value) ? end : -1
 }
 
 function scalarEnd(text: string, start: number): number {
   let index = start
   while (index < text.length && !JSON_SPACE.has(text[index]!) && text[index] !== ',' && text[index] !== '}' && text[index] !== ']') index++
   return index
-}
-
-/** A string or number value as JSON reads it, for the count a key may name (max_tokens); undefined for a container. */
-function scalarOf(raw: string): unknown {
-  return raw.startsWith('{') || raw.startsWith('[') ? undefined : JSON.parse(raw)
 }
 
 /** The index of the quote that closes the JSON string opened at `open`. */
