@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, envSplitWords, gitInvocation, hasFlag, holdsExpansion, parseArgv, shellScriptSource, shellStatementList, shellTokens, shownCommand, sshCommandSetting, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, envSplitWords, gitInvocation, hasFlag, holdsExpansion, parseArgv, shellScriptSource, shellStartupFiles, shellStatementList, shellTokens, shownCommand, sshCommandSetting, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
 import { commandForms, readLimitOf } from '../common/domain/command-forms.js'
 
 describe('parseArgv', () => {
@@ -67,6 +67,19 @@ describe('shellScriptSource', () => {
     [['./stdin'], 'file'],
   ])('reads a shell given %j as taking its script from: %s', (args, source) => {
     expect(shellScriptSource(args)).toBe(source)
+  })
+})
+
+// The startup files bash's own options name, read up to the shell's first operand.
+describe('shellStartupFiles', () => {
+  it.each<[string[], string[]]>([
+    [['--rcfile', 'a', '--init-file', 'b', '-i', '-c', 'true'], ['a', 'b']],
+    [['-o', 'pipefail', '--rcfile', 'a', '-i'], ['a']],
+    [['-c', 'true', '--rcfile', 'a'], []],
+    [['script.sh', '--rcfile', 'a'], []],
+    [['--rcfile'], []],
+  ])('reads %j as naming the startup files %j', (args, files) => {
+    expect(shellStartupFiles(args)).toEqual(files)
   })
 })
 

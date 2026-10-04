@@ -230,30 +230,45 @@ export function shellScriptSource(args: readonly string[]): ShellScriptSource {
  * operand naming another descriptor or a device is `descriptor`; any other operand is a script file.
  */
 export function shellScriptOperand(args: readonly string[]): { source: ShellScriptSource; operand?: string } {
-  let command = false
-  let input = false
-  let index = 0
-  for (; index < args.length; index++) {
-    const word = args[index]!
-    if (word === '--' || word === '-') {
-      index++
-      break
-    }
-    if (word.length < 2 || (word[0] !== '-' && word[0] !== '+')) break
-    if (word.startsWith('--')) {
-      if (SHELL_INFO_OPTIONS.has(word)) return { source: 'none' }
-      if (SHELL_LONG_VALUE_OPTIONS.has(word)) index++
-      continue
-    }
-    if (word[0] === '-' && word.includes('c')) command = true
-    if (word[0] === '-' && word.includes('s')) input = true
-    if ([...word.slice(1)].some(flag => SHELL_VALUE_OPTIONS.has(flag))) index++
-  }
+  const { command, input, index, info } = shellOptions(args)
+  if (info) return { source: 'none' }
   const operand = args[index]
   if (command) return operand === undefined ? { source: 'missingCommand' } : { source: 'command', operand }
   if (input || operand === undefined) return { source: 'input', operand }
   const kind = scriptOperandKind(operand)
   return { source: kind === 'file' ? 'file' : kind, operand }
+}
+
+/** The startup files a shell call's `--rcfile` and `--init-file` options name, which an interactive bash runs first. */
+export function shellStartupFiles(args: readonly string[]): string[] {
+  return shellOptions(args).startup
+}
+
+/**
+ * A shell call's options as shellBodyIndexes reads them, up to its first operand: whether they include `c` and `s`, where
+ * the operand is, whether a long option only prints (`--version`), and the file each `--rcfile` or `--init-file` names.
+ */
+function shellOptions(args: readonly string[]): { command: boolean; input: boolean; index: number; info: boolean; startup: string[] } {
+  const options = { command: false, input: false, index: 0, info: false, startup: [] as string[] }
+  for (; options.index < args.length; options.index++) {
+    const word = args[options.index]!
+    if (word === '--' || word === '-') {
+      options.index++
+      break
+    }
+    if (word.length < 2 || (word[0] !== '-' && word[0] !== '+')) break
+    if (word.startsWith('--')) {
+      options.info ||= SHELL_INFO_OPTIONS.has(word)
+      if (!SHELL_LONG_VALUE_OPTIONS.has(word)) continue
+      const file = args[++options.index]
+      if (file !== undefined) options.startup.push(file)
+      continue
+    }
+    if (word[0] === '-' && word.includes('c')) options.command = true
+    if (word[0] === '-' && word.includes('s')) options.input = true
+    if ([...word.slice(1)].some(flag => SHELL_VALUE_OPTIONS.has(flag))) options.index++
+  }
+  return options
 }
 
 /** ssh's options that take a value, as OpenSSH's getopt string reads them (1246ab:c:e:fgi:kl:m:no:p:qstvxAB:CD:E:F:GI:J:KL:MNO:P:Q:R:S:TVw:W:XYy). */

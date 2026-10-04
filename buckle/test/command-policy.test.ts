@@ -707,7 +707,7 @@ describe('a call Buckle cannot read whole', () => {
   // payload with nothing read; the floor asked only about `| bash`, so under the dangerously-allow switch a deny glob
   // was bypassed (owner decision D7). Such a call is now unread: refused naming the limit under any deny glob, on both
   // engines and both switches, and asked at the floor with none (default D33 (b)). Real bash ran the sentinel in each.
-  const scriptData = 'A shell takes its script from a pipe, a redirection, a descriptor, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)'
+  const scriptData = 'A shell takes its script, or a startup file it runs first, from a pipe, a redirection, a descriptor, an expansion, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)'
   const piped = /^Pipes a downloaded payload into a shell/
   const device = /^Targets a device node/
   const asData = new RegExp(`^${scriptData.replace(/[()]/g, '\\$&')}; asked rather than guessed at$`)
@@ -1027,6 +1027,53 @@ describe('a call Buckle cannot read whole', () => {
   ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('admits %s deny, switch on: %s, a script operand with no feed from the call\'s text: %s', (engine, switched, _shape, body) => {
     const forms = commandFormsOf({ command: 'bash', args: ['-c', body] })
     expect([forms.unread, forms.scriptData]).toEqual([null, false])
+    expect(check(engine, switched, body, ['terraform destroy *']).kind).toBe('allow')
+  })
+
+  // A shell runs a startup file before its script (BASH_ENV, ENV, --rcfile, --init-file). One whose text the call
+  // supplies, set before the shell, through env, or exported earlier, is read by no reading: refused naming the limit
+  // under any deny glob and asked at the floor. A file on disk, /dev/null, or none stays read. Real bash ran the sentinel
+  // in each unread shape (heredoc-oracle.test.ts).
+  const startupShapes = [
+    ['BASH_ENV of a process substitution', `BASH_ENV=<(echo '${push}') bash -c true`],
+    ['BASH_ENV of a process substitution through env', `env BASH_ENV=<(echo '${push}') bash -c true`],
+    ['BASH_ENV of /dev/stdin from a here-string', `BASH_ENV=/dev/stdin bash -c true <<< '${push}'`],
+    ['BASH_ENV of a descriptor', `BASH_ENV=/dev/fd/3 bash -c true 3<<< '${push}'`],
+    ['BASH_ENV of a variable while a pipe feeds bash', `echo '${push}' | BASH_ENV="$x" bash -c true`],
+    ['BASH_ENV holding a command substitution', `BASH_ENV='$(${push})' bash -c true`],
+    ['BASH_ENV of /dev/stdin exported, then a here-string into bash', `export BASH_ENV=/dev/stdin; bash -c true <<< '${push}'`],
+    ['a BASH_ENV prefix on a function that starts a shell', `f() { bash -c true; }; BASH_ENV=<(echo '${push}') f`],
+    ['--rcfile of a process substitution', `bash --rcfile <(echo '${push}') -i -c true`],
+    ['--rcfile of a descriptor', `bash --rcfile /dev/fd/3 -i -c true 3<<< '${push}'`],
+    ['ENV of a process substitution', `ENV=<(echo '${push}') sh -i -c true`],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => startupShapes.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, a startup file the call supplies: %s, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).scriptData).toBe(true)
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${scriptData}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  // A device operand (`--rcfile /dev/fd/3`) is asked about first as one, so those rows check the refusal alone.
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => startupShapes.filter(([, body]) => !/ \/dev\//.test(body)).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a startup file the call supplies: %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${scriptData}; asked rather than guessed at`]])
+  })
+
+  it('reads the call itself handing bash a startup file whose name it expands into a substitution', () => {
+    expect(commandFormsOf({ command: 'env', args: ['BASH_ENV=$(git push origin main)', 'bash', '-c', 'true'] }).scriptData).toBe(true)
+    expect(commandFormsOf({ command: 'env', args: ['BASH_ENV=/dev/stdin', 'bash', '-c', 'true'] }).scriptData).toBe(false)
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => [
+    ['a file on disk', 'BASH_ENV=/etc/profile bash -c true'],
+    ['/dev/null', 'BASH_ENV=/dev/null bash -c true'],
+    ['--rcfile of a file on disk', 'bash --rcfile ./rc -i -c true'],
+    ['a file a variable names, with no feed', 'BASH_ENV="$HOME/.bashenv" bash -c true'],
+    ['a startup file set for no shell', 'BASH_ENV=/dev/stdin make <<< x'],
+    ['none', 'bash -c true'],
+  ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('admits %s deny, switch on: %s, a shell whose startup file is %s', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).scriptData).toBe(false)
     expect(check(engine, switched, body, ['terraform destroy *']).kind).toBe('allow')
   })
 

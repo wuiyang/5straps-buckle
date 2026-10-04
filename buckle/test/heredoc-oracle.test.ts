@@ -1202,6 +1202,54 @@ const QUOTE_NESTING: Shape[] = NESTED_WORDS.flatMap(([name, word, command]) => [
   ...(command === null ? [] : [{ label: `quote nesting: ${name}, the command word`, body: `${command} mark`, unread: 'expansion' as const }]),
 ])
 
+/**
+ * A shell runs a startup file before its script: BASH_ENV in a non-interactive bash, ENV in an interactive sh or bash in
+ * POSIX mode, and bash's --rcfile or --init-file when interactive, each name expanded first, command substitution
+ * included. Where the call supplies that file's text (a process substitution, the shell's own input, another
+ * descriptor, a command substitution in the name, or a name an expansion supplies while the call feeds the shell), set
+ * before the command, through env, or exported earlier, the call is unread (script as data). A file on disk, /dev/null,
+ * a shell with none, and a heredoc on the shell's own input stay read. Each ran the sentinel, or nothing where noted,
+ * under real bash and dash in scratch first.
+ */
+const STARTUP_FILES: Shape[] = [
+  ...[
+    ['BASH_ENV of a process substitution', `BASH_ENV=<(echo ${PAYLOAD}) bash -c true`],
+    ['BASH_ENV of a process substitution through env', `env BASH_ENV=<(echo ${PAYLOAD}) bash -c true`],
+    ['BASH_ENV of a process substitution before env', `BASH_ENV=<(echo ${PAYLOAD}) env bash -c true`],
+    ['BASH_ENV of a process substitution for a script', `printf 'true\\n' > s.sh; BASH_ENV=<(echo ${PAYLOAD}) bash s.sh`],
+    ['BASH_ENV of a process substitution for a nested shell', `BASH_ENV=<(echo ${PAYLOAD}) bash -c 'bash -c true'`],
+    ['BASH_ENV of a process substitution for a function that starts a shell', `f() { bash -c true; }; BASH_ENV=<(echo ${PAYLOAD}) f`],
+    ['BASH_ENV of /dev/stdin from a here-string', `BASH_ENV=/dev/stdin bash -c true <<< '${PAYLOAD}'`],
+    ['BASH_ENV of /dev/stdin from a pipe', `echo '${PAYLOAD}' | BASH_ENV=/dev/stdin bash -c true`],
+    ['BASH_ENV of a descriptor', `BASH_ENV=/dev/fd/3 bash -c true 3<<< '${PAYLOAD}'`],
+    ['BASH_ENV of a variable naming /dev/stdin, fed by a pipe', `x=/dev/stdin; echo '${PAYLOAD}' | BASH_ENV="$x" bash -c true`],
+    ['BASH_ENV holding a command substitution', `BASH_ENV='$(${PAYLOAD})' bash -c true`],
+    ['BASH_ENV holding a backtick substitution', `BASH_ENV='\`${PAYLOAD}\`' bash -c true`],
+    ['BASH_ENV holding a command substitution through env', `env BASH_ENV='$(${PAYLOAD})' bash -c true`],
+    ['BASH_ENV of /dev/stdin exported, then a pipe into bash', `export BASH_ENV=/dev/stdin; echo '${PAYLOAD}' | bash -c true`],
+    ['BASH_ENV of a descriptor exported apart', `BASH_ENV=/dev/fd/3; export BASH_ENV; exec 3<<< '${PAYLOAD}'; bash -c true`],
+    ['BASH_ENV of a variable exported, then a pipe into bash', `x=/dev/stdin; export BASH_ENV=$x; echo '${PAYLOAD}' | bash -c true`],
+    ['BASH_ENV of /dev/stdin declared exported', `declare -x BASH_ENV=/dev/stdin; bash -c true <<< '${PAYLOAD}'`],
+    ['an exported BASH_ENV of a process substitution (runs nothing: the descriptor closes first)', `export BASH_ENV=<(echo ${PAYLOAD}); bash -c true`],
+    ['--rcfile of a process substitution', `bash --rcfile <(echo ${PAYLOAD}) -i -c true`],
+    ['--init-file of a process substitution', `bash --init-file <(echo ${PAYLOAD}) -i -c true`],
+    ['--rcfile of a descriptor', `bash --rcfile /dev/fd/3 -i -c true 3<<< '${PAYLOAD}'`],
+    ['--init-file of /dev/stdin from a here-string', `bash --init-file /dev/stdin -i -c true <<< '${PAYLOAD}'`],
+    ['ENV of a process substitution for an interactive sh', `ENV=<(echo ${PAYLOAD}) sh -i -c true`],
+    ['ENV of a process substitution for bash --posix -i', `ENV=<(echo ${PAYLOAD}) bash --posix -i -c true`],
+    ['ENV holding a command substitution for an interactive sh', `ENV='$(${PAYLOAD})' sh -i -c true`],
+    ['ENV of a descriptor for an interactive sh', `ENV=/dev/fd/3 sh -i -c true 3<<< '${PAYLOAD}'`],
+  ].map(([label, body]) => ({ label: `startup file: ${label}`, body: body!, unread: 'scriptData' as const })),
+  ...[
+    ['BASH_ENV of a file on disk', `BASH_ENV=/etc/profile bash -c true; ${PAYLOAD}`],
+    ['BASH_ENV of a missing file a variable names', `BASH_ENV="$PWD/none" bash -c true; ${PAYLOAD}`],
+    ['BASH_ENV of /dev/null', `BASH_ENV=/dev/null bash -c true; ${PAYLOAD}`],
+    ['--rcfile of /dev/null', `bash --rcfile /dev/null -i -c true; ${PAYLOAD}`],
+    ['a shell with no startup file', `bash -c true; ${PAYLOAD}`],
+    ['BASH_ENV of /dev/stdin fed its heredoc', `BASH_ENV=/dev/stdin bash -c true <<'EOF'\n${PAYLOAD}\nEOF`],
+  ].map(([label, body]) => ({ label: `startup file read: ${label}`, body: body!, whole: true as const })),
+]
+
 /** An `until` loop runs its condition, so the command in it runs as surely as one under `if` or `while`. */
 const KEYWORD_SHAPES: Shape[] = [
   { label: 'keyword: until around the payload', body: `until ${PAYLOAD}; do :; done` },
@@ -1220,7 +1268,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT, ...QUOTE_NESTING]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT, ...QUOTE_NESTING, ...STARTUP_FILES]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }

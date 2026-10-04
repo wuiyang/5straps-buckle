@@ -1,4 +1,4 @@
-import { baseCommand, envSplitWords, holdsExpansion, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import { baseCommand, envSplitWords, holdsExpansion, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellScriptOperand, shellStartupFiles, shellStatementList, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
@@ -23,7 +23,7 @@ export const READ_LIMITS = {
   session: 'Opens an interactive session Buckle cannot read: ssh or su with no command, or a sudo or doas shell (interactive session)',
   expansion: 'Runs a command word or shell text an expansion supplies, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)"), so Buckle cannot read it (expansion)',
   ownParsing: 'A program reads an argument by rules of its own that Buckle does not read as shell words: an env -S escape, an ssh % token, or a sudo -s or -i command for a shell Buckle does not know (own parsing)',
-  scriptData: 'A shell takes its script from a pipe, a redirection, a descriptor, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)',
+  scriptData: 'A shell takes its script, or a startup file it runs first, from a pipe, a redirection, a descriptor, an expansion, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)',
   interpreter: 'Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter)',
 } as const
 
@@ -173,7 +173,10 @@ export interface CommandForms {
   unread: UnreadLimit | null
   /** The read budget (READ_BUDGET) ran out, so the commands past it were left unread. */
   overBudget: boolean
-  /** A shell or `source` the call runs takes its script as data, from its input or from xargs (scriptArrivesAsData). */
+  /**
+   * A shell or `source` the call runs takes its script as data, from its input or from xargs (scriptArrivesAsData), or a
+   * shell it starts runs a startup file whose text the call supplies (startupOf).
+   */
   scriptData: boolean
   /** The interpreters the call runs code with (interpreterRunningCode), by program name, each once. */
   interpreters: string[]
@@ -192,7 +195,9 @@ export interface CommandForms {
  * identity never use these forms; a rule shows and binds the raw argv (owner decision D17).
  */
 export function commandForms(command: string, args: readonly string[]): CommandForms {
-  const { rereads: _rereads, ...forms } = formsOf([command, ...args], 0, { ...READ_BUDGET, spent: false }, CALL)
+  const { rereads: _rereads, startup, ...forms } = formsOf([command, ...args], 0, { ...READ_BUDGET, spent: false }, CALL)
+  // A startup file set anywhere in the call, exported or before a command, reaches the shells the call starts.
+  if (runsStartupText(startup)) forms.scriptData = true
   return forms
 }
 
@@ -247,8 +252,11 @@ export function allForms(forms: CommandForms): string[][] {
 /** What is left of READ_BUDGET in one reading; `spent` once any part ran out. */
 interface Budget { characters: number; words: number; commands: number; spent: boolean }
 
-/** The forms, and whether the last of the chain reads its own text again as shell text (eval, a shell, find -exec). */
-interface Reading extends CommandForms { rereads: boolean }
+/**
+ * The forms, whether the last of the chain reads its own text again as shell text (eval, a shell, find -exec), and the
+ * startup files the reading met with the shells it starts below the command itself (Startup).
+ */
+interface Reading extends CommandForms { rereads: boolean; startup: Startup }
 
 /**
  * The words of a statement an expansion supplies (holdsExpansion), whose value Buckle cannot know, each mapped to whether
@@ -283,7 +291,9 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   const { chain, unread } = wrapperChain(words, place.expanded, place.sure && place.whole ? (place.found ? JUDGED_FOUND : JUDGED) : null)
   const inner = innerCommands(chain.at(-1)!, budget, place)
   const interpreter = interpreterRunningCode(chain, place)
-  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads }
+  const own = startupOf(words, chain, place)
+  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false } }
+  addStartup(forms.startup, inner.startup)
   const read = (command: string[], at: Place, piece = false): Reading | null => {
     if (depth >= MAX_DEPTH) {
       forms.unread = 'depth'
@@ -297,6 +307,11 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
     if (!piece) {
       forms.scriptData ||= nested.scriptData
       for (const name of nested.interpreters) if (!forms.interpreters.includes(name)) forms.interpreters.push(name)
+      addStartup(forms.startup, nested.startup)
+      if (SHELL_COMMANDS.has(nested.chain.at(-1)![0] ?? '')) {
+        forms.startup.shell = true
+        forms.startup.fed ||= at.fed
+      }
     }
     return nested
   }
@@ -456,6 +471,77 @@ function scriptArrivesAsData(chain: readonly string[][], place: Place): boolean 
   return false
 }
 
+/**
+ * The variables naming a file a starting shell runs before its script: BASH_ENV, which a non-interactive bash reads (a
+ * -c string or a script), and ENV, which sh, and bash in POSIX mode, read when interactive. Each shell expands the value
+ * first, a command substitution in it included (probes under bash 5.2 and dash 0.5).
+ */
+const STARTUP_VARIABLE = /^(?:BASH_ENV|ENV)=/
+
+/**
+ * What a reading met of the files a starting shell runs first (startupOf): `text` when one holds text the call itself
+ * supplies, which no reading sees; `expansion` when an expansion supplies one's name, so it may hold such text; `shell`
+ * when the reading starts a shell, and `fed` when the call's own text feeds that shell's input.
+ */
+interface Startup { text: boolean; expansion: boolean; shell: boolean; fed: boolean }
+
+const noStartup = (): Startup => ({ text: false, expansion: false, shell: false, fed: false })
+
+function addStartup(into: Startup, from: Startup | undefined): void {
+  if (from === undefined) return
+  into.text ||= from.text
+  into.expansion ||= from.expansion
+  into.shell ||= from.shell
+  into.fed ||= from.fed
+}
+
+/** Whether a shell started runs a startup file whose text the call supplies: one it names, or one an expansion names while the call feeds it. */
+const runsStartupText = (startup: Startup): boolean => (startup.text && startup.shell) || (startup.expansion && startup.fed)
+
+/** The builtins whose operands assign variables, which `-x` or `export` itself exports. */
+const DECLARING = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
+
+/**
+ * What one command's words say of a startup file: each word that assigns BASH_ENV or ENV (STARTUP_VARIABLE) before the
+ * command or through a wrapper in front of it (the words before the command the chain ends in), in a statement of
+ * assignments alone, or as an operand of export or declare, since an exported one reaches every shell the call starts
+ * after it, a function's included; each file a shell's own `--rcfile` or `--init-file` names; and whether the command is
+ * a shell, fed or not. Only words that surely run are judged (Place `sure`). A file on disk is not read, as a script file
+ * is not.
+ */
+function startupOf(words: readonly string[], chain: readonly string[][], place: Place): Startup {
+  const [command = '', ...args] = chain.at(-1)!
+  const shell = SHELL_COMMANDS.has(command)
+  const startup: Startup = { text: false, expansion: false, shell, fed: shell && place.fed }
+  if (!place.sure) return startup
+  const judge = (word: string, file: string) => {
+    const source = startupFile(word, file, place)
+    if (source === 'text') startup.text = true
+    if (source === 'expansion') startup.expansion = true
+  }
+  // The chain's last command is the words' end; its word as written, since a chain reduces it to a basename.
+  const at = Math.max(0, words.length - args.length - 1)
+  const assigning = ASSIGNMENT.test(words[at] ?? '') || DECLARING.has(command) ? words : words.slice(0, at)
+  for (const word of assigning) if (STARTUP_VARIABLE.test(word)) judge(word, word.slice(word.indexOf('=') + 1))
+  if (shell) for (const file of shellStartupFiles(args)) judge(file, file)
+  return startup
+}
+
+/**
+ * Where a startup file's text comes from, by its name (word, the word that gives it): `text` from the call itself, a
+ * process substitution (which a head shows as `<$()` or `>$()`), another descriptor, the shell's own input in shell text
+ * no heredoc feeds, or a command substitution the starting shell runs as it expands the name; `expansion` when an
+ * expansion supplies the name; null for a file on disk, and for /dev/null, which holds nothing.
+ */
+function startupFile(word: string, file: string, place: Place): 'text' | 'expansion' | null {
+  if (file.startsWith('<$()') || file.startsWith('>$()')) return 'text'
+  if (place.expanded.has(word)) return 'expansion'
+  if (file.includes('$(') || file.includes('`')) return 'text'
+  if (file === '/dev/null') return null
+  const kind = scriptOperandKind(file)
+  return kind === 'descriptor' || (kind === 'input' && place.statement && !place.heredoc) ? 'text' : null
+}
+
 /** Whether the command a chain ends in is a shell or `source` given a script file. */
 function runsScriptFile(chain: readonly string[][]): boolean {
   const [command = '', ...args] = chain.at(-1)!
@@ -488,7 +574,7 @@ interface CommandGroup { command: string[]; statement: string; heredoc: boolean;
  * The commands a command runs inside itself, why part of them was left unread, whether a script there arrives as data,
  * whether the command reads its own text again, and the whole-command reading of its text (CommandForms `heads`).
  */
-interface InnerCommands { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData?: boolean; rereads: boolean; heads?: string[][] }
+interface InnerCommands { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData?: boolean; rereads: boolean; heads?: string[][]; startup?: Startup }
 
 /** Commands a command runs whose words come from the statement around it (find -exec, su), keeping what the place knows of them. */
 const groupsOf = (commands: readonly string[][], place: Place, found: boolean): CommandGroup[] =>
@@ -513,7 +599,7 @@ function innerCommands(runs: readonly string[], budget: Budget, place: Place): I
     // eval joins its words with spaces and runs the result as shell text; one leading `--` ends its options (slice 7b review W7B-2).
     const text = (args[0] === '--' ? args.slice(1) : args).join(' ')
     const read = textCommands(text, budget, place)
-    return { groups: read.groups, unread: UNKNOWN_TEXT.test(text) || text.trim() === '' ? firstLimit(read.unread, 'expansion') : read.unread, scriptData: read.scriptData, rereads: true, heads: read.heads }
+    return { groups: read.groups, unread: UNKNOWN_TEXT.test(text) || text.trim() === '' ? firstLimit(read.unread, 'expansion') : read.unread, scriptData: read.scriptData, rereads: true, heads: read.heads, startup: read.startup }
   }
   if (command === 'trap') return heldCommands(trapAction(args), budget, place)
   if (command === 'alias') return heldCommands(aliasValues(args), budget, place)
@@ -528,7 +614,8 @@ function innerCommands(runs: readonly string[], budget: Budget, place: Place): I
   const rest = textCommands(positionals.filter((_, index) => index !== script).join('\n'), budget, { sure: false, fed: place.fed })
   const expanded = source === 'command' && operand !== undefined && place.expanded.has(operand)
   const unread = firstLimit(expanded ? firstLimit(read.unread, 'expansion') : read.unread, rest.unread)
-  return { groups: [...read.groups, ...rest.groups], unread, scriptData: read.scriptData || rest.scriptData, rereads: true, heads: [...read.heads, ...rest.heads] }
+  addStartup(read.startup, rest.startup)
+  return { groups: [...read.groups, ...rest.groups], unread, scriptData: read.scriptData || rest.scriptData, rereads: true, heads: [...read.heads, ...rest.heads], startup: read.startup }
 }
 
 /** Shell text a builtin keeps for the shell to run later: the word of the call that carries it, and the text. */
@@ -542,6 +629,7 @@ interface HeldText { word: string; text: string }
 function heldCommands(held: readonly HeldText[], budget: Budget, place: Place): InnerCommands {
   const groups: CommandGroup[] = []
   const heads: string[][] = []
+  const startup = noStartup()
   let unread: UnreadLimit | null = null
   let scriptData = false
   for (const { word, text } of held) {
@@ -549,10 +637,11 @@ function heldCommands(held: readonly HeldText[], budget: Budget, place: Place): 
     const read = textCommands(text, budget, place)
     groups.push(...read.groups)
     for (const head of read.heads) heads.push(head)
+    addStartup(startup, read.startup)
     unread = firstLimit(unread, read.unread)
     scriptData ||= read.scriptData
   }
-  return { groups, unread, scriptData, rereads: held.length > 0, heads }
+  return { groups, unread, scriptData, rereads: held.length > 0, heads, startup }
 }
 
 /**
@@ -614,14 +703,16 @@ function sshCommands(args: readonly string[], budget: Budget, place: Place): Inn
   if ([...ssh.words, ...ssh.settings].some(word => place.expanded.has(word))) unread = firstLimit(unread, 'expansion')
   if (ssh.tokens) unread = firstLimit(unread, 'ownParsing')
   const heads: string[][] = []
+  const startup = noStartup()
   for (const text of [...ssh.remote, ...ssh.local]) {
     const read = textCommands(text, budget, place)
     groups.push(...read.groups)
     for (const head of read.heads) heads.push(head)
+    addStartup(startup, read.startup)
     unread = firstLimit(unread, read.unread)
     scriptData ||= read.scriptData
   }
-  return { groups, unread, scriptData, rereads: true, heads }
+  return { groups, unread, scriptData, rereads: true, heads, startup }
 }
 
 /**
@@ -647,12 +738,13 @@ function suCommands(args: readonly string[], place: Place): InnerCommands {
  * call's own text is what the splitter saw, or what `around` says of the command whose text this is; a command a
  * substitution cut is judged on its head for a script file it is given while so fed (scriptArrivesAsData).
  */
-function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' | 'fed'>): { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData: boolean; heads: string[][] } {
+function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' | 'fed'>): { groups: CommandGroup[]; unread: UnreadLimit | null; scriptData: boolean; heads: string[][]; startup: Startup } {
   const { sure } = around
+  const startup = noStartup()
   if (budget.characters < text.length) {
     budget.characters -= text.length
     budget.spent = true
-    return { groups: [], unread: null, scriptData: false, heads: [] }
+    return { groups: [], unread: null, scriptData: false, heads: [], startup }
   }
   const meter = { characters: budget.characters }
   const { statements, seen, heads, deep, overDepth, unsureComment, overBudget } = shellStatementList(text, meter, feedsShell)
@@ -662,7 +754,7 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
   // Past the budget no form is read (formsOf stops at a spent budget), so the statements are not split into words.
   if (overBudget) {
     budget.spent = true
-    return { groups, unread: null, scriptData: false, heads: judged }
+    return { groups, unread: null, scriptData: false, heads: judged, startup }
   }
   let unread: UnreadLimit | null = overDepth ? 'depth' : deep ? 'substitutions' : unsureComment ? 'comment' : null
   let scriptData = false
@@ -680,9 +772,11 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
     if (limit === 'expansion') unread = firstLimit(unread, 'expansion')
     scriptData ||= (around.fed || known.fed) && runsScriptFile(chain)
     for (const step of chain) judged.push(step)
+    // A head is the only reading of a command a process substitution cut whole (`BASH_ENV=<(...) bash`).
+    addStartup(startup, startupOf(form.words, chain, { ...CALL, statement: true, heredoc: form.heredoc, expanded: form.expanded, fed: around.fed || known.fed }))
   }
   for (const use of aliasUses(groups, budget)) groups.push(use)
-  return { groups, unread, scriptData, heads: judged }
+  return { groups, unread, scriptData, heads: judged, startup }
 }
 
 /**
