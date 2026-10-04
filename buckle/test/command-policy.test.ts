@@ -962,6 +962,42 @@ describe('a call Buckle cannot read whole', () => {
     expect(check(engine, switched, body, ['terraform destroy *']).kind).toBe('allow')
   })
 
+  // Shell text a builtin keeps for the shell to run later is read as shell text: a trap's action, an alias's value, and
+  // a mapfile or readarray callback. The push glob refuses each by name; one an expansion supplies is unread, refused
+  // naming the limit. Real bash ran the sentinel in each shape (heredoc-oracle.test.ts).
+  it.each(cases.flatMap(([engine, switched]) => [
+    ['a trap on exit', `trap '${push}' EXIT`],
+    ['a trap after --', `trap -- '${push}' EXIT INT`],
+    ['an alias', `shopt -s expand_aliases\nalias p='${push}'\np`],
+    ['a mapfile callback', `mapfile -C '${push} #' -c 1 <<< a`],
+    ['an attached readarray callback', `readarray -t -C'${push} #' -c1 lines <<< a`],
+  ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('refuses %s deny, switch on: %s, by the push glob, a git push %s keeps', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBeNull()
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => [
+    ['a trap of a variable', `x='${push}'; trap "$x" EXIT`],
+    ['an alias of a variable', `x='${push}'; alias p="$x"`],
+    ['a mapfile callback of a variable', `x='${push} #'; mapfile -C "$x" -c 1 <<< a`],
+  ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('refuses %s deny, switch on: %s, held shell text an expansion supplies: %s, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  // An alias stands for its value where its name begins a command, the words after the name joined on, so a glob and the
+  // floor meet `git push --force` that neither the alias nor its use spells alone.
+  const aliasedForce = "shopt -s expand_aliases\nalias g='git push' f='g --force'\nf origin main"
+  it.each(cases)('refuses %s deny, switch on: %s, a force push an alias of an alias spells, by the force glob', (engine, switched) => {
+    expect(refusal(check(engine, switched, aliasedForce, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
+  })
+
+  it.each(['workspace', 'ceiling'] as const)('asks at the floor, %s with no deny glob, about a force push an alias spells', (engine) => {
+    const outcome = check(engine, false, aliasedForce, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
   // Slice 7l: rbash, ash, mksh, yash, and posh are POSIX shells: a -c string is read, and a script piped in is data.
   // Real rbash ran the sentinel both ways; the others are not installed here.
   it.each(cases.flatMap(([engine, switched]) => ['rbash', 'ash', 'mksh', 'yash', 'posh'].map(shell => [engine, switched, shell] as const)))('refuses %s deny, switch on: %s, a git push %s -c runs by the push glob, and a script piped into it as data', (engine, switched, shell) => {

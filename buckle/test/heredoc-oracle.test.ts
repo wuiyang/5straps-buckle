@@ -1120,6 +1120,45 @@ const MULTICALL_AND_CHRT: Shape[] = [
   { label: 'chrt: no policy and no priority', body: `chrt ${PAYLOAD}`, whole: true },
 ]
 
+/**
+ * Shell text a builtin keeps for the shell to run later: a trap's action, run on a signal or at exit; an alias's value,
+ * run where its name begins a command (with expand_aliases, on a later line), the words after the name joined on; and a
+ * mapfile or readarray callback, run every quantum of lines with the index and the line as words. Each is read as shell
+ * text, and is unread (expansion) where an expansion supplies it. Arithmetic evaluates a variable's text, running a
+ * substitution in an array subscript; Buckle reads such text where the call spells it, through the statement pieces,
+ * and these rows pin that. Each ran the sentinel under real bash in scratch first.
+ */
+const HELD_TEXT: Shape[] = [
+  ...[
+    ['a trap on exit', `trap '${PAYLOAD}' EXIT`],
+    ['a trap after --', `trap -- '${PAYLOAD}' EXIT`],
+    ['a trap on ERR', `trap '${PAYLOAD}' ERR; false`],
+    ['a trap on two signals', `trap '${PAYLOAD}' INT TERM; kill -INT $$`],
+    ['an alias', `shopt -s expand_aliases\nalias x='${PAYLOAD}'\nx`],
+    ['an alias the words after its name join', `shopt -s expand_aliases\nalias x=${SENTINEL}\nx mark`],
+    ['an alias of an alias', `shopt -s expand_aliases\nalias g='${SENTINEL}' f='g mark'\nf`],
+    ['an alias ending in a blank', `shopt -s expand_aliases\nalias e='env '\ne ${PAYLOAD}`],
+    ['a mapfile callback', `mapfile -C '${PAYLOAD} #' -c 1 <<< a`],
+    ['a readarray callback', `readarray -C '${PAYLOAD} #' -c 1 <<< a`],
+    ['an attached mapfile callback', `mapfile -C'${PAYLOAD} #' -c1 <<< a`],
+    ['a mapfile callback after -t', `mapfile -t -C '${PAYLOAD} #' -c 1 lines <<< a`],
+    ['arithmetic of a variable', `x='a[$(${PAYLOAD})]'; (( x ))`],
+    ['arithmetic expansion of a variable', `x='a[$(${PAYLOAD})]'; y=$(( x + 1 ))`],
+    ['let of a variable', `x='a[$(${PAYLOAD})]'; let x`],
+    ['an integer declaration of a variable', `x='a[$(${PAYLOAD})]'; declare -i y=x`],
+    ['an arithmetic test of a variable', `x='a[$(${PAYLOAD})]'; [[ x -eq 0 ]]`],
+  ].map(([label, body]) => ({ label: `held text: ${label}`, body: body! })),
+  ...[
+    ['a trap of a variable', `x='${PAYLOAD}'; trap "$x" EXIT`],
+    ['a trap whose command word is a variable', `trap 'x=${SENTINEL}; $x mark' EXIT`],
+    ['an alias of a variable', `shopt -s expand_aliases\na='${PAYLOAD}'; alias x="$a"\nx`],
+    ['a mapfile callback of a variable', `x='${PAYLOAD} #'; mapfile -C "$x" -c 1 <<< a`],
+    ['a trap holding a variable after its command word', `x='mark; ${SENTINEL} two'; trap "${SENTINEL} $x" EXIT`],
+    ['an alias holding a variable after its command word', `x='mark; ${SENTINEL} two'; shopt -s expand_aliases\nalias y="${SENTINEL} $x"\ny`],
+    ['a mapfile callback holding a variable after its command word', `x='mark; ${SENTINEL} two #'; mapfile -C "${SENTINEL} $x" -c 1 <<< a`],
+  ].map(([label, body]) => ({ label: `held text: ${label}`, body: body!, unread: 'expansion' as const })),
+]
+
 /** An `until` loop runs its condition, so the command in it runs as surely as one under `if` or `while`. */
 const KEYWORD_SHAPES: Shape[] = [
   { label: 'keyword: until around the payload', body: `until ${PAYLOAD}; do :; done` },
@@ -1138,7 +1177,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }

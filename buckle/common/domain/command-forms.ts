@@ -505,6 +505,9 @@ function innerCommands(runs: readonly string[], budget: Budget, place: Place): I
     const read = textCommands(text, budget, place)
     return { groups: read.groups, unread: UNKNOWN_TEXT.test(text) || text.trim() === '' ? firstLimit(read.unread, 'expansion') : read.unread, scriptData: read.scriptData, rereads: true }
   }
+  if (command === 'trap') return heldCommands(trapAction(args), budget, place)
+  if (command === 'alias') return heldCommands(aliasValues(args), budget, place)
+  if (command === 'mapfile' || command === 'readarray') return heldCommands(mapfileCallbacks(args), budget, place)
   if (!SHELL_COMMANDS.has(command)) return { groups: [], unread: null, rereads: false }
   const { source, operand } = shellScriptOperand(args)
   // Only a -c string is shell text the shell runs. A script file's name, and the words after a -c string ($0, $1), are
@@ -516,6 +519,74 @@ function innerCommands(runs: readonly string[], budget: Budget, place: Place): I
   const expanded = source === 'command' && operand !== undefined && place.expanded.has(operand)
   const unread = firstLimit(expanded ? firstLimit(read.unread, 'expansion') : read.unread, rest.unread)
   return { groups: [...read.groups, ...rest.groups], unread, scriptData: read.scriptData || rest.scriptData, rereads: true }
+}
+
+/** Shell text a builtin keeps for the shell to run later: the word of the call that carries it, and the text. */
+interface HeldText { word: string; text: string }
+
+/**
+ * The commands of shell text a builtin keeps to run later (a trap's action, an alias's value, a mapfile callback), each
+ * read as shell text, as bash runs it; one an expansion supplies exists only once the shell has run, so the call is
+ * unread (expansion).
+ */
+function heldCommands(held: readonly HeldText[], budget: Budget, place: Place): InnerCommands {
+  const groups: CommandGroup[] = []
+  let unread: UnreadLimit | null = null
+  let scriptData = false
+  for (const { word, text } of held) {
+    if (place.expanded.has(word)) unread = firstLimit(unread, 'expansion')
+    const read = textCommands(text, budget, place)
+    groups.push(...read.groups)
+    unread = firstLimit(unread, read.unread)
+    scriptData ||= read.scriptData
+  }
+  return { groups, unread, scriptData, rereads: held.length > 0 }
+}
+
+/**
+ * The action `trap` sets: its first operand when a signal follows, unless that is `-`, which resets the signals; `-l`
+ * and `-p` only print. bash runs the action as shell text when the signal or the exit comes.
+ */
+function trapAction(args: readonly string[]): HeldText[] {
+  let index = 0
+  for (; index < args.length && args[index]!.startsWith('-') && args[index] !== '-'; index++) {
+    if (args[index] === '--') {
+      index++
+      break
+    }
+    if (/[lp]/.test(args[index]!)) return []
+  }
+  const action = args[index]
+  return action !== undefined && action !== '-' && index + 1 < args.length ? [{ word: action, text: action }] : []
+}
+
+/** The value of each `name=value` operand of `alias`, which the shell reads as shell text where the name begins a command. */
+function aliasValues(args: readonly string[]): HeldText[] {
+  return args.filter(word => !word.startsWith('-') && word.indexOf('=') > 0).map(word => ({ word, text: word.slice(word.indexOf('=') + 1) }))
+}
+
+/** The options of mapfile and readarray that take a value (bash's -C callback, -c quantum, -d, -n, -O, -s, -u). */
+const MAPFILE_VALUES = 'CcdnOsu'
+
+/**
+ * The callback mapfile or readarray runs as shell text every quantum of lines (`-C callback`, attached or not), with
+ * the index and the line after it as words; it is read whatever the quantum.
+ */
+function mapfileCallbacks(args: readonly string[]): HeldText[] {
+  const held: HeldText[] = []
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index]!
+    if (word === '--' || !word.startsWith('-') || word === '-') break
+    for (let offset = 1; offset < word.length; offset++) {
+      const flag = word[offset]!
+      if (!MAPFILE_VALUES.includes(flag)) continue
+      const attached = word.slice(offset + 1)
+      const value = attached !== '' ? attached : args[++index]
+      if (flag === 'C' && value !== undefined) held.push({ word: attached !== '' ? word : value, text: value })
+      break
+    }
+  }
+  return held
 }
 
 /**
@@ -594,7 +665,40 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
     if (limit === 'expansion') unread = firstLimit(unread, 'expansion')
     scriptData ||= (around.fed || known.fed) && runsScriptFile(chain)
   }
+  for (const use of aliasUses(groups, budget)) groups.push(use)
   return { groups, unread, scriptData }
+}
+
+/**
+ * Each statement of shell text whose command word is an alias a statement of the same text defines, read again with the
+ * alias's value in place of its name and the words after the name joined on (`alias g='git push'; g --force`), so a
+ * glob meets them together. The value is read in turn for another alias, but not for one it is expanding already, as
+ * bash reads it. An alias defined only in another text (an eval, a function called elsewhere) is not followed.
+ */
+function aliasUses(groups: readonly CommandGroup[], budget: Budget): CommandGroup[] {
+  const aliases = new Map<string, string>()
+  for (const group of groups) {
+    if (group.command[0] !== 'alias') continue
+    for (const { word, text } of aliasValues(group.command.slice(1))) if (!group.expanded.has(word)) aliases.set(word.slice(0, word.indexOf('=')), text)
+  }
+  if (aliases.size === 0) return []
+  const uses: CommandGroup[] = []
+  for (const group of groups) {
+    const start = group.command.findIndex(word => !ASSIGNMENT.test(word))
+    if (start < 0) continue
+    let words = group.command
+    let expanded = group.expanded
+    const used = new Set<string>()
+    for (let name = words[start]!; aliases.has(name) && !used.has(name); name = words[start] ?? '') {
+      used.add(name)
+      const value = budget.spent ? null : statementForm(aliases.get(name)!, budget)
+      if (value === null) break
+      words = [...words.slice(0, start), ...value.words, ...words.slice(start + 1)]
+      expanded = new Map([...expanded, ...value.expanded])
+    }
+    if (used.size > 0) uses.push({ ...group, command: words, statement: '', expanded })
+  }
+  return uses
 }
 
 /** Programs that run what a heredoc feeds them as shell text: the shells, `source`, and ssh and su, which hand it to one. */
