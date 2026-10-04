@@ -1250,6 +1250,58 @@ const STARTUP_FILES: Shape[] = [
   ].map(([label, body]) => ({ label: `startup file read: ${label}`, body: body!, whole: true as const })),
 ]
 
+/**
+ * bash expands an alias where its name is a command's word: past the reserved words before a command, so in a function's
+ * body too, and in the word after an alias whose value ends in a blank; each such use in the same text is read with the
+ * value in place of the name. In text the same shell parses later (eval, a trap's action, a mapfile callback, source of
+ * its input) an alias defined anywhere in the call is expanded too, which no reading follows, so a call that defines one
+ * and runs such text is unread (expansion). A child shell has no aliases, and sh (dash) expands them with no shopt.
+ * Each ran the sentinel, or nothing where noted, under real bash and dash in scratch first.
+ */
+const ALIASED = `shopt -s expand_aliases\nalias x=${SENTINEL}\n`
+const ALIAS_USES: Shape[] = [
+  ...[
+    ['after if', 'if x mark; then :; fi'],
+    ['after then', 'if true; then x mark; fi'],
+    ['in a group', '{ x mark; }'],
+    ['after !', '! x mark'],
+    ['after time', 'time x mark'],
+    ['after time -p', 'time -p x mark'],
+    ['after while', 'while x mark; do break; done'],
+    ['after do', 'for i in 1; do x mark; done'],
+    ['in a function body', 'f() { x mark; }\nf'],
+    ['in a function keyword body', 'function g { x mark; }; g'],
+    ['after coproc', 'coproc x mark; wait'],
+    ['in a -c string, a child shell with no aliases (runs nothing)', "bash -c 'x mark'"],
+    ['in a heredoc fed to bash, a child shell with no aliases (runs nothing)', "bash <<'EOF'\nx mark\nEOF"],
+  ].map(([label, use]) => ({ label: `alias: ${label}`, body: `${ALIASED}${use}`, whole: true as const })),
+  { label: 'alias: after an alias ending in a blank', body: `shopt -s expand_aliases\nalias e='env ' x=${SENTINEL}\ne x mark`, whole: true },
+  { label: 'alias: sh expands one with no shopt', body: `sh -c 'alias x=${SENTINEL}\nx mark'`, whole: true },
+  ...[
+    ['eval', 'eval x mark'],
+    ['eval behind command', 'command eval x mark'],
+    ['eval after --', 'eval -- x mark'],
+    ['a trap action', "trap 'x mark' EXIT"],
+    ['a trap action after --', "trap -- 'x mark' EXIT"],
+    ['a mapfile callback', "mapfile -C 'x mark #' -c 1 <<< a"],
+    ['source of its input', "source /dev/stdin <<'EOF'\nx mark\nEOF"],
+    ['a function eval defines', "eval 'f() { x mark; }'; f"],
+  ].map(([label, use]) => ({ label: `alias in text parsed later: ${label}`, body: `${ALIASED}${use}`, unread: 'expansion' as const })),
+  { label: 'alias in text parsed later: one eval defines, used after it', body: `shopt -s expand_aliases\neval "alias x=${SENTINEL}"\nx mark`, unread: 'expansion' },
+  { label: 'alias in text parsed later: sh, eval', body: `sh -c 'alias x=${SENTINEL}\neval x mark'`, unread: 'expansion' },
+  { label: 'alias in text parsed later: sh, a trap action', body: `sh -c 'alias x=${SENTINEL}\ntrap "x mark" EXIT'`, unread: 'expansion' },
+]
+
+/**
+ * Arithmetic evaluates a variable's text, running a substitution in an array subscript, and `set -x` expands PS4 before
+ * each command it traces. Buckle reads such text only where the call spells it out (its statement pieces), not where the
+ * call builds it at run time: these rows pin that limit (bash ran the sentinel in each).
+ */
+const RUN_TIME_TEXT: Shape[] = [
+  // HELD_TEXT holds the arithmetic row: `x='a[$(...)]'; (( x ))`.
+  { label: 'run-time text: PS4 the call spells out is read', body: `PS4='$(${PAYLOAD})'; set -x; true` },
+]
+
 /** An `until` loop runs its condition, so the command in it runs as surely as one under `if` or `while`. */
 const KEYWORD_SHAPES: Shape[] = [
   { label: 'keyword: until around the payload', body: `until ${PAYLOAD}; do :; done` },
@@ -1268,7 +1320,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT, ...QUOTE_NESTING, ...STARTUP_FILES]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT, ...QUOTE_NESTING, ...STARTUP_FILES, ...ALIAS_USES, ...RUN_TIME_TEXT]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }

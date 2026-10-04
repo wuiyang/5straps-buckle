@@ -195,9 +195,11 @@ export interface CommandForms {
  * identity never use these forms; a rule shows and binds the raw argv (owner decision D17).
  */
 export function commandForms(command: string, args: readonly string[]): CommandForms {
-  const { rereads: _rereads, startup, ...forms } = formsOf([command, ...args], 0, { ...READ_BUDGET, spent: false }, CALL)
+  const { rereads: _rereads, startup, aliases, ...forms } = formsOf([command, ...args], 0, { ...READ_BUDGET, spent: false }, CALL)
   // A startup file set anywhere in the call, exported or before a command, reaches the shells the call starts.
   if (runsStartupText(startup)) forms.scriptData = true
+  // An alias defined anywhere in the call reaches text the same shell parses later, which no reading follows it into.
+  if (aliases.defined && aliases.later) forms.unread = firstLimit(forms.unread, 'expansion')
   return forms
 }
 
@@ -256,7 +258,15 @@ interface Budget { characters: number; words: number; commands: number; spent: b
  * The forms, whether the last of the chain reads its own text again as shell text (eval, a shell, find -exec), and the
  * startup files the reading met with the shells it starts below the command itself (Startup).
  */
-interface Reading extends CommandForms { rereads: boolean; startup: Startup }
+interface Reading extends CommandForms { rereads: boolean; startup: Startup; aliases: AliasReach }
+
+/**
+ * Whether a reading defines an alias (an `alias NAME=value` that surely runs), and whether it hands the shell running it
+ * text that shell parses later (parsesLater), where bash expands an alias defined anywhere before, in that text or out of
+ * it (probes under bash 5.2 and dash 0.5: `alias x=...; eval x`, `trap x EXIT`, `mapfile -C x`, `source /dev/stdin`, and
+ * `eval "alias x=..."` then `x` each ran the alias's value). A child shell (`bash -c`, `bash <<EOF`) has no aliases.
+ */
+interface AliasReach { defined: boolean; later: boolean }
 
 /**
  * The words of a statement an expansion supplies (holdsExpansion), whose value Buckle cannot know, each mapped to whether
@@ -292,7 +302,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   const inner = innerCommands(chain.at(-1)!, budget, place)
   const interpreter = interpreterRunningCode(chain, place)
   const own = startupOf(words, chain, place)
-  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false } }
+  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false }, aliases: { defined: place.sure && definesAlias(chain.at(-1)!), later: place.sure && parsesLater(chain.at(-1)!) } }
   addStartup(forms.startup, inner.startup)
   const read = (command: string[], at: Place, piece = false): Reading | null => {
     if (depth >= MAX_DEPTH) {
@@ -308,6 +318,8 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
       forms.scriptData ||= nested.scriptData
       for (const name of nested.interpreters) if (!forms.interpreters.includes(name)) forms.interpreters.push(name)
       addStartup(forms.startup, nested.startup)
+      forms.aliases.defined ||= nested.aliases.defined
+      forms.aliases.later ||= nested.aliases.later
       if (SHELL_COMMANDS.has(nested.chain.at(-1)![0] ?? '')) {
         forms.startup.shell = true
         forms.startup.fed ||= at.fed
@@ -782,8 +794,10 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
 /**
  * Each statement of shell text whose command word is an alias a statement of the same text defines, read again with the
  * alias's value in place of its name and the words after the name joined on (`alias g='git push'; g --force`), so a
- * glob meets them together. The value is read in turn for another alias, but not for one it is expanding already, as
- * bash reads it. An alias defined only in another text (an eval, a function called elsewhere) is not followed.
+ * glob meets them together. bash looks for an alias at a command's word (commandWordAt), past the reserved words before
+ * it, so in a function's body too; again at the value's first word, but not for an alias it is expanding already; and
+ * at the word after a value that ends in a blank (`alias s='sudo '`). An alias reaching text the same shell parses later
+ * (eval, a trap's action) leaves the call unread instead (AliasReach).
  */
 function aliasUses(groups: readonly CommandGroup[], budget: Budget): CommandGroup[] {
   const aliases = new Map<string, string>()
@@ -794,21 +808,65 @@ function aliasUses(groups: readonly CommandGroup[], budget: Budget): CommandGrou
   if (aliases.size === 0) return []
   const uses: CommandGroup[] = []
   for (const group of groups) {
-    const start = group.command.findIndex(word => !ASSIGNMENT.test(word))
-    if (start < 0) continue
     let words = group.command
     let expanded = group.expanded
     const used = new Set<string>()
-    for (let name = words[start]!; aliases.has(name) && !used.has(name); name = words[start] ?? '') {
+    for (let at = commandWordAt(words); at >= 0 && at < words.length;) {
+      const name = words[at]!
+      if (!aliases.has(name) || used.has(name)) break
       used.add(name)
-      const value = budget.spent ? null : statementForm(aliases.get(name)!, budget)
+      const text = aliases.get(name)!
+      const value = budget.spent ? null : statementForm(text, budget)
       if (value === null) break
-      words = [...words.slice(0, start), ...value.words, ...words.slice(start + 1)]
+      words = [...words.slice(0, at), ...value.words, ...words.slice(at + 1)]
       expanded = new Map([...expanded, ...value.expanded])
+      const first = value.words[0]
+      if (first !== undefined && aliases.has(first) && !used.has(first)) continue
+      if (!/[ \t]$/.test(text)) break
+      at += value.words.length
     }
     if (used.size > 0) uses.push({ ...group, command: words, statement: '', expanded })
   }
   return uses
+}
+
+/**
+ * Where a statement's command word is, as bash looks for an alias there: past its NAME=value assignments and the reserved
+ * words before a command (SHELL_KEYWORDS, `time` and its `-p`, `coproc` and the name before a compound command, and
+ * `function NAME`); -1 when no word is left.
+ */
+function commandWordAt(words: readonly string[]): number {
+  let index = 0
+  while (index < words.length) {
+    const word = words[index]!
+    if (ASSIGNMENT.test(word) || SHELL_KEYWORDS.has(word)) index++
+    else if (word === 'time') {
+      index++
+      while (words[index] === '-p' || words[index] === '--') index++
+    } else if (word === 'coproc') index += COMPOUND_START.has(words[index + 2] ?? '') ? 2 : 1
+    else if (word === 'function') index += 2
+    else return index
+  }
+  return -1
+}
+
+/** Whether a command is `alias` defining one (an operand NAME=value). */
+function definesAlias(runs: readonly string[]): boolean {
+  return runs[0] === 'alias' && aliasValues(runs.slice(1)).length > 0
+}
+
+/**
+ * Whether a command hands the shell running it text that shell parses later: eval's words, a trap's action, a mapfile
+ * callback, and what `source` or `.` reads from the shell's input or a descriptor. A script file on disk is not read.
+ */
+function parsesLater(runs: readonly string[]): boolean {
+  const [command = '', ...args] = runs
+  if (command === 'eval') return true
+  if (command === 'trap') return trapAction(args).length > 0
+  if (command === 'mapfile' || command === 'readarray') return mapfileCallbacks(args).length > 0
+  if (!SOURCE_COMMANDS.has(command)) return false
+  const file = args[0] === '--' ? args[1] : args[0]
+  return file !== undefined && scriptOperandKind(file) !== 'file'
 }
 
 /** Programs that run what a heredoc feeds them as shell text: the shells, `source`, and ssh and su, which hand it to one. */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import type { ResolvedEffect } from '../common/domain/effect.js'
-import { commandFormsOf, READ_LIMITS } from '../common/domain/command-forms.js'
+import { allForms, commandFormsOf, READ_LIMITS } from '../common/domain/command-forms.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
@@ -1098,6 +1098,82 @@ describe('a call Buckle cannot read whole', () => {
   ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('refuses %s deny, switch on: %s, held shell text an expansion supplies: %s, naming the limit', (engine, switched, _shape, body) => {
     expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
     expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  // An alias is expanded where its name is a command's word: past the reserved words before a command, in a function's
+  // body, and after an alias ending in a blank. The force push only the substitution spells is refused by the force
+  // glob and asked about at the floor. Real bash ran the sentinel in each shape (heredoc-oracle.test.ts).
+  const aliasedUse = (use: string) => `shopt -s expand_aliases\nalias g='git push'\n${use}`
+  const forcedUses = [
+    ['after if', aliasedUse('if g --force origin main; then :; fi')],
+    ['in a group', aliasedUse('{ g --force origin main; }')],
+    ['after !', aliasedUse('! g --force origin main')],
+    ['after time -p', aliasedUse('time -p g --force origin main')],
+    ['after do', aliasedUse('for i in 1; do g --force origin main; done')],
+    ['in a function body', aliasedUse('f() { g --force origin main; }\nf')],
+    ['in a function keyword body', aliasedUse('function h { g --force origin main; }; h')],
+    ['after coproc', aliasedUse('coproc g --force origin main; wait')],
+    ['after an alias ending in a blank', "shopt -s expand_aliases\nalias e='env ' g='git push'\ne g --force origin main"],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => forcedUses.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, by the force glob, a force push an alias spells %s', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBeNull()
+    expect(refusal(check(engine, switched, body, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => forcedUses.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push an alias spells %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
+  })
+
+  // An alias defined anywhere in the call reaches text the same shell parses later (eval, a trap's action, a mapfile
+  // callback, source of its input), which no reading follows it into: such a call is unread, refused naming the limit
+  // under any deny glob and asked at the floor. A call that defines no alias reads that text as before.
+  const aliasedLater = [
+    ['eval', `shopt -s expand_aliases\nalias p='${push}'\neval p`],
+    ['a trap action', `shopt -s expand_aliases\nalias p='${push}'\ntrap p EXIT`],
+    ['a mapfile callback', `shopt -s expand_aliases\nalias p='${push}'\nmapfile -C 'p #' -c 1 <<< a`],
+    ['source of its input', `shopt -s expand_aliases\nalias p='${push}'\nsource /dev/stdin <<'EOF'\np\nEOF`],
+    ['an alias eval defines, used after it', `shopt -s expand_aliases\neval "alias p='${push}'"\np`],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => aliasedLater.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, an alias reaching %s, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
+    expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  // A device operand (`source /dev/stdin`) is asked about first as one, so that row checks the refusal alone.
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => aliasedLater.filter(([, body]) => !/ \/dev\//.test(body)).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about an alias reaching %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
+  })
+
+  it.each(cases.flatMap(([engine, switched]) => [
+    ['eval', `eval '${push}'`],
+    ['a trap action', `trap '${push}' EXIT`],
+    ['source of its input', `source /dev/stdin <<'EOF'\n${push}\nEOF`],
+    ['a -c string beside an alias, run in a child shell', `shopt -s expand_aliases\nalias p=ls\nbash -c '${push}'`],
+  ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('refuses %s deny, switch on: %s, by the push glob, a git push in %s, with no alias reaching it', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBeNull()
+    expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
+  })
+
+  // Arithmetic and PS4 under set -x run text a variable holds: Buckle reads it only where the call spells it out, so a
+  // git push built at run time is read by no rule and the call is not marked unread. These rows pin that limit.
+  const pushes = (body: string) => allForms(commandFormsOf({ command: 'bash', args: ['-c', body] })).some(([command, subcommand]) => command === 'git' && subcommand === 'push')
+
+  it('reads arithmetic and PS4 text the call spells out, so the push glob meets it', () => {
+    expect(pushes(`x='a[$(${push})]'; (( x ))`)).toBe(true)
+    expect(pushes(`PS4='$(${push})'; set -x; true`)).toBe(true)
+  })
+
+  it('reads no arithmetic or PS4 text the call builds at run time, and marks no such call unread (a limit)', () => {
+    for (const body of [`p='$(git'; x="a[$p push origin main)]"; (( x ))`, `p='$(git'; PS4="$p push origin main)"; set -x; true`]) {
+      expect(pushes(body)).toBe(false)
+      expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBeNull()
+    }
   })
 
   // An alias stands for its value where its name begins a command, the words after the name joined on, so a glob and the
