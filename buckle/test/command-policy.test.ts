@@ -7,7 +7,7 @@ import { createCommandPolicyRule } from '../common/domain/permission/rules/comma
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
 import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
 import { compilePolicy } from '../common/domain/policy.js'
-import { leastProcessorTime } from './support/processor-time.js'
+import { leastProcessorTime, PROCESSOR_TIME_ROW_TIMEOUT } from './support/processor-time.js'
 
 function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[]; destructive?: string[] } = {}) {
   const policy = emptyWorkspacePolicy()
@@ -267,14 +267,14 @@ describe('a check of a large nested body', () => {
     expect(milliseconds).toBeLessThan(1_000)
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks[0]?.reason).toMatch(reason)
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   it.each(['eval', 'bash -c'])('reads a 1 MB body three %s levels deep whole, each level once, and allows it', (runner) => {
     const body = nested(runner, 3)
     const { milliseconds, result } = leastProcessorTime(() => evaluate('bash', ['-c', body], { allow: ['bash -c *'] }))
     expect(result.kind).toBe('allow')
     expect(milliseconds).toBeLessThan(1_000)
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   it('still refuses by the deny list what a 1 MB body three levels down runs', () => {
     expect(reasonOf(evaluate('bash', ['-c', nested('eval', 3, '; git clean -fdx')], commands))).toMatch(/git clean \*/)
@@ -455,7 +455,7 @@ describe('a call Buckle cannot read whole', () => {
     const refused = leastProcessorTime(() => check('workspace', false, heredocLine(`${notes}\n${quotedPush}`)))
     expect(refusal(refused.result)).toBe('Refused by the workspace command policy: git push *')
     expect(refused.milliseconds).toBeLessThan(1_000)
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   // Slice 7f residual 1: heredoc body lines a backslash-newline joins were read one at a time, so `git push \` then
   // `--force origin main` fed to bash was allowed with no ask (real bash force-pushed); a deny glob still met `git push`.
@@ -561,7 +561,7 @@ describe('a call Buckle cannot read whole', () => {
     const { milliseconds, result } = leastProcessorTime(() => check(engine, switched, body))
     expect(refusal(result)).toBe(`Wrappers or shell bodies nest deeper than Buckle reads (MAX_DEPTH: 8 levels), so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
     expect(milliseconds).toBeLessThan(1_000)
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   it('asks about a thousand nested heredocs with no deny glob, naming the depth limit', () => {
     const outcome = check('workspace', false, nestedHeredocs(1_000), [])
@@ -576,7 +576,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(result[0].kind).toBe('allow')
     expect(refusal(result[1])).toBe('Refused by the workspace command policy: git push *')
     expect(milliseconds).toBeLessThan(1_000)
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   // Slice 7h probe: a backslash-newline outside single quotes is a line continuation bash removes before it splits
   // words, so one inside a command name or a flag ran a git push, or a force push, that every rule read as two words.
@@ -1369,7 +1369,7 @@ describe('a call Buckle cannot read whole', () => {
       expect(result.kind).toBe('allow')
       expect(milliseconds).toBeLessThan(1_000)
     }
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   it('reads a thousand heredocs nested in substitutions within a second, each body whole once', () => {
     const opened = Array.from({ length: 1_000 }, (_, index) => `$(cat <<D${index}`).join('\n')
@@ -1377,7 +1377,7 @@ describe('a call Buckle cannot read whole', () => {
     const { milliseconds, result } = leastProcessorTime(() => check('workspace', false, heredocLine(`${opened}\n${quotedPush}\n${closed}`)))
     expect(result).toMatchObject({ kind: 'deny' })
     expect(milliseconds).toBeLessThan(1_000)
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 })
 
 // Owner decision D55: a body run by python, node, deno, bun, perl, ruby, php, awk (gawk, mawk, nawk), lua, luajit, pwsh,

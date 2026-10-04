@@ -5,6 +5,13 @@
  * time limit on it fails only when the reading itself is slow (the 7h to 7k review saw one-second rows fail at 1266 ms
  * and 2006 ms on a loaded machine). Nothing the run spawns is counted, so the run must spawn nothing.
  */
+/**
+ * The wall-clock time a row timed by leastProcessorTime may take: it runs its reading four times or more, and a machine
+ * loaded by other test workers stretched one such row past vitest's 5 s default (4 to 5.6 s seen). The processor-time
+ * limit in the row stays the real check; this one only stops a row that hangs.
+ */
+export const PROCESSOR_TIME_ROW_TIMEOUT = 30_000
+
 export function leastProcessorTime<T>(run: () => T, runs = 3): { milliseconds: number; result: T } {
   let milliseconds = Number.POSITIVE_INFINITY
   let result = run()

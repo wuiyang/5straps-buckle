@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { baseCommand } from '../common/domain/argv.js'
 import { allForms, commandForms, type CommandForms, type ReadLimit, readLimitOf } from '../common/domain/command-forms.js'
-import { leastProcessorTime } from './support/processor-time.js'
+import { leastProcessorTime, PROCESSOR_TIME_ROW_TIMEOUT } from './support/processor-time.js'
 
 /**
  * Slice 7f review and the slice reading rule: Buckle must read a superset of the commands a shell runs, so a denied
@@ -1459,7 +1459,8 @@ function unreadByForms(forms: CommandForms): string[] {
  * unread at the depth limit, and a 1 MB body, 100,000 one-character lines and 50,000 continuations each read within a
  * second (slice 7g review coverage probes). Each limit is on the reader's own processor time, the least of three warm
  * readings with no process spawned (leastProcessorTime), so a loaded machine or a cold start does not fail it: here the
- * rows take about 30 to 220 ms of the 1000 ms allowed (slice 7l, the 7h to 7k review's flaky timing rows).
+ * rows take about 30 to 380 ms of the 1000 ms allowed (slice 7l, the 7h to 7k review's flaky timing rows). Each row may
+ * take PROCESSOR_TIME_ROW_TIMEOUT of wall-clock time, which a loaded machine meets; the processor time is the check.
  */
 describe('the reader is bounded on adversarial bulk', () => {
   const under = (body: string, limit = 1_000) => {
@@ -1472,40 +1473,40 @@ describe('the reader is bounded on adversarial bulk', () => {
     const open = Array.from({ length: 1_000 }, (_, index) => `bash <<'D${index}'`).join('\n')
     const close = Array.from({ length: 1_000 }, (_, index) => `D${999 - index}`).join('\n')
     expect(under(`${open}\necho "$(${PAYLOAD})"\n${close}`).unread).toBe('depth')
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   it('reads a 1 MB adversarial body within a second', () => {
     const line = `find . -maxdepth 0 -exec true '$(${PAYLOAD})' \\;`
     const body = `cat <<EOF\n${Array.from({ length: Math.ceil(1_000_000 / line.length) }, () => line).join('\n')}\nEOF`
     expect(body.length).toBeGreaterThan(1_000_000)
     under(body)
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   it('reads 100,000 one-character body lines within a second', () => {
     under(`cat <<EOF\n${Array.from({ length: 100_000 }, () => 'x').join('\n')}\nEOF`)
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   it('reads 50,000 continuations within a second', () => {
     under(`bash <<EOF\n${Array.from({ length: 50_000 }, () => 'echo a \\').join('\n')}\ndone\nEOF`)
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   // Each `((` looks ahead for the `))` that makes it arithmetic; a megabyte of open parentheses stops at the read budget.
   it.each(['((', '$(('])('stops at the read budget within a second on a megabyte of %s never closed', (opener) => {
     expect(readLimitOf(under(opener.repeat(Math.ceil(1_000_000 / opener.length))))).toBe('budget')
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   /**
    * Slice 7l, the 7h to 7k review: a request under the 1 MiB cap of eight heredocs fed to bash, one in another, around
    * backtick bodies took 33.7 s to read, since each pass over a body re-read it whole. Every pass is now charged to
    * the read budget, so the reading stops as 'budget' (refused under any deny glob, asked at the floor). Here it takes
-   * about 200 ms of the 1000 ms allowed; one level and four levels too.
+   * about 150 ms of the 1000 ms allowed; one level and four levels too.
    */
   it.each([1, 4, 8])('stops at the read budget within a second on the 1 MiB shape of %i heredocs fed to bash around backtick bodies', (levels) => {
     let body = `echo ${Array.from({ length: 200_000 }, (_, index) => `w${index % 1000}`).join(' ')} \\\\x`
     for (let level = 0; level < levels; level++) body = `bash <<E${level}\necho \`${body}\`\nE${level}\n`
     expect(JSON.stringify({ command: 'bash', args: ['-c', body] }).length).toBeLessThan(1_048_576)
     expect(readLimitOf(under(body))).toBe('budget')
-  })
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 })
 
 describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of what real bash runs', () => {
