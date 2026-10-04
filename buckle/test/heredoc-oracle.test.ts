@@ -1100,6 +1100,26 @@ const UNFED_SCRIPT_OPERANDS: Shape[] = [
   { label: 'unfed script operand: the line after a here-string is a command', body: `cat <<< x\nx=${SENTINEL}; $x mark`, unread: 'expansion' },
 ]
 
+/**
+ * busybox and toybox run the applet their first operand names, so the command behind one is read as that applet with
+ * its words; a shell applet stays an interpreter Buckle does not read as bash. Neither is installed here, so these rows
+ * skip where the program is absent, as the other absent shells do. chrt from util-linux 2.41 runs a command given with
+ * no priority; an older chrt refuses it and runs nothing, so here the rows are over-reads, which the reading allows.
+ */
+const MULTICALL_AND_CHRT: Shape[] = [
+  ...['busybox', 'toybox'].flatMap(binary => [
+    { label: `${binary}: env`, body: `${binary} env ${PAYLOAD}`, needs: binary },
+    { label: `${binary}: env -u`, body: `${binary} env -u HOME ${PAYLOAD}`, needs: binary },
+    { label: `${binary}: nice`, body: `${binary} nice ${PAYLOAD}`, needs: binary },
+    { label: `${binary}: timeout`, body: `${binary} timeout 5 ${PAYLOAD}`, needs: binary },
+    { label: `${binary}: xargs`, body: `echo mark | ${binary} xargs ${SENTINEL}`, needs: binary },
+  ]),
+  { label: 'toybox: sh -c is an interpreter', body: `toybox sh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'toybox' },
+  { label: 'chrt: a policy with no priority', body: `chrt -o ${PAYLOAD}`, whole: true },
+  { label: 'chrt: a long policy with no priority', body: `chrt --other ${PAYLOAD}`, whole: true },
+  { label: 'chrt: no policy and no priority', body: `chrt ${PAYLOAD}`, whole: true },
+]
+
 /** An `until` loop runs its condition, so the command in it runs as surely as one under `if` or `while`. */
 const KEYWORD_SHAPES: Shape[] = [
   { label: 'keyword: until around the payload', body: `until ${PAYLOAD}; do :; done` },
@@ -1118,7 +1138,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }

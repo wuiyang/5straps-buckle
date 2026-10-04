@@ -49,6 +49,16 @@ interface Wrapper {
   runsNothing?: { short: string; long: readonly string[] }
   /** Words between the options and the command: timeout's duration, chrt's priority. */
   operands?: number
+  /**
+   * The operand is a number that may be left out, so a word that is no number is the command: chrt from util-linux 2.41
+   * runs `chrt -o cmd` with the policy's default priority (an older chrt refuses it, so reading cmd there reads more).
+   */
+  numericOperand?: true
+  /**
+   * A multi-call binary (busybox, toybox) that runs the applet its first operand names with the words after it; a shell
+   * applet is an interpreter Buckle does not read as bash (MULTICALL_SHELLS), so the chain ends at the binary.
+   */
+  applets?: true
   /** `env`'s and `sudo`'s NAME=value words before the command. */
   assignments?: true
   /** `env -`, which is `env -i`; for every other wrapper a lone `-` is the command word. */
@@ -73,7 +83,7 @@ interface Wrapper {
  * git push --force` passed the destructive floor and the command policy; slice 7 review F1; owner decision D25,
  * default (a)). Their option tables follow each program's getopt string (coreutils env, nice, nohup, timeout and
  * stdbuf; GNU time; findutils xargs; util-linux ionice, chrt, setsid and flock; sudo 1.9 and OpenDoas; the shell's
- * `command`, `exec` and `builtin`). `sudo git push` was read as `sudo` alone, so under the dangerously-allow switch its
+ * `command`, `exec` and `builtin`; and the multi-call busybox and toybox, which run the applet they are given). `sudo git push` was read as `sudo` alone, so under the dangerously-allow switch its
  * ask became an allow past a deny glob on `git push *` (slice 7i residual, owner decision D7).
  *
  * Read the same way, though not in the table: a statement's leading NAME=value assignments (`A=1 git push
@@ -103,13 +113,15 @@ const WRAPPERS: Readonly<Record<string, Wrapper>> = {
   timeout: { shortValues: 'ks', longValues: ['kill-after', 'signal'], operands: 1 },
   stdbuf: { shortValues: 'ioe', longValues: ['input', 'output', 'error'] },
   ionice: { shortValues: 'cnpPu', longValues: ['class', 'classdata', 'pid', 'pgid', 'uid'], runsNothing: { short: 'pPu', long: ['pid', 'pgid', 'uid'] } },
-  chrt: { shortValues: 'TPD', longValues: ['sched-runtime', 'sched-period', 'sched-deadline'], operands: 1, runsNothing: { short: 'pm', long: ['pid', 'max'] } },
+  chrt: { shortValues: 'TPD', longValues: ['sched-runtime', 'sched-period', 'sched-deadline'], operands: 1, numericOperand: true, runsNothing: { short: 'pm', long: ['pid', 'max'] } },
   command: { runsNothing: { short: 'vV', long: [] } },
   exec: { shortValues: 'a' },
   builtin: {},
   setsid: {},
   flock: { shortValues: 'wE', longValues: ['timeout', 'wait', 'conflict-exit-code'], operands: 1, shellCommand: ['-c', '--command'] },
   xargs: { shortValues: 'aEILnsPd', shortOptional: 'eil', longValues: ['arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var'] },
+  busybox: { applets: true, runsNothing: { short: '', long: ['help', 'list', 'list-full', 'install', 'show'] } },
+  toybox: { applets: true, runsNothing: { short: '', long: ['help', 'version', 'long'] } },
 }
 
 /** A shell assignment word: a name, an optional array index, an optional `+`, then `=`. */
@@ -307,9 +319,10 @@ const PYTHONS: readonly string[] = ['python', 'pypy']
  * (`python3`, `python3.12`, `node22`, `perl5.36`, `lua5.4`). A policy names the ones it reads as ordinary commands.
  * awk and its variants, lua, PowerShell, and the TypeScript runners joined in slice 7j (default D57); the package
  * runners npx, pnpx, and bunx stay ordinary commands until the owner rules on them (D57 open). Slice 7l adds PyPy, the
- * C shells, whose syntax is not the POSIX shell's, and busybox, whose shell applet may be ash or hush.
+ * C shells, whose syntax is not the POSIX shell's, and busybox, whose shell applet may be ash or hush; toybox, whose
+ * shell applet is its own toysh, is one too.
  */
-const INTERPRETERS = [...PYTHONS, 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'awk', 'gawk', 'mawk', 'nawk', 'lua', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node', 'tcsh', 'csh', 'busybox'] as const
+const INTERPRETERS = [...PYTHONS, 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'awk', 'gawk', 'mawk', 'nawk', 'lua', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node', 'tcsh', 'csh', 'busybox', 'toybox'] as const
 /**
  * The CPython builds' names carry a build suffix after the version: `t` for the free-threaded build (python3.13t), `d`
  * for a debug build, and Debian's `-dbg`; PyPy installs as pypy and pypy3.
@@ -331,8 +344,11 @@ function interpreterProgram(name: string): string | null {
   return match ? match[1] ?? match[2]! : null
 }
 
-/** The busybox applets that are a shell: a call of one runs shell text in busybox's own shell, which Buckle does not read. */
-const BUSYBOX_SHELLS = new Set(['sh', 'ash', 'hush', 'bash'])
+/**
+ * The busybox and toybox applets that are a shell: a call of one runs shell text in the binary's own shell (ash or
+ * hush, toysh), which Buckle does not read as bash.
+ */
+const MULTICALL_SHELLS: ReadonlySet<string> = new Set(['sh', 'ash', 'hush', 'bash', 'toysh'])
 
 /** awk's version and help calls across gawk, mawk (`-W version`), and the one true awk (`-version`). */
 const AWK_INFO: ReadonlySet<string> = new Set(['--version', '-V', '-version', '-Wversion', '-Wv', '-W version', '--help', '-h', '--usage', '-Wusage', '-W usage'])
@@ -367,6 +383,7 @@ const INTERPRETER_INFO: Readonly<Record<string, ReadonlySet<string>>> = {
   tcsh: new Set(['--version', '--help']),
   csh: new Set(),
   busybox: new Set(['--help', '--list', '--list-full']),
+  toybox: new Set(['--help', '--version', '--long']),
 }
 
 /** Whether these arguments only print the interpreter's version or its help. */
@@ -388,8 +405,9 @@ function interpreterRunningCode(chain: readonly string[][], place: Place): strin
   if (!INTERPRETER.test(command)) return null
   if (chain.some(form => form[0] === 'xargs')) return command
   if (printsInfo(command, args)) return null
-  // busybox runs code Buckle cannot read only through a shell applet; its other applets are judged by their own words.
-  if (command === 'busybox') return BUSYBOX_SHELLS.has(baseCommand(args[0] ?? '')) ? command : null
+  // busybox and toybox run code Buckle cannot read only through a shell applet; another applet is read as the command
+  // it names (wrapperChain), so the chain ends at the binary only with a shell applet, or with no applet at all.
+  if (command === 'busybox' || command === 'toybox') return MULTICALL_SHELLS.has(baseCommand(args[0] ?? '')) ? command : null
   return args.length === 0 && !place.statement ? null : command
 }
 
@@ -721,7 +739,10 @@ function unwrapped(words: readonly string[], expanded: Expanded): Unwrapped | un
   if (words[0] === 'function') return runs(words.length > 2 ? words.slice(2) : null)
   if (words[0] === 'coproc') return runs(COMPOUND_START.has(words[2] ?? '') ? words.slice(2) : words.length > 1 ? words.slice(1) : null)
   const wrapper = wrapperOf(baseCommand(words[0] ?? ''))
-  return wrapper === undefined ? undefined : innerCommand(wrapper, words.slice(1), expanded)
+  if (wrapper === undefined) return undefined
+  const inner = innerCommand(wrapper, words.slice(1), expanded)
+  if (wrapper.applets && Array.isArray(inner.command) && MULTICALL_SHELLS.has(baseCommand(inner.command[0] ?? ''))) return undefined
+  return inner
 }
 
 /**
@@ -790,7 +811,7 @@ function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expan
     }
   }
   if (wrapper.assignments) while (index < words.length && words[index]!.includes('=')) index++
-  index += wrapper.operands ?? 0
+  if (!wrapper.numericOperand || /^\d+$/.test(words[index] ?? '')) index += wrapper.operands ?? 0
   if (wrapper.shellCommand?.includes(words[index] ?? '')) return index + 1 < words.length ? { command: ['sh', '-c', words[index + 1]!], unread } : { command: null, unread, open: true }
   if (index < words.length && session && wrapper.sessionShell) {
     const shell = shellSessionCommand(words.slice(index))

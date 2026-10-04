@@ -1133,6 +1133,10 @@ describe('a call that runs code with an interpreter', () => {
     ['csh', ['script.csh'], 'csh'],
     ['busybox', ['sh', '-c', 'echo 1'], 'busybox'],
     ['bash', ['-c', 'echo id | busybox ash'], 'busybox'],
+    // A shell applet behind a wrapper, and toybox's own shell, are interpreters too.
+    ['env', ['busybox', 'hush', '-c', 'echo 1'], 'busybox'],
+    ['toybox', ['sh', '-c', 'echo 1'], 'toybox'],
+    ['toybox', ['toysh', 'script.sh'], 'toybox'],
   ] as const
   const refusal = (outcome: ReturnType<typeof check>) => {
     if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
@@ -1200,6 +1204,10 @@ describe('a call that runs code with an interpreter', () => {
     [engine, switched, 'tcsh', ['--version']],
     [engine, switched, 'busybox', ['--list']],
     [engine, switched, 'busybox', ['ls', '-la']],
+    [engine, switched, 'toybox', ['--version']],
+    [engine, switched, 'toybox', ['ls', '-la']],
+    [engine, switched, 'bash', ['-c', 'busybox']],
+    [engine, switched, 'bash', ['-c', 'toybox']],
     // Default D57 (open): package runners stay ordinary commands until the owner rules on them.
     [engine, switched, 'npx', ['tsx', 'script.ts']],
     [engine, switched, 'pnpx', ['ts-node', 'script.ts']],
@@ -1255,6 +1263,9 @@ describe('a command behind a wrapper', () => {
       ['ssh', 'host'], ['ssh', '-p', '22', 'host'], ['ssh', 'host', '-l', 'me'], ['ssh', '-P', 'tag', 'host'], ['env', '-i', '-u', 'HOME', 'X=1'], ['nice', '-n', '5'],
       ['nohup'], ['timeout', '-s', 'KILL', '-k', '1', '--foreground', '5'], ['time', '-p'], ['stdbuf', '-oL'], ['ionice', '-c', '3'], ['chrt', '-o', '0'],
       ['command', '-p'], ['builtin'], ['exec'], ['sudo', 'env', 'X=1', 'nice'], ['ssh', 'host', 'sudo'], ['doas', 'timeout', '5', 'ssh', 'host'],
+      // busybox and toybox run the applet they are given; chrt from util-linux 2.41 may omit the priority.
+      ['busybox', 'env'], ['busybox', 'env', '-i'], ['busybox', 'nice'], ['busybox', 'timeout', '5'], ['busybox', 'xargs'], ['/bin/busybox', 'chrt', '-o', '0'],
+      ['toybox', 'env'], ['toybox', 'nice', '-n', '5'], ['toybox', 'timeout', '5'], ['toybox', 'xargs'], ['chrt', '-o'], ['chrt', '--other'], ['chrt', '-f', '5'],
     ].map(prefix => [prefix.join(' '), (command: string[]) => [...prefix, ...command]] as [string, (command: string[]) => string[]]),
     ['su -c', command => ['su', '-c', command.join(' '), 'root']],
     ['su root -c', command => ['su', 'root', '-c', command.join(' ')]],
