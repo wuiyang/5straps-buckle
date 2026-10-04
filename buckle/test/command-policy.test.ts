@@ -778,7 +778,7 @@ describe('a call Buckle cannot read whole', () => {
   // Slice 7l: a shell's -c string that an expansion supplies runs text Buckle never sees, as eval of the same text does;
   // the call is unread: refused naming the limit under any deny glob, and asked at the floor with none. A -c string
   // whose `$` sits in single quotes is text the inner shell reads, and stays read. Real bash ran the sentinel in each.
-  const expansion = 'Runs a command word or shell text an expansion supplies, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)"), so Buckle cannot read it (expansion)'
+  const expansion = 'Runs a command word or shell text an expansion supplies, or a command an expansion among a wrapper\'s own words may move, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)", timeout $t cmd), so Buckle cannot read it (expansion)'
   const expandedShapes = [
     ['bash -c of a substitution', `bash -c "$(echo '${push}')"`],
     ['sh -c of a variable', `x='${push}'; sh -c "$x"`],
@@ -806,7 +806,8 @@ describe('a call Buckle cannot read whole', () => {
   it.each(cases.flatMap(([engine, switched]) => [
     [engine, switched, 'a single-quoted -c string holding a variable', `x=main; bash -c 'git push origin $x'`],
     [engine, switched, 'find handing {} to bash -c as $0', `find . -maxdepth 0 -exec bash -c '${push}' {} \\;`],
-    [engine, switched, 'an ssh host from a variable', `ssh "$host" '${push}'`],
+    // A host whose typed text before the variable is no option; a bare `"$host"` may be one (an expansion among ssh's words).
+    [engine, switched, 'an ssh host from a variable after a typed user', `ssh deploy@"$host" '${push}'`],
   ] as const))('refuses %s deny, switch on: %s, by the push glob, a git push still read through %s', (engine, switched, _shape, body) => {
     const forms = commandFormsOf({ command: 'bash', args: ['-c', body] })
     expect([forms.unread, forms.scriptData]).toEqual([null, false])
@@ -908,8 +909,10 @@ describe('a call Buckle cannot read whole', () => {
   ] as const
   const nested = (command: string) => nestedWords.flatMap(([shape, word]) => nestedPlaces(word, command).map(([place, body]) => [`${shape}, ${place}`, body] as const))
 
+  // env is handed an unquoted word split on its blanks, so the word after a blank is env's command: unread (expansion),
+  // still refused by the push glob, which meets the git push as written.
   it.each(cases.flatMap(([engine, switched]) => nested(push).map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, by the push glob, a git push after %s', (engine, switched, _shape, body) => {
-    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBeNull()
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe(body.startsWith('env X=') && !body.startsWith('env X="') ? 'expansion' : null)
     expect(refusal(check(engine, switched, body, ['git push*']))).toBe(`Refused by ${named[engine]}: git push*`)
   })
 
@@ -971,6 +974,106 @@ describe('a call Buckle cannot read whole', () => {
     expect([forms.unread, forms.nested]).toEqual([null, [['x=push'], ['git', '$x', 'origin', 'main']]])
     expect(check(engine, switched, 'x=push; git $x origin main', ['git push*']).kind).toBe('allow')
     expect(refusal(check(engine, switched, 'x=main; git push origin $x', ['git push*']))).toBe(`Refused by ${named[engine]}: git push*`)
+  })
+
+  // An expansion among the words a wrapper, xargs, find, ssh, su, or a shell reads before the command it runs may be an
+  // option, a value naming what runs, or several words, and so supply or move that command: the words as read name no
+  // git push while bash runs one. The call is unread: refused naming the limit under git push*, and asked at the floor
+  // with no deny glob. Real bash ran the sentinel in each shape (heredoc-oracle.test.ts, wrapper words).
+  const movedCommands = [
+    ['timeout, an unquoted duration', 'v="1 git"; timeout $v push origin main'],
+    ['timeout, a quoted duration that is -s', 'v=-s; timeout "$v" KILL 5 git push origin main'],
+    ['timeout, a brace expansion', 'timeout {1,git} push origin main'],
+    ['timeout, "$@"', 'set -- 5 git; timeout "$@" push origin main'],
+    ['nice -n, an unquoted value', 'v="5 git"; nice -n $v push origin main'],
+    ['nice -n, "${a[@]}"', 'a=(5 git); nice -n "${a[@]}" push origin main'],
+    ['nice, a quoted option letter', 'v=n; nice -"$v" 5 git push origin main'],
+    ['env, an unquoted assignment value', 'v="1 git"; env X=$v push origin main'],
+    ['env, a quoted word that is -u', 'v=-u; env "$v" x git push origin main'],
+    ['env -S, a quoted attached value', 'v="git push"; env -S"$v" origin main'],
+    ['env, an option letter before a typed one', `v='S git push #'; env -"$v"uX origin main`],
+    ['flock, a quoted file that is -x', 'v=-x; flock "$v" lk git push origin main'],
+    ['xargs -I, a quoted replace string', 'r=X; echo git | xargs -I "$r" env X push origin main'],
+    ['xargs items handed to find', "echo '-exec git push origin main ;' | xargs find ."],
+    ['find, a quoted path that is -exec', 'v=-exec; find "$v" git push origin main \\;'],
+    ['find, a quoted -exec closed by a quoted ;', 'a=-exec; b=";"; find "$a" git push origin main "$b"'],
+    ['find, an unquoted path', 'd=". -exec git push origin main ;"; find $d -name x'],
+    ['ssh, an unquoted host', 'h="host git"; ssh $h push origin main'],
+    ['ssh, a quoted host that is -p', 'v=-p; ssh "$v" 22 host git push origin main'],
+    ['ssh, a quoted host that is an -o ProxyCommand', 'v="-oProxyCommand=git push origin main"; ssh "$v" host true'],
+    ['ssh -o, a quoted attached ProxyCommand', 'v="ProxyCommand=git push origin main"; ssh -o"$v" host true'],
+    ['bash, a quoted script operand that is -c before a variable', 'x="git push origin main"; v=-c; bash "$v" "$x"'],
+    ['bash, an unquoted script operand', 'v="-c git"; bash $v'],
+    ['su, a quoted user that is -c', 'v=-c; x="git push origin main"; su "$v" "$x" root'],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => movedCommands.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, under git push*, a command an expansion among the wrapper words may move: %s, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
+    expect(refusal(check(engine, switched, body, ['git push*']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => movedCommands.filter(([shape]) => !shape.startsWith('su')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a command an expansion among the wrapper words may move: %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
+  })
+
+  // Where the expanded word cannot change the parse, the call stays read whole: a quoted value after an option that always
+  // takes one or attached to a typed option, an assignment with a typed name and a quoted value, `NAME=$v` before a
+  // command, a quoted find path with no exec after it or a quoted find primary value, an operand with typed text before
+  // the expansion that is no option, and a shell's quoted script operand with no word after it. The push glob refuses
+  // each by name, and the floor asks about each force push as one.
+  const keptRead = (command: string) => [
+    ['nice -n, a quoted value', `v=5; nice -n "$v" ${command}`],
+    ['nice -n, a quoted attached value', `v=5; nice -n"$v" ${command}`],
+    ['sudo -u, a quoted user', `sudo -u "$USER" ${command}`],
+    ['timeout --signal=, a quoted value', `s=TERM; timeout --signal="$s" 5 ${command}`],
+    ['timeout -s, a quoted attached value', `s=TERM; timeout -s"$s" 5 ${command}`],
+    ['timeout -k, a quoted substitution', `timeout -k "$(echo 5)" 10 ${command}`],
+    ['env, a quoted assignment value', `env FOO="$BAR" ${command}`],
+    ['an unquoted assignment before a command', `FOO=$BAR ${command}`],
+    ['env -C, a quoted value', `env -C "$dir" ${command}`],
+    ['flock, a file with typed text first', `flock ./"$lock" ${command}`],
+    ['xargs -P, a quoted substitution', `xargs -P "$(nproc)" ${command} < /dev/null`],
+    ['find, a quoted -name value before -exec', `find . -name "$n" -exec ${command} \\;`],
+    ['find, a quoted path with no exec after it', `find "$dir" -name x -print; ${command}`],
+    ['ssh, a host with a typed user first', `ssh deploy@"$host" ${command}`],
+    ['ssh -p, a quoted value', `ssh -p "$port" host ${command}`],
+    ['bash -o, a quoted value', `bash -o "$opt" -c '${command}'`],
+    ['bash, a quoted script operand with no word after it', `bash "$script"; ${command}`],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => keptRead(push).map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, by the push glob, a git push read whole behind %s', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBeNull()
+    expect(refusal(check(engine, switched, body, ['git push*']))).toBe(`Refused by ${named[engine]}: git push*`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => keptRead('git push --force origin main').map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push read whole behind %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(body.startsWith('sudo') ? /^sudo escalates privileges$/ : /^Force push rewrites remote history/)]])
+  })
+
+  // The cost of the rule: these ordinary shapes are now unread, refused under any deny glob and asked at the floor, since
+  // a quoted value there may be an option and an unquoted one several words.
+  it.each([
+    'timeout $T make test', 'timeout "$T" make test', 'env FOO=$BAR make test', 'ssh "$HOST" uptime', 'ssh "$USER@$HOST" uptime',
+    'find $DIR -name x', 'find . -name *.log', 'find "$dir" -name x -exec rm {} \\;', 'find . -exec grep -l "$pattern" {} +', 'xargs -P $(nproc) make',
+    'flock "$LOCK" make', 'bash "$script" "$@"', 'su "$user" -c make', 'nice -n $N make', 'sudo -u $USER make',
+  ])('reads %j as unread (expansion), the cost of the rule', (body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
+  })
+
+  // A startup file reaches bash through a program Buckle does not read as a shell, a bash script run by its shebang or
+  // make with SHELL=/bin/bash, and bash runs it (probes under bash 5.2 and GNU make 4.3 ran the sentinel). Buckle reads
+  // neither as a shell, so the git push in the file is read by no rule and the call is not marked unread: these rows pin
+  // that limit.
+  it.each([
+    'BASH_ENV=<(echo git push origin main) ./deploy.sh',
+    'BASH_ENV=<(echo git push origin main) make SHELL=/bin/bash',
+  ])('reads no startup file %j hands bash through a program it does not read as a shell, and marks the call read (a limit)', (body) => {
+    const forms = commandFormsOf({ command: 'bash', args: ['-c', body] })
+    expect([forms.unread, forms.scriptData, allForms(forms).some(([command, subcommand]) => command === 'git' && subcommand === 'push')]).toEqual([null, false, false])
   })
 
   // A shell or source given a script operand, while the call's own text feeds its input on any descriptor, may read its

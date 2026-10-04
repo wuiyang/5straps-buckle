@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argvIdentity, commandSubject, envSplitWords, gitInvocation, hasFlag, holdsExpansion, parseArgv, shellScriptSource, shellStartupFiles, shellStatementList, shellTokens, shownCommand, sshCommandSetting, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
+import { argvIdentity, commandSubject, envSplitWords, expansionShape, gitInvocation, hasFlag, holdsExpansion, parseArgv, shellScriptSource, shellStartupFiles, shellStatementList, shellTokens, shownCommand, sshCommandSetting, sshInvocation, statementPieces, suInvocation } from '../common/domain/argv.js'
 import { commandForms, readLimitOf } from '../common/domain/command-forms.js'
 
 describe('parseArgv', () => {
@@ -91,6 +91,20 @@ describe('holdsExpansion', () => {
     ['"*"', false], ['plain', false], ['a~b', false],
   ])('reads %s as holding an expansion: %s', (raw, expanded) => {
     expect(holdsExpansion(raw)).toBe(expanded)
+  })
+})
+
+// An expansion outside double quotes, a pattern, a brace expansion, "$@", and "${a[@]}" may make a word several; the
+// text before the first expansion is the word's own.
+describe('expansionShape', () => {
+  it.each<[string, boolean, string]>([
+    ['$v', true, ''], ['"$v"', false, ''], ['"${v}"', false, ''], ['"$(echo "a b")"', false, ''], ['"`id`"', false, ''], ['$(id)', true, ''],
+    ['"$@"', true, ''], ['"${@:2}"', true, ''], ['"${a[@]}"', true, ''], ['"${!a[@]}"', true, ''], ['"${#a[@]}"', false, ''], ['"$*"', false, ''],
+    ['"${a[*]}"', false, ''], ['{1,2}', true, ''], ['*.ts', true, ''], ['a?', true, 'a'], ['~/x', false, ''], ['--signal="$s"', false, '--signal='],
+    ['-n"$v"', false, '-n'], ['-n$v', true, '-n'], ['user@"$HOST"', false, 'user@'], ['"user@$HOST"', false, 'user@'], ['X=$v', true, 'X='],
+    ['FOO="$BAR"', false, 'FOO='], ["'-'\"$x\"", false, '-'], ['"$(a)"$b', true, ''], ['"$a"*', true, ''], ['x<$()', false, 'x'], ["$'\\x2d'\"$v\"", false, '-'],
+  ])('reads %s as splitting: %s, its own text first: %j', (raw, splits, prefix) => {
+    expect(expansionShape(raw)).toEqual({ splits, prefix })
   })
 })
 
@@ -553,6 +567,19 @@ describe('sshInvocation', () => {
     expect(sshInvocation(['host']).words).toEqual([])
     expect(sshInvocation(['-V']).words).toEqual([])
   })
+
+  it('names the words before the remote command as options, values, and the host, an -o value as one naming what runs', () => {
+    expect(sshInvocation(['-p22', '-l', 'me', '-oUser=x', '-o', 'ProxyCommand=y', 'host', '-T', 'ls']).leading).toEqual([
+      { word: '-p22', role: 'option', valueAt: 2 },
+      { word: '-l', role: 'option', valueAt: null },
+      { word: 'me', role: 'value' },
+      { word: '-oUser=x', role: 'option', valueAt: 2, runs: true },
+      { word: '-o', role: 'option', valueAt: null, runs: true },
+      { word: 'ProxyCommand=y', role: 'value', runs: true },
+      { word: 'host', role: 'operand' },
+      { word: '-T', role: 'option', valueAt: null },
+    ])
+  })
 })
 
 // Slice 7l: an -o setting read as OpenSSH 9.6's configuration reader reads it (real ssh ran each command shape).
@@ -626,12 +653,24 @@ describe('suInvocation', () => {
     [['--help'], null, [], [], false],
     [['-V'], null, [], [], false],
   ])('reads su %j: shell %s, commands %j, operands %j, session %s', (args, shell, commands, operands, session) => {
-    expect(suInvocation(args)).toEqual({ shell, commands, operands, session })
+    expect(suInvocation(args)).toMatchObject({ shell, commands, operands, session })
   })
 
   it('reads the shell su runs as a command of its own, with each -c string or with the words after the user', () => {
     expect(commandForms('su', ['-c', 'git push --force', 'root']).nested).toEqual([['sh', '-c', 'git push --force'], ['git', 'push', '--force']])
     expect(commandForms('su', ['-s', '/usr/bin/python3', 'root', '-c', 'import os']).interpreters).toEqual(['python3'])
     expect(commandForms('su', ['root', '--', '-c', 'git push']).nested).toContainEqual(['git', 'push'])
+  })
+
+  it('names every word before a -- as an option, a value, or an operand, the -c string and the -s shell as ones naming what runs', () => {
+    expect(suInvocation(['-', 'root', '-gwheel', '-s', 'bash', '--command=id', 'x', '--', 'y']).leading).toEqual([
+      { word: '-', role: 'operand' },
+      { word: 'root', role: 'operand' },
+      { word: '-gwheel', role: 'option', valueAt: 2 },
+      { word: '-s', role: 'option', valueAt: null },
+      { word: 'bash', role: 'value', runs: true },
+      { word: '--command=id', role: 'option', valueAt: 10, runs: true },
+      { word: 'x', role: 'operand' },
+    ])
   })
 })

@@ -1,4 +1,4 @@
-import { baseCommand, envSplitWords, holdsExpansion, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellScriptOperand, shellStartupFiles, shellStatementList, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import { baseCommand, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
@@ -21,7 +21,7 @@ export const READ_LIMITS = {
   findPrimary: 'A find -exec command starts with a word find reads as a primary, which Buckle does not read as a command (find primary)',
   comment: 'A # follows a ) that a case pattern or an extended glob may have closed, so Buckle cannot tell whether the rest of the line is a comment (comment)',
   session: 'Opens an interactive session Buckle cannot read: ssh or su with no command, or a sudo or doas shell (interactive session)',
-  expansion: 'Runs a command word or shell text an expansion supplies, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)"), so Buckle cannot read it (expansion)',
+  expansion: 'Runs a command word or shell text an expansion supplies, or a command an expansion among a wrapper\'s own words may move, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)", timeout $t cmd), so Buckle cannot read it (expansion)',
   ownParsing: 'A program reads an argument by rules of its own that Buckle does not read as shell words: an env -S escape, an ssh % token, or a sudo -s or -i command for a shell Buckle does not know (own parsing)',
   scriptData: 'A shell takes its script, or a startup file it runs first, from a pipe, a redirection, a descriptor, an expansion, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)',
   interpreter: 'Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter)',
@@ -76,6 +76,8 @@ interface Wrapper {
   numericOption?: true
   /** After the operands, an option whose value a shell runs (`flock <file> -c 'git push -f'`), read as `sh -c <value>`. */
   shellCommand?: readonly string[]
+  /** Short options whose value is a string replaced in the command's words (`xargs -I X`), so it changes what runs. */
+  replaces?: string
 }
 
 /**
@@ -119,7 +121,7 @@ const WRAPPERS: Readonly<Record<string, Wrapper>> = {
   builtin: {},
   setsid: {},
   flock: { shortValues: 'wE', longValues: ['timeout', 'wait', 'conflict-exit-code'], operands: 1, shellCommand: ['-c', '--command'] },
-  xargs: { shortValues: 'aEILnsPd', shortOptional: 'eil', longValues: ['arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var'] },
+  xargs: { shortValues: 'aEILnsPd', shortOptional: 'eil', longValues: ['arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var'], replaces: 'Ii' },
   busybox: { applets: true, runsNothing: { short: '', long: ['help', 'list', 'list-full', 'install', 'show'] } },
   toybox: { applets: true, runsNothing: { short: '', long: ['help', 'version', 'long'] } },
 }
@@ -269,12 +271,18 @@ interface Reading extends CommandForms { rereads: boolean; startup: Startup; ali
 interface AliasReach { defined: boolean; later: boolean }
 
 /**
- * The words of a statement an expansion supplies (holdsExpansion), whose value Buckle cannot know, each mapped to whether
- * the expansion may change the command the word names: false for a word whose only expansion is a leading tilde, which
- * names a directory, so a command word keeps its basename (`~/bin/tool`).
+ * The words of a statement an expansion supplies (holdsExpansion), whose value Buckle cannot know, each mapped to what the
+ * expansion may make of it (Expansion).
  */
-type Expanded = ReadonlyMap<string, boolean>
+type Expanded = ReadonlyMap<string, Expansion>
 const NO_WORDS: Expanded = new Map()
+
+/**
+ * What an expansion may make of a word: `command` says it may change the command the word names, false for a word whose
+ * only expansion is a leading tilde, which names a directory, so a command word keeps its basename (`~/bin/tool`); and
+ * the shape (expansionShape) says whether it may become several words, and what text before it is the word's own.
+ */
+interface Expansion extends ExpansionShape { command: boolean }
 
 /**
  * Where the words being read stand: the call itself, whose input Buckle's exec leaves empty, or a statement of shell
@@ -932,7 +940,10 @@ const JUDGED_FOUND: Judged = { found: true }
  * expansion supplies (Place), whose value Buckle cannot know. With `judged`, a command word whose value something other
  * than the text supplies leaves the call unread (expansion), at every step of the chain: an expansion (`$cmd`, `"$(...)"`,
  * a glob, a brace expansion; a leading tilde alone keeps the basename), the `{}` find replaces, the replace string of an
- * xargs before it (`xargs -I X env X`), and the items xargs hands a wrapper that names no command (`xargs env`).
+ * xargs before it (`xargs -I X env X`), and the items xargs hands a wrapper that names no command (`xargs env`). So does
+ * an expansion among the words a program reads before the command it runs, where it may be an option, an option's
+ * value, or several words, and so move that command: a wrapper's (innerCommand) and, at the chain's end, find's,
+ * ssh's, su's, or a shell's before its script (unsureLeadingWords). Words after the command's own word are its arguments.
  */
 function wrapperChain(words: readonly string[], expanded: Expanded, judged: Judged | null): { chain: string[][]; unread: UnreadLimit | null } {
   const chain = [reduced(words)]
@@ -943,9 +954,10 @@ function wrapperChain(words: readonly string[], expanded: Expanded, judged: Judg
   for (let depth = 0; ; depth++) {
     if (judged && suppliedCommand(current[0], expanded, judged, xargs?.replace ?? null)) unread = firstLimit(unread, 'expansion')
     const inner = unwrapped(current, expanded)
-    if (inner === undefined) return { chain, unread }
+    if (inner === undefined) return { chain, unread: judged && unsureLeadingWords(current, expanded, xargs !== null) ? firstLimit(unread, 'expansion') : unread }
     if (depth >= MAX_DEPTH) return { chain, unread: 'depth' }
     unread = firstLimit(unread, inner.unread)
+    if (judged && inner.unsure) unread = firstLimit(unread, 'expansion')
     if (inner.command === 'session') return { chain, unread: firstLimit(unread, 'session') }
     if (!inner.command?.[0]) return { chain, unread: judged && inner.open && xargs ? firstLimit(unread, 'expansion') : unread }
     if (baseCommand(current[0]!) === 'xargs') xargs = { replace: xargsReplace(current.slice(1, current.length - inner.command.length)) }
@@ -957,9 +969,86 @@ function wrapperChain(words: readonly string[], expanded: Expanded, judged: Judg
 /** Whether something other than the text supplies a command word: see wrapperChain. An assignment word is no command word. */
 function suppliedCommand(word: string | undefined, expanded: Expanded, judged: Judged, replace: string | null): boolean {
   if (word === undefined || ASSIGNMENT.test(word)) return false
-  if (expanded.get(word) === true) return true
+  if (expanded.get(word)?.command === true) return true
   if (judged.found && word.includes('{}')) return true
   return replace !== null && replace !== '' && word.includes(replace)
+}
+
+/**
+ * Whether an expansion leaves a word one word that no option parser reads as an option: its own text starts it, with a
+ * character other than `-` (or `+`, for a shell), so the expansion cannot make it one.
+ */
+const surelyOperand = (expansion: Expansion, signs = '-'): boolean => !expansion.splits && expansion.prefix !== '' && !signs.includes(expansion.prefix[0]!)
+
+/**
+ * Whether an expansion in an option word leaves the options as written: the word stays one word, and the expansion
+ * starts no earlier than a value attached after a letter or a name, typed, that takes one (`-n"$v"`, `--signal="$s"`),
+ * which names nothing that runs.
+ */
+const attachedValue = (expansion: Expansion, valueAt: number | null, runs: boolean): boolean =>
+  valueAt !== null && !runs && !expansion.splits && expansion.prefix.length >= valueAt
+
+/**
+ * Whether an expansion among the words before what a program runs (LeadingWord) may move it: in an option word, unless
+ * it is a value attached after a typed letter that takes one; in an option's value, if it may be several words or names
+ * what runs; and in an operand, unless the word's own text starts it with no `-` (`user@"$HOST"`).
+ */
+function unsureWords(leading: readonly LeadingWord[], expanded: Expanded, signs = '-'): boolean {
+  return leading.some(item => {
+    const expansion = expanded.get(item.word)
+    if (expansion === undefined) return false
+    if (item.role === 'operand') return !surelyOperand(expansion, signs)
+    if (item.role === 'value') return expansion.splits || item.runs === true
+    return !attachedValue(expansion, item.valueAt, item.runs === true)
+  })
+}
+
+/**
+ * Whether an expansion among the words that find, ssh, su, or a shell reads before the command it runs may move that
+ * command, the last step of a chain (wrapperChain). ssh and su: as unsureWords reads their options, values, and host or
+ * user, every word before a `--` for su, whose getopt_long permutes. A shell: its options and their values, and a
+ * script operand that may be an option, unless no word follows it, since the word after one may be its `-c` string
+ * (`bash "$v" 'git push'`); a `-c` string an expansion supplies is unread already (innerCommands). find: unsureFind.
+ * Items xargs hands find, ssh, or su become such words (`xargs find .`), so behind xargs each is unsure.
+ */
+function unsureLeadingWords(words: readonly string[], expanded: Expanded, fromXargs: boolean): boolean {
+  const [command = '', ...args] = words
+  const name = baseCommand(command)
+  if (name === 'find') return fromXargs || unsureFind(args, expanded)
+  if (name === 'ssh') return fromXargs || unsureWords(sshInvocation(args).leading, expanded)
+  if (name === 'su') return fromXargs || unsureWords(suInvocation(args).leading, expanded)
+  if (!SHELL_COMMANDS.has(name)) return false
+  const { leading, operand, command: commandString } = shellLeadingWords(args)
+  if (unsureWords(leading, expanded, '-+')) return true
+  const expansion = expanded.get(args[operand] ?? '')
+  if (expansion === undefined || commandString || surelyOperand(expansion, '-+')) return false
+  return expansion.splits || operand + 1 < args.length
+}
+
+/**
+ * Whether an expansion among find's words may change what it runs: one that may be several words may be `-exec` and a
+ * command; one word may still be `-exec`, `-ok`, or a terminator, so it is unsure while a `;` or `+` is typed after it or
+ * another expansion follows that may be one. A word right after a primary that takes a value, outside any -exec command,
+ * is that value whatever it holds (`-name "$pattern"`).
+ */
+function unsureFind(args: readonly string[], expanded: Expanded): boolean {
+  let last = -1
+  for (let index = 0; index < args.length; index++) if (args[index] === ';' || args[index] === '+' || expanded.has(args[index]!)) last = index
+  let exec = false
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index]!
+    const expansion = expanded.get(word)
+    if (expansion !== undefined && (expansion.splits || last > index)) return true
+    if (exec) {
+      exec = !(word === ';' || (word === '+' && args[index - 1] === '{}'))
+      continue
+    }
+    if (FIND_VALUE_PRIMARIES.has(word) || FIND_NEWER.test(word)) {
+      if (expanded.get(args[index + 1] ?? '')?.splits === true) return true
+      index++
+    } else exec = FIND_EXEC.has(word)
+  }
+  return false
 }
 
 /**
@@ -994,9 +1083,10 @@ function xargsReplace(options: readonly string[]): string | null {
 
 /**
  * What a prefix runs (null for nothing, 'session' for an interactive session) and why part of it was left unread; `open`
- * when a wrapper names no command but would run one from more words it is handed (`env`, `timeout 5`), as from xargs.
+ * when a wrapper names no command but would run one from more words it is handed (`env`, `timeout 5`), as from xargs;
+ * `unsure` when an expansion among the words the wrapper reads before that command may move it (innerCommand).
  */
-interface Unwrapped { command: string[] | null | 'session'; unread: UnreadLimit | null; open?: true }
+interface Unwrapped { command: string[] | null | 'session'; unread: UnreadLimit | null; open?: true; unsure?: true }
 
 /**
  * What the first words run: past NAME=value assignments, a wrapper's options, a shell keyword, `function NAME` or
@@ -1050,15 +1140,25 @@ function reduced(words: readonly string[]): string[] {
 
 /**
  * The command a wrapper runs, read past its options, assignments and operands; null when it runs none, and 'session'
- * when it runs none but an option opens an interactive session (`sudo -i`).
+ * when it runs none but an option opens an interactive session (`sudo -i`). Bash splits an unquoted expansion and a
+ * pattern into words, and an expansion may be an option, so one among these words may supply the command or move it
+ * (`v="1 git"; timeout $v push`): such a word marks the reading `unsure`. It is sure only as an option's value that stays
+ * one word and names nothing that runs (`nice -n "$v"`, `sudo -u "$USER"`, `--signal="$s"`, `-n"$v"`), as an assignment
+ * whose name and `=` are typed and whose value stays one word (`env FOO="$BAR"`), or as an operand that stays one word
+ * with typed text before the expansion that is no option (`flock ./"$lock"`). A `NAME=$v` before a command, with no
+ * wrapper, is an assignment bash does not split, and is not read here.
  */
 function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expanded): Unwrapped {
   const words = [...args]
+  const expansionOf = (at: number) => expanded.get(words[at] ?? '')
   let index = 0
   let session = false
   let unread: UnreadLimit | null = null
+  let unsure = false
+  const read = (inner: Unwrapped): Unwrapped => (unsure ? { ...inner, unsure: true } : inner)
   while (index < words.length) {
     const word = words[index]!
+    const expansion = expansionOf(index)
     if (word === '--') {
       index++
       break
@@ -1069,11 +1169,18 @@ function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expan
     }
     if (word === '-' || !word.startsWith('-')) break
     if (wrapper.numericOption && /^-[-+]?\d/.test(word)) {
+      unsure ||= expansion !== undefined
       index++
       continue
     }
     const option = word.startsWith('--') ? readLong(wrapper, words, index) : readShort(wrapper, words, index)
-    if (option.runsNothing) return { command: null, unread }
+    const value = option.value
+    unsure ||= expansion !== undefined && !attachedValue(expansion, value?.at ?? null, value?.runs === true)
+    if (value !== undefined && value.at === null) {
+      const given = expansionOf(index + 1)
+      unsure ||= given !== undefined && (given.splits || value.runs)
+    }
+    if (option.runsNothing) return read({ command: null, unread })
     session ||= option.session === true
     index = option.next
     if (option.split !== undefined) {
@@ -1082,18 +1189,32 @@ function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expan
       unread = firstLimit(unread, split.unread)
     }
   }
-  if (wrapper.assignments) while (index < words.length && words[index]!.includes('=')) index++
-  if (!wrapper.numericOperand || /^\d+$/.test(words[index] ?? '')) index += wrapper.operands ?? 0
-  if (wrapper.shellCommand?.includes(words[index] ?? '')) return index + 1 < words.length ? { command: ['sh', '-c', words[index + 1]!], unread } : { command: null, unread, open: true }
+  for (; wrapper.assignments && index < words.length && words[index]!.includes('='); index++) {
+    const expansion = expansionOf(index)
+    unsure ||= expansion !== undefined && (expansion.splits || !ASSIGNMENT.test(expansion.prefix))
+  }
+  const operands = !wrapper.numericOperand || /^\d+$/.test(words[index] ?? '') ? wrapper.operands ?? 0 : 0
+  for (let at = index; at < Math.min(index + operands, words.length); at++) {
+    const expansion = expansionOf(at)
+    unsure ||= expansion !== undefined && !surelyOperand(expansion)
+  }
+  index += operands
+  if (wrapper.shellCommand?.includes(words[index] ?? '')) return read(index + 1 < words.length ? { command: ['sh', '-c', words[index + 1]!], unread } : { command: null, unread, open: true })
   if (index < words.length && session && wrapper.sessionShell) {
     const shell = shellSessionCommand(words.slice(index))
-    return { command: shell.command, unread: firstLimit(unread, shell.unread) }
+    return read({ command: shell.command, unread: firstLimit(unread, shell.unread) })
   }
-  if (index < words.length) return { command: words.slice(index), unread }
-  return session ? { command: 'session', unread } : { command: null, unread, open: true }
+  if (index < words.length) return read({ command: words.slice(index), unread })
+  return read(session ? { command: 'session', unread } : { command: null, unread, open: true })
 }
 
-interface ReadOption { next: number; runsNothing?: true; split?: string; session?: true }
+/**
+ * An option as a wrapper reads it: where the reading goes on, whether nothing runs past it, the value it splits into
+ * words (env -S), whether it opens a session, and, for one that takes a value, where that value is (`at`, the offset in
+ * the option's word where an attached value starts, or null for the next word) and whether it changes what runs (env -S,
+ * xargs -I).
+ */
+interface ReadOption { next: number; runsNothing?: true; split?: string; session?: true; value?: { at: number | null; runs: boolean } }
 
 /**
  * A long option as getopt_long matches it: a name typed whole is that option (`sudo --login` opens a session, though
@@ -1112,7 +1233,8 @@ function readLong(wrapper: Wrapper, words: readonly string[], index: number): Re
   if (name === undefined) return wrapper.session?.long.some(begins) ? { next: index + 1, session: true } : { next: index + 1 }
   const value = separator === -1 ? words[index + 1] : word.slice(separator + 1)
   const next = separator === -1 ? index + 2 : index + 1
-  return name === wrapper.split?.long && value !== undefined ? { next, split: value } : { next }
+  const read = { at: separator === -1 ? null : separator + 1, runs: name === wrapper.split?.long }
+  return name === wrapper.split?.long && value !== undefined ? { next, split: value, value: read } : { next, value: read }
 }
 
 function readShort(wrapper: Wrapper, words: readonly string[], index: number): ReadOption {
@@ -1122,13 +1244,16 @@ function readShort(wrapper: Wrapper, words: readonly string[], index: number): R
     const character = word.charAt(offset)
     if (wrapper.runsNothing?.short.includes(character)) return { next: index + 1, runsNothing: true }
     session ||= wrapper.session?.short.includes(character) === true
-    if (wrapper.shortOptional?.includes(character)) return { next: index + 1, ...(session ? { session: true } : {}) }
+    const runs = character === wrapper.split?.short || wrapper.replaces?.includes(character) === true
+    // An optional value is only ever the rest of the cluster.
+    if (wrapper.shortOptional?.includes(character)) return { next: index + 1, value: { at: offset + 1, runs }, ...(session ? { session: true } : {}) }
     if (!wrapper.shortValues?.includes(character)) continue
     const attached = word.slice(offset + 1)
     const value = attached.length > 0 ? attached : words[index + 1]
     const next = attached.length > 0 ? index + 1 : index + 2
-    if (character === wrapper.split?.short && value !== undefined) return { next, split: value }
-    return { next, ...(session ? { session: true } : {}) }
+    const read = { at: attached.length > 0 ? offset + 1 : null, runs }
+    if (character === wrapper.split?.short && value !== undefined) return { next, split: value, value: read }
+    return { next, value: read, ...(session ? { session: true } : {}) }
   }
   return { next: index + 1, ...(session ? { session: true } : {}) }
 }
@@ -1152,17 +1277,30 @@ function statementForm(statement: string, budget: Budget): { words: string[]; he
   }
   const words: string[] = []
   let heredoc = false
-  let expanded: Map<string, boolean> | null = null
+  let expanded: Map<string, Expansion> | null = null
   for (let index = 0; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
     if (!REDIRECTION.test(raw)) {
       words.push(word)
-      // A word that expands more than a leading tilde may name another command; a word seen both ways may.
-      if (holdsExpansion(raw)) (expanded ??= new Map()).set(word, expanded.get(word) === true || !raw.startsWith('~') || holdsExpansion(raw.slice(1)))
+      if (holdsExpansion(raw)) {
+        expanded ??= new Map()
+        // A word that expands more than a leading tilde may name another command. A word seen two ways may do what
+        // either does: name a command, split, or start with only the text both share.
+        const met: Expansion = { command: !raw.startsWith('~') || holdsExpansion(raw.slice(1)), ...expansionShape(raw) }
+        const known = expanded.get(word)
+        expanded.set(word, known === undefined ? met : { command: known.command || met.command, splits: known.splits || met.splits, prefix: sharedStart(known.prefix, met.prefix) })
+      }
       continue
     }
     if (STDIN_REDIRECTION.test(raw)) heredoc = STDIN_HEREDOC.test(raw)
     if (BARE_REDIRECTION.test(raw)) index++
   }
   return { words, heredoc, expanded: expanded ?? NO_WORDS }
+}
+
+/** The text two strings start with. */
+function sharedStart(one: string, other: string): string {
+  let length = 0
+  while (length < one.length && length < other.length && one[length] === other[length]) length++
+  return one.slice(0, length)
 }

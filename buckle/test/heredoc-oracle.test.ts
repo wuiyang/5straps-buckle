@@ -1194,11 +1194,14 @@ const NESTED_WORDS: Array<readonly [string, string, string | null]> = [
 /** The sentinel with an argument holding a quoted separator, which no statement piece reads whole, so only a statement split as bash splits it meets the invocation. */
 const QUOTED_PAYLOAD = `${SENTINEL} "c;d"`
 
+/** env and sudo are handed an unquoted word split on its blanks, whose word after a blank is the command they run: unread. */
+const behindWrapper = (word: string): Pick<Shape, 'whole' | 'unread'> => (word.startsWith('"') ? { whole: true } : { unread: 'expansion' })
+
 const QUOTE_NESTING: Shape[] = NESTED_WORDS.flatMap(([name, word, command]) => [
   { label: `quote nesting: ${name}, an assignment before a command`, body: `x=${word} ${QUOTED_PAYLOAD}`, whole: true as const },
   { label: `quote nesting: ${name}, an argument before a later statement`, body: `echo ${word}; ${QUOTED_PAYLOAD}`, whole: true as const },
-  { label: `quote nesting: ${name}, behind env`, body: `env X=${word} ${QUOTED_PAYLOAD}`, whole: true as const },
-  { label: `quote nesting: ${name}, behind sudo`, body: `sudo X=${word} ${QUOTED_PAYLOAD}`, whole: true as const },
+  { label: `quote nesting: ${name}, behind env`, body: `env X=${word} ${QUOTED_PAYLOAD}`, ...behindWrapper(word) },
+  { label: `quote nesting: ${name}, behind sudo`, body: `sudo X=${word} ${QUOTED_PAYLOAD}`, ...behindWrapper(word) },
   ...(command === null ? [] : [{ label: `quote nesting: ${name}, the command word`, body: `${command} mark`, unread: 'expansion' as const }]),
 ])
 
@@ -1309,6 +1312,102 @@ const KEYWORD_SHAPES: Shape[] = [
   { label: 'keyword: until under bash -c', body: `bash -c 'until ${PAYLOAD}; do :; done'` },
 ]
 
+/**
+ * An expansion among the words a program reads before the command it runs may supply that command or move it: bash splits
+ * an unquoted one, a pattern, a brace expansion, `"$@"`, and `"${a[@]}"` into words, and a quoted one may still be an
+ * option (`-u`, `-S`, `-c`, `-exec`, `-oProxyCommand=...`), or a value that names what runs (xargs -I, env -S). In a
+ * wrapper, xargs, find, ssh, su, or a shell before its script, such a call is unread (expansion). It stays read where the
+ * word cannot change the parse: a quoted value after an option that always takes one, a quoted value attached to a typed
+ * option, an assignment with a typed name and a quoted value, `NAME=$v` before a command (bash splits no assignment), find
+ * with no exec terminator after the word or a quoted value of a find primary, an operand with typed text before the
+ * expansion that is no option (`user@"$h"`, `./"$n"`), and a shell's quoted script operand with no word after it. Each ran
+ * the sentinel under real bash in scratch first, sudo, doas, su, and ssh as their stand-ins, ProxyCommand under real ssh.
+ */
+const WRAPPER_WORDS: Shape[] = [
+  ...[
+    ['timeout, an unquoted duration', `v='1 ${SENTINEL}'; timeout $v mark`],
+    ['timeout -s, an unquoted signal', `v='KILL 5 ${SENTINEL}'; timeout -s $v mark`],
+    ['timeout --signal=, an unquoted attached signal', `v='KILL 5 ${SENTINEL}'; timeout --signal=$v mark`],
+    ['timeout -s, an unquoted signal in the cluster', `v='KILL 5 ${SENTINEL}'; timeout -s$v mark`],
+    ['timeout, a quoted duration that is -s', `v=-s; timeout "$v" KILL 5 ${PAYLOAD}`],
+    ['timeout, a quoted duration that is -k', `v=-k; timeout "$v" 1 5 ${PAYLOAD}`],
+    ['timeout, a brace expansion', `timeout {1,${SENTINEL}} mark`],
+    ['timeout, a pattern', `mkdir -p g && cd g && touch 1 ${SENTINEL} && timeout * mark`],
+    ['timeout, "$@"', `set -- 5 ${SENTINEL}; timeout "$@" mark`],
+    ['timeout, "${a[@]}"', `a=(5 ${SENTINEL}); timeout "\${a[@]}" mark`],
+    ['nice -n, an unquoted value', `v='5 ${SENTINEL}'; nice -n $v mark`],
+    ['nice -n, "$@"', `set -- 5 ${SENTINEL}; nice -n "$@" mark`],
+    ['nice -n, "${a[@]}"', `a=(5 ${SENTINEL}); nice -n "\${a[@]}" mark`],
+    ['nice, a quoted option letter', `v=n; nice -"$v" 5 ${PAYLOAD}`],
+    ['nice, an unquoted number in its numeric option', `v='0 ${SENTINEL}'; nice -1$v mark`],
+    ['nice -n, an unquoted value also seen quoted', `v='5 ${SENTINEL}'; nice -n $v mark "$v"`],
+    ['timeout, a quoted duration also seen after typed text', `x=-s; y=; timeout "$x$y" KILL 5 ${PAYLOAD} '$x'"$y"`],
+    ['env, an unquoted assignment value', `v='1 ${SENTINEL}'; env X=$v mark`],
+    ['env, a quoted word that is -u', `v=-u; env "$v" mark ${SENTINEL} go`],
+    ['env -S, a quoted attached value', `v='${SENTINEL} go'; env -S"$v" mark`],
+    ['env --split-string=, a quoted value', `v='${SENTINEL} go'; env --split-string="$v" mark`],
+    ['env, an option letter before a typed one', `v='S ${SENTINEL} #'; env -"$v"uX mark`],
+    ['stdbuf -o, an unquoted value', `v='L ${SENTINEL}'; stdbuf -o $v mark`],
+    ['ionice -c, an unquoted value', `v='3 ${SENTINEL}'; ionice -c $v mark`],
+    ['exec, a quoted option letter', `v=a; exec -"$v" name ${PAYLOAD}`],
+    ['command, a quoted option letter', `v=p; command -"$v" ./${PAYLOAD}`],
+    ['setsid, a quoted option letter', `v=w; setsid -"$v" ${PAYLOAD}`],
+    ['flock, a quoted file that is -x', `v=-x; flock "$v" lk ${PAYLOAD}`],
+    ['sudo -u, an unquoted user', `v='root ${SENTINEL}'; sudo -u $v mark`],
+    ['sudo, a quoted option letter', `v=u; sudo -"$v" root ${PAYLOAD}`],
+    ['doas -u, an unquoted user', `v='root ${SENTINEL}'; doas -u $v mark`],
+    ['xargs -n, an unquoted value', `v='1 ${SENTINEL}'; echo mark | xargs -n $v`],
+    ['xargs -I, a quoted replace string', `r=X; echo ${SENTINEL} | xargs -I "$r" env X mark`],
+    ['xargs, a quoted option letter', `v=I; echo ${SENTINEL} | xargs -"$v" X env X mark`],
+    ['xargs items handed to find', `echo '-exec ${SENTINEL} go ;' | xargs find . -maxdepth 0`],
+    ['bash, a quoted script operand that is -c', `v=-c; bash "$v" '${PAYLOAD}'`],
+    ['sh, a quoted script operand that is -c', `v=-c; sh "$v" '${PAYLOAD}'`],
+    ['bash, a quoted script operand that is -c before a variable', `x='${PAYLOAD}'; v=-c; bash "$v" "$x"`],
+    ['bash, an unquoted script operand', `v='-c ${SENTINEL}'; bash $v`],
+    ['bash, a quoted option letter', `v=c; bash -"$v" '${PAYLOAD}'`],
+    ['bash -o, an unquoted value', `o='errexit -c'; bash -o $o '${PAYLOAD}'`],
+    ['find, a quoted path that is -exec', `v=-exec; find "$v" ${PAYLOAD} \\;`],
+    ['find, a quoted primary that is -exec', `v=-exec; find . -maxdepth 0 "$v" ${PAYLOAD} \\;`],
+    ['find, a quoted -exec closed by a quoted ;', `a=-exec; b=';'; find "$a" ${PAYLOAD} "$b"`],
+    ['find, an unquoted path', `d='. -maxdepth 0 -exec ${SENTINEL} go ;'; find $d -name x`],
+    ['find, an unquoted -exec argument', `p='x ; -exec ${SENTINEL} go'; find . -maxdepth 0 -exec true $p {} \\;`],
+    ['find, quoted -exec arguments that close it and open another', `a=';'; b=-exec; find . -maxdepth 0 -exec true "$a" "$b" ${SENTINEL} go \\;`],
+    ['ssh, a quoted host that is -p', `v=-p; ssh "$v" 22 host ${PAYLOAD}`],
+    ['ssh, an unquoted host', `h='host ${SENTINEL}'; ssh $h mark`],
+    ['su, a quoted user that is -c', `v=-c; su "$v" '${PAYLOAD}' root`],
+    ['su, a quoted word after the user that is -c', `v=-c; su root "$v" '${PAYLOAD}'`],
+  ].map(([label, body]) => ({ label: `wrapper words unread: ${label}`, body: body!, unread: 'expansion' as const })),
+  ...[
+    ['ssh, a quoted host that is an -o ProxyCommand', `v='-oProxyCommand=${PAYLOAD}'; ${REAL_SSH} "$v" h true`],
+    ['ssh -o, a quoted attached ProxyCommand', `v='ProxyCommand=${PAYLOAD}'; ${REAL_SSH} -o"$v" h true`],
+  ].map(([label, body]) => ({ label: `wrapper words unread: ${label}`, body: body!, unread: 'expansion' as const, needs: '/usr/bin/ssh' })),
+  ...[
+    ['nice -n, a quoted value', `v=5; nice -n "$v" ${PAYLOAD}`],
+    ['nice -n, a quoted attached value', `v=5; nice -n"$v" ${PAYLOAD}`],
+    ['sudo -u, a quoted user', `u=root; sudo -u "$u" ${PAYLOAD}`],
+    ['doas -u, a quoted user', `u=root; doas -u "$u" ${PAYLOAD}`],
+    ['timeout --signal=, a quoted value', `s=TERM; timeout --signal="$s" 5 ${PAYLOAD}`],
+    ['timeout -s, a quoted attached value', `s=TERM; timeout -s"$s" 5 ${PAYLOAD}`],
+    ['timeout -s, a quoted value', `s=TERM; timeout -s "$s" 5 ${PAYLOAD}`],
+    ['timeout, a duration with typed digits first', `t=5; timeout 1"$t" ${PAYLOAD}`],
+    ['env, a quoted assignment value', `b='x y'; env FOO="$b" ${PAYLOAD}`],
+    ['sudo, a quoted assignment value', `b='x y'; sudo FOO="$b" ${PAYLOAD}`],
+    ['an unquoted assignment before a command', `b='x y'; FOO=$b ${PAYLOAD}`],
+    ['env -C, a quoted value', `d=.; env -C "$d" ${PAYLOAD}`],
+    ['env --chdir=, a quoted value', `d=.; env --chdir="$d" ${PAYLOAD}`],
+    ['flock, a file with typed text first', `n=lk; flock ./"$n" ${PAYLOAD}`],
+    ['xargs -n, a quoted value', `n=1; xargs -n "$n" ${PAYLOAD} < /dev/null`],
+    ['exec -a, a quoted value', `n=x; (exec -a "$n" ${PAYLOAD})`],
+    ['find, a quoted path with no exec after it', `d=.; find "$d" -maxdepth 0 -print; ${PAYLOAD}`],
+    ['find, a quoted -name value before -exec', `n=.; find . -maxdepth 0 -name "$n" -exec ${PAYLOAD} \\;`],
+    ['ssh, a host with a typed user first', `h=host; ssh user@"$h" ${PAYLOAD}`],
+    ['ssh -p, a quoted value', `p=22; ssh -p "$p" host ${PAYLOAD}`],
+    ['bash -o, a quoted value', `o=errexit; bash -o "$o" -c '${PAYLOAD}'`],
+    ['bash, a quoted script operand with no word after it', `printf 'true\\n' > s.sh; s=./s.sh; bash "$s"; ${PAYLOAD}`],
+    ['bash, a script operand with typed text first', `printf 'true\\n' > s.sh; n=s.sh; bash ./"$n" x; ${PAYLOAD}`],
+  ].map(([label, body]) => ({ label: `wrapper words read: ${label}`, body: body!, whole: true as const })),
+]
+
 /** Every shape, each body once: a later table's copy of a body an earlier one holds is dropped, flags and all. */
 function allShapes(): Shape[] {
   const shapes: Shape[] = []
@@ -1320,7 +1419,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT, ...QUOTE_NESTING, ...STARTUP_FILES, ...ALIAS_USES, ...RUN_TIME_TEXT]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT, ...QUOTE_NESTING, ...STARTUP_FILES, ...ALIAS_USES, ...RUN_TIME_TEXT, ...WRAPPER_WORDS]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }

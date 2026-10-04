@@ -245,11 +245,36 @@ export function shellStartupFiles(args: readonly string[]): string[] {
 }
 
 /**
- * A shell call's options as shellBodyIndexes reads them, up to its first operand: whether they include `c` and `s`, where
- * the operand is, whether a long option only prints (`--version`), and the file each `--rcfile` or `--init-file` names.
+ * How a program reads one of the words before the command it runs, as its option parser reads them: an option cluster,
+ * with the offset at which a value attached to it starts (null for none); the value of the option before it; or an
+ * operand. `runs` marks a value that names or supplies what runs (ssh -o, su -c and -s).
  */
-function shellOptions(args: readonly string[]): { command: boolean; input: boolean; index: number; info: boolean; startup: string[] } {
-  const options = { command: false, input: false, index: 0, info: false, startup: [] as string[] }
+export type LeadingWord =
+  | { word: string; role: 'option'; valueAt: number | null; runs?: true }
+  | { word: string; role: 'value'; runs?: true }
+  | { word: string; role: 'operand' }
+
+/**
+ * A shell call's words before its `-c` string or script operand: its options, which take no attached value, and the
+ * value of each `-o`, `-O`, `--rcfile`, and `--init-file`; then where that operand is, and whether it is a `-c` string.
+ */
+export function shellLeadingWords(args: readonly string[]): { leading: LeadingWord[]; operand: number; command: boolean } {
+  const { leading, index, command } = shellOptions(args)
+  return { leading, operand: index, command }
+}
+
+/**
+ * A shell call's options as shellBodyIndexes reads them, up to its first operand: whether they include `c` and `s`, where
+ * the operand is, whether a long option only prints (`--version`), the file each `--rcfile` or `--init-file` names, and
+ * the words read on the way (LeadingWord).
+ */
+function shellOptions(args: readonly string[]): { command: boolean; input: boolean; index: number; info: boolean; startup: string[]; leading: LeadingWord[] } {
+  const options = { command: false, input: false, index: 0, info: false, startup: [] as string[], leading: [] as LeadingWord[] }
+  const value = () => {
+    const word = args[++options.index]
+    if (word !== undefined) options.leading.push({ word, role: 'value' })
+    return word
+  }
   for (; options.index < args.length; options.index++) {
     const word = args[options.index]!
     if (word === '--' || word === '-') {
@@ -257,16 +282,17 @@ function shellOptions(args: readonly string[]): { command: boolean; input: boole
       break
     }
     if (word.length < 2 || (word[0] !== '-' && word[0] !== '+')) break
+    options.leading.push({ word, role: 'option', valueAt: null })
     if (word.startsWith('--')) {
       options.info ||= SHELL_INFO_OPTIONS.has(word)
       if (!SHELL_LONG_VALUE_OPTIONS.has(word)) continue
-      const file = args[++options.index]
+      const file = value()
       if (file !== undefined) options.startup.push(file)
       continue
     }
     if (word[0] === '-' && word.includes('c')) options.command = true
     if (word[0] === '-' && word.includes('s')) options.input = true
-    if ([...word.slice(1)].some(flag => SHELL_VALUE_OPTIONS.has(flag))) options.index++
+    if ([...word.slice(1)].some(flag => SHELL_VALUE_OPTIONS.has(flag))) value()
   }
   return options
 }
@@ -339,6 +365,8 @@ export interface SshInvocation {
   tokens: boolean
   /** A host with no remote command and none of -N, -W, -G, -V, -O, or -Q: an interactive session. */
   session: boolean
+  /** The words before the remote command: options, their values, and the host (LeadingWord). */
+  leading: LeadingWord[]
 }
 
 /**
@@ -351,6 +379,7 @@ export function sshInvocation(args: readonly string[]): SshInvocation {
   const remote: string[] = []
   const local: string[] = []
   const settings: string[] = []
+  const leading: LeadingWord[] = []
   let tokens = false
   let noSession = false
   let index = 0
@@ -359,17 +388,25 @@ export function sshInvocation(args: readonly string[]): SshInvocation {
     while (index < args.length) {
       const word = args[index]!
       if (word.startsWith('--')) {
+        leading.push({ word, role: 'option', valueAt: null })
         index++
         terminated = word === '--'
         return
       }
       if (word.length < 2 || word[0] !== '-') return
       index++
+      let taken = false
       for (let offset = 1; offset < word.length; offset++) {
         const flag = word[offset]!
         if (SSH_NO_SESSION.includes(flag)) noSession = true
         if (!SSH_VALUE_OPTIONS.includes(flag)) continue
-        const value = offset + 1 < word.length ? word.slice(offset + 1) : args[index++]
+        const attached = offset + 1 < word.length
+        const value = attached ? word.slice(offset + 1) : args[index++]
+        // An -o value is a configuration line, which may name a command ssh runs (ProxyCommand).
+        const runs = flag === 'o' ? { runs: true as const } : {}
+        leading.push({ word, role: 'option', valueAt: attached ? offset + 1 : null, ...runs })
+        if (!attached && value !== undefined) leading.push({ word: value, role: 'value', ...runs })
+        taken = true
         if (flag === 'o' && value !== undefined) settings.push(value)
         const setting = flag === 'o' && value !== undefined ? sshCommandSetting(value) : null
         if (setting) {
@@ -379,17 +416,19 @@ export function sshInvocation(args: readonly string[]): SshInvocation {
         }
         break
       }
+      if (!taken) leading.push({ word, role: 'option', valueAt: null })
     }
   }
   options()
-  if (index >= args.length) return { remote, words: [], local, settings, tokens, session: false }
+  if (index >= args.length) return { remote, words: [], local, settings, tokens, session: false, leading }
+  leading.push({ word: args[index]!, role: 'operand' })
   index++
   if (!terminated) options()
   // ssh sends an empty command as no command, which opens a shell.
   const words = args.slice(index)
   const command = words.join(' ')
   if (command !== '') remote.unshift(command)
-  return { remote, words, local, settings, tokens, session: remote.length === 0 && !noSession }
+  return { remote, words, local, settings, tokens, session: remote.length === 0 && !noSession, leading }
 }
 
 /** su's options that take a value, as util-linux's getopt_long reads them (c:fg:G:lmpPs:u:hVw:, with their long names). */
@@ -409,6 +448,8 @@ export interface SuInvocation {
   operands: string[]
   /** No command string, no operands, and no --help or --version: an interactive session. */
   session: boolean
+  /** Every word before a `--`, which getopt_long may read as an option wherever it stands (LeadingWord). */
+  leading: LeadingWord[]
 }
 
 /**
@@ -419,6 +460,7 @@ export function suInvocation(args: readonly string[]): SuInvocation {
   let shell: string | null = null
   const commands: string[] = []
   const operands: string[] = []
+  const leading: LeadingWord[] = []
   let info = false
   for (let index = 0; index < args.length; index++) {
     const word = args[index]!
@@ -427,26 +469,34 @@ export function suInvocation(args: readonly string[]): SuInvocation {
       break
     }
     if (word === '-' || !word.startsWith('-')) {
+      leading.push({ word, role: 'operand' })
       operands.push(word)
       continue
     }
     const separator = word.indexOf('=')
     const long = word.startsWith('--') ? suLongOption(separator < 0 ? word.slice(2) : word.slice(2, separator)) : null
     const flags = long ?? word.slice(1)
+    const read: LeadingWord[] = [{ word, role: 'option', valueAt: null }]
     for (let offset = 0; offset < flags.length; offset++) {
       const flag = flags[offset]!
       if (flag === 'h' || flag === 'V') info = true
       if (!SU_VALUE_OPTIONS.includes(flag)) continue
       const attached = long === null ? flags.slice(offset + 1) : separator < 0 ? '' : word.slice(separator + 1)
-      const value = attached !== '' || (long !== null && separator >= 0) ? attached : args[++index]
+      const given = attached !== '' || (long !== null && separator >= 0)
+      const value = given ? attached : args[++index]
+      // The -c string is what runs, and the -s shell what runs it.
+      const runs = flag === 'c' || flag === 's' ? { runs: true as const } : {}
+      if (given) read[0] = { word, role: 'option', valueAt: long === null ? offset + 2 : separator + 1, ...runs }
+      else if (value !== undefined) read.push({ word: value, role: 'value', ...runs })
       if (value !== undefined && flag === 'c') commands.push(value)
       if (value !== undefined && flag === 's') shell = value
       break
     }
+    leading.push(...read)
   }
   if (operands[0] === '-') operands.shift()
   operands.shift()
-  return { shell, commands, operands, session: !info && commands.length === 0 && operands.length === 0 }
+  return { shell, commands, operands, session: !info && commands.length === 0 && operands.length === 0, leading }
 }
 
 /** A long su option as getopt_long matches it, as its short letter: the exact name, else the one name it begins; '' for none or several. */
@@ -1861,6 +1911,74 @@ export function holdsExpansion(raw: string): boolean {
     else if (quote === null && character === '{' && /,|\.\./.test(raw.slice(index + 1))) return true
   }
   return false
+}
+
+/** What the expansions a word holds may make of it (expansionShape). */
+export interface ExpansionShape {
+  /** The word may become several words, or none. */
+  splits: boolean
+  /** The word's own text before its first expansion, quotes removed, which the expansion cannot change. */
+  prefix: string
+}
+
+/**
+ * How the expansions a word as written holds (holdsExpansion) may change it. Outside double quotes a `$` or a backtick
+ * is split on blanks and globbed, and a pattern or a brace expansion may name several words, so the word may become
+ * several or none; inside them each is one word, but for `"$@"` and an array's elements (`"${a[@]}"`, `"${@:2}"`,
+ * `"${!a[@]}"`), which are a word each, so any `@` in a `${...}` but its length counts as several. A leading tilde names
+ * one directory and a process substitution one path: neither splits. `prefix` is the text before the first expansion.
+ * A word in which no expansion is found is read as one that may split, from its start.
+ */
+export function expansionShape(raw: string): ExpansionShape {
+  let quoted = false
+  let first = -1
+  let splits = false
+  const met = (at: number, several: boolean) => {
+    if (first < 0) first = at
+    splits ||= several
+  }
+  for (let index = 0; index < raw.length && !splits;) {
+    const character = raw[index]!
+    if (character === '\\') {
+      index += 2
+      continue
+    }
+    if (character === '"') {
+      quoted = !quoted
+      index++
+      continue
+    }
+    const literal = quoted ? null : literalQuoteEnd(raw, index)
+    if (literal !== null) {
+      index = literal
+      continue
+    }
+    // A process substitution, or one a whole-command reading shows with its body cut (`<$()`), names one path.
+    const process = !quoted && (character === '<' || character === '>') && (raw[index + 1] === '(' || raw.startsWith('$(', index + 1))
+    if (character === '$' || character === '`' || process) {
+      const at = process && raw[index + 1] === '$' ? index + 1 : index
+      const opened = expansionAt(raw, at, !quoted)
+      const end = opened ? partEnd(raw, opened.next, opened.part) : parameterEnd(raw, at + 1)
+      const text = raw.slice(index, end)
+      met(index, quoted ? text === '$@' || (text.startsWith('${') && !text.startsWith('${#') && text.includes('@')) : !process)
+      index = Math.max(end, index + 1)
+      continue
+    }
+    if (!quoted && ('*?['.includes(character) || (character === '{' && /,|\.\./.test(raw.slice(index + 1))))) met(index, true)
+    else if (!quoted && character === '~' && index === 0) met(index, false)
+    index++
+  }
+  return first < 0 ? { splits: true, prefix: '' } : { splits, prefix: unquote(raw.slice(0, first)) }
+}
+
+/** Where a parameter named after a `$` at `from - 1` ends: past a name, or past one digit or special parameter. */
+function parameterEnd(raw: string, from: number): number {
+  if (/[A-Za-z_]/.test(raw[from] ?? '')) {
+    let end = from + 1
+    while (end < raw.length && /[A-Za-z0-9_]/.test(raw[end]!)) end++
+    return end
+  }
+  return /[0-9@*#?$!-]/.test(raw[from] ?? '') ? from + 1 : from
 }
 
 /** Text as a shell would split it into words, roughly: whitespace separates, quotes and backslashes are removed. */
