@@ -691,7 +691,10 @@ const STAND_INS: Record<string, string[]> = {
  * Slice 7i residual and owner decision D7: `sudo git push` was read as `sudo` alone, so a deny glob on the command it
  * runs never met it. The sentinel behind each wrapper and option shape, nested wrappers, wrappers in shell text, su's
  * -c string and the remote command of ssh as shell text: each ran the sentinel under real bash in scratch first, the
- * plain wrappers as themselves and sudo, doas, su, and ssh as the stand-ins above.
+ * plain wrappers as themselves and sudo, doas, su, and ssh as the stand-ins above. `command -p` searches a default PATH
+ * that does not hold the sentinel, so its row names the sentinel by path. Three rows run nothing and pin only the
+ * reading, each labelled so: `builtin` runs only a builtin, the sudo stand-in hands `command`, a builtin, to exec, which
+ * finds no such program, and `chrt -f` needs real-time privilege.
  */
 function wrappedShapes(): Shape[] {
   const prefixes = [
@@ -708,9 +711,14 @@ function wrappedShapes(): Shape[] {
     'env', 'env -u HOME', 'env X=1', 'env --', 'env -C .', 'env --chdir=.', 'env --unset=HOME X=1', 'nice', 'nice -n 5', 'nice -5',
     'nice --adjustment=5', 'nohup', 'timeout 5', 'timeout -s KILL 5', 'timeout -k 1 5', 'timeout --foreground 5', 'timeout -s TERM -k 1 --foreground 5',
     'timeout --preserve-status 5', 'time', 'time -p', 'stdbuf -oL', 'stdbuf -i0 -o0 -e0', 'stdbuf --output=L', 'ionice', 'ionice -c 3', 'ionice -c2 -n7',
-    'chrt -o 0', 'chrt --other 0', 'chrt -b 0', 'chrt -i 0', 'chrt -f 1', 'command', 'command -p', 'builtin', 'exec', 'exec -a name', 'setsid', 'setsid -w',
+    'chrt -o 0', 'chrt --other 0', 'chrt -b 0', 'chrt -i 0', 'command', 'exec', 'exec -a name', 'setsid', 'setsid -w',
     'sudo env X=1 nice', 'sudo -u root env X=1 nice -n 5 timeout 5', 'doas sudo', 'ssh host sudo', 'sudo ssh host', 'env sudo -u root', 'nohup sudo',
-    'time sudo', 'command sudo', 'sudo command', 'timeout 5 ssh -p 22 host env X=1', 'X=1 sudo', 'sudo -u root -- env -- nice --',
+    'time sudo', 'command sudo', 'timeout 5 ssh -p 22 host env X=1', 'X=1 sudo', 'sudo -u root -- env -- nice --',
+  ]
+  const readingOnly = [
+    ['builtin', 'builtin runs only a builtin'],
+    ['sudo command', 'exec finds no program named command'],
+    ['chrt -f 1', 'chrt -f needs real-time privilege'],
   ]
   const bodies = [
     `su -c '${PAYLOAD}' root`, `su root -c '${PAYLOAD}'`, `su - root -c '${PAYLOAD}'`, `su -l root -c '${PAYLOAD}'`, `su -lc '${PAYLOAD}' root`,
@@ -723,10 +731,12 @@ function wrappedShapes(): Shape[] {
     `ssh host 'echo "$(${SENTINEL} inner)"'`, `ssh host "${PAYLOAD} | cat"`, `ssh host 'if true; then ${PAYLOAD}; fi'`,
     `if sudo ${PAYLOAD}; then :; fi`, `true && sudo ${PAYLOAD}`, `echo "$(sudo ${PAYLOAD})"`, `x=1 sudo ${PAYLOAD}`, `bash -c 'sudo ${PAYLOAD}'`,
     `eval 'sudo ${PAYLOAD}'`, `find . -maxdepth 0 -exec sudo ${PAYLOAD} \\;`, `sudo bash -c '${PAYLOAD}'`, `sudo sh -c '${PAYLOAD}'`,
+    `command -p ./${PAYLOAD}`,
   ]
   return [
     ...prefixes.map(prefix => ({ label: `wrapper: behind ${prefix}`, body: `${prefix} ${PAYLOAD}` })),
     ...bodies.map(body => ({ label: `wrapper: ${body}`, body })),
+    ...readingOnly.map(([prefix, reason]) => ({ label: `wrapper: behind ${prefix} (runs nothing: ${reason})`, body: `${prefix} ${PAYLOAD}` })),
   ]
 }
 
@@ -767,7 +777,7 @@ const STAND_IN_CONTROLS: Record<string, readonly [string, string]> = {
 
 /**
  * How long one shape may run: bash and the core tools start in milliseconds; a program a row `needs` (tsx, awk, a
- * shell) may take seconds from a cold cache. The whole table, 2,333 shapes, takes some 16 s here; its budget
+ * shell) may take seconds from a cold cache. The whole table takes some 16 s here; its budget
  * leaves room for a loaded machine, and each shape's own timeout still bounds a shape that hangs.
  */
 const SHAPE_TIMEOUT = 4_000
@@ -922,6 +932,19 @@ function delimiterShapes(): Shape[] {
   }
   return shapes
 }
+
+/**
+ * A heredoc inside a double-quoted substitution ends where bash ends it, so the word holding it, and the command after the
+ * closing `)"`, are read where bash reads them: a line with trailing blanks, a tab-indented line under plain `<<`, and a
+ * line a continuation joins to the one before are body text, not the delimiter. Each body holds a `)"` and a `;` that a
+ * reading ending the heredoc there would take for the end of the word, so it would miss the payload. Each ran the
+ * sentinel under real bash in scratch first.
+ */
+const QUOTED_SUBSTITUTION_HEREDOCS: Shape[] = [
+  ['a line with trailing blanks', 'EOF  '],
+  ['a tab-indented line under plain <<', '\tEOF'],
+  ['a line a continuation joins', 'a \\\nEOF'],
+].map(([label, line]) => ({ label: `heredoc in a quoted substitution: ${label} is body text`, body: `x="$(cat <<EOF\n${line}\n)" ; y\nEOF\n)" ${PAYLOAD}` }))
 
 /**
  * A command word whose value the shell supplies, from a variable, a substitution, a pattern, or a brace expansion, from
@@ -1350,6 +1373,9 @@ const WRAPPER_WORDS: Shape[] = [
     ['timeout, a pattern', `mkdir -p g && cd g && touch 1 ${SENTINEL} && timeout * mark`],
     ['timeout, "$@"', `set -- 5 ${SENTINEL}; timeout "$@" mark`],
     ['timeout, "${a[@]}"', `a=(5 ${SENTINEL}); timeout "\${a[@]}" mark`],
+    ['timeout, "$@" after typed digits', `set -- 5 ${SENTINEL}; timeout 1"$@" mark`],
+    ['timeout, "${a[@]}" after typed digits', `a=(5 ${SENTINEL}); timeout 1"\${a[@]}" mark`],
+    ['timeout, an unquoted value after typed digits', `v="5 ${SENTINEL}"; timeout 1$v mark`],
     ['nice -n, an unquoted value', `v='5 ${SENTINEL}'; nice -n $v mark`],
     ['nice -n, "$@"', `set -- 5 ${SENTINEL}; nice -n "$@" mark`],
     ['nice -n, "${a[@]}"', `a=(5 ${SENTINEL}); nice -n "\${a[@]}" mark`],
@@ -1448,7 +1474,7 @@ function allShapes(): Shape[] {
       }
     }
   }
-  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT, ...QUOTE_NESTING, ...STARTUP_FILES, ...ALIAS_USES, ...RUN_TIME_TEXT, ...WRAPPER_WORDS]
+  const all = [...shapes, ...NESTED, ...REVIEW_SHAPES, ...ADVERSARIAL, ...backtickShapes(), ...BACKTICK_EXTRA, ...backtickCommentShapes(), ...SCRIPT_DATA, ...continuationRunShapes(), ...INTERPRETERS, ...crlfShapes(), ...PROBE_CONSUMERS, ...PROBE_TOP_LEVEL, ...wrappedShapes(), ...SESSIONS, ...READING_PINS, ...COMMENTS, ...UNSURE_COMMENTS, ...BLANK_SHAPES, ...backtickContinuationShapes(), ...UNREAD_INPUTS, ...OTHER_SHELLS, ...OWN_PARSING, ...delimiterShapes(), ...QUOTED_SUBSTITUTION_HEREDOCS, ...KEYWORD_SHAPES, ...EXPANDED_COMMAND_WORDS, ...LITERAL_COMMAND_WORDS, ...FED_SCRIPT_OPERANDS, ...UNFED_SCRIPT_OPERANDS, ...MULTICALL_AND_CHRT, ...HELD_TEXT, ...QUOTE_NESTING, ...STARTUP_FILES, ...ALIAS_USES, ...RUN_TIME_TEXT, ...WRAPPER_WORDS]
   const seen = new Set<string>()
   return all.filter(shape => !seen.has(shape.body) && seen.add(shape.body))
 }
@@ -1488,7 +1514,7 @@ function unreadByForms(forms: CommandForms): string[] {
  * unread at the depth limit, and a 1 MB body, 100,000 one-character lines and 50,000 continuations each read within a
  * second (slice 7g review coverage probes). Each limit is on the reader's own processor time, the least of three warm
  * readings with no process spawned (leastProcessorTime), so a loaded machine or a cold start does not fail it: here the
- * rows take about 30 to 380 ms of the 1000 ms allowed (slice 7l, the 7h to 7k review's flaky timing rows). Each row may
+ * rows take about 30 to 380 ms of the 1000 ms allowed, where a wall-clock limit had failed them on a loaded machine. Each row may
  * take PROCESSOR_TIME_ROW_TIMEOUT of wall-clock time, which a loaded machine meets; the processor time is the check.
  */
 describe('the reader is bounded on adversarial bulk', () => {

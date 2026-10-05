@@ -3,7 +3,7 @@ import { baseCommand, envSplitWords, expansionShape, type ExpansionShape, holdsE
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
  * W7B-8): the characters of shell text it passes over, each re-reading of a line, a heredoc body, or a backtick body
- * counted again (slice 7l), the words of the statements it splits, and the commands it keeps. A 1 MB request read
+ * counted again, so nested bodies cannot multiply the work unseen, the words of the statements it splits, and the commands it keeps. A 1 MB request read
  * as a few passes at a few levels fits; whatever runs past the budget is unread.
  */
 export const READ_BUDGET = { characters: 8_000_000, words: 1_000_000, commands: 100_000 } as const
