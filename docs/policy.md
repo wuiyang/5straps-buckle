@@ -1,8 +1,10 @@
 # Policy
 
 The policy is the owner's standing answer about what an agent may run and reach through Buckle,
-the approval and sandbox runtime on this machine. What it refuses is refused without a question,
-and no tool can read or change it.
+the approval and sandbox runtime on this machine. What it refuses is refused without a question.
+Buckle's file tools cannot read or change it. Only a process sandbox hides it from shell
+commands: with `BUCKLE_SANDBOX=none`, a shell command can read and change the files that hold it,
+and Buckle does not ask about them.
 
 ## Where it comes from
 

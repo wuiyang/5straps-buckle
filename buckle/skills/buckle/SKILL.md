@@ -58,8 +58,10 @@ Private-network and loopback URLs are also refused until approved, per host and 
 
 Some things are refused outright, with the reason, and no approval is offered: a command the
 owner's policy denies or leaves off its allow list, a URL off the owner's approved list, any
-non-HTTP scheme, and Buckle's own state directory. The refusal names what is allowed instead
-where that helps. Do not try to route around it; the owner already answered.
+non-HTTP scheme, and Buckle's own state directory through the file tools. Only a process
+sandbox hides that directory from shell commands; with `BUCKLE_SANDBOX=none`, a shell command
+can reach it. The refusal names what is allowed instead where that helps. Do not try to route
+around it; the owner already answered.
 
 The owner's command rules are shell-word globs read a word at a time, so `pnpm {build,test} *`
 allows `pnpm build` with any arguments and refuses `pnpm install`. Wrapping a command in a
