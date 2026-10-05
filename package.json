@@ -18,6 +18,7 @@
     "pretypecheck": "pnpm --filter @5straps/protocol build && pnpm --filter @5straps/runtime build",
     "release:check": "pnpm check:runtime-pins && pnpm check:routes && pnpm typecheck && pnpm test && pnpm -r build && pnpm test:package && pnpm audit:release",
     "release": "node scripts/release/require-ci.mjs && pnpm release:check && pnpm -r publish --access public",
+    "release:prepare": "node scripts/release/prepare.mjs",
     "version:set": "pnpm --filter @5straps/protocol --filter @5straps/runtime --filter @5straps/buckle exec npm version",
     "test:package": "node scripts/release/packaged-smoke.mjs && node scripts/release/runtime-fixture-smoke.mjs",
     "audit:release": "pnpm audit --prod --audit-level=low && node scripts/release/audit-bundled.mjs",
