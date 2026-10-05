@@ -297,6 +297,7 @@
 - **repo:** Changelog regenerated under the 0.1.0 heading ([10669f0](https://github.com/wuiyang/5straps-buckle/commit/10669f0))
 - **buckle:** The sandbox, approvals, and install pages agree on what is withheld and what is refused ([35a3f88](https://github.com/wuiyang/5straps-buckle/commit/35a3f88))
 - **repo:** Changelog regenerated ([fc27ab1](https://github.com/wuiyang/5straps-buckle/commit/fc27ab1))
+- **repo:** Changelog regenerated ([727adba](https://github.com/wuiyang/5straps-buckle/commit/727adba))
 
 ### 📦 Build
 
@@ -353,6 +354,7 @@
 - **buckle:** Timing rows keep a third of their limit in hand and allow for a loaded machine ([8899a56](https://github.com/wuiyang/5straps-buckle/commit/8899a56))
 - **buckle:** Oracle rows pin the heredoc end inside a quoted substitution and the splitting guard, and comments say what the rows do ([120f3eb](https://github.com/wuiyang/5straps-buckle/commit/120f3eb))
 - **repo:** The bundled-audit test removes its temp directories ([225c491](https://github.com/wuiyang/5straps-buckle/commit/225c491))
+- **buckle:** A busybox or toybox row skips where the build lacks its applet, and the xargs rows read the words as typed ([a4ff51e](https://github.com/wuiyang/5straps-buckle/commit/a4ff51e))
 
 ### 🤖 CI
 
