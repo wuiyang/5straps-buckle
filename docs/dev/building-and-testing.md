@@ -103,10 +103,11 @@ uses no network and pushes nothing, and it skips, saying so, when `bash` is miss
 pnpm release:check
 ```
 
-This is the gate CI runs on every pull request and every push to `main`: `check:runtime-pins`
-(Nitro, h3, and db0 at their reviewed versions), `check:routes` (no two Nitro routes claim one
-path and method), `typecheck`, `test`, `pnpm -r build`, `test:package`, and `audit:release`
-(`pnpm audit --prod`, plus the packages bundled into `.output`).
+This is the gate CI runs on every pull request, every push to `main`, and every release commit,
+where the [Prepare release](releasing.md#step-one-prepare-release) workflow starts it. It runs
+`check:runtime-pins` (Nitro, h3, and db0 at their reviewed versions), `check:routes` (no two
+Nitro routes claim one path and method), `typecheck`, `test`, `pnpm -r build`, `test:package`,
+and `audit:release` (`pnpm audit --prod`, plus the packages bundled into `.output`).
 
 `pnpm test:package` is the packaged smoke. `scripts/release/packaged-smoke.mjs` packs the three
 packages, installs the tarballs with npm in a scratch directory with install scripts off and

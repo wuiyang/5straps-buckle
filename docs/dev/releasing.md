@@ -1,99 +1,106 @@
 # Releasing
 
-Three packages publish to npm. `@5straps/buckle`, the approval and sandbox runtime and its
-`buckle` binary, depends on the other two, so they go first: `@5straps/protocol` and
-`@5straps/runtime`, then `@5straps/buckle`. `pnpm -r publish` walks the workspace in that
-dependency order. Nothing in CI publishes; the workflow only verifies.
+Three packages publish to npm: `@5straps/protocol`, the wire schemas; `@5straps/runtime`, the
+runtime primitives; and `@5straps/buckle`, the approval and sandbox runtime with its `buckle`
+binary. Buckle depends on the other two, so they publish first. The three share one version.
 
-## Before the first release
+A release runs from the Actions tab of the GitHub repository, in two workflows started by hand on
+`main`: Prepare release, then Release. [Releasing: repeats and by hand](releasing-02.md) covers a
+failed run, the manual fallback, and what each package ships.
 
-- Log in to npm (`npm login`, then `npm whoami`) with an account that may publish under the
-  `@5straps` scope. Each package sets `publishConfig.access` to `public`.
-- Install the GitHub CLI and log it in. `pnpm release` asks it for the CI results.
-- Keep tokens out of the repository and out of the shell history.
+## One-time setup
 
-## Version and changelog
+On npmjs.com, open each of the three packages, then Settings, then Trusted publishing, and add a
+trusted publisher for GitHub Actions:
 
-The three packages share one version.
-
-```bash
-pnpm version:set 0.2.0
-```
-
-`version:set` runs `npm version 0.2.0` in each of the three packages. Buckle reads its version
-from its own `package.json` at run time (`buckle/common/runtime/version.ts`), so
-`buckle --version` and the manifest always match what was published.
-
-`@5straps/buckle` names the other two as `workspace:*`. `pnpm publish` replaces that with the
-exact version when it packs; `npm publish` does not, so always publish with pnpm.
-
-The changelog comes from commit subjects through changelogen, a root dev dependency configured
-under `changelog` in the root `package.json` (repository, commit types, no author lines):
-
-```bash
-pnpm exec changelogen --from <last release tag> --to HEAD -r <version> --output CHANGELOG.md
-```
-
-`-r` heads the new section `v<version>` and links its comparison to that tag; without it the
-heading is a commit range. It neither tags nor bumps a version.
-
-Read the result before committing it. Commit the version and the changelog together, push the
-branch, and wait for CI.
-
-## pnpm release
-
-```bash
-git fetch origin
-pnpm release
-```
-
-`pnpm release` runs three steps and stops at the first failure:
-
-1. `scripts/release/require-ci.mjs` refuses unless:
-   - the working tree has no uncommitted changes;
-   - `HEAD` is on a branch, not detached, and equals the local `origin/<branch>` (it compares
-     with what the last fetch saw and never fetches itself);
-   - both CI jobs, `verify` and `package-arm64`, run by GitHub Actions, have a latest run on that
-     exact commit that completed successfully. It reads the check runs with
-     `gh api repos/<owner>/<repo>/commits/<sha>/check-runs`, taking the repository from
-     `GITHUB_REPOSITORY` or from the `origin` URL.
-2. `pnpm release:check` runs the whole gate locally: runtime pins, route tables, typecheck, every
-   test suite, the builds, the packaged smoke, and the dependency audit.
-3. `pnpm -r publish --access public` publishes each package. Every package's `prepack` script
-   builds it first, so a stale `dist/` is never published.
-
-Tag the released commit, for example `git tag v0.2.0`, so the next changelog has a starting
-point.
-
-## What each package ships
-
-npm always adds `package.json` and `README.md`. The rest is each package's `files` list:
-
-| Package | `files` |
+| Field | Value |
 |---|---|
-| `@5straps/protocol` | `dist`, `src`, `LICENSE`, `NOTICE` |
-| `@5straps/runtime` | `dist`, `src`, `LICENSE`, `NOTICE` |
-| `@5straps/buckle` | `dist`, `.output`, `main.ts`, `common`, `cli`, `mcp`, `server`, `skills`, `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md` |
+| Organization or user | `wuiyang` |
+| Repository | `5straps-buckle` |
+| Workflow filename | `release.yml` |
+| Environment name | none |
+| Allowed actions | `npm publish` |
 
-For `@5straps/buckle`: `dist/main.js` is the `bin`. `.output` is the built HTTP app, which
-`buckle serve` imports at run time. `skills/buckle/SKILL.md` is read at run time as the root
-skill, and each pack's `SKILL.md` is copied into `dist` by the build. The sources ship beside the
-build. `THIRD_PARTY_NOTICES.md` covers the code bundled into `.output`.
+npm checks these fields only when a publish arrives, so a mistyped one shows up as a failed publish
+(`ENEEDAUTH`). A trusted publisher made after 3 September 2026 allows only `npm stage publish`
+until `npm publish` is selected. No npm token is stored anywhere: npm trades the publishing job's
+GitHub identity for a short-lived token. Once a release has gone through this way, each package's
+publishing access can be set to require two-factor authentication and disallow tokens; publishing
+by hand then asks for a one-time code.
 
-## Check the tarballs
+On GitHub, nothing needs setting, with two cautions:
+
+- A branch rule or ruleset on `main` that requires pull requests or status checks refuses the push
+  Prepare release makes, and the release stops there.
+- A tag rule that stops the workflow token from creating `v*` tags stops the last Release job.
+
+While the repository is private, npm publishes without a provenance statement. Once it is public,
+npm adds one on each trusted publish on its own; nothing changes here.
+
+## Step one: Prepare release
+
+Actions, Prepare release, Run workflow, on `main`, with the version: plain `MAJOR.MINOR.PATCH`
+with no `v`, such as `0.2.0`, greater than the current one.
+
+`scripts/release/prepare.mjs` refuses, changing nothing, unless:
+
+- the version is plain and greater than the one the three packages share;
+- the working tree is clean;
+- the tag of the current version, such as `v0.1.0`, exists, since the new changelog section starts
+  there;
+- neither the tag `v<version>` nor that version on npm exists yet.
+
+It then sets the version in the three `package.json` files, as `pnpm version:set` does, and writes
+the new section at the top of `CHANGELOG.md` with changelogen, a root dev dependency configured
+under `changelog` in the root `package.json`:
 
 ```bash
-mkdir -p /tmp/buckle-pack
-for name in protocol runtime buckle; do
-  pnpm --filter "@5straps/$name" pack --pack-destination /tmp/buckle-pack
-done
-tar -xzOf /tmp/buckle-pack/5straps-buckle-0.2.0.tgz package/package.json | grep '@5straps/'
-tar -tzf /tmp/buckle-pack/5straps-buckle-0.2.0.tgz | less
+pnpm exec changelogen --from v<current> --to HEAD -r <version> --output CHANGELOG.md
 ```
 
-The dependencies must name exact versions, never `workspace:*`, and the listing must hold
-`package/dist/main.js`, `package/.output/server/index.mjs`, and `package/skills/buckle/SKILL.md`.
-`pnpm test:package`, part of the release check, goes further: it installs the three tarballs
-with npm in a scratch directory, with install scripts off and optional dependencies left out, and
-drives the installed `buckle` over the CLI, HTTP, and MCP. [Building and
-testing](building-and-testing.md#the-release-check) lists what it covers.
+`-r` heads the section `v<version>` and links its comparison to that tag. changelogen exits 0
+even when it fails, so the script reads both results back: all three packages at the new version,
+one new section, and every earlier section unchanged after it.
+
+The workflow commits the four files as `github-actions[bot]`, with the subject
+`chore(release): v<version>`, and pushes to `main` without force. If `main` moved after the run
+started, the push is refused and nothing reaches GitHub. A push made with the workflow token starts
+no workflow, so the job then starts Release checks (`release-check.yml`) on `main` itself. The run
+summary names the release commit.
+
+Wait for both jobs of that Release checks run, `verify` and `package-arm64`, to pass. Buckle reads
+its version from its own `package.json` at run time (`buckle/common/runtime/version.ts`), so
+`buckle --version` matches what is published.
+
+## Step two: Release
+
+Actions, Release, Run workflow, on `main`. Tick `dry_run` to check and pack only: the tarballs and
+notes are kept as the run's `release` artifact, and nothing is published or tagged. The run
+releases the commit at the head of `main` when it starts.
+
+**`pack`** reads the repository and its check runs, and holds no publishing identity.
+
+1. `scripts/release/require-ci.mjs` refuses unless the tree is clean, `HEAD` is on `main` and is
+   what `origin/main` holds in the checkout, and both `verify` and `package-arm64`, run by GitHub
+   Actions, have a latest run on that exact commit that succeeded.
+2. It installs, then `scripts/release/plan.mjs` refuses unless the three packages share one
+   version, `CHANGELOG.md` has its section, and the tag `v<version>` is absent or already on this
+   commit. It reports which packages npm already holds at that version.
+3. It packs the three with `pnpm pack`, which runs each package's `prepack` build and writes
+   `workspace:*` as the exact version, then reads each tarball back: every sibling dependency at
+   exactly that version, and every file the manifest's entry points name present.
+4. It writes the changelog section as the release notes and uploads tarballs and notes.
+
+**`publish`** holds `id-token: write` and nothing else, and is skipped on a dry run. It checks out
+nothing, installs nothing, and runs no repository code. It sets up Node 24, refuses an npm older
+than 11.5.1, which trusted publishing requires, downloads the artifact, and publishes protocol,
+runtime, then buckle with `npm publish <tarball> --access public`. A package the registry already
+holds at that version is skipped.
+
+**`github-release`** holds `contents: write` and runs after `publish`, so never on a dry run.
+Through `gh`, `scripts/release/github-release.mjs` creates the tag `v<version>` on the released
+commit with a GitHub release of the same title, whose notes are the changelog section. When both
+already exist on that commit it does nothing; a tag on another commit stops it.
+
+Both workflows share one concurrency group. A second run waits for the one in progress and never
+cancels it; GitHub keeps one waiting run per group, so a third start replaces the waiting one.

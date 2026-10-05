@@ -27,7 +27,7 @@ them, and audits the production dependencies, including the code bundled into th
 | `buckle/` | `@5straps/buckle` | Buckle: the CLI, the MCP server, and the HTTP server |
 | `packages/protocol/` | `@5straps/protocol` | The wire schemas Buckle speaks |
 | `packages/runtime/` | `@5straps/runtime` | Runtime primitives: service lifetimes, logging, SQLite, and Nitro adapters |
-| `scripts/` | - | Release checks |
+| `scripts/` | - | Release checks and the release steps |
 | `test/` | - | Tests of the release scripts |
 
 ## House rules

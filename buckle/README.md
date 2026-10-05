@@ -170,7 +170,8 @@ For developers:
 
 - [Architecture](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/architecture.md) ([state and packs](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/architecture-02.md)),
   [Building and testing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/building-and-testing.md),
-  and [Releasing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing.md).
+  and [Releasing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing.md)
+  ([repeats and by hand](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing-02.md)).
 - Research records: [command matching](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/research/command-matching.md) and
   [transport and terminal packages](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/research/packages.md).
 
