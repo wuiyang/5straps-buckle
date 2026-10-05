@@ -57,6 +57,7 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
   const current = (): WorkspacePolicy => runtime.policy.stored() ?? emptyWorkspacePolicy()
 
   try {
+    refuseUnknownFlags(action, rest)
     switch (action) {
       case undefined:
       case 'show':
@@ -167,6 +168,7 @@ async function repairStoredPolicyAction(input: { config: BuckleConfig; argv: str
   const stored = store.read() ?? emptyWorkspacePolicy()
   const [action, ...rest] = input.argv
   try {
+    refuseUnknownFlags(action, rest)
     switch (action) {
       case 'remove': {
         const next = remove(stored, required(rest[0], action))
@@ -212,6 +214,22 @@ function opensNetwork(before: WorkspacePolicy, after: WorkspacePolicy, environme
 }
 
 class UsageError extends Error {}
+
+/** The actions that take no flag; `show` and `dangerously-allow` parse their own and refuse any other. */
+const FLAGLESS_ACTIONS = new Set([
+  'allow-command', 'deny-command', 'destructive-command', 'allow-interpreter', 'remove-interpreter', 'allow-url', 'mount', 'unmount',
+  'deny-tool', 'allow-tool', 'remove', 'import', 'export', 'clear',
+])
+
+/**
+ * Refuses a flag an action does not know rather than ignoring it: `allow-command 'git *' --workspace child` would
+ * otherwise edit the node's own workspace and exit 0, as if it had changed the one the flag names.
+ */
+function refuseUnknownFlags(action: string | undefined, args: readonly string[]): void {
+  if (action === undefined || !FLAGLESS_ACTIONS.has(action)) return
+  const flag = args.find(word => word.length > 1 && word.startsWith('-'))
+  if (flag !== undefined) throw new UsageError(`buckle policy ${action} does not know the flag ${flag}; it edits the node's own workspace only\n${USAGE}`)
+}
 
 function required(value: string | undefined, action: string): string {
   if (!value) throw new UsageError(`buckle policy ${action} needs an argument\n${USAGE}`)

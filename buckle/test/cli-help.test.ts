@@ -1,6 +1,13 @@
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { answerWithoutConfiguration } from '../cli/main.js'
-import { policyCommand } from '../cli/policy.js'
+import { policyCommand, repairStoredPolicy } from '../cli/policy.js'
+import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
+import { StoredPolicyError } from '../common/domain/policy.js'
+import { loadConfig, policyPath } from '../common/runtime/config.js'
 import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -46,5 +53,42 @@ describe('buckle policy --help', () => {
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain('buckle policy show')
     expect(io.out()).toBe('')
+  })
+})
+
+// `buckle policy allow-command 'git *' --workspace child` edited the node's own workspace and exited 0, as if it had
+// changed the workspace the flag names. An edit refuses a flag it does not know before it touches any policy: the
+// runtime here is empty, so any reading or writing of a policy would throw.
+describe('buckle policy refuses a flag it does not know', () => {
+  const runtime = {} as unknown as BuckleRuntime
+  const workspaces = {} as unknown as WorkspaceManager
+
+  it.each([
+    [['allow-command', 'git push *', '--workspace', 'child'], '--workspace'],
+    [['deny-command', '--workspace=child', 'curl *'], '--workspace=child'],
+    [['allow-interpreter', 'node', '-w', 'child'], '-w'],
+    [['allow-url', 'example.com', '--force'], '--force'],
+    [['clear', '--workspace', 'child'], '--workspace'],
+    [['export', '--json'], '--json'],
+  ])('refuses %j with the usage and exit 1, naming %s', async (argv, flag) => {
+    const io = captured()
+    const result = await policyCommand(runtime, argv, workspaces)
+    expect(result.exitCode).toBe(1)
+    expect(io.err()).toContain(`buckle policy ${argv[0]} does not know the flag ${flag}; it edits the node's own workspace only`)
+    expect(io.err()).toContain('buckle policy show')
+    expect(io.out()).toBe('')
+  })
+
+  it('refuses one while repairing a stored policy the node cannot load, and leaves the stored file as it was', async () => {
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-flag-')), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-flag-state-')), BUCKLE_SANDBOX: 'none' })
+    const stored = { ...emptyWorkspacePolicy(), commands: { ...emptyWorkspacePolicy().commands, deny: ['curl *'] } }
+    await createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd }).write(stored)
+    const before = readFileSync(policyPath(config), 'utf8')
+    const failure = new StoredPolicyError({ file: policyPath(config), reason: 'a test failure', stored, environment: emptyWorkspacePolicy() })
+    const io = captured()
+    const result = await repairStoredPolicy({ config, argv: ['clear', '--workspace', 'child'], failure })
+    expect(result.exitCode).toBe(1)
+    expect(io.err()).toContain('buckle policy clear does not know the flag --workspace')
+    expect(readFileSync(policyPath(config), 'utf8')).toBe(before)
   })
 })
