@@ -22,5 +22,5 @@ Node.js 24 or newer. Its one dependency is zod.
 
 ## License
 
-Apache-2.0. Copyright 2026 The 5straps Authors. See [LICENSE](https://github.com/wuiyang/buckle/blob/main/LICENSE)
-and [NOTICE](https://github.com/wuiyang/buckle/blob/main/NOTICE).
+Apache-2.0. Copyright 2026 The 5straps Authors. See [LICENSE](https://github.com/wuiyang/5straps-buckle/blob/main/LICENSE)
+and [NOTICE](https://github.com/wuiyang/5straps-buckle/blob/main/NOTICE).

@@ -32,7 +32,7 @@
     "vitest": "4.1.11"
   },
   "changelog": {
-    "repo": "wuiyang/buckle",
+    "repo": "wuiyang/5straps-buckle",
     "noAuthors": true,
     "excludeAuthors": [
       ""

@@ -11,7 +11,7 @@ Please do not open a public issue for a security problem.
 
 Report it through GitHub private vulnerability reporting on this repository: open the
 Security tab and use the "Report a vulnerability" advisory form
-(<https://github.com/wuiyang/buckle/security/advisories/new>). That form is the only
+(<https://github.com/wuiyang/5straps-buckle/security/advisories/new>). That form is the only
 reporting channel; there is no security email address.
 
 Include the package, the version or commit, steps to reproduce, and the impact you expect.

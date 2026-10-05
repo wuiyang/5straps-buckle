@@ -76,7 +76,7 @@ A granted directory never unlocks a credential file inside it.
 A person answers an ask with a scope: **once**, **session**, or **always**. Destructive
 commands never offer always. The approver sees the full action before anything runs, common
 credential shapes hidden
-([known limits](https://github.com/wuiyang/buckle/blob/main/docs/known-limits.md#credential-hiding)),
+([known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md#credential-hiding)),
 and the decision binds the whole call.
 
 The answer can come from wherever the person is: a prompt in the terminal running `buckle
@@ -106,7 +106,7 @@ buckle policy mount /workspace
 allow, destructive commands included. Explicit deny rules, the node's policy over a registered
 workspace, and the mount boundary still refuse, and a path outside the workspace root still asks.
 It is off by default;
-[Approvals](https://github.com/wuiyang/buckle/blob/main/docs/approvals.md#dangerously-allow)
+[Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md#dangerously-allow)
 documents it.
 
 ## Sandbox
@@ -149,30 +149,30 @@ on, push policy; Buckle runs without it.
 
 For users:
 
-- [Installing Buckle](https://github.com/wuiyang/buckle/blob/main/docs/install.md): requirements, platform status, upgrading, and the
+- [Installing Buckle](https://github.com/wuiyang/5straps-buckle/blob/main/docs/install.md): requirements, platform status, upgrading, and the
   state directory.
-- [First run](https://github.com/wuiyang/buckle/blob/main/docs/first-run.md): `buckle init`, the two credentials, and the CLI, MCP, and
+- [First run](https://github.com/wuiyang/5straps-buckle/blob/main/docs/first-run.md): `buckle init`, the two credentials, and the CLI, MCP, and
   HTTP faces.
-- [Approvals](https://github.com/wuiyang/buckle/blob/main/docs/approvals.md): what asks, the scopes, the destructive floor, where to
+- [Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md): what asks, the scopes, the destructive floor, where to
   answer, and the dangerously-allow switch.
-- [Policy](https://github.com/wuiyang/buckle/blob/main/docs/policy.md) ([what Buckle reads](https://github.com/wuiyang/buckle/blob/main/docs/policy-02.md),
-  [what stays unread](https://github.com/wuiyang/buckle/blob/main/docs/policy-03.md)): command globs, network lists, files, and
+- [Policy](https://github.com/wuiyang/5straps-buckle/blob/main/docs/policy.md) ([what Buckle reads](https://github.com/wuiyang/5straps-buckle/blob/main/docs/policy-02.md),
+  [what stays unread](https://github.com/wuiyang/5straps-buckle/blob/main/docs/policy-03.md)): command globs, network lists, files, and
   when a restart is needed.
-- [Sandbox and tools](https://github.com/wuiyang/buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, and shell
+- [Sandbox and tools](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, and shell
   isolation.
-- [The audit log](https://github.com/wuiyang/buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
-- [Rings](https://github.com/wuiyang/buckle/blob/main/docs/rings.md): the optional pairing and its settings.
-- [Troubleshooting](https://github.com/wuiyang/buckle/blob/main/docs/troubleshooting.md) ([refused commands](https://github.com/wuiyang/buckle/blob/main/docs/troubleshooting-02.md)): the first
+- [The audit log](https://github.com/wuiyang/5straps-buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
+- [Rings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/rings.md): the optional pairing and its settings.
+- [Troubleshooting](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting.md) ([refused commands](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting-02.md)): the first
   failures, with their messages.
-- [Known limits](https://github.com/wuiyang/buckle/blob/main/docs/known-limits.md): what Buckle does not yet read or hide.
+- [Known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md): what Buckle does not yet read or hide.
 
 For developers:
 
-- [Architecture](https://github.com/wuiyang/buckle/blob/main/docs/dev/architecture.md) ([state and packs](https://github.com/wuiyang/buckle/blob/main/docs/dev/architecture-02.md)),
-  [Building and testing](https://github.com/wuiyang/buckle/blob/main/docs/dev/building-and-testing.md),
-  and [Releasing](https://github.com/wuiyang/buckle/blob/main/docs/dev/releasing.md).
-- Research records: [command matching](https://github.com/wuiyang/buckle/blob/main/docs/dev/research/command-matching.md) and
-  [transport and terminal packages](https://github.com/wuiyang/buckle/blob/main/docs/dev/research/packages.md).
+- [Architecture](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/architecture.md) ([state and packs](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/architecture-02.md)),
+  [Building and testing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/building-and-testing.md),
+  and [Releasing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing.md).
+- Research records: [command matching](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/research/command-matching.md) and
+  [transport and terminal packages](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/research/packages.md).
 
 ## Packages
 
@@ -182,17 +182,17 @@ For developers:
 | `packages/protocol/` | `@5straps/protocol` | The wire schemas Buckle speaks |
 | `packages/runtime/` | `@5straps/runtime` | Runtime primitives Buckle is built on |
 
-Settings are documented in [`.env.example`](https://github.com/wuiyang/buckle/blob/main/.env.example).
-To work on Buckle, see [CONTRIBUTING.md](https://github.com/wuiyang/buckle/blob/main/CONTRIBUTING.md).
-Changes are listed in [CHANGELOG.md](https://github.com/wuiyang/buckle/blob/main/CHANGELOG.md).
+Settings are documented in [`.env.example`](https://github.com/wuiyang/5straps-buckle/blob/main/.env.example).
+To work on Buckle, see [CONTRIBUTING.md](https://github.com/wuiyang/5straps-buckle/blob/main/CONTRIBUTING.md).
+Changes are listed in [CHANGELOG.md](https://github.com/wuiyang/5straps-buckle/blob/main/CHANGELOG.md).
 
 ## Security
 
 Report a vulnerability privately through GitHub private vulnerability reporting, as
-[SECURITY.md](https://github.com/wuiyang/buckle/blob/main/SECURITY.md) describes, not in a
+[SECURITY.md](https://github.com/wuiyang/5straps-buckle/blob/main/SECURITY.md) describes, not in a
 public issue.
 
 ## License
 
-Apache-2.0. Copyright 2026 The 5straps Authors. See [LICENSE](https://github.com/wuiyang/buckle/blob/main/LICENSE)
-and [NOTICE](https://github.com/wuiyang/buckle/blob/main/NOTICE).
+Apache-2.0. Copyright 2026 The 5straps Authors. See [LICENSE](https://github.com/wuiyang/5straps-buckle/blob/main/LICENSE)
+and [NOTICE](https://github.com/wuiyang/5straps-buckle/blob/main/NOTICE).

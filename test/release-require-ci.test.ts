@@ -82,9 +82,9 @@ describe('the CI requirement before publishing', () => {
 
   it('takes the latest run of each job, and the repository from the origin URL or GITHUB_REPOSITORY', () => {
     expect(blockingJobs({ sha: SHA, runs: [run('verify', 'failure'), run('verify', 'success', { id: 2, started_at: '2026-09-29T12:00:00Z' }), run('package-arm64', 'success')] })).toEqual([])
-    expect(repositoryOf('git@github.com-alias:wuiyang/buckle.git')).toBe('wuiyang/buckle')
-    expect(repositoryOf('https://github.com/wuiyang/buckle.git')).toBe('wuiyang/buckle')
-    expect(repositoryOf('https://github.com/wuiyang/buckle')).toBe('wuiyang/buckle')
+    expect(repositoryOf('git@github.com-alias:wuiyang/5straps-buckle.git')).toBe('wuiyang/5straps-buckle')
+    expect(repositoryOf('https://github.com/wuiyang/5straps-buckle.git')).toBe('wuiyang/5straps-buckle')
+    expect(repositoryOf('https://github.com/wuiyang/5straps-buckle')).toBe('wuiyang/5straps-buckle')
     const git = fake({ runs: [run('verify', 'success'), run('package-arm64', 'success')] })
     requireCi({ run: git.run, repository: 'named/explicitly' })
     expect(git.calls.find(call => call[0] === 'gh')?.[2]).toBe(`repos/named/explicitly/commits/${SHA}/check-runs?per_page=100`)

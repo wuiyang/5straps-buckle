@@ -58,8 +58,8 @@ configured to skip install scripts leaves it unbuilt. Everything else still work
 To build from a clone instead, with pnpm 10.33.2 as `packageManager` pins it:
 
 ```bash
-git clone https://github.com/wuiyang/buckle.git
-cd buckle
+git clone https://github.com/wuiyang/5straps-buckle.git
+cd 5straps-buckle
 pnpm install
 pnpm build
 cd buckle && npm link

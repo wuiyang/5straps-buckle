@@ -10,8 +10,8 @@ Node.js 24 or newer, and pnpm 10.33.2, which `packageManager` in the root `packa
 (`corepack enable` picks it up).
 
 ```bash
-git clone https://github.com/wuiyang/buckle.git
-cd buckle
+git clone https://github.com/wuiyang/5straps-buckle.git
+cd 5straps-buckle
 CI=true pnpm install --frozen-lockfile
 ```
 

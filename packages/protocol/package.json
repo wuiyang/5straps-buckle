@@ -9,14 +9,14 @@
     "zod",
     "schema"
   ],
-  "homepage": "https://github.com/wuiyang/buckle#readme",
+  "homepage": "https://github.com/wuiyang/5straps-buckle#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wuiyang/buckle.git",
+    "url": "git+https://github.com/wuiyang/5straps-buckle.git",
     "directory": "packages/protocol"
   },
   "bugs": {
-    "url": "https://github.com/wuiyang/buckle/issues"
+    "url": "https://github.com/wuiyang/5straps-buckle/issues"
   },
   "type": "module",
   "exports": {

@@ -57,4 +57,4 @@ Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## Questions
 
-Open an issue at <https://github.com/wuiyang/buckle/issues>.
+Open an issue at <https://github.com/wuiyang/5straps-buckle/issues>.
