@@ -188,7 +188,8 @@ function printUsage(): CliResult {
   buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
   buckle keys enroll <public-key> --purpose <p> --workspace <w> | list | revoke <key-id>
                                    Client keys trusted for signed setup and approvals, by scope
-  buckle client keygen | key | request <METHOD> <url>     This device's signing key, and a signed request with it
+  buckle client keygen | key | request <METHOD> <url> | approve <node-url> <token>
+                                   This device's signing key, a signed request with it, and a signed approval
 
   buckle --version                   Print the version
 `)

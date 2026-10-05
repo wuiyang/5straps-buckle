@@ -206,7 +206,7 @@ async function askNodeChoices(prompt: InitPrompt): Promise<NodeChoices> {
   for (const pack of BUILTIN_PACKS) prompt.say(`  ${pack.id.padEnd(12)} ${pack.summary}`)
   const packs = await askValid(prompt, 'Packs to enable, comma separated; naming them turns plugins off [all]: ', 'BUCKLE_PACKS')
   const shell = await askYesNo(prompt, 'Shell tools on? [Y/n]: ', true)
-  prompt.say('Host Git and forge tools read the repository outside the sandbox\'s per-file checks, so they start off (BUCKLE-D17).')
+  prompt.say('Host Git and forge tools read the repository outside the sandbox\'s per-file checks, so they start off.')
   const hostGit = await askYesNo(prompt, 'Host Git and forge tools on? [y/N]: ', false)
   const networkAllow = await askValid(prompt, 'Approved hosts and URLs, the only ones fetches and pages may reach, e.g. localhost:3000,*.example.com [none]: ', 'BUCKLE_NETWORK_ALLOW')
   const allowedHosts = await askValid(prompt, 'Private-address hosts web_fetch may reach, e.g. db.internal,*.internal.test [none]: ', 'BUCKLE_ALLOWED_HOSTS')
@@ -247,7 +247,7 @@ function describeChoices(choices: NodeChoices): string {
 function renderChoices(choices: NodeChoices): string {
   return `${choices.packs ? `BUCKLE_PACKS=${choices.packs.join(',')}` : '# BUCKLE_PACKS=fs,web,shell'}
 BUCKLE_ALLOW_SHELL=${choices.shell}
-# Host Git and forge tools read the repository outside per-file checks (BUCKLE-D17).
+# Host Git and forge tools read the repository outside per-file checks.
 ${choices.hostGit ? 'BUCKLE_ALLOW_HOST_GIT=true' : '# BUCKLE_ALLOW_HOST_GIT=true'}`
 }
 

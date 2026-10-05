@@ -11,8 +11,9 @@ import { loadConfig, policyPath } from '../common/runtime/config.js'
 import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
-// The top-level help once omitted the dangerously-allow switch, and `buckle policy --help` printed its usage but
-// exited 1, so a wrapper that treats a non-zero exit as failure saw asking for help as an error (public docs review).
+// The top-level help once omitted the dangerously-allow switch and `buckle client approve`, and `buckle policy --help`
+// printed its usage but exited 1, so a wrapper that treats a non-zero exit as failure saw asking for help as an error
+// (public docs review).
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -39,6 +40,12 @@ describe('buckle --help', () => {
     expect(result).toEqual({ exitCode: 0 })
     expect(io.out()).toContain('buckle policy dangerously-allow on|off')
     expect(io.out()).toContain('DANGEROUS')
+  })
+
+  it('names buckle client approve on the client line, as the settings reference and the approvals page do', () => {
+    const io = captured()
+    answerWithoutConfiguration(['--help'])
+    expect(io.out()).toMatch(/^ {2}buckle client .*\| approve <node-url> <token>$/m)
   })
 })
 

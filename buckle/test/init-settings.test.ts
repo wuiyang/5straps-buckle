@@ -49,7 +49,7 @@ describe('buckle init asks for node settings after the workspace', () => {
       expect.stringContaining('[none]'),
       expect.stringContaining('[none]'),
     ])
-    expect(prompt.said).toContainEqual(expect.stringContaining('BUCKLE-D17'))
+    expect(prompt.said).toContainEqual('Host Git and forge tools read the repository outside the sandbox\'s per-file checks, so they start off.')
     for (const id of ['fs', 'web', 'git', 'forge', 'dev', 'browser', 'shell', 'environment']) expect(prompt.said.join('\n')).toContain(`  ${id} `)
 
     const env = parseEnv(result.written)
@@ -58,6 +58,7 @@ describe('buckle init asks for node settings after the workspace', () => {
     expect(env.BUCKLE_ALLOW_SHELL).toBe('true')
     for (const key of ['BUCKLE_PACKS', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_ALLOWED_HOSTS']) expect(env[key]).toBeUndefined()
     expect(result.written).toContain('# BUCKLE_ALLOW_HOST_GIT=true')
+    expect(result.written).toContain('# Host Git and forge tools read the repository outside per-file checks.\n')
   })
 
   it('writes the answers that move off a default', async () => {
