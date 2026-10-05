@@ -298,6 +298,7 @@
 - **buckle:** The sandbox, approvals, and install pages agree on what is withheld and what is refused ([35a3f88](https://github.com/wuiyang/5straps-buckle/commit/35a3f88))
 - **repo:** Changelog regenerated ([fc27ab1](https://github.com/wuiyang/5straps-buckle/commit/fc27ab1))
 - **repo:** Changelog regenerated ([727adba](https://github.com/wuiyang/5straps-buckle/commit/727adba))
+- **repo:** Changelog regenerated ([69da39e](https://github.com/wuiyang/5straps-buckle/commit/69da39e))
 
 ### 📦 Build
 
@@ -355,6 +356,7 @@
 - **buckle:** Oracle rows pin the heredoc end inside a quoted substitution and the splitting guard, and comments say what the rows do ([120f3eb](https://github.com/wuiyang/5straps-buckle/commit/120f3eb))
 - **repo:** The bundled-audit test removes its temp directories ([225c491](https://github.com/wuiyang/5straps-buckle/commit/225c491))
 - **buckle:** A busybox or toybox row skips where the build lacks its applet, and the xargs rows read the words as typed ([a4ff51e](https://github.com/wuiyang/5straps-buckle/commit/a4ff51e))
+- **protocol:** A request forged under the identity key is refused at the key on every Node 24 release ([77d2389](https://github.com/wuiyang/5straps-buckle/commit/77d2389))
 
 ### 🤖 CI
 
