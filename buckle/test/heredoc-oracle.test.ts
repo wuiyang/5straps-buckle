@@ -27,14 +27,16 @@ if (!hasBash) console.info('heredoc oracle: bash is not on PATH, so the real-bas
 
 /**
  * One shape: its body, run as `bash -c`. `written` is the invocation Buckle reads where bash runs it expanded (an
- * over-read, see BACKTICK_EXTRA). `unread` is the limit the reading must name: the call is one Buckle cannot read
+ * over-read, see BACKTICK_EXTRA), or with arguments xargs reads from standard input at run time, which Buckle cannot
+ * see (MULTICALL_AND_CHRT). `unread` is the limit the reading must name: the call is one Buckle cannot read
  * whole, so it is refused under any deny glob and asked at the floor (default D33 (b)), and what bash ran need not be
  * among the commands read. `whole` says the call must be read whole, with no limit, so a reading that marks it unread
  * fails the row as a miss would. `needs` names a program the shape runs that a machine may lack: where it is absent the
  * row is skipped and the reason logged; where it is present the sentinel must have run, so the row proves the program
- * runs it.
+ * runs it. `applet` names the applet of a multi-call `needs` (busybox, toybox) the shape runs, which a build may leave
+ * out: where the build on PATH lacks it, the row is skipped and the reason logged, as for an absent program.
  */
-interface Shape { label: string; body: string; written?: string; unread?: ReadLimit; whole?: true; needs?: string }
+interface Shape { label: string; body: string; written?: string; unread?: ReadLimit; whole?: true; needs?: string; applet?: string }
 
 /** The dangerous command each shape carries, a sentinel that only records that it ran. `mark` shows its argument too. */
 const SENTINEL = 'sentinel'
@@ -487,7 +489,7 @@ const INTERPRETERS: Shape[] = [
   { label: 'interpreter: pypy3 -c os.system', body: `pypy3 -c "import os; os.system('${PAYLOAD}')"`, unread: 'interpreter', needs: 'pypy3' },
   { label: 'interpreter: tcsh -c', body: `tcsh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'tcsh' },
   { label: 'interpreter: csh -c', body: `csh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'csh' },
-  { label: 'interpreter: busybox sh -c', body: `busybox sh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'busybox' },
+  { label: 'interpreter: busybox sh -c', body: `busybox sh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'busybox', applet: 'sh' },
 ]
 
 /**
@@ -1138,23 +1140,31 @@ const UNFED_SCRIPT_OPERANDS: Shape[] = [
 
 /**
  * busybox and toybox run the applet their first operand names, so the command behind one is read as that applet with
- * its words; a shell applet stays an interpreter Buckle does not read as bash. Neither is installed here, so these rows
- * skip where the program is absent, as the other absent shells do. chrt from util-linux 2.41 runs a command given with
- * no priority; an older chrt refuses it and runs nothing, so here the rows are over-reads, which the reading allows.
+ * its words; a shell applet stays an interpreter Buckle does not read as bash. Each row runs under the real program
+ * where it is on PATH, as on the Ubuntu 24.04 CI runners, which carry busybox, and is skipped with its reason logged
+ * where the program is absent or its build lacks the applet: Ubuntu's busybox 1.36.1 has no nice, and its toybox
+ * 0.8.9 no sh. xargs hands the items it reads from standard input to the command as arguments at run time, so bash
+ * runs `sentinel mark` where Buckle reads `sentinel`, the words as typed, under busybox and toybox as under plain
+ * xargs, whose row beside them keeps the readings together. chrt from util-linux 2.41 runs a command given with no
+ * priority; an older chrt refuses it and runs nothing, so here the rows are over-reads, which the reading allows.
  */
 const MULTICALL_AND_CHRT: Shape[] = [
   ...['busybox', 'toybox'].flatMap(binary => [
-    { label: `${binary}: env`, body: `${binary} env ${PAYLOAD}`, needs: binary },
-    { label: `${binary}: env -u`, body: `${binary} env -u HOME ${PAYLOAD}`, needs: binary },
-    { label: `${binary}: nice`, body: `${binary} nice ${PAYLOAD}`, needs: binary },
-    { label: `${binary}: timeout`, body: `${binary} timeout 5 ${PAYLOAD}`, needs: binary },
-    { label: `${binary}: xargs`, body: `echo mark | ${binary} xargs ${SENTINEL}`, needs: binary },
+    { label: `${binary}: env`, body: `${binary} env ${PAYLOAD}`, needs: binary, applet: 'env' },
+    { label: `${binary}: env -u`, body: `${binary} env -u HOME ${PAYLOAD}`, needs: binary, applet: 'env' },
+    { label: `${binary}: nice`, body: `${binary} nice ${PAYLOAD}`, needs: binary, applet: 'nice' },
+    { label: `${binary}: timeout`, body: `${binary} timeout 5 ${PAYLOAD}`, needs: binary, applet: 'timeout' },
+    { label: `${binary}: xargs, an item from standard input (read as written)`, body: `echo mark | ${binary} xargs ${SENTINEL}`, written: '', needs: binary, applet: 'xargs' },
   ]),
-  { label: 'toybox: sh -c is an interpreter', body: `toybox sh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'toybox' },
+  { label: 'xargs: an item from standard input (read as written)', body: `echo mark | xargs ${SENTINEL}`, written: '' },
+  { label: 'toybox: sh -c is an interpreter', body: `toybox sh -c '${PAYLOAD}'`, unread: 'interpreter', needs: 'toybox', applet: 'sh' },
   { label: 'chrt: a policy with no priority', body: `chrt -o ${PAYLOAD}`, whole: true },
   { label: 'chrt: a long policy with no priority', body: `chrt --other ${PAYLOAD}`, whole: true },
   { label: 'chrt: no policy and no priority', body: `chrt ${PAYLOAD}`, whole: true },
 ]
+
+/** The command that prints the applets each multi-call program's build holds: busybox under --list, toybox with no arguments. */
+const APPLET_LISTINGS: Readonly<Record<string, string>> = { busybox: 'busybox --list', toybox: 'toybox' }
 
 /**
  * Shell text a builtin keeps for the shell to run later: a trap's action, run on a signal or at exit; an alias's value,
@@ -1594,6 +1604,17 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     }
   }
 
+  /**
+   * The applets the build of a multi-call program bash finds on the test PATH holds. A listing that fails or names
+   * none fails the run rather than skipping the program's rows, so a broken listing hides no row.
+   */
+  const applets = (program: string): Set<string> => {
+    const listing = APPLET_LISTINGS[program]
+    const names = listing === undefined ? [] : execFileSync('bash', ['-c', listing], { env: environment, encoding: 'utf8' }).split(/\s+/).filter(name => name !== '')
+    if (names.length === 0) throw new Error(`heredoc oracle: ${program} listed no applets, so its rows could neither run nor skip`)
+    return new Set(names)
+  }
+
   /** Why the control recorded nothing, checked in the order its run needs each part. */
   const sentinelFault = (): string => {
     if (!existsSync('/bin/sh')) return 'there is no /bin/sh, the interpreter the sentinel script names'
@@ -1645,9 +1666,13 @@ describe.skipIf(!hasBash)('heredoc and continuation shapes read a superset of wh
     let overRead = 0
     let unreadShapes = 0
     const skipped: string[] = []
-    for (const { label, body, written, unread, whole, needs } of shapes) {
+    for (const { label, body, written, unread, whole, needs, applet } of shapes) {
       if (needs !== undefined && resolved(needs) === '') {
         skipped.push(`${label} (${needs} is not on PATH)`)
+        continue
+      }
+      if (needs !== undefined && applet !== undefined && !applets(needs).has(applet)) {
+        skipped.push(`${label} (the ${needs} on PATH has no ${applet} applet)`)
         continue
       }
       const ran = bashRan(body, needs === undefined ? SHAPE_TIMEOUT : NEEDS_TIMEOUT)
