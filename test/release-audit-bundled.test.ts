@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { bundledAdvisories, checkedAudit, readBundled } from '../scripts/release/audit-bundled.mjs'
 
 // B21 (plan section G): an advisory for a package the Buckle build bundled into .output fails the
@@ -25,6 +25,19 @@ function audit(advisories: Array<{ id: number; module_name: string; versions: st
 
 const BUNDLED = ['hookable@6.1.1', 'nitro@3.0.260903-beta', 'srvx@1.0.5']
 
+const directories: string[] = []
+
+/** A fresh temp directory, removed after the test that made it. */
+function tempDirectory(): string {
+  const directory = mkdtempSync(join(tmpdir(), 'audit-bundled-'))
+  directories.push(directory)
+  return directory
+}
+
+afterEach(() => {
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
+
 describe('the bundled-package audit', () => {
   it('names each advisory for a bundled package at its bundled version', () => {
     expect(bundledAdvisories({ audit: audit([{ id: 1, module_name: 'srvx', versions: ['1.0.5'] }]), bundled: BUNDLED })).toEqual([
@@ -38,7 +51,7 @@ describe('the bundled-package audit', () => {
   })
 
   it('reads the build\'s lists, and refuses a missing or malformed one', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'audit-bundled-'))
+    const directory = tempDirectory()
     writeFileSync(join(directory, 'good.json'), JSON.stringify(BUNDLED))
     writeFileSync(join(directory, 'bad.json'), JSON.stringify({ packages: BUNDLED }))
     expect(readBundled([join(directory, 'good.json')])).toEqual(BUNDLED)
@@ -47,7 +60,7 @@ describe('the bundled-package audit', () => {
   })
 
   it('exits 1 naming the package and the advisory, and 0 when nothing bundled is affected', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'audit-bundled-'))
+    const directory = tempDirectory()
     writeFileSync(join(directory, 'bundled.json'), JSON.stringify(BUNDLED))
     writeFileSync(join(directory, 'affected.json'), JSON.stringify(audit([{ id: 4, module_name: 'nitro', versions: ['3.0.260903-beta'], severity: 'critical' }])))
     writeFileSync(join(directory, 'clean.json'), JSON.stringify(audit([{ id: 5, module_name: 'nitro', versions: ['2.0.0'] }])))
@@ -67,7 +80,7 @@ describe('the bundled-package audit', () => {
   })
 
   it('fails when the audit itself failed: an error answer, an answer without advisories and metadata, or a non-zero exit naming no advisory (review M7 of B20-B22)', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'audit-bundled-'))
+    const directory = tempDirectory()
     writeFileSync(join(directory, 'bundled.json'), JSON.stringify(BUNDLED))
     // What pnpm answers when the registry is down or refuses the request.
     writeFileSync(join(directory, 'error.json'), JSON.stringify({ error: { code: 'ERR_PNPM_AUDIT_BAD_RESPONSE', message: 'The audit endpoint responded with 503' } }))
