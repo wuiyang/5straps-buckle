@@ -253,6 +253,7 @@
 - **buckle:** A lone tilde as the command word leaves the call unread ([42a70dc](https://github.com/wuiyang/buckle/commit/42a70dc))
 - **buckle:** An expansion that is the whole value attached to a short option leaves the call unread ([ea56f90](https://github.com/wuiyang/buckle/commit/ea56f90))
 - **buckle:** Buckle policy refuses a flag it does not know ([eb2637e](https://github.com/wuiyang/buckle/commit/eb2637e))
+- **buckle:** Buckle policy refuses extra words instead of dropping them ([5803a29](https://github.com/wuiyang/buckle/commit/5803a29))
 
 ### 💅 Refactors
 
@@ -288,6 +289,7 @@
 - **buckle:** Interpreters under a deny rule, how to allow one, and which version flags stay ordinary ([6b85884](https://github.com/wuiyang/buckle/commit/6b85884))
 - **repo:** Changelog regenerated ([ddad571](https://github.com/wuiyang/buckle/commit/ddad571))
 - **buckle:** The pages say what the code does, with a known-limits page ([c928dac](https://github.com/wuiyang/buckle/commit/c928dac))
+- **repo:** Changelog regenerated ([879f913](https://github.com/wuiyang/buckle/commit/879f913))
 
 ### 📦 Build
 
