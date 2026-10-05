@@ -998,16 +998,18 @@ const surelyOperand = (expansion: Expansion, signs = '-'): boolean => !expansion
 
 /**
  * Whether an expansion in an option word leaves the options as written: the word stays one word, and the expansion
- * starts no earlier than a value attached after a letter or a name, typed, that takes one (`-n"$v"`, `--signal="$s"`),
- * which names nothing that runs.
+ * starts inside a value attached to a typed option that takes one, which names nothing that runs. After a long option's
+ * `=` the value stays attached even when empty (`--signal="$s"`). After a short option's letter it must follow typed
+ * value text (`-n1"$v"`): an empty value leaves the letter alone, and it takes the next word (`v=; nice -n"$v" 5 cmd`).
  */
 const attachedValue = (expansion: Expansion, valueAt: number | null, runs: boolean): boolean =>
-  valueAt !== null && !runs && !expansion.splits && expansion.prefix.length >= valueAt
+  valueAt !== null && !runs && !expansion.splits
+  && (expansion.prefix.length > valueAt || (expansion.prefix.length === valueAt && expansion.prefix[valueAt - 1] === '='))
 
 /**
  * Whether an expansion among the words before what a program runs (LeadingWord) may move it: in an option word, unless
- * it is a value attached after a typed letter that takes one; in an option's value, if it may be several words or names
- * what runs; and in an operand, unless the word's own text starts it with no `-` (`user@"$HOST"`).
+ * it is a value attached to a typed option that takes one (attachedValue); in an option's value, if it may be several
+ * words or names what runs; and in an operand, unless the word's own text starts it with no `-` (`user@"$HOST"`).
  */
 function unsureWords(leading: readonly LeadingWord[], expanded: Expanded, signs = '-'): boolean {
   return leading.some(item => {
@@ -1164,7 +1166,7 @@ const marked = (unsure: boolean, inner: Unwrapped): Unwrapped => (unsure ? { ...
  * when it runs none but an option opens an interactive session (`sudo -i`). Bash splits an unquoted expansion and a
  * pattern into words, and an expansion may be an option, so one among these words may supply the command or move it
  * (`v="1 git"; timeout $v push`): such a word marks the reading `unsure`. It is sure only as an option's value that stays
- * one word and names nothing that runs (`nice -n "$v"`, `sudo -u "$USER"`, `--signal="$s"`, `-n"$v"`), as an assignment
+ * one word and names nothing that runs (`nice -n "$v"`, `sudo -u "$USER"`, `--signal="$s"`, `-n1"$v"`), as an assignment
  * whose name and `=` are typed and whose value stays one word (`env FOO="$BAR"`), or as an operand that stays one word
  * with typed text before the expansion that is no option (`flock ./"$lock"`). A `NAME=$v` before a command, with no
  * wrapper, is an assignment bash does not split, and is not read here.

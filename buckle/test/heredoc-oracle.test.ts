@@ -1328,10 +1328,12 @@ const KEYWORD_SHAPES: Shape[] = [
 /**
  * An expansion among the words a program reads before the command it runs may supply that command or move it: bash splits
  * an unquoted one, a pattern, a brace expansion, `"$@"`, and `"${a[@]}"` into words, and a quoted one may still be an
- * option (`-u`, `-S`, `-c`, `-exec`, `-oProxyCommand=...`), or a value that names what runs (xargs -I, env -S). In a
+ * option (`-u`, `-S`, `-c`, `-exec`, `-oProxyCommand=...`), or a value that names what runs (xargs -I, env -S), and an
+ * empty one attached to a short option's letter leaves the letter to take the next word (`v=; nice -n"$v" 5 cmd`). In a
  * wrapper, xargs, find, ssh, su, or a shell before its script, such a call is unread (expansion). It stays read where the
- * word cannot change the parse: a quoted value after an option that always takes one, a quoted value attached to a typed
- * option, an assignment with a typed name and a quoted value, `NAME=$v` before a command (bash splits no assignment), find
+ * word cannot change the parse: a quoted value after an option that always takes one, a quoted value attached after a
+ * long option's `=` or after typed value text, an assignment with a typed name and a quoted value, `NAME=$v` before a
+ * command (bash splits no assignment), find
  * with no exec terminator after the word or a quoted value of a find primary, an operand with typed text before the
  * expansion that is no option (`user@"$h"`, `./"$n"`), and a shell's quoted script operand with no word after it. Each ran
  * the sentinel under real bash in scratch first, sudo, doas, su, and ssh as their stand-ins, ProxyCommand under real ssh.
@@ -1389,6 +1391,19 @@ const WRAPPER_WORDS: Shape[] = [
     ['ssh, an unquoted host', `h='host ${SENTINEL}'; ssh $h mark`],
     ['su, a quoted user that is -c', `v=-c; su "$v" '${PAYLOAD}' root`],
     ['su, a quoted word after the user that is -c', `v=-c; su root "$v" '${PAYLOAD}'`],
+    ['nice -n, a quoted attached value', `v=5; nice -n"$v" ${PAYLOAD}`],
+    ['timeout -s, a quoted attached value', `s=TERM; timeout -s"$s" 5 ${PAYLOAD}`],
+    ['timeout -s, an empty quoted attached value', `v=; timeout -s"$v" KILL 5 ${PAYLOAD}`],
+    ['timeout -k, an empty quoted attached value', `v=; timeout -k"$v" 1 5 ${PAYLOAD}`],
+    ['nice -n, an empty quoted attached value', `v=; nice -n"$v" 5 ${PAYLOAD}`],
+    ['env -u, an empty quoted attached value', `v=; env -u"$v" X ${PAYLOAD}`],
+    ['env -C, an empty quoted attached value', `v=; env -C"$v" . ${PAYLOAD}`],
+    ['sudo -u, an empty quoted attached value', `v=; sudo -u"$v" root ${PAYLOAD}`],
+    ['doas -u, an empty quoted attached value', `v=; doas -u"$v" root ${PAYLOAD}`],
+    ['xargs -n, an empty quoted attached value', `v=; echo mark | xargs -n"$v" 1 ${SENTINEL}`],
+    ['stdbuf -o, an empty quoted attached value', `v=; stdbuf -o"$v" L ${PAYLOAD}`],
+    ['ionice -c, an empty quoted attached value', `v=; ionice -c"$v" 3 ${PAYLOAD}`],
+    ['ssh -p, an empty quoted attached value', `v=; ssh -p"$v" 22 host ${PAYLOAD}`],
   ].map(([label, body]) => ({ label: `wrapper words unread: ${label}`, body: body!, unread: 'expansion' as const })),
   ...[
     ['ssh, a quoted host that is an -o ProxyCommand', `v='-oProxyCommand=${PAYLOAD}'; ${REAL_SSH} "$v" h true`],
@@ -1396,11 +1411,12 @@ const WRAPPER_WORDS: Shape[] = [
   ].map(([label, body]) => ({ label: `wrapper words unread: ${label}`, body: body!, unread: 'expansion' as const, needs: '/usr/bin/ssh' })),
   ...[
     ['nice -n, a quoted value', `v=5; nice -n "$v" ${PAYLOAD}`],
-    ['nice -n, a quoted attached value', `v=5; nice -n"$v" ${PAYLOAD}`],
+    ['nice -n, an empty quoted value attached after typed digits', `v=; nice -n1"$v" ${PAYLOAD}`],
     ['sudo -u, a quoted user', `u=root; sudo -u "$u" ${PAYLOAD}`],
     ['doas -u, a quoted user', `u=root; doas -u "$u" ${PAYLOAD}`],
     ['timeout --signal=, a quoted value', `s=TERM; timeout --signal="$s" 5 ${PAYLOAD}`],
-    ['timeout -s, a quoted attached value', `s=TERM; timeout -s"$s" 5 ${PAYLOAD}`],
+    ['timeout --signal=, an empty quoted value (runs nothing: the empty signal stays its value)', `s=; timeout --signal="$s" 5 ${PAYLOAD}`],
+    ['timeout -s, an empty quoted value attached after a typed signal', `s=; timeout -sTERM"$s" 5 ${PAYLOAD}`],
     ['timeout -s, a quoted value', `s=TERM; timeout -s "$s" 5 ${PAYLOAD}`],
     ['timeout, a duration with typed digits first', `t=5; timeout 1"$t" ${PAYLOAD}`],
     ['env, a quoted assignment value', `b='x y'; env FOO="$b" ${PAYLOAD}`],

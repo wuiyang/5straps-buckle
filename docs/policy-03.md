@@ -19,9 +19,11 @@ exists only once the shell runs, so Buckle cannot know it.
   (`v="1 git"; timeout $v push`). The call is unread, ordinary shapes included: `timeout $T cmd`,
   `timeout "$T" cmd`, `env FOO=$BAR cmd`, `sudo -u $USER cmd`, `nice -n $N cmd`,
   `ssh "$HOST" cmd`, `find $DIR -name x`, `find . -name *.log`, `xargs -P $(nproc) cmd`,
-  `flock "$LOCK" cmd`, `bash "$script" "$@"`, and `su "$user" -c cmd`.
+  `flock "$LOCK" cmd`, `bash "$script" "$@"`, and `su "$user" -c cmd`. So is a value attached to
+  a short option (`nice -n"$N" cmd`): left empty, it leaves `-n` to take the next word.
 - These stay read, since the expansion cannot move the command: a quoted value after an option
-  that takes one (`sudo -u "$USER" cmd`, `nice -n "$N" cmd`), a quoted assignment value
+  that takes one (`sudo -u "$USER" cmd`, `nice -n "$N" cmd`) or after a long option's `=`
+  (`timeout --signal="$s"`), a quoted assignment value
   (`env FOO="$BAR" cmd`), an assignment before the command (`FOO=$BAR cmd`), a quoted `find`
   primary value (`find . -name "$p"`), an operand with typed text first (`ssh deploy@"$host" cmd`),
   and a shell's quoted script with nothing after it (`bash "$script"`). Write the value out, or

@@ -1102,6 +1102,11 @@ describe('a call Buckle cannot read whole', () => {
     ['bash, a quoted script operand that is -c before a variable', 'x="git push origin main"; v=-c; bash "$v" "$x"'],
     ['bash, an unquoted script operand', 'v="-c git"; bash $v'],
     ['su, a quoted user that is -c', 'v=-c; x="git push origin main"; su "$v" "$x" root'],
+    ['timeout -s, an empty quoted attached value', 'v=; timeout -s"$v" KILL 5 git push origin main'],
+    ['nice -n, an empty quoted attached value', 'v=; nice -n"$v" 5 git push origin main'],
+    ['env -u, an empty quoted attached value', 'v=; env -u"$v" X git push origin main'],
+    ['xargs -n, an empty quoted attached value', 'v=; echo main | xargs -n"$v" 1 git push origin'],
+    ['ssh -p, an empty quoted attached value', 'v=; ssh -p"$v" 22 host git push origin main'],
   ] as const
 
   it.each(cases.flatMap(([engine, switched]) => movedCommands.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, under git push*, a command an expansion among the wrapper words may move: %s, naming the limit', (engine, switched, _shape, body) => {
@@ -1116,16 +1121,17 @@ describe('a call Buckle cannot read whole', () => {
   })
 
   // Where the expanded word cannot change the parse, the call stays read whole: a quoted value after an option that always
-  // takes one or attached to a typed option, an assignment with a typed name and a quoted value, `NAME=$v` before a
-  // command, a quoted find path with no exec after it or a quoted find primary value, an operand with typed text before
-  // the expansion that is no option, and a shell's quoted script operand with no word after it. The push glob refuses
-  // each by name, and the floor asks about each force push as one.
+  // takes one, or attached after a long option's `=` or after typed value text, an assignment with a typed name and a
+  // quoted value, `NAME=$v` before a command, a quoted find path with no exec after it or a quoted find primary value, an
+  // operand with typed text before the expansion that is no option, and a shell's quoted script operand with no word
+  // after it. The push glob refuses each by name, and the floor asks about each force push as one.
   const keptRead = (command: string) => [
     ['nice -n, a quoted value', `v=5; nice -n "$v" ${command}`],
-    ['nice -n, a quoted attached value', `v=5; nice -n"$v" ${command}`],
+    ['nice -n, an empty quoted value attached after typed digits', `v=; nice -n1"$v" ${command}`],
     ['sudo -u, a quoted user', `sudo -u "$USER" ${command}`],
     ['timeout --signal=, a quoted value', `s=TERM; timeout --signal="$s" 5 ${command}`],
-    ['timeout -s, a quoted attached value', `s=TERM; timeout -s"$s" 5 ${command}`],
+    ['timeout --signal=, an empty quoted value', `s=; timeout --signal="$s" 5 ${command}`],
+    ['timeout -s, an empty quoted value attached after a typed signal', `s=; timeout -sTERM"$s" 5 ${command}`],
     ['timeout -k, a quoted substitution', `timeout -k "$(echo 5)" 10 ${command}`],
     ['env, a quoted assignment value', `env FOO="$BAR" ${command}`],
     ['an unquoted assignment before a command', `FOO=$BAR ${command}`],
@@ -1152,11 +1158,13 @@ describe('a call Buckle cannot read whole', () => {
   })
 
   // The cost of the rule: these ordinary shapes are now unread, refused under any deny glob and asked at the floor, since
-  // a quoted value there may be an option and an unquoted one several words.
+  // a quoted value there may be an option, an unquoted one several words, and an empty one attached to a short option's
+  // letter no value at all.
   it.each([
     'timeout $T make test', 'timeout "$T" make test', 'env FOO=$BAR make test', 'ssh "$HOST" uptime', 'ssh "$USER@$HOST" uptime',
     'find $DIR -name x', 'find . -name *.log', 'find "$dir" -name x -exec rm {} \\;', 'find . -exec grep -l "$pattern" {} +', 'xargs -P $(nproc) make',
     'flock "$LOCK" make', 'bash "$script" "$@"', 'su "$user" -c make', 'nice -n $N make', 'sudo -u $USER make',
+    'nice -n"$N" make', 'timeout -s"$SIG" 5 make', 'sudo -u"$USER" make', 'ssh -p"$PORT" host uptime', 'xargs -n"$N" make',
   ])('reads %j as unread (expansion), the cost of the rule', (body) => {
     expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
   })
