@@ -294,6 +294,8 @@
 - **repo:** Changelog regenerated ([ffc0d19](https://github.com/wuiyang/buckle/commit/ffc0d19))
 - **buckle:** The state directory is hidden from tools only under a process sandbox ([29a099b](https://github.com/wuiyang/buckle/commit/29a099b))
 - **buckle:** Current test counts, every page in the index, and what a missing ripgrep does ([8754eb9](https://github.com/wuiyang/buckle/commit/8754eb9))
+- **repo:** Changelog regenerated under the 0.1.0 heading ([10669f0](https://github.com/wuiyang/buckle/commit/10669f0))
+- **buckle:** The sandbox, approvals, and install pages agree on what is withheld and what is refused ([35a3f88](https://github.com/wuiyang/buckle/commit/35a3f88))
 
 ### 📦 Build
 
