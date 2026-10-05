@@ -38,7 +38,7 @@ might hold a denied command; with none, the destructive floor asks. The refusal 
 | find primary | `find . -exec -name x \;` | start the command with the program it runs |
 | comment | `case $x in a) true;; esac; echo $(true)#x` | put a blank before the `#` |
 | interactive session | `ssh host`, `su deploy`, or `sudo -s` with no command | give it the command, `ssh host uptime` |
-| expansion | `$cmd push`, `eval "$x"`, `bash -c "$(cat job.sh)"`, `timeout $t make` | spell the command out, or quote the value ([expansions](policy-03.md#expansions)) |
+| expansion | `$cmd push`, `eval "$x"`, `bash -c "$(cat job.sh)"`, `nice -n $n make` | spell the command out, or quote a value after an option that takes one, `nice -n "$n" make` ([expansions](policy-03.md#expansions)) |
 | own parsing | `env -S 'a\_b'`, a `%r` in an `ssh` `ProxyCommand`, `sudo -s $'a\nb'` | write the value with no escape, `%` token, or quoting of its own |
 | script as data | `cat job.sh \| bash`, `bash < job.sh`, `xargs bash`, `BASH_ENV=<(...) bash -c true` | hand the shell its text with `-c` or a heredoc on its own statement |
 | unknown interpreter | `python3 -c 'print(1)'` | allow it, as below |

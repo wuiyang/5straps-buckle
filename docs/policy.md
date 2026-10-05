@@ -35,18 +35,21 @@ last. `**` matches any run of words, and `{a,b}` one alternative. Buckle refuses
   asks, once or for the session.
 
 A shell wrapper (`bash -c`, or `-c` with `sh`, `zsh`, `dash`, `ksh`, `fish`, `rbash`, `ash`,
-`mksh`, `yash`, or `posh`) hides its command from word globs, so it needs its own allow rule, such
-as `buckle policy allow-command 'bash -c *'`, even with no allow list; `script_run` with the `bash`
+`mksh`, `yash`, or `posh`) that a call starts with, or reaches through a prefix such as `sudo`,
+`env`, or `xargs`, hides its command from word globs, so it needs its own allow rule, such as
+`buckle policy allow-command 'bash -c *'`, even with no allow list; `script_run` with the `bash`
 runtime is one. Behind a prefix the rule names the prefix as typed, `sudo bash -c *`, since
 `bash -c *` alone does not admit `sudo bash -c ls`; the refusal names that rule
-([Troubleshooting](troubleshooting-02.md#a-bash-script-is-refused)).
+([Troubleshooting](troubleshooting-02.md#a-bash-script-is-refused)). A shell reached through
+`find -exec`, `su -c`, `sudo -s`, or an `ssh` remote command needs no such rule: the deny rules
+and the destructive floor judge its commands.
 
 No pattern lets a tool run Buckle's admin commands, such as `buckle approve`, `buckle policy`,
 or `buckle settings`.
 
 [What Buckle reads](policy-02.md) in a call, where that reading stops, and how interpreters count
 continue on the next page, and [what stays unread](policy-03.md), with what to do about it, on the
-one after.
+one after. [Known limits](known-limits.md) lists what Buckle does not yet read or hide.
 
 ## Network
 

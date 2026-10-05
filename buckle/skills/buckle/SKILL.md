@@ -63,8 +63,9 @@ where that helps. Do not try to route around it; the owner already answered.
 
 The owner's command rules are shell-word globs read a word at a time, so `pnpm {build,test} *`
 allows `pnpm build` with any arguments and refuses `pnpm install`. Wrapping a command in a
-shell does not get past them: `bash -c ...` and `script_run` with the `bash` runtime are
-refused unless the owner allowed the wrapper itself. Run the program directly with
+shell does not get past them: `bash -c ...` at the start of a call or behind a prefix such as
+`sudo` or `env`, and `script_run` with the `bash` runtime, are refused unless the owner allowed
+the wrapper itself. Run the program directly with
 `shell_exec` instead, one command per call.
 
 Code an interpreter runs (`python3 -c`, `node script.js`, `perl -e`, and the like) is code Buckle

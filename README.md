@@ -5,7 +5,7 @@ harness can drive over CLI, MCP, or HTTP, which runs what its owner allows, asks
 before anything else runs, and refuses the rest.
 
 It gives an agent files, a shell, Git, web fetch, a browser (once agent-browser is installed),
-and language tools inside one workspace, and keeps a log of what it actually did.
+and language tools inside one workspace, and keeps a log of what it did.
 
 ## Install
 
@@ -15,7 +15,7 @@ Buckle needs Node.js 24 or newer.
 npm i -g @5straps/buckle
 ```
 
-To build from a clone instead (pnpm 10.33.2, as pinned in `package.json`):
+To build from a clone (pnpm 10.33.2, pinned in `package.json`):
 
 ```bash
 pnpm install
@@ -46,7 +46,7 @@ macOS, hides it from shell commands: with `BUCKLE_SANDBOX=none`, a shell command
 
 ## Three faces
 
-The same tools and the same approvals sit behind each face.
+Each face has the same tools and approvals.
 
 **CLI**
 
@@ -74,8 +74,10 @@ the workspace ask when no mount is set; the `/workspace` mount `buckle init` wri
 A granted directory never unlocks a credential file inside it.
 
 A person answers an ask with a scope: **once**, **session**, or **always**. Destructive
-commands never offer always. The approver sees the full action before anything runs; only
-credentials are redacted from what is shown, and the decision binds the whole call.
+commands never offer always. The approver sees the full action before anything runs, common
+credential shapes hidden
+([known limits](https://github.com/wuiyang/buckle/blob/main/docs/known-limits.md#credential-hiding)),
+and the decision binds the whole call.
 
 The answer can come from wherever the person is: a prompt in the terminal running `buckle
 serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
@@ -103,7 +105,7 @@ buckle policy mount /workspace
 `buckle policy dangerously-allow on` removes the person: every ask in that workspace becomes an
 allow, destructive commands included. Explicit deny rules, the node's policy over a registered
 workspace, and the mount boundary still refuse, and a path outside the workspace root still asks.
-It is off by default, and
+It is off by default;
 [Approvals](https://github.com/wuiyang/buckle/blob/main/docs/approvals.md#dangerously-allow)
 documents it.
 
@@ -161,6 +163,7 @@ For users:
 - [The audit log](https://github.com/wuiyang/buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
 - [Rings](https://github.com/wuiyang/buckle/blob/main/docs/rings.md): the optional pairing and its settings.
 - [Troubleshooting](https://github.com/wuiyang/buckle/blob/main/docs/troubleshooting.md): the first failures, with their messages.
+- [Known limits](https://github.com/wuiyang/buckle/blob/main/docs/known-limits.md): what Buckle does not yet read or hide.
 
 For developers:
 

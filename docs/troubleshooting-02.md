@@ -10,10 +10,12 @@ starting Buckle. A refusal comes back to the agent as `PERMISSION_DENIED` with t
 PERMISSION_DENIED: A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command 'bash -c *'
 ```
 
-`script_run` with the `bash` runtime, and any `bash -c`, is refused until a rule allows the
-wrapper. Prefer `shell_exec` with the program and its arguments, or allow the wrapper with the
-rule the message names. An allow rule admits a call only as typed, so behind a prefix the message
-names the prefix too: `sudo bash -c ls` names `sudo bash -c *`, and `env bash -c ls` names
+`script_run` with the `bash` runtime, and a `bash -c` the call starts with or reaches through a
+prefix such as `sudo` or `env`, is refused until a rule allows the wrapper; one reached through
+`find -exec`, `su -c`, or `sudo -s` meets only the deny rules and the destructive floor. Prefer
+`shell_exec` with the program and its arguments, or allow the wrapper with the rule the message
+names. An allow rule admits a call only as typed, so behind a prefix the message names the prefix
+too: `sudo bash -c ls` names `sudo bash -c *`, and `env bash -c ls` names
 `env bash -c *`. [Policy](policy.md#commands) explains why.
 
 ## An interpreter is refused or asks
@@ -50,5 +52,17 @@ PERMISSION_DENIED: Runs a command word or shell text an expansion supplies, or a
 With none, the destructive floor asks instead. The name in parentheses, or a constant such as
 `MAX_DEPTH`, is the limit that stopped the reading. [Reading limits](policy-02.md#reading-limits)
 lists each with an example and the fix, which is usually to spell the command out, quote a
-variable, or hand a shell its script with `-c`. [What stays unread](policy-03.md) shows the
-forms an expansion leaves read.
+variable after an option that takes one (`nice -n "$n" make`), or hand a shell its script with
+`-c`. [What stays unread](policy-03.md) shows the forms an expansion leaves read, and
+[Known limits](known-limits.md) what Buckle does not read at all.
+
+## A rule for a registered workspace changes nothing
+
+`buckle policy` edits the node's own workspace only. It refuses a flag it does not know, such as
+`--workspace`; only `show --json` and `dangerously-allow --workspace <id>` take one. A
+[registered workspace](policy.md#workspace-and-node-ceiling) keeps a stored policy of its own,
+which `GET` and `PUT /workspaces/<id>/setup/policy` read and replace on the experimental setup
+face, with `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, under the admin credential
+`buckle workspace add` printed for it. The node's environment settings, such as
+`BUCKLE_COMMAND_DENY` and `BUCKLE_ALLOWED_INTERPRETERS`, are a ceiling over it, so a call must
+pass both.

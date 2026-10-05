@@ -36,7 +36,7 @@ always, a tool running a Buckle admin command such as `buckle approve`, and what
 
 A path grant covers its directory and everything below it. A network grant covers one host and
 port; `buckle approve <token> --scope session --host '*.localhost:3000'` widens one to a pattern
-that covers the asking host. `buckle grants list` shows grants and remembered denials, and
+covering the asking host. `buckle grants list` shows grants and remembered denials, and
 `buckle grants revoke <id>` removes one.
 
 ## The destructive floor
@@ -58,9 +58,9 @@ arguments, so approving `rm -rf build` does not approve `rm -rf /`.
 
 Every deciding route shows the ask, then the whole action: node, workspace, a summary,
 rule, subject, reason, working directory, every effect, and every argument as JSON. Nothing is
-cut or paged. Scripts and free text show as written; only values under password, secret, or token
-keys, and a URL value's password and credential query values, read `[redacted]`. Control and invisible
-characters show as escapes. Hiding is display only; the decision binds the exact arguments. An
+cut or paged. Scripts and free text show as written; a plain value under a key naming password,
+secret, or token, and a URL's password and credential query values, read `[redacted]`, with
+[known limits](known-limits.md#credential-hiding). Control and invisible characters show as escapes. Hiding is display only; the decision binds the exact arguments. An
 ask whose whole call was not recorded can be denied, never approved.
 
 ## Where to answer
@@ -73,7 +73,7 @@ ask whose whole call was not recorded can be denied, never approved.
 | `buckle approvals`, then `buckle approve <token>` | shows the whole action and approves only after you type `yes` at a terminal; `--deny` works anywhere |
 | MCP elicitation | `buckle mcp` sends a form per ask when the client declares form elicitation; other clients, and `/mcp` over HTTP, get text pointing to `buckle approvals` |
 
-A question ignores keys until the keyboard has been still for half a second. Add
+A question ignores keys until the keyboard has rested half a second. Add
 `--workspace <id>` for a [registered workspace](policy.md#workspace-and-node-ceiling).
 
 Nothing the agent token reaches can decide. With the experimental
@@ -81,7 +81,7 @@ Nothing the agent token reaches can decide. With the experimental
 credential, and an approval only when a device key enrolled with `buckle keys enroll` signed it,
 as `buckle client approve <node-url> <token>` does.
 
-`BUCKLE_APPROVAL_WEBHOOK` names a URL that Buckle posts each new ask to. It announces and never
+`BUCKLE_APPROVAL_WEBHOOK` names a URL Buckle posts each new ask to. It announces and never
 decides; [Rings](rings.md#approval-webhook) describes what it sends.
 
 ## Timeouts
@@ -91,7 +91,7 @@ default, and an answer inside that window lets it run. `0` holds until someone a
 hold ends unanswered, the call returns `approval_required`, its asks stay answerable ten more
 minutes, and the agent retries the same call once answered. An HTTP caller's `context.approvalWait` overrides the node:
 `{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute. A one-shot CLI
-command waits only while its own terminal question is open. Change the node's wait with
+command waits only while its terminal question is open. Change the node's wait with
 `buckle settings set approval-wait 60000`, then restart.
 
 ## Persisted grants and the admin credential
