@@ -1,0 +1,152 @@
+name: Release
+
+# Release step two, started by hand from the Actions tab on main once release-prepare.yml has committed
+# the version and verify and package-arm64 have passed on that commit. pack checks and packs, publish
+# holds the npm identity and runs no repository code, and github-release tags the commit. A failed run
+# can be started again: what npm or GitHub already holds for this version on this commit is skipped.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Check and pack only; publish nothing and make no tag or release
+        type: boolean
+        default: false
+
+permissions: {}
+
+# One group for both release workflows; a run in progress is never cancelled.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      checks: read
+    env:
+      CI: 'true'
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - name: Run only on main
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Release from main, not $GITHUB_REF"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The plan reads the release tag, if it exists.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Require verify and package-arm64 to have passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/require-ci.mjs
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Plan, pack, and write the release notes
+        id: plan
+        run: node scripts/release/plan.mjs "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          # A re-run of every job packs again and replaces what the earlier attempt uploaded.
+          overwrite: true
+          retention-days: 30
+
+  publish:
+    needs: pack
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The npm identity lives here only: no checkout, no install, no repository code.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Require npm 11.5.1 or newer, which trusted publishing needs
+        run: |
+          npm_version="$(npm --version)"
+          if ! printf '11.5.1\n%s\n' "$npm_version" | sort --version-sort --check=quiet; then
+            echo "::error::npm ${npm_version} cannot publish through trusted publishing, which needs 11.5.1 or newer"
+            exit 1
+          fi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: release
+      - name: Publish protocol, runtime, then buckle
+        env:
+          VERSION: ${{ needs.pack.outputs.version }}
+        run: |
+          if ! [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::The pack job gave no plain version: '${VERSION}'"
+            exit 1
+          fi
+          for name in protocol runtime buckle; do
+            if [ ! -f "release/5straps-${name}-${VERSION}.tgz" ]; then
+              echo "::error::The artifact has no 5straps-${name}-${VERSION}.tgz"
+              exit 1
+            fi
+          done
+          for name in protocol runtime buckle; do
+            # The registry, not npm view, says whether the version exists: no credential is involved.
+            status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "https://registry.npmjs.org/@5straps%2f${name}/${VERSION}")"
+            case "$status" in
+              200) echo "@5straps/${name}@${VERSION} is already on npm; skipping it" ;;
+              # The leading ./ makes npm read a file, never a GitHub owner/repository shorthand.
+              404) npm publish "./release/5straps-${name}-${VERSION}.tgz" --access public ;;
+              *)
+                echo "::error::The registry answered HTTP ${status} for @5straps/${name}@${VERSION}"
+                exit 1
+                ;;
+            esac
+          done
+
+  github-release:
+    needs: [pack, publish]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.pack.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      - name: Create the tag and the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.pack.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.pack.outputs.sha }}
+        run: RELEASE_NOTES="$RUNNER_TEMP/release/notes.md" node scripts/release/github-release.mjs
