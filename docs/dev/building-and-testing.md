@@ -62,10 +62,10 @@ workers each. The counts at version 0.1.0:
 
 | Suite | Where | Tests |
 |---|---|---|
-| `@5straps/buckle` | `buckle/test/`, 121 files in two projects, `unit` and `http` | 2,214: 2,211 pass and 3 skip on a Linux machine outside CI without ripgrep |
-| `@5straps/runtime` | `packages/runtime/test/`, projects `unit`, `sqlite`, and `fixture` | 329 |
+| `@5straps/buckle` | `buckle/test/`, 125 files in two projects, `unit` and `http` | 5,727: 5,724 pass and 3 skip on a Linux machine outside CI without ripgrep |
+| `@5straps/runtime` | `packages/runtime/test/`, projects `unit`, `sqlite`, and `fixture` | 364 |
 | `@5straps/protocol` | `packages/protocol/test/` | 29 |
-| release scripts | `test/` | 18 |
+| release scripts | `test/` | 20 |
 
 The `http` project runs against the built package: its global setup builds it first
 (`buckle/test/support/global-build.ts`). The runtime's `fixture` project builds its small Nitro

@@ -122,7 +122,8 @@ On Linux, shell tools work on private copies of the workspace by default and pub
 changes through conflict-checked checkpoints; `BUCKLE_SHELL_ISOLATION=false` selects
 shared-workspace execution. Host Git and forge tools (`BUCKLE_ALLOW_HOST_GIT`) and host
 language servers (`BUCKLE_ALLOW_HOST_LSP`) are off by default, because they run outside the
-sandbox. `buckle manifest` explains any tool that is unavailable.
+sandbox. `buckle manifest` explains a withheld pack; without `rg`, `fs_search_content` is simply
+absent, unexplained.
 
 ## Audit log
 
@@ -154,20 +155,21 @@ For users:
   HTTP faces.
 - [Approvals](https://github.com/wuiyang/buckle/blob/main/docs/approvals.md): what asks, the scopes, the destructive floor, where to
   answer, and the dangerously-allow switch.
-- [Policy](https://github.com/wuiyang/buckle/blob/main/docs/policy.md): command globs, network lists, files, and when a restart is
-  needed.
-- [Policy: what Buckle reads](https://github.com/wuiyang/buckle/blob/main/docs/policy-02.md): the commands behind wrappers and in
-  shell text, reading limits, and interpreters.
+- [Policy](https://github.com/wuiyang/buckle/blob/main/docs/policy.md) ([what Buckle reads](https://github.com/wuiyang/buckle/blob/main/docs/policy-02.md),
+  [what stays unread](https://github.com/wuiyang/buckle/blob/main/docs/policy-03.md)): command globs, network lists, files, and
+  when a restart is needed.
 - [Sandbox and tools](https://github.com/wuiyang/buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, and shell
   isolation.
 - [The audit log](https://github.com/wuiyang/buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
 - [Rings](https://github.com/wuiyang/buckle/blob/main/docs/rings.md): the optional pairing and its settings.
-- [Troubleshooting](https://github.com/wuiyang/buckle/blob/main/docs/troubleshooting.md): the first failures, with their messages.
+- [Troubleshooting](https://github.com/wuiyang/buckle/blob/main/docs/troubleshooting.md) ([refused commands](https://github.com/wuiyang/buckle/blob/main/docs/troubleshooting-02.md)): the first
+  failures, with their messages.
 - [Known limits](https://github.com/wuiyang/buckle/blob/main/docs/known-limits.md): what Buckle does not yet read or hide.
 
 For developers:
 
-- [Architecture](https://github.com/wuiyang/buckle/blob/main/docs/dev/architecture.md), [Building and testing](https://github.com/wuiyang/buckle/blob/main/docs/dev/building-and-testing.md),
+- [Architecture](https://github.com/wuiyang/buckle/blob/main/docs/dev/architecture.md) ([state and packs](https://github.com/wuiyang/buckle/blob/main/docs/dev/architecture-02.md)),
+  [Building and testing](https://github.com/wuiyang/buckle/blob/main/docs/dev/building-and-testing.md),
   and [Releasing](https://github.com/wuiyang/buckle/blob/main/docs/dev/releasing.md).
 - Research records: [command matching](https://github.com/wuiyang/buckle/blob/main/docs/dev/research/command-matching.md) and
   [transport and terminal packages](https://github.com/wuiyang/buckle/blob/main/docs/dev/research/packages.md).

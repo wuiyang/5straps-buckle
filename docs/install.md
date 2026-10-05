@@ -12,8 +12,9 @@ disk.
   none. CI runs on Linux only, x64 and arm64, so the macOS and Windows columns below come from
   the code paths, not from a CI run.
 
-Buckle looks for these programs on `PATH`. Without one, the matching pack or tool is withheld,
-and `buckle manifest` says why.
+Buckle looks for these programs on `PATH`. Without one, the matching pack or tool is withheld.
+`buckle manifest` says why a pack is withheld; without `rg`, the `fs_search_content` tool is
+simply absent from the manifest, and no reason is given.
 
 | Program | Unlocks |
 |---|---|
