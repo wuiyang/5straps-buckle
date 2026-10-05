@@ -1,9 +1,9 @@
 # Changelog
 
 
-## 400459e...HEAD
+## v0.1.0
 
-[compare changes](https://github.com/wuiyang/buckle/compare/400459e...HEAD)
+[compare changes](https://github.com/wuiyang/buckle/compare/400459e...v0.1.0)
 
 ### 🚀 Enhancements
 
@@ -254,6 +254,7 @@
 - **buckle:** An expansion that is the whole value attached to a short option leaves the call unread ([ea56f90](https://github.com/wuiyang/buckle/commit/ea56f90))
 - **buckle:** Buckle policy refuses a flag it does not know ([eb2637e](https://github.com/wuiyang/buckle/commit/eb2637e))
 - **buckle:** Buckle policy refuses extra words instead of dropping them ([5803a29](https://github.com/wuiyang/buckle/commit/5803a29))
+- **buckle:** The help names buckle client approve, and init states its rule in words ([84d7af1](https://github.com/wuiyang/buckle/commit/84d7af1))
 
 ### 💅 Refactors
 
@@ -290,6 +291,9 @@
 - **repo:** Changelog regenerated ([ddad571](https://github.com/wuiyang/buckle/commit/ddad571))
 - **buckle:** The pages say what the code does, with a known-limits page ([c928dac](https://github.com/wuiyang/buckle/commit/c928dac))
 - **repo:** Changelog regenerated ([879f913](https://github.com/wuiyang/buckle/commit/879f913))
+- **repo:** Changelog regenerated ([ffc0d19](https://github.com/wuiyang/buckle/commit/ffc0d19))
+- **buckle:** The state directory is hidden from tools only under a process sandbox ([29a099b](https://github.com/wuiyang/buckle/commit/29a099b))
+- **buckle:** Current test counts, every page in the index, and what a missing ripgrep does ([8754eb9](https://github.com/wuiyang/buckle/commit/8754eb9))
 
 ### 📦 Build
 
@@ -344,6 +348,7 @@
 - **buckle:** The oracle kills the delimiter and keyword mutations ([e80334e](https://github.com/wuiyang/buckle/commit/e80334e))
 - **buckle:** Timing rows keep a third of their limit in hand and allow for a loaded machine ([8899a56](https://github.com/wuiyang/buckle/commit/8899a56))
 - **buckle:** Oracle rows pin the heredoc end inside a quoted substitution and the splitting guard, and comments say what the rows do ([120f3eb](https://github.com/wuiyang/buckle/commit/120f3eb))
+- **repo:** The bundled-audit test removes its temp directories ([225c491](https://github.com/wuiyang/buckle/commit/225c491))
 
 ### 🤖 CI
 

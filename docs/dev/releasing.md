@@ -31,8 +31,11 @@ The changelog comes from commit subjects through changelogen, a root dev depende
 under `changelog` in the root `package.json` (repository, commit types, no author lines):
 
 ```bash
-pnpm exec changelogen --from <last release tag> --to HEAD --output CHANGELOG.md
+pnpm exec changelogen --from <last release tag> --to HEAD -r <version> --output CHANGELOG.md
 ```
+
+`-r` heads the new section `v<version>` and links its comparison to that tag; without it the
+heading is a commit range. It neither tags nor bumps a version.
 
 Read the result before committing it. Commit the version and the changelog together, push the
 branch, and wait for CI.
