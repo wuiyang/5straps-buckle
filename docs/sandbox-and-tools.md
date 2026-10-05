@@ -2,7 +2,8 @@
 
 Buckle, the approval and sandbox runtime on your machine, groups its tools into packs. A pack
 that cannot run here is withheld with a reason rather than failing at call time, so
-`buckle tools` lists only what works and `buckle manifest` says why the rest is missing.
+`buckle tools` lists only what works and `buckle manifest` says why the rest is missing. One tool
+is the exception: `fs_search_content` is left out without `rg`, and no reason is given.
 
 ## Packs
 

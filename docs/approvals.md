@@ -22,9 +22,9 @@ Asks:
 | `process_probe` | listing running processes (`lsp_discover`) | once, session |
 | `filesystem_policy` | a path a policy rule marks `ask` | once |
 
-Refused, with the reason: Buckle's own state, a sensitive file you denied for the session or
-always, a tool running a Buckle admin command such as `buckle approve`, and whatever the
-[policy](policy.md) denies.
+Refused, with the reason: Buckle's own state through the file tools, a sensitive file you denied
+for the session or always, a tool running a Buckle admin command such as `buckle approve`, and
+whatever the [policy](policy.md) denies.
 
 ## Scopes
 
@@ -45,7 +45,7 @@ Built in, it asks before `sudo`, `su`, `doas`, `pkexec`, `mkfs`, `fdisk`, `parte
 `blkdiscard`, `shred`, and `sgdisk`; `rm -r` or `-f`; `dd of=`; `truncate`; `chmod -R` and
 `chown -R`; `find -delete`; `kill`, `pkill`, or `killall` with `-9`; an argument under `/dev/`;
 `git push` with force, `--delete`, `--mirror`, or `--prune`; `git reset --hard`; `git clean -f`;
-and `git checkout --force`. In a shell body it also catches a pipe into a shell, a fork bomb,
+and `git checkout --force`. In a shell body it catches a pipe into a shell, a fork bomb,
 `rm -rf /`, and `chmod 777`. It judges [every command a call runs](policy-02.md#what-buckle-reads),
 and asks about an `eval` of text that only exists at run time and a call past the
 [reading limits](policy-02.md#reading-limits).
@@ -107,7 +107,7 @@ buckle policy dangerously-allow off
 ```
 
 Warning: this removes the person. While it is on, every ask about a path inside the workspace
-root, and every command, host, and process ask, is allowed without anyone being asked, sensitive
+root, and every command, host, and process ask, is allowed without asking anyone, sensitive
 files, writes, and destructive commands included. Paths outside the root keep their normal
 outcome, and deny rules, the node's policy over a registered workspace, the mount, and the state
 directory still refuse.
@@ -115,5 +115,5 @@ directory still refuse.
 Only the local CLI sets it; `buckle policy import` refuses a file that names it. A running node
 reads it on every call, so `off` applies at once. Each use is logged as
 `policy_dangerously_allowed`. `buckle policy clear` leaves it on, and a registered workspace's
-switch works only while the node's is on too. `buckle --help` and `buckle policy --help`
+switch works only while the node's is on. `buckle --help` and `buckle policy --help`
 list it.
