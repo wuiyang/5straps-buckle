@@ -250,6 +250,9 @@
 - **buckle:** An expansion among the words a wrapper reads before its command leaves the call unread ([e913e41](https://github.com/wuiyang/buckle/commit/e913e41))
 - **buckle:** Approval displays hide an object key only when it is named password, secret, or token, and never a script body ([6ebc5d8](https://github.com/wuiyang/buckle/commit/6ebc5d8))
 - **buckle:** A refused wrapper call names the rule that admits it ([631cf8d](https://github.com/wuiyang/buckle/commit/631cf8d))
+- **buckle:** A lone tilde as the command word leaves the call unread ([42a70dc](https://github.com/wuiyang/buckle/commit/42a70dc))
+- **buckle:** An expansion that is the whole value attached to a short option leaves the call unread ([ea56f90](https://github.com/wuiyang/buckle/commit/ea56f90))
+- **buckle:** Buckle policy refuses a flag it does not know ([eb2637e](https://github.com/wuiyang/buckle/commit/eb2637e))
 
 ### 💅 Refactors
 
@@ -283,6 +286,8 @@
 - **repo:** The copyright holder is The 5straps Authors ([2dbcb95](https://github.com/wuiyang/buckle/commit/2dbcb95))
 - **repo:** Changelog regenerated after slices 7i, 7j, and 7k ([7e148f7](https://github.com/wuiyang/buckle/commit/7e148f7))
 - **buckle:** Interpreters under a deny rule, how to allow one, and which version flags stay ordinary ([6b85884](https://github.com/wuiyang/buckle/commit/6b85884))
+- **repo:** Changelog regenerated ([ddad571](https://github.com/wuiyang/buckle/commit/ddad571))
+- **buckle:** The pages say what the code does, with a known-limits page ([c928dac](https://github.com/wuiyang/buckle/commit/c928dac))
 
 ### 📦 Build
 
@@ -336,6 +341,7 @@
 - **buckle:** The heredoc oracle carries the 7h probe shapes and kills the surviving mutations ([2320926](https://github.com/wuiyang/buckle/commit/2320926))
 - **buckle:** The oracle kills the delimiter and keyword mutations ([e80334e](https://github.com/wuiyang/buckle/commit/e80334e))
 - **buckle:** Timing rows keep a third of their limit in hand and allow for a loaded machine ([8899a56](https://github.com/wuiyang/buckle/commit/8899a56))
+- **buckle:** Oracle rows pin the heredoc end inside a quoted substitution and the splitting guard, and comments say what the rows do ([120f3eb](https://github.com/wuiyang/buckle/commit/120f3eb))
 
 ### 🤖 CI
 
