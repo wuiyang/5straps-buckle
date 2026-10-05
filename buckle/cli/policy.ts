@@ -58,6 +58,7 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
 
   try {
     refuseUnknownFlags(action, rest)
+    refuseExtraArguments(action, rest)
     switch (action) {
       case undefined:
       case 'show':
@@ -169,6 +170,7 @@ async function repairStoredPolicyAction(input: { config: BuckleConfig; argv: str
   const [action, ...rest] = input.argv
   try {
     refuseUnknownFlags(action, rest)
+    refuseExtraArguments(action, rest)
     switch (action) {
       case 'remove': {
         const next = remove(stored, required(rest[0], action))
@@ -215,10 +217,19 @@ function opensNetwork(before: WorkspacePolicy, after: WorkspacePolicy, environme
 
 class UsageError extends Error {}
 
-/** The actions that take no flag; `show` and `dangerously-allow` parse their own and refuse any other. */
+/** The actions that take no flag. */
 const FLAGLESS_ACTIONS = new Set([
   'allow-command', 'deny-command', 'destructive-command', 'allow-interpreter', 'remove-interpreter', 'allow-url', 'mount', 'unmount',
   'deny-tool', 'allow-tool', 'remove', 'import', 'export', 'clear',
+])
+
+/** The actions that parse flags of their own, with the flags each one knows. */
+const OWN_FLAGS = new Map<string, readonly string[]>([['show', ['--json']], ['dangerously-allow', ['--workspace']]])
+
+/** The actions that take exactly one argument. */
+const ONE_ARGUMENT_ACTIONS = new Set([
+  'allow-command', 'deny-command', 'destructive-command', 'allow-interpreter', 'remove-interpreter', 'allow-url', 'mount',
+  'deny-tool', 'allow-tool', 'remove', 'import',
 ])
 
 /**
@@ -226,9 +237,27 @@ const FLAGLESS_ACTIONS = new Set([
  * otherwise edit the node's own workspace and exit 0, as if it had changed the one the flag names.
  */
 function refuseUnknownFlags(action: string | undefined, args: readonly string[]): void {
-  if (action === undefined || !FLAGLESS_ACTIONS.has(action)) return
-  const flag = args.find(word => word.length > 1 && word.startsWith('-'))
-  if (flag !== undefined) throw new UsageError(`buckle policy ${action} does not know the flag ${flag}; it edits the node's own workspace only\n${USAGE}`)
+  if (action === undefined) return
+  const known = OWN_FLAGS.get(action)
+  if (known === undefined && !FLAGLESS_ACTIONS.has(action)) return
+  const flag = args.find(word => word.length > 1 && word.startsWith('-') && !known?.includes(word.split('=')[0] ?? word))
+  if (flag === undefined) return
+  const scope = known === undefined ? '; it edits the node\'s own workspace only' : ''
+  throw new UsageError(`buckle policy ${action} does not know the flag ${flag}${scope}\n${USAGE}`)
+}
+
+/**
+ * Refuses words past the one argument rather than dropping them: `deny-command git push*` typed without quotes
+ * arrives as two words, and storing the first alone would keep a rule other than the one the owner typed.
+ */
+function refuseExtraArguments(action: string | undefined, args: readonly string[]): void {
+  if (action === undefined || !ONE_ARGUMENT_ACTIONS.has(action) || args.length <= 1) return
+  throw new UsageError(`buckle policy ${action} takes one argument, not ${args.length}; to pass a glob or path of several words, quote it as one: buckle policy ${action} ${shellQuote(args.join(' '))}\n${USAGE}`)
+}
+
+/** The text as one shell word: single-quoted, with each quote inside it closed, escaped, and reopened. */
+function shellQuote(text: string): string {
+  return `'${text.replaceAll('\'', '\'\\\'\'')}'`
 }
 
 function required(value: string | undefined, action: string): string {
