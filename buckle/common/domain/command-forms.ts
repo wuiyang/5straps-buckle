@@ -161,6 +161,8 @@ function wrapperOf(command: string): Wrapper | undefined {
 /** A redirection word: optional descriptor digits, then `<` or `>`; a bare operator's target is the next word (`<<- EOF`). */
 const REDIRECTION = /^\d*[<>]/
 const BARE_REDIRECTION = /^\d*(?:<<-|<<?<?|>>?|>\||<>)$/
+/** A word's typed basename: a slash, then a name, as a tilde path ends (`~/bin/tool`, `~user/bin/x`). */
+const TYPED_BASENAME = /\/[^/]+$/
 
 export interface CommandForms {
   /** The call as typed, then the command behind each wrapper prefix in turn: the last one is what runs. */
@@ -285,7 +287,7 @@ const NO_WORDS: Expanded = new Map()
 
 /**
  * What an expansion may make of a word: `command` says it may change the command the word names, false for a word whose
- * only expansion is a leading tilde, which names a directory, so a command word keeps its basename (`~/bin/tool`); and
+ * only expansion is a leading tilde before a typed basename, so a command word keeps that basename (`~/bin/tool`); and
  * the shape (expansionShape) says whether it may become several words, and what text before it is the word's own.
  */
 interface Expansion extends ExpansionShape { command: boolean }
@@ -953,7 +955,7 @@ const JUDGED_FOUND: Judged = { found: true }
  * The call as written, then the command behind each wrapper prefix in turn. The words `expanded` names are those an
  * expansion supplies (Place), whose value Buckle cannot know. With `judged`, a command word whose value something other
  * than the text supplies leaves the call unread (expansion), at every step of the chain: an expansion (`$cmd`, `"$(...)"`,
- * a glob, a brace expansion; a leading tilde alone keeps the basename), the `{}` find replaces, the replace string of an
+ * a glob, a brace expansion; a leading tilde before a typed basename keeps it), the `{}` find replaces, the replace string of an
  * xargs before it (`xargs -I X env X`), and the items xargs hands a wrapper that names no command (`xargs env`). So does
  * an expansion among the words a program reads before the command it runs, where it may be an option, an option's
  * value, or several words, and so move that command: a wrapper's (innerCommand) and, at the chain's end, find's,
@@ -1301,9 +1303,11 @@ function statementForm(statement: string, budget: Budget): { words: string[]; he
       words.push(word)
       if (holdsExpansion(raw)) {
         expanded ??= new Map()
-        // A word that expands more than a leading tilde may name another command. A word seen two ways may do what
-        // either does: name a command, split, or start with only the text both share.
-        const met: Expansion = { command: !raw.startsWith('~') || holdsExpansion(raw.slice(1)), ...expansionShape(raw) }
+        // A word that expands more than a leading tilde before a typed basename may name another command: a lone `~`,
+        // `~+`, `~-`, `~2`, or `~user` is the whole name, which HOME, PWD, OLDPWD, the directory stack, or a home holds,
+        // and the call may set the first three. A word seen two ways may do what either does: name a command, split, or
+        // start with only the text both share.
+        const met: Expansion = { command: !raw.startsWith('~') || holdsExpansion(raw.slice(1)) || !TYPED_BASENAME.test(word), ...expansionShape(raw) }
         const known = expanded.get(word)
         expanded.set(word, known === undefined ? met : { command: known.command || met.command, splits: known.splits || met.splits, prefix: sharedStart(known.prefix, met.prefix) })
       }

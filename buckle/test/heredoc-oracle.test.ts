@@ -927,8 +927,9 @@ function delimiterShapes(): Shape[] {
  * A command word whose value the shell supplies, from a variable, a substitution, a pattern, or a brace expansion, from
  * find's `{}`, or from what xargs hands on, names a command Buckle cannot know, so the call is unread (expansion): at the
  * start of a statement, behind each wrapper, after assignments, keywords, and redirections, inside a word, in a body fed
- * to bash, in a substitution in heredoc text, in a -c string, and in a `((` bash reads as a subshell. The patterns match
- * the sentinel the oracle's working directory holds. Each ran the sentinel under real bash in scratch first.
+ * to bash, in a substitution in heredoc text, in a -c string, and in a `((` bash reads as a subshell. So does a lone
+ * tilde, which HOME, OLDPWD, PWD, or a user's home supplies whole. The patterns match the sentinel the oracle's working
+ * directory holds. Each ran the sentinel under real bash in scratch first, but the `~user` row, whose home is a directory.
  */
 const EXPANDED_COMMAND_WORDS: Shape[] = [
   ['a variable', `x=${SENTINEL}; $x mark`],
@@ -985,6 +986,17 @@ const EXPANDED_COMMAND_WORDS: Shape[] = [
   ['a variable in a (( bash reads as a subshell', `x=${SENTINEL}; (($x mark); true)`],
   ['a variable in a $(( bash reads as a substitution', `x=${SENTINEL}; echo $(($x mark) )`],
   ['a variable in a substitution in an array', `x=${SENTINEL}; a=($($x mark))`],
+  ['a lone tilde HOME names', `HOME="$PWD/${SENTINEL}"; ~ mark`],
+  ['a lone ~- OLDPWD names', `OLDPWD="$PWD/${SENTINEL}"; ~- mark`],
+  ['a lone ~+ PWD names', `PWD="$PWD/${SENTINEL}"; ~+ mark`],
+  ['a lone ~0 PWD names', `PWD="$PWD/${SENTINEL}"; ~0 mark`],
+  ['a lone tilde behind command', `HOME="$PWD/${SENTINEL}"; command ~ mark`],
+  ['a lone ~- behind command', `OLDPWD="$PWD/${SENTINEL}"; command ~- mark`],
+  ['a lone ~+ behind command', `PWD="$PWD/${SENTINEL}"; command ~+ mark`],
+  ['a lone tilde behind env', `HOME="$PWD/${SENTINEL}"; env ~ mark`],
+  ['a lone ~- behind env', `OLDPWD="$PWD/${SENTINEL}"; env ~- mark`],
+  ['a lone ~+ behind env', `PWD="$PWD/${SENTINEL}"; env ~+ mark`],
+  ['a lone ~user (runs nothing: a home is a directory)', '~root mark'],
 ].map(([label, body]) => ({ label: `expanded command word: ${label}`, body: body!, unread: 'expansion' as const }))
 
 /**

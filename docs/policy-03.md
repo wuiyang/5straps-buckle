@@ -11,7 +11,9 @@ A word an expansion supplies (`$x`, `"$(...)"`, a glob such as `*.log`, or a bra
 exists only once the shell runs, so Buckle cannot know it.
 
 - As a command word it leaves the call unread (expansion): `$cmd push origin main`,
-  `x=git; $x push`, and `{git,true} push`. A leading `~` alone keeps the name (`~/bin/tool`).
+  `x=git; $x push`, `{git,true} push`, and a lone `~`, `~-`, `~+`, or `~user`, which HOME,
+  OLDPWD, PWD, or a home supplies whole (`HOME=/usr/bin/git; ~ push`). A tilde path keeps the
+  name it types (`~/bin/tool`).
 - Among the words a wrapper, `xargs`, `find`, `ssh`, `su`, or a shell reads before the command it
   runs, it may become an option, an option's value, or several words, and so move that command
   (`v="1 git"; timeout $v push`). The call is unread, ordinary shapes included: `timeout $T cmd`,

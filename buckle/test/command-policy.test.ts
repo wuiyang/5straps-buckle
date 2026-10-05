@@ -924,14 +924,45 @@ describe('a call Buckle cannot read whole', () => {
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
   })
 
-  // A command word the text spells stays read as written: quoted, escaped, behind a tilde or a literal path, or after
-  // assignments that expand. The push glob refuses each by name.
+  // A lone tilde as the command word is the whole name: HOME, OLDPWD, PWD, the directory stack, or a user's home holds
+  // it, and the call may set the first three, so bash runs `HOME=/usr/bin/git; ~ push` as a git push. The call is
+  // unread: refused naming the limit under git push*, and asked at the floor with no deny glob. Real bash ran the
+  // sentinel in each shape but `~user`, whose home is a directory (heredoc-oracle.test.ts).
+  const loneTildes = [
+    ['~ that HOME names', 'HOME=/usr/bin/git; ~ push origin main'],
+    ['~- that OLDPWD names', 'OLDPWD=/usr/bin/git; ~- push origin main'],
+    ['~+ that PWD names', 'PWD=/usr/bin/git; ~+ push origin main'],
+    ['~0 that PWD names', 'PWD=/usr/bin/git; ~0 push origin main'],
+    ['~user', '~git push origin main'],
+    ['~ behind command', 'HOME=/usr/bin/git; command ~ push origin main'],
+    ['~- behind command', 'OLDPWD=/usr/bin/git; command ~- push origin main'],
+    ['~+ behind command', 'PWD=/usr/bin/git; command ~+ push origin main'],
+    ['~ behind env', 'HOME=/usr/bin/git; env ~ push origin main'],
+    ['~- behind env', 'OLDPWD=/usr/bin/git; env ~- push origin main'],
+    ['~+ behind env', 'PWD=/usr/bin/git; env ~+ push origin main'],
+    ['~- naming rm', 'OLDPWD=/bin/rm; ~- -rf build'],
+  ] as const
+
+  it.each(cases.flatMap(([engine, switched]) => loneTildes.map(([shape, body]) => [engine, switched, shape, body] as const)))('refuses %s deny, switch on: %s, under git push*, a lone tilde command word: %s, naming the limit', (engine, switched, _shape, body) => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', body] }).unread).toBe('expansion')
+    expect(refusal(check(engine, switched, body, ['git push*']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
+  })
+
+  it.each((['workspace', 'ceiling'] as const).flatMap(engine => loneTildes.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a lone tilde command word: %s', (engine, _shape, body) => {
+    const outcome = check(engine, false, body, [])
+    if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
+    expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
+  })
+
+  // A command word the text spells stays read as written: quoted, escaped, behind a tilde path with a typed basename or
+  // a literal path, or after assignments that expand. The push glob refuses each by name.
   it.each(cases.flatMap(([engine, switched]) => [
     ['a quoted letter', 'g"i"t push origin main'],
     ['an escaped first letter', '\\git push origin main'],
     ['single quotes', "'git' push origin main"],
     ['ANSI-C quotes', "$'git' push origin main"],
     ['a tilde path', '~/bin/git push origin main'],
+    ['a tilde path under a user', '~user/bin/git push origin main'],
     ['a literal path', '/usr/bin/git push origin main'],
     ['an assignment holding a variable', 'GIT_DIR=$HOME/.git git push origin main'],
     ['an assignment holding a substitution with blanks', 'x=$(echo a b) git push origin main'],
