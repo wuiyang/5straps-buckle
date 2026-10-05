@@ -1,4 +1,4 @@
-import { createPublicKey, verify } from 'node:crypto'
+import { createHash, createPublicKey, verify } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { callDigestOf, isSmallOrderPoint, SmallOrderKeyError, canonicalJson, challengeBytes, generateSigningKey, isSignedRequest, keyIdOf, publicKeyFrom, readChallenge, signChallenge, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, signingKeyFromPem, signRequest, verifySignedRequest, type ApprovalChallenge, type SignedRequestPurpose, type SignedRequestRefusal } from '../src/signed-request.js'
 
@@ -182,10 +182,38 @@ describe('a small-order public key (review L3 of B23-B25)', () => {
     for (let index = 0; index < 50; index++) expect(() => publicKeyFrom(generateSigningKey().publicKey)).not.toThrow()
   })
 
-  it('would let a forged signature verify: identity R and zero S under the identity key', () => {
+  // A signature by nobody: R the identity point and S zero. Under the identity key, Node before 24.19
+  // verifies it for any message, and 24.19 and later refuse the point themselves. The package refuses
+  // the key on every release, so a request carrying this signature is turned away at the key and never
+  // reaches a signature check, whichever answer this Node would give.
+  it('turns a request forged under the identity key away at the key, before any signature check, on every Node', () => {
     const identity = Buffer.from(encodings[0]!, 'hex')
     const forged = Buffer.concat([identity, Buffer.alloc(32)])
-    const key = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: identity.toString('base64url') }, format: 'jwk' })
-    expect(verify(null, Buffer.from('anything'), key, forged)).toBe(true)
+    const identityKey = `ed25519:${identity.toString('base64url')}`
+    const keyId = `SHA256:${createHash('sha256').update(identity).digest('base64url')}`
+    // This Node's own answer for the forgery, for the failure message only, since it differs by release.
+    const nodeVerifies = (() => {
+      try {
+        return verify(null, Buffer.from('anything'), createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: identity.toString('base64url') }, format: 'jwk' }), forged)
+      } catch {
+        return false
+      }
+    })()
+    const [scheme, token] = signed().split(' ')
+    const payload = JSON.parse(Buffer.from(token!.split('.')[0]!, 'base64url').toString('utf8')) as Record<string, unknown>
+    const header = `${scheme} ${Buffer.from(JSON.stringify({ ...payload, keyId })).toString('base64url')}.${forged.toString('base64url')}`
+    const verdict = verifySignedRequest({
+      authorization: header, body: Buffer.from(body), now, expected: { purpose: 'buckle-setup', ...route }, claim: () => true,
+      // As an enrolled-key store does: a key the package refuses is no enrolled key.
+      publicKeyFor: () => {
+        try {
+          return { key: publicKeyFrom(identityKey), covers: true }
+        } catch (error) {
+          if (error instanceof SmallOrderKeyError) return { refused: 'unknown_key' }
+          throw error
+        }
+      },
+    })
+    expect(verdict, `this Node's own verify ${nodeVerifies ? 'accepts' : 'refuses'} the forged signature`).toEqual({ ok: false, reason: 'unknown_key', claimedKeyId: keyId })
   })
 })

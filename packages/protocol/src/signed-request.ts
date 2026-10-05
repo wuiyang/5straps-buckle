@@ -118,7 +118,9 @@ export function publicKeyFrom(text: string): KeyObject {
 
 /**
  * A public key on one of Ed25519's eight small-order points (review L3 of B23-B25): a signature by
- * nobody verifies under it (the identity point with R the identity and S zero), so it proves nothing.
+ * nobody can verify under it (the identity point with R the identity and S zero), so it proves
+ * nothing. Node before 24.19 verifies such a signature, and later releases refuse the point
+ * themselves; this refusal holds on all of them.
  */
 export class SmallOrderKeyError extends Error {
   constructor() { super('A small-order Ed25519 public key proves nothing, since signatures verify under it without a private key; generate a real key') }
