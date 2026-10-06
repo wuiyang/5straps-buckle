@@ -66,24 +66,42 @@ describe('a path from Windows, read into pathe\'s form', () => {
     expect(() => withForwardSlashes('a\\..\\..\\x', 'linux')).toThrow(/holds a backslash/)
   })
 
+  /**
+   * How Windows opens a path: folded as node's own Windows normalize folds it, then each name trimmed, every dot and
+   * space off the last name and one dot off each name before it. Null where a name is left empty, `.`, or `..`, which
+   * Buckle refuses, as Windows would open the folder above or a name no folder holds.
+   */
+  function windowsOpens(typed: string): string | null {
+    const names = win32.normalize(typed).split('\\')
+    const trimmed = names.map((name, index) => ['', '.', '..'].includes(name) ? name : name.replace(index === names.length - 1 ? /[. ]+$/ : /\.$/, ''))
+    return trimmed.some((name, index) => ['', '.', '..'].includes(name) && name !== names[index]) ? null : trimmed.join('/')
+  }
+
   // Every spelling of up to four pieces after `C:` and a separator, each a separator, a dot, two dots, a name, or a
-  // space, folded as node's own Windows normalize folds it, unless Buckle refuses it.
+  // space, folded as node's own Windows normalize folds it and trimmed as Windows trims its names, or refused.
   it('folds every drive-rooted spelling as Windows does, whatever separators, dots, names, and spaces follow the drive', () => {
     const pieces = ['/', '\\', '.', '..', 'x', ' ', 'a b']
     const tails = (length: number): string[] => length === 0 ? [''] : tails(length - 1).flatMap(head => pieces.map(piece => head + piece))
     let folded = 0
+    let refused = 0
     for (const separator of ['/', '\\']) {
       for (let length = 0; length <= 4; length++) {
         for (const tail of tails(length)) {
           const typed = `C:${separator}${tail}`
-          let named: string
-          try { named = nativePath(typed, 'win32') } catch { continue }
-          expect(named, typed).toBe(win32.normalize(typed).replaceAll('\\', '/'))
-          folded++
+          const opened = windowsOpens(typed)
+          if (opened === null) {
+            expect(() => nativePath(typed, 'win32'), typed).toThrow(/holds a name Windows trims to nothing, `\.`, or `\.\.`/)
+            refused++
+          } else {
+            expect(nativePath(typed, 'win32'), typed).toBe(opened)
+            folded++
+          }
         }
       }
     }
-    expect(folded).toBe(2 * (1 + 7 + 49 + 343 + 2401))
+    expect(folded + refused).toBe(2 * (1 + 7 + 49 + 343 + 2401))
+    expect(refused).toBeGreaterThan(0)
+    expect(nativePath('C:\\x.\\.github.\\workflows. ', 'win32')).toBe('C:/x/.github/workflows')
   })
 })
 
@@ -211,6 +229,34 @@ describe('the agent\'s paths on a Windows workspace, imitated', () => {
     expect(view.resolve('C:\\ws\\notes.txt')).toBe('C:/ws/notes.txt')
     expect(nativePath('D:', 'win32')).toBe('D:/')
     expect(nativePath('notes.txt:payload', 'linux')).toBe('notes.txt:payload')
+  })
+
+  // Windows removes every dot and space that ends a path's last name, and one dot that ends each name before it: a write
+  // of `.github\workflows.\ci.yml` with its parents created made `.github\workflows\ci.yml`, while Buckle judged
+  // `workflows.`, which a write deny on an absent `.github/workflows` did not meet.
+  it('judges a name Windows trims where Windows opens it, so a deny on the folder it trims to is met', () => {
+    for (const named of ['.github\\workflows.\\ci.yml', '.github.\\workflows\\ci.yml. ', 'C:\\ws\\.github\\workflows.\\ci.yml . ', '.github\\workflows.\\x\\..\\ci.yml']) {
+      expect(view.resolve(named)).toBe('C:/ws/.github/workflows/ci.yml')
+    }
+    expect(view.resolve('.github\\workflows .\\ci.yml')).toBe('C:/ws/.github/workflows /ci.yml')
+    // realpathSync.native answers as Windows would: the drive exists, and `.github/workflows` does not yet.
+    vi.spyOn(realpathSync, 'native').mockImplementation(((path: string) => {
+      if (path === 'C:/') return 'C:\\'
+      throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' })
+    }) as typeof realpathSync.native)
+    try {
+      const policy = WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: '.github/workflows', write: 'deny' }] } })
+      expect(filesystemPathDecision({ root: 'C:/ws', path: view.resolve('.github\\workflows.\\ci.yml'), policy, operation: 'write', platform: 'win32' })).toBe('deny')
+    } finally { vi.restoreAllMocks() }
+    // Linux and macOS keep every name as written.
+    expect(nativePath('/ws/src./a.ts. ', 'linux')).toBe('/ws/src./a.ts. ')
+  })
+
+  it('refuses a name Windows trims to nothing, `.`, or `..`, which would open the folder above or no name written', () => {
+    for (const named of ['notes\\...', '.github\\.. ', 'src\\ ', 'a\\...\\b', 'C:\\ws\\. .']) {
+      expect(() => nativePath(named, 'win32')).toThrow(/holds a name Windows trims to nothing/)
+      expect(() => view.resolve(named)).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
+    }
   })
 })
 
@@ -552,12 +598,15 @@ describe('a whole drive as a Buckle root on Windows, imitated', () => {
     expect(isDriveRoot('/', 'linux')).toBe(false)
   })
 
-  // Windows trims the dots and spaces that end a name, so each of these opens the drive's root there.
+  // Windows trims the dots and spaces that end a name, once `.` and `..` are folded, so each of these first opens the
+  // drive's root there. `.. ` is no `..` to Windows, so `C:\x\.. ` is `C:\x\`, a folder.
   it('is named with the dots and spaces that end a name, as Windows trims them', () => {
-    for (const drive of ['C:\\ ', 'C:/.', 'C:\\...', 'C:\\. .', 'C:\\x\\.. ', 'D:\\x\\..\\ .', '\\ ', typedPath('E:\\ ', 'win32')]) expect(isDriveRoot(drive, 'win32')).toBe(true)
-    for (const folder of ['C:\\x.', 'C:\\x ', 'C:\\x\\. ', 'C:\\x. \\y']) expect(isDriveRoot(folder, 'win32')).toBe(false)
-    expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: 'E:\\ ' }, 'win32')).toThrow(`BUCKLE_STATE_DIR is E:/ : ${refused}`)
-    expect(() => clientDirectory({ BUCKLE_CLIENT_DIR: 'D:\\.. .' }, 'win32')).toThrow(`BUCKLE_CLIENT_DIR is D:/.. .: ${refused}`)
+    for (const drive of ['C:\\ ', 'C:/.', 'C:\\...', 'C:\\. .', 'D:\\x\\..\\ .', '\\ ', 'D:\\.. .', typedPath('E:\\x.\\..', 'win32')]) expect(isDriveRoot(drive, 'win32')).toBe(true)
+    for (const folder of ['C:\\x.', 'C:\\x ', 'C:\\x\\. ', 'C:\\x. \\y', 'C:\\x\\.. ']) expect(isDriveRoot(folder, 'win32')).toBe(false)
+    expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: 'E:\\x.\\..' }, 'win32')).toThrow(`BUCKLE_STATE_DIR is E:/: ${refused}`)
+    // A name Windows trims to nothing is refused before it is judged at all, wherever it would land.
+    expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: 'E:\\ ' }, 'win32')).toThrow(/E:\\ {2}holds a name Windows trims to nothing/)
+    expect(() => clientDirectory({ BUCKLE_CLIENT_DIR: 'D:\\.. .' }, 'win32')).toThrow(/D:\\\.\. \. holds a name Windows trims to nothing/)
   })
 
   it('is refused as the state directory or the client directory where it really is, through a link', () => {

@@ -21,14 +21,21 @@ export function isInsideAny(directories: string[], candidate: string, platform?:
 
 /**
  * A path the operating system or a person hands Buckle (a real path, the working or home directory, a state
- * directory, a workspace root) in the form pathe gives every path: forward slashes, `.` and `..` folded, a drive
- * letter in upper case. What unsupportedPath names is refused rather than read as another place. On Linux and macOS
- * only a leading `/` is absolute and a leading `//` is the root, as the kernel reads them, where pathe would keep `//x`
- * as a Windows share and read `//.x` as relative; the folded path is refused where it lands on a drive (refuseDrive).
+ * directory, a workspace root, a tool's path through the agent's view) in the form pathe gives every path: forward
+ * slashes, `.` and `..` folded, a drive letter in upper case. What unsupportedPath names is refused rather than read as
+ * another place. On Linux and macOS only a leading `/` is absolute and a leading `//` is the root, as the kernel reads
+ * them, where pathe would keep `//x` as a Windows share and read `//.x` as relative; the folded path is refused where it
+ * lands on a drive (refuseDrive). On Windows each name is then trimmed as Windows trims it when it opens the path
+ * (windowsTrimmed), so `.github\workflows.\ci.yml` is judged at `.github/workflows`, where Windows creates it, and a
+ * path with a name Windows trims to nothing, `.`, or `..` is refused.
  */
 export function nativePath(path: string, platform: NodeJS.Platform = process.platform): string {
   const named = withForwardSlashes(path, platform)
-  return refuseDrive(onDrive([platform === 'win32' ? named : named.replace(/^\/{2,}/, '/')], first => normalize(first)), path, platform)
+  const folded = refuseDrive(onDrive([platform === 'win32' ? named : named.replace(/^\/{2,}/, '/')], first => normalize(first)), path, platform)
+  if (platform !== 'win32') return folded
+  const opened = windowsTrimmed(folded)
+  if (opened.emptied) throw unsupported(path, 'holds a name Windows trims to nothing, `.`, or `..` when it opens the path')
+  return opened.path
 }
 
 /**
@@ -88,24 +95,33 @@ export const WHOLE_DRIVE = 'a whole drive cannot be a Buckle root; use a folder'
 
 /**
  * Whether a path names a whole drive on Windows (`C:/`, `C:\`, or `/`, the current drive's root): refused there as a
- * workspace root, scratch root, state directory, or client directory (WHOLE_DRIVE). Windows trims the dots and spaces
- * that end a name, so `C:\ ` and `C:\x\.. ` are judged as it may read them (trimmedNames). Elsewhere never.
+ * workspace root, scratch root, state directory, or client directory (WHOLE_DRIVE). It is judged as written and with
+ * its names trimmed as Windows trims them once `.` and `..` are folded (windowsTrimmed), so `C:\ ` and `C:\...` are the
+ * drive's root, while `C:\x\.. ` is `C:\x\`, as `.. ` is no `..` to Windows. Elsewhere never.
  */
 export function isDriveRoot(path: string, platform: NodeJS.Platform = process.platform): boolean {
-  return platform === 'win32' && [path, trimmedNames(path)].some(spelling => /^(?:[A-Za-z]:)?\/$/.test(resolvePath(spelling)))
+  if (platform !== 'win32') return false
+  const folded = resolvePath(path)
+  return [folded, windowsTrimmed(folded).path].some(spelling => /^(?:[A-Za-z]:)?\/$/.test(resolvePath(spelling)))
 }
 
 /**
- * A Windows path with the dots and spaces that end each name removed, as Windows removes them when it opens a path,
- * so `C:\ ` and `C:\...` name the drive's root. A name of dots and spaces alone is dropped, or read as `..` where it
- * holds two dots in a row (`.. `), the reading that climbs furthest, so a root refused by it is refused in every
- * reading Windows may give.
+ * A Windows path in pathe's form, `.` and `..` already folded, with each name trimmed as Windows trims it when it opens
+ * the path: every dot and space that ends the last name, and one dot that ends each name before it, so `C:\test.\file`
+ * is `C:\test\file`. After a trailing separator, the name before it loses only that one dot. `emptied` is set where a
+ * name is left empty, `.`, or `..`: Windows then opens the folder above (`C:\x\.. ` is `C:\x\`), or a name no folder
+ * holds, never the one written, and resolvePath would read a `..` left here as a climb.
  */
-function trimmedNames(path: string): string {
-  return path.split(/[\\/]/).map(name => {
-    const trimmed = name.replace(/[. ]+$/, '')
-    return trimmed === '' && name.includes('..') ? '..' : trimmed
-  }).join('/')
+function windowsTrimmed(path: string): { path: string; emptied: boolean } {
+  const names = path.split('/')
+  let emptied = false
+  const trimmed = names.map((name, index) => {
+    if (name === '' || name === '.' || name === '..') return name
+    const kept = name.replace(index === names.length - 1 ? /[. ]+$/ : /\.$/, '')
+    emptied ||= kept === '' || kept === '.' || kept === '..'
+    return kept
+  })
+  return { path: trimmed.join('/'), emptied }
 }
 
 /** The working directory in pathe's form (nativePath). */
