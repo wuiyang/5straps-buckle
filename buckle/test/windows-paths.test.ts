@@ -2,7 +2,9 @@ import { closeSync, constants, mkdirSync, mkdtempSync, readFileSync, readlinkSyn
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
+import { emptyWorkspacePolicy, WorkspacePolicySchema } from '@5straps/protocol'
 import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/adapters/beneath.js'
+import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { descent, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, withForwardSlashes } from '../common/domain/paths.js'
 import { loadConfig } from '../common/runtime/config.js'
@@ -101,6 +103,39 @@ describe('containment on Windows-shaped paths', () => {
     expect(isInside('C:/ws', 'C:/WS/a')).toBe(false)
     expect(isInside('C:/ws', 'c:/ws/a')).toBe(true)
     expect(isInsideComparable('C:/Users/me/.5straps', 'c:/users/ME/.5STRAPS/buckle', true)).toBe(true)
+  })
+
+  it('keeps two drives apart on Windows, whatever the path below each', () => {
+    expect(isInside('C:/ws', 'D:/x', 'win32')).toBe(false)
+    expect(isInside('C:/ws', 'D:/ws/x', 'win32')).toBe(false)
+    expect(isInsideComparable('c:/ws', 'D:/WS/x', true, 'win32')).toBe(false)
+    expect(isInside('C:/ws', 'C:/ws/x', 'win32')).toBe(true)
+  })
+})
+
+// pathe's isAbsolute reads `c:/x` as a drive, so the relative path from a workspace to its folder `c:` read as outside
+// it: a workspace deny there was skipped, and a grant on the workspace let the call through.
+describe('a folder named like a drive on Linux and macOS: <ws>/c:/x', () => {
+  it('is inside its workspace on both', () => {
+    for (const platform of ['linux', 'darwin'] as const) {
+      expect(isInside('/ws', '/ws/c:/x', platform)).toBe(true)
+      expect(isInside('/ws', '/ws/C:', platform)).toBe(true)
+      expect(isInsideComparable('/ws', '/ws/C:/x', true, platform)).toBe(true)
+      expect(isInside('/ws/c:', '/ws/x', platform)).toBe(false)
+    }
+  })
+
+  it('meets a workspace deny on it, which a grant on the workspace does not lift', () => {
+    const root = scratch()
+    const policy = WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: 'c:', read: 'deny' }] } })
+    const rule = createFilesystemPolicyRule({ root, policy })
+    const effect = { kind: 'read_path' as const, path: `${root}/c:/x`, directory: `${root}/c:` }
+    expect(rule.evaluate({ tool: 'fs_read', effect, grants: { subjectsFor: () => [root] } })).toMatchObject({ kind: 'deny', rule: 'filesystem_policy' })
+  })
+
+  it('keeps a state directory there inside the workspace, which refuses to start', () => {
+    const root = scratch()
+    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: `${root}/c:/state` })).toThrow(/inside the BUCKLE_WORKSPACE_ROOT/)
   })
 })
 

@@ -1,13 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import { realpathSync, statSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, sep } from 'pathe'
+import { dirname, isAbsolute, join } from 'pathe'
 import { z } from 'zod'
 import { WorkspacePolicySchema, emptyWorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { actionsPath, type BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
-import { comparablePath, nativePath } from '../../domain/paths.js'
+import { comparablePath, isInsideComparable, nativePath } from '../../domain/paths.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { tokenMatches } from '../access/tokens.js'
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
@@ -321,11 +321,7 @@ function canonicalDirectory(root: string): string {
 
 /** Whether either root holds the other, as the volume compares paths (a case variant of a root is that root on macOS). */
 function overlaps(left: string, right: string): boolean {
-  const contains = (parent: string, child: string) => {
-    const path = relative(comparablePath(parent), comparablePath(child))
-    return path === '' || !path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path)
-  }
-  return contains(left, right) || contains(right, left)
+  return isInsideComparable(left, right) || isInsideComparable(right, left)
 }
 
 function assertNoHostExposure(root: string, exposedRoots: string[]): void {

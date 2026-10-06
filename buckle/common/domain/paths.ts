@@ -2,15 +2,21 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'pathe'
 import { ToolInputError } from './tool.js'
 
-/** True when candidate is the directory itself or sits underneath it. Both must be absolute. */
-export function isInside(directory: string, candidate: string): boolean {
-  const fromDirectory = relative(resolve(directory), resolve(candidate))
-  if (fromDirectory === '') return true
-  return !fromDirectory.startsWith('..') && !isAbsolute(fromDirectory)
+/**
+ * True when candidate is the directory itself or sits underneath it. Both must be absolute. Two paths from different
+ * roots (pathRoot), such as two drives, are apart. The relative result is never read as a path of its own: pathe's
+ * isAbsolute takes `c:/x`, a folder named `c:` on Linux, for a drive, which put `<ws>/c:/x` outside its workspace.
+ */
+export function isInside(directory: string, candidate: string, platform: NodeJS.Platform = process.platform): boolean {
+  const from = resolve(directory)
+  const to = resolve(candidate)
+  if (pathRoot(from) !== pathRoot(to)) return false
+  const fromDirectory = relative(from, to)
+  return fromDirectory !== '..' && !fromDirectory.startsWith('../') && !(platform !== 'win32' && fromDirectory.startsWith('/'))
 }
 
-export function isInsideAny(directories: string[], candidate: string): boolean {
-  return directories.some(directory => isInside(directory, candidate))
+export function isInsideAny(directories: string[], candidate: string, platform?: NodeJS.Platform): boolean {
+  return directories.some(directory => isInside(directory, candidate, platform))
 }
 
 /**
@@ -118,8 +124,8 @@ export function comparablePath(path: string, caseInsensitive = process.platform 
  * disk ignores case, so a restriction never answers by spelling (review H2 of the second
  * proof-of-possession re-review). Restrictions only: see comparablePath.
  */
-export function isInsideComparable(directory: string, candidate: string, caseInsensitive?: boolean): boolean {
-  return isInside(comparablePath(directory, caseInsensitive), comparablePath(candidate, caseInsensitive))
+export function isInsideComparable(directory: string, candidate: string, caseInsensitive?: boolean, platform?: NodeJS.Platform): boolean {
+  return isInside(comparablePath(directory, caseInsensitive), comparablePath(candidate, caseInsensitive), platform)
 }
 
 /** Path segments, case-folded, for pattern rules that must not be defeated by casing. */
