@@ -1,8 +1,8 @@
 import { realpathSync } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
-import { relative, resolve } from 'pathe'
+import { relative } from 'pathe'
 import type { FilesystemPermission, WorkspacePolicy } from '@5straps/protocol'
-import { comparablePath, isInside, isInsideComparable, nativePath, parentDirectory, resolvePath, withForwardSlashes } from './paths.js'
+import { childPath, comparablePath, isInside, isInsideComparable, nativePath, parentDirectory, resolvePath } from './paths.js'
 import type { PermissionRule } from './permission/decision.js'
 import { allowedVia, ask, deny } from './permission/decision.js'
 
@@ -13,7 +13,7 @@ export interface FilesystemPolicyInput {
   ceiling?: WorkspacePolicy | null
   /** Whether the volume ignores case; the platform's default (comparablePath) when absent. */
   caseInsensitive?: boolean
-  /** The host's unless a test imitates another: on Windows a workspace may sit at a drive's root (resolvePath). */
+  /** The host's unless a test imitates another: off Windows a rule's names are names under the root (rulePath). */
   platform?: NodeJS.Platform
 }
 export type FilesystemDecision = FilesystemPermission | 'inherit'
@@ -52,7 +52,7 @@ export function filesystemPathDecision(input: Omit<FilesystemPolicyInput, 'path'
   const path = relativeWithin(input.root, input.path, input.caseInsensitive, platform)
   if (path === null) return 'inherit'
   const canonical = (policy: WorkspacePolicy): WorkspacePolicy => ({ ...policy, filesystem: { rules: (policy.filesystem?.rules ?? []).flatMap(rule => {
-    const target = relativeWithin(input.root, canonicalPolicyPath(resolvePath(input.root, rule.path), platform), input.caseInsensitive, platform)
+    const target = relativeWithin(input.root, canonicalPolicyPath(rulePath(input.root, rule.path, platform), platform), input.caseInsensitive, platform)
     return target === null ? [rule] : [rule, { ...rule, path: target }]
   }) } })
   return resolveFilesystemPermission({ ...input, policy: canonical(input.policy), ceiling: input.ceiling ? canonical(input.ceiling) : null, path })
@@ -99,8 +99,9 @@ export async function projectFilesystemSandbox(input: { root: string; policy: Wo
     const write = resolveFilesystemPermission({ ...input, path: rule.path, operation: 'write' })
     if (!['ask', 'deny'].includes(read) && !['ask', 'deny'].includes(write)) continue
     // What is hidden here is handed to the sandbox as a path the kernel reads, where a backslash on Linux is part of
-    // a name: such a rule is refused (withForwardSlashes), never hidden at the other path pathe would read.
-    const named = resolvePath(root, withForwardSlashes(rule.path, platform))
+    // a name: such a rule is refused, never hidden at the other path pathe would read.
+    if (platform !== 'win32' && rule.path.includes('\\')) throw new Error(`The filesystem rule ${rule.path} holds a backslash, which Buckle reads as a separator`)
+    const named = rulePath(root, rule.path, platform)
     if (!isInside(root, named, platform)) throw new Error('Filesystem policy escaped its workspace')
     const existing = await nearestExisting(named)
     const canonical = nativePath(await realpath(existing))
@@ -123,6 +124,16 @@ async function nearestExisting(path: string): Promise<string> {
   }
 }
 
+/**
+ * Where a workspace rule's path lies. Off Windows its names are appended to the root as text (childPath): pathe reads
+ * `c:/secret.txt` as the drive `C:/`, whose real path does not exist there, so every file call in that workspace
+ * failed; the rule covers `<ws>/c:/secret.txt`. On Windows a colon in a name is refused, and pathe's reading stands.
+ */
+function rulePath(root: string, path: string, platform: NodeJS.Platform): string {
+  if (path === '.') return root
+  return platform === 'win32' ? resolvePath(root, path) : childPath(root, path)
+}
+
 /** A rule's path as the disk names it (realpathSync.native: the case it stores), so it compares with judged effect paths. */
 function canonicalPolicyPath(path: string, platform: NodeJS.Platform): string {
   let real: string
@@ -131,7 +142,7 @@ function canonicalPolicyPath(path: string, platform: NodeJS.Platform): string {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
     const parent = parentDirectory(path)
     if (parent === path) throw error
-    return resolve(canonicalPolicyPath(parent, platform), relative(parent, path))
+    return childPath(canonicalPolicyPath(parent, platform), relative(parent, path))
   }
   return nativePath(real, platform)
 }

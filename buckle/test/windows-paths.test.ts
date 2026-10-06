@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, MountPathSchema, WorkspacePolicySchema } from '@5straps/protocol'
 import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/adapters/beneath.js'
 import { resolveProgram } from '../common/domain/executable.js'
-import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
+import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox } from '../common/domain/filesystem-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { childPath, descent, isDriveRoot, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, resolvePath, typedPath, WHOLE_DRIVE, withForwardSlashes } from '../common/domain/paths.js'
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
@@ -619,5 +619,26 @@ describe('a drive-shaped name reached by a climb or a link, on Linux', () => {
       expect(found).toEqual({ matches: [], truncated: false, excludedFiles: 1 })
       expect(judged).toEqual([])
     } finally { process.chdir(cwd) }
+  })
+})
+
+// pathe resolved a rule's `c:/secret.txt` from the workspace to the drive `C:/`, whose real path does not exist on Linux,
+// so the rule failed every file call in the workspace. Its names are now a path under the root.
+describe('a workspace rule named like a drive, on Linux', () => {
+  it('covers the folder c: in the workspace, and leaves every other call alone, wherever the process runs', async () => {
+    const root = scratch()
+    const workspace = join(root, 'ws')
+    mkdirSync(join(workspace, 'c:'), { recursive: true })
+    writeFileSync(join(workspace, 'c:', 'secret.txt'), 'secret')
+    const policy = WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: 'c:/secret.txt', read: 'deny' }, { path: 'C:/missing/x', write: 'deny' }] } })
+    // The process runs where no `C:` is, so pathe's `C:/` had no real path at all.
+    within(root, () => {
+      expect(filesystemPathDecision({ root: workspace, path: join(workspace, 'c:', 'secret.txt'), policy, operation: 'read', platform: 'linux' })).toBe('deny')
+      expect(filesystemPathDecision({ root: workspace, path: join(workspace, 'C:', 'missing', 'x'), policy, operation: 'write', platform: 'linux' })).toBe('deny')
+      expect(filesystemPathDecision({ root: workspace, path: join(workspace, 'other.txt'), policy, operation: 'read', platform: 'linux' })).toBe('inherit')
+    })
+    const projected = await projectFilesystemSandbox({ root: workspace, policy, platform: 'linux' })
+    expect(projected.hiddenFiles).toEqual([join(workspace, 'c:', 'secret.txt')])
+    expect(projected.readOnlyWorkspacePaths).toEqual([workspace])
   })
 })
