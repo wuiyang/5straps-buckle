@@ -2,7 +2,7 @@ import { closeSync, constants, mkdtempSync, readFileSync, readlinkSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { openHandleNoFollow, openNoFollow } from '../common/adapters/beneath.js'
+import { EntryAppearedError, openBeneath, openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/adapters/beneath.js'
 
 // Windows has no O_NOFOLLOW, so Buckle checks a name with lstat before it opens it. Another process can swap a link in
 // between. These tests imitate Windows through the platform each open takes, and swap the entry at a chosen lstat of
@@ -120,6 +120,31 @@ describe('the Windows open that follows no link, against a link swapped in after
       unlinkSync(path)
       resetRace()
     }
+  })
+
+  // Buckle knows only that an entry appeared after each check, which a plain file made and removed does as well as a link.
+  it('refuses a plain file made after each of the two checks as an entry that appeared, never naming a link', async () => {
+    for (const open of [syncRead, handleRead]) {
+      const { path } = scene({ exists: false })
+      race.after.set(1, () => writeFileSync(path, 'made'))
+      race.before.set(2, () => unlinkSync(path))
+      race.after.set(2, () => writeFileSync(path, 'made again'))
+      await expect(open(path)).rejects.toMatchObject({ code: 'ELOOP', message: expect.stringContaining('an entry appeared after it was checked') })
+      unlinkSync(path)
+      resetRace()
+    }
+    const root = mkdtempSync(join(tmpdir(), 'buckle-no-follow-'))
+    roots.push(root)
+    const directory = openRealDirectory(root)
+    try {
+      const path = directory.child('target')
+      race.path = path
+      race.after.set(1, () => writeFileSync(path, 'made'))
+      race.before.set(2, () => unlinkSync(path))
+      race.after.set(2, () => writeFileSync(path, 'made again'))
+      expect(() => openBeneath(directory, 'target', constants.O_RDONLY, 'notes/target', undefined, 'win32')).toThrow(new EntryAppearedError('notes/target'))
+      expect(new EntryAppearedError('notes/target').message).toBe('An entry appeared in notes/target after it was checked, so the call is refused; try again')
+    } finally { directory.close() }
   })
 
   it('still truncates a plain file, creates a missing one, and fails an exclusive create of an existing one', async () => {

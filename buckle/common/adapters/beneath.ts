@@ -30,6 +30,16 @@ export class LinkAppearedError extends ToolInputError {
   }
 }
 
+/**
+ * Where a check saw no entry, an open that creates nothing reached one, and did again once checked again
+ * (openNoFollow): a link swapped in and out, or a file another process made and removed, so the call is refused.
+ */
+export class EntryAppearedError extends ToolInputError {
+  constructor(path: string) {
+    super(`An entry appeared in ${path} after it was checked, so the call is refused; try again`, { code: 'PERMISSION_DENIED' })
+  }
+}
+
 /** How a refusal names the path and what did not happen, so a read is not told nothing was written. */
 interface Refusal { shown: string; outcome?: string }
 const NOT_OPENED = 'it was not opened'
@@ -199,10 +209,10 @@ function deviceOf(path: string): number | undefined {
   try { return statSync(path).dev } catch { return undefined }
 }
 
-/** Opens a name beneath a pinned directory without following a link in its place. */
-export function openBeneath(directory: PinnedDirectory, name: string, flags: number, refusal: string | Refusal, mode?: number): number {
+/** Opens a name beneath a pinned directory without following a link in its place; `platform` lets a test imitate Windows. */
+export function openBeneath(directory: PinnedDirectory, name: string, flags: number, refusal: string | Refusal, mode?: number, platform: NodeJS.Platform = process.platform): number {
   try {
-    return openNoFollow(directory.child(name), flags | constants.O_NONBLOCK, mode)
+    return openNoFollow(directory.child(name), flags | constants.O_NONBLOCK, mode, platform)
   } catch (error) {
     throw asRefusal(error, typeof refusal === 'string' ? { shown: refusal } : refusal)
   }
@@ -221,9 +231,10 @@ function hasNoFollowFlag(platform: NodeJS.Platform): boolean {
  * file ID, where the volume reports them), and is truncated through the descriptor only once the name is checked again
  * and is still no link; a name lstat did not see is created with O_EXCL, which fails on a link in its place. Where lstat
  * saw no entry but an open that creates nothing opens one, the entry appeared after the lstat, perhaps as a link: the
- * open is checked again from the lstat once, and then refused with the same ELOOP. Only on a volume that reports no
- * file ID is an entry lstat saw, swapped for a link before the open and back before the second check, still followed
- * (known-limits.md). The platform is a parameter so a test can imitate Windows.
+ * open is checked again from the lstat once, and then refused with the same ELOOP, named as an entry that appeared
+ * rather than a link (EntryAppearedError): it may as well have been a file made and removed. Only on a volume that
+ * reports no file ID is an entry lstat saw, swapped for a link before the open and back before the second check, still
+ * followed (known-limits.md). The platform is a parameter so a test can imitate Windows.
  */
 export function openNoFollow(path: string, flags: number, mode?: number, platform: NodeJS.Platform = process.platform): number {
   if (hasNoFollowFlag(platform)) return openSync(path, flags | constants.O_NOFOLLOW, mode)
@@ -240,7 +251,7 @@ export function openNoFollow(path: string, flags: number, mode?: number, platfor
     if (plan.appeared) {
       closeSync(descriptor)
       if (attempt === 0) continue
-      throw linkInTheWay(path)
+      throw new AppearedAfterCheck(path)
     }
     try {
       refuseSwap(path, seen, fstatSync(descriptor, { bigint: true }), lstatSync(path, { bigint: true, throwIfNoEntry: false }))
@@ -270,7 +281,7 @@ export async function openHandleNoFollow(path: string, flags: number, platform: 
     if (plan.appeared) {
       await handle.close()
       if (attempt === 0) continue
-      throw linkInTheWay(path)
+      throw new AppearedAfterCheck(path)
     }
     try {
       refuseSwap(path, seen, await handle.stat({ bigint: true }), await lstatOrNone())
@@ -326,11 +337,22 @@ function linkInTheWay(path: string): NodeJS.ErrnoException {
   return Object.assign(new Error(`ELOOP: a symbolic link or junction is in the way, open '${path}'`), { code: 'ELOOP', syscall: 'open', path })
 }
 
+/**
+ * What an open that creates nothing raises where an entry appeared after its check twice (checkedOpen): the ELOOP a
+ * link gets, so every caller refuses it as one, named for what Buckle knows, which is only that an entry appeared.
+ */
+class AppearedAfterCheck extends Error {
+  readonly code = 'ELOOP'
+  readonly syscall = 'open'
+  constructor(readonly path: string) { super(`ELOOP: an entry appeared after it was checked, open '${path}'`) }
+}
+
 function isLink(path: string): boolean {
   try { return lstatSync(path).isSymbolicLink() } catch { return false }
 }
 
 function asRefusal(error: unknown, refusal: Refusal): unknown {
+  if (error instanceof AppearedAfterCheck) return new EntryAppearedError(refusal.shown)
   return errorCode(error) === 'ELOOP' ? new LinkAppearedError(refusal.shown, refusal.outcome) : error
 }
 
