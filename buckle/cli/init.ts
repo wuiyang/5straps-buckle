@@ -175,11 +175,18 @@ async function pair(input: { out: string; contents: string; code: string; rings:
 
 /**
  * How `buckle serve` finds the file just written: on its own from the default state directory, with
- * the state directory named when BUCKLE_STATE_DIR moved it, and by name for any other file.
+ * the state directory named when BUCKLE_STATE_DIR moved it, and by name for any other file. The
+ * variable is set as the platform's shell sets one: before the command on Linux and macOS, and on
+ * Windows as PowerShell and cmd each do; cmd's is quoted whole, or the space before `&&` would end
+ * the value.
  */
-function serveCommand(out: string): string {
-  if (out !== defaultEnvironmentFile()) return `BUCKLE_ENV_FILE=${out} buckle serve`
-  return process.env.BUCKLE_STATE_DIR ? `BUCKLE_STATE_DIR=${dirname(out)} buckle serve` : 'buckle serve'
+export function serveCommand(out: string, environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  const setting = out !== defaultEnvironmentFile(environment) ? { name: 'BUCKLE_ENV_FILE', value: out }
+    : environment.BUCKLE_STATE_DIR ? { name: 'BUCKLE_STATE_DIR', value: dirname(out) } : null
+  if (!setting) return 'buckle serve'
+  const { name, value } = setting
+  if (platform !== 'win32') return `${name}=${value} buckle serve`
+  return `$env:${name} = '${value.replaceAll("'", "''")}'; buckle serve   (PowerShell; in cmd: set "${name}=${value}" && buckle serve)`
 }
 
 /** Questions on stderr, so stdout stays the summary; the readline is opened only when one is asked. */

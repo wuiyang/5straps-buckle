@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { runInit, type InitPrompt } from '../cli/init.js'
+import { runInit, serveCommand, type InitPrompt } from '../cli/init.js'
+import { defaultEnvironmentFile } from '../common/runtime/environment.js'
 
 let workspace: string
 let out: string
@@ -98,6 +99,22 @@ describe('buckle init asks for node settings after the workspace', () => {
     const accepted = scripted([workspace, '', 'Fixture', 'fs,environment'])
     expect(parseEnv((await init(accepted, ['--force'])).written).BUCKLE_PACKS).toBe('fs,environment')
     vi.unstubAllEnvs()
+  })
+})
+
+describe('the command init prints to start the node', () => {
+  it('sets the variable before the command on Linux and macOS', () => {
+    expect(serveCommand('/srv/node/buckle.env', {}, 'linux')).toBe('BUCKLE_ENV_FILE=/srv/node/buckle.env buckle serve')
+    expect(serveCommand('/srv/state/buckle.env', { BUCKLE_STATE_DIR: '/srv/state' }, 'darwin')).toBe('BUCKLE_STATE_DIR=/srv/state buckle serve')
+  })
+
+  it('sets it as PowerShell and cmd do on Windows, with cmd\'s quoted whole so no space ends the value', () => {
+    expect(serveCommand("/srv/O'Neil/node.env", {}, 'win32')).toBe(`$env:BUCKLE_ENV_FILE = '/srv/O''Neil/node.env'; buckle serve   (PowerShell; in cmd: set "BUCKLE_ENV_FILE=/srv/O'Neil/node.env" && buckle serve)`)
+    expect(serveCommand('/srv/state/buckle.env', { BUCKLE_STATE_DIR: '/srv/state' }, 'win32')).toBe(`$env:BUCKLE_STATE_DIR = '/srv/state'; buckle serve   (PowerShell; in cmd: set "BUCKLE_STATE_DIR=/srv/state" && buckle serve)`)
+  })
+
+  it('names no variable for the file in the default state directory, on any platform', () => {
+    for (const platform of ['linux', 'win32'] as const) expect(serveCommand(defaultEnvironmentFile({}), {}, platform)).toBe('buckle serve')
   })
 })
 
