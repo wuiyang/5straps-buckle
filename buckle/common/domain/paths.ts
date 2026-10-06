@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'pathe'
 import { ToolInputError } from './tool.js'
 
@@ -23,6 +24,22 @@ export function nativePath(path: string, platform: NodeJS.Platform = process.pla
   return platform !== 'win32' && normal.startsWith('//') ? normal.replace(/^\/+/, '/') : normal
 }
 
+/** The working directory in pathe's form (nativePath). */
+export function workingDirectory(): string {
+  return nativePath(process.cwd())
+}
+
+/** The home directory in pathe's form (nativePath). */
+export function homeDirectory(): string {
+  return nativePath(homedir())
+}
+
+/** A path a person typed, absolute or relative to the working directory, as an absolute path in pathe's form. */
+export function typedPath(path: string): string {
+  const named = nativePath(path)
+  return isAbsolute(named) ? resolve(named) : resolve(workingDirectory(), named)
+}
+
 /**
  * A path with its separators as pathe writes them and nothing folded, for a link target, whose `..` climbs from where
  * the component before it really lands. Refused where unsupportedPath says.
@@ -37,11 +54,13 @@ export function withForwardSlashes(path: string, platform: NodeJS.Platform = pro
  * Why pathe cannot name a path as the operating system does. On Windows, a network share or a device path
  * (`\\server\share`, `\\?\C:\`): pathe's resolve reads `//server/share` as `/server/share`, a folder on the current
  * drive, so a root there would be judged in one place and reached in another. Elsewhere, a backslash, which is part of
- * a name there and a separator to pathe.
+ * a name there and a separator to pathe, and a leading drive letter (`c:/x`), which pathe reads as a Windows drive and
+ * the kernel as a name in the working directory.
  */
 function unsupportedPath(path: string, platform: NodeJS.Platform): string | null {
   if (platform === 'win32') return /^[\\/]{2}/.test(path) ? 'is on a network share or is a device path, which Buckle does not use on Windows' : null
-  return path.includes('\\') ? 'holds a backslash, which Buckle reads as a separator' : null
+  if (path.includes('\\')) return 'holds a backslash, which Buckle reads as a separator'
+  return /^[A-Za-z]:(?:\/|$)/.test(path) ? 'starts with a drive letter, which Buckle reads as a Windows drive' : null
 }
 
 /**

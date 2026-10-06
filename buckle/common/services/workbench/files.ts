@@ -1,10 +1,10 @@
 import { invokePinnedWorkbenchFile } from './safe-files.js'
 import { isUtf8 } from 'node:buffer'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'pathe'
 import type { JsonObject, JsonValue, WorkbenchChange } from '@5straps/protocol'
 import { createPathView } from '../../domain/path-view.js'
-import { isInside } from '../../domain/paths.js'
+import { isInside, isPlainName } from '../../domain/paths.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { createToolRegistry } from '../../domain/tool-registry.js'
 import { createFsPack } from '../packs/fs/index.js'
@@ -21,6 +21,13 @@ export interface WorkbenchFileOptions {
   authorizePath(path: string, operation: 'read' | 'write'): boolean
   hasRipgrep: boolean
 }
+
+/** A listed name pathe reads as itself; one it would read as another path (a backslash on Linux) cannot be judged. */
+function plainName(name: string): string {
+  if (!isPlainName(name)) throw new WorkbenchError('The workspace holds a file name with a backslash, which the staged editor cannot judge', 403)
+  return name
+}
+
 export function createWorkbenchFiles(options: WorkbenchFileOptions) {
   function root(id: string): string { return join(options.directory, id, 'workspace') }
   function objectPath(id: string, hash: string): string {
@@ -42,7 +49,7 @@ export function createWorkbenchFiles(options: WorkbenchFileOptions) {
       if (paths.some(excludedPath => isInside(excludedPath, path))) return
       const info = lstatSync(path)
       if (!permitted(relative(options.sourceRoot, path) || '.', 'read') || info.isSymbolicLink()) { paths.push(path); return }
-      if (info.isDirectory()) for (const name of readdirSync(path)) walk(join(path, name))
+      if (info.isDirectory()) for (const name of readdirSync(path)) walk(join(path, plainName(name)))
     }
     walk(options.sourceRoot)
     return paths
@@ -73,7 +80,7 @@ export function createWorkbenchFiles(options: WorkbenchFileOptions) {
     function visit(path: string): void {
       const info = lstatSync(path)
       if (++count > 100_000 || (bytes += info.isFile() ? info.size : 0) > options.maxBytes) throw new WorkbenchError('Staged filesystem exceeded its configured size limit', 413)
-      if (info.isDirectory() && !info.isSymbolicLink()) for (const name of readdirSync(path)) visit(join(path, name))
+      if (info.isDirectory() && !info.isSymbolicLink()) for (const name of readdirSync(path)) visit(join(path, plainName(name)))
     }
     visit(root(id))
   }

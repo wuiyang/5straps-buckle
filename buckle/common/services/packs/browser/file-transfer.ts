@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, mkdirSync, openSync, read, readdirSync, rmSync, statSync, write } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, join } from 'pathe'
 import { promisify } from 'node:util'
 import { withFileBeneathAsync } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import { isMissingPathError } from '../../invocation/real-path.js'
 import { judgedPath } from '../judged-path.js'
+import { isPlainName } from '../../../domain/paths.js'
 
 /**
  * agent-browser opens the paths it is given with ordinary, link-following opens, so it is never handed
@@ -90,7 +91,7 @@ export function sweepTransfers(input: { directory: string; staleAfterMs: number;
   let names: string[]
   try { names = readdirSync(input.directory) } catch { return }
   const now = input.now ?? Date.now()
-  for (const name of names.filter(entry => entry.startsWith(TRANSFER_PREFIX))) {
+  for (const name of names.filter(entry => entry.startsWith(TRANSFER_PREFIX) && isPlainName(entry))) {
     const path = join(input.directory, name)
     try {
       if (now - statSync(path).mtimeMs > input.staleAfterMs) rmSync(path, { recursive: true, force: true })

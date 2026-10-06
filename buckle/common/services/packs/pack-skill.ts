@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { buildSkill, type LoadedSkill } from '../../domain/skill.js'
 import { PACKAGE_ROOT } from '../../runtime/package-root.js'
 

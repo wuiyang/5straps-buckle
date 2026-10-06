@@ -1,8 +1,8 @@
 import { realpathSync } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
-import { dirname, relative, resolve } from 'node:path'
+import { relative, resolve } from 'pathe'
 import type { FilesystemPermission, WorkspacePolicy } from '@5straps/protocol'
-import { comparablePath, isInside, isInsideComparable } from './paths.js'
+import { comparablePath, isInside, isInsideComparable, nativePath, parentDirectory, withForwardSlashes } from './paths.js'
 import type { PermissionRule } from './permission/decision.js'
 import { allowedVia, ask, deny } from './permission/decision.js'
 
@@ -87,17 +87,19 @@ export async function projectFilesystemSandbox(input: { root: string; policy: Wo
   const hiddenPaths = new Set<string>()
   const hiddenFiles = new Set<string>()
   const readOnlyWorkspacePaths = new Set<string>()
-  const root = await realpath(input.root)
+  const root = nativePath(await realpath(input.root))
   const rules = [...input.policy.filesystem?.rules ?? [], ...input.ceiling?.filesystem?.rules ?? []]
   for (const rule of rules) {
     input.signal?.throwIfAborted()
     const read = resolveFilesystemPermission({ ...input, path: rule.path, operation: 'read' })
     const write = resolveFilesystemPermission({ ...input, path: rule.path, operation: 'write' })
     if (!['ask', 'deny'].includes(read) && !['ask', 'deny'].includes(write)) continue
-    const named = resolve(root, rule.path)
+    // What is hidden here is handed to the sandbox as a path the kernel reads, where a backslash on Linux is part of
+    // a name: such a rule is refused (withForwardSlashes), never hidden at the other path pathe would read.
+    const named = resolve(root, withForwardSlashes(rule.path))
     if (!isInside(root, named)) throw new Error('Filesystem policy escaped its workspace')
     const existing = await nearestExisting(named)
-    const canonical = await realpath(existing)
+    const canonical = nativePath(await realpath(existing))
     if (!isInside(root, canonical)) throw new Error('Filesystem policy resolves outside its workspace')
     if (read === 'ask' || read === 'deny') {
       if ((await lstat(canonical)).isDirectory()) hiddenPaths.add(canonical)
@@ -111,7 +113,7 @@ async function nearestExisting(path: string): Promise<string> {
   try { await lstat(path); return path }
   catch (error) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
-    const parent = dirname(path)
+    const parent = parentDirectory(path)
     if (parent === path) throw error
     return nearestExisting(parent)
   }
@@ -119,11 +121,13 @@ async function nearestExisting(path: string): Promise<string> {
 
 /** A rule's path as the disk names it (realpathSync.native: the case it stores), so it compares with judged effect paths. */
 function canonicalPolicyPath(path: string): string {
-  try { return realpathSync.native(path) }
+  let real: string
+  try { real = realpathSync.native(path) }
   catch (error) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
-    const parent = dirname(path)
+    const parent = parentDirectory(path)
     if (parent === path) throw error
     return resolve(canonicalPolicyPath(parent), relative(parent, path))
   }
+  return nativePath(real)
 }

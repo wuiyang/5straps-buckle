@@ -1,5 +1,5 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'pathe'
 import type { ForgeRepository } from '../../../domain/forge.js'
 import { ToolInputError } from '../../../domain/tool.js'
 

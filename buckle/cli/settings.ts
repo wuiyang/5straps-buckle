@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { resolve } from 'pathe'
 import { parseEnv } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { actionsPath, stateDirectoryOf } from '../common/runtime/config.js'

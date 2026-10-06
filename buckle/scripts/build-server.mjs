@@ -6,7 +6,7 @@
 // --prod` cannot see (plan section G; scripts/release/audit-bundled.mjs).
 import { readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join, resolve } from 'node:path'
+import { join, resolve } from 'pathe'
 import { parseArgs } from 'node:util'
 import { build, copyPublicAssets, createNitro, prepare } from 'nitro/builder'
 

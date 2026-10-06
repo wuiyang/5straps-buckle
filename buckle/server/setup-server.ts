@@ -1,6 +1,6 @@
 import { createServer, type RequestListener, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { pathToFileURL } from 'node:url'
 import { registerHttpServerClose, type Logger, type RequestCli } from '@5straps/runtime'
 import { bindHost, createRequestCli, registerCliListener } from '@5straps/runtime/nitro'

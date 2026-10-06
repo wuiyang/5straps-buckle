@@ -2,7 +2,7 @@ import { deniedSubjects } from '../../adapters/grant-store/file-grant-store.js'
 import { randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, realpathSync } from 'node:fs'
-import { dirname, isAbsolute } from 'node:path'
+import { isAbsolute } from 'pathe'
 import type { ChangeHistory } from '../history/journal.js'
 import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
@@ -24,6 +24,7 @@ import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
 import { requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
+import { nativePath, parentDirectory } from '../../domain/paths.js'
 
 /** Why a call's signal fired when its runtime shut down (B19): not the caller leaving. */
 export class InvocationsClosedError extends Error {
@@ -157,7 +158,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute })
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
-          const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path)) path = dirname(path); return realpathSync(path) })]
+          const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path); return nativePath(realpathSync(path)) })]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
           // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
           // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).

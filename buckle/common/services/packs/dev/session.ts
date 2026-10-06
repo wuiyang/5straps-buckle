@@ -1,7 +1,7 @@
 import { logger } from '../../../runtime/log.js'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
-import { resolve } from 'node:path'
+import { resolve } from 'pathe'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { connectLspSocket, spawnLspServer, type LspConnection } from './lsp-client.js'
 import { serverForLanguage } from './servers.js'

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { basename } from 'node:path'
+import { basename } from 'pathe'
 import type { SkillDescriptor } from '@5straps/protocol'
 
 export interface LoadedSkill extends SkillDescriptor {

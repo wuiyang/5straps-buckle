@@ -1,7 +1,7 @@
 import { isInside } from '../../domain/paths.js'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { createConnectionOwner, openDatabase, rawConnection, SqliteErrorCode, withFileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'

@@ -10,7 +10,7 @@
 // from this dist and .output too, so a dev cycle changes what it runs.
 import { spawn } from 'node:child_process'
 import { cpSync, existsSync, renameSync, rmSync, watch } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, resolve } from 'pathe'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const PACKAGE_ROOT = resolve(import.meta.dirname, '..')

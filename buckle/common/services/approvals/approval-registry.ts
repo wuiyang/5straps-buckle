@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join } from 'pathe'
 import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
@@ -11,6 +11,7 @@ import type { GrantStore } from '../../types/ports/grant-store.js'
 import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
 import { RECORDED_BEFORE_NOTE } from '../../domain/approval-instruction.js'
 import { logger, withoutCause } from '../../runtime/log.js'
+import { isPlainName } from '../../domain/paths.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
@@ -223,6 +224,7 @@ function createCallFiles(directory: string): CallFiles {
       return []
     }
     return names.filter((name) => {
+      if (!isPlainName(name)) return false
       const id = CALL_FILE.exec(name)?.[1]
       return (id !== undefined && !named.has(id)) || name.endsWith('.tmp')
     })

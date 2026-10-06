@@ -5,11 +5,11 @@ import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbenc
 import { spawnPtyProcess } from '../../adapters/pty-process.js'
 import { buildChildEnvironment } from '../../domain/environment.js'
 import { hasExecutable } from '../../domain/executable.js'
-import { isInside } from '../../domain/paths.js'
+import { isInside, nativePath, parentDirectory } from '../../domain/paths.js'
 import { collectShellHiddenPaths } from '../shell/shell-filesystem.js'
 import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
 import { createShellWorkspaceRecovery } from '../shell/isolated-shell.js'
-import { join, dirname } from 'node:path'
+import { join } from 'pathe'
 import { existsSync, realpathSync } from 'node:fs'
 import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
@@ -327,7 +327,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
         grants,
         actions,
         history,
-        historyRoots: [realpathSync(config.cwd), ...config.scratchRoots.map(root => { let existing = root; while (!existsSync(existing)) existing = dirname(existing); return realpathSync(existing) })],
+        historyRoots: [nativePath(realpathSync(config.cwd)), ...config.scratchRoots.map(root => { let existing = root; while (!existsSync(existing) && parentDirectory(existing) !== existing) existing = parentDirectory(existing); return nativePath(realpathSync(existing)) })],
         reporter,
         paths,
         serverId: config.serverId,

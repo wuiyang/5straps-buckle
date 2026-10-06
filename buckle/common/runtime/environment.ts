@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'pathe'
 import { parseEnv } from 'node:util'
 import { isOpenToOthers } from '../adapters/file-modes.js'
-import { isInside } from '../domain/paths.js'
+import { isInside, nativePath, typedPath } from '../domain/paths.js'
 import { stateDirectoryOf } from './config.js'
 
 /** The node's environment file in its state directory, which `buckle init` and pairing write. */
@@ -22,7 +22,7 @@ export function environmentFilePath(environment: NodeJS.ProcessEnv = process.env
   if (!named) return defaultEnvironmentFile(environment)
   // Relative, it would name another file in every directory a command starts in (review L9 of B18-B19).
   if (!isAbsolute(named)) throw new Error(`BUCKLE_ENV_FILE must be an absolute path, not ${named}: Buckle never resolves its settings against the working directory`)
-  return resolve(named)
+  return typedPath(named)
 }
 
 /** buckle.env in the state directory the process environment names. */
@@ -97,7 +97,7 @@ export function outsideRootNotice(input: { namedNode: boolean; root: string; cwd
 }
 
 function realPath(path: string): string {
-  try { return realpathSync(path) } catch { return resolve(path) }
+  try { return nativePath(realpathSync(path)) } catch { return resolve(path) }
 }
 
 /** Owner decision D5: a project outside the root is warned, not refused. A later ruling flips it here: throw new Error(notice). */

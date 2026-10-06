@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process'
 import { chmod, cp, readdir, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { join, resolve } from 'node:path'
+import { join, resolve } from 'pathe'
 import { parseArgs } from 'node:util'
 
 const PACKS = 'common/services/packs'

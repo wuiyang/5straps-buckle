@@ -1,4 +1,4 @@
-import { basename } from 'node:path'
+import { basename } from 'pathe'
 import { comparablePath, isInsideAny, segments } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, deny } from '../decision.js'

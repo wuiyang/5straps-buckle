@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join } from 'pathe'
 import { parseEnv } from 'node:util'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { withFileLock } from '@5straps/runtime/sqlite'

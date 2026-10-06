@@ -1,6 +1,7 @@
 import { lstatSync, readdirSync, realpathSync, type Dirent, type Stats } from 'node:fs'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { ToolInputError } from '../../../domain/tool.js'
+import { isPlainName, nativePath } from '../../../domain/paths.js'
 
 /** A linked worktree's pointers, which send git's objects and refs to another repository. */
 export const POINTER_FILES = ['commondir', 'gitdir']
@@ -72,6 +73,8 @@ function firstLink(input: { directory: string; depth: number; budget: Budget }):
   input.budget.remaining -= entries.length
   if (input.budget.remaining < 0) input.budget.exceeded()
   for (const entry of entries) {
+    // A name pathe would read as another path (a backslash on Linux) cannot be checked, so it is refused as a link is.
+    if (!isPlainName(entry.name)) return `${input.directory}/${entry.name}`
     const path = join(input.directory, entry.name)
     if (entry.isSymbolicLink()) return path
     if (!entry.isDirectory() || input.depth <= 1) continue
@@ -91,7 +94,7 @@ function statOf(path: string): Stats | null {
 
 function realPathOf(path: string): string | null {
   try {
-    return realpathSync.native(path)
+    return nativePath(realpathSync.native(path))
   } catch {
     return null
   }

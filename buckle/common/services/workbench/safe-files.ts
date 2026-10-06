@@ -1,11 +1,12 @@
 import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, openSync, readSync, readdirSync, writeFileSync } from 'node:fs'
 import { isUtf8 } from 'node:buffer'
-import { dirname, join, matchesGlob, relative } from 'node:path'
+import { dirname, join, matchesGlob, relative } from 'pathe'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { createPathView } from '../../domain/path-view.js'
 import { isIgnoredDirectory } from '../packs/fs/ignore.js'
 import { readInput, writeInput, listInput, findInput, searchInput } from '../packs/fs/schemas.js'
 import { WorkbenchError, workbenchHash } from './storage.js'
+import { isPlainName } from '../../domain/paths.js'
 
 const MAX_BYTES = 10 * 1_048_576
 interface SafeFilesInput { root: string; tool: string; args: JsonObject; permitted(path: string, operation: 'read' | 'write'): boolean }
@@ -60,6 +61,8 @@ export function invokePinnedWorkbenchFile(input: SafeFilesInput): JsonValue {
       directory(path, descriptor => {
         for (const child of readdirSync('/proc/self/fd/' + descriptor, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
           if (entries.length >= 5000) return
+          // A name pathe would read as another path (a backslash on Linux) would be judged there: left out.
+          if (!isPlainName(child.name)) continue
           const named = path === '.' ? child.name : path + '/' + child.name
           if (!input.permitted(named, 'read') || child.isSymbolicLink() || child.isDirectory() && isIgnoredDirectory(child.name, includeIgnored)) continue
           const info = lstatSync('/proc/self/fd/' + descriptor + '/' + child.name)

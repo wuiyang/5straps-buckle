@@ -3,9 +3,9 @@ import { withFileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'pathe'
 import { setMode } from '../../adapters/file-modes.js'
-import { isInsideAny, isInside } from '../../domain/paths.js'
+import { isInside, isInsideAny, isPlainName, parentDirectory } from '../../domain/paths.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { ToolExecutionError } from '../../domain/tool.js'
 import { logger } from '../../runtime/log.js'
@@ -126,6 +126,9 @@ function linkLanding(tree: Snapshot, root: string, link: string): string | null 
 function follow(input: { tree: Snapshot; root: string; from: string; target: string; budget: { links: number } }): string | null {
   const { tree, root, target, budget } = input
   let current = input.from
+  // The copy runs under bubblewrap on Linux, where a backslash in a link target is part of a name, which pathe's join
+  // would read as a separator: such a target counts as leaving the root.
+  if (target.includes('\\')) return null
   let parts = target.split('/')
   if (target.startsWith('/')) {
     if (!target.startsWith(`${root}/`) && target !== root) return null
@@ -136,7 +139,7 @@ function follow(input: { tree: Snapshot; root: string; from: string; target: str
   for (const part of parts) {
     if (part === '' || part === '.') continue
     if (part === '..' && missing) return null
-    current = part === '..' ? dirname(current) : join(current, part)
+    current = part === '..' ? parentDirectory(current) : join(current, part)
     if (!isInside(root, current)) return null
     const entry = tree[current]
     if (!entry) {
@@ -165,7 +168,8 @@ function onDisk(path: string): 'link' | 'missing' | 'present' {
 function removePrivateWorkspace(directory: string): void {
   if (!lstatSync(directory).isDirectory()) { rmSync(directory); return }
   setMode(directory, 0o700)
-  for (const name of readdirSync(directory)) removePrivateWorkspace(join(directory, name))
+  // A name pathe would read as another path is not walked; the recursive remove below takes it with its directory.
+  for (const name of readdirSync(directory)) if (isPlainName(name)) removePrivateWorkspace(join(directory, name))
   rmSync(directory, { recursive: true })
 }
 

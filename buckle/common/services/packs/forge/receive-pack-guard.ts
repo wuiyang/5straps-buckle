@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { accessSync, constants, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { setMode } from '../../../adapters/file-modes.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { receivePackCommand } from '../git-isolation.js'

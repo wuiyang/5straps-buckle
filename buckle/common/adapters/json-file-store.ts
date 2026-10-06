@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { resolve } from 'pathe'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { withFileLock } from '@5straps/runtime/sqlite'
 import { ZodError, type z } from 'zod'

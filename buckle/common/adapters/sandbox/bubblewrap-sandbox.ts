@@ -1,5 +1,5 @@
 import { SANDBOX_HOME } from '../../domain/sandbox-mounts.js'
-import { dirname, relative } from 'node:path'
+import { dirname, relative } from 'pathe'
 import type { Sandbox, SandboxCommand } from '../../types/ports/sandbox.js'
 
 export function createBubblewrapSandbox(bwrapPath: string, options: { nodePrefix?: string } = {}): Sandbox {

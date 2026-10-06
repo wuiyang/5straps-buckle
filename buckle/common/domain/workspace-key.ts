@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { basename, resolve } from 'node:path'
+import { basename, resolve } from 'pathe'
 
 const UNSAFE_KEY_CHARACTERS = /[^a-z0-9_-]+/gi
 

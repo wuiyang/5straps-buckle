@@ -1,8 +1,7 @@
 import { opendir, realpath, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'pathe'
 import { z } from 'zod'
-import { isInside } from '../../domain/paths.js'
+import { homeDirectory, isInside, isPlainName, nativePath, parentDirectory } from '../../domain/paths.js'
 import { WorkspaceError } from '../workspaces/workspace-manager.js'
 
 export const DirectoryQuerySchema = z.object({
@@ -20,6 +19,7 @@ export async function browseDirectories(input: z.infer<typeof DirectoryQuerySche
   const named = input.workspaceRoot ? resolve(input.workspaceRoot, input.path || '.') : expandHome(input.path)
   let path: string
   try { path = await realpath(named) } catch { throw new WorkspaceError('Directory does not exist or cannot be read') }
+  try { path = nativePath(path) } catch (error) { throw new WorkspaceError(error instanceof Error ? error.message : String(error)) }
   if (input.workspaceRoot && !isInside(input.workspaceRoot, path)) throw new WorkspaceError('Directory is outside the workspace')
   const display = (value: string) => input.workspaceRoot ? relative(input.workspaceRoot, value).split('\\').join('/') || '.' : value
   const entries: DirectoryEntry[] = []
@@ -29,12 +29,14 @@ export async function browseDirectories(input: z.infer<typeof DirectoryQuerySche
     for await (const item of await opendir(path)) {
       if (scanned++ < input.cursor) continue
       if (entries.length === input.limit) { nextCursor = String(scanned - 1); break }
+      // pathe would read a backslash in the name as a separator and show another path: left out.
+      if (!isPlainName(item.name)) continue
       const child = join(path, item.name)
       let directory = item.isDirectory()
       let canonical = child
       let reason: string | undefined
       if (item.isSymbolicLink()) {
-        try { canonical = await realpath(child); directory = (await stat(canonical)).isDirectory() }
+        try { canonical = nativePath(await realpath(child)); directory = (await stat(canonical)).isDirectory() }
         catch { reason = 'Symbolic link cannot be resolved' }
       }
       if (!input.includeFiles && !directory) continue
@@ -46,13 +48,13 @@ export async function browseDirectories(input: z.infer<typeof DirectoryQuerySche
     if (error instanceof WorkspaceError) throw error
     throw new WorkspaceError('Directory cannot be listed by the Buckle service account')
   }
-  const parent = dirname(path)
+  const parent = parentDirectory(path)
   return { path: display(path), parent: parent === path || input.workspaceRoot && !isInside(input.workspaceRoot, parent) ? null : display(parent), entries, nextCursor }
 }
 
 function expandHome(path: string): string {
-  if (path === '~' || path === '~/') return homedir()
-  if (path.startsWith('~/')) return resolve(homedir(), path.slice(2))
+  if (path === '~' || path === '~/') return homeDirectory()
+  if (path.startsWith('~/')) return resolve(homeDirectory(), path.slice(2))
   if (!isAbsolute(path)) throw new WorkspaceError('Enter an absolute path or ~/ for the Buckle account home')
   return path
 }

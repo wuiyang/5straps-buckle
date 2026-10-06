@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { logger } from '../../runtime/log.js'
 import { z } from 'zod'
 import {
@@ -16,6 +16,7 @@ import { assertSnapshotMatches, changedPaths, snapshotSchema } from '../history/
 import { createWorkbenchFiles, type WorkbenchFileOptions } from './files.js'
 import { createWorkbenchTerminals } from './terminals.js'
 import { createWorkbenchStorage, publicWorkbench, StoredWorkbenchSchema, WorkbenchError, workbenchHash, writeWorkbenchJson, type StoredWorkbench } from './storage.js'
+import { isPlainName } from '../../domain/paths.js'
 
 /** The audit log's bound on caller-chosen ids, as the invoker's. */
 const MAX_LOGGED_ID = 200
@@ -90,7 +91,8 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     return record
   }
   function purge(record: StoredWorkbench): void {
-    for (const name of readdirSync(storage.location(record.id))) if (name !== 'state.json') rmSync(join(storage.location(record.id), name), { recursive: true, force: true })
+    // A name pathe would read as another path is left, never removed at the path it would read as.
+    for (const name of readdirSync(storage.location(record.id))) if (name !== 'state.json' && isPlainName(name)) rmSync(join(storage.location(record.id), name), { recursive: true, force: true })
   }
   function assertTool(tool: string): void {
     if (options.authorizeTool && !options.authorizeTool(tool)) throw new WorkbenchError('Tool disabled by workspace policy', 403)

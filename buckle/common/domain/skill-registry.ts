@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { join, resolve } from 'pathe'
 import { buildSkill, type LoadedSkill } from './skill.js'
 import { isMissingPathError } from '../services/invocation/real-path.js'
+import { isPlainName } from './paths.js'
 
 /** Operator-supplied skills from configured directories, alongside the skills packs ship. */
 export async function loadSkills(directories: string[]): Promise<LoadedSkill[]> {
@@ -26,7 +27,7 @@ async function findSkillFiles(directory: string): Promise<string[]> {
 
   const files: string[] = []
   for (const child of await readdir(directory, { withFileTypes: true })) {
-    if (!child.isDirectory()) continue
+    if (!child.isDirectory() || !isPlainName(child.name)) continue
     const candidate = join(directory, child.name, 'SKILL.md')
     if (await isFile(candidate)) files.push(candidate)
   }

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { createServer as createSocketServer, type AddressInfo } from 'node:net'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createGitHubForgeClient } from '../common/adapters/forge/github.js'
@@ -921,7 +921,8 @@ describe('a local push or a commit writes only the repository its permission che
   })
 
   // Slice 7c review RGC-2: the refusal was written with echo, which dash (/bin/sh here) reads backslash escapes in, so a
-  // state path holding `\n` or `\c` broke or cut the reason.
+  // state path holding `\n` or `\c` broke or cut the reason. Buckle now names paths with pathe, which reads those
+  // backslashes as separators, so the path joins here with pathe too.
   it.each<[string, (root: string) => string]>([
     ['', root => root],
     [', its state path holding backslashes', root => join(root, 's\\ntate\\cEND')],

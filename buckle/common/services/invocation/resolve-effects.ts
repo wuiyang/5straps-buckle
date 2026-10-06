@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { dirname } from 'pathe'
 import type { ResolvedEffect, ToolEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import { ToolInputError } from '../../domain/tool.js'

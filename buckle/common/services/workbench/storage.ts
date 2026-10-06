@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { acquireFileLock, type FileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'

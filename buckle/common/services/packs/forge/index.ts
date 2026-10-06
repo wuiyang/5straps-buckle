@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from 'node:path'
+import { isAbsolute, resolve } from 'pathe'
 import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
 import type { JsonObject, JsonValue } from '@5straps/protocol'

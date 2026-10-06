@@ -1,11 +1,10 @@
 import { parseSandboxMounts, type SandboxMount } from '../domain/sandbox-mounts.js'
 import { realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, isAbsolute, join } from 'pathe'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
 import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
-import { isInside, isInsideComparable } from '../domain/paths.js'
+import { homeDirectory, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
@@ -100,7 +99,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
   // Named as the disk names it (realpathSync.native), as every judged effect path is: a root typed in
   // another case than the disk's put every existing file outside it on macOS (review M1 of the second
   // proof-of-possession re-review), and a linked root put every file outside it everywhere.
-  const typedRoot = resolve(environment.BUCKLE_WORKSPACE_ROOT ?? process.cwd())
+  const typedRoot = environment.BUCKLE_WORKSPACE_ROOT ? typedPath(environment.BUCKLE_WORKSPACE_ROOT) : workingDirectory()
   const cwd = realPathOf(typedRoot)
   const stateDirectory = stateDirectoryOf(environment)
   // As typed, and where each really is, compared as the disk compares: a root or state directory spelled
@@ -129,7 +128,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     authToken,
     adminToken,
     cwd,
-    scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => resolve(root)),
+    scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => typedPath(root)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
     sandboxMode,
     acknowledgedUnsandboxed: sandboxMode === 'none',
@@ -155,7 +154,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     approvalWebhook: environment.BUCKLE_APPROVAL_WEBHOOK || undefined,
     policy: parsePolicy(environment),
     sandboxMounts: parseSandboxMounts(environment.BUCKLE_MOUNTS),
-    mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => resolve(path)),
+    mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => typedPath(path)),
     reportUrl: environment.BUCKLE_REPORT_URL || undefined,
     reportToken: environment.BUCKLE_REPORT_TOKEN || undefined,
     ringsApprovalKey: parseRingsApprovalKey(environment.BUCKLE_RINGS_APPROVAL_KEY),
@@ -173,27 +172,29 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
  * the case the disk stores it (realpathSync.native); the rule folds case where the disk ignores it.
  */
 export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string[] {
-  const named = [join(homedir(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory]
+  const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory]
   return [...new Set([...named, ...named.map(realPathOf)])]
 }
 
 /** The real path of a directory, or of its nearest existing ancestor with the rest appended. */
 function realPathOf(path: string): string {
+  let real: string
   try {
-    return realpathSync.native(path)
+    real = realpathSync.native(path)
   } catch {
-    const parent = dirname(path)
+    const parent = parentDirectory(path)
     return parent === path ? path : join(realPathOf(parent), basename(path))
   }
+  return nativePath(real)
 }
 
 /** Where grants, approvals and the action log live, read without loading the rest of the config. */
 export function stateDirectoryOf(environment: NodeJS.ProcessEnv): string {
   const named = environment.BUCKLE_STATE_DIR
-  if (!named) return join(homedir(), '.5straps', 'buckle')
+  if (!named) return join(homeDirectory(), '.5straps', 'buckle')
   // Relative, it would name another directory in every directory a command starts in (review L13 of B20-B22).
   if (!isAbsolute(named)) throw new Error(`BUCKLE_STATE_DIR must be an absolute path, not ${named}: Buckle never resolves its state against the working directory`)
-  return resolve(named)
+  return typedPath(named)
 }
 
 /** The HTTP face exposes tools over the network, so it refuses to start without a token. */

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { isInside } from '../../../domain/paths.js'
+import { join } from 'pathe'
+import { isInside, parentDirectory, withForwardSlashes } from '../../../domain/paths.js'
 import { ToolInputError } from '../../../domain/tool.js'
 import { gitDirectory, readBounded, readRepositoryConfig } from './remote.js'
 
@@ -51,11 +51,12 @@ export function assertNoFilterPrograms(input: { repository: string; keys: string
 function attributeFiles(input: { repository: string; paths: string[] }): string[] {
   const files = new Set<string>([join(gitDirectory(input.repository), 'info', 'attributes')])
   for (const named of input.paths) {
-    let directory = join(input.repository, named)
+    // git reads a backslash on Linux as part of a name, which pathe's join would read as a separator: refused there.
+    let directory = join(input.repository, withForwardSlashes(named))
     while (isInside(input.repository, directory)) {
       files.add(join(directory, '.gitattributes'))
       if (directory === input.repository) break
-      directory = dirname(directory)
+      directory = parentDirectory(directory)
     }
   }
   return [...files].filter(file => existsSync(file))

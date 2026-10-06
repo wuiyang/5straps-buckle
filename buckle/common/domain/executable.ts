@@ -1,5 +1,5 @@
 import { accessSync, constants, statSync } from 'node:fs'
-import { delimiter, resolve } from 'node:path'
+import { delimiter, resolve } from 'pathe'
 
 /**
  * Extensions Windows hands straight to CreateProcess. `.cmd` and `.bat` are deliberately absent:

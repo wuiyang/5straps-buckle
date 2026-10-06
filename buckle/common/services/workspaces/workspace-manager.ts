@@ -1,13 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import { realpathSync, statSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, sep } from 'pathe'
 import { z } from 'zod'
 import { WorkspacePolicySchema, emptyWorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { actionsPath, type BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
-import { comparablePath } from '../../domain/paths.js'
+import { comparablePath, nativePath } from '../../domain/paths.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { tokenMatches } from '../access/tokens.js'
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
@@ -96,10 +96,10 @@ function registryStore(filePath: string, lockDeadlineMs?: number) {
 }
 
 export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime; interaction?: InteractionSource }) {
-  const defaultRoot = realpathSync.native(input.config.cwd)
-  const stateRoot = realpathSync.native(input.config.stateDirectory)
+  const defaultRoot = nativePath(realpathSync.native(input.config.cwd))
+  const stateRoot = nativePath(realpathSync.native(input.config.stateDirectory))
   const store = registryStore(join(stateRoot, 'workspaces.json'), input.config.stateLockDeadlineMs)
-  const exposedRoots = [...input.config.mountReadOnlyPaths, ...(input.config.sandboxMounts ?? []).map(mount => mount.source), dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return realpathSync.native(path) } catch { return path } })
+  const exposedRoots = [...input.config.mountReadOnlyPaths, ...(input.config.sandboxMounts ?? []).map(mount => mount.source), dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return nativePath(realpathSync.native(path)) } catch { return path } })
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
   const defaultDescriptor = (): WorkspaceDescriptor => ({ id: 'default', name: input.config.serverName, root: defaultRoot, enabled: true, default: true, retiredAt: null, updatedAt: null })
 
@@ -311,11 +311,12 @@ function describe(workspace: StoredWorkspace): WorkspaceDescriptor {
 
 /** An existing directory as the disk names it: links followed, in the case the disk stores (review M1 of the second re-review). */
 function canonicalDirectory(root: string): string {
+  let canonical: string
   try {
-    const canonical = realpathSync.native(root)
+    canonical = realpathSync.native(root)
     if (!statSync(canonical).isDirectory()) throw new Error('Not a directory')
-    return canonical
   } catch { throw new WorkspaceError('Workspace root must be an existing directory') }
+  try { return nativePath(canonical) } catch (error) { throw new WorkspaceError(error instanceof Error ? error.message : String(error)) }
 }
 
 /** Whether either root holds the other, as the volume compares paths (a case variant of a root is that root on macOS). */

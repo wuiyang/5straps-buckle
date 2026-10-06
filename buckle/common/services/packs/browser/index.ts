@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { z } from 'zod'
 import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
 import type { JsonValue } from '@5straps/protocol'

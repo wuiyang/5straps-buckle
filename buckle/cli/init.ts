@@ -1,12 +1,12 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
-import { dirname, resolve } from 'node:path'
+import { dirname, resolve } from 'pathe'
 import { parseArgs } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
 import { stateDirectoryOf } from '../common/runtime/config.js'
 import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/environment.js'
-import { isInside } from '../common/domain/paths.js'
+import { isInside, typedPath } from '../common/domain/paths.js'
 import { BUILTIN_PACKS } from '../common/services/packs/index.js'
 import { writeEnvironmentFile } from './environment-file.js'
 import { findNodeSetting, normaliseSetting } from './node-settings.js'
@@ -107,7 +107,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
     prompt.close()
   }
 
-  const root = resolve(answers.root)
+  const root = typedPath(answers.root)
   // An agent writes anywhere in its workspace, so the workspace never holds the node's state and credentials.
   if (isInside(root, dirname(out)) || isInside(root, stateDirectoryOf(process.env))) {
     process.stderr.write(`${root} holds the state directory or the environment file; choose a workspace root outside ${dirname(out)}.\n`)

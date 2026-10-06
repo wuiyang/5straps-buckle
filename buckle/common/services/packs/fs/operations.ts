@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto'
 import { isUtf8 } from 'node:buffer'
 import { constants, fstatSync, ftruncateSync, lstatSync, readFileSync, writeSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
-import { basename, join, matchesGlob } from 'node:path'
+import { basename, join, matchesGlob } from 'pathe'
 import type { JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
 import { openDirectoryBeneath, openRealDirectory, withFileBeneath, type PinnedDirectory } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
+import { isPlainName } from '../../../domain/paths.js'
 import { ToolInputError } from '../../../domain/tool.js'
 import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
 import { isIgnoredDirectory } from './ignore.js'
@@ -204,6 +205,8 @@ async function walkTree(input: {
   for (const child of children) {
     if (input.entries.length >= MAX_TREE_ENTRIES) return
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
+    // A name pathe would read as another path (a backslash on Linux) would be judged there: left out.
+    if (!isPlainName(child.name)) continue
 
     const real = join(input.real, child.name)
     const shown = join(input.shown, child.name)
@@ -240,6 +243,7 @@ async function walkNames(input: {
   for (const child of await readdir(input.directory.self, { withFileTypes: true })) {
     if (input.matches.length >= input.limit) return
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
+    if (!isPlainName(child.name)) continue
 
     const real = join(input.real, child.name)
     const shown = join(input.shown, child.name)

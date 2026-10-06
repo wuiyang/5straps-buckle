@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join } from 'pathe'
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
 import { terminalConfirm, type Confirm } from './terminal-consumer.js'
 import { OwnerOnlyError, requireOwnerOnly, setMode, type OwnerOnlyCheck } from '../common/adapters/file-modes.js'
 import { describeAction, printable, sameCallNote } from '../common/domain/approval-instruction.js'
 import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
+import { homeDirectory, typedPath } from '../common/domain/paths.js'
 
 export interface CliResult {
   exitCode: number
@@ -66,9 +66,9 @@ export async function clientCommand(argv: string[], environment: NodeJS.ProcessE
 /** Where this device keeps its key: BUCKLE_CLIENT_DIR when set, which must be absolute, or ~/.5straps/client. */
 export function clientDirectory(environment: NodeJS.ProcessEnv = process.env): string {
   const named = environment.BUCKLE_CLIENT_DIR
-  if (!named) return join(homedir(), '.5straps', 'client')
+  if (!named) return join(homeDirectory(), '.5straps', 'client')
   if (!isAbsolute(named)) throw new ClientError(`BUCKLE_CLIENT_DIR must be an absolute path, not ${named}`)
-  return named
+  return typedPath(named)
 }
 
 /** This device's key, refused when other users can read it, as ssh refuses an unprotected key. */

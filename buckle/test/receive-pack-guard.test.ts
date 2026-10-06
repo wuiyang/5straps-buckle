@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 /** Paths whose execute test fails whatever their mode, as every file on a noexec mount does. */
@@ -58,7 +58,8 @@ describe('the receive-pack guard before a push', () => {
   })
 
   // Slice 7c review RGC-2: the refusal was written with echo, and dash's echo reads `\n` and `\c` in the state path as
-  // escapes, so the text broke at the first and stopped at the second.
+  // escapes, so the text broke at the first and stopped at the second. Buckle now names paths with pathe, which reads
+  // those backslashes as separators, so the path joins here with pathe too.
   it('writes the whole refusal under dash when the state path holds backslashes', () => {
     const directory = join(state(), 's\\ntate\\cEND')
     const command = guardedReceivePackCommand(directory)

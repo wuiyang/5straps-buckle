@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import { ToolExecutionError } from '../../domain/tool.js'
 
 /** Empty, Buckle-owned, and where `core.hooksPath` points, so no hook the workspace wrote runs. */

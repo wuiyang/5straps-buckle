@@ -3,8 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/adapters/beneath.js'
+import { createPathView } from '../common/domain/path-view.js'
 import { descent, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, withForwardSlashes } from '../common/domain/paths.js'
+import { loadConfig } from '../common/runtime/config.js'
 import { applySnapshot, restoredLinkType, restoreLink, snapshot } from '../common/services/history/snapshot.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
 // Buckle names every path with pathe. These tests give the path helpers and the sandbox's walks Windows-shaped input
 // on Linux, and imitate Windows' open, which has no O_NOFOLLOW, through the platform each check takes.
@@ -32,9 +36,11 @@ describe('a path from Windows, read into pathe\'s form', () => {
     }
   })
 
-  it('refuses a backslash on Linux and macOS, where it is part of a name, and reads a leading // as the root', () => {
+  it('refuses a backslash or a leading drive letter on Linux and macOS, where both are part of a name, and reads a leading // as the root', () => {
     expect(() => nativePath('/home/me/we\\ird', 'linux')).toThrow(/holds a backslash/)
     expect(() => nativePath('/home/me/we\\ird', 'darwin')).toThrow(/holds a backslash/)
+    expect(() => nativePath('c:/state', 'linux')).toThrow(/starts with a drive letter/)
+    expect(nativePath('c:notes', 'linux')).toBe('c:notes')
     expect(nativePath('//tmp//ws/./a', 'linux')).toBe('/tmp/ws/a')
   })
 
@@ -95,6 +101,60 @@ describe('containment on Windows-shaped paths', () => {
     expect(isInside('C:/ws', 'C:/WS/a')).toBe(false)
     expect(isInside('C:/ws', 'c:/ws/a')).toBe(true)
     expect(isInsideComparable('C:/Users/me/.5straps', 'c:/users/ME/.5STRAPS/buckle', true)).toBe(true)
+  })
+})
+
+describe('the agent\'s paths on a Windows workspace, imitated', () => {
+  const view = createPathView({ root: 'C:/ws', mount: null, platform: 'win32' })
+  const mounted = createPathView({ root: 'C:/ws', mount: '/workspace', platform: 'win32' })
+
+  it('reads backslashes and mixed separators as separators, and shows paths with slashes', () => {
+    expect(view.resolve('src\\a.ts')).toBe('C:/ws/src/a.ts')
+    expect(view.resolve('C:\\ws\\src/a.ts')).toBe('C:/ws/src/a.ts')
+    expect(view.resolve('src\\sub\\..')).toBe('C:/ws/src')
+    expect(view.display('C:/ws/src/a.ts')).toBe('src/a.ts')
+    expect(mounted.toVirtual('C:/ws/src/a.ts')).toBe('/workspace/src/a.ts')
+  })
+
+  // pathe climbs past a drive's root to `/`, a path on the current drive: outside the root still, and the real path the
+  // system answers for it (resolveTarget) carries the drive again.
+  it('names a path that climbs out, a case variant, or another drive as the place it is, outside the root', () => {
+    for (const [named, landed] of [['C:\\ws\\..\\other', 'C:/other'], ['..\\..\\x', '/x'], ['C:\\WS\\src', 'C:/WS/src'], ['D:\\ws\\a', 'D:/ws/a']]) {
+      expect(view.resolve(named!)).toBe(landed)
+      expect(isInside(view.root, landed!)).toBe(false)
+    }
+  })
+
+  it('refuses under a mount every path that leaves it, a share included', () => {
+    expect(mounted.resolve('\\workspace\\src\\a.ts')).toBe('C:/ws/src/a.ts')
+    for (const named of ['\\workspace\\..\\other', 'C:\\other', 'D:\\ws\\a']) {
+      expect(() => mounted.resolve(named)).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
+    }
+    expect(() => mounted.resolve('\\\\server\\share\\x')).toThrow(/network share/)
+  })
+})
+
+describe('the backslash case on Linux: inside\\..\\..\\x', () => {
+  // pathe would read the name as two levels up and then x; the kernel reads one name. The agent's path is refused,
+  // so neither the file outside nor the file of that literal name is read or written.
+  it('is refused by the file tools, and neither file is read or written', async () => {
+    const root = scratch()
+    const workspace = join(root, 'parent', 'workspace')
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(join(root, 'x'), 'outside')
+    writeFileSync(`${workspace}/inside\\..\\..\\x`, 'literal')
+    expect(() => createPathView({ root: workspace, mount: null }).resolve('inside\\..\\..\\x')).toThrow('inside\\..\\..\\x holds a backslash, which Buckle reads as a separator, so Buckle refuses it rather than read it as another path')
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    const runtime = await createRuntime({ config, interaction: fixedInteraction(headlessGrace) })
+    try {
+      for (const [tool, args] of [['fs_read', { path: 'inside\\..\\..\\x' }], ['fs_write', { path: 'inside\\..\\..\\x', content: 'written' }]] as const) {
+        const result = await runtime.invoke({ sessionId: 'backslash', request: { requestId: tool, tool, args, approvalTokens: [] }, approvalWait: { mode: 'none' } })
+        expect(result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
+        expect(JSON.stringify(result)).not.toMatch(/outside|literal/)
+      }
+    } finally { await runtime.history.close() }
+    expect(readFileSync(join(root, 'x'), 'utf8')).toBe('outside')
+    expect(readFileSync(`${workspace}/inside\\..\\..\\x`, 'utf8')).toBe('literal')
   })
 })
 

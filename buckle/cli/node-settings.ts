@@ -1,5 +1,5 @@
 import { parseApprovalTimeout } from '../common/runtime/config.js'
-import { isAbsolute, resolve } from 'node:path'
+import { isAbsolute, resolve } from 'pathe'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
 import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'

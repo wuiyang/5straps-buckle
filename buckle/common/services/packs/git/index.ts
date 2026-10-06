@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute, join } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
@@ -11,6 +11,7 @@ import { configuredFilterPrograms, ensureHooksDirectory, filterProgramOverrides,
 import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
+import { withForwardSlashes } from '../../../domain/paths.js'
 
 const PACK_ID = 'git'
 /** Unit separator: safe inside commit subjects and branch names, unlike any printable delimiter. */
@@ -126,7 +127,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       tags: ['git'],
       input: blameInput,
       // The repository is read too, and the file is where git finds it: under the repository (review L5 of the second re-review).
-      effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'read_path', path: isAbsolute(input.path) ? input.path : join(input.repo, input.path) }],
+      effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'read_path', path: isAbsolute(input.path) ? input.path : join(input.repo, withForwardSlashes(input.path)) }],
       run: async (input, context): Promise<JsonValue> => {
         const args = ['blame', '--line-porcelain', '--no-textconv']
         if (input.startLine) args.push('-L', `${input.startLine},${input.endLine ?? input.startLine}`)

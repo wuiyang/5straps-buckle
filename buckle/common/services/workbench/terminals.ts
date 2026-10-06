@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import type { WorkbenchTerminal, WorkbenchTerminalEvent, WorkbenchTerminalEvents } from '@5straps/protocol'
 import type { PtyProcess, PtySpawner, PtySpawnRequest } from '../../types/ports/pty-process.js'
 import { logger } from '../../runtime/log.js'

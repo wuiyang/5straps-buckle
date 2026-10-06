@@ -1,9 +1,9 @@
 import { realpath } from 'node:fs/promises'
-import { isAbsolute } from 'node:path'
+import { isAbsolute } from 'pathe'
 import { z } from 'zod'
 import { buildChildEnvironment } from '../../../domain/environment.js'
 import type { Pack } from '../../../domain/pack.js'
-import { isInside } from '../../../domain/paths.js'
+import { isInside, nativePath } from '../../../domain/paths.js'
 import { defineTool, ToolInputError } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 
@@ -17,8 +17,8 @@ export function createEnvironmentPack(input: { command: string; cwd: string; run
       effects: () => [{ kind: 'exec', command: input.command, args: ['load', '--agent'] }],
       run: async (_args, context) => {
         if (!isAbsolute(input.command)) throw new ToolInputError('The owner must configure an absolute validator executable path')
-        const executable = await realpath(input.command)
-        if (isInside(await realpath(input.cwd), executable)) throw new ToolInputError('The validator executable must be outside the agent workspace', { code: 'PERMISSION_DENIED' })
+        const executable = nativePath(await realpath(input.command))
+        if (isInside(nativePath(await realpath(input.cwd)), executable)) throw new ToolInputError('The validator executable must be outside the agent workspace', { code: 'PERMISSION_DENIED' })
         const result = await input.runProcess({
           command: executable, args: ['load', '--agent'], cwd: input.cwd, timeoutMs: context.timeoutMs,
           signal: context.signal, environment: buildChildEnvironment({ parent: process.env, extra: {} }),

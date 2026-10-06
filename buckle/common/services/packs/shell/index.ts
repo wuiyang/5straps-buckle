@@ -2,10 +2,10 @@ import { realpathSync, statSync } from 'node:fs'
 import { validateSandboxMounts, type SandboxMount } from '../../../domain/sandbox-mounts.js'
 import { projectFilesystemSandbox } from '../../../domain/filesystem-policy.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
-import { relative, resolve } from 'node:path'
+import { relative, resolve } from 'pathe'
 import { runIsolatedShell, type IsolatedShellOptions } from '../../shell/isolated-shell.js'
 import { collectShellHiddenPaths } from '../../shell/shell-filesystem.js'
-import { isInsideAny } from '../../../domain/paths.js'
+import { isInsideAny, nativePath } from '../../../domain/paths.js'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
@@ -79,7 +79,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     const sensitiveFiles = [...new Set(input.sensitiveFiles)].map(path => options.paths.resolve(path))
     if (sensitiveFiles.length && (options.sandbox.mode !== 'bubblewrap' || !options.isolation)) throw new ToolInputError('Sensitive file requests require isolated bubblewrap execution', { code: 'PERMISSION_DENIED' })
     for (const path of sensitiveFiles) {
-      if (!isInsideAny([options.paths.root], path) || realpathSync(path) !== path || !statSync(path).isFile()) throw new ToolInputError('Sensitive file requests must name exact regular workspace files without symlink aliases')
+      if (!isInsideAny([options.paths.root], path) || nativePath(realpathSync(path)) !== path || !statSync(path).isFile()) throw new ToolInputError('Sensitive file requests must name exact regular workspace files without symlink aliases')
       if (!await input.context.authorizeRead?.(path)) throw new ToolInputError('The requested file is not approved for this call', { code: 'PERMISSION_DENIED' })
     }
     const cwd = options.paths.resolve(input.cwd)
