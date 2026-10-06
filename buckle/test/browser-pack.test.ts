@@ -29,7 +29,7 @@ async function run(input: JsonObject, options: Partial<BrowserPackOptions> = {},
     agentBrowserCommand: 'agent-browser',
     sessionDirectory: PROFILE,
     headed: false,
-    available: true,
+    agentBrowser: { path: 'agent-browser' },
     approvedLists: [],
     runProcess: async request => {
       calls.push(request)
@@ -101,7 +101,7 @@ describe('how the browser pack reports trouble', () => {
       agentBrowserCommand: '/opt/private/tools/agent-browser',
       sessionDirectory: PROFILE,
       headed: false,
-      available: false,
+      agentBrowser: { path: null, reason: '/opt/private/tools/agent-browser is not installed on this node', untrusted: false },
       approvedLists: [],
       runProcess: async () => stubResult(),
     })
@@ -258,7 +258,7 @@ describe('the environment the browser is spawned with', () => {
         agentBrowserCommand: 'agent-browser',
         sessionDirectory: PROFILE,
         headed: false,
-        available: true,
+        agentBrowser: { path: 'agent-browser' },
         approvedLists: [],
         runProcess: async request => {
           calls.push(request)
@@ -415,7 +415,7 @@ describe('file arguments reach agent-browser only through a private transfer', (
     const calls: ProcessRequest[] = []
     const pack = createBrowserPack({
       cwd: input.workspace, paths: createPathView({ root: input.workspace, mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: input.sessions,
-      headed: false, available: true, approvedLists: [],
+      headed: false, agentBrowser: { path: 'agent-browser' }, approvedLists: [],
       runProcess: async (request) => { calls.push(request); return input.process?.(request) ?? stubResult() },
     })
     const execute = pack.tools[0]!.prepare({ command: input.command, args: input.args }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal, ...input.context })

@@ -1,5 +1,7 @@
-import { accessSync, constants, statSync } from 'node:fs'
-import { delimiter, resolve } from 'pathe'
+import { accessSync, constants, realpathSync, statSync } from 'node:fs'
+import { join } from 'pathe'
+import { isInsideComparable, nativePath, pathRoot } from './paths.js'
+import { ToolInputError } from './tool.js'
 
 /**
  * Extensions Windows hands straight to CreateProcess. `.cmd` and `.bat` are deliberately absent:
@@ -9,8 +11,9 @@ import { delimiter, resolve } from 'pathe'
 const WINDOWS_EXECUTABLE_EXTENSIONS = ['.exe', '.com']
 
 /**
- * Resolves a binary the way `spawn` will: by scanning PATH for an executable file. A shell
- * function or alias is deliberately not found, because a shell-less spawn cannot run one.
+ * Resolves a binary by scanning PATH for an executable file. A shell function or alias is deliberately not found,
+ * because a shell-less spawn cannot run one. Only absolute PATH entries are searched: a relative one (`.`, `bin`)
+ * names a directory under whichever working directory a lookup runs in.
  */
 export function findExecutable(
   binary: string,
@@ -19,11 +22,68 @@ export function findExecutable(
 ): string | null {
   if (isPathReference(binary, platform)) return firstExecutable(binary, platform)
 
-  for (const directory of searchDirectories(environment)) {
-    const found = firstExecutable(resolve(directory, binary), platform)
+  for (const directory of searchDirectories(environment, platform)) {
+    const found = firstExecutable(join(directory, binary), platform)
     if (found) return found
   }
   return null
+}
+
+/** How a program is looked up: findExecutable's signature, so a test can put another in its place. */
+export type ExecutableLookup = (binary: string, environment: NodeJS.ProcessEnv, platform: NodeJS.Platform) => string | null
+
+/** Where programs are looked up, and for which platform: the host's unless a test imitates another. */
+export interface ProgramSearch {
+  lookup?: ExecutableLookup
+  environment?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+}
+
+/**
+ * A program Buckle runs: the absolute path it spawns, or why it is not run. `untrusted` is a program found where an
+ * agent can write.
+ */
+export type ResolvedProgram = { path: string } | { path: null; reason: string; untrusted: boolean }
+
+/** One workspace's resolveProgram, bound to its roots and search. */
+export type ProgramResolver = (name: string) => ResolvedProgram
+
+/**
+ * A program Buckle runs by name, looked up on PATH once (findExecutable, never in a working directory) and spawned by
+ * the absolute path found. Spawned by its bare name, it would be looked up again by the system: on Windows libuv tries
+ * `name.com` and `name.exe` in the child's working directory before PATH, so a program an agent wrote into the
+ * workspace would run with Buckle's rights. A program found inside the workspace or a scratch root (`untrustedRoots`),
+ * as written or where its links lead, is refused, compared as the disk compares paths (comparablePath).
+ */
+export function resolveProgram(name: string, input: ProgramSearch & { untrustedRoots: readonly string[] }): ResolvedProgram {
+  const platform = input.platform ?? process.platform
+  const found = (input.lookup ?? findExecutable)(name, input.environment ?? process.env, platform)
+  if (found === null) return { path: null, reason: `${name} is not installed on this node`, untrusted: false }
+  let path: string
+  try { path = nativePath(found, platform) } catch (error) { return { path: null, reason: error instanceof Error ? error.message : String(error), untrusted: false } }
+  if (pathRoot(path) === '') return { path: null, reason: `${name} is a relative path, which Buckle does not run from a working directory`, untrusted: false }
+  const caseInsensitive = platform === 'darwin' || platform === 'win32'
+  const spellings = [path, realPathOr(path, platform)]
+  if (input.untrustedRoots.some(root => spellings.some(spelling => isInsideComparable(root, spelling, caseInsensitive, platform)))) {
+    return { path: null, reason: `${name} is found inside the workspace or a scratch root, where an agent can write, so Buckle does not run it`, untrusted: true }
+  }
+  return { path }
+}
+
+/**
+ * The program a command word names, as the unsandboxed shell spawns it: a path the agent wrote stays as written, and
+ * the rules judged that path; a bare name is resolved (resolveProgram), so a program the agent planted in its working
+ * directory never stands in for the one on PATH that a rule naming it meant.
+ */
+export function runnableCommand(command: string, input: ProgramSearch & { untrustedRoots: readonly string[] }): string {
+  if (isPathReference(command, input.platform ?? process.platform)) return command
+  const program = resolveProgram(command, input)
+  if (program.path === null) throw new ToolInputError(program.reason, program.untrusted ? { code: 'PERMISSION_DENIED' } : undefined)
+  return program.path
+}
+
+function realPathOr(path: string, platform: NodeJS.Platform): string {
+  try { return nativePath(realpathSync.native(path), platform) } catch { return path }
 }
 
 export function hasExecutable(
@@ -58,8 +118,13 @@ function hasWindowsExecutableExtension(path: string): boolean {
   return WINDOWS_EXECUTABLE_EXTENSIONS.some(extension => lower.endsWith(extension))
 }
 
-function searchDirectories(environment: NodeJS.ProcessEnv): string[] {
-  return (environment.PATH ?? '').split(delimiter).filter(Boolean)
+function searchDirectories(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
+  return (environment.PATH ?? '').split(platform === 'win32' ? ';' : ':').flatMap(entry => {
+    try {
+      const directory = nativePath(entry, platform)
+      return entry && pathRoot(directory) !== '' ? [directory] : []
+    } catch { return [] }
+  })
 }
 
 /** Directories carry the execute bit too, so the file check is what keeps one out of the result. */

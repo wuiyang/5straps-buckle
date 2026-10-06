@@ -12,7 +12,8 @@ const PACK_ID = 'fs'
 export interface FsPackOptions {
   paths: PathView
   runProcess: ProcessRunner
-  hasRipgrep: boolean
+  /** The ripgrep this node runs, by its absolute path (resolveProgram); null withholds fs_search_content. */
+  ripgrep: string | null
   /** Buckle's own state: a hard-linked file on its device is never read or searched (review L3 of the second re-review). */
   protectedRoots?: readonly string[]
 }
@@ -88,7 +89,8 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
   ]
 
-  if (options.hasRipgrep) {
+  const ripgrep = options.ripgrep
+  if (ripgrep !== null) {
     tools.push(defineTool(PACK_ID, {
       name: 'fs_search_content',
       description: 'Search file contents with a regular expression. Respects .gitignore.',
@@ -100,6 +102,7 @@ export function createFsPack(options: FsPackOptions): Pack {
         args: input,
         paths: options.paths,
         runProcess: options.runProcess,
+        ripgrep,
         timeoutMs: toolContext.timeoutMs,
         signal: toolContext.signal,
         authorizeRead: toolContext.authorizeRead ?? (async () => false),

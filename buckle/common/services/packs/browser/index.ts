@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
+import type { ResolvedProgram } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../../domain/tool.js'
@@ -39,12 +40,14 @@ export interface BrowserPackOptions {
   cwd: string
   paths: PathView
   runProcess: ProcessRunner
+  /** The command as configured, which an exec rule judges. */
   agentBrowserCommand: string
   /** Protected daemon mapping and configuration, never a browser profile. */
   sessionDirectory: string
   /** Launch a visible window instead of headless. A per-call --headed flag still wins. */
   headed: boolean
-  available: boolean
+  /** The configured command resolved once (resolveProgram): the absolute path every call spawns, or why none is run. */
+  agentBrowser: ResolvedProgram
   /**
    * Each configured approved list, node ceiling first, empty when none is set. Passed on every
    * call as --allowed-domains, so clicks, redirects and page requests stay on their hosts too; the
@@ -63,6 +66,8 @@ const DEFAULT_MAX_TIMEOUT_MS = 300_000
 
 /** Names the setting, never its value, which can be a path outside the workspace. */
 export const BROWSER_UNAVAILABLE = 'agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it'
+/** As BROWSER_UNAVAILABLE, for a command found where the agent writes. */
+export const BROWSER_UNTRUSTED = 'BUCKLE_AGENT_BROWSER_COMMAND names a program inside the workspace or a scratch root, where an agent can write, so Buckle does not run it'
 
 export function createBrowserPack(options: BrowserPackOptions): Pack {
   // A node that stopped mid-call leaves its transfer copies behind; each pack start clears them (review L4 of the second re-review).
@@ -78,7 +83,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     version: '1.0.0',
     skills: [loadPackSkill(PACK_ID)],
     // Fixed text: the manifest carrying it is read with the agent token, and the configured path is the owner's.
-    unavailableReason: options.available ? null : BROWSER_UNAVAILABLE,
+    unavailableReason: options.agentBrowser.path !== null ? null : options.agentBrowser.untrusted ? BROWSER_UNTRUSTED : BROWSER_UNAVAILABLE,
     close: () => closeSessions({ options, sessions, opened }),
     tools: [
       defineTool(PACK_ID, {
@@ -123,7 +128,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
 
             writeFileSync(configFile, '{}\n', { mode: 0o600 })
             const ran = await options.runProcess({
-              command: options.agentBrowserCommand,
+              command: browserProgram(options),
               args,
               cwd: options.sessionDirectory,
               timeoutMs: context.timeoutMs,
@@ -154,6 +159,12 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   }
 }
 
+/** The path agent-browser is spawned by; a pack without one is withheld, so no call reaches here. */
+function browserProgram(options: BrowserPackOptions): string {
+  if (options.agentBrowser.path === null) throw new ToolExecutionError(BROWSER_UNAVAILABLE, { code: 'BROWSER_COMMAND_FAILED' })
+  return options.agentBrowser.path
+}
+
 /** How long shutdown waits for the browser daemons to close, all of them together. */
 const CLOSE_TIMEOUT_MS = 5_000
 
@@ -170,7 +181,7 @@ async function closeSessions(input: { options: BrowserPackOptions; sessions: Jso
   const bound = AbortSignal.timeout(CLOSE_TIMEOUT_MS)
   await Promise.all(closing.map(async (session) => {
     const result = await input.options.runProcess({
-      command: input.options.agentBrowserCommand,
+      command: browserProgram(input.options),
       args: ['close', '--session', session, '--json'],
       cwd: input.options.sessionDirectory,
       timeoutMs: CLOSE_TIMEOUT_MS,

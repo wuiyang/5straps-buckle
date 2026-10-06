@@ -2,7 +2,8 @@ import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { defineTool } from '../../../domain/tool.js'
+import { resolveProgram, type ProgramResolver } from '../../../domain/executable.js'
+import { defineTool, ToolExecutionError } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { discoverServers } from './discovery.js'
@@ -35,10 +36,13 @@ export interface DevPackOptions {
   allowHostLsp?: boolean
   paths: PathView
   runProcess: ProcessRunner
+  /** How the language servers and `ps` are found; by default on PATH, refused inside the workspace or a scratch root. */
+  resolveProgram?: ProgramResolver
 }
 
 export function createDevPack(options: DevPackOptions): Pack {
-  const pool = createSessionPool(options.cwd)
+  const program = options.resolveProgram ?? (name => resolveProgram(name, { untrustedRoots: [options.paths.root, ...options.paths.scratchRoots] }))
+  const pool = createSessionPool(options.cwd, program)
 
   const query = async (input: {
     method: string
@@ -75,8 +79,11 @@ export function createDevPack(options: DevPackOptions): Pack {
         input: z.object({}),
         effects: () => [{ kind: 'process_probe' }],
         run: async (_input, context): Promise<JsonValue> => {
+          const ps = program('ps')
+          if (ps.path === null) throw new ToolExecutionError(ps.reason, { code: 'PROCESS_LIST_FAILED' })
           const servers = await discoverServers({
             runProcess: options.runProcess,
+            ps: ps.path,
             timeoutMs: context.timeoutMs,
             signal: context.signal,
           })

@@ -2,7 +2,7 @@ import type { SandboxMount } from '../../domain/sandbox-mounts.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import type { IsolatedShellOptions } from '../shell/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
-import { hasExecutable } from '../../domain/executable.js'
+import { resolveProgram, type ProgramSearch, type ResolvedProgram } from '../../domain/executable.js'
 import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
 import { forgeGitHost } from '../../domain/forge.js'
@@ -55,6 +55,8 @@ export interface BuiltinPackOptions {
   environmentValidator?: string
   /** Why commands cannot be sandboxed here, if they cannot. */
   sandboxUnavailableReason: string | null
+  /** How the programs the packs run are looked up (resolveProgram): the host's PATH unless a test imitates another platform. */
+  programSearch?: ProgramSearch
 }
 
 /**
@@ -84,13 +86,17 @@ export function unmetPackPrerequisite(id: string, options: Pick<BuiltinPackOptio
 
 /** The only place built-in packs are constructed. Plugins are appended by the plugin loader. */
 export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
+  // Each program a pack runs is resolved once, here, and spawned by that path; one found where the agent writes is refused.
+  const program = (name: string): ResolvedProgram => resolveProgram(name, { untrustedRoots: [options.paths.root, ...options.paths.scratchRoots], ...options.programSearch })
+  const git = program('git')
   const packs: Pack[] = [
-    createFsPack({ paths: options.paths, runProcess: options.runProcess, hasRipgrep: hasExecutable('rg'), protectedRoots: options.hiddenPaths }),
+    createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: program('rg').path, protectedRoots: options.hiddenPaths }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, allowedHosts: options.allowedHosts, approved: options.approvedUrls }),
-    createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, hasGit: hasExecutable('git') }),
+    createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git }),
     createForgePack({
       paths: options.paths,
       runProcess: options.runProcess,
+      git,
       stateDirectory: options.stateDirectory,
       forge: {
         client: options.forge.token ? createGitHubForgeClient({ token: options.forge.token, apiUrl: options.forge.apiUrl }) : null,
@@ -100,9 +106,9 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       },
       author: options.forge.author,
       approved: options.approvedUrls,
-      unavailableReason: forgeUnavailableReason(options),
+      unavailableReason: forgeUnavailableReason(options, git),
     }),
-    createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess, allowHostLsp: options.allowHostLsp }),
+    createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess, allowHostLsp: options.allowHostLsp, resolveProgram: program }),
     createBrowserPack({
       cwd: options.cwd,
       paths: options.paths,
@@ -110,7 +116,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       agentBrowserCommand: options.agentBrowserCommand,
       sessionDirectory: options.browserStateDirectory,
       headed: options.browserHeaded,
-      available: hasExecutable(options.agentBrowserCommand),
+      agentBrowser: program(options.agentBrowserCommand),
       approvedLists: options.approvedLists,
       protectedRoots: options.hiddenPaths,
       ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
@@ -130,6 +136,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     isolation: options.shellIsolation,
     filesystemPolicy: options.filesystemPolicy,
     allowNetwork: options.shellNetwork === true && !options.approvedUrls && options.allowedHosts.length === 0,
+    ...(options.programSearch ? { programSearch: options.programSearch } : {}),
   }))
 
   if (unmetPackPrerequisite('environment', options) === null) packs.push(createEnvironmentPack({ command: options.environmentValidator!, cwd: options.cwd, runProcess: options.runProcess }))
@@ -144,10 +151,9 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   return packs
 }
 
-function forgeUnavailableReason(options: BuiltinPackOptions): string | null {
+function forgeUnavailableReason(options: BuiltinPackOptions, git: ResolvedProgram): string | null {
   if (!options.forge.token) return 'BUCKLE_FORGE_GITHUB_TOKEN is not set, so this node holds no forge credential and cannot commit, push or open a pull request'
-  if (!hasExecutable('git')) return 'git is not installed on this node'
-  return null
+  return git.path === null ? git.reason : null
 }
 
 function shellUnavailableReason(options: BuiltinPackOptions): string | null {

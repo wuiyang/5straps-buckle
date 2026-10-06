@@ -19,7 +19,8 @@ export interface WorkbenchFileOptions {
   maxBytes: number
   protectedRoots: string[]
   authorizePath(path: string, operation: 'read' | 'write'): boolean
-  hasRipgrep: boolean
+  /** The ripgrep the staged editor's search runs, by its absolute path (resolveProgram); null leaves search out. */
+  ripgrep: string | null
 }
 
 /** A listed name pathe reads as itself; one it would read as another path (a backslash on Linux) cannot be judged. */
@@ -101,7 +102,7 @@ export function createWorkbenchFiles(options: WorkbenchFileOptions) {
       if (process.platform === 'linux') return invokePinnedWorkbenchFile({ root: root(id), tool, args, permitted })
       if (!['fs_read', 'fs_write', 'fs_list', 'fs_find_names', 'fs_search_content'].includes(tool)) throw new WorkbenchError('Tool is unavailable in the staged workbench', 400)
       const paths = createPathView({ root: root(id), mount: '/workspace' })
-      const pack = createFsPack({ paths, runProcess, hasRipgrep: options.hasRipgrep })
+      const pack = createFsPack({ paths, runProcess, ripgrep: options.ripgrep })
       const prepared = createToolRegistry(pack.tools).get(tool).prepare(args)
       for (const effect of prepared.effects) {
         if (effect.kind === 'read_path' || effect.kind === 'write_path') await authorize(id, effect.path, effect.kind === 'read_path' ? 'read' : 'write')

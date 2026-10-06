@@ -9,6 +9,7 @@ import { isInsideAny, nativePath } from '../../../domain/paths.js'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
+import { runnableCommand, type ProgramSearch } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolInputError, type ToolContext } from '../../../domain/tool.js'
@@ -59,6 +60,8 @@ export interface ShellPackOptions {
   readOnlyPaths: string[]
   /** Set when there is no usable sandbox or shell was turned off, which withholds these tools. */
   unavailableReason: string | null
+  /** How an unsandboxed command word is looked up (runnableCommand): the host's PATH unless a test imitates another platform. */
+  programSearch?: ProgramSearch
 }
 
 export function createShellPack(options: ShellPackOptions): Pack {
@@ -85,6 +88,10 @@ export function createShellPack(options: ShellPackOptions): Pack {
     const cwd = options.paths.resolve(input.cwd)
     if (!isInsideAny(options.writableRoots, cwd)) throw new ToolInputError('Shell working directory must be in the workspace or an owner-configured writable root', { code: 'PERMISSION_DENIED' })
     if (input.allowNetwork && !options.allowNetwork) throw new ToolInputError('Shell networking is disabled by the owner; use the web tools for scoped network access', { code: 'PERMISSION_DENIED' })
+    // Unsandboxed, the command word is spawned as the system finds it, which on Windows is the working directory first.
+    const command = options.sandbox.mode === 'none'
+      ? runnableCommand(input.command, { untrustedRoots: [options.paths.root, ...options.paths.scratchRoots, ...options.writableRoots], ...options.programSearch })
+      : input.command
     const hidden = options.sandbox.mode === 'none' ? { directories: options.hiddenPaths, files: [] } : await collectShellHiddenPaths({
       roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths], protectedPaths: options.hiddenPaths, signal: input.signal,
     })
@@ -98,7 +105,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     const run = (copyRoot?: string) => {
       const mapped = (path: string) => copyRoot ? resolve(copyRoot, relative(options.paths.root, path)) : path
       const wrapped = options.sandbox.wrap({
-        command: input.command,
+        command,
         args: input.args,
         cwd: mapped(cwd),
         writableRoots: writableRoots.map(mapped),

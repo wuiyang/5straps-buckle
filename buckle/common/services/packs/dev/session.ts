@@ -2,6 +2,7 @@ import { logger } from '../../../runtime/log.js'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { resolve } from 'pathe'
+import { resolveProgram, type ProgramResolver } from '../../../domain/executable.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { connectLspSocket, spawnLspServer, type LspConnection } from './lsp-client.js'
 import { serverForLanguage } from './servers.js'
@@ -13,8 +14,11 @@ export interface LspSession {
   openedFiles: Set<string>
 }
 
-/** One connection per language per workspace, reused across calls. */
-export function createSessionPool(cwd: string) {
+/**
+ * One connection per language per workspace, reused across calls. A server is spawned by the absolute path `program`
+ * resolves for it, never by its bare name, which Windows would look up in the workspace first (resolveProgram).
+ */
+export function createSessionPool(cwd: string, program: ProgramResolver = name => resolveProgram(name, { untrustedRoots: [cwd] })) {
   const sessions = new Map<string, Promise<LspSession>>()
 
   const open = async (language: string, attach: { port: number; host: string } | null): Promise<LspSession> => {
@@ -23,7 +27,7 @@ export function createSessionPool(cwd: string) {
 
     const connection = attach
       ? await connectLspSocket(attach)
-      : spawnLspServer({ command: known.binaries[0] ?? language, args: known.spawnArgs, cwd })
+      : spawnLspServer({ command: serverProgram(program, known.binaries[0] ?? language), args: known.spawnArgs, cwd })
 
     try {
       await connection.request('initialize', {
@@ -64,6 +68,12 @@ export function createSessionPool(cwd: string) {
       sessions.clear()
     },
   }
+}
+
+function serverProgram(program: ProgramResolver, name: string): string {
+  const resolved = program(name)
+  if (resolved.path === null) throw new ToolExecutionError(resolved.reason, { code: 'LSP_UNAVAILABLE' })
+  return resolved.path
 }
 
 /** A server only answers about documents it has been told about. */

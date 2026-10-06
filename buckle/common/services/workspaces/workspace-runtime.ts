@@ -4,7 +4,7 @@ import { createWorkbenchManager } from '../workbench/manager.js'
 import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
 import { spawnPtyProcess } from '../../adapters/pty-process.js'
 import { buildChildEnvironment } from '../../domain/environment.js'
-import { hasExecutable } from '../../domain/executable.js'
+import { resolveProgram } from '../../domain/executable.js'
 import { isInside, nativePath, parentDirectory } from '../../domain/paths.js'
 import { collectShellHiddenPaths } from '../shell/shell-filesystem.js'
 import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
@@ -235,7 +235,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     directory: workbenchesDirectory({ stateDirectory: config.stateDirectory, root: config.cwd }),
     sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
     protectedRoots: protectedStateRoots(config), actions, history,
-    hasRipgrep: hasExecutable('rg'), spawnPty: spawnPtyProcess,
+    ripgrep: resolveProgram('rg', { untrustedRoots: [config.cwd, ...config.scratchRoots] }).path, spawnPty: spawnPtyProcess,
     policyHash: () => workbenchHash(JSON.stringify([compiled.policy, ceiling?.policy ?? null])),
     authorizeTool: tool => toolDenial(tool) === null,
     authorizePath: (path, operation) => !['deny', 'ask'].includes(resolveFilesystemPermission({ path, operation, policy: compiled.policy, ceiling: ceiling?.policy })),

@@ -4,6 +4,7 @@ import { redactCredentials } from '@5straps/runtime'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
 import type { ToolEffect } from '../../../domain/effect.js'
+import type { ResolvedProgram } from '../../../domain/executable.js'
 import type { ForgeClient, ForgeRepository } from '../../../domain/forge.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
@@ -60,6 +61,8 @@ const readInput = repoInput.extend({
 export interface ForgePackOptions {
   paths: PathView
   runProcess: ProcessRunner
+  /** The git this node runs, by its absolute path (resolveProgram), or why none is run. */
+  git: ResolvedProgram
   /** Buckle's own state directory, which is where the empty hooks directory git is pointed at lives. */
   stateDirectory: string
   forge: {
@@ -90,8 +93,9 @@ export function createForgePack(options: ForgePackOptions): Pack {
 
   const runGit = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; context: ToolContext }): Promise<ProcessResult> => {
     const config = [...isolationConfig(ensureHooksDirectory(options.stateDirectory)), ...(input.config ?? [])]
+    if (options.git.path === null) throw new ToolExecutionError(options.git.reason, { code: 'GIT_FAILED' })
     return await options.runProcess({
-      command: 'git',
+      command: options.git.path,
       args: input.args,
       cwd: input.repository,
       timeoutMs: input.context.timeoutMs,

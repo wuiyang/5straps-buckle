@@ -12,6 +12,7 @@ import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { withForwardSlashes } from '../../../domain/paths.js'
+import type { ResolvedProgram } from '../../../domain/executable.js'
 
 const PACK_ID = 'git'
 /** Unit separator: safe inside commit subjects and branch names, unlike any printable delimiter. */
@@ -45,13 +46,15 @@ export interface GitPackOptions {
   runProcess: ProcessRunner
   /** Buckle's own state directory, which is where the empty hooks directory git is pointed at lives. */
   stateDirectory: string
-  hasGit: boolean
+  /** The git this node runs, by its absolute path (resolveProgram), or why none is run. */
+  git: ResolvedProgram
 }
 
 export function createGitPack(options: GitPackOptions): Pack {
   const spawnGit = (input: { cwd: string; args: string[]; config: GitConfig[]; timeoutMs: number; signal: AbortSignal }): Promise<ProcessResult> => {
+    if (options.git.path === null) throw new ToolExecutionError(options.git.reason, { code: 'GIT_FAILED' })
     return options.runProcess({
-      command: 'git',
+      command: options.git.path,
       args: input.args,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
@@ -155,7 +158,7 @@ export function createGitPack(options: GitPackOptions): Pack {
     version: '1.0.0',
     tools,
     skills: [loadPackSkill(PACK_ID)],
-    unavailableReason: options.hasGit ? null : 'git is not installed on this node',
+    unavailableReason: options.git.path === null ? options.git.reason : null,
   }
 }
 

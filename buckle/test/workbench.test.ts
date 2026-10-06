@@ -41,7 +41,7 @@ async function fixture() {
   const processes: ReturnType<typeof fakePty>[] = []
   const spawned: PtySpawnRequest[] = []
   const options = {
-    sourceRoot, directory: join(state, 'workbenches'), workspaceId: 'development', maxBytes: 1_000_000, protectedRoots: [state], hasRipgrep: false,
+    sourceRoot, directory: join(state, 'workbenches'), workspaceId: 'development', maxBytes: 1_000_000, protectedRoots: [state], ripgrep: null,
     actions: { async record(entry: ActionLogEntry) { audit.push(entry) }, async recoverInterrupted() { return 0 }, read() { return audit }, page() { return { entries: audit, nextCursor: null } } },
     history, now: () => clock,
     authorizePath: (path: string, operation: 'read' | 'write') => !path.startsWith('private') && !(operation === 'write' && denyWrites),

@@ -30,7 +30,7 @@ vi.mock('../common/adapters/process-runner.js', async (importOriginal) => {
   return {
     ...actual,
     runProcess: async (request: Parameters<typeof actual.runProcess>[0]) => {
-      if (request.command === 'git' && request.args[0] === 'push' && spawnHook.beforePush) await spawnHook.beforePush()
+      if (/(^|\/)git$/.test(request.command) && request.args[0] === 'push' && spawnHook.beforePush) await spawnHook.beforePush()
       return await actual.runProcess(request)
     },
   }
@@ -127,6 +127,7 @@ function pack(input: { repository: string; token?: string; runner?: typeof runPr
   const options: ForgePackOptions = {
     paths: input.paths ?? createPathView({ root: input.repository, mount: null }),
     runProcess: input.runner ?? runProcess,
+    git: { path: 'git' },
     stateDirectory: input.stateDirectory ?? temporaryRoot('state'),
     forge: {
       client: token ? createGitHubForgeClient({ token, apiUrl }) : null,

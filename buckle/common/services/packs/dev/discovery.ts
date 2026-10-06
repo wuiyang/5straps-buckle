@@ -19,11 +19,13 @@ const SOCKET_FLAG_PATTERN = /--(?:port|socket|tcp)[= ](\d{2,5})/
 
 export async function discoverServers(input: {
   runProcess: ProcessRunner
+  /** The absolute path `ps` is spawned by (resolveProgram), never its bare name. */
+  ps: string
   timeoutMs: number
   signal: AbortSignal
 }): Promise<DiscoveredServer[]> {
   const result = await input.runProcess({
-    command: 'ps',
+    command: input.ps,
     args: ['-eo', 'pid=,args='],
     cwd: process.cwd(),
     timeoutMs: input.timeoutMs,
