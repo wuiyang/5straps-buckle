@@ -77,6 +77,17 @@ const DRIVE_FIRST = /^[A-Za-z]:(?:[\\/]|$)/
 /** A drive pathe's own resolve leaves bare, `/C:` alone or before a separator. */
 const ROOTED_DRIVE = /^\/[A-Za-z]:(?:\/|$)/
 
+/** Why a whole drive is refused as a root on Windows (isDriveRoot). */
+export const WHOLE_DRIVE = 'a whole drive cannot be a Buckle root; use a folder'
+
+/**
+ * Whether a path names a whole drive on Windows (`C:/`, `C:\`, or `/`, the current drive's root): refused there as a
+ * workspace root, scratch root, state directory, or client directory (WHOLE_DRIVE). Elsewhere never.
+ */
+export function isDriveRoot(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'win32' && /^(?:[A-Za-z]:)?\/$/.test(resolvePath(path))
+}
+
 /** The working directory in pathe's form (nativePath). */
 export function workingDirectory(platform: NodeJS.Platform = process.platform): string {
   return nativePath(process.cwd(), platform)

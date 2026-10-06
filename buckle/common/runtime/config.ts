@@ -4,7 +4,7 @@ import { basename, isAbsolute, join } from 'pathe'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
 import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
-import { homeDirectory, ignoresCase, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, workingDirectory } from '../domain/paths.js'
+import { homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
@@ -95,14 +95,16 @@ export interface BuckleConfig {
   maxTimeoutMs: number
 }
 
-export function loadConfig(environment: NodeJS.ProcessEnv = process.env): BuckleConfig {
+/** `platform`: the host's unless a test imitates another; on Windows a whole drive is refused as any root (realFolder). */
+export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): BuckleConfig {
   // Named as the disk names it (realpathSync.native), as every judged effect path is: a root typed in
   // another case than the disk's put every existing file outside it on macOS (review M1 of the second
   // proof-of-possession re-review), and a linked root put every file outside it everywhere.
-  const typedRoot = environment.BUCKLE_WORKSPACE_ROOT ? typedPath(environment.BUCKLE_WORKSPACE_ROOT) : workingDirectory()
-  const cwd = realPathOf(typedRoot)
-  const stateDirectory = stateDirectoryOf(environment)
-  if (workspaceHolds(typedRoot, stateDirectory)) {
+  const rootSetting = environment.BUCKLE_WORKSPACE_ROOT ? 'BUCKLE_WORKSPACE_ROOT' : 'The working directory, the workspace root while BUCKLE_WORKSPACE_ROOT is unset,'
+  const typedRoot = environment.BUCKLE_WORKSPACE_ROOT ? typedPath(environment.BUCKLE_WORKSPACE_ROOT, platform) : workingDirectory(platform)
+  const cwd = realFolder(typedRoot, rootSetting, platform)
+  const stateDirectory = stateDirectoryOf(environment, platform)
+  if (workspaceHolds(typedRoot, stateDirectory, platform)) {
     throw new Error(`BUCKLE_STATE_DIR is ${stateDirectory}, inside the BUCKLE_WORKSPACE_ROOT at ${cwd}: an agent writes anywhere in the workspace, and the state directory holds the recorded grants, the approvals and the empty hooks directory the forge tools run git with`)
   }
 
@@ -127,7 +129,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     adminToken,
     cwd,
     // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
-    scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realPathOf(typedPath(root))),
+    scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
     sandboxMode,
     acknowledgedUnsandboxed: sandboxMode === 'none',
@@ -153,7 +155,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     approvalWebhook: environment.BUCKLE_APPROVAL_WEBHOOK || undefined,
     policy: parsePolicy(environment),
     sandboxMounts: parseSandboxMounts(environment.BUCKLE_MOUNTS),
-    mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => typedPath(path)),
+    mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => typedPath(path, platform)),
     reportUrl: environment.BUCKLE_REPORT_URL || undefined,
     reportToken: environment.BUCKLE_REPORT_TOKEN || undefined,
     ringsApprovalKey: parseRingsApprovalKey(environment.BUCKLE_RINGS_APPROVAL_KEY),
@@ -172,7 +174,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
  */
 export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string[] {
   const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory]
-  return [...new Set([...named, ...named.map(realPathOf)])]
+  return [...new Set([...named, ...named.map(path => realPathOf(path))])]
 }
 
 /**
@@ -181,29 +183,44 @@ export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' 
  * whose state an agent can write. `buckle init` refuses by the same test.
  */
 export function workspaceHolds(typedRoot: string, path: string, platform: NodeJS.Platform = process.platform): boolean {
-  const root = realPathOf(typedRoot)
-  return isInside(typedRoot, path, platform) || isInside(root, path, platform) || isInsideComparable(root, realPathOf(path), ignoresCase(platform), platform)
+  const root = realPathOf(typedRoot, platform)
+  return isInside(typedRoot, path, platform) || isInside(root, path, platform) || isInsideComparable(root, realPathOf(path, platform), ignoresCase(platform), platform)
 }
 
 /** The real path of a directory, or of its nearest existing ancestor with the rest appended. */
-function realPathOf(path: string): string {
+function realPathOf(path: string, platform: NodeJS.Platform = process.platform): string {
   let real: string
   try {
     real = realpathSync.native(path)
   } catch {
     const parent = parentDirectory(path)
-    return parent === path ? path : join(realPathOf(parent), basename(path))
+    return parent === path ? path : join(realPathOf(parent, platform), basename(path))
   }
-  return nativePath(real)
+  return nativePath(real, platform)
+}
+
+/**
+ * A typed root as the disk names it (realPathOf), refused on Windows where it is a whole drive (`D:\`), as typed or
+ * where it really is: everything on the drive would be the workspace or the scratch the agent writes without asking.
+ * `setting` names where the root came from.
+ */
+function realFolder(typed: string, setting: string, platform: NodeJS.Platform): string {
+  return folder(realPathOf(folder(typed, setting, platform), platform), setting, platform)
+}
+
+/** A root refused on Windows where it is a whole drive (isDriveRoot), named by the setting it came from. */
+function folder(path: string, setting: string, platform: NodeJS.Platform): string {
+  if (isDriveRoot(path, platform)) throw new Error(`${setting} is ${path}: ${WHOLE_DRIVE}`)
+  return path
 }
 
 /** Where grants, approvals and the action log live, read without loading the rest of the config. */
-export function stateDirectoryOf(environment: NodeJS.ProcessEnv): string {
+export function stateDirectoryOf(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string {
   const named = environment.BUCKLE_STATE_DIR
-  if (!named) return join(homeDirectory(), '.5straps', 'buckle')
+  if (!named) return join(homeDirectory(platform), '.5straps', 'buckle')
   // Relative, it would name another directory in every directory a command starts in (review L13 of B20-B22).
   if (!isAbsolute(named)) throw new Error(`BUCKLE_STATE_DIR must be an absolute path, not ${named}: Buckle never resolves its state against the working directory`)
-  return typedPath(named)
+  return folder(typedPath(named, platform), 'BUCKLE_STATE_DIR', platform)
 }
 
 /** The HTTP face exposes tools over the network, so it refuses to start without a token. */

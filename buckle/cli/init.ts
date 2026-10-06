@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
 import { stateDirectoryOf, workspaceHolds } from '../common/runtime/config.js'
 import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/environment.js'
-import { typedPath } from '../common/domain/paths.js'
+import { isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
 import { BUILTIN_PACKS } from '../common/services/packs/index.js'
 import { writeEnvironmentFile } from './environment-file.js'
 import { findNodeSetting, normaliseSetting } from './node-settings.js'
@@ -109,9 +109,13 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
     prompt.close()
   }
 
-  const root = typedPath(answers.root)
+  const root = typedPath(answers.root, platform)
+  if (isDriveRoot(root, platform)) {
+    process.stderr.write(`The workspace root is ${root}: ${WHOLE_DRIVE}.\n`)
+    return { exitCode: 1 }
+  }
   // An agent writes anywhere in its workspace, so the workspace never holds the node's state and credentials.
-  if (workspaceHolds(root, dirname(out)) || workspaceHolds(root, stateDirectoryOf(process.env))) {
+  if (workspaceHolds(root, dirname(out)) || workspaceHolds(root, stateDirectoryOf(process.env, platform))) {
     process.stderr.write(`${root} holds the state directory or the environment file; choose a workspace root outside ${dirname(out)}.\n`)
     return { exitCode: 1 }
   }

@@ -7,7 +7,7 @@ import { createJsonFileStore, StateFileError } from '../../adapters/json-file-st
 import type { InteractionSource } from '../approvals/interaction.js'
 import { actionsPath, type BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
-import { comparablePath, isInsideComparable, nativePath } from '../../domain/paths.js'
+import { comparablePath, ignoresCase, isDriveRoot, isInsideComparable, nativePath, WHOLE_DRIVE } from '../../domain/paths.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { tokenMatches } from '../access/tokens.js'
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
@@ -95,7 +95,9 @@ function registryStore(filePath: string, lockDeadlineMs?: number) {
   }
 }
 
-export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime; interaction?: InteractionSource }) {
+/** `platform`: the host's unless a test imitates another; on Windows a whole drive is never a workspace root. */
+export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime; interaction?: InteractionSource; platform?: NodeJS.Platform }) {
+  const platform = input.platform ?? process.platform
   const defaultRoot = nativePath(realpathSync.native(input.config.cwd))
   const stateRoot = nativePath(realpathSync.native(input.config.stateDirectory))
   const store = registryStore(join(stateRoot, 'workspaces.json'), input.config.stateLockDeadlineMs)
@@ -105,9 +107,9 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
 
   function eligibility(path: string): { selectable: boolean; reason?: string } {
     try {
-      const root = canonicalDirectory(path)
-      assertNoHostExposure(root, exposedRoots)
-      if ([defaultRoot, stateRoot, ...store.read().workspaces.map(workspace => workspace.root)].some(existing => overlaps(existing, root))) return { selectable: false, reason: 'Overlaps an existing workspace or Buckle state' }
+      const root = canonicalDirectory(path, platform)
+      assertNoHostExposure(root, exposedRoots, platform)
+      if ([defaultRoot, stateRoot, ...store.read().workspaces.map(workspace => workspace.root)].some(existing => overlaps(existing, root, platform))) return { selectable: false, reason: 'Overlaps an existing workspace or Buckle state' }
       return { selectable: true }
     } catch (error) { return { selectable: false, reason: error instanceof WorkspaceError ? error.message : 'Directory is unavailable' } }
   }
@@ -130,13 +132,13 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
     eligibility,
     list(): WorkspaceDescriptor[] { return [defaultDescriptor(), ...store.read().workspaces.map(describe)] },
     register(value: WorkspaceRegistration): Promise<WorkspaceDescriptor> {
-      const root = canonicalDirectory(value.root)
-      assertNoHostExposure(root, exposedRoots)
+      const root = canonicalDirectory(value.root, platform)
+      assertNoHostExposure(root, exposedRoots, platform)
       compilePolicy(value.policy)
       const at = new Date().toISOString()
       return store.update(state => {
         if (state.workspaces.some(workspace => workspace.id === value.id)) throw new WorkspaceError('Workspace ID already exists', 409)
-        if ([defaultRoot, stateRoot, ...state.workspaces.map(workspace => workspace.root)].some(existing => overlaps(existing, root))) {
+        if ([defaultRoot, stateRoot, ...state.workspaces.map(workspace => workspace.root)].some(existing => overlaps(existing, root, platform))) {
           throw new WorkspaceError('Workspace roots must not overlap existing workspaces or Buckle state', 409)
         }
         if (value.authToken === value.adminToken) throw new WorkspaceError('Each workspace requires distinct execution and admin credentials', 409)
@@ -245,9 +247,9 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
       const workspace = store.read().workspaces.find(item => item.id === id)
       if (!workspace) throw new WorkspaceError('Workspace not found', 404)
       if (!options.setup && (!workspace.enabled || workspace.retiredAt)) throw new WorkspaceError('Workspace is disabled or retired', 409)
-      assertNoHostExposure(workspace.root, exposedRoots)
+      assertNoHostExposure(workspace.root, exposedRoots, platform)
       // A root stored before roots were named in the disk's case still loads, in that case (review M1 of the second re-review).
-      const root = canonicalDirectory(workspace.root)
+      const root = canonicalDirectory(workspace.root, platform)
       if (comparablePath(root) !== comparablePath(workspace.root)) throw new WorkspaceError('Workspace root changed; owner repair is required', 409)
       let pending = runtimes.get(id)
       if (!pending) {
@@ -309,23 +311,34 @@ function describe(workspace: StoredWorkspace): WorkspaceDescriptor {
   return { id: workspace.id, name: workspace.name, root: workspace.root, enabled: workspace.enabled, default: false, retiredAt: workspace.retiredAt, updatedAt: workspace.updatedAt }
 }
 
-/** An existing directory as the disk names it: links followed, in the case the disk stores (review M1 of the second re-review). */
-function canonicalDirectory(root: string): string {
+/**
+ * An existing directory as the disk names it: links followed, in the case the disk stores. On Windows a whole drive is
+ * refused, as named and where it really is: every file on it would be the workspace's.
+ */
+function canonicalDirectory(root: string, platform: NodeJS.Platform): string {
+  refuseWholeDrive(root, platform)
   let canonical: string
   try {
     canonical = realpathSync.native(root)
     if (!statSync(canonical).isDirectory()) throw new Error('Not a directory')
   } catch { throw new WorkspaceError('Workspace root must be an existing directory') }
-  try { return nativePath(canonical) } catch (error) { throw new WorkspaceError(error instanceof Error ? error.message : String(error)) }
+  let named: string
+  try { named = nativePath(canonical) } catch (error) { throw new WorkspaceError(error instanceof Error ? error.message : String(error)) }
+  return refuseWholeDrive(named, platform)
+}
+
+function refuseWholeDrive(root: string, platform: NodeJS.Platform): string {
+  if (isDriveRoot(root, platform)) throw new WorkspaceError(`Workspace root ${root}: ${WHOLE_DRIVE}`)
+  return root
 }
 
 /** Whether either root holds the other, as the volume compares paths (a case variant of a root is that root on macOS). */
-function overlaps(left: string, right: string): boolean {
-  return isInsideComparable(left, right) || isInsideComparable(right, left)
+function overlaps(left: string, right: string, platform: NodeJS.Platform): boolean {
+  return isInsideComparable(left, right, ignoresCase(platform), platform) || isInsideComparable(right, left, ignoresCase(platform), platform)
 }
 
-function assertNoHostExposure(root: string, exposedRoots: string[]): void {
-  if (exposedRoots.some(exposed => overlaps(exposed, root))) {
+function assertNoHostExposure(root: string, exposedRoots: string[], platform: NodeJS.Platform): void {
+  if (exposedRoots.some(exposed => overlaps(exposed, root, platform))) {
     throw new WorkspaceError('Workspace overlaps a host toolchain or read-only mount; narrow the host exposure first', 409)
   }
 }

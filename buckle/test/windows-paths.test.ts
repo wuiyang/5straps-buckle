@@ -1,16 +1,18 @@
-import { closeSync, constants, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { emptyWorkspacePolicy, WorkspacePolicySchema } from '@5straps/protocol'
+import { emptyWorkspacePolicy, MountPathSchema, WorkspacePolicySchema } from '@5straps/protocol'
 import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/adapters/beneath.js'
 import { resolveProgram } from '../common/domain/executable.js'
 import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { descent, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, resolvePath, typedPath, withForwardSlashes } from '../common/domain/paths.js'
+import { descent, isDriveRoot, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, resolvePath, typedPath, WHOLE_DRIVE, withForwardSlashes } from '../common/domain/paths.js'
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
+import { clientDirectory } from '../cli/client.js'
 import { runInit } from '../cli/init.js'
-import { loadConfig, workspaceHolds } from '../common/runtime/config.js'
+import { loadConfig, stateDirectoryOf, workspaceHolds } from '../common/runtime/config.js'
+import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { outsideRootNotice } from '../common/runtime/environment.js'
 import { logger } from '../common/runtime/log.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
@@ -482,5 +484,56 @@ describe('a drive\'s root on Windows, imitated', () => {
   it('refuses a program found anywhere on a drive that is an untrusted root', () => {
     expect(resolveProgram('rg', { untrustedRoots: ['D:/'], lookup: () => 'D:\\tools\\rg.exe', platform: 'win32' })).toMatchObject({ path: null, untrusted: true })
     expect(resolveProgram('rg', { untrustedRoots: ['D:/'], lookup: () => 'C:\\tools\\rg.exe', platform: 'win32' })).toEqual({ path: 'C:/tools/rg.exe' })
+  })
+})
+
+describe('a whole drive as a Buckle root on Windows, imitated', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs() })
+  const refused = `a whole drive cannot be a Buckle root; use a folder`
+
+  it('is what isDriveRoot names, in any spelling, and only on Windows', () => {
+    expect(WHOLE_DRIVE).toBe(refused)
+    for (const drive of ['C:/', 'C:\\', 'c:/x/..', '/', typedPath('c:', 'win32')]) expect(isDriveRoot(drive, 'win32')).toBe(true)
+    for (const folder of ['C:/x', 'C:\\Users\\me', '/x']) expect(isDriveRoot(folder, 'win32')).toBe(false)
+    expect(isDriveRoot('/', 'linux')).toBe(false)
+  })
+
+  it('is refused at config load as the workspace root, the working directory, a scratch root, or the state directory', () => {
+    const root = scratch()
+    const state = join(scratch(), 'state')
+    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: 'D:\\', BUCKLE_STATE_DIR: state }, 'win32')).toThrow(`BUCKLE_WORKSPACE_ROOT is D:/: ${refused}`)
+    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: 'E:\\' }, 'win32')).toThrow(`BUCKLE_STATE_DIR is E:/: ${refused}`)
+    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: state, BUCKLE_SCRATCH_ROOTS: `${join(root, 'scratch')},F:\\` }, 'win32')).toThrow(`BUCKLE_SCRATCH_ROOTS is F:/: ${refused}`)
+    expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: 'C:/' }, 'win32')).toThrow(refused)
+    expect(loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: state }, 'win32').cwd).toBe(root)
+    // Buckle started in D:\ with no BUCKLE_WORKSPACE_ROOT serves the directory it started in.
+    vi.spyOn(process, 'cwd').mockReturnValue('D:\\')
+    expect(() => loadConfig({ BUCKLE_STATE_DIR: state }, 'win32')).toThrow(`The working directory, the workspace root while BUCKLE_WORKSPACE_ROOT is unset, is D:/: ${refused}`)
+  })
+
+  it('is refused as the client directory, and by init as the workspace root', async () => {
+    expect(() => clientDirectory({ BUCKLE_CLIENT_DIR: 'D:\\' }, 'win32')).toThrow(`BUCKLE_CLIENT_DIR is D:/: ${refused}`)
+    let printed = ''
+    vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const prompt = { interactive: false, question: async () => '', say: () => {}, close: () => {} }
+    const out = join(scratch(), 'buckle.env')
+    expect((await runInit(['--root', 'D:\\', '--out', out, '--yes'], prompt, { platform: 'win32' })).exitCode).toBe(1)
+    expect(printed).toBe(`The workspace root is D:/: ${refused}.\n`)
+    expect(existsSync(out)).toBe(false)
+  })
+
+  it('is refused when a workspace is registered, and offered as no choice; a mount names no drive at all', async () => {
+    const root = scratch()
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(scratch(), 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    const runtime = await createRuntime({ config })
+    try {
+      const manager = createWorkspaceManager({ config, runtime, platform: 'win32' })
+      const tokens = { authToken: 'drive-root-agent-token-fixture-only', adminToken: 'drive-root-admin-token-fixture-only' }
+      expect(() => manager.register({ id: 'drive', name: 'Drive', root: 'D:\\', ...tokens, policy: emptyWorkspacePolicy() })).toThrow(`Workspace root D:\\: ${refused}`)
+      expect(manager.eligibility('E:/')).toEqual({ selectable: false, reason: `Workspace root E:/: ${refused}` })
+      expect(manager.list().map(workspace => workspace.id)).toEqual(['default'])
+    } finally { await runtime.history.close() }
+    for (const mount of ['C:/', 'C:\\', '/C:', '/c:/x', 'D:']) expect(MountPathSchema.safeParse(mount).success).toBe(false)
   })
 })
