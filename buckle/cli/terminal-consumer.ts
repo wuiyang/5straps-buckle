@@ -14,10 +14,34 @@ export interface TerminalOptions {
   input?: Readable
   output?: Writable
   /**
-   * What Ctrl-C does once every question is dropped. By default SIGINT is raised again, so the
-   * process stops exactly as it would have with no question open.
+   * What Ctrl-C does once every question is dropped. By default the process is interrupted again
+   * (interruptSelf), so it stops exactly as it would have with no question open.
    */
   onInterrupt?: () => void
+}
+
+/** What interrupting the process needs of it; the process itself unless a test hands in its own. */
+export interface InterruptTarget {
+  readonly pid: number
+  kill(pid: number, signal: NodeJS.Signals): unknown
+  listenerCount(event: 'SIGINT'): number
+  emit(event: 'SIGINT', signal: NodeJS.Signals): unknown
+  exit(code: number): unknown
+}
+
+/**
+ * Stops the process as a Ctrl-C with no question open would. On Linux and macOS SIGINT is raised
+ * again. Windows has no signal a process can send itself: process.kill ends it at once, before any
+ * close step runs, so there the SIGINT listeners run directly, main's stop among them, and with none
+ * the process exits as an interrupted one does.
+ */
+export function interruptSelf(platform: NodeJS.Platform = process.platform, target: InterruptTarget = process): void {
+  if (platform !== 'win32') {
+    target.kill(target.pid, 'SIGINT')
+    return
+  }
+  if (target.listenerCount('SIGINT') > 0) target.emit('SIGINT', 'SIGINT')
+  else target.exit(130)
 }
 
 /**
@@ -62,13 +86,13 @@ const QuestionDetailsSchema = z.object({
  * Ctrl-C at a question stops the process, not just that question: every gated call queues its own,
  * so dropping one at a time would take a key press per question to stop `buckle serve`. The first
  * Ctrl-C closes the terminal and calls `onInterrupt`, whose caller detaches this consumer, which
- * drops every queued question, and raises SIGINT again for the process to shut down as usual.
+ * drops every queued question, and interrupts the process again for it to shut down as usual.
  */
 export function createTerminalConsumer(options: TerminalOptions = {}): CliConsumer {
   const input = options.input ?? process.stdin
   const output = options.output ?? process.stderr
   const interrupted = new AbortController()
-  const onInterrupt = options.onInterrupt ?? (() => process.kill(process.pid, 'SIGINT'))
+  const onInterrupt = options.onInterrupt ?? (() => interruptSelf())
   const interrupt = () => {
     if (interrupted.signal.aborted) return
     interrupted.abort()

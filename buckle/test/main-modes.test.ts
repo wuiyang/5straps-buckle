@@ -23,7 +23,7 @@ vi.mock('../mcp/stdio.js', () => ({ serveMcpStdio: entry.serveMcpStdio }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))
 vi.mock('../common/adapters/file-modes.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/adapters/file-modes.js')>(), configureOwnerOnlyCheck: entry.configureOwnerOnlyCheck }))
 
-const { main, selectMode, takeGlobalFlags } = await import('../main.js')
+const { main, selectMode, stopSignals, takeGlobalFlags } = await import('../main.js')
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -36,6 +36,14 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('the signals that stop the service', () => {
+  it('are SIGTERM and SIGINT on Linux and macOS, and on Windows, which delivers no SIGTERM, Ctrl-C, Ctrl-Break, and closing the console', () => {
+    expect(stopSignals('linux')).toEqual(['SIGTERM', 'SIGINT'])
+    expect(stopSignals('darwin')).toEqual(['SIGTERM', 'SIGINT'])
+    expect(stopSignals('win32')).toEqual(['SIGINT', 'SIGBREAK', 'SIGHUP'])
+  })
 })
 
 describe('selectMode', () => {
@@ -106,6 +114,12 @@ describe('main', () => {
     expect(entry.runCli).not.toHaveBeenCalled()
     // The process's one requester is bound before anything is served.
     expect(entry.initializeCommon.mock.results[0]!.value.bindRequester).toHaveBeenCalledTimes(1)
+  })
+
+  it('listens for the stop signals of this platform, so a stop always runs the close steps', async () => {
+    await main(['serve'])
+    const listened = vi.mocked(process.once).mock.calls.map(([event]) => event)
+    expect(listened).toEqual(expect.arrayContaining(stopSignals()))
   })
 
   it('starts the stdio MCP server for mcp on one mcp-role common runtime, and no HTTP', async () => {

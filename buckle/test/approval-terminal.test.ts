@@ -11,7 +11,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
-import { createTerminalConsumer, describeQuestion } from '../cli/terminal-consumer.js'
+import { createTerminalConsumer, describeQuestion, interruptSelf, type InterruptTarget } from '../cli/terminal-consumer.js'
 import type { ApprovalHold } from '../common/services/approvals/interaction.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { runsNativeTerminal } from './support/native-terminal.js'
@@ -337,6 +337,34 @@ describe('keys meant for another terminal question', () => {
 
     expect(await call).toMatchObject({ settled: true })
     expect(registry.unspent('s').map(entry => entry.subject)).toEqual([{ rule: 'read_scope', subject: '/shots' }])
+  })
+})
+
+describe('the process interrupting itself after Ctrl-C at a question', () => {
+  const target = (listeners: number) => ({ pid: 4321, kill: vi.fn(), listenerCount: vi.fn(() => listeners), emit: vi.fn(), exit: vi.fn() }) satisfies InterruptTarget
+
+  it('raises SIGINT again on Linux and macOS', () => {
+    for (const platform of ['linux', 'darwin'] as const) {
+      const process = target(1)
+      interruptSelf(platform, process)
+      expect(process.kill).toHaveBeenCalledWith(4321, 'SIGINT')
+      expect(process.emit).not.toHaveBeenCalled()
+    }
+  })
+
+  it('runs the SIGINT listeners directly on Windows, where a signal to itself would end it before any close step', () => {
+    const process = target(1)
+    interruptSelf('win32', process)
+    expect(process.emit).toHaveBeenCalledWith('SIGINT', 'SIGINT')
+    expect(process.kill).not.toHaveBeenCalled()
+    expect(process.exit).not.toHaveBeenCalled()
+  })
+
+  it('exits as an interrupted process on Windows when nothing listens for SIGINT', () => {
+    const process = target(0)
+    interruptSelf('win32', process)
+    expect(process.exit).toHaveBeenCalledWith(130)
+    expect(process.kill).not.toHaveBeenCalled()
   })
 })
 

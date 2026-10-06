@@ -142,6 +142,14 @@ function terminalFor(kind: ServiceKind): TerminalOptions | null {
   return kind === 'serve' && process.stdin.isTTY && process.stderr.isTTY ? { input: process.stdin, output: process.stderr } : null
 }
 
+/**
+ * The signals that ask the service to stop. Windows delivers no SIGTERM: Ctrl-C there is SIGINT, Ctrl-Break is
+ * SIGBREAK, and closing the console window is SIGHUP, after which Windows ends the process within seconds.
+ */
+export function stopSignals(platform: NodeJS.Platform = process.platform): NodeJS.Signals[] {
+  return platform === 'win32' ? ['SIGINT', 'SIGBREAK', 'SIGHUP'] : ['SIGTERM', 'SIGINT']
+}
+
 function closeOnSignals(input: { common: BuckleCommon; logging: LoggerRoot }): Shutdown {
   let closing: Promise<void> | undefined
   const close = () => (closing ??= closeProcess(input))
@@ -149,8 +157,7 @@ function closeOnSignals(input: { common: BuckleCommon; logging: LoggerRoot }): S
     input.logging.logger.info('Shutdown requested', { signal })
     void close()
   }
-  process.once('SIGTERM', onSignal)
-  process.once('SIGINT', onSignal)
+  for (const signal of stopSignals()) process.once(signal, onSignal)
   return { close, requested: () => closing !== undefined }
 }
 
