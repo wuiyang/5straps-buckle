@@ -7,19 +7,20 @@ disk.
 
 ## Requirements
 
-- Node.js 24 or newer. Every package in this repository declares `"node": ">=24.0.0"`.
+- Node.js 24 or newer. Every package declares `"node": ">=24.0.0"`.
 - Linux with bubblewrap for every feature. macOS has a narrower shell sandbox and Windows has
-  none. CI runs on Linux only, x64 and arm64, so the macOS and Windows columns below come from
-  the code paths, not from a CI run.
+  none. CI runs on Linux only, x64 and arm64; the macOS column below comes from the code.
 
-On Windows, Buckle starts, its file tools read and write in the workspace, and Ctrl-C,
-Ctrl-Break, or closing its console stops it after its close steps. Windows is checked by hand,
-not by CI. [Known limits](known-limits.md#paths-and-windows) lists the differences.
+On Windows, Buckle starts, its file tools work in the workspace, and Ctrl-C, Ctrl-Break, or
+closing its console stops it after its close steps. Windows support comes from reading the code
+and from Linux tests that imitate Windows paths, signals, and file locks; it has not run on a
+Windows machine, and CI does not run there. [Known limits](known-limits.md#paths-and-windows)
+lists the differences.
 
 Buckle looks for these programs on `PATH`. Without one, the matching pack or tool is withheld,
-except for a language server: a missing one withholds nothing, and a call that needs it fails
-when it runs. `buckle manifest` says why a pack is withheld; without `rg`, the
-`fs_search_content` tool is simply absent from the manifest, and no reason is given.
+except for a language server: a missing one withholds nothing, and a call that needs it fails.
+`buckle manifest` says why a pack is withheld; without `rg`, `fs_search_content` is absent from
+the manifest, with no reason given.
 
 | Program | Unlocks |
 |---|---|
@@ -44,7 +45,7 @@ or `sudo dnf install bubblewrap`.
 | `node-pty` binary | built from source at install | prebuilt | prebuilt |
 
 The shell rows follow from two checks in the shell pack: isolated shell execution needs
-bubblewrap, and so does a workspace mount such as the `/workspace` that `buckle init` sets.
+bubblewrap, and so does a workspace mount, such as `buckle init`'s `/workspace`.
 [Sandbox and tools](sandbox-and-tools.md) explains both.
 
 ## Install

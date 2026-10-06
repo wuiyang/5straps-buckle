@@ -46,12 +46,20 @@ decision binds the whole call, whatever the display hides.
 
 ## Paths and Windows
 
-- On Linux and macOS, Buckle reads a backslash in a path as a separator, so a tool call naming
-  `notes\draft.md` is refused there, and a file whose name holds a backslash is left out of
-  listings and cannot be read or written with the file tools.
+- On Linux and macOS, Buckle reads a backslash in a path as a separator and a leading `C:` as a
+  Windows drive, so a tool path holding a backslash or starting with a drive letter is refused
+  there: `notes\draft.md`, `c:/notes`, and `./C:/notes`, which folds to `C:/notes`.
+- There, an entry whose name holds a backslash is left out of listings, searches, and history,
+  and the file tools cannot read or write it. History logs it once, and lists a change to it as not
+  restorable. The shell sandbox and the staged editor refuse to run while it exists.
+- On Windows, a path holding a colon other than a leading drive's, as in `C:\`, is refused:
+  Windows reads `notes.txt:payload` and `.env::$DATA` as hidden streams of the file, and
+  `D:notes` from that drive's working directory.
 - Windows has no open that refuses a symbolic link, so there Buckle checks the path for a link or
-  junction just before opening it and compares the file it opened with the one it checked: a
-  link swapped in and back out between those two steps can still be followed.
+  junction just before opening it, opens it without creating or truncating it, compares the file
+  it opened with the one it checked, and checks the path again before it truncates. On a volume
+  that reports no file IDs, a link swapped in before the open and back out before the second
+  check can still be followed.
 - On Windows, a workspace or state directory on a network share, such as
   `\\server\share\project`, or on a mapped drive, is refused: use a folder on a local drive.
 
