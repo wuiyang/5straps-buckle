@@ -77,13 +77,20 @@ decision binds the whole call, whatever the display hides.
 
 ## Programs Buckle runs
 
-- Buckle runs each program it needs, such as `rg`, `git`, or the sandbox program `bwrap`, by the
-  path `PATH` gives, and refuses one an agent could have written: one found in any workspace or
-  scratch root this node knows, or in a folder `BUCKLE_MOUNTS` shares, whichever workspace runs
-  it. `npx` and `pnpm exec` put a workspace's `node_modules/.bin` first on `PATH`, so an `rg`
-  there leaves content search out of every workspace, and a `bwrap` there leaves no sandbox: the
-  shell tools are withheld rather than run without one. A node started while its workspace
-  registry cannot be read runs no program: repair the registry, then restart the node.
+- Buckle runs each program it needs, such as `rg`, `git`, the sandbox program `bwrap`, or the
+  environment validator, from where `PATH` really leads, and refuses one an agent could have
+  written: one found in, or through a link in, any workspace or scratch root this node knows, or
+  a folder `BUCKLE_MOUNTS` shares writable, whichever workspace runs it. A folder it shares
+  read-only is no such place. `npx` and `pnpm exec` put a workspace's `node_modules/.bin` first
+  on `PATH`, so an `rg` there leaves content search out of every workspace, and a `bwrap` there
+  leaves no sandbox: the shell tools are withheld rather than run without one. A node started
+  while its workspace registry cannot be read runs no program: repair the registry, then restart
+  the node.
+- Each program Buckle runs gets a `PATH` with those places taken out, so a script it runs that
+  starts `#!/usr/bin/env node` never finds a `node` an agent planted. The shell keeps the agent's
+  `PATH`.
+- A running workspace keeps the programs it found: a workspace registered later counts for them
+  from the running one's next policy change, or for the sandbox program, its next start.
 
 ## The command line
 
