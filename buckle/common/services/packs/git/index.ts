@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs'
-import { isAbsolute, join } from 'pathe'
+import { isAbsolute, join, relative } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
@@ -67,9 +67,10 @@ export function createGitPack(options: GitPackOptions): Pack {
     })
   }
 
+  /** `args` may be built from the judged real repository git runs in, for a path git is handed relative to it. */
   const run = async (input: Pick<ToolContext, 'timeoutMs' | 'signal' | 'authorizeReadTarget'> & {
     repo: string
-    args: string[]
+    args: string[] | ((repository: string) => string[])
   }): Promise<string> => {
     const cwd = resolveRepository({ paths: options.paths, repo: input.repo, context: input })
     const isolation = isolationConfig(ensureHooksDirectory(options.stateDirectory))
@@ -78,7 +79,8 @@ export function createGitPack(options: GitPackOptions): Pack {
       describeFailure: result => describeProcessFailure('git config --list', result),
     })
     const config = [...isolation, ...filterProgramOverrides(keys)]
-    const result = await spawnGit({ cwd, args: input.args, config, timeoutMs: input.timeoutMs, signal: input.signal })
+    const args = typeof input.args === 'function' ? input.args(cwd) : input.args
+    const result = await spawnGit({ cwd, args, config, timeoutMs: input.timeoutMs, signal: input.signal })
     if (result.exitCode !== 0) {
       throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
     }
@@ -134,12 +136,13 @@ export function createGitPack(options: GitPackOptions): Pack {
       tags: ['git'],
       input: blameInput,
       // The repository is read too, and the file is where git finds it: under the repository (review L5 of the second re-review).
-      effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'read_path', path: isAbsolute(input.path) ? input.path : join(input.repo, withForwardSlashes(input.path)) }],
+      effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'read_path', path: blamedFile(input) }],
       run: async (input, context): Promise<JsonValue> => {
+        // git is handed the judged real file, named from the judged real repository it runs in, never the agent's string.
+        const file = judgedPath({ named: blamedFile(input), kind: 'read', paths: options.paths, context })
         const args = ['blame', '--line-porcelain', '--no-textconv']
         if (input.startLine) args.push('-L', `${input.startLine},${input.endLine ?? input.startLine}`)
-        args.push('--', input.path)
-        return { lines: parseBlame(await run({ repo: input.repo, args, ...context })) }
+        return { lines: parseBlame(await run({ repo: input.repo, args: repository => [...args, '--', relative(repository, file)], ...context })) }
       },
     }),
     defineTool(PACK_ID, {
@@ -164,6 +167,11 @@ export function createGitPack(options: GitPackOptions): Pack {
     skills: [loadPackSkill(PACK_ID)],
     unavailableReason: options.git.path === null ? options.git.reason : null,
   }
+}
+
+/** The file git_blame reads, as its effect names it: where git finds it, under the repository. */
+function blamedFile(input: { repo: string; path: string }): string {
+  return isAbsolute(input.path) ? input.path : join(input.repo, withForwardSlashes(input.path))
 }
 
 /**

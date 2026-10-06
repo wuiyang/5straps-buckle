@@ -83,3 +83,40 @@ describe('a git tool runs in the repository its permission check judged', () => 
     expect(blame.prepare({ repo: 'repo', path: 'src/a.txt' }).effects).toEqual([{ kind: 'read_path', path: 'repo' }, { kind: 'read_path', path: 'repo/src/a.txt' }])
   })
 })
+
+// git_blame judged where the file really is and then handed git the agent's own string, which git resolves again: a link
+// swapped after the check, or a name git reads otherwise, reached another file than the one judged.
+describe('git_blame hands git the file its permission check judged', () => {
+  function repository() {
+    const root = mkdtempSync(join(tmpdir(), 'git-pack-blame-'))
+    mkdirSync(join(root, 'repoA', 'src'), { recursive: true })
+    for (const name of ['a.txt', 'b.txt']) writeFileSync(join(root, 'repoA', 'src', name), `${name}\n`)
+    symlinkSync('repoA', join(root, 'repo'))
+    symlinkSync('src', join(root, 'repoA', 'alias'))
+    symlinkSync('a.txt', join(root, 'repoA', 'src', 'current.txt'))
+    return root
+  }
+  const ran = () => vi.fn<ProcessRunner>(async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }))
+  const judgedUnder = (root: string) => ({ authorizeReadTarget: (target: string) => [join(root, 'repoA'), join(root, 'repoA', 'src', 'a.txt')].includes(target) })
+
+  it('as its real path relative to the real repository, whatever links and dots the agent named it by', async () => {
+    const root = repository()
+    for (const path of ['src/a.txt', 'alias/a.txt', 'src/../src/current.txt', join(root, 'repo', 'alias', 'current.txt')]) {
+      const runProcess = ran()
+      const { call } = gitPack(root, runProcess)
+      await call('git_blame', { repo: 'repo', path }, judgedUnder(root))
+      const blame = runProcess.mock.calls.at(-1)![0]
+      expect(blame.cwd).toBe(join(root, 'repoA'))
+      expect(blame.args.slice(-2)).toEqual(['--', 'src/a.txt'])
+    }
+  })
+
+  it('refuses a file link swapped after the check, and runs nothing', async () => {
+    const root = repository()
+    const { call, runProcess } = gitPack(root)
+    unlinkSync(join(root, 'repoA', 'src', 'current.txt'))
+    symlinkSync('b.txt', join(root, 'repoA', 'src', 'current.txt'))
+    await expect(call('git_blame', { repo: 'repo', path: 'src/current.txt' }, judgedUnder(root))).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(runProcess).not.toHaveBeenCalled()
+  })
+})
