@@ -188,7 +188,7 @@ export function workspaceHolds(typedRoot: string, path: string, platform: NodeJS
 }
 
 /** The real path of a directory, or of its nearest existing ancestor with the rest appended. */
-function realPathOf(path: string, platform: NodeJS.Platform = process.platform): string {
+export function realPathOf(path: string, platform: NodeJS.Platform = process.platform): string {
   let real: string
   try {
     real = realpathSync.native(path)
@@ -220,7 +220,10 @@ export function stateDirectoryOf(environment: NodeJS.ProcessEnv, platform: NodeJ
   if (!named) return join(homeDirectory(platform), '.5straps', 'buckle')
   // Relative, it would name another directory in every directory a command starts in (review L13 of B20-B22).
   if (!isAbsolute(named)) throw new Error(`BUCKLE_STATE_DIR must be an absolute path, not ${named}: Buckle never resolves its state against the working directory`)
-  return folder(typedPath(named, platform), 'BUCKLE_STATE_DIR', platform)
+  // Refused as typed and where it really is, as the workspace root is; named as typed, and protectedStateRoots adds the real path.
+  const typed = typedPath(named, platform)
+  realFolder(typed, 'BUCKLE_STATE_DIR', platform)
+  return typed
 }
 
 /** The HTTP face exposes tools over the network, so it refuses to start without a token. */

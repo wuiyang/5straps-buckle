@@ -1,5 +1,6 @@
 import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { win32 } from 'node:path'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, MountPathSchema, WorkspacePolicySchema } from '@5straps/protocol'
@@ -63,6 +64,26 @@ describe('a path from Windows, read into pathe\'s form', () => {
     expect(withForwardSlashes('..\\a\\..\\b', 'win32')).toBe('../a/../b')
     expect(withForwardSlashes('C:\\target\\..\\x', 'win32')).toBe('C:/target/../x')
     expect(() => withForwardSlashes('a\\..\\..\\x', 'linux')).toThrow(/holds a backslash/)
+  })
+
+  // Every spelling of up to four pieces after `C:` and a separator, each a separator, a dot, two dots, a name, or a
+  // space, folded as node's own Windows normalize folds it, unless Buckle refuses it.
+  it('folds every drive-rooted spelling as Windows does, whatever separators, dots, names, and spaces follow the drive', () => {
+    const pieces = ['/', '\\', '.', '..', 'x', ' ', 'a b']
+    const tails = (length: number): string[] => length === 0 ? [''] : tails(length - 1).flatMap(head => pieces.map(piece => head + piece))
+    let folded = 0
+    for (const separator of ['/', '\\']) {
+      for (let length = 0; length <= 4; length++) {
+        for (const tail of tails(length)) {
+          const typed = `C:${separator}${tail}`
+          let named: string
+          try { named = nativePath(typed, 'win32') } catch { continue }
+          expect(named, typed).toBe(win32.normalize(typed).replaceAll('\\', '/'))
+          folded++
+        }
+      }
+    }
+    expect(folded).toBe(2 * (1 + 7 + 49 + 343 + 2401))
   })
 })
 
@@ -493,6 +514,31 @@ describe('a drive\'s root on Windows, imitated', () => {
     expect(resolveProgram('rg', { untrustedRoots: ['D:/'], lookup: () => 'D:\\tools\\rg.exe', platform: 'win32' })).toMatchObject({ path: null, untrusted: true })
     expect(resolveProgram('rg', { untrustedRoots: ['D:/'], lookup: () => 'C:\\tools\\rg.exe', platform: 'win32' })).toEqual({ path: 'C:/tools/rg.exe' })
   })
+
+  // pathe takes `//./ws` for a relative path, so `C://./ws/secret/k.txt` was resolved from the working directory: from
+  // `C:\ws` the agent's view judged `C:/ws/ws/secret/k.txt`, past a deny on `secret`, while Windows, and git handed the
+  // string as typed, open `C:\ws\secret\k.txt`.
+  it('keeps every separator after a drive one, so a drive followed by two and a dot stays on that drive', () => {
+    vi.spyOn(process, 'cwd').mockReturnValue('C:\\ws')
+    vi.spyOn(realpathSync, 'native').mockImplementation(((path: string) => {
+      if (path === 'C:/') return 'C:\\'
+      throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' })
+    }) as typeof realpathSync.native)
+    try {
+      const view = createPathView({ root: 'C:/ws', mount: null, platform: 'win32' })
+      for (const named of ['C://./ws/secret/k.txt', 'C:\\\\.\\ws\\secret\\k.txt', 'C:///ws//secret/./k.txt', 'C:\\\\\\ws\\secret\\k.txt', 'C:/./../ws/secret/k.txt']) {
+        expect(nativePath(named, 'win32')).toBe('C:/ws/secret/k.txt')
+        expect(resolvePath(withForwardSlashes(named, 'win32'))).toBe('C:/ws/secret/k.txt')
+        expect(view.resolve(named)).toBe('C:/ws/secret/k.txt')
+      }
+      const policy = WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: 'secret', read: 'deny' }] } })
+      expect(filesystemPathDecision({ root: 'C:/ws', path: view.resolve('C://./ws/secret/k.txt'), policy, operation: 'read', platform: 'win32' })).toBe('deny')
+      expect(nativePath('C://./.', 'win32')).toBe('C:/')
+      expect(nativePath('D://./x', 'win32')).toBe('D:/x')
+      expect(resolvePath('D://./x')).toBe('D:/x')
+      expect(resolvePath('C://./ws', '..', '..')).toBe('C:/')
+    } finally { vi.restoreAllMocks() }
+  })
 })
 
 describe('a whole drive as a Buckle root on Windows, imitated', () => {
@@ -501,9 +547,26 @@ describe('a whole drive as a Buckle root on Windows, imitated', () => {
 
   it('is what isDriveRoot names, in any spelling, and only on Windows', () => {
     expect(WHOLE_DRIVE).toBe(refused)
-    for (const drive of ['C:/', 'C:\\', 'c:/x/..', '/', typedPath('c:', 'win32')]) expect(isDriveRoot(drive, 'win32')).toBe(true)
+    for (const drive of ['C:/', 'C:\\', 'c:/x/..', '/', typedPath('c:', 'win32'), 'C://./.', 'C:\\\\\\']) expect(isDriveRoot(drive, 'win32')).toBe(true)
     for (const folder of ['C:/x', 'C:\\Users\\me', '/x']) expect(isDriveRoot(folder, 'win32')).toBe(false)
     expect(isDriveRoot('/', 'linux')).toBe(false)
+  })
+
+  // Windows trims the dots and spaces that end a name, so each of these opens the drive's root there.
+  it('is named with the dots and spaces that end a name, as Windows trims them', () => {
+    for (const drive of ['C:\\ ', 'C:/.', 'C:\\...', 'C:\\. .', 'C:\\x\\.. ', 'D:\\x\\..\\ .', '\\ ', typedPath('E:\\ ', 'win32')]) expect(isDriveRoot(drive, 'win32')).toBe(true)
+    for (const folder of ['C:\\x.', 'C:\\x ', 'C:\\x\\. ', 'C:\\x. \\y']) expect(isDriveRoot(folder, 'win32')).toBe(false)
+    expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: 'E:\\ ' }, 'win32')).toThrow(`BUCKLE_STATE_DIR is E:/ : ${refused}`)
+    expect(() => clientDirectory({ BUCKLE_CLIENT_DIR: 'D:\\.. .' }, 'win32')).toThrow(`BUCKLE_CLIENT_DIR is D:/.. .: ${refused}`)
+  })
+
+  it('is refused as the state directory or the client directory where it really is, through a link', () => {
+    const link = join(scratch(), 'drive')
+    // Linux's root stands for the drive a link on Windows leads to: both are a root with nothing above it.
+    symlinkSync('/', link)
+    expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: link }, 'win32')).toThrow(`BUCKLE_STATE_DIR is /: ${refused}`)
+    expect(() => clientDirectory({ BUCKLE_CLIENT_DIR: link }, 'win32')).toThrow(`BUCKLE_CLIENT_DIR is /: ${refused}`)
+    expect(clientDirectory({ BUCKLE_CLIENT_DIR: join(link, 'client') }, 'win32')).toBe(join(link, 'client'))
   })
 
   it('is refused at config load as the workspace root, the working directory, a scratch root, or the state directory', () => {

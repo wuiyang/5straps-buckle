@@ -7,6 +7,7 @@ import { OwnerOnlyError, requireOwnerOnly, setMode, type OwnerOnlyCheck } from '
 import { describeAction, printable, sameCallNote } from '../common/domain/approval-instruction.js'
 import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 import { homeDirectory, isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
+import { realPathOf } from '../common/runtime/config.js'
 
 export interface CliResult {
   exitCode: number
@@ -65,14 +66,16 @@ export async function clientCommand(argv: string[], environment: NodeJS.ProcessE
 
 /**
  * Where this device keeps its key: BUCKLE_CLIENT_DIR when set, which must be absolute and on Windows not a whole drive,
- * or ~/.5straps/client. `platform`: the host's unless a test imitates another.
+ * as typed or where it really is, or ~/.5straps/client. `platform`: the host's unless a test imitates another.
  */
 export function clientDirectory(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
   const named = environment.BUCKLE_CLIENT_DIR
   if (!named) return join(homeDirectory(platform), '.5straps', 'client')
   if (!isAbsolute(named)) throw new ClientError(`BUCKLE_CLIENT_DIR must be an absolute path, not ${named}`)
   const directory = typedPath(named, platform)
-  if (isDriveRoot(directory, platform)) throw new ClientError(`BUCKLE_CLIENT_DIR is ${directory}: ${WHOLE_DRIVE}`)
+  for (const spelling of [directory, realPathOf(directory, platform)]) {
+    if (isDriveRoot(spelling, platform)) throw new ClientError(`BUCKLE_CLIENT_DIR is ${spelling}: ${WHOLE_DRIVE}`)
+  }
   return directory
 }
 

@@ -45,14 +45,16 @@ export function resolvePath(...paths: string[]): string {
 /**
  * pathe's resolve or normalize (`fold`), starting from `first`: when it starts on a drive, the rest is folded beneath
  * `/`, where a `..` stops, and put back on the drive. pathe drops a drive a `..` climbs past, and leaves a bare one
- * as `/C:` (driveForm).
+ * as `/C:` (driveForm). Every separator after the drive is one, as Windows reads them: `C://./x` folded as `//./x`,
+ * which pathe takes for a relative path, was resolved from the working directory. What a drive starts never leaves it.
  */
 function onDrive(paths: string[], fold: (first: string, rest: string[]) => string): string {
   const [first = '', ...rest] = paths
   const drive = /^([A-Za-z]):[\\/]/.exec(first)
   if (!drive) return driveForm(fold(first, rest))
-  const below = fold(`/${first.slice(3)}`, rest)
-  return below.startsWith('/') ? `${drive[1]!.toUpperCase()}:${below}` : driveForm(below)
+  const below = fold(`/${first.slice(2).replace(/^[\\/]+/, '')}`, rest)
+  if (!/^\/(?![\\/])/.test(below)) throw unsupported(first, 'does not stay on its drive once `.`, `..`, and repeated separators are folded')
+  return `${drive[1]!.toUpperCase()}:${below}`
 }
 
 /** A drive in the form pathe gives a drive path elsewhere: `/C:` is `C:/`, and the letter is upper case. */
@@ -86,10 +88,24 @@ export const WHOLE_DRIVE = 'a whole drive cannot be a Buckle root; use a folder'
 
 /**
  * Whether a path names a whole drive on Windows (`C:/`, `C:\`, or `/`, the current drive's root): refused there as a
- * workspace root, scratch root, state directory, or client directory (WHOLE_DRIVE). Elsewhere never.
+ * workspace root, scratch root, state directory, or client directory (WHOLE_DRIVE). Windows trims the dots and spaces
+ * that end a name, so `C:\ ` and `C:\x\.. ` are judged as it may read them (trimmedNames). Elsewhere never.
  */
 export function isDriveRoot(path: string, platform: NodeJS.Platform = process.platform): boolean {
-  return platform === 'win32' && /^(?:[A-Za-z]:)?\/$/.test(resolvePath(path))
+  return platform === 'win32' && [path, trimmedNames(path)].some(spelling => /^(?:[A-Za-z]:)?\/$/.test(resolvePath(spelling)))
+}
+
+/**
+ * A Windows path with the dots and spaces that end each name removed, as Windows removes them when it opens a path,
+ * so `C:\ ` and `C:\...` name the drive's root. A name of dots and spaces alone is dropped, or read as `..` where it
+ * holds two dots in a row (`.. `), the reading that climbs furthest, so a root refused by it is refused in every
+ * reading Windows may give.
+ */
+function trimmedNames(path: string): string {
+  return path.split(/[\\/]/).map(name => {
+    const trimmed = name.replace(/[. ]+$/, '')
+    return trimmed === '' && name.includes('..') ? '..' : trimmed
+  }).join('/')
 }
 
 /** The working directory in pathe's form (nativePath). */
