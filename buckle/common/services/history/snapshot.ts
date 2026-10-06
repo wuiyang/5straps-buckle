@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { basename, join, relative, resolve } from 'pathe'
 import { z } from 'zod'
-import { isDependencyBelowRoot, openBeneath, openRealDirectory, type PinnedDirectory } from '../../adapters/beneath.js'
+import { isDependencyBelowRoot, openBeneath, openNoFollow, openRealDirectory, type PinnedDirectory } from '../../adapters/beneath.js'
 import { setDescriptorMode } from '../../adapters/file-modes.js'
-import { isInside, isInsideAny } from '../../domain/paths.js'
+import { isInside, isInsideAny, isPlainName, nativePath, parentDirectory } from '../../domain/paths.js'
 
 /**
  * `excluded`: a hard-linked file under a node_modules directory below a snapshot root (pnpm links its store
@@ -37,7 +37,11 @@ export function snapshot(input: { roots: string[]; excluded: string[]; maxBytes:
     if (stat.isSymbolicLink()) result[path] = { kind: 'symlink', mode, target: readlinkSync(path) }
     else if (stat.isDirectory()) {
       result[path] = { kind: 'directory', mode }
-      for (const name of readdirSync(path)) visit(join(path, name))
+      for (const name of readdirSync(path)) {
+        // pathe reads a backslash as a separator: such a name would be recorded, and restored, as another path.
+        if (!isPlainName(name)) throw new Error('History cannot capture a file name holding a backslash')
+        visit(join(path, name))
+      }
     } else if (stat.isFile()) {
       if (stat.nlink > 1 && input.excludeLinkedDependencies && isDependencyBelowRoot(path, roots)) {
         result[path] = { kind: 'excluded', mode }
@@ -46,7 +50,7 @@ export function snapshot(input: { roots: string[]; excluded: string[]; maxBytes:
       if (stat.nlink > 1) throw new Error('History cannot safely restore hard-linked files')
       bytes += stat.size
       if (bytes > input.maxBytes) throw new Error('History snapshot exceeds its configured byte limit')
-      const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      const descriptor = openNoFollow(path, constants.O_RDONLY | constants.O_NONBLOCK)
       let content: Buffer
       try {
         const opened = fstatSync(descriptor)
@@ -89,7 +93,7 @@ export function sameEntry(left: Entry | undefined, right: Entry | undefined): bo
  * so a link swapped into the tree after the checkpoint check is refused instead of followed (review H1
  * of B23-B25). `roots` are the directories the snapshots were taken from; every path is inside one.
  */
-export function applySnapshot(input: { target: Snapshot; current: Snapshot; paths: string[]; content: (hash: string) => Buffer; roots: string[] }): void {
+export function applySnapshot(input: { target: Snapshot; current: Snapshot; paths: string[]; content: (hash: string) => Buffer; roots: string[]; platform?: NodeJS.Platform }): void {
   const directories = createDirectoryCache(input.roots)
   try {
     // Children leave before parents. Never recursively delete untracked contents.
@@ -112,7 +116,7 @@ export function applySnapshot(input: { target: Snapshot; current: Snapshot; path
         try { mkdirSync(directory.child(name), { mode: 0o700 }) } catch (error) { if (!isExisting(error)) throw error }
         changeMode(directory, name, entry.mode | 0o700, path)
       }
-      else if (entry.kind === 'symlink') symlinkSync(entry.target!, directory.child(name))
+      else if (entry.kind === 'symlink') restoreLink({ target: entry.target!, at: directory.child(name), parent: directory.self, shown: path, platform: input.platform })
       else if (entry.kind === 'file') writeRestoredFile({ directory, name, path, content: input.content(entry.hash!), mode: entry.mode })
     }
     for (const path of [...input.paths].sort((a, b) => b.length - a.length)) {
@@ -136,9 +140,9 @@ function createDirectoryCache(roots: string[]) {
     parentOf(path: string, create: boolean): { directory: PinnedDirectory; name: string } {
       const root = roots.find(candidate => isInside(candidate, path))
       if (!root) throw new Error('A checkpoint path is outside the roots it was taken from')
-      const anchor = path === root ? dirname(root) : root
-      if (!realRoots.has(anchor)) realRoots.set(anchor, realpathSync(anchor))
-      const parent = join(realRoots.get(anchor)!, relative(anchor, dirname(path)))
+      const anchor = path === root ? parentDirectory(root) : root
+      if (!realRoots.has(anchor)) realRoots.set(anchor, nativePath(realpathSync(anchor)))
+      const parent = join(realRoots.get(anchor)!, relative(anchor, parentDirectory(path)))
       let directory = open.get(parent)
       if (!directory) {
         if (open.size >= OPEN_DIRECTORIES) closeAll()
@@ -148,6 +152,29 @@ function createDirectoryCache(roots: string[]) {
       return { directory, name: basename(path) }
     },
     close: closeAll,
+  }
+}
+
+/**
+ * symlinkSync's type for a restored link on Windows, decided as Node decides it, from the target as seen from the
+ * link's directory: a junction for a directory, which needs no privilege, and a file link otherwise. Elsewhere none.
+ */
+export function restoredLinkType(input: { target: string; parent: string; platform?: NodeJS.Platform }): 'junction' | 'file' | undefined {
+  if ((input.platform ?? process.platform) !== 'win32') return undefined
+  return statSync(resolve(input.parent, input.target), { throwIfNoEntry: false })?.isDirectory() ? 'junction' : 'file'
+}
+
+/**
+ * Makes a recorded link again. A file link on Windows needs Developer Mode or an administrator; without either the
+ * restore stops there with that reason, not with the system's bare EPERM.
+ */
+export function restoreLink(input: { target: string; at: string; parent: string; shown: string; platform?: NodeJS.Platform; symlink?: typeof symlinkSync }): void {
+  const type = restoredLinkType(input)
+  try {
+    (input.symlink ?? symlinkSync)(input.target, input.at, type)
+  } catch (error) {
+    if (type === undefined || !(error instanceof Error && 'code' in error && error.code === 'EPERM')) throw error
+    throw new Error(`Windows refused to make the symbolic link ${input.shown}: a file link needs Developer Mode or an administrator, so the restore stopped there`, { cause: error })
   }
 }
 
@@ -180,13 +207,15 @@ export function isMissing(error: unknown): boolean {
 export function assertSnapshotMatches(input: { current: Snapshot; expected: Snapshot; target: Snapshot; paths: string[]; operation: 'Restore' | 'Promotion' }): void {
   if (input.paths.some(path => !sameEntry(input.current[path], input.expected[path]))) throw new Error(`${input.operation} conflict: a changed path no longer matches the checkpoint`)
   for (const path of input.paths) {
-    for (let parent = dirname(path); parent !== dirname(parent); parent = dirname(parent)) {
+    for (let parent = parentDirectory(path); parent !== parentDirectory(parent); parent = parentDirectory(parent)) {
       if (!sameEntry(input.current[parent], input.expected[parent])) throw new Error(`${input.operation} conflict: a parent directory changed since the checkpoint`)
     }
   }
   for (const path of input.paths) if (input.expected[path]?.kind === 'directory' && input.target[path]?.kind !== 'directory') {
-    if (Object.keys(input.current).some(child => child.startsWith(`${path}/`) && !Object.hasOwn(input.expected, child))) throw new Error(`${input.operation} conflict: a directory contains newer files`)
+    // Snapshot paths are in pathe's form, so `/` separates them on every platform.
+    const below = path.endsWith('/') ? path : `${path}/`
+    if (Object.keys(input.current).some(child => child.startsWith(below) && !Object.hasOwn(input.expected, child))) throw new Error(`${input.operation} conflict: a directory contains newer files`)
     // Removing it would remove a file history never captured and leaves untouched.
-    if (Object.entries(input.current).some(([child, entry]) => entry.kind === 'excluded' && child.startsWith(`${path}/`))) throw new Error(`${input.operation} conflict: a directory holds hard-linked dependency files history does not capture; remove only those hard-linked files (a package manager puts them back) and restore again`)
+    if (Object.entries(input.current).some(([child, entry]) => entry.kind === 'excluded' && child.startsWith(below))) throw new Error(`${input.operation} conflict: a directory holds hard-linked dependency files history does not capture; remove only those hard-linked files (a package manager puts them back) and restore again`)
   }
 }

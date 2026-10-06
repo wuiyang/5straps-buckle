@@ -1,10 +1,11 @@
 import { constants } from 'node:fs'
-import { open, realpath, stat } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { realpath, stat } from 'node:fs/promises'
+import { resolve } from 'pathe'
 import type { JsonValue } from '@5straps/protocol'
 import { z } from 'zod'
-import { isLinkedOnStateDevice } from '../../../adapters/beneath.js'
+import { isLinkedOnStateDevice, openHandleNoFollow } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
+import { nativePath } from '../../../domain/paths.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { buildChildEnvironment } from '../../../domain/environment.js'
@@ -44,10 +45,10 @@ export async function searchContent(input: {
     const file = await openCandidate(path)
     if (!file) { excludedFiles += 1; continue }
     try {
-      const canonical = await realpath(path)
+      const canonical = canonicalOf(await realpath(path))
       const held = await file.stat()
-      const current = await stat(canonical)
-      if (!held.isFile() || held.size > MAX_FILE_BYTES || held.ino !== current.ino || held.dev !== current.dev || isLinkedOnStateDevice({ info: held, path: canonical, protectedRoots: input.protectedRoots, roots: [input.paths.root, ...input.paths.scratchRoots] }) || !await input.authorizeRead(canonical)) {
+      const current = canonical === null ? null : await stat(canonical)
+      if (canonical === null || current === null || !held.isFile() || held.size > MAX_FILE_BYTES || held.ino !== current.ino || held.dev !== current.dev || isLinkedOnStateDevice({ info: held, path: canonical, protectedRoots: input.protectedRoots, roots: [input.paths.root, ...input.paths.scratchRoots] }) || !await input.authorizeRead(canonical)) {
         excludedFiles += 1
         continue
       }
@@ -70,9 +71,14 @@ export async function searchContent(input: {
   return { matches, truncated: truncated || matches.length >= input.args.limit, excludedFiles }
 }
 
+/** A real path in pathe's form; null for one pathe cannot name as the system does (nativePath), which is left out. */
+function canonicalOf(real: string): string | null {
+  try { return nativePath(real) } catch { return null }
+}
+
 async function openCandidate(path: string) {
   try {
-    return await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    return await openHandleNoFollow(path, constants.O_RDONLY | constants.O_NONBLOCK)
   } catch (error) {
     if (error instanceof Error && 'code' in error && ['ENOENT', 'ELOOP', 'EACCES'].includes(String(error.code))) return null
     throw error

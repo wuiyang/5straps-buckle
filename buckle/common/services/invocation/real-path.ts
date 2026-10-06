@@ -1,5 +1,6 @@
 import { lstatSync, readlinkSync, realpathSync, type Stats } from 'node:fs'
-import { dirname, isAbsolute, join } from 'node:path'
+import { join } from 'pathe'
+import { nativePath, parentDirectory, pathRoot, withForwardSlashes } from '../../domain/paths.js'
 import { ToolInputError } from '../../domain/tool.js'
 
 /** How many links one path may pass through, as Linux allows (SYMLOOP_MAX). */
@@ -14,18 +15,23 @@ const MAX_LINKS = 40
  * planned path is named as the disk names it, so a case variant of an existing directory is judged
  * where it lands (review H2 of the second proof-of-possession re-review). A path that passes through
  * more than MAX_LINKS links, or climbs back out of a directory that does not exist or out of a file,
- * is refused.
+ * is refused. `absolutePath` is in pathe's form; the walk starts from its own root (`/`, or a drive
+ * such as `C:/`), and every path the system answers with is read back into that form (nativePath).
  */
 export function resolveTarget(absolutePath: string): string {
+  let real: string
   try {
     // The C library's realpath, as the kernel resolves: Node's own folds a link target's `..` as text.
-    return realpathSync.native(absolutePath)
+    real = realpathSync.native(absolutePath)
   } catch (error) {
     if (isLinkLoop(error)) throw tooManyLinks(absolutePath)
     if (!isMissingPathError(error)) throw error
+    const root = pathRoot(absolutePath)
+    if (root === '') throw new ToolInputError(`${absolutePath} is not an absolute path, so where it lands cannot be checked`)
+    const landing = walk(root, absolutePath.slice(root.length).split('/'), { links: 0 })
+    return landing.kind === 'directory' ? diskCase(landing.path) : landing.path
   }
-  const landing = walk('/', absolutePath.split('/'), { links: 0 })
-  return landing.kind === 'directory' ? diskCase(landing.path) : landing.path
+  return nativePath(real)
 }
 
 /** The same resolution for callers that await; kept async so a later non-blocking lookup changes no caller. */
@@ -43,7 +49,7 @@ function walk(start: string, parts: string[], budget: { links: number }): Landin
   let current = start
   for (const [index, part] of parts.entries()) {
     if (part === '' || part === '.') continue
-    if (part === '..') { current = dirname(current); continue }
+    if (part === '..') { current = parentDirectory(current); continue }
     const next = join(current, part)
     const rest = parts.slice(index + 1)
     let info: Stats
@@ -55,8 +61,10 @@ function walk(start: string, parts: string[], budget: { links: number }): Landin
     }
     if (info.isSymbolicLink()) {
       if (++budget.links > MAX_LINKS) throw tooManyLinks(next)
-      const target = readlinkSync(next)
-      const landing = walk(isAbsolute(target) ? '/' : current, target.split('/'), budget)
+      // Windows answers with backslashes; nothing is folded, so a `..` still climbs from where the link lands.
+      const target = withForwardSlashes(readlinkSync(next))
+      const root = pathRoot(target)
+      const landing = walk(root === '' ? current : root, target.slice(root.length).split('/'), budget)
       if (landing.kind === 'directory') { current = landing.path; continue }
       return beyond(landing, rest)
     }
@@ -93,7 +101,9 @@ function planned(missing: string, rest: string[]): string {
  * when the path went away meanwhile, which the pinned open then refuses or creates as judged.
  */
 function diskCase(path: string): string {
-  try { return realpathSync.native(path) } catch { return path }
+  let real: string
+  try { real = realpathSync.native(path) } catch { return path }
+  return nativePath(real)
 }
 
 function tooManyLinks(path: string): ToolInputError {
