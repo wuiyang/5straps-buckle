@@ -1,5 +1,5 @@
-import { normalize, relative, resolve } from 'pathe'
-import { isInsideAny, withForwardSlashes } from './paths.js'
+import { relative, resolve } from 'pathe'
+import { isInsideAny, nativePath, refuseDrive } from './paths.js'
 import { ToolInputError } from './tool.js'
 
 /** What a real path outside the workspace is called, so a mount never shows one through. */
@@ -39,7 +39,8 @@ export interface PathView {
  * `platform` is the host's unless a test imitates another: on Windows the agent's backslashes are separators, and on
  * Linux and macOS, where a backslash is part of a name, a path holding one is refused (withForwardSlashes) rather than
  * read as another path. A tool that hands the agent's string to another program (git, a shell) would otherwise reach
- * the name while the rules judged the path pathe reads.
+ * the name while the rules judged the path pathe reads. So is a path that pathe folds or resolves onto a drive there
+ * (`./C:/x`, `../C:/x`), and `//x` is `/x`, as the kernel reads both (nativePath, refuseDrive).
  */
 export function createPathView(input: { root: string; mount: string | null; scratchRoots?: string[]; platform?: NodeJS.Platform }): PathView {
   const root = resolve(input.root)
@@ -62,10 +63,10 @@ export function createPathView(input: { root: string; mount: string | null; scra
     displayRoots,
 
     resolve(path) {
-      const named = normalize(withForwardSlashes(path, input.platform))
+      const named = nativePath(path, input.platform)
       const underMount = insideMount(named)
-      const real = underMount === null ? resolve(root, named) : resolve(root, underMount)
-      if (!mount || isInsideAny(reachable, real)) return real
+      const real = refuseDrive(underMount === null ? resolve(root, named) : resolve(root, underMount), path, input.platform)
+      if (!mount || isInsideAny(reachable, real, input.platform)) return real
       throw new ToolInputError(outsideMountReason({ named: path, displayRoots }), { code: 'PERMISSION_DENIED' })
     },
 

@@ -22,13 +22,27 @@ export function isInsideAny(directories: string[], candidate: string, platform?:
 /**
  * A path the operating system or a person hands Buckle (a real path, the working or home directory, a state
  * directory, a workspace root) in the form pathe gives every path: forward slashes, `.` and `..` folded, a drive
- * letter in upper case. What unsupportedPath names is refused rather than read as another place. On Linux and macOS a
- * leading `//` is the root, as the kernel reads it, where pathe would keep it as a Windows share.
+ * letter in upper case. What unsupportedPath names is refused rather than read as another place. On Linux and macOS
+ * only a leading `/` is absolute and a leading `//` is the root, as the kernel reads them, where pathe would keep `//x`
+ * as a Windows share and read `//.x` as relative; the folded path is refused where it lands on a drive (refuseDrive).
  */
 export function nativePath(path: string, platform: NodeJS.Platform = process.platform): string {
-  const normal = normalize(withForwardSlashes(path, platform))
-  return platform !== 'win32' && normal.startsWith('//') ? normal.replace(/^\/+/, '/') : normal
+  const named = withForwardSlashes(path, platform)
+  return refuseDrive(normalize(platform === 'win32' ? named : named.replace(/^\/{2,}/, '/')), path, platform)
 }
+
+/**
+ * A path pathe folded or resolved, refused off Windows where it starts with a drive letter: pathe folds `./C:/x`,
+ * `/C:/x`, `a/../C:/x`, and `/ws/../C:/x` to `C:/x`, which the kernel there opens relative to the working directory.
+ * `named` is the path as it was handed over, for the refusal.
+ */
+export function refuseDrive(path: string, named: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32' && DRIVE_FIRST.test(path)) throw unsupported(named, 'lands on a drive letter once `.`, `..`, and repeated slashes are folded, which Buckle reads as a Windows drive')
+  return path
+}
+
+/** A drive letter that starts a path: `C:` alone or before a separator. */
+const DRIVE_FIRST = /^[A-Za-z]:(?:[\\/]|$)/
 
 /** The working directory in pathe's form (nativePath). */
 export function workingDirectory(): string {
@@ -52,21 +66,31 @@ export function typedPath(path: string): string {
  */
 export function withForwardSlashes(path: string, platform: NodeJS.Platform = process.platform): string {
   const reason = unsupportedPath(path, platform)
-  if (reason) throw new ToolInputError(`${path} ${reason}, so Buckle refuses it rather than read it as another path`, { code: 'PERMISSION_DENIED' })
+  if (reason) throw unsupported(path, reason)
   return platform === 'win32' ? path.replaceAll('\\', '/') : path
+}
+
+function unsupported(path: string, reason: string): ToolInputError {
+  return new ToolInputError(`${path} ${reason}, so Buckle refuses it rather than read it as another path`, { code: 'PERMISSION_DENIED' })
 }
 
 /**
  * Why pathe cannot name a path as the operating system does. On Windows, a network share or a device path
  * (`\\server\share`, `\\?\C:\`): pathe's resolve reads `//server/share` as `/server/share`, a folder on the current
- * drive, so a root there would be judged in one place and reached in another. Elsewhere, a backslash, which is part of
- * a name there and a separator to pathe, and a leading drive letter (`c:/x`), which pathe reads as a Windows drive and
- * the kernel as a name in the working directory.
+ * drive, so a root there would be judged in one place and reached in another. Also on Windows, a colon anywhere but
+ * after a drive letter that starts the path and comes before a separator or the end: NTFS reads `notes.txt:payload`
+ * and `.env::$DATA` as a stream of the file, which listings and history never see, and `D:foo` as a path relative to
+ * that drive's working directory. Elsewhere, a backslash, which is part of a name there and a separator to pathe, and
+ * a leading drive letter (`c:/x`), which pathe reads as a Windows drive and the kernel as a name in the working
+ * directory.
  */
 function unsupportedPath(path: string, platform: NodeJS.Platform): string | null {
-  if (platform === 'win32') return /^[\\/]{2}/.test(path) ? 'is on a network share or is a device path, which Buckle does not use on Windows' : null
+  if (platform === 'win32') {
+    if (/^[\\/]{2}/.test(path)) return 'is on a network share or is a device path, which Buckle does not use on Windows'
+    return path.replace(DRIVE_FIRST, '').includes(':') ? 'holds a colon that is not a drive letter\'s, which Windows reads as a file stream or a drive\'s working directory' : null
+  }
   if (path.includes('\\')) return 'holds a backslash, which Buckle reads as a separator'
-  return /^[A-Za-z]:(?:\/|$)/.test(path) ? 'starts with a drive letter, which Buckle reads as a Windows drive' : null
+  return DRIVE_FIRST.test(path) ? 'starts with a drive letter, which Buckle reads as a Windows drive' : null
 }
 
 /**

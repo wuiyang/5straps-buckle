@@ -167,6 +167,44 @@ describe('the agent\'s paths on a Windows workspace, imitated', () => {
     }
     expect(() => mounted.resolve('\\\\server\\share\\x')).toThrow(/network share/)
   })
+
+  // NTFS reads a colon after a name as a stream of that file: a write there lands where listings and history never
+  // look, and `.env::$DATA` is `.env` to Windows while the sensitive-path rule reads another name.
+  it('refuses a colon that is not a drive letter\'s, so no file stream and no drive-relative path is reached', () => {
+    for (const named of ['notes.txt:payload', '.env::$DATA', 'src\\a.ts:hidden', 'C:\\ws\\a:b', 'D:foo', 'C:/ws/x:']) {
+      expect(() => nativePath(named, 'win32')).toThrow(/holds a colon that is not a drive letter's/)
+      expect(() => view.resolve(named)).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
+    }
+    expect(view.resolve('C:\\ws\\notes.txt')).toBe('C:/ws/notes.txt')
+    expect(nativePath('D:', 'win32')).toBe('D:/')
+    expect(nativePath('notes.txt:payload', 'linux')).toBe('notes.txt:payload')
+  })
+})
+
+// pathe folds each of these to `C:/x`, which the kernel on Linux and macOS opens relative to the working directory, and
+// reads `//.hidden.ts` as relative where the kernel reads `/.hidden.ts`.
+describe('a spelling pathe folds onto a drive, on Linux and macOS', () => {
+  it('is refused by nativePath and by the agent\'s view, as is one the view resolves onto a drive', () => {
+    for (const platform of ['linux', 'darwin'] as const) {
+      const view = createPathView({ root: '/ws', mount: null, platform })
+      for (const named of ['./C:/x', '/C:/x', '/./C:/x', 'a/../C:/x', '//C:/x', 'C:', './c:']) {
+        expect(() => nativePath(named, platform)).toThrow(/drive letter/)
+        expect(() => view.resolve(named)).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
+      }
+      for (const named of ['../C:/x', 'sub/../../C:/x']) expect(() => view.resolve(named)).toThrow(`${named} lands on a drive letter`)
+      expect(view.resolve('sub/c:/x')).toBe('/ws/sub/c:/x')
+      expect(view.resolve('c:notes')).toBe('/ws/c:notes')
+    }
+  })
+
+  it('reads a leading // as the root, so //.hidden.ts is /.hidden.ts and //x is /x', () => {
+    for (const platform of ['linux', 'darwin'] as const) {
+      expect(nativePath('//.hidden.ts', platform)).toBe('/.hidden.ts')
+      expect(nativePath('//x', platform)).toBe('/x')
+      expect(createPathView({ root: '/ws', mount: null, platform }).resolve('//.hidden.ts')).toBe('/.hidden.ts')
+      expect(() => createPathView({ root: '/ws', mount: '/workspace', platform }).resolve('//.hidden.ts')).toThrow(/outside the mounted workspace/)
+    }
+  })
 })
 
 describe('the backslash case on Linux: inside\\..\\..\\x', () => {
