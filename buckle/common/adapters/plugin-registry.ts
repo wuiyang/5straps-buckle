@@ -1,3 +1,5 @@
+import { pathToFileURL } from 'node:url'
+import { isAbsolute } from 'pathe'
 import { z } from 'zod'
 import type { Pack } from '../domain/pack.js'
 import { createJsonFileStore } from './json-file-store.js'
@@ -59,7 +61,7 @@ export const PLUGIN_UNAVAILABLE = 'The plugin failed to load; the node\'s log ha
 /** A plugin that fails to load becomes a visibly unavailable pack rather than killing startup. */
 async function loadOne(plugin: PluginEntry, packOptions: Record<string, unknown>): Promise<Pack> {
   try {
-    const loaded: unknown = await import(plugin.specifier)
+    const loaded: unknown = await import(importSpecifier(plugin.specifier))
     if (!isPluginModule(loaded)) throw new Error('Plugin must export createPack(options)')
     return await loaded.createPack(packOptions)
   } catch (error) {
@@ -69,6 +71,17 @@ async function loadOne(plugin: PluginEntry, packOptions: Record<string, unknown>
     // manifest; the owner reads the error in the node's log.
     return { id: plugin.id, version: '0.0.0', tools: [], skills: [], unavailableReason: PLUGIN_UNAVAILABLE }
   }
+}
+
+/**
+ * What import() is handed for a plugin: a package name or a URL as written, and a file path as its file URL. import()
+ * reads `C:\plugins\pack.js` as a URL whose scheme is `c:`, so on Windows a plain path failed and the pack showed as
+ * unavailable; a POSIX path works either way. The platform is a parameter so a test can imitate Windows.
+ */
+export function importSpecifier(specifier: string, platform: NodeJS.Platform = process.platform): string {
+  const windows = platform === 'win32'
+  const path = windows ? isAbsolute(specifier) : specifier.startsWith('/')
+  return path ? pathToFileURL(specifier, { windows }).href : specifier
 }
 
 function isPluginModule(value: unknown): value is PluginModule {
