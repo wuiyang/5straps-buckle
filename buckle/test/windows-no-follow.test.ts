@@ -93,6 +93,35 @@ describe('the Windows open that follows no link, against a link swapped in after
     }
   })
 
+  // A read, an edit, or a write that names its expected hash opens without creating. Where lstat saw nothing, there is no
+  // identity to compare what the open reached with, so a link swapped in and back out before the second check was
+  // followed and its target read.
+  it('reads nothing through a link that came and went where lstat saw no entry, and refuses one that does it again', async () => {
+    for (const open of [syncRead, handleRead]) {
+      const { path, swapInLink } = scene({ exists: false })
+      race.after.set(1, swapInLink)
+      race.before.set(2, () => unlinkSync(path))
+      await expect(open(path)).rejects.toMatchObject({ code: 'ENOENT' })
+      resetRace()
+      race.after.set(1, swapInLink)
+      race.before.set(2, () => unlinkSync(path))
+      race.after.set(2, swapInLink)
+      await expect(open(path)).rejects.toMatchObject({ code: 'ELOOP' })
+      unlinkSync(path)
+      resetRace()
+    }
+  })
+
+  it('opens a file another process made between the check and the open, once it is checked again', async () => {
+    for (const open of [syncRead, handleRead]) {
+      const { path } = scene({ exists: false })
+      race.after.set(1, () => writeFileSync(path, 'made'))
+      expect(await open(path)).toBe('made')
+      unlinkSync(path)
+      resetRace()
+    }
+  })
+
   it('still truncates a plain file, creates a missing one, and fails an exclusive create of an existing one', async () => {
     for (const open of [syncOpen, handleOpen]) {
       const { path } = scene({ exists: true })
@@ -116,6 +145,17 @@ async function syncOpen(path: string, flags: number): Promise<void> {
 
 async function handleOpen(path: string, flags: number): Promise<void> {
   await (await openHandleNoFollow(path, flags, 'win32')).close()
+}
+
+/** Opens for reading as fs_read does, imitating Windows, and reads what the open reached. */
+async function syncRead(path: string): Promise<string> {
+  const descriptor = openNoFollow(path, constants.O_RDONLY, undefined, 'win32')
+  try { return readFileSync(descriptor, 'utf8') } finally { closeSync(descriptor) }
+}
+
+async function handleRead(path: string): Promise<string> {
+  const handle = await openHandleNoFollow(path, constants.O_RDONLY, 'win32')
+  try { return await handle.readFile('utf8') } finally { await handle.close() }
 }
 
 /** Each pass of a loop above is its own scene: the watched name's count and swaps start again. */

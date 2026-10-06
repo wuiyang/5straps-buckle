@@ -219,8 +219,10 @@ function hasNoFollowFlag(platform: NodeJS.Platform): boolean {
  * refused with the same ELOOP, and the open neither creates nor truncates through a name it did not check
  * (checkedOpen): an entry lstat saw is opened without O_CREAT and O_TRUNC, must be the file lstat saw (its volume and
  * file ID, where the volume reports them), and is truncated through the descriptor only once the name is checked again
- * and is still no link; a name lstat did not see is created with O_EXCL, which fails on a link in its place. On a volume
- * that reports no file ID, a link swapped in before the open and back out before the second check is still followed
+ * and is still no link; a name lstat did not see is created with O_EXCL, which fails on a link in its place. Where lstat
+ * saw no entry but an open that creates nothing opens one, the entry appeared after the lstat, perhaps as a link: the
+ * open is checked again from the lstat once, and then refused with the same ELOOP. Only on a volume that reports no
+ * file ID is an entry lstat saw, swapped for a link before the open and back before the second check, still followed
  * (known-limits.md). The platform is a parameter so a test can imitate Windows.
  */
 export function openNoFollow(path: string, flags: number, mode?: number, platform: NodeJS.Platform = process.platform): number {
@@ -234,6 +236,11 @@ export function openNoFollow(path: string, flags: number, mode?: number, platfor
     } catch (error) {
       if (attempt === 0 && plan.raced(error)) continue
       throw error
+    }
+    if (plan.appeared) {
+      closeSync(descriptor)
+      if (attempt === 0) continue
+      throw linkInTheWay(path)
     }
     try {
       refuseSwap(path, seen, fstatSync(descriptor, { bigint: true }), lstatSync(path, { bigint: true, throwIfNoEntry: false }))
@@ -260,6 +267,11 @@ export async function openHandleNoFollow(path: string, flags: number, platform: 
       if (attempt === 0 && plan.raced(error)) continue
       throw error
     }
+    if (plan.appeared) {
+      await handle.close()
+      if (attempt === 0) continue
+      throw linkInTheWay(path)
+    }
     try {
       refuseSwap(path, seen, await handle.stat({ bigint: true }), await lstatOrNone())
       if (plan.truncate) await handle.truncate(0)
@@ -276,8 +288,11 @@ export async function openHandleNoFollow(path: string, flags: number, platform: 
  * without O_CREAT, O_EXCL, and O_TRUNC (an exclusive create of it fails as the open would); a name lstat did not see is
  * created only with O_EXCL. `truncate` is O_TRUNC, done through the descriptor after the checks. `raced` is an entry made
  * or removed between the lstat and the open of a call that may create: the open is checked again from the lstat, once.
+ * `appeared` is a name lstat did not see that an open which does not create would still open: whatever it opened came
+ * after the lstat, perhaps a link swapped in and back out before a second check, and there is no identity to compare
+ * it with, so it is never used; the open is checked again from the lstat once, and then refused.
  */
-function checkedOpen(path: string, flags: number, seen: BigIntStats | undefined): { flags: number; truncate: boolean; raced: (error: unknown) => boolean } {
+function checkedOpen(path: string, flags: number, seen: BigIntStats | undefined): { flags: number; truncate: boolean; raced: (error: unknown) => boolean; appeared: boolean } {
   refuseLink(path, seen)
   const creating = (flags & constants.O_CREAT) !== 0
   const exclusive = creating && (flags & constants.O_EXCL) !== 0
@@ -287,6 +302,7 @@ function checkedOpen(path: string, flags: number, seen: BigIntStats | undefined)
     flags: !seen && creating ? plain | constants.O_CREAT | constants.O_EXCL : plain,
     truncate: (flags & constants.O_TRUNC) !== 0,
     raced: error => creating && !exclusive && errorCode(error) === (seen ? 'ENOENT' : 'EEXIST'),
+    appeared: !seen && !creating,
   }
 }
 
