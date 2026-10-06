@@ -2,9 +2,9 @@ import { execFile } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createJsonFileStore } from '../common/adapters/json-file-store.js'
+import { createJsonFileStore, replaceFile } from '../common/adapters/json-file-store.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
@@ -81,5 +81,37 @@ describe('in-process state updates', () => {
     })
     await followUp.promise
     expect(store.read()).toEqual({ count: 2 })
+  })
+})
+
+// Windows refuses a rename over a file another handle holds open, with EPERM or EBUSY, until that handle closes.
+describe('replacing a state file another handle holds open', () => {
+  const failing = (code: string) => Object.assign(new Error(`${code}: operation not permitted, rename`), { code })
+
+  it('tries the rename again a short pause apart until it lands', async () => {
+    const rename = vi.fn().mockImplementationOnce(() => { throw failing('EPERM') }).mockImplementationOnce(() => { throw failing('EBUSY') }).mockImplementation(() => {})
+    const pause = vi.fn(async () => {})
+    await replaceFile('state.json.tmp', 'state.json', { rename, pause })
+    expect(rename).toHaveBeenCalledTimes(3)
+    expect(pause.mock.calls).toEqual([[20], [40]])
+  })
+
+  it('gives up after five tries with the last failure, and throws any other failure at once', async () => {
+    const held = vi.fn(() => { throw failing('EBUSY') })
+    const pause = vi.fn(async () => {})
+    await expect(replaceFile('a', 'b', { rename: held, pause })).rejects.toMatchObject({ code: 'EBUSY' })
+    expect(held).toHaveBeenCalledTimes(5)
+    expect(pause).toHaveBeenCalledTimes(4)
+    const missing = vi.fn(() => { throw failing('ENOENT') })
+    await expect(replaceFile('a', 'b', { rename: missing, pause: vi.fn(async () => {}) })).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(missing).toHaveBeenCalledTimes(1)
+  })
+
+  it('replaces the file on disk', async () => {
+    const root = directory()
+    writeFileSync(join(root, 'state.json'), 'old')
+    writeFileSync(join(root, 'state.json.tmp'), 'new')
+    await replaceFile(join(root, 'state.json.tmp'), join(root, 'state.json'))
+    expect(readFileSync(join(root, 'state.json'), 'utf8')).toBe('new')
   })
 })
