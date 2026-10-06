@@ -1,7 +1,7 @@
 import { opendir, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve } from 'pathe'
+import { isAbsolute, relative, resolve } from 'pathe'
 import { z } from 'zod'
-import { homeDirectory, isInside, isPlainName, nativePath, parentDirectory } from '../../domain/paths.js'
+import { childPath, homeDirectory, isInside, isPlainName, nativePath, parentDirectory } from '../../domain/paths.js'
 import { WorkspaceError } from '../workspaces/workspace-manager.js'
 
 export const DirectoryQuerySchema = z.object({
@@ -31,7 +31,7 @@ export async function browseDirectories(input: z.infer<typeof DirectoryQuerySche
       if (entries.length === input.limit) { nextCursor = String(scanned - 1); break }
       // pathe would read a backslash in the name as a separator and show another path: left out.
       if (!isPlainName(item.name)) continue
-      const child = join(path, item.name)
+      const child = childPath(path, item.name)
       let directory = item.isDirectory()
       let canonical = child
       let reason: string | undefined

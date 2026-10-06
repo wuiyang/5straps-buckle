@@ -7,11 +7,12 @@ import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/a
 import { resolveProgram } from '../common/domain/executable.js'
 import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { descent, isDriveRoot, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, resolvePath, typedPath, WHOLE_DRIVE, withForwardSlashes } from '../common/domain/paths.js'
+import { childPath, descent, isDriveRoot, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, resolvePath, typedPath, WHOLE_DRIVE, withForwardSlashes } from '../common/domain/paths.js'
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
 import { clientDirectory } from '../cli/client.js'
 import { runInit } from '../cli/init.js'
 import { loadConfig, stateDirectoryOf, workspaceHolds } from '../common/runtime/config.js'
+import { resolveTarget } from '../common/services/invocation/real-path.js'
 import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { outsideRootNotice } from '../common/runtime/environment.js'
 import { logger } from '../common/runtime/log.js'
@@ -437,6 +438,13 @@ describe('history beside a name holding a backslash, on Linux', () => {
   })
 })
 
+/** Runs `run` with the process's working directory at `directory`, where a path pathe reads as a drive would be opened. */
+function within<T>(directory: string, run: () => T): T {
+  const cwd = process.cwd()
+  process.chdir(directory)
+  try { return run() } finally { process.chdir(cwd) }
+}
+
 // pathe resolves `C:/` to `/C:`, whose root is `/`, so a workspace at a drive's root held none of its own files, and
 // `C:/` held `D:/`: a deny there was skipped, a program planted on the drive was trusted, and a state directory on it
 // was not inside the workspace.
@@ -535,5 +543,81 @@ describe('a whole drive as a Buckle root on Windows, imitated', () => {
       expect(manager.list().map(workspace => workspace.id)).toEqual(['default'])
     } finally { await runtime.history.close() }
     for (const mount of ['C:/', 'C:\\', '/C:', '/c:/x', 'D:']) expect(MountPathSchema.safeParse(mount).success).toBe(false)
+  })
+})
+
+// pathe's join folds `/` and `c:` into the drive `c:/`, and its resolve climbs from a workspace to `/c:`, a folder at the
+// root on Linux and macOS: a walk then lstat'ed `c:/` in the process's working directory, and judged a link to `/c:`
+// as `C:/` while beneath created `C:` at the filesystem root. Each is now walked as the kernel walks it and refused.
+describe('a drive-shaped name reached by a climb or a link, on Linux', () => {
+  /** A workspace four levels down, and a working directory holding `C:` and `c:` folders a misread path would reach. */
+  function scene() {
+    const root = scratch()
+    const workspace = join(root, 'a', 'b', 'c', 'ws')
+    mkdirSync(workspace, { recursive: true })
+    const elsewhere = join(root, 'elsewhere')
+    mkdirSync(join(elsewhere, 'C:'), { recursive: true })
+    mkdirSync(join(elsewhere, 'c:'), { recursive: true })
+    writeFileSync(join(elsewhere, 'C:', 'x'), 'misread')
+    return { workspace, elsewhere, climb: '../'.repeat(workspace.split('/').length + 2) }
+  }
+
+  it('refuses a climb onto /c:, from the agent\'s view and from a typed path', () => {
+    const { workspace, elsewhere, climb } = scene()
+    const view = createPathView({ root: workspace, mount: null, platform: 'linux' })
+    for (const named of [`${climb}c:`, `${climb}c:/x`, `${climb}C:/x`, `sub/${climb}c:`]) {
+      expect(() => view.resolve(named)).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED', message: expect.stringContaining('lands on a drive letter') }))
+    }
+    within(elsewhere, () => {
+      expect(() => typedPath(`${climb}c:`, 'linux')).toThrow(/lands on a drive letter/)
+      expect(() => typedPath(`${climb}C:/x`, 'linux')).toThrow(/lands on a drive letter/)
+    })
+    expect(view.resolve('sub/c:')).toBe(`${workspace}/sub/c:`)
+  })
+
+  it('refuses a workspace link to /c:, /C:/x, or /c:/x, and a path through one, wherever the process runs', () => {
+    const { workspace, elsewhere } = scene()
+    const links = { L1: '/c:', L2: '/C:/x', L3: '/c:/x' }
+    for (const [name, target] of Object.entries(links)) symlinkSync(target, join(workspace, name))
+    for (const directory of [workspace, elsewhere]) {
+      within(directory, () => {
+        for (const path of ['L1', 'L2', 'L3', 'L1/x', 'L1/new/file.txt']) {
+          expect(() => resolveTarget(join(workspace, path))).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED', message: `${join(workspace, path)} lands on a drive letter once \`.\`, \`..\`, and repeated slashes are folded, which Buckle reads as a Windows drive, so Buckle refuses it rather than read it as another path` }))
+        }
+      })
+    }
+    expect(existsSync(join(workspace, 'C:'))).toBe(false)
+  })
+
+  it('walks to a folder named c: at the root as that folder, and refuses it there', () => {
+    const { elsewhere } = scene()
+    within(elsewhere, () => {
+      for (const path of ['/c:', '/C:', '/c:/x', '/C:/x', '/c:/new/file.txt']) {
+        expect(() => resolveTarget(path)).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
+      }
+    })
+    expect(childPath('/', 'c:')).toBe('/c:')
+    expect(childPath('/ws', 'c:')).toBe('/ws/c:')
+    expect(childPath('C:/', 'x')).toBe('C:/x')
+    expect(childPath('//server/share/', 'x')).toBe('//server/share/x')
+  })
+
+  it('leaves out of a content search from / a file rg lists under /c:, never opening the one the working directory holds', async () => {
+    const { elsewhere } = scene()
+    const judged: string[] = []
+    const answer = (stdout: string) => ({ exitCode: 0, signal: null, stdout, stderr: '', truncated: false, timedOut: false })
+    const match = JSON.stringify({ type: 'match', data: { lines: { text: 'misread\n' }, line_number: 1, submatches: [{ start: 0, end: 7 }] } })
+    const cwd = process.cwd()
+    // Async, so the working directory is set by hand for the whole search rather than by within().
+    process.chdir(elsewhere)
+    try {
+      const found = await searchContent({
+        args: searchInput.parse({ pattern: 'misread', path: '/' }), paths: createPathView({ root: '/', mount: null }), ripgrep: '/usr/bin/rg', protectedRoots: [], platform: 'linux',
+        runProcess: async request => answer(request.args[0] === '--files' ? './C:/x\0' : `${match}\n`),
+        timeoutMs: 5_000, signal: AbortSignal.timeout(5_000), authorizeRead: async path => { judged.push(path); return true },
+      })
+      expect(found).toEqual({ matches: [], truncated: false, excludedFiles: 1 })
+      expect(judged).toEqual([])
+    } finally { process.chdir(cwd) }
   })
 })

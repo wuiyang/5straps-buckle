@@ -1,7 +1,6 @@
 import { lstat, readdir } from 'node:fs/promises'
-import { join } from 'pathe'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
-import { entryBelowRoot, isInsideAny, isPlainName } from '../../domain/paths.js'
+import { childPath, entryBelowRoot, isInsideAny, isPlainName } from '../../domain/paths.js'
 import { ToolInputError } from '../../domain/tool.js'
 
 export async function collectShellHiddenPaths(input: { roots: string[]; protectedPaths: string[]; signal: AbortSignal }): Promise<{ directories: string[]; files: string[] }> {
@@ -22,7 +21,7 @@ export async function collectShellHiddenPaths(input: { roots: string[]; protecte
       // The hidden paths go to the sandbox as the kernel reads them, where a backslash is part of a name; pathe would
       // read it as a separator and hide another path, so a workspace holding one is refused, naming it as listed.
       if (!isPlainName(name)) throw new ToolInputError(`The workspace holds ${entryBelowRoot(root, path, name)}, a name with a backslash, which Buckle cannot hide from shell commands`, { code: 'PERMISSION_DENIED' })
-      await visit(join(path, name), root)
+      await visit(childPath(path, name), root)
     }
   }
   for (const root of new Set(input.roots)) await visit(root, root)

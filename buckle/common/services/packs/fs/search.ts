@@ -5,7 +5,7 @@ import type { JsonValue } from '@5straps/protocol'
 import { z } from 'zod'
 import { isLinkedOnStateDevice, openHandleNoFollow } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { isPlainName, nativePath } from '../../../domain/paths.js'
+import { childPath, isPlainName, nativePath } from '../../../domain/paths.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { buildChildEnvironment } from '../../../domain/environment.js'
@@ -77,11 +77,13 @@ export async function searchContent(input: {
 
 /**
  * The path a name rg listed (`./src/a.ts`) names. Off Windows a segment that is not one plain name (a backslash, which
- * pathe reads as a separator) would name another path than the file rg found, so such a name is left out: null.
+ * pathe reads as a separator) would name another path than the file rg found, so such a name is left out: null. There
+ * the names are appended to the root as text (childPath), which pathe would fold onto a drive under `/` (`/c:/x`).
  */
 function listedPath(root: string, name: string, platform: NodeJS.Platform): string | null {
-  if (platform !== 'win32' && !name.replace(/^\.\//, '').split('/').every(isPlainName)) return null
-  return resolve(root, name)
+  if (platform === 'win32') return resolve(root, name)
+  const below = name.replace(/^\.\//, '')
+  return below.split('/').every(isPlainName) ? childPath(root, below) : null
 }
 
 /** A real path in pathe's form; null for one pathe cannot name as the system does (nativePath), which is left out. */

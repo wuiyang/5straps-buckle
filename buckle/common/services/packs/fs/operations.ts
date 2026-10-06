@@ -10,7 +10,7 @@ import type { JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
 import { openDirectoryBeneath, openRealDirectory, withFileBeneath, type PinnedDirectory } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { comparablePath, ignoresCase, isPlainName } from '../../../domain/paths.js'
+import { childPath, comparablePath, ignoresCase, isPlainName } from '../../../domain/paths.js'
 import { ToolInputError } from '../../../domain/tool.js'
 import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
 import { isIgnoredDirectory } from './ignore.js'
@@ -213,7 +213,7 @@ async function walkTree(input: {
     // A name pathe would read as another path (a backslash on Linux) would be judged there: left out.
     if (!isPlainName(child.name)) continue
 
-    const real = join(input.real, child.name)
+    const real = childPath(input.real, child.name)
     const shown = join(input.shown, child.name)
     if (input.authorizeRead && !await input.authorizeRead(real)) continue
     const info = lstatSync(input.directory.child(child.name))
@@ -251,7 +251,7 @@ async function walkNames(input: {
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
     if (!isPlainName(child.name)) continue
 
-    const real = join(input.real, child.name)
+    const real = childPath(input.real, child.name)
     const shown = join(input.shown, child.name)
     if (input.authorizeRead && !await input.authorizeRead(real)) continue
     if (nameMatches(shown, input.pattern, input.platform) || nameMatches(basename(shown), input.pattern, input.platform)) {

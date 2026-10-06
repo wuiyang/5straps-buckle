@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, type Stats, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
-import { basename, join, relative, resolve } from 'pathe'
+import { basename, relative, resolve } from 'pathe'
 import { z } from 'zod'
 import { isDependencyBelowRoot, openBeneath, openNoFollow, openRealDirectory, type PinnedDirectory } from '../../adapters/beneath.js'
 import { setDescriptorMode } from '../../adapters/file-modes.js'
-import { entryBelowRoot, isInside, isInsideAny, isPlainName, nativePath, parentDirectory } from '../../domain/paths.js'
+import { childPath, entryBelowRoot, isInside, isInsideAny, isPlainName, nativePath, parentDirectory } from '../../domain/paths.js'
 
 /**
  * Two kinds are recorded without content, and history never restores, removes or rewrites one: each is left out of
@@ -48,7 +48,7 @@ export function snapshot(input: { roots: string[]; excluded: string[]; maxBytes:
     else if (stat.isDirectory()) {
       result[path] = { kind: 'directory', mode }
       for (const name of readdirSync(path)) {
-        if (isPlainName(name)) visit(join(path, name), root)
+        if (isPlainName(name)) visit(childPath(path, name), root)
         else excludeName({ directory: path, name, root })
       }
     } else if (stat.isFile()) {
@@ -183,7 +183,8 @@ function createDirectoryCache(roots: string[]) {
       if (!root) throw new Error('A checkpoint path is outside the roots it was taken from')
       const anchor = path === root ? parentDirectory(root) : root
       if (!realRoots.has(anchor)) realRoots.set(anchor, nativePath(realpathSync(anchor)))
-      const parent = join(realRoots.get(anchor)!, relative(anchor, parentDirectory(path)))
+      const below = relative(anchor, parentDirectory(path))
+      const parent = below === '' ? realRoots.get(anchor)! : childPath(realRoots.get(anchor)!, below)
       let directory = open.get(parent)
       if (!directory) {
         if (open.size >= OPEN_DIRECTORIES) closeAll()

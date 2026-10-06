@@ -4,7 +4,7 @@ import { basename, isAbsolute, join } from 'pathe'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
 import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
-import { homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
+import { childPath, homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
@@ -194,7 +194,7 @@ function realPathOf(path: string, platform: NodeJS.Platform = process.platform):
     real = realpathSync.native(path)
   } catch {
     const parent = parentDirectory(path)
-    return parent === path ? path : join(realPathOf(parent, platform), basename(path))
+    return parent === path ? path : childPath(realPathOf(parent, platform), basename(path))
   }
   return nativePath(real, platform)
 }

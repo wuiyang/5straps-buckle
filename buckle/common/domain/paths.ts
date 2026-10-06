@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'pathe'
+import { dirname, isAbsolute, normalize, relative, resolve, sep } from 'pathe'
 import { ToolInputError } from './tool.js'
 
 /**
@@ -63,18 +63,22 @@ function driveForm(path: string): string {
 }
 
 /**
- * A path pathe folded or resolved, refused off Windows where it starts with a drive letter: pathe folds `./C:/x`,
- * `/C:/x`, `a/../C:/x`, and `/ws/../C:/x` to `C:/x`, which the kernel there opens relative to the working directory.
+ * A path pathe folded or resolved, or a walk built by name, refused off Windows where it starts with a drive letter,
+ * or with a root folder named like one: pathe folds `./C:/x`, `/C:/x`, `a/../C:/x`, and `/ws/../C:/x` to `C:/x`, which
+ * the kernel there opens relative to the working directory, and reads `/c:`, a folder at the root there, as a drive.
  * `named` is the path as it was handed over, for the refusal.
  */
 export function refuseDrive(path: string, named: string, platform: NodeJS.Platform = process.platform): string {
-  if (platform !== 'win32' && DRIVE_FIRST.test(path)) throw unsupported(named, 'lands on a drive letter once `.`, `..`, and repeated slashes are folded, which Buckle reads as a Windows drive')
+  if (platform !== 'win32' && (DRIVE_FIRST.test(path) || ROOTED_DRIVE.test(path))) throw unsupported(named, 'lands on a drive letter once `.`, `..`, and repeated slashes are folded, which Buckle reads as a Windows drive')
   return path
 }
 
 /** A drive letter that starts a path: `C:` alone or before a separator. */
 const DRIVE_FIRST = /^[A-Za-z]:(?:[\\/]|$)/
-/** A drive pathe's own resolve leaves bare, `/C:` alone or before a separator. */
+/**
+ * `/C:` alone or before a separator: a drive pathe's own resolve leaves bare, and on Linux and macOS a folder at the
+ * root named like a drive, which pathe reads as the drive `c:/`.
+ */
 const ROOTED_DRIVE = /^\/[A-Za-z]:(?:\/|$)/
 
 /** Why a whole drive is refused as a root on Windows (isDriveRoot). */
@@ -98,10 +102,13 @@ export function homeDirectory(platform: NodeJS.Platform = process.platform): str
   return nativePath(homedir(), platform)
 }
 
-/** A path a person typed, absolute or relative to the working directory, as an absolute path in pathe's form. */
+/**
+ * A path a person typed, absolute or relative to the working directory, as an absolute path in pathe's form; refused
+ * off Windows where it resolves onto a drive (refuseDrive), as `../../c:` does from a folder two levels down.
+ */
 export function typedPath(path: string, platform: NodeJS.Platform = process.platform): string {
   const named = nativePath(path, platform)
-  return isAbsolute(named) ? resolvePath(named) : resolvePath(workingDirectory(platform), named)
+  return refuseDrive(isAbsolute(named) ? resolvePath(named) : resolvePath(workingDirectory(platform), named), path, platform)
 }
 
 /**
@@ -165,8 +172,18 @@ export function parentDirectory(path: string): string {
 /** Each directory from an absolute path's root down to the path itself: `C:/a/b` gives `C:/`, `C:/a`, `C:/a/b`. */
 export function descent(path: string): string[] {
   const steps = [pathRoot(path)]
-  for (const name of path.slice(steps[0]!.length).split('/').filter(Boolean)) steps.push(join(steps.at(-1)!, name))
+  for (const name of path.slice(steps[0]!.length).split('/').filter(Boolean)) steps.push(childPath(steps.at(-1)!, name))
   return steps
+}
+
+/**
+ * A name in a directory, joined as text, as a walk that lists or lstats one name at a time appends it: pathe's join
+ * and resolve fold `/` and `c:` into the drive `c:/`, where Linux and macOS name a folder `c:` at the root, which a
+ * walk would then lstat relative to the working directory. `name` is one plain name (isPlainName), or names joined by
+ * `/` that each are one.
+ */
+export function childPath(parent: string, name: string): string {
+  return parent.endsWith('/') ? `${parent}${name}` : `${parent}/${name}`
 }
 
 /**

@@ -1,6 +1,5 @@
 import { lstatSync, readlinkSync, realpathSync, type Stats } from 'node:fs'
-import { join } from 'pathe'
-import { nativePath, parentDirectory, pathRoot, withForwardSlashes } from '../../domain/paths.js'
+import { childPath, nativePath, parentDirectory, pathRoot, refuseDrive, withForwardSlashes } from '../../domain/paths.js'
 import { ToolInputError } from '../../domain/tool.js'
 
 /** How many links one path may pass through, as Linux allows (SYMLOOP_MAX). */
@@ -17,8 +16,14 @@ const MAX_LINKS = 40
  * more than MAX_LINKS links, or climbs back out of a directory that does not exist or out of a file,
  * is refused. `absolutePath` is in pathe's form; the walk starts from its own root (`/`, or a drive
  * such as `C:/`), and every path the system answers with is read back into that form (nativePath).
+ * Each name is appended as text (childPath), so on Linux and macOS a link to `/c:` is walked to the
+ * folder `c:` at the root, and a landing there is refused (refuseDrive), as pathe would read it as a drive.
  */
 export function resolveTarget(absolutePath: string): string {
+  return refuseDrive(whereItLands(absolutePath), absolutePath)
+}
+
+function whereItLands(absolutePath: string): string {
   let real: string
   try {
     // The C library's realpath, as the kernel resolves: Node's own folds a link target's `..` as text.
@@ -50,14 +55,14 @@ function walk(start: string, parts: string[], budget: { links: number }): Landin
   for (const [index, part] of parts.entries()) {
     if (part === '' || part === '.') continue
     if (part === '..') { current = parentDirectory(current); continue }
-    const next = join(current, part)
+    const next = childPath(current, part)
     const rest = parts.slice(index + 1)
     let info: Stats
     try {
       info = lstatSync(next)
     } catch (error) {
       if (!isMissingPathError(error)) throw error
-      return { path: planned(join(diskCase(current), part), rest), kind: 'missing' }
+      return { path: planned(childPath(diskCase(current), part), rest), kind: 'missing' }
     }
     if (info.isSymbolicLink()) {
       if (++budget.links > MAX_LINKS) throw tooManyLinks(next)
@@ -93,7 +98,8 @@ function beyond(landing: Landing, rest: string[]): Landing {
  */
 function planned(missing: string, rest: string[]): string {
   if (rest.includes('..')) throw new ToolInputError('A symbolic link in this path climbs back out of a directory that does not exist, or out of a file, so where it lands cannot be checked', { code: 'PERMISSION_DENIED' })
-  return join(missing, ...rest)
+  const names = rest.filter(part => part !== '' && part !== '.')
+  return names.length === 0 ? missing : childPath(missing, names.join('/'))
 }
 
 /**

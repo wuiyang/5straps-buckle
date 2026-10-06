@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, statSync, type BigIntStats } from 'node:fs'
 import { lstat, open, type FileHandle } from 'node:fs/promises'
-import { basename, dirname, join, relative } from 'pathe'
-import { isInside, isPlainName, pathRoot } from '../domain/paths.js'
+import { basename, dirname, relative } from 'pathe'
+import { childPath, isInside, isPlainName, pathRoot } from '../domain/paths.js'
 import { ToolInputError } from '../domain/tool.js'
 
 const PINNED = process.platform === 'linux'
@@ -76,7 +76,7 @@ function pinnedAt(descriptor: number): PinnedDirectory {
 function checkedWalk(realPath: string, root: string, parts: string[], create: boolean, refusal: Refusal): PinnedDirectory {
   let current = root
   for (const part of parts) {
-    current = join(current, part)
+    current = childPath(current, part)
     try {
       if (lstatSync(current).isSymbolicLink()) throw new LinkAppearedError(refusal.shown, refusal.outcome)
     } catch (error) {
@@ -88,7 +88,7 @@ function checkedWalk(realPath: string, root: string, parts: string[], create: bo
 }
 
 function checkedAt(realPath: string): PinnedDirectory {
-  return { self: realPath, child: name => join(realPath, plainName(name)), close: () => {} }
+  return { self: realPath, child: name => childPath(realPath, plainName(name)), close: () => {} }
 }
 
 /**
