@@ -5,7 +5,7 @@ import type { JsonValue } from '@5straps/protocol'
 import { z } from 'zod'
 import { isLinkedOnStateDevice, openHandleNoFollow } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { nativePath } from '../../../domain/paths.js'
+import { isPlainName, nativePath } from '../../../domain/paths.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { buildChildEnvironment } from '../../../domain/environment.js'
@@ -29,6 +29,8 @@ export async function searchContent(input: {
   timeoutMs: number; signal: AbortSignal; authorizeRead: (path: string) => Promise<boolean>
   /** A hard-linked file on the device of one of these is excluded, as fs_read refuses it. */
   protectedRoots: readonly string[]
+  /** The host's unless a test imitates another: off Windows a listed name holding a backslash is left out. */
+  platform?: NodeJS.Platform
 }): Promise<JsonValue> {
   const root = input.paths.resolve(input.args.path)
   const environment = buildChildEnvironment({ parent: process.env, extra: {} })
@@ -43,9 +45,9 @@ export async function searchContent(input: {
   for (const name of names.slice(0, MAX_FILES)) {
     input.signal.throwIfAborted()
     if (matches.length >= input.args.limit) { truncated = true; break }
-    const path = resolve(root, name)
-    const file = await openCandidate(path)
-    if (!file) { excludedFiles += 1; continue }
+    const path = listedPath(root, name, input.platform ?? process.platform)
+    const file = path === null ? null : await openCandidate(path)
+    if (path === null || !file) { excludedFiles += 1; continue }
     try {
       const canonical = canonicalOf(await realpath(path))
       const held = await file.stat()
@@ -71,6 +73,15 @@ export async function searchContent(input: {
     }
   }
   return { matches, truncated: truncated || matches.length >= input.args.limit, excludedFiles }
+}
+
+/**
+ * The path a name rg listed (`./src/a.ts`) names. Off Windows a segment that is not one plain name (a backslash, which
+ * pathe reads as a separator) would name another path than the file rg found, so such a name is left out: null.
+ */
+function listedPath(root: string, name: string, platform: NodeJS.Platform): string | null {
+  if (platform !== 'win32' && !name.replace(/^\.\//, '').split('/').every(isPlainName)) return null
+  return resolve(root, name)
 }
 
 /** A real path in pathe's form; null for one pathe cannot name as the system does (nativePath), which is left out. */

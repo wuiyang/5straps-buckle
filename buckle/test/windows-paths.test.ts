@@ -13,6 +13,8 @@ import { openChangeHistory } from '../common/services/history/journal.js'
 import { applySnapshot, restoredLinkType, restoreLink, snapshot } from '../common/services/history/snapshot.js'
 import { collectShellHiddenPaths } from '../common/services/shell/shell-filesystem.js'
 import { createWorkbenchFiles } from '../common/services/workbench/files.js'
+import { searchInput } from '../common/services/packs/fs/schemas.js'
+import { searchContent } from '../common/services/packs/fs/search.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
@@ -212,6 +214,27 @@ describe('a spelling pathe folds onto a drive, on Linux and macOS', () => {
 })
 
 describe('the backslash case on Linux: inside\\..\\..\\x', () => {
+  // rg lists the entry by its name; pathe would resolve it to another file, and the search would open that one.
+  it('is left out of a content search, counted as excluded, and the file pathe would land on is never opened', async () => {
+    const root = scratch()
+    const workspace = join(root, 'parent', 'workspace')
+    mkdirSync(workspace, { recursive: true })
+    // Where pathe lands: inside, then two levels up, is the workspace's parent.
+    writeFileSync(join(root, 'parent', 'x'), 'needle outside')
+    writeFileSync(`${workspace}/inside\\..\\..\\x`, 'needle literal')
+    writeFileSync(join(workspace, 'plain.txt'), 'needle plain')
+    const judged: string[] = []
+    const answer = (stdout: string) => ({ exitCode: 0, signal: null, stdout, stderr: '', truncated: false, timedOut: false })
+    const match = JSON.stringify({ type: 'match', data: { lines: { text: 'needle\n' }, line_number: 1, submatches: [{ start: 0, end: 6 }] } })
+    const found = await searchContent({
+      args: searchInput.parse({ pattern: 'needle' }), paths: createPathView({ root: workspace, mount: null }), ripgrep: '/usr/bin/rg', protectedRoots: [], platform: 'linux',
+      runProcess: async request => answer(request.args[0] === '--files' ? './inside\\..\\..\\x\0./plain.txt\0' : `${match}\n`),
+      timeoutMs: 5_000, signal: AbortSignal.timeout(5_000), authorizeRead: async path => { judged.push(path); return true },
+    })
+    expect(found).toEqual({ matches: [{ path: './plain.txt', line: 1, text: 'needle', ranges: [{ start: 0, end: 6 }] }], truncated: false, excludedFiles: 1 })
+    expect(judged).toEqual([join(workspace, 'plain.txt')])
+  })
+
   // pathe would read the name as two levels up and then x; the kernel reads one name. The agent's path is refused,
   // so neither the file outside nor the file of that literal name is read or written.
   it('is refused by the file tools, and neither file is read or written', async () => {
