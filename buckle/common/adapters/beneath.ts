@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, statSync, type BigIntStats } from 'node:fs'
+import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, statSync, type BigIntStats } from 'node:fs'
 import { lstat, open, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, join, relative } from 'pathe'
 import { isInside, isPlainName, pathRoot } from '../domain/paths.js'
@@ -216,47 +216,87 @@ function hasNoFollowFlag(platform: NodeJS.Platform): boolean {
 /**
  * Opens a path without following a link in its last component. Linux and macOS refuse one in the open itself
  * (O_NOFOLLOW), with ELOOP. Windows has no such flag, so there the path is lstat'ed first and a link or junction is
- * refused with the same ELOOP; once opened, the file must be the one lstat saw (its volume and file ID, where the
- * volume reports them), or, for a file the open created, the name must still be no link. A link swapped in and out
- * again between the check and the open is the race that remains there (known-limits.md). The platform is a parameter
- * so a test can imitate Windows.
+ * refused with the same ELOOP, and the open neither creates nor truncates through a name it did not check
+ * (checkedOpen): an entry lstat saw is opened without O_CREAT and O_TRUNC, must be the file lstat saw (its volume and
+ * file ID, where the volume reports them), and is truncated through the descriptor only once the name is checked again
+ * and is still no link; a name lstat did not see is created with O_EXCL, which fails on a link in its place. On a volume
+ * that reports no file ID, a link swapped in before the open and back out before the second check is still followed
+ * (known-limits.md). The platform is a parameter so a test can imitate Windows.
  */
 export function openNoFollow(path: string, flags: number, mode?: number, platform: NodeJS.Platform = process.platform): number {
   if (hasNoFollowFlag(platform)) return openSync(path, flags | constants.O_NOFOLLOW, mode)
-  const seen = lstatSync(path, { bigint: true, throwIfNoEntry: false })
-  refuseLink(path, seen)
-  const descriptor = openSync(path, flags, mode)
-  try {
-    refuseSwap(path, seen, fstatSync(descriptor, { bigint: true }), () => lstatSync(path, { bigint: true, throwIfNoEntry: false }))
-  } catch (error) {
-    closeSync(descriptor)
-    throw error
+  for (let attempt = 0; ; attempt++) {
+    const seen = lstatSync(path, { bigint: true, throwIfNoEntry: false })
+    const plan = checkedOpen(path, flags, seen)
+    let descriptor: number
+    try {
+      descriptor = openSync(path, plan.flags, mode)
+    } catch (error) {
+      if (attempt === 0 && plan.raced(error)) continue
+      throw error
+    }
+    try {
+      refuseSwap(path, seen, fstatSync(descriptor, { bigint: true }), lstatSync(path, { bigint: true, throwIfNoEntry: false }))
+      if (plan.truncate) ftruncateSync(descriptor, 0)
+    } catch (error) {
+      closeSync(descriptor)
+      throw error
+    }
+    return descriptor
   }
-  return descriptor
 }
 
 /** openNoFollow for a caller that holds a FileHandle. */
 export async function openHandleNoFollow(path: string, flags: number, platform: NodeJS.Platform = process.platform): Promise<FileHandle> {
   if (hasNoFollowFlag(platform)) return open(path, flags | constants.O_NOFOLLOW)
-  const seen = await lstat(path, { bigint: true }).catch((error: unknown) => { if (errorCode(error) === 'ENOENT') return undefined; throw error })
-  refuseLink(path, seen)
-  const handle = await open(path, flags)
-  try {
-    const after = seen ? undefined : await lstat(path, { bigint: true }).catch(() => undefined)
-    refuseSwap(path, seen, await handle.stat({ bigint: true }), () => after)
-  } catch (error) {
-    await handle.close()
-    throw error
+  const lstatOrNone = (): Promise<BigIntStats | undefined> => lstat(path, { bigint: true }).catch((error: unknown) => { if (errorCode(error) === 'ENOENT') return undefined; throw error })
+  for (let attempt = 0; ; attempt++) {
+    const seen = await lstatOrNone()
+    const plan = checkedOpen(path, flags, seen)
+    let handle: FileHandle
+    try {
+      handle = await open(path, plan.flags)
+    } catch (error) {
+      if (attempt === 0 && plan.raced(error)) continue
+      throw error
+    }
+    try {
+      refuseSwap(path, seen, await handle.stat({ bigint: true }), await lstatOrNone())
+      if (plan.truncate) await handle.truncate(0)
+    } catch (error) {
+      await handle.close()
+      throw error
+    }
+    return handle
   }
-  return handle
+}
+
+/**
+ * How the Windows fallback opens a path lstat has just checked: a link is refused; an entry lstat saw is opened
+ * without O_CREAT, O_EXCL, and O_TRUNC (an exclusive create of it fails as the open would); a name lstat did not see is
+ * created only with O_EXCL. `truncate` is O_TRUNC, done through the descriptor after the checks. `raced` is an entry made
+ * or removed between the lstat and the open of a call that may create: the open is checked again from the lstat, once.
+ */
+function checkedOpen(path: string, flags: number, seen: BigIntStats | undefined): { flags: number; truncate: boolean; raced: (error: unknown) => boolean } {
+  refuseLink(path, seen)
+  const creating = (flags & constants.O_CREAT) !== 0
+  const exclusive = creating && (flags & constants.O_EXCL) !== 0
+  if (seen && exclusive) throw Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), { code: 'EEXIST', syscall: 'open', path })
+  const plain = flags & ~(constants.O_CREAT | constants.O_EXCL | constants.O_TRUNC)
+  return {
+    flags: !seen && creating ? plain | constants.O_CREAT | constants.O_EXCL : plain,
+    truncate: (flags & constants.O_TRUNC) !== 0,
+    raced: error => creating && !exclusive && errorCode(error) === (seen ? 'ENOENT' : 'EEXIST'),
+  }
 }
 
 function refuseLink(path: string, seen: BigIntStats | undefined): void {
   if (seen?.isSymbolicLink()) throw linkInTheWay(path)
 }
 
-function refuseSwap(path: string, seen: BigIntStats | undefined, opened: BigIntStats, now: () => BigIntStats | undefined): void {
-  if (seen ? !sameFile(seen, opened) : now()?.isSymbolicLink()) throw linkInTheWay(path)
+/** The opened file must be the one lstat saw, and the name, checked again, must still be no link. */
+function refuseSwap(path: string, seen: BigIntStats | undefined, opened: BigIntStats, now: BigIntStats | undefined): void {
+  if ((seen && !sameFile(seen, opened)) || now?.isSymbolicLink()) throw linkInTheWay(path)
 }
 
 /** The same file by volume and file ID; a volume that reports no file ID (0) cannot tell, so it passes. */
