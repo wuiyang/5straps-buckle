@@ -2,7 +2,7 @@ import type { SandboxMount } from '../../domain/sandbox-mounts.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import type { IsolatedShellOptions } from '../shell/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
-import { resolveProgram, type ProgramSearch, type ResolvedProgram } from '../../domain/executable.js'
+import { resolveProgram, type ProgramSearch, type ResolvedProgram, type UntrustedRoots } from '../../domain/executable.js'
 import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
 import { forgeGitHost } from '../../domain/forge.js'
@@ -57,6 +57,11 @@ export interface BuiltinPackOptions {
   sandboxUnavailableReason: string | null
   /** How the programs the packs run are looked up (resolveProgram): the host's PATH unless a test imitates another platform. */
   programSearch?: ProgramSearch
+  /**
+   * Where no program a pack runs may come from, read as each is resolved: every root the node knows (NodeRoots).
+   * The workspace and its scratch roots when absent.
+   */
+  untrusted?: () => UntrustedRoots
 }
 
 /**
@@ -86,8 +91,9 @@ export function unmetPackPrerequisite(id: string, options: Pick<BuiltinPackOptio
 
 /** The only place built-in packs are constructed. Plugins are appended by the plugin loader. */
 export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
-  // Each program a pack runs is resolved once, here, and spawned by that path; one found where the agent writes is refused.
-  const program = (name: string): ResolvedProgram => resolveProgram(name, { untrustedRoots: [options.paths.root, ...options.paths.scratchRoots], ...options.programSearch })
+  // Each program a pack runs is resolved once, here, and spawned by that path; one found where an agent writes is refused.
+  const untrusted = options.untrusted ?? (() => ({ untrustedRoots: [options.paths.root, ...options.paths.scratchRoots] }))
+  const program = (name: string): ResolvedProgram => resolveProgram(name, { ...untrusted(), ...options.programSearch })
   const git = program('git')
   const packs: Pack[] = [
     createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: program('rg').path, protectedRoots: options.hiddenPaths }),
@@ -136,6 +142,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     isolation: options.shellIsolation,
     filesystemPolicy: options.filesystemPolicy,
     allowNetwork: options.shellNetwork === true && !options.approvedUrls && options.allowedHosts.length === 0,
+    untrusted,
     ...(options.programSearch ? { programSearch: options.programSearch } : {}),
   }))
 

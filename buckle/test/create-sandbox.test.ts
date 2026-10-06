@@ -1,10 +1,12 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'pathe'
+import { dirname, join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { emptyWorkspacePolicy, type HarnessManifest } from '@5straps/protocol'
 import { resolveSandbox } from '../common/adapters/sandbox/create-sandbox.js'
 import type { ExecutableLookup } from '../common/domain/executable.js'
 import { loadConfig } from '../common/runtime/config.js'
+import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 // The sandbox program is the one program every shell, script, and terminal call runs through. `npx` and `pnpm exec`
@@ -28,7 +30,7 @@ function lookupFrom(table: Record<string, string>): ExecutableLookup {
   return name => table[name] ?? null
 }
 
-const WITHHELD = /found inside the workspace or a scratch root, where an agent can write, so Buckle does not run it; no process sandbox is available, so shell tools are withheld/
+const WITHHELD = /found inside a workspace, a scratch root, or a mount of this node, where an agent may have put it, so Buckle does not run it; no process sandbox is available, so shell tools are withheld/
 
 describe('the sandbox program found where the agent writes', () => {
   it('is refused on Linux, whether bubblewrap was asked for or found, and no command runs unsandboxed', () => {
@@ -76,5 +78,90 @@ describe('the sandbox program found where the agent writes', () => {
       expect(manifest.packs.find(pack => pack.id === 'shell')?.unavailableReason).toMatch(WITHHELD)
       expect(manifest.tools.map(tool => tool.name)).not.toContain('shell_exec')
     } finally { await runtime.history.close() }
+  })
+})
+
+// A registered workspace's runtime was built with no scratch roots, so its sandbox program was checked against its own
+// root alone: a bwrap the default workspace's agent planted in its node_modules/.bin, first on the node's PATH, became
+// the registered workspace's sandbox. Every root the node knows is now one no program runs from, for every workspace.
+describe('the sandbox program planted in another root of the node', () => {
+  /** An executable bwrap in a directory, as npm install or an agent's chmod leaves one. */
+  function bwrapIn(directory: string): string {
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(join(directory, 'bwrap'), '#!/bin/sh\nexit 0\n')
+    chmodSync(join(directory, 'bwrap'), 0o755)
+    return join(directory, 'bwrap')
+  }
+
+  /** The node as `buckle` starts it, its default workspace at `workspace`, run by `use` and closed after. */
+  async function onNode<T>(input: { workspace: string; state: string }, use: (common: BuckleCommon) => Promise<T>): Promise<T> {
+    const common = initializeCommon({ role: 'cli', config: loadConfig({
+      BUCKLE_WORKSPACE_ROOT: input.workspace, BUCKLE_STATE_DIR: input.state, BUCKLE_SANDBOX: process.platform === 'linux' ? 'auto' : 'bubblewrap',
+      BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell',
+    }) })
+    try {
+      await common.start()
+      return await use(common)
+    } finally { await common.owner.close() }
+  }
+
+  const shellReason = (manifest: HarnessManifest) => manifest.packs.find(pack => pack.id === 'shell')?.unavailableReason ?? null
+  const tokens = { authToken: 'planted-sandbox-agent-token-fixture', adminToken: 'planted-sandbox-admin-token-fixture' }
+
+  function scene() {
+    const state = join(scratch(), 'state')
+    mkdirSync(state, { mode: 0o700 })
+    return { workspace: scratch(), child: scratch(), state, trusted: bwrapIn(join(scratch(), 'bin')) }
+  }
+
+  it('withholds a registered workspace\'s shell while PATH starts at a bwrap in the default workspace, and both use the trusted one once it is gone', async () => {
+    const { workspace, child, state, trusted } = scene()
+    const planted = bwrapIn(join(workspace, 'node_modules', '.bin'))
+    vi.stubEnv('PATH', `${dirname(planted)}:${dirname(trusted)}:${process.env.PATH ?? ''}`)
+    await onNode({ workspace, state }, async common => {
+      const workspaces = await common.services.getWorkspaces()
+      await workspaces.register({ id: 'child', name: 'Child', root: child, ...tokens, policy: emptyWorkspacePolicy() })
+      for (const manifest of [(await workspaces.resolve('child')).runtime.manifest(), (await common.services.getWorkspaceRuntime()).manifest()]) {
+        expect(manifest.sandbox.mode).toBe('none')
+        expect(shellReason(manifest)).toMatch(WITHHELD)
+        expect(manifest.tools.map(tool => tool.name)).not.toContain('shell_exec')
+      }
+    })
+    rmSync(planted)
+    await onNode({ workspace, state }, async common => {
+      for (const runtime of [await common.services.getWorkspaceRuntime(), (await (await common.services.getWorkspaces()).resolve('child')).runtime]) {
+        expect(runtime.manifest().sandbox.mode).toBe('bubblewrap')
+        expect(shellReason(runtime.manifest())).toBeNull()
+      }
+    })
+  })
+
+  it('withholds the default workspace\'s shell from the start while PATH starts at a bwrap in a workspace the registry holds', async () => {
+    const { workspace, child, state, trusted } = scene()
+    vi.stubEnv('PATH', `${dirname(trusted)}:${process.env.PATH ?? ''}`)
+    await onNode({ workspace, state }, async common => {
+      await (await common.services.getWorkspaces()).register({ id: 'child', name: 'Child', root: child, ...tokens, policy: emptyWorkspacePolicy() })
+    })
+    const planted = bwrapIn(join(child, 'node_modules', '.bin'))
+    vi.stubEnv('PATH', `${dirname(planted)}:${dirname(trusted)}:${process.env.PATH ?? ''}`)
+    await onNode({ workspace, state }, async common => {
+      const manifest = (await common.services.getWorkspaceRuntime()).manifest()
+      expect(manifest.sandbox.mode).toBe('none')
+      expect(shellReason(manifest)).toMatch(WITHHELD)
+    })
+  })
+
+  it('runs no program while the registry cannot be read, as one could lie in a workspace it holds', async () => {
+    const { workspace, child, state, trusted } = scene()
+    vi.stubEnv('PATH', `${dirname(trusted)}:${process.env.PATH ?? ''}`)
+    await onNode({ workspace, state }, async common => {
+      await (await common.services.getWorkspaces()).register({ id: 'child', name: 'Child', root: child, ...tokens, policy: emptyWorkspacePolicy() })
+    })
+    writeFileSync(join(state, 'workspaces.json'), '{ not json')
+    await onNode({ workspace, state }, async common => {
+      const manifest = (await common.services.getWorkspaceRuntime()).manifest()
+      expect(manifest.sandbox.mode).toBe('none')
+      expect(shellReason(manifest)).toBe('bwrap is not run while the workspace registry cannot be read: it could lie in a registered workspace, where an agent can write; no process sandbox is available, so shell tools are withheld')
+    })
   })
 })

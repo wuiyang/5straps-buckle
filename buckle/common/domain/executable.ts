@@ -50,22 +50,33 @@ export type ResolvedProgram = { path: string } | { path: null; reason: string; u
 export type ProgramResolver = (name: string) => ResolvedProgram
 
 /**
+ * Where no program Buckle runs may come from: every root the node knows an agent may have put one in, its workspaces',
+ * its scratch roots, and its mounts (NodeRoots). `rootsUnknown` says why not all of them are known, when they are not
+ * (the workspace registry cannot be read): every program is then refused, as it could lie in a root not listed.
+ */
+export interface UntrustedRoots {
+  untrustedRoots: readonly string[]
+  rootsUnknown?: string | null
+}
+
+/**
  * A program Buckle runs by name, looked up on PATH once (findExecutable, never in a working directory) and spawned by
  * the absolute path found. Spawned by its bare name, it would be looked up again by the system: on Windows libuv tries
  * `name.com` and `name.exe` in the child's working directory before PATH, so a program an agent wrote into the
- * workspace would run with Buckle's rights. A program found inside the workspace or a scratch root (`untrustedRoots`),
- * as written or where its links lead, is refused, compared as the disk compares paths (comparablePath).
+ * workspace would run with Buckle's rights. A program found inside an untrusted root (`untrustedRoots`), as written or
+ * where its links lead, is refused, compared as the disk compares paths (comparablePath).
  */
-export function resolveProgram(name: string, input: ProgramSearch & { untrustedRoots: readonly string[] }): ResolvedProgram {
+export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoots): ResolvedProgram {
   const platform = input.platform ?? process.platform
   const found = (input.lookup ?? findExecutable)(name, input.environment ?? process.env, platform)
   if (found === null) return { path: null, reason: `${name} is not installed on this node`, untrusted: false }
+  if (input.rootsUnknown) return { path: null, reason: `${name} is not run while ${input.rootsUnknown}`, untrusted: true }
   let path: string
   try { path = nativePath(found, platform) } catch (error) { return { path: null, reason: error instanceof Error ? error.message : String(error), untrusted: false } }
   if (pathRoot(path) === '') return { path: null, reason: `${name} is a relative path, which Buckle does not run from a working directory`, untrusted: false }
   const spellings = [path, realPathOr(path, platform)]
   if (input.untrustedRoots.some(root => spellings.some(spelling => isInsideComparable(root, spelling, ignoresCase(platform), platform)))) {
-    return { path: null, reason: `${name} is found inside the workspace or a scratch root, where an agent can write, so Buckle does not run it`, untrusted: true }
+    return { path: null, reason: `${name} is found inside a workspace, a scratch root, or a mount of this node, where an agent may have put it, so Buckle does not run it`, untrusted: true }
   }
   return { path }
 }
@@ -75,14 +86,15 @@ export function resolveProgram(name: string, input: ProgramSearch & { untrustedR
  * the rules judged that path; a bare name is resolved (resolveProgram), so a program the agent planted in its working
  * directory never stands in for the one on PATH that a rule naming it meant.
  */
-export function runnableCommand(command: string, input: ProgramSearch & { untrustedRoots: readonly string[] }): string {
+export function runnableCommand(command: string, input: ProgramSearch & UntrustedRoots): string {
   if (isPathReference(command, input.platform ?? process.platform)) return command
   const program = resolveProgram(command, input)
   if (program.path === null) throw new ToolInputError(program.reason, program.untrusted ? { code: 'PERMISSION_DENIED' } : undefined)
   return program.path
 }
 
-function realPathOr(path: string, platform: NodeJS.Platform): string {
+/** Where a path really is, in pathe's form, or the path itself where it cannot be resolved. */
+export function realPathOr(path: string, platform: NodeJS.Platform = process.platform): string {
   try { return nativePath(realpathSync.native(path), platform) } catch { return path }
 }
 

@@ -1,5 +1,5 @@
 import type { SandboxMode } from '@5straps/protocol'
-import { findExecutable, resolveProgram, type ProgramSearch } from '../../domain/executable.js'
+import { findExecutable, resolveProgram, type ProgramSearch, type UntrustedRoots } from '../../domain/executable.js'
 import type { Sandbox } from '../../types/ports/sandbox.js'
 import { logger } from '../../runtime/log.js'
 import { createBubblewrapSandbox } from './bubblewrap-sandbox.js'
@@ -17,15 +17,15 @@ export interface SandboxResolution {
 
 /**
  * The only place a sandbox implementation is chosen. The sandbox program (bwrap, or macOS's sandbox-exec) is resolved
- * as every program Buckle runs is (resolveProgram): one found inside the workspace or a scratch root (`untrustedRoots`),
- * as `npx` and `pnpm exec` put `<ws>/node_modules/.bin` first on PATH, would be the sandbox of every command, so it is
- * refused, and then no sandbox is available: the shell tools are withheld with the reason, never run without one.
+ * as every program Buckle runs is (resolveProgram): one found inside any workspace or scratch root the node knows
+ * (`untrustedRoots`), as `npx` and `pnpm exec` put `<ws>/node_modules/.bin` first on PATH, would be the sandbox of
+ * every command, so it is refused, and then no sandbox is available: the shell tools are withheld with the reason,
+ * never run without one.
  */
 export function resolveSandbox(input: {
   requested: SandboxMode | 'auto'
   acknowledgedUnsandboxed: boolean
-  untrustedRoots: readonly string[]
-} & ProgramSearch): SandboxResolution {
+} & UntrustedRoots & ProgramSearch): SandboxResolution {
   const platform = input.platform ?? process.platform
   const search = { ...input, platform }
   const detected = input.requested === 'auto' ? detectMode(search) : input.requested

@@ -9,6 +9,7 @@ import { actionsPath, type BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
 import { comparablePath, ignoresCase, isDriveRoot, isInsideComparable, nativePath, WHOLE_DRIVE } from '../../domain/paths.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
+import { createNodeRoots, type NodeRoots } from './node-roots.js'
 import { tokenMatches } from '../access/tokens.js'
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
@@ -95,12 +96,32 @@ function registryStore(filePath: string, lockDeadlineMs?: number) {
   }
 }
 
-/** `platform`: the host's unless a test imitates another; on Windows a whole drive is never a workspace root. */
-export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime; interaction?: InteractionSource; platform?: NodeJS.Platform }) {
+/**
+ * The roots of a node (NodeRoots): the default workspace's, its scratch roots, its mounts' sources, and every root its
+ * workspace registry holds. `config` is the node's own.
+ */
+export function nodeRootsOf(config: BuckleConfig, platform: NodeJS.Platform = process.platform): NodeRoots {
+  const registry = registryStore(join(config.stateDirectory, 'workspaces.json'), config.stateLockDeadlineMs)
+  return createNodeRoots({
+    fixed: [config.cwd, ...config.scratchRoots, ...(config.sandboxMounts ?? []).map(mount => mount.source)],
+    readRegistered: () => {
+      try { return registry.read().workspaces.map(workspace => workspace.root) }
+      catch (error) { if (error instanceof WorkspaceRegistryError) return null; throw error }
+    },
+    platform,
+  })
+}
+
+/**
+ * `platform`: the host's unless a test imitates another; on Windows a whole drive is never a workspace root.
+ * `nodeRoots`: the node's (NodeRoots), shared with its default workspace's runtime; read from `config` when absent.
+ */
+export function createWorkspaceManager(input: { config: BuckleConfig; runtime: BuckleRuntime; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots }) {
   const platform = input.platform ?? process.platform
   const defaultRoot = nativePath(realpathSync.native(input.config.cwd))
   const stateRoot = nativePath(realpathSync.native(input.config.stateDirectory))
   const store = registryStore(join(stateRoot, 'workspaces.json'), input.config.stateLockDeadlineMs)
+  const nodeRoots = input.nodeRoots ?? nodeRootsOf(input.config, platform)
   const exposedRoots = [...input.config.mountReadOnlyPaths, ...(input.config.sandboxMounts ?? []).map(mount => mount.source), dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64'].map(path => { try { return nativePath(realpathSync.native(path)) } catch { return path } })
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
   const defaultDescriptor = (): WorkspaceDescriptor => ({ id: 'default', name: input.config.serverName, root: defaultRoot, enabled: true, default: true, retiredAt: null, updatedAt: null })
@@ -150,6 +171,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           enabled: true, retiredAt: null, updatedAt: at,
         }
         state.workspaces.push(workspace)
+        nodeRoots.take(state.workspaces.map(item => item.root))
         return describe(workspace)
       })
     },
@@ -244,7 +266,10 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
     },
     async resolve(id: string, options: { setup?: boolean } = {}): Promise<ManagedWorkspace> {
       if (id === 'default') return input
-      const workspace = store.read().workspaces.find(item => item.id === id)
+      const registered = store.read().workspaces
+      // Every root the registry holds now, one registered from another process included, is one no program runs from.
+      nodeRoots.take(registered.map(item => item.root))
+      const workspace = registered.find(item => item.id === id)
       if (!workspace) throw new WorkspaceError('Workspace not found', 404)
       if (!options.setup && (!workspace.enabled || workspace.retiredAt)) throw new WorkspaceError('Workspace is disabled or retired', 409)
       assertNoHostExposure(workspace.root, exposedRoots, platform)
@@ -266,6 +291,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           adminToken: workspace.adminToken,
           stateDirectory: join(stateRoot, 'workspaces', workspace.id),
           nodeStateDirectory: stateRoot,
+          // Nothing outside its root is written without asking; the node's roots still bar the programs it runs (nodeRoots).
           scratchRoots: [],
           // Owner credential mounts belong only to the directly configured workspace.
           sandboxMounts: [],
@@ -276,7 +302,7 @@ export function createWorkspaceManager(input: { config: BuckleConfig; runtime: B
           nodePolicy: structuredClone(input.config.policy),
         }
         // One audit health per process: a registered workspace's log failing makes the node unready too.
-        pending = createRuntime({ config, workspaceId: id, auditHealth: input.runtime.auditHealth, executionBudget: input.runtime.executionBudget,
+        pending = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth: input.runtime.auditHealth, executionBudget: input.runtime.executionBudget,
           // The node's own switch is the ceiling this workspace's switch needs too (policy.md: ceilings must all permit).
           nodeDangerouslyAllowed: () => input.runtime.policy.dangerouslyAllow().on, serving: () => serving(id), ...(input.interaction ? { interaction: input.interaction } : {}) }).then(runtime => ({ config, runtime }))
         runtimes.set(id, pending)

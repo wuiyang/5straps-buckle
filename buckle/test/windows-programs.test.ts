@@ -41,7 +41,7 @@ describe('a program resolved on Windows, imitated', () => {
 
   it('is refused where the agent writes: the workspace, a scratch root, or a case variant of either', () => {
     for (const found of ['C:\\ws\\rg.exe', 'c:\\WS\\bin\\rg.exe', 'D:\\Scratch\\rg.exe']) {
-      expect(resolveProgram('rg', { untrustedRoots, lookup: lookupFrom({ rg: found }), platform: 'win32' })).toEqual({ path: null, reason: 'rg is found inside the workspace or a scratch root, where an agent can write, so Buckle does not run it', untrusted: true })
+      expect(resolveProgram('rg', { untrustedRoots, lookup: lookupFrom({ rg: found }), platform: 'win32' })).toEqual({ path: null, reason: 'rg is found inside a workspace, a scratch root, or a mount of this node, where an agent may have put it, so Buckle does not run it', untrusted: true })
     }
   })
 
@@ -133,12 +133,12 @@ describe('the packs on Windows, imitated, with programs planted in the workspace
     const { root, call, spawned, pack } = builtins({ table: planted })
     mkdirSync(join(root, 'bin'))
     expect(pack('fs').tools.map(tool => tool.capability.name)).not.toContain('fs_search_content')
-    expect(pack('git').unavailableReason).toBe('git is found inside the workspace or a scratch root, where an agent can write, so Buckle does not run it')
+    expect(pack('git').unavailableReason).toBe('git is found inside a workspace, a scratch root, or a mount of this node, where an agent may have put it, so Buckle does not run it')
     expect(pack('forge').unavailableReason).toMatch(/BUCKLE_FORGE_GITHUB_TOKEN/)
     expect(pack('browser').unavailableReason).toBe(BROWSER_UNTRUSTED)
     writeFileSync(join(root, 'a.ts'), 'export const a = 1\n')
-    await expect(call('dev', 'lsp_hover', { path: 'a.ts', language: 'typescript', line: 1 })).rejects.toThrow('typescript-language-server is found inside the workspace')
-    await expect(call('dev', 'lsp_discover', {})).rejects.toThrow('ps is found inside the workspace')
+    await expect(call('dev', 'lsp_hover', { path: 'a.ts', language: 'typescript', line: 1 })).rejects.toThrow('typescript-language-server is found inside a workspace')
+    await expect(call('dev', 'lsp_discover', {})).rejects.toThrow('ps is found inside a workspace')
     await expect(call('shell', 'shell_exec', { command: 'node', args: ['-e', '1'] })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
     expect(spawned).toEqual([])
   })

@@ -9,7 +9,7 @@ import { isInsideAny, nativePath } from '../../../domain/paths.js'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
-import { runnableCommand, type ProgramSearch } from '../../../domain/executable.js'
+import { runnableCommand, type ProgramSearch, type UntrustedRoots } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolInputError, type ToolContext } from '../../../domain/tool.js'
@@ -62,9 +62,15 @@ export interface ShellPackOptions {
   unavailableReason: string | null
   /** How an unsandboxed command word is looked up (runnableCommand): the host's PATH unless a test imitates another platform. */
   programSearch?: ProgramSearch
+  /** Where no program an unsandboxed command word names may come from, beside the writable roots: every root the node knows. */
+  untrusted?: () => UntrustedRoots
 }
 
 export function createShellPack(options: ShellPackOptions): Pack {
+  const untrustedBeside = (writableRoots: readonly string[]): UntrustedRoots => {
+    const untrusted = options.untrusted?.() ?? { untrustedRoots: [options.paths.root, ...options.paths.scratchRoots] }
+    return { ...untrusted, untrustedRoots: [...untrusted.untrustedRoots, ...writableRoots] }
+  }
   const execute = async (input: {
     command: string
     args: string[]
@@ -89,9 +95,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     if (!isInsideAny(options.writableRoots, cwd)) throw new ToolInputError('Shell working directory must be in the workspace or an owner-configured writable root', { code: 'PERMISSION_DENIED' })
     if (input.allowNetwork && !options.allowNetwork) throw new ToolInputError('Shell networking is disabled by the owner; use the web tools for scoped network access', { code: 'PERMISSION_DENIED' })
     // Unsandboxed, the command word is spawned as the system finds it, which on Windows is the working directory first.
-    const command = options.sandbox.mode === 'none'
-      ? runnableCommand(input.command, { untrustedRoots: [options.paths.root, ...options.paths.scratchRoots, ...options.writableRoots], ...options.programSearch })
-      : input.command
+    const command = options.sandbox.mode === 'none' ? runnableCommand(input.command, { ...untrustedBeside(options.writableRoots), ...options.programSearch }) : input.command
     const hidden = options.sandbox.mode === 'none' ? { directories: options.hiddenPaths, files: [] } : await collectShellHiddenPaths({
       roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths], protectedPaths: options.hiddenPaths, signal: input.signal,
     })

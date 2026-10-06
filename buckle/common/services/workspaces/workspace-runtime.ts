@@ -4,7 +4,7 @@ import { createWorkbenchManager } from '../workbench/manager.js'
 import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
 import { spawnPtyProcess } from '../../adapters/pty-process.js'
 import { buildChildEnvironment } from '../../domain/environment.js'
-import { resolveProgram } from '../../domain/executable.js'
+import { resolveProgram, type UntrustedRoots } from '../../domain/executable.js'
 import { isInside, nativePath, parentDirectory } from '../../domain/paths.js'
 import { collectShellHiddenPaths } from '../shell/shell-filesystem.js'
 import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
@@ -59,6 +59,7 @@ import { createAuditHealth } from '../audit/audit-health.js'
 import { logger } from '../../runtime/log.js'
 import { auditOperation } from '../audit/audit-operation.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
+import type { NodeRoots } from './node-roots.js'
 
 /**
  * The owner's policy as the runtime holds it. `base` came from the environment, or for a registered
@@ -143,6 +144,8 @@ interface RuntimeInput {
   nodeDangerouslyAllowed?: () => boolean
   /** For a registered workspace: whether it serves calls now (enabled, not retired); its log's failures count toward readiness only then. */
   serving?: () => boolean
+  /** Every root the node knows, where no program run here may come from (NodeRoots); this workspace's own alone when absent. */
+  nodeRoots?: NodeRoots
 }
 
 export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime> {
@@ -166,11 +169,16 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
 
-  // The sandbox program is refused where the agent writes, as every other program Buckle runs is.
+  // Where no program run here may come from: this workspace's roots and every root the node knows, read at each resolution.
+  const untrusted = (): UntrustedRoots => {
+    const node = input.nodeRoots?.current()
+    return { untrustedRoots: [config.cwd, ...config.scratchRoots, ...node?.untrustedRoots ?? []], rootsUnknown: node?.rootsUnknown ?? null }
+  }
+  // The sandbox program is refused where an agent writes, as every other program Buckle runs is.
   const sandbox = resolveSandbox({
     requested: config.sandboxMode,
     acknowledgedUnsandboxed: config.acknowledgedUnsandboxed,
-    untrustedRoots: [config.cwd, ...config.scratchRoots],
+    ...untrusted(),
   })
 
   const lockDeadlineMs = config.stateLockDeadlineMs
@@ -224,7 +232,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   }
   const dangerouslyAllowed = () => dangerouslyAllow().effective
   let permissions = buildPermissionEngine({ config, compiled, ceiling, paths, dangerouslyAllowed })
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history })
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history, untrusted })
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
@@ -237,7 +245,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     directory: workbenchesDirectory({ stateDirectory: config.stateDirectory, root: config.cwd }),
     sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
     protectedRoots: protectedStateRoots(config), actions, history,
-    ripgrep: resolveProgram('rg', { untrustedRoots: [config.cwd, ...config.scratchRoots] }).path, spawnPty: spawnPtyProcess,
+    ripgrep: resolveProgram('rg', untrusted()).path, spawnPty: spawnPtyProcess,
     policyHash: () => workbenchHash(JSON.stringify([compiled.policy, ceiling?.policy ?? null])),
     authorizeTool: tool => toolDenial(tool) === null,
     authorizePath: (path, operation) => !['deny', 'ask'].includes(resolveFilesystemPermission({ path, operation, policy: compiled.policy, ceiling: ceiling?.policy })),
@@ -361,7 +369,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
       compiled = compileEffective()
       paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
       permissions = buildPermissionEngine({ config, compiled, ceiling, paths, dangerouslyAllowed })
-      packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history })
+      packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history, untrusted })
       registry = createToolRegistry(availableTools(packs))
       for (const listener of listeners) listener()
     },
@@ -409,10 +417,12 @@ async function buildPacks(input: {
   paths: PathView
   browserStateDirectory: string
   history: ChangeHistory
+  untrusted: () => UntrustedRoots
 }): Promise<Pack[]> {
   const builtin = createBuiltinPacks({
     cwd: input.config.cwd,
     paths: input.paths,
+    untrusted: input.untrusted,
     runProcess,
     sandbox: input.sandbox.sandbox,
     sandboxUnavailableReason: input.sandbox.unavailableReason,

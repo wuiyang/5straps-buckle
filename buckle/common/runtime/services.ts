@@ -1,7 +1,7 @@
 import { defineSingleton, useScopeSafe, type AnyServiceDefinition, type CloseStage, type Closer, type OperationScope, type RequestCli, type RuntimeOwner, type ScopedDefinition, type SingletonDefinition } from '@5straps/runtime'
 import { InteractionService, NO_INTERACTION, type InteractionPort, type InteractionSource } from '../services/approvals/interaction.js'
 import { createSetupViews, type SetupViews } from '../services/setup/setup-views.js'
-import { createWorkspaceManager, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
+import { createWorkspaceManager, nodeRootsOf, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
 import { createRuntime, type BuckleRuntime } from '../services/workspaces/workspace-runtime.js'
 import { createRequestVerifier, type RequestVerifier } from '../services/access/signed-requests.js'
 import { createNodeSigner, type NodeSigner } from '../services/access/node-signer.js'
@@ -76,10 +76,12 @@ function closeWithOwner(input: { onClose: OnClose; registered: boolean; runtimes
 }
 
 export function defineBuckleServices(input: { config: BuckleConfig; interaction: InteractionSource; onClose: OnClose }): BuckleServiceDefinitions {
+  // One set of roots for every workspace on the node: a program found in any of them is run by none (NodeRoots).
+  const nodeRoots = nodeRootsOf(input.config)
   const workspaceRuntime = defineSingleton<BuckleRuntime>({
     name: 'WorkspaceRuntime',
     create: async () => {
-      const runtime = await createRuntime({ config: input.config, interaction: input.interaction })
+      const runtime = await createRuntime({ config: input.config, interaction: input.interaction, nodeRoots })
       closeWithOwner({ onClose: input.onClose, registered: false, runtimes: async () => [runtime] })
       return runtime
     },
@@ -88,7 +90,7 @@ export function defineBuckleServices(input: { config: BuckleConfig; interaction:
     name: 'WorkspaceManager',
     dependencies: [workspaceRuntime],
     create: async ({ get }) => {
-      const manager = createWorkspaceManager({ config: input.config, runtime: await get(workspaceRuntime), interaction: input.interaction })
+      const manager = createWorkspaceManager({ config: input.config, runtime: await get(workspaceRuntime), interaction: input.interaction, nodeRoots })
       closeWithOwner({ onClose: input.onClose, registered: true, runtimes: () => manager.opened() })
       return manager
     },
