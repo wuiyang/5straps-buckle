@@ -1,5 +1,5 @@
-import { relative, resolve } from 'pathe'
-import { isInsideAny, nativePath, refuseDrive } from './paths.js'
+import { relative } from 'pathe'
+import { isInsideAny, nativePath, refuseDrive, resolvePath } from './paths.js'
 import { ToolInputError } from './tool.js'
 
 /** What a real path outside the workspace is called, so a mount never shows one through. */
@@ -40,12 +40,13 @@ export interface PathView {
  * Linux and macOS, where a backslash is part of a name, a path holding one is refused (withForwardSlashes) rather than
  * read as another path. A tool that hands the agent's string to another program (git, a shell) would otherwise reach
  * the name while the rules judged the path pathe reads. So is a path that pathe folds or resolves onto a drive there
- * (`./C:/x`, `../C:/x`), and `//x` is `/x`, as the kernel reads both (nativePath, refuseDrive).
+ * (`./C:/x`, `../C:/x`) or onto a root folder named like one (`../../c:` from two levels down), and `//x` is `/x`, as
+ * the kernel reads both (nativePath, refuseDrive). On Windows a climb stops at the drive's root (resolvePath).
  */
 export function createPathView(input: { root: string; mount: string | null; scratchRoots?: string[]; platform?: NodeJS.Platform }): PathView {
-  const root = resolve(input.root)
+  const root = resolvePath(input.root)
   const mount = input.mount
-  const scratchRoots = (input.scratchRoots ?? []).map(scratch => resolve(scratch))
+  const scratchRoots = (input.scratchRoots ?? []).map(scratch => resolvePath(scratch))
   const reachable = [root, ...scratchRoots]
   const displayRoots = [mount ?? root, ...scratchRoots]
 
@@ -65,7 +66,7 @@ export function createPathView(input: { root: string; mount: string | null; scra
     resolve(path) {
       const named = nativePath(path, input.platform)
       const underMount = insideMount(named)
-      const real = refuseDrive(underMount === null ? resolve(root, named) : resolve(root, underMount), path, input.platform)
+      const real = refuseDrive(resolvePath(root, underMount ?? named), path, input.platform)
       if (!mount || isInsideAny(reachable, real, input.platform)) return real
       throw new ToolInputError(outsideMountReason({ named: path, displayRoots }), { code: 'PERMISSION_DENIED' })
     },

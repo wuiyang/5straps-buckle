@@ -8,9 +8,9 @@ import { ToolInputError } from './tool.js'
  * isAbsolute takes `c:/x`, a folder named `c:` on Linux, for a drive, which put `<ws>/c:/x` outside its workspace.
  */
 export function isInside(directory: string, candidate: string, platform: NodeJS.Platform = process.platform): boolean {
-  const from = resolve(directory)
-  const to = resolve(candidate)
-  if (pathRoot(from) !== pathRoot(to)) return false
+  const from = resolvePath(directory)
+  const to = resolvePath(candidate)
+  if (pathRoot(from, platform) !== pathRoot(to, platform)) return false
   const fromDirectory = relative(from, to)
   return fromDirectory !== '..' && !fromDirectory.startsWith('../') && !(platform !== 'win32' && fromDirectory.startsWith('/'))
 }
@@ -28,7 +28,38 @@ export function isInsideAny(directories: string[], candidate: string, platform?:
  */
 export function nativePath(path: string, platform: NodeJS.Platform = process.platform): string {
   const named = withForwardSlashes(path, platform)
-  return refuseDrive(normalize(platform === 'win32' ? named : named.replace(/^\/{2,}/, '/')), path, platform)
+  return refuseDrive(onDrive([platform === 'win32' ? named : named.replace(/^\/{2,}/, '/')], first => normalize(first)), path, platform)
+}
+
+/**
+ * pathe's resolve, with a drive kept: pathe resolves `C:/` and `C:/a/..` to `/C:`, and `C:/a/../..` to `/`, a folder
+ * or the root of whichever drive is current, so a workspace at a drive's root held none of its files and `C:/` held
+ * `D:/`. Here a path that starts on a drive is resolved beneath that drive's root, which a `..` cannot climb past, as
+ * Windows does, and a bare drive is `C:/`, never `/C:`. A relative path is resolved against the working directory.
+ */
+export function resolvePath(...paths: string[]): string {
+  const all = [process.cwd(), ...paths]
+  return onDrive(all.slice(all.findLastIndex(path => isAbsolute(path))), (first, rest) => resolve(first, ...rest))
+}
+
+/**
+ * pathe's resolve or normalize (`fold`), starting from `first`: when it starts on a drive, the rest is folded beneath
+ * `/`, where a `..` stops, and put back on the drive. pathe drops a drive a `..` climbs past, and leaves a bare one
+ * as `/C:` (driveForm).
+ */
+function onDrive(paths: string[], fold: (first: string, rest: string[]) => string): string {
+  const [first = '', ...rest] = paths
+  const drive = /^([A-Za-z]):[\\/]/.exec(first)
+  if (!drive) return driveForm(fold(first, rest))
+  const below = fold(`/${first.slice(3)}`, rest)
+  return below.startsWith('/') ? `${drive[1]!.toUpperCase()}:${below}` : driveForm(below)
+}
+
+/** A drive in the form pathe gives a drive path elsewhere: `/C:` is `C:/`, and the letter is upper case. */
+function driveForm(path: string): string {
+  const bare = /^\/([A-Za-z]):$/.exec(path)
+  if (bare) return `${bare[1]!.toUpperCase()}:/`
+  return /^[a-z]:\//.test(path) ? `${path[0]!.toUpperCase()}${path.slice(1)}` : path
 }
 
 /**
@@ -43,21 +74,23 @@ export function refuseDrive(path: string, named: string, platform: NodeJS.Platfo
 
 /** A drive letter that starts a path: `C:` alone or before a separator. */
 const DRIVE_FIRST = /^[A-Za-z]:(?:[\\/]|$)/
+/** A drive pathe's own resolve leaves bare, `/C:` alone or before a separator. */
+const ROOTED_DRIVE = /^\/[A-Za-z]:(?:\/|$)/
 
 /** The working directory in pathe's form (nativePath). */
-export function workingDirectory(): string {
-  return nativePath(process.cwd())
+export function workingDirectory(platform: NodeJS.Platform = process.platform): string {
+  return nativePath(process.cwd(), platform)
 }
 
 /** The home directory in pathe's form (nativePath). */
-export function homeDirectory(): string {
-  return nativePath(homedir())
+export function homeDirectory(platform: NodeJS.Platform = process.platform): string {
+  return nativePath(homedir(), platform)
 }
 
 /** A path a person typed, absolute or relative to the working directory, as an absolute path in pathe's form. */
-export function typedPath(path: string): string {
-  const named = nativePath(path)
-  return isAbsolute(named) ? resolve(named) : resolve(workingDirectory(), named)
+export function typedPath(path: string, platform: NodeJS.Platform = process.platform): string {
+  const named = nativePath(path, platform)
+  return isAbsolute(named) ? resolvePath(named) : resolvePath(workingDirectory(platform), named)
 }
 
 /**
@@ -95,12 +128,15 @@ function unsupportedPath(path: string, platform: NodeJS.Platform): string | null
 
 /**
  * The root a path in pathe's form starts from: `/`, a drive (`C:/`), or a share (`//server/share/`); empty when it is
- * relative. A drive letter alone (`C:`) names that drive's working directory, so it is relative.
+ * relative. A drive letter alone (`C:`) names that drive's working directory, so it is relative. On Windows `/C:`, the
+ * form pathe's own resolve gives a bare drive, is that drive (resolvePath never gives it); elsewhere it is a folder at
+ * the root.
  */
-export function pathRoot(path: string): string {
+export function pathRoot(path: string, platform: NodeJS.Platform = process.platform): string {
   const share = /^\/\/[^/]+\/[^/]+/.exec(path)
   if (share) return `${share[0]}/`
   if (/^[A-Za-z]:\//.test(path)) return `${path[0]!.toUpperCase()}:/`
+  if (platform === 'win32' && ROOTED_DRIVE.test(path)) return `${path[1]!.toUpperCase()}:/`
   return path.startsWith('/') ? '/' : ''
 }
 

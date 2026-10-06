@@ -4,9 +4,11 @@ import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, WorkspacePolicySchema } from '@5straps/protocol'
 import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/adapters/beneath.js'
+import { resolveProgram } from '../common/domain/executable.js'
 import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { descent, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, withForwardSlashes } from '../common/domain/paths.js'
+import { descent, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, resolvePath, typedPath, withForwardSlashes } from '../common/domain/paths.js'
+import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
 import { runInit } from '../cli/init.js'
 import { loadConfig, workspaceHolds } from '../common/runtime/config.js'
 import { outsideRootNotice } from '../common/runtime/environment.js'
@@ -159,10 +161,9 @@ describe('the agent\'s paths on a Windows workspace, imitated', () => {
     expect(mounted.toVirtual('C:/ws/src/a.ts')).toBe('/workspace/src/a.ts')
   })
 
-  // pathe climbs past a drive's root to `/`, a path on the current drive: outside the root still, and the real path the
-  // system answers for it (resolveTarget) carries the drive again.
+  // A climb past a drive's root stops there, as on Windows; pathe's own resolve went on to `/`, the current drive's root.
   it('names a path that climbs out, a case variant, or another drive as the place it is, outside the root', () => {
-    for (const [named, landed] of [['C:\\ws\\..\\other', 'C:/other'], ['..\\..\\x', '/x'], ['C:\\WS\\src', 'C:/WS/src'], ['D:\\ws\\a', 'D:/ws/a']]) {
+    for (const [named, landed] of [['C:\\ws\\..\\other', 'C:/other'], ['..\\..\\x', 'C:/x'], ['C:\\WS\\src', 'C:/WS/src'], ['D:\\ws\\a', 'D:/ws/a']]) {
       expect(view.resolve(named!)).toBe(landed)
       expect(isInside(view.root, landed!)).toBe(false)
     }
@@ -431,5 +432,55 @@ describe('history beside a name holding a backslash, on Linux', () => {
     await expect(collectShellHiddenPaths({ roots: [workspace], protectedPaths: [], signal: AbortSignal.timeout(5_000) })).rejects.toThrow('The workspace holds sub/a\\b, a name with a backslash, which Buckle cannot hide from shell commands')
     const files = createWorkbenchFiles({ sourceRoot: workspace, directory: join(root, 'workbenches'), maxBytes: 1_000_000, protectedRoots: [], authorizePath: () => true, ripgrep: null })
     expect(() => files.prepare('staged')).toThrow('The workspace holds sub/a\\b, a name with a backslash, which the staged editor cannot judge')
+  })
+})
+
+// pathe resolves `C:/` to `/C:`, whose root is `/`, so a workspace at a drive's root held none of its own files, and
+// `C:/` held `D:/`: a deny there was skipped, a program planted on the drive was trusted, and a state directory on it
+// was not inside the workspace.
+describe('a drive\'s root on Windows, imitated', () => {
+  it('holds every path on its drive and none on another', () => {
+    expect(isInside('C:/', 'C:/x', 'win32')).toBe(true)
+    expect(isInside('C:\\', 'C:\\x\\y', 'win32')).toBe(true)
+    expect(isInside('C:/', 'C:/', 'win32')).toBe(true)
+    expect(isInside('C:/', 'D:/', 'win32')).toBe(false)
+    expect(isInside('C:/', 'D:/x', 'win32')).toBe(false)
+    expect(isInside('C:/x', 'C:/', 'win32')).toBe(false)
+    expect(isInsideComparable('c:/', 'C:/Users/x', true, 'win32')).toBe(true)
+    expect(workspaceHolds('D:/', 'D:/state', 'win32')).toBe(true)
+  })
+
+  it('is never named /C:, and a climb stops at it, by any path helper', () => {
+    const named = [
+      resolvePath('C:/'), resolvePath('C:\\'), resolvePath('c:/x/..'), resolvePath('C:/..'), resolvePath('C:/ws', '../..'), resolvePath('C:/ws', '..\\..\\x'),
+      nativePath('C:\\', 'win32'), nativePath('C:\\x\\..', 'win32'), nativePath('C:\\..\\x', 'win32'), nativePath('C:/x/../..', 'win32'),
+      typedPath('C:\\', 'win32'), typedPath('D:', 'win32'), pathRoot('/C:', 'win32'), parentDirectory('C:/x'), ...descent('C:/x'),
+      createPathView({ root: 'C:\\', mount: null, platform: 'win32' }).root, createPathView({ root: 'C:/ws', mount: null, platform: 'win32' }).resolve('..\\..\\..'),
+      createPathView({ root: 'D:/ws', mount: null, scratchRoots: ['C:\\'], platform: 'win32' }).scratchRoots[0]!,
+    ]
+    expect(named.filter(path => /^\/[A-Za-z]:/.test(path))).toEqual([])
+    expect(named.slice(0, 6)).toEqual(['C:/', 'C:/', 'C:/', 'C:/', 'C:/', 'C:/x'])
+    expect(createPathView({ root: 'D:\\', mount: null, platform: 'win32' }).resolve('src\\a.ts')).toBe('D:/src/a.ts')
+  })
+
+  it('meets a deny on the drive, which a grant on a folder does not lift, and reads the drive\'s files as inside', () => {
+    // realpathSync.native answers as Windows would: the drive exists, nothing below it does.
+    vi.spyOn(realpathSync, 'native').mockImplementation(((path: string) => {
+      if (path === 'D:/') return 'D:\\'
+      throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' })
+    }) as typeof realpathSync.native)
+    try {
+      const policy = WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: 'secret', read: 'deny' }] } })
+      const rule = createFilesystemPolicyRule({ root: 'D:/', policy, platform: 'win32' })
+      const effect = { kind: 'read_path' as const, path: 'D:/secret/key.txt', directory: 'D:/secret' }
+      expect(rule.evaluate({ tool: 'fs_read', effect, grants: { subjectsFor: () => ['D:/secret'] } })).toMatchObject({ kind: 'deny', rule: 'filesystem_policy' })
+      const readScope = createReadScopeRule({ paths: createPathView({ root: 'D:/', mount: null, platform: 'win32' }) })
+      expect(readScope.evaluate({ tool: 'fs_read', effect: { kind: 'read_path', path: 'D:/src/a.ts', directory: 'D:/src' }, grants: { subjectsFor: () => [] } })).toEqual({ kind: 'allow' })
+    } finally { vi.restoreAllMocks() }
+  })
+
+  it('refuses a program found anywhere on a drive that is an untrusted root', () => {
+    expect(resolveProgram('rg', { untrustedRoots: ['D:/'], lookup: () => 'D:\\tools\\rg.exe', platform: 'win32' })).toMatchObject({ path: null, untrusted: true })
+    expect(resolveProgram('rg', { untrustedRoots: ['D:/'], lookup: () => 'C:\\tools\\rg.exe', platform: 'win32' })).toEqual({ path: 'C:/tools/rg.exe' })
   })
 })
