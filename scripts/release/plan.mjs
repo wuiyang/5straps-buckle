@@ -82,7 +82,7 @@ runAsScript(import.meta.url, () => {
     `Release ${tagOf(plan.version)} of ${plan.sha}.`,
     `To publish: ${waiting.join(', ') || 'nothing, npm holds all three'}.`,
     `Already on npm: ${plan.published.join(', ') || 'none'}.`,
-    `Tag ${tagOf(plan.version)}: ${plan.tagged ? 'already on this commit' : 'made with the GitHub release'}.`,
+    `Tag ${tagOf(plan.version)}: ${plan.tagged ? 'already on this commit' : 'made on this commit by the tag job, before publishing'}.`,
     `Packed: ${plan.tarballs.join(', ')}.`,
   ].join('\n')
 })
