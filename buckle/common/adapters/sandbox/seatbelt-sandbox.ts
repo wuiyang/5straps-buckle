@@ -1,7 +1,11 @@
 import type { Sandbox, SandboxCommand } from '../../types/ports/sandbox.js'
 
-export function createSeatbeltSandbox(): Sandbox {
-  return { mode: 'seatbelt', supportsMount: false, wrap: command => ({ command: '/usr/bin/sandbox-exec', args: ['-p', buildProfile(command), command.command, ...command.args] }) }
+/** macOS's sandbox tool, where the system keeps it. */
+export const SANDBOX_EXEC = '/usr/bin/sandbox-exec'
+
+/** `sandboxExec`: the path the sandbox tool was resolved to (resolveProgram), which every wrapped command spawns. */
+export function createSeatbeltSandbox(sandboxExec: string = SANDBOX_EXEC): Sandbox {
+  return { mode: 'seatbelt', supportsMount: false, wrap: command => ({ command: sandboxExec, args: ['-p', buildProfile(command), command.command, ...command.args] }) }
 }
 
 function buildProfile(command: SandboxCommand): string {

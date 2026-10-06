@@ -166,9 +166,11 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
 
+  // The sandbox program is refused where the agent writes, as every other program Buckle runs is.
   const sandbox = resolveSandbox({
     requested: config.sandboxMode,
     acknowledgedUnsandboxed: config.acknowledgedUnsandboxed,
+    untrustedRoots: [config.cwd, ...config.scratchRoots],
   })
 
   const lockDeadlineMs = config.stateLockDeadlineMs
