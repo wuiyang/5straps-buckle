@@ -4,7 +4,7 @@ import { basename, isAbsolute, join } from 'pathe'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
 import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
-import { homeDirectory, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, workingDirectory } from '../domain/paths.js'
+import { homeDirectory, ignoresCase, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
@@ -182,7 +182,7 @@ export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' 
  */
 export function workspaceHolds(typedRoot: string, path: string, platform: NodeJS.Platform = process.platform): boolean {
   const root = realPathOf(typedRoot)
-  return isInside(typedRoot, path, platform) || isInside(root, path, platform) || isInsideComparable(root, realPathOf(path), platform === 'darwin' || platform === 'win32', platform)
+  return isInside(typedRoot, path, platform) || isInside(root, path, platform) || isInsideComparable(root, realPathOf(path), ignoresCase(platform), platform)
 }
 
 /** The real path of a directory, or of its nearest existing ancestor with the rest appended. */

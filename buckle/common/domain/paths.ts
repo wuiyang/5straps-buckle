@@ -148,8 +148,13 @@ export function entryBelowRoot(root: string, directory: string, name: string): s
  * at least as much as a volume does, so only restrictions (protected roots, owner deny and ask rules)
  * compare by it: a wider fold there denies more, never less.
  */
-export function comparablePath(path: string, caseInsensitive = process.platform === 'darwin' || process.platform === 'win32'): string {
+export function comparablePath(path: string, caseInsensitive = ignoresCase()): string {
   return caseInsensitive ? path.normalize('NFC').toUpperCase().toLowerCase() : path
+}
+
+/** Whether a platform's default volume ignores case, as macOS's and Windows' do (comparablePath). */
+export function ignoresCase(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'darwin' || platform === 'win32'
 }
 
 /**

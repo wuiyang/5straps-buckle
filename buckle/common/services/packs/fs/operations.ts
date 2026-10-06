@@ -2,12 +2,15 @@ import { createHash } from 'node:crypto'
 import { isUtf8 } from 'node:buffer'
 import { constants, fstatSync, ftruncateSync, lstatSync, readFileSync, writeSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
-import { basename, join, matchesGlob } from 'pathe'
+import { basename, join } from 'pathe'
+// node:path's matchesGlob, not pathe's, which matches otherwise: here a `*` leaves dot names out and a leading `!` is
+// literal, as the name search always matched. Case is folded where the volume ignores it (nameMatches).
+import { matchesGlob } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
 import { openDirectoryBeneath, openRealDirectory, withFileBeneath, type PinnedDirectory } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { isPlainName } from '../../../domain/paths.js'
+import { comparablePath, ignoresCase, isPlainName } from '../../../domain/paths.js'
 import { ToolInputError } from '../../../domain/tool.js'
 import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
 import { isIgnoredDirectory } from './ignore.js'
@@ -26,6 +29,8 @@ export interface FsContext {
   authorizeRead?: (path: string) => Promise<boolean>
   authorizeReadTarget?: (target: string) => boolean
   authorizeWrite?: (target: string) => boolean
+  /** The host's unless a test imitates another: on Windows and macOS a name search ignores case. */
+  platform?: NodeJS.Platform
 }
 
 /**
@@ -162,7 +167,7 @@ export async function findNames(
   const root = context.paths.resolve(input.path)
   const matches: string[] = []
   const walk = { deep: false }
-  await withDirectoryBeneath(root, context, (directory, real) => walkNames({ real, shown: '', directory, depth: 0, walk, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches, authorizeRead: context.authorizeRead }))
+  await withDirectoryBeneath(root, context, (directory, real) => walkNames({ real, shown: '', directory, depth: 0, walk, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches, authorizeRead: context.authorizeRead, platform: context.platform ?? process.platform }))
   return { path: context.paths.display(root), matches, truncated: matches.length >= input.limit || walk.deep }
 }
 
@@ -238,6 +243,7 @@ async function walkNames(input: {
   includeIgnored: boolean
   matches: string[]
   authorizeRead?: (path: string) => Promise<boolean>
+  platform: NodeJS.Platform
 }): Promise<void> {
   if (input.matches.length >= input.limit) return
   for (const child of await readdir(input.directory.self, { withFileTypes: true })) {
@@ -248,13 +254,18 @@ async function walkNames(input: {
     const real = join(input.real, child.name)
     const shown = join(input.shown, child.name)
     if (input.authorizeRead && !await input.authorizeRead(real)) continue
-    if (matchesGlob(shown, input.pattern) || matchesGlob(basename(shown), input.pattern)) {
+    if (nameMatches(shown, input.pattern, input.platform) || nameMatches(basename(shown), input.pattern, input.platform)) {
       input.matches.push(shown)
     }
     if (!child.isDirectory() || child.isSymbolicLink()) continue
     if (input.depth >= MAX_FIND_DEPTH) { input.walk.deep = true; continue }
     await descend({ directory: input.directory, name: child.name, shown }, directory => walkNames({ ...input, real, shown, directory, depth: input.depth + 1 }))
   }
+}
+
+/** A glob match as the volume compares names: case folded on Windows and macOS (comparablePath), exact elsewhere. */
+function nameMatches(name: string, pattern: string, platform: NodeJS.Platform = process.platform): boolean {
+  return matchesGlob(comparablePath(name, ignoresCase(platform)), comparablePath(pattern, ignoresCase(platform)))
 }
 
 function countOccurrences(content: string, needle: string): number {

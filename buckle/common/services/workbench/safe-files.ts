@@ -1,15 +1,19 @@
 import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, openSync, readSync, readdirSync, writeFileSync } from 'node:fs'
 import { isUtf8 } from 'node:buffer'
-import { dirname, join, matchesGlob, relative } from 'pathe'
+import { dirname, join, relative } from 'pathe'
+// node:path's matchesGlob, not pathe's, which matches otherwise: here a `*` leaves dot names out and a leading `!` is
+// literal, as the staged editor always matched. Case is folded where the volume ignores it (globMatches).
+import { matchesGlob } from 'node:path'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { createPathView } from '../../domain/path-view.js'
 import { isIgnoredDirectory } from '../packs/fs/ignore.js'
 import { readInput, writeInput, listInput, findInput, searchInput } from '../packs/fs/schemas.js'
 import { WorkbenchError, workbenchHash } from './storage.js'
-import { isPlainName } from '../../domain/paths.js'
+import { comparablePath, ignoresCase, isPlainName } from '../../domain/paths.js'
 
 const MAX_BYTES = 10 * 1_048_576
-interface SafeFilesInput { root: string; tool: string; args: JsonObject; permitted(path: string, operation: 'read' | 'write'): boolean }
+/** `platform`: the host's unless a test imitates another; on Windows and macOS a glob ignores case (globMatches). */
+interface SafeFilesInput { root: string; tool: string; args: JsonObject; permitted(path: string, operation: 'read' | 'write'): boolean; platform?: NodeJS.Platform }
 export function invokePinnedWorkbenchFile(input: SafeFilesInput): JsonValue {
   const view = createPathView({ root: input.root, mount: '/workspace' })
   const relativeName = (named: string) => relative(input.root, view.resolve(named)) || '.'
@@ -103,7 +107,7 @@ export function invokePinnedWorkbenchFile(input: SafeFilesInput): JsonValue {
   if (input.tool === 'fs_find_names') {
     const args = findInput.parse(input.args), path = relativeName(args.path)
     const all = walk(path, 10, args.includeIgnored)
-    const matches = all.filter(entry => matchesGlob(entry.path, args.pattern)).slice(0, args.limit).map(entry => entry.path)
+    const matches = all.filter(entry => globMatches(entry.path, args.pattern, input.platform)).slice(0, args.limit).map(entry => entry.path)
     return { path, matches, truncated: matches.length >= args.limit || all.length >= 5000 }
   }
   if (input.tool === 'fs_search_content') {
@@ -113,7 +117,7 @@ export function invokePinnedWorkbenchFile(input: SafeFilesInput): JsonValue {
     const pattern = args.caseSensitive ? args.pattern : args.pattern.toLowerCase()
     let scannedBytes = 0, budgetExhausted = false
     for (const entry of entries) {
-      if (entry.type !== 'file' || args.glob && !matchesGlob(entry.path, args.glob) || entry.size > MAX_BYTES) continue
+      if (entry.type !== 'file' || args.glob && !globMatches(entry.path, args.glob, input.platform) || entry.size > MAX_BYTES) continue
       if ((scannedBytes += entry.size) > 64 * 1_048_576) { budgetExhausted = true; break }
       const buffer = file(join(path, entry.path), false, content)
       if (!isUtf8(buffer) || buffer.includes(0)) continue
@@ -126,4 +130,9 @@ export function invokePinnedWorkbenchFile(input: SafeFilesInput): JsonValue {
     return { path, matches, truncated: budgetExhausted || matches.length >= args.limit || entries.length >= 5000, literal: true }
   }
   throw new WorkbenchError('Tool is unavailable in the staged workbench', 400)
+}
+
+/** A glob match as the volume compares names: case folded on Windows and macOS (comparablePath), exact elsewhere. */
+function globMatches(path: string, pattern: string, platform: NodeJS.Platform = process.platform): boolean {
+  return matchesGlob(comparablePath(path, ignoresCase(platform)), comparablePath(pattern, ignoresCase(platform)))
 }

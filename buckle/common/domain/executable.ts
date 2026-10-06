@@ -1,6 +1,6 @@
 import { accessSync, constants, realpathSync, statSync } from 'node:fs'
 import { join } from 'pathe'
-import { isInsideComparable, nativePath, pathRoot } from './paths.js'
+import { ignoresCase, isInsideComparable, nativePath, pathRoot } from './paths.js'
 import { ToolInputError } from './tool.js'
 
 /**
@@ -62,9 +62,8 @@ export function resolveProgram(name: string, input: ProgramSearch & { untrustedR
   let path: string
   try { path = nativePath(found, platform) } catch (error) { return { path: null, reason: error instanceof Error ? error.message : String(error), untrusted: false } }
   if (pathRoot(path) === '') return { path: null, reason: `${name} is a relative path, which Buckle does not run from a working directory`, untrusted: false }
-  const caseInsensitive = platform === 'darwin' || platform === 'win32'
   const spellings = [path, realPathOr(path, platform)]
-  if (input.untrustedRoots.some(root => spellings.some(spelling => isInsideComparable(root, spelling, caseInsensitive, platform)))) {
+  if (input.untrustedRoots.some(root => spellings.some(spelling => isInsideComparable(root, spelling, ignoresCase(platform), platform)))) {
     return { path: null, reason: `${name} is found inside the workspace or a scratch root, where an agent can write, so Buckle does not run it`, untrusted: true }
   }
   return { path }
