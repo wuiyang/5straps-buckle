@@ -1,9 +1,10 @@
-import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, statSync } from 'node:fs'
+import { closeSync, lstatSync, mkdirSync, openSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { createDatabase, type Database } from 'db0'
 import nodeSqliteConnector from 'db0/connectors/node-sqlite'
 import { RuntimeError } from '../errors.js'
+import { looseMode, setMode } from '../internal/file-modes.js'
 import type { Logger } from '../logger/types.js'
 import { SqliteErrorCode } from './codes.js'
 
@@ -123,27 +124,19 @@ function checkDirectoryAccess({ directory, logger, requireOwnerOnlyDirectory }: 
 }
 
 /**
- * Refuses a directory other users can reach, for one that holds credentials (ruling 7). A missing
- * directory passes: whoever creates it makes it 0700.
+ * Refuses a directory other users can reach, for one that holds credentials. A missing directory
+ * passes: whoever creates it makes it 0700. Windows keeps no modes, so nothing is checked there.
  */
-export function assertOwnerOnlyDirectory(directory: string): void {
-  const mode = looseMode(directory)
+export function assertOwnerOnlyDirectory(directory: string, platform: NodeJS.Platform = process.platform): void {
+  const mode = looseMode(directory, platform)
   if (mode === undefined) return
   throw new RuntimeError(SqliteErrorCode.directoryNotOwnerOnly, `Directory ${directory} is accessible to other users (mode ${mode.toString(8)}); it holds credentials and must be owner-only: chmod 700 ${directory}`)
-}
-
-// The mode when group or other users have any access; undefined when owner-only or missing.
-function looseMode(directory: string): number | undefined {
-  const stat = statSync(directory, { throwIfNoEntry: false })
-  if (!stat) return undefined
-  const mode = stat.mode & 0o777
-  return (mode & 0o077) === 0 ? undefined : mode
 }
 
 // A file another user owns, or a filesystem without modes, refuses chmod with EPERM: warn and keep going.
 function restrictMode({ path, mode, logger }: { path: string; mode: number; logger: Logger | undefined }): void {
   try {
-    chmodSync(path, mode)
+    setMode(path, mode)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error
     logger?.warn('SQLite file mode could not be restricted', { path, mode: mode.toString(8), code: 'EPERM' })

@@ -1,8 +1,9 @@
 import { once } from 'node:events'
-import { chmodSync, mkdirSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { appendFile, rename, rm, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Writable } from 'node:stream'
+import { setMode } from '../internal/file-modes.js'
 import { levelRank, type LogEvent, type LogLevel, type LogSink } from './types.js'
 
 async function writeWithBackpressure(stream: Writable, text: string): Promise<void> {
@@ -66,7 +67,7 @@ export function createRotatingFileSink(options: RotatingFileSinkOptions): LogSin
       const bytes = Buffer.byteLength(line)
       if ((await currentSize()) > 0 && (await currentSize()) + bytes > options.maxBytes) await rotate()
       await appendFile(options.path, line, { mode: 0o600 })
-      if (size === 0) chmodSync(options.path, 0o600)
+      if (size === 0) setMode(options.path, 0o600)
       size = (size ?? 0) + bytes
     },
   }
