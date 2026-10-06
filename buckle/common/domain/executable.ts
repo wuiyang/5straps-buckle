@@ -13,7 +13,8 @@ const WINDOWS_EXECUTABLE_EXTENSIONS = ['.exe', '.com']
 /**
  * Resolves a binary by scanning PATH for an executable file. A shell function or alias is deliberately not found,
  * because a shell-less spawn cannot run one. Only absolute PATH entries are searched: a relative one (`.`, `bin`)
- * names a directory under whichever working directory a lookup runs in.
+ * names a directory under whichever working directory a lookup runs in, and on Windows one with a root but no drive
+ * (`\bin`) a directory on whichever drive is current (isFullPath).
  */
 export function findExecutable(
   binary: string,
@@ -121,9 +122,18 @@ function searchDirectories(environment: NodeJS.ProcessEnv, platform: NodeJS.Plat
   return (environment.PATH ?? '').split(platform === 'win32' ? ';' : ':').flatMap(entry => {
     try {
       const directory = nativePath(entry, platform)
-      return entry && pathRoot(directory) !== '' ? [directory] : []
+      return entry && isFullPath(directory, platform) ? [directory] : []
     } catch { return [] }
   })
+}
+
+/**
+ * Whether a path in pathe's form names one place whatever the working directory: it has a root, and on Windows that
+ * root is a drive or a share, never `/` alone, which is the root of whichever drive is current.
+ */
+function isFullPath(path: string, platform: NodeJS.Platform): boolean {
+  const root = pathRoot(path, platform)
+  return root !== '' && (platform !== 'win32' || root !== '/')
 }
 
 /** Directories carry the execute bit too, so the file check is what keeps one out of the result. */

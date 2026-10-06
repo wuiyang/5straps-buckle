@@ -50,12 +50,22 @@ describe('a program resolved on Windows, imitated', () => {
     expect(resolveProgram('tools\\rg.exe', { untrustedRoots, lookup: lookupFrom({ 'tools\\rg.exe': 'tools\\rg.exe' }), platform: 'win32' })).toMatchObject({ path: null, untrusted: false })
   })
 
-  it('reads PATH with Windows\' separator and searches only its absolute entries', () => {
+  // On Linux `C:/tools` is the folder `C:` in the working directory, which stands in for the drive here. An entry with a
+  // root but no drive, `\\bin` or one from `/`, is on whichever drive is current on Windows, so it is skipped too.
+  it('reads PATH with Windows\' separator and searches only its entries on a drive', () => {
     const root = scratch()
-    writeFileSync(join(root, 'tool.exe'), '')
-    chmodSync(join(root, 'tool.exe'), 0o755)
-    expect(findExecutable('tool', { PATH: `bin;${root}` }, 'win32')).toBe(join(root, 'tool.exe'))
-    expect(findExecutable('tool', { PATH: 'bin' }, 'win32')).toBeNull()
+    for (const directory of [join(root, 'C:', 'tools'), join(root, 'bin')]) {
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, 'tool.exe'), '')
+      chmodSync(join(directory, 'tool.exe'), 0o755)
+    }
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(findExecutable('tool', { PATH: 'bin;C:\\tools' }, 'win32')).toBe('C:/tools/tool.exe')
+      expect(findExecutable('tool', { PATH: `bin;\\bin;${root.replaceAll('/', '\\')}\\bin;${root}/bin` }, 'win32')).toBeNull()
+      expect(findExecutable('tool.exe', { PATH: `${root}/bin` }, 'linux')).toBe(join(root, 'bin', 'tool.exe'))
+    } finally { process.chdir(cwd) }
   })
 
   it('leaves a command word the agent wrote as a path as written, and resolves a bare one', () => {
