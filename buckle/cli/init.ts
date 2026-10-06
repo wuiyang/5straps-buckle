@@ -59,7 +59,9 @@ export interface NodeChoices {
 
 const DEFAULT_CHOICES: NodeChoices = { packs: null, shell: true, hostGit: false, networkAllow: null, allowedHosts: null }
 
-export async function runInit(argv: string[], prompt: InitPrompt = terminalPrompt(), options: { home?: string } = {}): Promise<CliResult> {
+/** `options.platform`: the host's unless a test imitates another; on Windows the hints are printed in each shell's form. */
+export async function runInit(argv: string[], prompt: InitPrompt = terminalPrompt(), options: { home?: string; platform?: NodeJS.Platform } = {}): Promise<CliResult> {
+  const platform = options.platform ?? process.platform
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -89,7 +91,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
 
   const out = values.out ? resolve(values.out) : environmentFilePath()
   // Pairing beside a configured node re-pairs it: the credentials stay, the URL is what moved.
-  if (existsSync(out) && values.pair && !values.force) return pairExisting({ out, code: values.pair, rings: values.rings!, url: values.url, home: options.home })
+  if (existsSync(out) && values.pair && !values.force) return pairExisting({ out, code: values.pair, rings: values.rings!, url: values.url, home: options.home, platform })
   if (existsSync(out) && !values.force) {
     process.stderr.write(`${out} already exists. Pass --force to replace it, or --out to write elsewhere.\n`)
     return { exitCode: 1 }
@@ -140,12 +142,11 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
 ${describeChoices(choices)}${interactive ? '' : 'These are the defaults, kept because nothing was asked. Change one with: buckle settings set <key> <value>\n'}
 
 Next:
-  1. Start the node:            ${serveCommand(out)}
+${hintStep('  1. Start the node:', serveCommand(out, process.env, platform))}
   2. Register it in Rings with both credentials, or drive it directly:
        agent token        ${authToken}
        admin credential   ${adminToken}
-  3. Restrict it:               buckle policy allow-command 'pnpm {build,test} *'
-                                buckle policy allow-url localhost:3000
+${hintStep('  3. Restrict it:', restrictCommands(platform))}
 
 The agent token runs tools. The admin credential reads and pushes the policy at /setup, mints
 and revokes workspace tokens, and nothing else. Keep them apart; Buckle refuses to start if
@@ -154,39 +155,67 @@ buckle settings set experimental-admin-http on
 `)
 
   if (!values.pair) return { exitCode: 0 }
-  return pair({ out, contents, code: values.pair, rings: values.rings!, url: values.url, port, home: options.home })
+  return pair({ out, contents, code: values.pair, rings: values.rings!, url: values.url, port, home: options.home, platform })
 }
 
 /** Re-pairs a node that already has an environment file, keeping the credentials it holds. */
-async function pairExisting(input: { out: string; code: string; rings: string; url?: string; home?: string }): Promise<CliResult> {
+async function pairExisting(input: { out: string; code: string; rings: string; url?: string; home?: string; platform: NodeJS.Platform }): Promise<CliResult> {
   const contents = readFileSync(input.out, 'utf8')
   const port = /^BUCKLE_PORT=(\d+)$/m.exec(contents)?.[1] ?? '4320'
   process.stdout.write(`Pairing the node configured in ${input.out}; its credentials are unchanged.\n`)
   return pair({ ...input, contents, port })
 }
 
-async function pair(input: { out: string; contents: string; code: string; rings: string; url?: string; port: string; home?: string }): Promise<CliResult> {
+async function pair(input: { out: string; contents: string; code: string; rings: string; url?: string; port: string; home?: string; platform: NodeJS.Platform }): Promise<CliResult> {
   const baseUrl = input.url?.trim() || `http://127.0.0.1:${input.port}`
   const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, environmentText: input.contents, ...(input.home ? { home: input.home } : {}) })
   process.stdout.write(`\n${result.message}\n`)
-  if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}. Start it with: ${serveCommand(input.out)}\n`)
+  if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}. ${hintStep('Start it with:', serveCommand(input.out, process.env, input.platform), { column: 'Start it with: '.length, indent: '  ' })}\n`)
   return { exitCode: result.ok ? 0 : 1 }
 }
+
+/** A hint's command lines as one shell reads them; `shell` names it where the platform has more than one. */
+export interface ShellForm { shell: string | null; lines: string[] }
 
 /**
  * How `buckle serve` finds the file just written: on its own from the default state directory, with
  * the state directory named when BUCKLE_STATE_DIR moved it, and by name for any other file. The
  * variable is set as the platform's shell sets one: before the command on Linux and macOS, and on
- * Windows as PowerShell and cmd each do; cmd's is quoted whole, or the space before `&&` would end
- * the value.
+ * Windows in PowerShell's form and in cmd's, each its own; cmd's is quoted whole, or the space before
+ * `&&` would end the value.
  */
-export function serveCommand(out: string, environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+export function serveCommand(out: string, environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): ShellForm[] {
   const setting = out !== defaultEnvironmentFile(environment) ? { name: 'BUCKLE_ENV_FILE', value: out }
     : environment.BUCKLE_STATE_DIR ? { name: 'BUCKLE_STATE_DIR', value: dirname(out) } : null
-  if (!setting) return 'buckle serve'
+  if (!setting) return [{ shell: null, lines: ['buckle serve'] }]
   const { name, value } = setting
-  if (platform !== 'win32') return `${name}=${value} buckle serve`
-  return `$env:${name} = '${value.replaceAll("'", "''")}'; buckle serve   (PowerShell; in cmd: set "${name}=${value}" && buckle serve)`
+  if (platform !== 'win32') return [{ shell: null, lines: [`${name}=${value} buckle serve`] }]
+  return [
+    { shell: 'PowerShell', lines: [`$env:${name} = '${value.replaceAll("'", "''")}'; buckle serve`] },
+    { shell: 'cmd', lines: [`set "${name}=${value}" && buckle serve`] },
+  ]
+}
+
+/** The example rules, quoted as each shell reads a quoted word: cmd keeps single quotes as part of the word. */
+export function restrictCommands(platform: NodeJS.Platform = process.platform): ShellForm[] {
+  const rules = (quote: string) => [`buckle policy allow-command ${quote}pnpm {build,test} *${quote}`, 'buckle policy allow-url localhost:3000']
+  if (platform !== 'win32') return [{ shell: null, lines: rules("'") }]
+  return [{ shell: 'PowerShell', lines: rules("'") }, { shell: 'cmd', lines: rules('"') }]
+}
+
+/** Where the hints' commands start, after the widest step label, as `buckle init` has always aligned them. */
+const HINT_COLUMN = 32
+const SHELL_LABEL_WIDTH = 13
+
+/**
+ * A hint: one form follows its label on the same line, its further lines aligned beneath; several forms each go
+ * on lines of their own below the label, each labelled with its shell.
+ */
+function hintStep(label: string, forms: ShellForm[], layout: { column: number; indent: string } = { column: HINT_COLUMN, indent: '       ' }): string {
+  const [only] = forms
+  if (forms.length === 1 && only!.shell === null) return `${label.padEnd(layout.column)}${only!.lines.join(`\n${' '.repeat(layout.column)}`)}`
+  const labelled = forms.flatMap(form => form.lines.map((line, index) => `${layout.indent}${(index === 0 ? form.shell ?? '' : '').padEnd(SHELL_LABEL_WIDTH)}${line}`))
+  return [label, ...labelled].join('\n')
 }
 
 /** Questions on stderr, so stdout stays the summary; the readline is opened only when one is asked. */

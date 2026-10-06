@@ -29,11 +29,11 @@ function scripted(answers: string[], interactive = true): InitPrompt & { asked: 
   }
 }
 
-async function init(prompt: InitPrompt, extra: string[] = []) {
+async function init(prompt: InitPrompt, extra: string[] = [], platform?: NodeJS.Platform) {
   let printed = ''
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
   try {
-    const result = await runInit(['--out', out, '--port', '4399', ...extra], prompt)
+    const result = await runInit(['--out', out, '--port', '4399', ...extra], prompt, platform ? { platform } : {})
     return { ...result, printed, written: readFileSync(out, 'utf8') }
   } finally { stdout.mockRestore() }
 }
@@ -104,17 +104,45 @@ describe('buckle init asks for node settings after the workspace', () => {
 
 describe('the command init prints to start the node', () => {
   it('sets the variable before the command on Linux and macOS', () => {
-    expect(serveCommand('/srv/node/buckle.env', {}, 'linux')).toBe('BUCKLE_ENV_FILE=/srv/node/buckle.env buckle serve')
-    expect(serveCommand('/srv/state/buckle.env', { BUCKLE_STATE_DIR: '/srv/state' }, 'darwin')).toBe('BUCKLE_STATE_DIR=/srv/state buckle serve')
+    expect(serveCommand('/srv/node/buckle.env', {}, 'linux')).toEqual([{ shell: null, lines: ['BUCKLE_ENV_FILE=/srv/node/buckle.env buckle serve'] }])
+    expect(serveCommand('/srv/state/buckle.env', { BUCKLE_STATE_DIR: '/srv/state' }, 'darwin')).toEqual([{ shell: null, lines: ['BUCKLE_STATE_DIR=/srv/state buckle serve'] }])
   })
 
-  it('sets it as PowerShell and cmd do on Windows, with cmd\'s quoted whole so no space ends the value', () => {
-    expect(serveCommand("/srv/O'Neil/node.env", {}, 'win32')).toBe(`$env:BUCKLE_ENV_FILE = '/srv/O''Neil/node.env'; buckle serve   (PowerShell; in cmd: set "BUCKLE_ENV_FILE=/srv/O'Neil/node.env" && buckle serve)`)
-    expect(serveCommand('/srv/state/buckle.env', { BUCKLE_STATE_DIR: '/srv/state' }, 'win32')).toBe(`$env:BUCKLE_STATE_DIR = '/srv/state'; buckle serve   (PowerShell; in cmd: set "BUCKLE_STATE_DIR=/srv/state" && buckle serve)`)
+  it('sets it as PowerShell and cmd do on Windows, each its own form, with cmd\'s quoted whole so no space ends the value', () => {
+    expect(serveCommand("/srv/O'Neil/node.env", {}, 'win32')).toEqual([
+      { shell: 'PowerShell', lines: ["$env:BUCKLE_ENV_FILE = '/srv/O''Neil/node.env'; buckle serve"] },
+      { shell: 'cmd', lines: [`set "BUCKLE_ENV_FILE=/srv/O'Neil/node.env" && buckle serve`] },
+    ])
+    expect(serveCommand('/srv/state/buckle.env', { BUCKLE_STATE_DIR: '/srv/state' }, 'win32')).toEqual([
+      { shell: 'PowerShell', lines: ["$env:BUCKLE_STATE_DIR = '/srv/state'; buckle serve"] },
+      { shell: 'cmd', lines: ['set "BUCKLE_STATE_DIR=/srv/state" && buckle serve'] },
+    ])
   })
 
   it('names no variable for the file in the default state directory, on any platform', () => {
-    for (const platform of ['linux', 'win32'] as const) expect(serveCommand(defaultEnvironmentFile({}), {}, platform)).toBe('buckle serve')
+    for (const platform of ['linux', 'win32'] as const) expect(serveCommand(defaultEnvironmentFile({}), {}, platform)).toEqual([{ shell: null, lines: ['buckle serve'] }])
+  })
+
+  it('prints each Windows form on its own labelled line, the restrict example quoted as each shell reads it', async () => {
+    const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'win32')
+    expect(printed).toContain([
+      '  1. Start the node:',
+      `       PowerShell   $env:BUCKLE_ENV_FILE = '${out}'; buckle serve`,
+      `       cmd          set "BUCKLE_ENV_FILE=${out}" && buckle serve`,
+    ].join('\n'))
+    expect(printed).toContain([
+      '  3. Restrict it:',
+      "       PowerShell   buckle policy allow-command 'pnpm {build,test} *'",
+      '                    buckle policy allow-url localhost:3000',
+      '       cmd          buckle policy allow-command "pnpm {build,test} *"',
+      '                    buckle policy allow-url localhost:3000',
+    ].join('\n'))
+  })
+
+  it('keeps one form on the step\'s own line on Linux', async () => {
+    const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'linux')
+    expect(printed).toContain(`  1. Start the node:            BUCKLE_ENV_FILE=${out} buckle serve\n`)
+    expect(printed).toContain("  3. Restrict it:               buckle policy allow-command 'pnpm {build,test} *'\n                                buckle policy allow-url localhost:3000\n")
   })
 })
 
