@@ -48,7 +48,9 @@ decision binds the whole call, whatever the display hides.
 
 - On Linux and macOS, Buckle reads a backslash in a path as a separator and a leading `C:` as a
   Windows drive, so a tool path holding a backslash or starting with a drive letter is refused
-  there: `notes\draft.md`, `c:/notes`, and `./C:/notes`, which folds to `C:/notes`.
+  there: `notes\draft.md`, `c:/notes`, and `./C:/notes`, which folds to `C:/notes`. So is a
+  folder named like a drive at the filesystem root, `/c:`, whether a path climbs there or a link
+  leads there.
 - There, an entry whose name holds a backslash is left out of listings, searches, and history,
   and the file tools cannot read or write it. History logs it once, and lists a change to it as not
   restorable. The shell sandbox and the staged editor refuse to run while it exists.
@@ -57,11 +59,23 @@ decision binds the whole call, whatever the display hides.
   `D:notes` from that drive's working directory.
 - Windows has no open that refuses a symbolic link, so there Buckle checks the path for a link or
   junction just before opening it, opens it without creating or truncating it, compares the file
-  it opened with the one it checked, and checks the path again before it truncates. On a volume
-  that reports no file IDs, a link swapped in before the open and back out before the second
-  check can still be followed.
+  it opened with the one it checked, and checks the path again before it truncates. A name that
+  was absent at the check is created only while still absent, and an open that creates nothing
+  never uses an entry that appeared after the check. Only on a volume that reports no file IDs can a
+  file swapped for a link before the open, and back before the second check, still be followed.
 - On Windows, a workspace or state directory on a network share, such as
   `\\server\share\project`, or on a mapped drive, is refused: use a folder on a local drive.
+- On Windows, a whole drive cannot be a Buckle root: the workspace root, a scratch root, the
+  state directory, and the client directory must each be a folder, not `D:\`. Buckle started in
+  `D:\` without `BUCKLE_WORKSPACE_ROOT` refuses to start for the same reason.
+
+## Programs Buckle runs
+
+- Buckle runs each program it needs, such as `rg`, `git`, or the sandbox program `bwrap`, by the
+  path `PATH` gives, and refuses one found inside the workspace or a scratch root, where the
+  agent writes. `npx` and `pnpm exec` put the workspace's `node_modules/.bin` first on `PATH`, so
+  an `rg` there leaves content search out, and a `bwrap` there leaves no sandbox: the shell tools
+  are withheld rather than run without one.
 
 ## The command line
 
