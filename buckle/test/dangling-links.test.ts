@@ -303,3 +303,17 @@ describe('a listing whose named root link flips during the walk (review H1 of th
     await stop(setup)
   })
 })
+
+// A link onto a root folder named like a drive (`/c:`) is refused where it lands, as pathe reads `/c:` as a drive, and
+// that refusal failed the whole listing or name search of the directory holding it. It is left out instead, as any
+// entry the call cannot reach is.
+describe('a dangling link onto /c: in a listed directory', () => {
+  it('is left out of fs_list and fs_find_names, which go on with every other entry', async () => {
+    const setup = await node()
+    writeFileSync(join(setup.workspace, 'kept.txt'), 'kept')
+    symlinkSync('/c:', join(setup.workspace, 'L1'))
+    expect((await run(setup.runtime, 'fs_list', { path: '.' })).result).toMatchObject({ outcome: 'ok', output: { entries: [expect.objectContaining({ path: 'kept.txt' })] } })
+    expect((await run(setup.runtime, 'fs_find_names', { path: '.', pattern: '*' })).result).toMatchObject({ outcome: 'ok', output: { matches: ['kept.txt'] } })
+    await stop(setup)
+  })
+})

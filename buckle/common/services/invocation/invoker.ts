@@ -592,8 +592,12 @@ async function executeWithTimeout(input: {
       signal: input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal,
       authorizeRead: async path => {
         if (!isAbsolute(path)) return false
+        // A path its resolution refuses, such as a link onto a root folder named like a drive, is unreachable: it is
+        // hidden as any other unreachable entry is, never a failure of the whole listing or search it is in.
+        const effect = await resolveHostRead(path).catch((error: unknown) => { if (error instanceof ToolInputError) return null; throw error })
+        if (effect === null) return false
         const outcome = input.options.permissions.evaluate({
-          tool: input.request.tool, effects: [await resolveHostRead(path)],
+          tool: input.request.tool, effects: [effect],
           grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
         })
         if (outcome.kind !== 'allow') return false
