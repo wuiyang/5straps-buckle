@@ -99,6 +99,12 @@ describe('preparing a release', () => {
     expect(readChangelog(root)).toBe(CHANGELOG)
   })
 
+  // In the workflow a fetch cannot help when GitHub itself lacks the tag, so both remedies are named.
+  it('names both remedies for a missing tag: fetching it into a clone, and pushing it from the clone that made it', () => {
+    const root = scratchRepository()
+    expect(() => prepareRelease({ version: '0.1.1', root, run: fake(root, { tags: [] }).run })).toThrow(/in a clone, fetch the tags \(git fetch --tags origin\); if GitHub lacks the tag, push it from the clone that made it \(git push origin v0\.1\.0\)$/)
+  })
+
   it('refuses a changelog that already held the section when changelogen wrote nothing', () => {
     const root = scratchRepository({ changelog: `${CHANGELOG}${SECTION('0.1.1', 'v0.1.0')}\n` })
     expect(() => prepareRelease({ version: '0.1.1', root, run: fake(root, { changelogen: 'nothing' }).run })).toThrow('changed CHANGELOG.md beyond adding the ## v0.1.1 section above the earlier ones')

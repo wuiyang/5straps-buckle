@@ -1,12 +1,13 @@
 // The first release step, run by the Prepare release workflow or by hand:
 //   node scripts/release/prepare.mjs <version>    (or RELEASE_VERSION=<version>)
 // It checks the version, sets it in the three packages as `pnpm version:set` does, and writes its
-// changelog section with changelogen. It commits nothing: the workflow commits and pushes, and a
-// person releasing by hand reads the result first.
+// changelog section with changelogen. It commits nothing: in the workflow, a later job that installs
+// nothing checks the four files again (check-prepared.mjs) and commits them, and a person releasing
+// by hand reads the result first.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { REPOSITORY_ROOT, Refusal, runAsScript, runCommand, writeStepOutputs } from './command.mjs'
-import { CHANGELOG, PACKAGES, compareVersions, isPlainVersion, localTagCommit, packagesOnNpm, sharedVersion, tagOf } from './packages.mjs'
+import { CHANGELOG, PACKAGES, addsOnlySection, compareVersions, isPlainVersion, localTagCommit, packagesOnNpm, sharedVersion, tagOf } from './packages.mjs'
 
 /** Prepares `version` in the clone at `root` and returns it with the version it follows. */
 export function prepareRelease({ version, root = REPOSITORY_ROOT, run = runCommand }) {
@@ -24,7 +25,7 @@ function prepareReleaseGuard({ version, root, run }) {
   if (run('git', ['status', '--porcelain']).trim() !== '') throw new Refusal('The working tree has uncommitted changes: the release commit must hold only the version and the changelog')
   const previous = sharedVersion(root)
   if (compareVersions(version, previous) <= 0) throw new Refusal(`${version} must be greater than the current version ${previous}`)
-  if (!localTagCommit({ run, tag: tagOf(previous) })) throw new Refusal(`The tag ${tagOf(previous)} of the current version is missing from this clone, and the new changelog section starts there: fetch the tags (git fetch --tags origin)`)
+  if (!localTagCommit({ run, tag: tagOf(previous) })) throw new Refusal(`The tag ${tagOf(previous)} of the current version is missing from this clone, and the new changelog section starts there: in a clone, fetch the tags (git fetch --tags origin); if GitHub lacks the tag, push it from the clone that made it (git push origin ${tagOf(previous)})`)
   if (localTagCommit({ run, tag: tagOf(version) })) throw new Refusal(`The tag ${tagOf(version)} already exists`)
   const published = packagesOnNpm({ run, version })
   if (published.length > 0) throw new Refusal(`npm already holds ${published.map(name => `${name}@${version}`).join(', ')}`)
@@ -40,11 +41,7 @@ function prepareReleaseCheck({ version, root, changelog }) {
   const written = readFileSync(join(root, CHANGELOG), 'utf8')
   const heading = `## ${tagOf(version)}`
   if (written.split('\n').filter(line => line.trimEnd() === heading).length !== 1) throw new Refusal(`changelogen did not write one ${heading} section into ${CHANGELOG}`)
-  const firstSection = changelog.search(/^## /m)
-  const [title, earlier] = firstSection === -1 ? [changelog, ''] : [changelog.slice(0, firstSection), changelog.slice(firstSection)]
-  if (!written.startsWith(title) || !written.endsWith(earlier) || written.indexOf(heading) >= written.length - earlier.length) {
-    throw new Refusal(`changelogen changed ${CHANGELOG} beyond adding the ${heading} section above the earlier ones`)
-  }
+  if (!addsOnlySection({ before: changelog, after: written, version })) throw new Refusal(`changelogen changed ${CHANGELOG} beyond adding the ${heading} section above the earlier ones`)
 }
 
 runAsScript(import.meta.url, () => {

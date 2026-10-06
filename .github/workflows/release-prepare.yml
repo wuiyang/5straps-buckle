@@ -3,6 +3,11 @@ name: Prepare release
 # Release step one, started by hand from the Actions tab on main: sets the version in the three
 # packages, writes its changelog section, commits that to main, and starts the release checks on the
 # new commit. Step two is release.yml, once verify and package-arm64 have passed on it.
+#
+# Two jobs, so that no installed dependency runs where main can be pushed. prepare installs and runs
+# changelogen with read access only, and hands over the four files it wrote. commit holds the write
+# token, installs nothing, takes only those four files over a fresh checkout, and refuses unless they
+# change only the version and add only the changelog section before it commits and pushes.
 
 on:
   workflow_dispatch:
@@ -12,9 +17,7 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-  actions: write
+permissions: {}
 
 # One group for both release workflows; a run in progress is never cancelled.
 concurrency:
@@ -29,6 +32,9 @@ jobs:
   prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # Runs changelogen and its dependencies, so it can read the repository and nothing more.
+    permissions:
+      contents: read
     env:
       CI: 'true'
     steps:
@@ -42,7 +48,6 @@ jobs:
         with:
           # The changelog section starts at the last release tag.
           fetch-depth: 0
-          # The token reaches only the last two steps, which push and start the checks.
           persist-credentials: false
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -50,20 +55,65 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - name: Install pinned dependencies
-        # changelogen is all this job needs; no install script runs where main can be pushed.
+        # changelogen is all this job needs, so no install script runs.
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Set the version and write its changelog section
-        id: prepare
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: node scripts/release/prepare.mjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prepared
+          path: |
+            CHANGELOG.md
+            packages/protocol/package.json
+            packages/runtime/package.json
+            buckle/package.json
+          if-no-files-found: error
+          retention-days: 1
+
+  commit:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Holds the push token, so it installs nothing and runs no dependency: only Node, git, gh, and a
+    # repository script that imports nothing beyond Node itself.
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The commit the prepare job read.
+          ref: ${{ github.sha }}
+          # The token reaches only the last two steps, which push and start the checks.
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: prepared
+          # Beside the checkout, not over it: the prepare job ran dependency code, so only the four
+          # files are taken from what it handed over, never a file such as a git hook.
+          path: ${{ runner.temp }}/prepared
+      - name: Take the four prepared files
+        run: |
+          for file in CHANGELOG.md packages/protocol/package.json packages/runtime/package.json buckle/package.json; do
+            cp -- "$RUNNER_TEMP/prepared/$file" "$file"
+          done
+      - name: Refuse anything beyond the version and the changelog section
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: node scripts/release/check-prepared.mjs
       - name: Commit the release
         env:
-          VERSION: ${{ steps.prepare.outputs.version }}
+          VERSION: ${{ inputs.version }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add CHANGELOG.md packages/protocol/package.json packages/runtime/package.json buckle/package.json
+          git add -- CHANGELOG.md packages/protocol/package.json packages/runtime/package.json buckle/package.json
           git commit --message "chore(release): v${VERSION}"
       - name: Push to main
         # A plain push: if main moved since this run started, it is refused and nothing is released.
@@ -75,7 +125,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VERSION: ${{ steps.prepare.outputs.version }}
+          VERSION: ${{ inputs.version }}
         run: |
           gh workflow run release-check.yml --ref main
           {

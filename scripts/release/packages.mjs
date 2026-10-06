@@ -13,6 +13,9 @@ export const PACKAGES = [
 
 export const CHANGELOG = 'CHANGELOG.md'
 
+/** The four files a prepared release changes, as git names them from the repository root. */
+export const RELEASE_FILES = [CHANGELOG, ...PACKAGES.map(({ directory }) => `${directory}/package.json`)]
+
 /** MAJOR.MINOR.PATCH with no leading zeros, prerelease, or build part. */
 const PLAIN_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 
@@ -78,4 +81,18 @@ export function changelogSection(changelog, version) {
   if (start === -1) return null
   const next = lines.findIndex((line, index) => index > start && line.startsWith('## '))
   return lines.slice(start + 1, next === -1 ? undefined : next).join('\n').trim() || null
+}
+
+/**
+ * Whether `after` is the changelog `before` with one section, headed `## v<version>`, added above
+ * its earlier sections: the title and every earlier section kept byte for byte, and nothing else added.
+ */
+export function addsOnlySection({ before, after, version }) {
+  const first = before.search(/^## /m)
+  const [title, earlier] = first === -1 ? [before, ''] : [before.slice(0, first), before.slice(first)]
+  if (after.length < title.length + earlier.length || !after.startsWith(title) || !after.endsWith(earlier)) return false
+  const added = after.slice(title.length, after.length - earlier.length).split('\n')
+  const start = added.findIndex(line => line.trim() !== '')
+  if (start === -1 || added[start].trimEnd() !== `## ${tagOf(version)}`) return false
+  return added.slice(start + 1).every(line => !/^##? /.test(line))
 }
