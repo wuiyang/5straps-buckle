@@ -1,4 +1,4 @@
-import { closeSync, constants, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +7,9 @@ import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/a
 import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { descent, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, withForwardSlashes } from '../common/domain/paths.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { runInit } from '../cli/init.js'
+import { loadConfig, workspaceHolds } from '../common/runtime/config.js'
+import { outsideRootNotice } from '../common/runtime/environment.js'
 import { logger } from '../common/runtime/log.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { applySnapshot, restoredLinkType, restoreLink, snapshot } from '../common/services/history/snapshot.js'
@@ -260,6 +262,50 @@ describe('the backslash case on Linux: inside\\..\\..\\x', () => {
     } finally { await runtime.history.close() }
     expect(readFileSync(join(root, 'x'), 'utf8')).toBe('outside')
     expect(readFileSync(`${workspace}/inside\\..\\..\\x`, 'utf8')).toBe('literal')
+  })
+})
+
+// Windows keeps a path's case as typed where the disk ignores it: the root and scratch roots are named as the disk
+// stores them, and a path compared with one is too. realpathSync.native answers as Windows would here.
+describe('case and links on Windows, imitated', () => {
+  function diskCase(typed: string, disk: string) {
+    const native = realpathSync.native
+    return vi.spyOn(realpathSync, 'native').mockImplementation(((path: string, options?: unknown) => path === typed ? disk : native(path, options as undefined)) as typeof realpathSync.native)
+  }
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs() })
+
+  it('reads a working directory typed in another case as inside the root, with no outside-the-root notice', () => {
+    const root = scratch()
+    const disk = join(root, 'Project')
+    mkdirSync(disk)
+    diskCase(join(root, 'project'), disk)
+    expect(outsideRootNotice({ namedNode: false, root: disk, cwd: join(root, 'project'), file: null })).toBeNull()
+  })
+
+  it('names a scratch root as the disk does, through a link or in another case', () => {
+    const root = scratch()
+    mkdirSync(join(root, 'Scratch'))
+    symlinkSync(join(root, 'Scratch'), join(root, 'link'))
+    diskCase(join(root, 'scratch'), join(root, 'Scratch'))
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(scratch(), 'state'), BUCKLE_SCRATCH_ROOTS: `${join(root, 'link')},${join(root, 'scratch')}` })
+    expect(config.scratchRoots).toEqual([join(root, 'Scratch'), join(root, 'Scratch')])
+  })
+
+  it('refuses in init, as the node does, a workspace that holds the state directory through a link or in another case', async () => {
+    const root = scratch()
+    mkdirSync(join(root, 'real', 'state'), { recursive: true })
+    symlinkSync(join(root, 'real'), join(root, 'link'))
+    expect(workspaceHolds('/x/WS', '/x/ws/state', 'win32')).toBe(true)
+    expect(workspaceHolds('/x/WS', '/x/ws/state', 'linux')).toBe(false)
+    expect(workspaceHolds(join(root, 'link'), join(root, 'real', 'state'))).toBe(true)
+    vi.stubEnv('BUCKLE_STATE_DIR', join(root, 'real', 'state'))
+    vi.stubEnv('BUCKLE_ENV_FILE', undefined)
+    let printed = ''
+    vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const prompt = { interactive: false, question: async () => '', say: () => {}, close: () => {} }
+    expect((await runInit(['--root', join(root, 'link'), '--yes'], prompt)).exitCode).toBe(1)
+    expect(printed).toContain('holds the state directory')
   })
 })
 

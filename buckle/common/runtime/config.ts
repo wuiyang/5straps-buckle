@@ -102,9 +102,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
   const typedRoot = environment.BUCKLE_WORKSPACE_ROOT ? typedPath(environment.BUCKLE_WORKSPACE_ROOT) : workingDirectory()
   const cwd = realPathOf(typedRoot)
   const stateDirectory = stateDirectoryOf(environment)
-  // As typed, and where each really is, compared as the disk compares: a root or state directory spelled
-  // through a link must not start a node whose state an agent can write (review M3).
-  if (isInside(typedRoot, stateDirectory) || isInside(cwd, stateDirectory) || isInsideComparable(cwd, realPathOf(stateDirectory))) {
+  if (workspaceHolds(typedRoot, stateDirectory)) {
     throw new Error(`BUCKLE_STATE_DIR is ${stateDirectory}, inside the BUCKLE_WORKSPACE_ROOT at ${cwd}: an agent writes anywhere in the workspace, and the state directory holds the recorded grants, the approvals and the empty hooks directory the forge tools run git with`)
   }
 
@@ -128,7 +126,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
     authToken,
     adminToken,
     cwd,
-    scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => typedPath(root)),
+    // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
+    scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realPathOf(typedPath(root))),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
     sandboxMode,
     acknowledgedUnsandboxed: sandboxMode === 'none',
@@ -174,6 +173,16 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Buckle
 export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string[] {
   const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory]
   return [...new Set([...named, ...named.map(realPathOf)])]
+}
+
+/**
+ * Whether a workspace root holds a path, as typed and where each really is, compared as the disk compares: a root or
+ * a state directory spelled through a link, or in another case where the disk ignores case, must not start a node
+ * whose state an agent can write (review M3). `buckle init` refuses by the same test.
+ */
+export function workspaceHolds(typedRoot: string, path: string, platform: NodeJS.Platform = process.platform): boolean {
+  const root = realPathOf(typedRoot)
+  return isInside(typedRoot, path, platform) || isInside(root, path, platform) || isInsideComparable(root, realPathOf(path), platform === 'darwin' || platform === 'win32', platform)
 }
 
 /** The real path of a directory, or of its nearest existing ancestor with the rest appended. */

@@ -96,8 +96,9 @@ export function outsideRootNotice(input: { namedNode: boolean; root: string; cwd
   return `Buckle serves ${input.root}, ${source}, but started in ${input.cwd}, outside it: this project gets that root's files, grants and history. To give this project its own node, set BUCKLE_ENV_FILE to its own environment file, or BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR, in the shell or the MCP config's env.`
 }
 
+/** As the disk names it (realpathSync.native, the case it stores), as the root it is compared with is named. */
 function realPath(path: string): string {
-  try { return nativePath(realpathSync(path)) } catch { return resolve(path) }
+  try { return nativePath(realpathSync.native(path)) } catch { return resolve(path) }
 }
 
 /** Owner decision D5: a project outside the root is warned, not refused. A later ruling flips it here: throw new Error(notice). */
