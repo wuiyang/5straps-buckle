@@ -2,6 +2,7 @@ import type { SandboxMount } from '../../domain/sandbox-mounts.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import type { IsolatedShellOptions } from '../shell/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
+import { hostEnvironment } from '../../domain/environment.js'
 import { ownRoots, resolveProgram, type ProgramSearch, type ResolvedProgram, type UntrustedRoots } from '../../domain/executable.js'
 import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
@@ -94,15 +95,18 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   // Each program a pack runs is resolved once, here, and spawned by that path; one found where an agent writes is refused.
   const untrusted = options.untrusted ?? (() => ownRoots(options.paths))
   const program = (name: string): ResolvedProgram => resolveProgram(name, { ...untrusted(), ...options.programSearch })
+  // And each runs with a PATH that leads to no program an agent wrote, as a script it runs looks its interpreter up there.
+  const environment = hostEnvironment(untrusted, options.programSearch?.platform)
   const git = program('git')
   const packs: Pack[] = [
-    createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: program('rg').path, protectedRoots: options.hiddenPaths }),
+    createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: program('rg').path, protectedRoots: options.hiddenPaths, environment }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, allowedHosts: options.allowedHosts, approved: options.approvedUrls }),
-    createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git }),
+    createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment }),
     createForgePack({
       paths: options.paths,
       runProcess: options.runProcess,
       git,
+      environment,
       stateDirectory: options.stateDirectory,
       forge: {
         client: options.forge.token ? createGitHubForgeClient({ token: options.forge.token, apiUrl: options.forge.apiUrl }) : null,
@@ -114,7 +118,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       approved: options.approvedUrls,
       unavailableReason: forgeUnavailableReason(options, git),
     }),
-    createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess, allowHostLsp: options.allowHostLsp, resolveProgram: program }),
+    createDevPack({ cwd: options.cwd, paths: options.paths, runProcess: options.runProcess, allowHostLsp: options.allowHostLsp, resolveProgram: program, environment }),
     createBrowserPack({
       cwd: options.cwd,
       paths: options.paths,
@@ -123,6 +127,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       sessionDirectory: options.browserStateDirectory,
       headed: options.browserHeaded,
       agentBrowser: program(options.agentBrowserCommand),
+      environment,
       approvedLists: options.approvedLists,
       protectedRoots: options.hiddenPaths,
       ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
@@ -146,7 +151,12 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     ...(options.programSearch ? { programSearch: options.programSearch } : {}),
   }))
 
-  if (unmetPackPrerequisite('environment', options) === null) packs.push(createEnvironmentPack({ command: options.environmentValidator!, cwd: options.cwd, runProcess: options.runProcess }))
+  const validator = options.environmentValidator
+  if (validator !== undefined && unmetPackPrerequisite('environment', options) === null) {
+    // Named by its setting in a refusal the agent reads, never by its path, which may lie outside the workspace.
+    const resolved = resolveProgram(validator, { ...untrusted(), ...options.programSearch, shownAs: 'The validator BUCKLE_ENV_VALIDATOR_COMMAND names' })
+    packs.push(createEnvironmentPack({ command: validator, validator: resolved, cwd: options.cwd, runProcess: options.runProcess, environment }))
+  }
   if (!options.allowHostGit) for (const pack of packs) {
     if (pack.id === 'git' || pack.id === 'forge') pack.unavailableReason = 'Host Git can read repository data outside per-file approval checks; BUCKLE_ALLOW_HOST_GIT=true explicitly trusts repository access outside the shell sandbox'
   }

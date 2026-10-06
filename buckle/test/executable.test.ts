@@ -1,8 +1,8 @@
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { executableCandidates, findExecutable, isPathReference } from '../common/domain/executable.js'
+import { executableCandidates, findExecutable, isPathReference, rootsOf, trustedSearchPath } from '../common/domain/executable.js'
 
 const root = mkdtempSync(join(tmpdir(), 'buckle-exec-'))
 
@@ -78,5 +78,36 @@ describe('executableCandidates', () => {
     const candidates = executableCandidates('agent-browser', 'win32')
     expect(candidates.some(candidate => candidate.endsWith('.cmd'))).toBe(false)
     expect(candidates.some(candidate => candidate.endsWith('.bat'))).toBe(false)
+  })
+})
+
+// A program Buckle runs on the host inherits PATH: a trusted script that starts `#!/usr/bin/env node` looked `node` up
+// where `npx` and `pnpm exec` start it, in a workspace's node_modules/.bin, and ran the agent's.
+describe('trustedSearchPath', () => {
+  const base = mkdtempSync(join(root, 'search-path-'))
+  const workspace = join(base, 'ws')
+  const tools = join(base, 'tools')
+  for (const directory of [join(workspace, 'node_modules', '.bin'), join(workspace, 'tools'), tools]) mkdirSync(directory, { recursive: true })
+  symlinkSync(join(workspace, 'tools'), join(base, 'linked-tools'))
+  symlinkSync(join(workspace, 'tools'), join(base, 'hop'))
+  symlinkSync(join(base, 'hop'), join(base, 'through-hop'))
+  const roots = { untrustedRoots: rootsOf('workspace', [workspace]) }
+
+  it('keeps the entries outside every root, in order, and drops each one inside a root, as named, where it leads, or on the way', () => {
+    const entries = [join(workspace, 'node_modules', '.bin'), '/usr/bin', join(base, 'linked-tools'), tools, join(base, 'through-hop', 'sub'), '/bin']
+    expect(trustedSearchPath(entries.join(':'), roots, 'linux')).toBe(['/usr/bin', tools, '/bin'].join(':'))
+  })
+
+  it('drops an empty or relative entry, which names a folder in whichever directory a program starts in', () => {
+    expect(trustedSearchPath(['', '.', 'bin', './node_modules/.bin', '/usr/bin'].join(':'), roots, 'linux')).toBe('/usr/bin')
+  })
+
+  it('keeps nothing while the roots are unknown', () => {
+    expect(trustedSearchPath('/usr/bin:/bin', { ...roots, rootsUnknown: 'the workspace registry cannot be read' }, 'linux')).toBe('')
+  })
+
+  it('reads Windows\' separator, keeps only entries on a drive, and compares as the disk does', () => {
+    const windowsRoots = { untrustedRoots: rootsOf('workspace', ['C:/ws']) }
+    expect(trustedSearchPath('C:\\WS\\node_modules\\.bin;C:\\Windows\\system32;\\bin;tools;D:\\Tools', windowsRoots, 'win32')).toBe('C:\\Windows\\system32;D:\\Tools')
   })
 })

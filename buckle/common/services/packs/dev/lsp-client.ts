@@ -1,4 +1,3 @@
-import { buildChildEnvironment } from '../../../domain/environment.js'
 import type { Program } from '../../../domain/executable.js'
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import { connect } from 'node:net'
@@ -137,11 +136,12 @@ export function createLspConnection(streams: { input: Readable; output: Writable
   }
 }
 
-export function spawnLspServer(input: { program: Program; args: string[]; cwd: string }): LspConnection {
+/** `environment`: the host program environment (hostEnvironment), whose PATH no agent wrote into. */
+export function spawnLspServer(input: { program: Program; args: string[]; cwd: string; environment: NodeJS.ProcessEnv }): LspConnection {
   const child: ChildProcessByStdio<Writable, Readable, Readable> = spawn(input.program.path, input.args, {
     argv0: input.program.argv0,
     cwd: input.cwd,
-    env: buildChildEnvironment({ parent: process.env, extra: {} }),
+    env: input.environment,
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   child.stderr.on('data', (chunk: Buffer) => logger.warn('Language server wrote stderr', { bytes: chunk.byteLength }))

@@ -1,3 +1,4 @@
+import type { HostEnvironment } from '../../../domain/environment.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool } from '../../../domain/tool.js'
@@ -16,6 +17,8 @@ export interface FsPackOptions {
   ripgrep: string | null
   /** Buckle's own state: a hard-linked file on its device is never read or searched (review L3 of the second re-review). */
   protectedRoots?: readonly string[]
+  /** The environment ripgrep runs with (hostEnvironment); the workspace's own roots alone when absent. */
+  environment?: HostEnvironment
 }
 
 export function createFsPack(options: FsPackOptions): Pack {
@@ -107,6 +110,7 @@ export function createFsPack(options: FsPackOptions): Pack {
         signal: toolContext.signal,
         authorizeRead: toolContext.authorizeRead ?? (async () => false),
         protectedRoots: options.protectedRoots ?? [],
+        ...(options.environment ? { environment: options.environment } : {}),
       }),
     }))
   }

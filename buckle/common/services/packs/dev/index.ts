@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
+import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
 import { ownRoots, resolveProgram, type ProgramResolver } from '../../../domain/executable.js'
 import { defineTool, ToolExecutionError } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
@@ -38,11 +39,14 @@ export interface DevPackOptions {
   runProcess: ProcessRunner
   /** How the language servers and `ps` are found; by default on PATH, refused inside the workspace or a scratch root. */
   resolveProgram?: ProgramResolver
+  /** The environment they run with (hostEnvironment); the workspace's own roots alone when absent. */
+  environment?: HostEnvironment
 }
 
 export function createDevPack(options: DevPackOptions): Pack {
   const program = options.resolveProgram ?? (name => resolveProgram(name, ownRoots(options.paths)))
-  const pool = createSessionPool(options.cwd, program)
+  const environment = options.environment ?? hostEnvironment(() => ownRoots(options.paths))
+  const pool = createSessionPool(options.cwd, program, environment)
 
   const query = async (input: {
     method: string
@@ -84,6 +88,7 @@ export function createDevPack(options: DevPackOptions): Pack {
           const servers = await discoverServers({
             runProcess: options.runProcess,
             ps,
+            environment: environment(),
             timeoutMs: context.timeoutMs,
             signal: context.signal,
           })

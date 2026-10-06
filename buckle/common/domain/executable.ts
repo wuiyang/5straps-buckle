@@ -97,21 +97,23 @@ const ROOT_NAMES: Record<RootKind, string> = { 'workspace': 'a workspace', 'scra
  * root (`untrustedRoots`): the path found, each link it passes through and where each leads, and where it lands
  * (walkLinks), compared as the disk compares paths (comparablePath). Judged by the path found and its real path alone,
  * a PATH entry linked to a folder in a workspace let the agent point the program there at a trusted one for the check
- * and at its own after it, and the PATH spelling then ran the agent's.
+ * and at its own after it, and the PATH spelling then ran the agent's. `shownAs` names the program in a refusal, where
+ * its configured path, which may lie outside the workspace, is no business of the agent's.
  */
-export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoots): ResolvedProgram {
+export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoots & { shownAs?: string }): ResolvedProgram {
   const platform = input.platform ?? process.platform
+  const shown = input.shownAs ?? name
   const found = (input.lookup ?? findExecutable)(name, input.environment ?? process.env, platform)
-  if (found === null) return { path: null, reason: `${name} is not installed on this node`, untrusted: false }
-  if (input.rootsUnknown) return { path: null, reason: `${name} is not run while ${input.rootsUnknown}`, untrusted: true }
+  if (found === null) return { path: null, reason: `${shown} is not installed on this node`, untrusted: false }
+  if (input.rootsUnknown) return { path: null, reason: `${shown} is not run while ${input.rootsUnknown}`, untrusted: true }
   let path: string
   try { path = nativePath(found, platform) } catch (error) { return { path: null, reason: messageOf(error), untrusted: false } }
-  if (pathRoot(path) === '') return { path: null, reason: `${name} is a relative path, which Buckle does not run from a working directory`, untrusted: false }
+  if (pathRoot(path) === '') return { path: null, reason: `${shown} is a relative path, which Buckle does not run from a working directory`, untrusted: false }
   let walked: LinkWalk
   // A chain Buckle cannot follow may be one an agent built, so it is refused as one found where an agent writes.
-  try { walked = walkLinks(path, platform) } catch (error) { return { path: null, reason: `${name} cannot be followed to where it really is: ${messageOf(error)}`, untrusted: true } }
+  try { walked = walkLinks(path, platform) } catch (error) { return { path: null, reason: `${shown} cannot be followed to where it really is: ${messageOf(error)}`, untrusted: true } }
   const root = rootHolding(input.untrustedRoots, [path, ...walked.passed, walked.real], platform)
-  if (root) return { path: null, reason: `${name} is found in or through ${ROOT_NAMES[root.kind]} of this node, where an agent can write, so Buckle does not run it`, untrusted: true }
+  if (root) return { path: null, reason: `${shown} is found in or through ${ROOT_NAMES[root.kind]} of this node, where an agent can write, so Buckle does not run it`, untrusted: true }
   return { path: walked.real, argv0: path }
 }
 
@@ -125,6 +127,27 @@ export function runnableCommand(command: string, input: ProgramSearch & Untruste
   const program = resolveProgram(command, input)
   if (program.path === null) throw new ToolInputError(program.reason, program.untrusted ? { code: 'PERMISSION_DENIED' } : undefined)
   return program
+}
+
+/**
+ * PATH for a program Buckle runs on the host: only its entries that name one place whatever the working directory
+ * (isFullPath), none of whose places (walkLinks) lies inside an untrusted root, as named. A trusted script that starts
+ * `#!/usr/bin/env node`, such as the environment validator, agent-browser, or a node-based language server, looks
+ * `node` up on this PATH, so the `node` an agent planted in `<ws>/node_modules/.bin`, which `npx` and `pnpm exec` put
+ * first, is never it. Empty while the roots are unknown, as an entry could lie in a root not listed.
+ */
+export function trustedSearchPath(searchPath: string | undefined, roots: UntrustedRoots, platform: NodeJS.Platform = process.platform): string {
+  if (roots.rootsUnknown) return ''
+  const delimiter = searchPathDelimiter(platform)
+  return (searchPath ?? '').split(delimiter).filter(entry => {
+    if (!entry) return false
+    try {
+      const directory = nativePath(entry, platform)
+      if (!isFullPath(directory, platform)) return false
+      const walked = walkLinks(directory, platform)
+      return !rootHolding(roots.untrustedRoots, [directory, ...walked.passed, walked.real], platform)
+    } catch { return false }
+  }).join(delimiter)
 }
 
 /** The first untrusted root that holds any of `places`. */
@@ -216,8 +239,12 @@ function hasWindowsExecutableExtension(path: string): boolean {
   return WINDOWS_EXECUTABLE_EXTENSIONS.some(extension => lower.endsWith(extension))
 }
 
+function searchPathDelimiter(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? ';' : ':'
+}
+
 function searchDirectories(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
-  return (environment.PATH ?? '').split(platform === 'win32' ? ';' : ':').flatMap(entry => {
+  return (environment.PATH ?? '').split(searchPathDelimiter(platform)).flatMap(entry => {
     try {
       const directory = nativePath(entry, platform)
       return entry && isFullPath(directory, platform) ? [directory] : []

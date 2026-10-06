@@ -1,7 +1,9 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
+import { hostEnvironment } from '../common/domain/environment.js'
+import { ownRoots, resolveProgram } from '../common/domain/executable.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
 import { createEnvironmentPack } from '../common/services/packs/environment/index.js'
@@ -50,18 +52,24 @@ describe('shell filesystem and network policy', () => {
 })
 
 describe('optional environment validation', () => {
+  /** The pack as createBuiltinPacks builds it over one workspace: the validator resolved, and run with the host environment. */
+  function validatorPack(input: { command: string; workspace: string; runProcess: ProcessRunner }) {
+    const roots = () => ownRoots({ root: input.workspace, scratchRoots: [] })
+    return createEnvironmentPack({ command: input.command, validator: resolveProgram(input.command, roots()), cwd: input.workspace, runProcess: input.runProcess, environment: hostEnvironment(roots) })
+  }
+
   it('returns only validity and never validator output', async () => {
     const { workspace, runProcess, context } = fixture()
-    const pack = createEnvironmentPack({ command: process.execPath, cwd: workspace, runProcess })
+    const pack = validatorPack({ command: process.execPath, workspace, runProcess })
     expect(await pack.tools[0]!.prepare({}).execute(context)).toEqual({ valid: true, timedOut: false })
     expect(runProcess.mock.calls[0]?.[0].args).toEqual(['load', '--agent'])
   })
 
   it('rejects a validator executable supplied by the agent workspace', async () => {
     const { workspace, runProcess, context } = fixture()
-    const command = join(workspace, 'fake-validator'); writeFileSync(command, 'fake')
-    const pack = createEnvironmentPack({ command, cwd: workspace, runProcess })
-    await expect(pack.tools[0]!.prepare({}).execute(context)).rejects.toThrow('outside the agent workspace')
+    const command = join(workspace, 'fake-validator'); writeFileSync(command, 'fake'); chmodSync(command, 0o755)
+    const pack = validatorPack({ command, workspace, runProcess })
+    await expect(pack.tools[0]!.prepare({}).execute(context)).rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: `${command} is found in or through a workspace of this node, where an agent can write, so Buckle does not run it` })
     expect(runProcess).not.toHaveBeenCalled()
   })
 })

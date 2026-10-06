@@ -2,7 +2,7 @@ import { statSync } from 'node:fs'
 import { isAbsolute, join } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
-import { buildChildEnvironment } from '../../../domain/environment.js'
+import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
@@ -12,7 +12,7 @@ import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { withForwardSlashes } from '../../../domain/paths.js'
-import type { ResolvedProgram } from '../../../domain/executable.js'
+import { ownRoots, type ResolvedProgram } from '../../../domain/executable.js'
 
 const PACK_ID = 'git'
 /** Unit separator: safe inside commit subjects and branch names, unlike any printable delimiter. */
@@ -48,9 +48,12 @@ export interface GitPackOptions {
   stateDirectory: string
   /** The git this node runs, by its real path (resolveProgram), or why none is run. */
   git: ResolvedProgram
+  /** The environment git runs with (hostEnvironment); the workspace's own roots alone when absent. */
+  environment?: HostEnvironment
 }
 
 export function createGitPack(options: GitPackOptions): Pack {
+  const environment = options.environment ?? hostEnvironment(() => ownRoots(options.paths))
   const spawnGit = (input: { cwd: string; args: string[]; config: GitConfig[]; timeoutMs: number; signal: AbortSignal }): Promise<ProcessResult> => {
     if (options.git.path === null) throw new ToolExecutionError(options.git.reason, { code: 'GIT_FAILED' })
     return options.runProcess({
@@ -59,7 +62,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       args: input.args,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
-      environment: buildChildEnvironment({ parent: process.env, extra: { ...ISOLATION_ENVIRONMENT, ...gitConfigEnvironment(input.config) } }),
+      environment: environment({ ...ISOLATION_ENVIRONMENT, ...gitConfigEnvironment(input.config) }),
       signal: input.signal,
     })
   }

@@ -8,7 +8,8 @@ import type { PathView } from '../../../domain/path-view.js'
 import { childPath, isPlainName, nativePath } from '../../../domain/paths.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { buildChildEnvironment } from '../../../domain/environment.js'
+import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
+import { ownRoots } from '../../../domain/executable.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import type * as schemas from './schemas.js'
 
@@ -31,9 +32,11 @@ export async function searchContent(input: {
   protectedRoots: readonly string[]
   /** The host's unless a test imitates another: off Windows a listed name holding a backslash is left out. */
   platform?: NodeJS.Platform
+  /** The environment ripgrep runs with, its PATH clear of every root an agent writes (hostEnvironment); the view's own roots alone when absent. */
+  environment?: HostEnvironment
 }): Promise<JsonValue> {
   const root = input.paths.resolve(input.args.path)
-  const environment = buildChildEnvironment({ parent: process.env, extra: {} })
+  const environment = (input.environment ?? hostEnvironment(() => ownRoots(input.paths), input.platform))()
   const glob = input.args.glob ? ['--glob', input.args.glob] : []
   const listed = await input.runProcess({ command: input.ripgrep, args: ['--files', '--null', ...glob, '--', '.'], cwd: root, environment, timeoutMs: input.timeoutMs, signal: input.signal })
   if (listed.exitCode !== 0 && listed.exitCode !== 1) throw searchError(listed)

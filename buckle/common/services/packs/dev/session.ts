@@ -2,6 +2,7 @@ import { logger } from '../../../runtime/log.js'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { resolve } from 'pathe'
+import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
 import { resolveProgram, rootsOf, type Program, type ProgramResolver } from '../../../domain/executable.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { connectLspSocket, spawnLspServer, type LspConnection } from './lsp-client.js'
@@ -16,9 +17,14 @@ export interface LspSession {
 
 /**
  * One connection per language per workspace, reused across calls. A server is spawned by the real path `program`
- * resolves for it, never by its bare name, which Windows would look up in the workspace first (resolveProgram).
+ * resolves for it, never by its bare name, which Windows would look up in the workspace first (resolveProgram), with
+ * `environment`'s PATH clear of every root an agent writes, as a node-based server looks `node` up there.
  */
-export function createSessionPool(cwd: string, program: ProgramResolver = name => resolveProgram(name, { untrustedRoots: rootsOf('workspace', [cwd]) })) {
+export function createSessionPool(
+  cwd: string,
+  program: ProgramResolver = name => resolveProgram(name, { untrustedRoots: rootsOf('workspace', [cwd]) }),
+  environment: HostEnvironment = hostEnvironment(() => ({ untrustedRoots: rootsOf('workspace', [cwd]) })),
+) {
   const sessions = new Map<string, Promise<LspSession>>()
 
   const open = async (language: string, attach: { port: number; host: string } | null): Promise<LspSession> => {
@@ -27,7 +33,7 @@ export function createSessionPool(cwd: string, program: ProgramResolver = name =
 
     const connection = attach
       ? await connectLspSocket(attach)
-      : spawnLspServer({ program: serverProgram(program, known.binaries[0] ?? language), args: known.spawnArgs, cwd })
+      : spawnLspServer({ program: serverProgram(program, known.binaries[0] ?? language), args: known.spawnArgs, cwd, environment: environment() })
 
     try {
       await connection.request('initialize', {

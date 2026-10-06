@@ -4,8 +4,8 @@ import { join } from 'pathe'
 import { z } from 'zod'
 import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
 import type { JsonValue } from '@5straps/protocol'
-import { buildChildEnvironment } from '../../../domain/environment.js'
-import type { Program, ResolvedProgram } from '../../../domain/executable.js'
+import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
+import { ownRoots, type Program, type ResolvedProgram } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../../domain/tool.js'
@@ -48,6 +48,8 @@ export interface BrowserPackOptions {
   headed: boolean
   /** The configured command resolved once (resolveProgram): the real path every call spawns, or why none is run. */
   agentBrowser: ResolvedProgram
+  /** The environment it runs with (hostEnvironment); the workspace's own roots alone when absent. */
+  environment?: HostEnvironment
   /**
    * Each configured approved list, node ceiling first, empty when none is set. Passed on every
    * call as --allowed-domains, so clicks, redirects and page requests stay on their hosts too; the
@@ -134,7 +136,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               args,
               cwd: options.sessionDirectory,
               timeoutMs: context.timeoutMs,
-              environment: buildChildEnvironment({ parent: process.env, extra: {} }),
+              environment: browserEnvironment(options),
               signal: context.signal,
             })
             const result = { ...ran, stdout: transfer.shown(ran.stdout), stderr: transfer.shown(ran.stderr) }
@@ -167,6 +169,10 @@ function browserProgram(options: BrowserPackOptions): Program {
   return options.agentBrowser
 }
 
+/** agent-browser is a node script, so its PATH is the host program one, where no agent put a `node` (hostEnvironment). */
+function browserEnvironment(options: BrowserPackOptions): NodeJS.ProcessEnv {
+  return (options.environment ?? hostEnvironment(() => ownRoots(options.paths)))()
+}
 
 /** How long shutdown waits for the browser daemons to close, all of them together. */
 const CLOSE_TIMEOUT_MS = 5_000
@@ -190,7 +196,7 @@ async function closeSessions(input: { options: BrowserPackOptions; sessions: Jso
       args: ['close', '--session', session, '--json'],
       cwd: input.options.sessionDirectory,
       timeoutMs: CLOSE_TIMEOUT_MS,
-      environment: buildChildEnvironment({ parent: process.env, extra: {} }),
+      environment: browserEnvironment(input.options),
       signal: bound,
     }).catch((error: unknown) => ({ exitCode: null, error }))
     if (result.exitCode !== 0) logger.warn('A browser session did not close at shutdown; its idle timeout ends it', { exitCode: result.exitCode })

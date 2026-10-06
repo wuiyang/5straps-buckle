@@ -1,4 +1,3 @@
-import { buildChildEnvironment } from '../../../domain/environment.js'
 import type { Program } from '../../../domain/executable.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
@@ -22,6 +21,8 @@ export async function discoverServers(input: {
   runProcess: ProcessRunner
   /** The `ps` spawned (resolveProgram), by its real path, never its bare name. */
   ps: Program
+  /** The host program environment (hostEnvironment). */
+  environment: NodeJS.ProcessEnv
   timeoutMs: number
   signal: AbortSignal
 }): Promise<DiscoveredServer[]> {
@@ -31,7 +32,7 @@ export async function discoverServers(input: {
     args: ['-eo', 'pid=,args='],
     cwd: process.cwd(),
     timeoutMs: input.timeoutMs,
-    environment: buildChildEnvironment({ parent: process.env, extra: {} }),
+    environment: input.environment,
     signal: input.signal,
   })
   if (result.exitCode !== 0) {

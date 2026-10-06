@@ -2,9 +2,9 @@ import { isAbsolute, resolve } from 'pathe'
 import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
-import { buildChildEnvironment } from '../../../domain/environment.js'
+import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
 import type { ToolEffect } from '../../../domain/effect.js'
-import type { ResolvedProgram } from '../../../domain/executable.js'
+import { ownRoots, type ResolvedProgram } from '../../../domain/executable.js'
 import type { ForgeClient, ForgeRepository } from '../../../domain/forge.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
@@ -63,6 +63,8 @@ export interface ForgePackOptions {
   runProcess: ProcessRunner
   /** The git this node runs, by its real path (resolveProgram), or why none is run. */
   git: ResolvedProgram
+  /** The environment git runs with (hostEnvironment); the workspace's own roots alone when absent. */
+  environment?: HostEnvironment
   /** Buckle's own state directory, which is where the empty hooks directory git is pointed at lives. */
   stateDirectory: string
   forge: {
@@ -90,6 +92,7 @@ interface ReceivingGit {
 
 export function createForgePack(options: ForgePackOptions): Pack {
   const { forge, paths } = options
+  const environment = options.environment ?? hostEnvironment(() => ownRoots(paths))
 
   const runGit = async (input: { repository: string; args: string[]; config?: GitConfig[]; extra?: Record<string, string>; context: ToolContext }): Promise<ProcessResult> => {
     const config = [...isolationConfig(ensureHooksDirectory(options.stateDirectory)), ...(input.config ?? [])]
@@ -100,7 +103,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
       args: input.args,
       cwd: input.repository,
       timeoutMs: input.context.timeoutMs,
-      environment: buildChildEnvironment({ parent: process.env, extra: { ...ISOLATION_ENVIRONMENT, ...gitConfigEnvironment(config), ...input.extra } }),
+      environment: environment({ ...ISOLATION_ENVIRONMENT, ...gitConfigEnvironment(config), ...input.extra }),
       signal: input.context.signal,
     })
   }
