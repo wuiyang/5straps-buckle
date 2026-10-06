@@ -215,7 +215,7 @@ export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
 /**
  * A checkpoint as the owner reads it. `notRestorable`: the paths it changed among entries history records without
  * content (hard-linked dependency files, names holding a backslash, files another program held open), which no
- * restore puts back (review L1).
+ * restore puts back.
  */
 function summary(record: Checkpoint) {
   return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, createdAt: record.createdAt, status: record.status, restores: record.restores, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changedPaths(record.before, record.after).map(path => ({ path, kind: !record.before[path] ? 'created' : !record.after![path] ? 'deleted' : 'modified' })) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }

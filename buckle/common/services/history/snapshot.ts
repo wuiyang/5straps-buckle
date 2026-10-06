@@ -117,7 +117,7 @@ export function changedPaths(before: Snapshot, after: Snapshot): string[] {
 
 /**
  * The paths whose entry differs where either side was recorded without content (an excluded or unreadable entry): a
- * change no restore puts back. Listed as not restorable (review L1).
+ * change no restore puts back. Listed as not restorable.
  */
 export function notRestorablePaths(before: Snapshot, after: Snapshot): string[] {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]

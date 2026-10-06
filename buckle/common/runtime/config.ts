@@ -178,7 +178,7 @@ export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' 
 /**
  * Whether a workspace root holds a path, as typed and where each really is, compared as the disk compares: a root or
  * a state directory spelled through a link, or in another case where the disk ignores case, must not start a node
- * whose state an agent can write (review M3). `buckle init` refuses by the same test.
+ * whose state an agent can write. `buckle init` refuses by the same test.
  */
 export function workspaceHolds(typedRoot: string, path: string, platform: NodeJS.Platform = process.platform): boolean {
   const root = realPathOf(typedRoot)
