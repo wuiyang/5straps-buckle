@@ -7,6 +7,7 @@ import { createConnectionOwner, openDatabase, rawConnection, SqliteErrorCode, wi
 import { z } from 'zod'
 import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
 import { STATE_BUSY } from '../../adapters/json-file-store.js'
+import { logger } from '../../runtime/log.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
 
@@ -47,6 +48,8 @@ export interface ChangeHistoryOptions {
   retentionDays: number
   label?: string
   lockDeadlineMs?: number
+  /** The host's unless a test imitates another: on Windows a file held open without read sharing is recorded as unreadable. */
+  platform?: NodeJS.Platform
 }
 
 /**
@@ -64,6 +67,14 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const excluded = [...input.excluded, input.directory]
   const lockDeadlineMs = input.lockDeadlineMs ?? EXECUTION_LOCK_DEADLINE_MS
   await section(connection => connection.exec(SCHEMA))
+  // Each entry left out for a backslash in its name is named once, not at every capture.
+  const warnedNames = new Set<string>()
+  const warnBackslashName = (shown: string, root: string): void => {
+    const key = JSON.stringify([root, shown])
+    if (warnedNames.has(key)) return
+    warnedNames.add(key)
+    logger.warn('History leaves out an entry whose name holds a backslash, which Buckle reads as a separator: it is not captured or restored, and a change to it is listed as not restorable', { root, name: shown })
+  }
 
   function section<T>(body: (connection: DatabaseSync) => T): Promise<T> {
     return busyAsHistory(owner.run(async raw => body(await rawConnection(raw))))
@@ -84,7 +95,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     }))
   }
   function capture(connection: DatabaseSync, roots: string[], extraExcluded: string[] = []): Snapshot {
-    return snapshot({ roots, excluded: [...excluded, ...extraExcluded], maxBytes: input.maxBytes, excludeLinkedDependencies: true, save(hash, content) {
+    return snapshot({ roots, excluded: [...excluded, ...extraExcluded], maxBytes: input.maxBytes, excludeLinkedDependencies: true, onBackslashName: warnBackslashName, ...(input.platform ? { platform: input.platform } : {}), save(hash, content) {
       connection.prepare('INSERT OR IGNORE INTO objects(hash,content) VALUES(?,?)').run(hash, content)
       checkBudget(connection)
     } })
@@ -202,8 +213,9 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
 export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
 
 /**
- * A checkpoint as the owner reads it. `notRestorable`: the paths it changed among hard-linked dependency files,
- * which history records without content and no restore puts back (review L1).
+ * A checkpoint as the owner reads it. `notRestorable`: the paths it changed among entries history records without
+ * content (hard-linked dependency files, names holding a backslash, files another program held open), which no
+ * restore puts back (review L1).
  */
 function summary(record: Checkpoint) {
   return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, createdAt: record.createdAt, status: record.status, restores: record.restores, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changedPaths(record.before, record.after).map(path => ({ path, kind: !record.before[path] ? 'created' : !record.after![path] ? 'deleted' : 'modified' })) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }

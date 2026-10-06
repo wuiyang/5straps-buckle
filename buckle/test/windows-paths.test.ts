@@ -1,14 +1,18 @@
 import { closeSync, constants, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, WorkspacePolicySchema } from '@5straps/protocol'
 import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/adapters/beneath.js'
 import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { descent, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, withForwardSlashes } from '../common/domain/paths.js'
 import { loadConfig } from '../common/runtime/config.js'
+import { logger } from '../common/runtime/log.js'
+import { openChangeHistory } from '../common/services/history/journal.js'
 import { applySnapshot, restoredLinkType, restoreLink, snapshot } from '../common/services/history/snapshot.js'
+import { collectShellHiddenPaths } from '../common/services/shell/shell-filesystem.js'
+import { createWorkbenchFiles } from '../common/services/workbench/files.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
@@ -225,6 +229,11 @@ describe('the backslash case on Linux: inside\\..\\..\\x', () => {
         expect(result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
         expect(JSON.stringify(result)).not.toMatch(/outside|literal/)
       }
+      // A write beside the entry goes through: history leaves the entry out rather than failing the call.
+      await runtime.grants.grant({ sessionId: 'backslash', rule: 'write_scope', subject: workspace, scope: 'session' })
+      const beside = await runtime.invoke({ sessionId: 'backslash', request: { requestId: 'beside', tool: 'fs_write', args: { path: 'notes.md', content: 'notes' }, approvalTokens: [] }, approvalWait: { mode: 'none' } })
+      expect(beside).toMatchObject({ outcome: 'ok' })
+      expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('notes')
     } finally { await runtime.history.close() }
     expect(readFileSync(join(root, 'x'), 'utf8')).toBe('outside')
     expect(readFileSync(`${workspace}/inside\\..\\..\\x`, 'utf8')).toBe('literal')
@@ -307,10 +316,51 @@ describe('history on Windows, imitated', () => {
     expect(readlinkSync(path)).toBe('folder')
   })
 
-  it('refuses to capture a name holding a backslash, which pathe would record as another path', () => {
+  it('refuses, outside history, to capture a name holding a backslash, and names it from its root as listed', () => {
     const root = scratch()
+    mkdirSync(join(root, 'sub'))
     // Joined by hand: pathe's join would read the backslashes as separators.
-    writeFileSync(`${root}/inside\\..\\..\\x`, 'literal')
-    expect(() => snapshot({ roots: [root], excluded: [], maxBytes: 1_000_000, save: () => {} })).toThrow('History cannot capture a file name holding a backslash')
+    writeFileSync(`${root}/sub/inside\\..\\..\\x`, 'literal')
+    expect(() => snapshot({ roots: [root], excluded: [], maxBytes: 1_000_000, save: () => {} })).toThrow('History cannot capture sub/inside\\..\\..\\x, whose name holds a backslash, which Buckle reads as a separator')
+  })
+})
+
+// One backslash-named entry anywhere in a Linux workspace stopped every write and tracked command, and the agent saw only
+// that the tool failed. History now leaves it out, as it does a hard-linked dependency, and says so once in the log.
+describe('history beside a name holding a backslash, on Linux', () => {
+  it('leaves the entry out, names it once, records the writes beside it, and refuses a restore that would remove it', async () => {
+    const root = scratch()
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    writeFileSync(`${workspace}/inside\\..\\..\\x`, 'literal')
+    const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [], maxBytes: 1_000_000, retentionDays: 30 })
+    const warn = vi.spyOn(logger, 'warn')
+    try {
+      const details = { sessionId: 'backslash', stageId: 'stage', tool: 'fs_write', roots: [workspace] }
+      await history.run(details, async () => { writeFileSync(join(workspace, 'notes.md'), 'notes') })
+      await history.run(details, async () => { mkdirSync(join(workspace, 'made')); writeFileSync(`${workspace}/made/a\\b`, 'made') })
+      const [first, second] = await history.list()
+      expect(first!.paths).toEqual([join(workspace, 'notes.md')])
+      expect(second!.paths).toEqual([join(workspace, 'made')])
+      expect(second!.notRestorable).toEqual([`${workspace}/made/a\\b`])
+      const named = warn.mock.calls.filter(([message]) => message.startsWith('History leaves out')).map(([, fields]) => fields)
+      expect(named).toEqual([{ root: workspace, name: 'inside\\..\\..\\x' }, { root: workspace, name: 'made/a\\b' }])
+      await expect(history.restore(second!.id)).rejects.toThrow('Restore conflict: a directory holds a name with a backslash, which history does not capture')
+      expect(readFileSync(`${workspace}/made/a\\b`, 'utf8')).toBe('made')
+      expect(readFileSync(`${workspace}/inside\\..\\..\\x`, 'utf8')).toBe('literal')
+    } finally {
+      warn.mockRestore()
+      await history.close()
+    }
+  })
+
+  it('is still refused by the shell\'s hidden-path scan and the staged editor, which name it the same way', async () => {
+    const root = scratch()
+    const workspace = join(root, 'workspace')
+    mkdirSync(join(workspace, 'sub'), { recursive: true })
+    writeFileSync(`${workspace}/sub/a\\b`, '')
+    await expect(collectShellHiddenPaths({ roots: [workspace], protectedPaths: [], signal: AbortSignal.timeout(5_000) })).rejects.toThrow('The workspace holds sub/a\\b, a name with a backslash, which Buckle cannot hide from shell commands')
+    const files = createWorkbenchFiles({ sourceRoot: workspace, directory: join(root, 'workbenches'), maxBytes: 1_000_000, protectedRoots: [], authorizePath: () => true, ripgrep: null })
+    expect(() => files.prepare('staged')).toThrow('The workspace holds sub/a\\b, a name with a backslash, which the staged editor cannot judge')
   })
 })

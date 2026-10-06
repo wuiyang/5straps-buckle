@@ -132,6 +132,15 @@ export function isPlainName(name: string): boolean {
 }
 
 /**
+ * A directory entry named relative to the root a walk started from, its name as listed: a name that is not one plain
+ * name (a backslash on Linux) is shown with its backslash, never read as separators. `directory` is in pathe's form.
+ */
+export function entryBelowRoot(root: string, directory: string, name: string): string {
+  const below = relative(root, directory)
+  return below === '' ? name : `${below}/${name}`
+}
+
+/**
  * A path as the filesystem compares it: macOS's and Windows' default volumes ignore case (macOS also
  * Unicode normalization), so there a path is folded before a boundary compares it; elsewhere exactly.
  * The fold is upper then lower case, which Unicode defines without a locale, so the long s (U+017F)
