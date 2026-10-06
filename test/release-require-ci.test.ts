@@ -1,18 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { blockingJobs, repositoryOf, requireCi } from '../scripts/release/require-ci.mjs'
+import { blockingJobs, isReleaseCheckRun, repositoryOf, requireCi, workflowRunId } from '../scripts/release/require-ci.mjs'
 
-// B22, ruling 9: `pnpm release` publishes only when verify and package-arm64 both succeeded on the
-// exact commit being released, from a clean tree, and that commit is what origin holds for the branch
-// (review of B20-B22). git and gh are answered by the test.
+// The Release workflow and `pnpm release` publish only when verify and package-arm64 both succeeded
+// on the exact commit being released, in release-check.yml on a push to main or a run started on main,
+// from a clean tree, and that commit is what origin holds for the branch. git and gh are answered by
+// the test.
 
 const SHA = 'a'.repeat(40)
 const OTHER = 'b'.repeat(40)
 
-interface Run { id: number; name: string; head_sha: string; status: string; conclusion: string | null; started_at: string; app?: { slug: string } }
-const run = (name: string, conclusion: string | null, extra: Partial<Run> = {}): Run => ({ id: 1, name, head_sha: SHA, status: conclusion === null ? 'in_progress' : 'completed', conclusion, started_at: '2026-09-29T10:00:00Z', ...extra })
+interface Run { id: number; name: string; head_sha: string; status: string; conclusion: string | null; started_at: string; app?: { slug: string }; details_url?: string }
+const jobUrl = (workflowRun: number, id = 1) => `https://github.com/owner/repo/actions/runs/${workflowRun}/job/${id}`
+const run = (name: string, conclusion: string | null, extra: Partial<Run> = {}): Run => ({ id: 1, name, head_sha: SHA, status: conclusion === null ? 'in_progress' : 'completed', conclusion, started_at: '2026-09-29T10:00:00Z', details_url: jobUrl(7, extra.id), ...extra })
+
+interface WorkflowRun { path: string; event: string; head_branch: string; head_sha: string }
+/** Workflow run 7 is release-check.yml on a push to main, at SHA. */
+const RELEASE_CHECK: WorkflowRun = { path: '.github/workflows/release-check.yml', event: 'push', head_branch: 'main', head_sha: SHA }
 
 /** Answers git and gh as a repository on master whose HEAD is SHA would, recording every gh call. */
-function fake(input: { onOrigin?: boolean; originAt?: string; dirty?: boolean; detached?: boolean; runs?: Run[]; origin?: string; gh?: Error }) {
+function fake(input: { onOrigin?: boolean; originAt?: string; dirty?: boolean; detached?: boolean; runs?: Run[]; workflowRuns?: Record<string, WorkflowRun>; origin?: string; gh?: Error; workflowRunGh?: Error }) {
   const calls: string[][] = []
   const answer = (command: string, args: string[]): string => {
     calls.push([command, ...args])
@@ -25,6 +31,13 @@ function fake(input: { onOrigin?: boolean; originAt?: string; dirty?: boolean; d
     }
     if (command === 'git' && args[0] === 'remote') return `${input.origin ?? 'git@github.com-alias:owner/repo.git'}\n`
     if (command === 'gh' && input.gh) throw input.gh
+    const workflowRun = /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)$/.exec(args[1] ?? '')?.[1]
+    if (command === 'gh' && workflowRun) {
+      if (input.workflowRunGh) throw input.workflowRunGh
+      const answer = { 7: RELEASE_CHECK, ...input.workflowRuns }[workflowRun]
+      if (!answer) throw Object.assign(new Error('gh: Not Found (HTTP 404)'), { status: 1 })
+      return JSON.stringify({ id: Number(workflowRun), ...answer })
+    }
     if (command === 'gh') return JSON.stringify({ total_count: input.runs?.length ?? 0, check_runs: input.runs ?? [] })
     throw new Error(`unexpected ${command} ${args.join(' ')}`)
   }
@@ -88,5 +101,53 @@ describe('the CI requirement before publishing', () => {
     const git = fake({ runs: [run('verify', 'success'), run('package-arm64', 'success')] })
     requireCi({ run: git.run, repository: 'named/explicitly' })
     expect(git.calls.find(call => call[0] === 'gh')?.[2]).toBe(`repos/named/explicitly/commits/${SHA}/check-runs?per_page=100`)
+  })
+})
+
+describe('the workflow a CI job ran in', () => {
+  const passing = (workflowRun: number) => [run('verify', 'success', { details_url: jobUrl(workflowRun, 1) }), run('package-arm64', 'success', { id: 2, details_url: jobUrl(workflowRun, 2) })]
+
+  it('counts release-check.yml on a push to main or a run started on main, reading each workflow run once', () => {
+    for (const workflowRun of [RELEASE_CHECK, { ...RELEASE_CHECK, event: 'workflow_dispatch' }, { ...RELEASE_CHECK, path: '.github/workflows/release-check.yml@refs/heads/main' }]) {
+      const git = fake({ runs: passing(8), workflowRuns: { 8: workflowRun } })
+      expect(requireCi({ run: git.run, repository: '' })).toEqual({ ok: true, message: expect.stringContaining('succeeded in .github/workflows/release-check.yml on main') })
+      expect(git.calls.filter(call => call[0] === 'gh' && call[2] === 'repos/owner/repo/actions/runs/8')).toHaveLength(1)
+    }
+  })
+
+  it.each([
+    ['another workflow file', { ...RELEASE_CHECK, path: '.github/workflows/other.yml' }],
+    ['a copy of the file under another name', { ...RELEASE_CHECK, path: '.github/workflows/release-check.yml.bak' }],
+    ['a pull request', { ...RELEASE_CHECK, event: 'pull_request' }],
+    ['a run started on another branch', { ...RELEASE_CHECK, event: 'workflow_dispatch', head_branch: 'release-check-edit' }],
+    ['a workflow run of another commit', { ...RELEASE_CHECK, head_sha: OTHER }],
+  ])('refuses jobs that ran in %s', (_, workflowRun) => {
+    const result = requireCi({ run: fake({ runs: passing(8), workflowRuns: { 8: workflowRun } }).run, repository: '' })
+    expect(result).toEqual({ ok: false, message: expect.stringContaining('verify has not run on this commit in .github/workflows/release-check.yml on main; package-arm64 has not run') })
+  })
+
+  it('refuses a check run whose details_url names no workflow run, without asking for one', () => {
+    const git = fake({ runs: [run('verify', 'success', { details_url: 'https://example.com/verify' }), run('package-arm64', 'success', { id: 2 })] })
+    expect(requireCi({ run: git.run, repository: '' })).toEqual({ ok: false, message: expect.stringContaining('verify has not run on this commit') })
+    expect(git.calls.filter(call => call[0] === 'gh' && /actions\/runs/.test(call[2] ?? ''))).toHaveLength(1)
+  })
+
+  it('lets a later success in another workflow hide no failure in release-check.yml', () => {
+    const runs = [run('verify', 'failure'), run('package-arm64', 'success', { id: 2 }), run('verify', 'success', { id: 3, started_at: '2026-09-29T11:00:00Z', details_url: jobUrl(9, 3) })]
+    const result = requireCi({ run: fake({ runs, workflowRuns: { 9: { ...RELEASE_CHECK, path: '.github/workflows/other.yml' } } }).run, repository: '' })
+    expect(result).toEqual({ ok: false, message: expect.stringContaining('verify concluded failure') })
+  })
+
+  it('refuses in one line naming gh when the workflow run cannot be read', () => {
+    const result = requireCi({ run: fake({ runs: passing(7), workflowRunGh: Object.assign(new Error('Command failed: gh api'), { status: 1 }) }).run, repository: '' })
+    expect(result).toEqual({ ok: false, message: expect.stringContaining('gh could not read the CI results for owner/repo') })
+  })
+
+  it('reads the workflow run id from a job URL only', () => {
+    expect(workflowRunId({ details_url: 'https://github.com/owner/repo/actions/runs/123/job/456' })).toBe('123')
+    expect(workflowRunId({ details_url: 'https://github.com/owner/repo/runs/456' })).toBeNull()
+    expect(workflowRunId({})).toBeNull()
+    expect(isReleaseCheckRun({ ...RELEASE_CHECK, path: '.github/workflows/release-check.yml@main' }, SHA)).toBe(true)
+    expect(isReleaseCheckRun(undefined, SHA)).toBe(false)
   })
 })
