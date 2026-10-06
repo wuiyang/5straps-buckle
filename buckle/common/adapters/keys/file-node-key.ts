@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto'
-import { closeSync, existsSync, fsyncSync, linkSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, linkSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs'
 import { generateSigningKey, signingKeyFromPem, type SigningKey } from '@5straps/protocol/signed-request'
+import { requireOwnerOnly, type OwnerOnlyCheck } from '../file-modes.js'
 
 /**
  * The node's own Ed25519 signing identity (keys-provisioning.md: Buckle signs requests with its
  * machine key; the trusted client verifies those): made once, owner-only, in the node's state
  * directory, and never shown but its public half. A separate purpose from every person's key.
  */
-export function loadNodeKey(filePath: string): SigningKey & { publicKey: string } {
+export function loadNodeKey(filePath: string, ownerOnly: OwnerOnlyCheck = {}): SigningKey & { publicKey: string } {
   if (!existsSync(filePath)) createOnce(filePath)
-  if ((statSync(filePath).mode & 0o077) !== 0) throw new Error(`${filePath} can be read by other users; run chmod 600 ${filePath}`)
+  requireOwnerOnly(filePath, 'file', ownerOnly)
   try {
     return signingKeyFromPem(readFileSync(filePath, 'utf8'))
   } catch (error) {

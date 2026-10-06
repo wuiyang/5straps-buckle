@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { setDescriptorMode } from '../file-modes.js'
 import { StateBusyError } from '../json-file-store.js'
 import { createPendingAudit } from './pending-audit.js'
-import { closeSync, fsyncSync, fchmodSync, fstatSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, fstatSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { logger } from '../../runtime/log.js'
@@ -106,7 +107,7 @@ function appendSynced(filePath: string, data: (size: number, tail: number | unde
   mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
   const descriptor = openSync(filePath, 'a+', 0o600)
   try {
-    fchmodSync(descriptor, 0o600)
+    setDescriptorMode(descriptor, 0o600)
     const size = fstatSync(descriptor).size
     const tail = Buffer.alloc(1)
     if (size > 0) readSync(descriptor, tail, 0, 1, size - 1)

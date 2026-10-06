@@ -12,6 +12,7 @@ const entry = vi.hoisted(() => ({
   setupServer: vi.fn(async () => ({ requestCli: vi.fn() })),
   serveMcpStdio: vi.fn(async () => {}),
   initializeCommon: vi.fn(() => ({ owner: { onClose: vi.fn(), close: vi.fn(async () => {}) }, bindRequester: vi.fn() })),
+  configureOwnerOnlyCheck: vi.fn(),
 }))
 vi.mock('../common/runtime/environment.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/environment.js')>(), loadEnvironmentFile: entry.loadEnvironmentFile }))
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
@@ -20,8 +21,9 @@ vi.mock('../server/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, builtEntryPath: () => '/built/.output/server/index.mjs' }))
 vi.mock('../mcp/stdio.js', () => ({ serveMcpStdio: entry.serveMcpStdio }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))
+vi.mock('../common/adapters/file-modes.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/adapters/file-modes.js')>(), configureOwnerOnlyCheck: entry.configureOwnerOnlyCheck }))
 
-const { main, selectMode } = await import('../main.js')
+const { main, selectMode, takeGlobalFlags } = await import('../main.js')
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -51,7 +53,35 @@ describe('selectMode', () => {
   })
 })
 
+describe('takeGlobalFlags', () => {
+  it.each([
+    [['--skip-owner-only-check', 'policy', 'show'], { argv: ['policy', 'show'], skipOwnerOnlyCheck: true }],
+    [['policy', 'show', '--skip-owner-only-check'], { argv: ['policy', 'show'], skipOwnerOnlyCheck: true }],
+    [['policy', '--skip-owner-only-check', 'show'], { argv: ['policy', 'show'], skipOwnerOnlyCheck: true }],
+    [['serve', '--skip-owner-only-check'], { argv: ['serve'], skipOwnerOnlyCheck: true }],
+    [['fs', 'read', 'notes.txt'], { argv: ['fs', 'read', 'notes.txt'], skipOwnerOnlyCheck: false }],
+    // After a `--` every argument is the command's own, the flag's spelling included.
+    [['fs', 'write', '--', '--skip-owner-only-check'], { argv: ['fs', 'write', '--', '--skip-owner-only-check'], skipOwnerOnlyCheck: false }],
+  ])('reads %j as %j', (argv, taken) => {
+    expect(takeGlobalFlags(argv)).toEqual(taken)
+  })
+})
+
 describe('main', () => {
+  it('takes --skip-owner-only-check before or after the command word, so buckle policy never sees it', async () => {
+    for (const argv of [['--skip-owner-only-check', 'policy', 'show'], ['policy', 'show', '--skip-owner-only-check']]) {
+      expect(await main(argv)).toBe(5)
+      expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['policy', 'show'], config })
+      expect(entry.configureOwnerOnlyCheck).toHaveBeenLastCalledWith({ skip: true })
+    }
+    expect(await main(['--skip-owner-only-check', 'init', '--yes'])).toBe(3)
+    expect(entry.runInitCommand).toHaveBeenCalledWith(['--yes'])
+    expect(await main(['--skip-owner-only-check', 'serve'])).toBeUndefined()
+    expect(entry.initializeCommon).toHaveBeenCalledWith(expect.objectContaining({ role: 'server' }))
+    expect(await main(['policy', 'show'])).toBe(5)
+    expect(entry.configureOwnerOnlyCheck).toHaveBeenLastCalledWith({ skip: false })
+  })
+
   it('runs init and settings before, and without, the environment file and the node config', async () => {
     expect(await main(['init', '--yes'])).toBe(3)
     expect(entry.runInitCommand).toHaveBeenCalledWith(['--yes'])

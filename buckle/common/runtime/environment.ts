@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { parseEnv } from 'node:util'
+import { isOpenToOthers } from '../adapters/file-modes.js'
 import { isInside } from '../domain/paths.js'
 import { stateDirectoryOf } from './config.js'
 
@@ -31,7 +32,7 @@ export function defaultEnvironmentFile(environment: NodeJS.ProcessEnv = process.
 
 export interface LoadedEnvironmentFile {
   file: string | null
-  /** Group or other permission bits are set on a file that holds the node's credentials. */
+  /** Group or other permission bits are set on a file that holds the node's credentials; never on Windows, which keeps no modes. */
   openToOthers: boolean
 }
 
@@ -52,7 +53,7 @@ export function loadEnvironmentFile(): LoadedEnvironmentFile {
   for (const [name, value] of variables) {
     if (process.env[name] === undefined) process.env[name] = value
   }
-  return { file: path, openToOthers: (statSync(path).mode & 0o077) !== 0 }
+  return { file: path, openToOthers: isOpenToOthers(path) }
 }
 
 // Buckle never reads <cwd>/.env; starting on defaults beside one that configures it would silently

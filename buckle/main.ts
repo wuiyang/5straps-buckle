@@ -6,6 +6,7 @@ import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand,
 import { setupCli } from './cli/setup.js'
 import { clientCommand } from './cli/client.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
+import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
 import { loadConfig, type BuckleConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile, meetOutsideRoot, namesItsNode, outsideRootNotice } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
@@ -28,6 +29,20 @@ interface Shutdown {
   requested(): boolean
 }
 
+/**
+ * Flags any command takes, before or after its command word, up to a `--`: each is taken out here, so no
+ * command's own parser sees it (`buckle policy` refuses a flag it does not know).
+ */
+export function takeGlobalFlags(argv: readonly string[]): { argv: string[]; skipOwnerOnlyCheck: boolean } {
+  const terminator = argv.indexOf('--')
+  const end = terminator === -1 ? argv.length : terminator
+  const flags = argv.slice(0, end)
+  return {
+    argv: [...flags.filter(argument => argument !== SKIP_OWNER_ONLY_FLAG), ...argv.slice(end)],
+    skipOwnerOnlyCheck: flags.includes(SKIP_OWNER_ONLY_FLAG),
+  }
+}
+
 export function selectMode(argv: readonly string[]): Mode {
   const [command, ...rest] = argv
   if (command === 'init' || command === 'settings' || command === 'client') return { kind: command, argv: rest }
@@ -37,7 +52,9 @@ export function selectMode(argv: readonly string[]): Mode {
 
 /** The exit code of a one-shot command; undefined once serve or mcp is running. */
 export async function main(argv: readonly string[]): Promise<number | undefined> {
-  const mode = selectMode(argv)
+  const global = takeGlobalFlags(argv)
+  configureOwnerOnlyCheck({ skip: global.skipOwnerOnlyCheck })
+  const mode = selectMode(global.argv)
   if (!('argv' in mode)) {
     await runService({ kind: mode.kind, ...configureProcess({ servesTools: mode.kind === 'mcp' }) })
     return undefined

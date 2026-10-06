@@ -1,5 +1,5 @@
 import { createRuntimeOwner, type Logger, type RequestCli, type RuntimeOwner } from '@5straps/runtime'
-import { assertOwnerOnlyDirectory } from '@5straps/runtime/sqlite'
+import { requireOwnerOnly } from '../adapters/file-modes.js'
 import type { BuckleConfig } from './config.js'
 import { createServiceAccessors, currentInteraction, defineBuckleServices, serviceList, type BuckleServices } from './services.js'
 
@@ -51,7 +51,7 @@ export function initializeCommon(input: InitializeCommonInput): BuckleCommon {
 async function startCommon(input: { config: BuckleConfig; services: BuckleServices; role: RuntimeRole }): Promise<void> {
   const { services } = input
   // workspaces.json there holds workspace credentials (ruling 7).
-  assertOwnerOnlyDirectory(input.config.stateDirectory)
+  requireOwnerOnly(input.config.stateDirectory, 'directory')
   await services.getWorkspaceRuntime()
   await services.getWorkspaces()
   // Only the admin HTTP layer uses the node key, the seen nonces and the setup sessions, so only a

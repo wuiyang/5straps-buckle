@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { z } from 'zod'
 import { isDependencyBelowRoot, openBeneath, openRealDirectory, type PinnedDirectory } from '../../adapters/beneath.js'
+import { setDescriptorMode } from '../../adapters/file-modes.js'
 import { isInside, isInsideAny } from '../../domain/paths.js'
 
 /**
@@ -152,7 +153,7 @@ function createDirectoryCache(roots: string[]) {
 
 function changeMode(directory: PinnedDirectory, name: string, mode: number, shown: string): void {
   const descriptor = openBeneath(directory, name, constants.O_RDONLY, shown)
-  try { fchmodSync(descriptor, mode) } finally { closeSync(descriptor) }
+  try { setDescriptorMode(descriptor, mode) } finally { closeSync(descriptor) }
 }
 
 function writeRestoredFile(input: { directory: PinnedDirectory; name: string; path: string; content: Buffer; mode: number }): void {
@@ -162,7 +163,7 @@ function writeRestoredFile(input: { directory: PinnedDirectory; name: string; pa
   try {
     try {
       writeFileSync(descriptor, input.content)
-      fchmodSync(descriptor, input.mode)
+      setDescriptorMode(descriptor, input.mode)
     } finally { closeSync(descriptor) }
     renameSync(input.directory.child(temporary), input.directory.child(input.name))
   } finally { rmSync(input.directory.child(temporary), { force: true }) }

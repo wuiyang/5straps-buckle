@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, fchmodSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { withFileLock } from '@5straps/runtime/sqlite'
+import { setDescriptorMode, setMode } from '../common/adapters/file-modes.js'
 
 /**
  * Sets one variable in an environment file's text, in place where it is already there: the line
@@ -71,7 +72,7 @@ export function writeEnvironmentFile(path: string, text: string): void {
     writeFileSync(path, text, { mode: OWNER_ONLY, flag: 'wx' })
     return
   }
-  chmodSync(path, OWNER_ONLY)
+  setMode(path, OWNER_ONLY)
   writeFileAtomically(path, text)
 }
 
@@ -87,7 +88,7 @@ const LOCK_POLL_MS = 25
 export function updateEnvironmentFile(path: string, edit: (text: string) => EnvironmentEdit, options: { home?: string; lockDeadlineMs?: number } = {}): Promise<EnvironmentEdit> {
   const target = realpathSync(path)
   return withEnvironmentLock({ target, home: options.home ?? homedir(), deadlineMs: options.lockDeadlineMs ?? LOCK_WAIT_MS }, () => {
-    chmodSync(target, OWNER_ONLY)
+    setMode(target, OWNER_ONLY)
     const text = readFileSync(target, 'utf8')
     const result = edit(text)
     if (result.ok && result.text !== text) writeFileAtomically(target, result.text)
@@ -109,7 +110,7 @@ export function writeFileAtomically(path: string, text: string): void {
     const descriptor = openSync(temporary, 'wx', OWNER_ONLY)
     try {
       writeFileSync(descriptor, text)
-      fchmodSync(descriptor, OWNER_ONLY)
+      setDescriptorMode(descriptor, OWNER_ONLY)
       fsyncSync(descriptor)
     } finally {
       closeSync(descriptor)

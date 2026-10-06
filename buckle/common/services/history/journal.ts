@@ -1,10 +1,11 @@
 import { isInside } from '../../domain/paths.js'
 import { randomUUID } from 'node:crypto'
-import { chmodSync, mkdirSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { createConnectionOwner, openDatabase, rawConnection, SqliteErrorCode, withFileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
+import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
 import { STATE_BUSY } from '../../adapters/json-file-store.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
@@ -54,9 +55,11 @@ export interface ChangeHistoryOptions {
  */
 export async function openChangeHistory(input: ChangeHistoryOptions) {
   mkdirSync(input.directory, { recursive: true, mode: 0o700 })
-  chmodSync(input.directory, 0o700)
-  // It holds copies of workspace files, secrets included.
-  const db = await openDatabase({ path: join(input.directory, 'history.sqlite'), pragmas: { busy_timeout: 5_000 }, requireOwnerOnlyDirectory: true })
+  setMode(input.directory, 0o700)
+  // It holds copies of workspace files, secrets included. Checked here rather than by openDatabase, so the
+  // refusal names the flag that lets it through, as the state directory's does.
+  requireOwnerOnly(input.directory, 'directory')
+  const db = await openDatabase({ path: join(input.directory, 'history.sqlite'), pragmas: { busy_timeout: 5_000 } })
   const owner = createConnectionOwner(db, { owned: true, label: input.label ?? `history:${input.directory}` })
   const excluded = [...input.excluded, input.directory]
   const lockDeadlineMs = input.lockDeadlineMs ?? EXECUTION_LOCK_DEADLINE_MS

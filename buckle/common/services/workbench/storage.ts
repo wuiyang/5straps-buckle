@@ -1,10 +1,11 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { acquireFileLock, type FileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { WorkbenchIdSchema, WorkbenchRecordSchema, type WorkbenchRecord } from '@5straps/protocol'
+import { setMode } from '../../adapters/file-modes.js'
 import { workspaceStateKey } from '../../domain/workspace-key.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 
@@ -53,7 +54,7 @@ export function writeWorkbenchJson(path: string, value: unknown): void {
   renameSync(temporary, path)
 }
 export function createWorkbenchStorage(directory: string) {
-  mkdirSync(directory, { recursive: true, mode: 0o700 }); chmodSync(directory, 0o700)
+  mkdirSync(directory, { recursive: true, mode: 0o700 }); setMode(directory, 0o700)
   let lock: Promise<FileLock> | undefined
   // True for the call that took ownership; the lock is held until close().
   async function own(): Promise<boolean> {

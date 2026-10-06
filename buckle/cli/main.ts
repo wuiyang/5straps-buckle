@@ -192,6 +192,7 @@ function printUsage(): CliResult {
                                    This device's signing key, a signed request with it, and a signed approval
 
   buckle --version                   Print the version
+  buckle <command> --skip-owner-only-check   Warn about, rather than refuse, a state directory or key file other users can reach
 `)
   return { exitCode: 0 }
 }

@@ -380,8 +380,28 @@ describe('a state directory other users can reach (ruling 7)', () => {
       running.push(run)
       expect(await run.exited).toEqual({ code: 1, signal: null })
       expect(run.stderr()).toContain(`chmod 700 ${node.state}`)
+      expect(run.stderr()).toContain('--skip-owner-only-check')
     }
     expect(readdirSync(node.state)).toEqual([])
+  }, 60_000)
+
+  it('with --skip-owner-only-check before or after the command word, runs commands, buckle policy included, and serve, warning once naming the directory', async () => {
+    const node = await prepareNode()
+    chmodSync(node.state, 0o755)
+    const warned = (run: BuckleProcess) => run.lines().filter(line => line.level === 'warn' && line.message.includes(`Directory ${node.state} is accessible to other users`))
+    for (const args of [['--skip-owner-only-check', 'tools'], ['policy', 'show', '--skip-owner-only-check']]) {
+      const run = spawnBuckle({ entry, args, env: node.env, cwd: node.workspace })
+      running.push(run)
+      expect(await run.exited).toEqual({ code: 0, signal: null })
+      expect(warned(run)).toHaveLength(1)
+    }
+    const served = spawnBuckle({ entry, args: ['serve', '--skip-owner-only-check'], env: node.env, cwd: node.workspace })
+    running.push(served)
+    await waitForStatus(`http://127.0.0.1:${node.port}/health/ready`, 200)
+    expect(warned(served)).toHaveLength(1)
+    served.child.kill('SIGTERM')
+    expect(await served.exited).toEqual({ code: 0, signal: null })
+    expect(statSync(node.state).mode & 0o777).toBe(0o755)
   }, 60_000)
 })
 

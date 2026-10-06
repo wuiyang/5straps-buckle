@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
-import { accessSync, chmodSync, constants, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { setMode } from '../../../adapters/file-modes.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { receivePackCommand } from '../git-isolation.js'
 import { MAX_ENTRIES, POINTER_FILES, REF_DIRECTORIES } from './own-git-directory.js'
@@ -113,7 +114,7 @@ function ensureReceiveGuard(stateDirectory: string): string {
   }
   if (!executable(hook)) {
     try {
-      chmodSync(hook, 0o700)
+      setMode(hook, 0o700)
     } catch {
       // Judged by the test below.
     }

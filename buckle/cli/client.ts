@@ -1,9 +1,10 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
 import { terminalConfirm, type Confirm } from './terminal-consumer.js'
+import { OwnerOnlyError, requireOwnerOnly, setMode, type OwnerOnlyCheck } from '../common/adapters/file-modes.js'
 import { describeAction, printable, sameCallNote } from '../common/domain/approval-instruction.js'
 import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 
@@ -56,7 +57,7 @@ export async function clientCommand(argv: string[], environment: NodeJS.ProcessE
     if (verb === 'approvals') return await approvals(rest, environment)
     if (verb === 'approve') return await approve(rest, environment, options.confirm === undefined ? terminalConfirm({ input: process.stdin, output: process.stdout }) : options.confirm)
   } catch (error) {
-    if (error instanceof ClientError) return fail(error.message)
+    if (error instanceof ClientError || error instanceof OwnerOnlyError) return fail(error.message)
     throw error
   }
   return fail(USAGE)
@@ -71,10 +72,10 @@ export function clientDirectory(environment: NodeJS.ProcessEnv = process.env): s
 }
 
 /** This device's key, refused when other users can read it, as ssh refuses an unprotected key. */
-export function loadClientKey(environment: NodeJS.ProcessEnv = process.env): SigningKey & { publicKey: string } {
+export function loadClientKey(environment: NodeJS.ProcessEnv = process.env, ownerOnly: OwnerOnlyCheck = {}): SigningKey & { publicKey: string } {
   const file = join(clientDirectory(environment), CLIENT_KEY_FILE)
   if (!existsSync(file)) throw new ClientError(`No signing key at ${file}: run buckle client keygen first`)
-  if ((statSync(file).mode & 0o077) !== 0) throw new ClientError(`${file} can be read by other users; run chmod 600 ${file}`)
+  requireOwnerOnly(file, 'file', ownerOnly)
   return signingKeyFromPem(readFileSync(file, 'utf8'))
 }
 
@@ -86,7 +87,7 @@ function keygen(argv: string[], environment: NodeJS.ProcessEnv): CliResult {
   const file = join(directory, CLIENT_KEY_FILE)
   if (existsSync(file) && !values.force) throw new ClientError(`${file} already holds this device's key; pass --force to replace it, then enroll the new one and revoke the old`)
   mkdirSync(directory, { recursive: true, mode: 0o700 })
-  chmodSync(directory, 0o700)
+  setMode(directory, 0o700)
   const generated = generateSigningKey()
   // Written owner-only beside the file, then moved over it, so no reader ever sees half a key.
   const temporary = `${file}.${process.pid}.tmp`

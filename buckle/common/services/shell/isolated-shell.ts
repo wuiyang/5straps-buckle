@@ -2,8 +2,9 @@ import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { withFileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
+import { setMode } from '../../adapters/file-modes.js'
 import { isInsideAny, isInside } from '../../domain/paths.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { ToolExecutionError } from '../../domain/tool.js'
@@ -163,7 +164,7 @@ function onDisk(path: string): 'link' | 'missing' | 'present' {
 
 function removePrivateWorkspace(directory: string): void {
   if (!lstatSync(directory).isDirectory()) { rmSync(directory); return }
-  chmodSync(directory, 0o700)
+  setMode(directory, 0o700)
   for (const name of readdirSync(directory)) removePrivateWorkspace(join(directory, name))
   rmSync(directory, { recursive: true })
 }
