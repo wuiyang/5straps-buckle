@@ -61,21 +61,29 @@ decision binds the whole call, whatever the display hides.
   junction just before opening it, opens it without creating or truncating it, compares the file
   it opened with the one it checked, and checks the path again before it truncates. A name that
   was absent at the check is created only while still absent, and an open that creates nothing
-  never uses an entry that appeared after the check. Only on a volume that reports no file IDs can a
-  file swapped for a link before the open, and back before the second check, still be followed.
+  never uses an entry that appeared after the check.
+- Two gaps remain. On Windows and macOS, Buckle checks each folder above a file and then opens
+  that folder by its path, so a folder swapped for a link between the check and the open is
+  followed. On a Windows volume that reports no file IDs, the file opened cannot be compared
+  with the one checked at all, so a file swapped for a link before the open, and back before the
+  second check, is followed.
 - On Windows, a workspace or state directory on a network share, such as
   `\\server\share\project`, or on a mapped drive, is refused: use a folder on a local drive.
 - On Windows, a whole drive cannot be a Buckle root: the workspace root, a scratch root, the
-  state directory, and the client directory must each be a folder, not `D:\`. Buckle started in
-  `D:\` without `BUCKLE_WORKSPACE_ROOT` refuses to start for the same reason.
+  state directory, and the client directory must each be a folder, not `D:\`. That holds through
+  a link to the drive, and with the dots and spaces Windows drops from the end of a name, as in
+  `D:\...`. Buckle started in `D:\` without `BUCKLE_WORKSPACE_ROOT` refuses to start for the same
+  reason.
 
 ## Programs Buckle runs
 
 - Buckle runs each program it needs, such as `rg`, `git`, or the sandbox program `bwrap`, by the
-  path `PATH` gives, and refuses one found inside the workspace or a scratch root, where the
-  agent writes. `npx` and `pnpm exec` put the workspace's `node_modules/.bin` first on `PATH`, so
-  an `rg` there leaves content search out, and a `bwrap` there leaves no sandbox: the shell tools
-  are withheld rather than run without one.
+  path `PATH` gives, and refuses one an agent could have written: one found in any workspace or
+  scratch root this node knows, or in a folder `BUCKLE_MOUNTS` shares, whichever workspace runs
+  it. `npx` and `pnpm exec` put a workspace's `node_modules/.bin` first on `PATH`, so an `rg`
+  there leaves content search out of every workspace, and a `bwrap` there leaves no sandbox: the
+  shell tools are withheld rather than run without one. A node started while its workspace
+  registry cannot be read runs no program: repair the registry, then restart the node.
 
 ## The command line
 
