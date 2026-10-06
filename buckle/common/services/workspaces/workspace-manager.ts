@@ -7,6 +7,7 @@ import { createJsonFileStore, StateFileError } from '../../adapters/json-file-st
 import type { InteractionSource } from '../approvals/interaction.js'
 import { actionsPath, type BuckleConfig } from '../../runtime/config.js'
 import { compilePolicy } from '../../domain/policy.js'
+import { rootsOf } from '../../domain/executable.js'
 import { comparablePath, ignoresCase, isDriveRoot, isInsideComparable, nativePath, WHOLE_DRIVE } from '../../domain/paths.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { createNodeRoots, type NodeRoots } from './node-roots.js'
@@ -97,13 +98,14 @@ function registryStore(filePath: string, lockDeadlineMs?: number) {
 }
 
 /**
- * The roots of a node (NodeRoots): the default workspace's, its scratch roots, its mounts' sources, and every root its
- * workspace registry holds. `config` is the node's own.
+ * The roots of a node (NodeRoots): the default workspace's, its scratch roots, the sources of its writable mounts, and
+ * every root its workspace registry holds. `config` is the node's own.
  */
 export function nodeRootsOf(config: BuckleConfig, platform: NodeJS.Platform = process.platform): NodeRoots {
   const registry = registryStore(join(config.stateDirectory, 'workspaces.json'), config.stateLockDeadlineMs)
+  const writableMounts = (config.sandboxMounts ?? []).filter(mount => !mount.readOnly).map(mount => mount.source)
   return createNodeRoots({
-    fixed: [config.cwd, ...config.scratchRoots, ...(config.sandboxMounts ?? []).map(mount => mount.source)],
+    fixed: [...rootsOf('workspace', [config.cwd]), ...rootsOf('scratch root', config.scratchRoots), ...rootsOf('writable mount', writableMounts)],
     readRegistered: () => {
       try { return registry.read().workspaces.map(workspace => workspace.root) }
       catch (error) { if (error instanceof WorkspaceRegistryError) return null; throw error }

@@ -4,7 +4,7 @@ import { createWorkbenchManager } from '../workbench/manager.js'
 import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
 import { spawnPtyProcess } from '../../adapters/pty-process.js'
 import { buildChildEnvironment } from '../../domain/environment.js'
-import { resolveProgram, type UntrustedRoots } from '../../domain/executable.js'
+import { ownRoots, resolveProgram, type UntrustedRoots } from '../../domain/executable.js'
 import { isInside, nativePath, parentDirectory } from '../../domain/paths.js'
 import { collectShellHiddenPaths } from '../shell/shell-filesystem.js'
 import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
@@ -172,7 +172,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   // Where no program run here may come from: this workspace's roots and every root the node knows, read at each resolution.
   const untrusted = (): UntrustedRoots => {
     const node = input.nodeRoots?.current()
-    return { untrustedRoots: [config.cwd, ...config.scratchRoots, ...node?.untrustedRoots ?? []], rootsUnknown: node?.rootsUnknown ?? null }
+    return { untrustedRoots: [...ownRoots({ root: config.cwd, scratchRoots: config.scratchRoots }).untrustedRoots, ...node?.untrustedRoots ?? []], rootsUnknown: node?.rootsUnknown ?? null }
   }
   // The sandbox program is refused where an agent writes, as every other program Buckle runs is.
   const sandbox = resolveSandbox({

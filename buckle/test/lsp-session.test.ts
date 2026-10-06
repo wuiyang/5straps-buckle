@@ -4,7 +4,7 @@ vi.mock('../common/services/packs/dev/lsp-client.js', () => ({ spawnLspServer: t
 import { createSessionPool } from '../common/services/packs/dev/session.js'
 
 /** Every server found outside the workspace, so the pool spawns it by that path. */
-const found = (name: string) => ({ path: `/opt/servers/${name}` })
+const found = (name: string) => ({ path: `/opt/servers/${name}`, argv0: `/opt/bin/${name}` })
 function connection() { return { request: vi.fn().mockResolvedValue({}), notify: vi.fn(), close: vi.fn(), diagnosticsFor: vi.fn() } }
 beforeEach(() => vi.resetAllMocks())
 
@@ -27,6 +27,6 @@ it('keeps spawned and attached endpoints in separate cached sessions', async () 
   expect((await pool.get('typescript', { host: '127.0.0.1', port: 9000 })).connection).toBe(attached)
   expect((await pool.get('typescript', null)).connection).toBe(spawned)
   expect(transport.spawn).toHaveBeenCalledOnce()
-  expect(transport.spawn).toHaveBeenCalledWith(expect.objectContaining({ command: '/opt/servers/typescript-language-server' }))
+  expect(transport.spawn).toHaveBeenCalledWith(expect.objectContaining({ program: { path: '/opt/servers/typescript-language-server', argv0: '/opt/bin/typescript-language-server' } }))
   pool.closeAll()
 })

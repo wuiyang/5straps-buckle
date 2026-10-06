@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { resolveProgram, type ProgramResolver } from '../../../domain/executable.js'
+import { ownRoots, resolveProgram, type ProgramResolver } from '../../../domain/executable.js'
 import { defineTool, ToolExecutionError } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -41,7 +41,7 @@ export interface DevPackOptions {
 }
 
 export function createDevPack(options: DevPackOptions): Pack {
-  const program = options.resolveProgram ?? (name => resolveProgram(name, { untrustedRoots: [options.paths.root, ...options.paths.scratchRoots] }))
+  const program = options.resolveProgram ?? (name => resolveProgram(name, ownRoots(options.paths)))
   const pool = createSessionPool(options.cwd, program)
 
   const query = async (input: {
@@ -83,7 +83,7 @@ export function createDevPack(options: DevPackOptions): Pack {
           if (ps.path === null) throw new ToolExecutionError(ps.reason, { code: 'PROCESS_LIST_FAILED' })
           const servers = await discoverServers({
             runProcess: options.runProcess,
-            ps: ps.path,
+            ps,
             timeoutMs: context.timeoutMs,
             signal: context.signal,
           })

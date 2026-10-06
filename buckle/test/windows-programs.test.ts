@@ -4,7 +4,7 @@ import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { JsonObject } from '@5straps/protocol'
 import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
-import { findExecutable, resolveProgram, runnableCommand, type ExecutableLookup } from '../common/domain/executable.js'
+import { findExecutable, resolveProgram, rootsOf, runnableCommand, type ExecutableLookup } from '../common/domain/executable.js'
 import type { Pack } from '../common/domain/pack.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { BROWSER_UNTRUSTED } from '../common/services/packs/browser/index.js'
@@ -31,17 +31,17 @@ function lookupFrom(table: Record<string, string>): ExecutableLookup & { platfor
 }
 
 describe('a program resolved on Windows, imitated', () => {
-  const untrustedRoots = ['C:/ws', 'D:/scratch']
+  const untrustedRoots = [...rootsOf('workspace', ['C:/ws']), ...rootsOf('scratch root', ['D:/scratch'])]
 
   it('is spawned by the absolute path PATH gives, in pathe\'s form', () => {
     const lookup = lookupFrom({ rg: 'C:\\Tools\\rg.exe' })
-    expect(resolveProgram('rg', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: 'C:/Tools/rg.exe' })
+    expect(resolveProgram('rg', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: 'C:/Tools/rg.exe', argv0: 'C:/Tools/rg.exe' })
     expect(lookup.platforms).toEqual(['win32'])
   })
 
   it('is refused where the agent writes: the workspace, a scratch root, or a case variant of either', () => {
-    for (const found of ['C:\\ws\\rg.exe', 'c:\\WS\\bin\\rg.exe', 'D:\\Scratch\\rg.exe']) {
-      expect(resolveProgram('rg', { untrustedRoots, lookup: lookupFrom({ rg: found }), platform: 'win32' })).toEqual({ path: null, reason: 'rg is found inside a workspace, a scratch root, or a mount of this node, where an agent may have put it, so Buckle does not run it', untrusted: true })
+    for (const [found, kind] of [['C:\\ws\\rg.exe', 'a workspace'], ['c:\\WS\\bin\\rg.exe', 'a workspace'], ['D:\\Scratch\\rg.exe', 'a scratch root']]) {
+      expect(resolveProgram('rg', { untrustedRoots, lookup: lookupFrom({ rg: found! }), platform: 'win32' })).toEqual({ path: null, reason: `rg is found in or through ${kind} of this node, where an agent can write, so Buckle does not run it`, untrusted: true })
     }
   })
 
@@ -70,8 +70,8 @@ describe('a program resolved on Windows, imitated', () => {
 
   it('leaves a command word the agent wrote as a path as written, and resolves a bare one', () => {
     const lookup = lookupFrom({ git: 'C:\\Program Files\\Git\\cmd\\git.exe', node: 'C:\\ws\\node.exe' })
-    expect(runnableCommand('git', { untrustedRoots, lookup, platform: 'win32' })).toBe('C:/Program Files/Git/cmd/git.exe')
-    expect(runnableCommand('.\\tools\\git.exe', { untrustedRoots, lookup, platform: 'win32' })).toBe('.\\tools\\git.exe')
+    expect(runnableCommand('git', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: 'C:/Program Files/Git/cmd/git.exe', argv0: 'C:/Program Files/Git/cmd/git.exe' })
+    expect(runnableCommand('.\\tools\\git.exe', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: '.\\tools\\git.exe', argv0: '.\\tools\\git.exe' })
     expect(() => runnableCommand('node', { untrustedRoots, lookup, platform: 'win32' })).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
   })
 })
@@ -133,12 +133,12 @@ describe('the packs on Windows, imitated, with programs planted in the workspace
     const { root, call, spawned, pack } = builtins({ table: planted })
     mkdirSync(join(root, 'bin'))
     expect(pack('fs').tools.map(tool => tool.capability.name)).not.toContain('fs_search_content')
-    expect(pack('git').unavailableReason).toBe('git is found inside a workspace, a scratch root, or a mount of this node, where an agent may have put it, so Buckle does not run it')
+    expect(pack('git').unavailableReason).toBe('git is found in or through a workspace of this node, where an agent can write, so Buckle does not run it')
     expect(pack('forge').unavailableReason).toMatch(/BUCKLE_FORGE_GITHUB_TOKEN/)
     expect(pack('browser').unavailableReason).toBe(BROWSER_UNTRUSTED)
     writeFileSync(join(root, 'a.ts'), 'export const a = 1\n')
-    await expect(call('dev', 'lsp_hover', { path: 'a.ts', language: 'typescript', line: 1 })).rejects.toThrow('typescript-language-server is found inside a workspace')
-    await expect(call('dev', 'lsp_discover', {})).rejects.toThrow('ps is found inside a workspace')
+    await expect(call('dev', 'lsp_hover', { path: 'a.ts', language: 'typescript', line: 1 })).rejects.toThrow('typescript-language-server is found in or through a workspace')
+    await expect(call('dev', 'lsp_discover', {})).rejects.toThrow('ps is found in or through a workspace')
     await expect(call('shell', 'shell_exec', { command: 'node', args: ['-e', '1'] })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
     expect(spawned).toEqual([])
   })

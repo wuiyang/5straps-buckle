@@ -127,7 +127,7 @@ function pack(input: { repository: string; token?: string; runner?: typeof runPr
   const options: ForgePackOptions = {
     paths: input.paths ?? createPathView({ root: input.repository, mount: null }),
     runProcess: input.runner ?? runProcess,
-    git: { path: 'git' },
+    git: { path: 'git', argv0: 'git' },
     stateDirectory: input.stateDirectory ?? temporaryRoot('state'),
     forge: {
       client: token ? createGitHubForgeClient({ token, apiUrl }) : null,

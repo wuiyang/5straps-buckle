@@ -1,5 +1,7 @@
 export interface ProcessRequest {
   command: string
+  /** The name the program is started by, when it is not `command`: a resolved program's path as PATH gave it (Program). */
+  argv0?: string
   args: string[]
   cwd: string
   timeoutMs: number

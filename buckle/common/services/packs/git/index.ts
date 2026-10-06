@@ -46,7 +46,7 @@ export interface GitPackOptions {
   runProcess: ProcessRunner
   /** Buckle's own state directory, which is where the empty hooks directory git is pointed at lives. */
   stateDirectory: string
-  /** The git this node runs, by its absolute path (resolveProgram), or why none is run. */
+  /** The git this node runs, by its real path (resolveProgram), or why none is run. */
   git: ResolvedProgram
 }
 
@@ -55,6 +55,7 @@ export function createGitPack(options: GitPackOptions): Pack {
     if (options.git.path === null) throw new ToolExecutionError(options.git.reason, { code: 'GIT_FAILED' })
     return options.runProcess({
       command: options.git.path,
+      argv0: options.git.argv0,
       args: input.args,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,

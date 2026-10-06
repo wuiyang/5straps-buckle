@@ -2,7 +2,7 @@ import type { SandboxMount } from '../../domain/sandbox-mounts.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import type { IsolatedShellOptions } from '../shell/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
-import { resolveProgram, type ProgramSearch, type ResolvedProgram, type UntrustedRoots } from '../../domain/executable.js'
+import { ownRoots, resolveProgram, type ProgramSearch, type ResolvedProgram, type UntrustedRoots } from '../../domain/executable.js'
 import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
 import { forgeGitHost } from '../../domain/forge.js'
@@ -92,7 +92,7 @@ export function unmetPackPrerequisite(id: string, options: Pick<BuiltinPackOptio
 /** The only place built-in packs are constructed. Plugins are appended by the plugin loader. */
 export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   // Each program a pack runs is resolved once, here, and spawned by that path; one found where an agent writes is refused.
-  const untrusted = options.untrusted ?? (() => ({ untrustedRoots: [options.paths.root, ...options.paths.scratchRoots] }))
+  const untrusted = options.untrusted ?? (() => ownRoots(options.paths))
   const program = (name: string): ResolvedProgram => resolveProgram(name, { ...untrusted(), ...options.programSearch })
   const git = program('git')
   const packs: Pack[] = [
@@ -164,7 +164,8 @@ function forgeUnavailableReason(options: BuiltinPackOptions, git: ResolvedProgra
 }
 
 function shellUnavailableReason(options: BuiltinPackOptions): string | null {
-  if (options.sandboxMounts?.length && options.sandbox.mode !== 'bubblewrap') return 'Explicit mounts require bubblewrap'
+  // Where no sandbox could be had, such as a bwrap refused where an agent writes, that is the reason, not the mounts.
+  if (options.sandboxMounts?.length && options.sandbox.mode !== 'bubblewrap') return options.sandboxUnavailableReason ?? 'Explicit mounts require bubblewrap'
   if (!options.enableShell) return 'Shell tools are turned off by BUCKLE_ALLOW_SHELL=false'
   if (options.shellIsolation && options.sandbox.mode !== 'bubblewrap') return 'Isolated shell execution requires bubblewrap; BUCKLE_SHELL_ISOLATION=false opts into shared-workspace checkpoints'
   if (options.sandboxUnavailableReason) return options.sandboxUnavailableReason

@@ -61,7 +61,7 @@ const readInput = repoInput.extend({
 export interface ForgePackOptions {
   paths: PathView
   runProcess: ProcessRunner
-  /** The git this node runs, by its absolute path (resolveProgram), or why none is run. */
+  /** The git this node runs, by its real path (resolveProgram), or why none is run. */
   git: ResolvedProgram
   /** Buckle's own state directory, which is where the empty hooks directory git is pointed at lives. */
   stateDirectory: string
@@ -96,6 +96,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
     if (options.git.path === null) throw new ToolExecutionError(options.git.reason, { code: 'GIT_FAILED' })
     return await options.runProcess({
       command: options.git.path,
+      argv0: options.git.argv0,
       args: input.args,
       cwd: input.repository,
       timeoutMs: input.context.timeoutMs,

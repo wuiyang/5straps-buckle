@@ -9,7 +9,7 @@ import { isInsideAny, nativePath } from '../../../domain/paths.js'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
-import { runnableCommand, type ProgramSearch, type UntrustedRoots } from '../../../domain/executable.js'
+import { ownRoots, rootsOf, runnableCommand, type ProgramSearch, type UntrustedRoots } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolInputError, type ToolContext } from '../../../domain/tool.js'
@@ -68,8 +68,8 @@ export interface ShellPackOptions {
 
 export function createShellPack(options: ShellPackOptions): Pack {
   const untrustedBeside = (writableRoots: readonly string[]): UntrustedRoots => {
-    const untrusted = options.untrusted?.() ?? { untrustedRoots: [options.paths.root, ...options.paths.scratchRoots] }
-    return { ...untrusted, untrustedRoots: [...untrusted.untrustedRoots, ...writableRoots] }
+    const untrusted = options.untrusted?.() ?? ownRoots(options.paths)
+    return { ...untrusted, untrustedRoots: [...untrusted.untrustedRoots, ...rootsOf('scratch root', writableRoots)] }
   }
   const execute = async (input: {
     command: string
@@ -95,7 +95,8 @@ export function createShellPack(options: ShellPackOptions): Pack {
     if (!isInsideAny(options.writableRoots, cwd)) throw new ToolInputError('Shell working directory must be in the workspace or an owner-configured writable root', { code: 'PERMISSION_DENIED' })
     if (input.allowNetwork && !options.allowNetwork) throw new ToolInputError('Shell networking is disabled by the owner; use the web tools for scoped network access', { code: 'PERMISSION_DENIED' })
     // Unsandboxed, the command word is spawned as the system finds it, which on Windows is the working directory first.
-    const command = options.sandbox.mode === 'none' ? runnableCommand(input.command, { ...untrustedBeside(options.writableRoots), ...options.programSearch }) : input.command
+    const program = options.sandbox.mode === 'none' ? runnableCommand(input.command, { ...untrustedBeside(options.writableRoots), ...options.programSearch }) : null
+    const command = program?.path ?? input.command
     const hidden = options.sandbox.mode === 'none' ? { directories: options.hiddenPaths, files: [] } : await collectShellHiddenPaths({
       roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths], protectedPaths: options.hiddenPaths, signal: input.signal,
     })
@@ -124,7 +125,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
         readOnlyWorkspacePaths: restrictions.readOnlyWorkspacePaths.map(mapped),
       })
       return options.runProcess({
-        command: wrapped.command, args: wrapped.args, cwd: mapped(cwd), timeoutMs: input.timeoutMs,
+        command: wrapped.command, argv0: program?.argv0, args: wrapped.args, cwd: mapped(cwd), timeoutMs: input.timeoutMs,
         environment: buildChildEnvironment({ parent: process.env, extra: input.env }), signal: input.signal,
       })
     }

@@ -9,6 +9,7 @@ export const runProcess: ProcessRunner = (request: ProcessRequest): Promise<Proc
   return new Promise((resolvePromise, rejectPromise) => {
     if (request.signal?.aborted) { rejectPromise(new Error('Process request was already cancelled')); return }
     const child = spawn(request.command, request.args, {
+      argv0: request.argv0,
       cwd: request.cwd,
       env: request.environment,
       shell: false,

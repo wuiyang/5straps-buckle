@@ -1,6 +1,6 @@
-import { accessSync, constants, realpathSync, statSync } from 'node:fs'
+import { accessSync, constants, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs'
 import { join } from 'pathe'
-import { ignoresCase, isInsideComparable, nativePath, pathRoot } from './paths.js'
+import { childPath, ignoresCase, isInsideComparable, nativePath, parentDirectory, pathRoot, withForwardSlashes } from './paths.js'
 import { ToolInputError } from './tool.js'
 
 /**
@@ -41,30 +41,63 @@ export interface ProgramSearch {
 }
 
 /**
- * A program Buckle runs: the absolute path it spawns, or why it is not run. `untrusted` is a program found where an
- * agent can write.
+ * A program Buckle runs: the real path it spawns, with the path PATH gave it as its `argv0`, as a program that answers
+ * to the name it was started by (busybox, ccache, a rustup proxy) reads it.
  */
-export type ResolvedProgram = { path: string } | { path: null; reason: string; untrusted: boolean }
+export interface Program {
+  path: string
+  argv0: string
+}
+
+/** A program Buckle runs, or why it is not run. `untrusted` is a program found where an agent can write. */
+export type ResolvedProgram = Program | { path: null; reason: string; untrusted: boolean }
 
 /** One workspace's resolveProgram, bound to its roots and search. */
 export type ProgramResolver = (name: string) => ResolvedProgram
 
-/**
- * Where no program Buckle runs may come from: every root the node knows an agent may have put one in, its workspaces',
- * its scratch roots, and its mounts (NodeRoots). `rootsUnknown` says why not all of them are known, when they are not
- * (the workspace registry cannot be read): every program is then refused, as it could lie in a root not listed.
- */
-export interface UntrustedRoots {
-  untrustedRoots: readonly string[]
-  rootsUnknown?: string | null
+/** What a root an agent can write is to the node. */
+export type RootKind = 'workspace' | 'scratch root' | 'writable mount'
+
+/** A root an agent can write: a workspace, a scratch root, or the source of a mount the sandbox shares writable. */
+export interface UntrustedRoot {
+  path: string
+  kind: RootKind
+}
+
+/** Roots of one kind, from the list the configuration names them in. */
+export function rootsOf(kind: RootKind, paths: readonly string[]): UntrustedRoot[] {
+  return paths.map(path => ({ path, kind }))
+}
+
+/** A workspace's own roots, its root and its scratch roots, which a pack built without the node's roots refuses. */
+export function ownRoots(view: { root: string; scratchRoots: readonly string[] }): UntrustedRoots {
+  return { untrustedRoots: [...rootsOf('workspace', [view.root]), ...rootsOf('scratch root', view.scratchRoots)] }
 }
 
 /**
+ * Where no program Buckle runs may come from: every root the node knows an agent may have put one in, its workspaces',
+ * its scratch roots, and the sources of its writable mounts (NodeRoots). `rootsUnknown` says why not all of them are
+ * known, when they are not (the workspace registry cannot be read): every program is then refused, as it could lie in a
+ * root not listed.
+ */
+export interface UntrustedRoots {
+  untrustedRoots: readonly UntrustedRoot[]
+  rootsUnknown?: string | null
+}
+
+// A refusal names the kind of root, never its path: a mounted workspace hides every host path from its agent, and one
+// workspace's root is no business of another's.
+const ROOT_NAMES: Record<RootKind, string> = { 'workspace': 'a workspace', 'scratch root': 'a scratch root', 'writable mount': 'the source of a writable mount' }
+
+/**
  * A program Buckle runs by name, looked up on PATH once (findExecutable, never in a working directory) and spawned by
- * the absolute path found. Spawned by its bare name, it would be looked up again by the system: on Windows libuv tries
- * `name.com` and `name.exe` in the child's working directory before PATH, so a program an agent wrote into the
- * workspace would run with Buckle's rights. A program found inside an untrusted root (`untrustedRoots`), as written or
- * where its links lead, is refused, compared as the disk compares paths (comparablePath).
+ * the real path it leads to. Spawned by its bare name, it would be looked up again by the system: on Windows libuv
+ * tries `name.com` and `name.exe` in the child's working directory before PATH, so a program an agent wrote into the
+ * workspace would run with Buckle's rights. A program is refused where any place on its way lies inside an untrusted
+ * root (`untrustedRoots`): the path found, each link it passes through and where each leads, and where it lands
+ * (walkLinks), compared as the disk compares paths (comparablePath). Judged by the path found and its real path alone,
+ * a PATH entry linked to a folder in a workspace let the agent point the program there at a trusted one for the check
+ * and at its own after it, and the PATH spelling then ran the agent's.
  */
 export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoots): ResolvedProgram {
   const platform = input.platform ?? process.platform
@@ -72,13 +105,14 @@ export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoo
   if (found === null) return { path: null, reason: `${name} is not installed on this node`, untrusted: false }
   if (input.rootsUnknown) return { path: null, reason: `${name} is not run while ${input.rootsUnknown}`, untrusted: true }
   let path: string
-  try { path = nativePath(found, platform) } catch (error) { return { path: null, reason: error instanceof Error ? error.message : String(error), untrusted: false } }
+  try { path = nativePath(found, platform) } catch (error) { return { path: null, reason: messageOf(error), untrusted: false } }
   if (pathRoot(path) === '') return { path: null, reason: `${name} is a relative path, which Buckle does not run from a working directory`, untrusted: false }
-  const spellings = [path, realPathOr(path, platform)]
-  if (input.untrustedRoots.some(root => spellings.some(spelling => isInsideComparable(root, spelling, ignoresCase(platform), platform)))) {
-    return { path: null, reason: `${name} is found inside a workspace, a scratch root, or a mount of this node, where an agent may have put it, so Buckle does not run it`, untrusted: true }
-  }
-  return { path }
+  let walked: LinkWalk
+  // A chain Buckle cannot follow may be one an agent built, so it is refused as one found where an agent writes.
+  try { walked = walkLinks(path, platform) } catch (error) { return { path: null, reason: `${name} cannot be followed to where it really is: ${messageOf(error)}`, untrusted: true } }
+  const root = rootHolding(input.untrustedRoots, [path, ...walked.passed, walked.real], platform)
+  if (root) return { path: null, reason: `${name} is found in or through ${ROOT_NAMES[root.kind]} of this node, where an agent can write, so Buckle does not run it`, untrusted: true }
+  return { path: walked.real, argv0: path }
 }
 
 /**
@@ -86,11 +120,63 @@ export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoo
  * the rules judged that path; a bare name is resolved (resolveProgram), so a program the agent planted in its working
  * directory never stands in for the one on PATH that a rule naming it meant.
  */
-export function runnableCommand(command: string, input: ProgramSearch & UntrustedRoots): string {
-  if (isPathReference(command, input.platform ?? process.platform)) return command
+export function runnableCommand(command: string, input: ProgramSearch & UntrustedRoots): Program {
+  if (isPathReference(command, input.platform ?? process.platform)) return { path: command, argv0: command }
   const program = resolveProgram(command, input)
   if (program.path === null) throw new ToolInputError(program.reason, program.untrusted ? { code: 'PERMISSION_DENIED' } : undefined)
-  return program.path
+  return program
+}
+
+/** The first untrusted root that holds any of `places`. */
+function rootHolding(roots: readonly UntrustedRoot[], places: readonly string[], platform: NodeJS.Platform): UntrustedRoot | undefined {
+  return roots.find(root => places.some(place => isInsideComparable(root.path, place, ignoresCase(platform), platform)))
+}
+
+/** How many links one lookup follows, as Linux allows (SYMLOOP_MAX). */
+const MAX_LINKS = 40
+
+interface LinkWalk {
+  /** Where the path lands, each link on the way followed; past a name that does not exist, named as written. */
+  real: string
+  /** Each link met, where it really lies, and the place it leads, in the order met. */
+  passed: string[]
+}
+
+/**
+ * Where an absolute path in pathe's form really leads, walked one name at a time from its root as the kernel walks it,
+ * with every place on the way an agent could change to send it elsewhere: each link met, named where it really lies,
+ * and where it leads, followed even where it leads nowhere yet. Each name is appended as text (childPath), and a `..`
+ * climbs from where the walk really is. `platform`: the host's unless a test imitates another.
+ */
+function walkLinks(path: string, platform: NodeJS.Platform): LinkWalk {
+  const passed: string[] = []
+  let links = 0
+  const follow = (start: string, names: readonly string[]): string => {
+    let current = start
+    for (const name of names) {
+      if (name === '' || name === '.') continue
+      if (name === '..') { current = parentDirectory(current); continue }
+      const next = childPath(current, name)
+      if (!isLink(next)) { current = next; continue }
+      if (++links > MAX_LINKS) throw new Error(`it passes through more than ${MAX_LINKS} links`)
+      const target = withForwardSlashes(readlinkSync(next), platform)
+      const root = pathRoot(target, platform)
+      passed.push(next)
+      current = follow(root === '' ? current : root, target.slice(root.length).split('/'))
+      passed.push(current)
+    }
+    return current
+  }
+  const root = pathRoot(path, platform)
+  return { real: follow(root, path.slice(root.length).split('/')), passed }
+}
+
+function isLink(path: string): boolean {
+  try { return lstatSync(path).isSymbolicLink() } catch { return false }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /** Where a path really is, in pathe's form, or the path itself where it cannot be resolved. */

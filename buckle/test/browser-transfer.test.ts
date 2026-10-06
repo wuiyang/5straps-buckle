@@ -30,7 +30,7 @@ const transfers = (session: string) => readdirSync(session).filter(name => name.
 async function browser(input: { workspace: string; session: string; args: JsonObject; run?: (request: ProcessRequest) => void; options?: Partial<BrowserPackOptions> }) {
   const pack = createBrowserPack({
     cwd: input.workspace, paths: createPathView({ root: input.workspace, mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: input.session,
-    headed: false, agentBrowser: { path: 'agent-browser' }, approvedLists: [],
+    headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [],
     runProcess: async (request): Promise<ProcessResult> => {
       input.run?.(request)
       return { exitCode: 0, signal: null, stdout: '{"success":true}', stderr: '', truncated: false, timedOut: false }

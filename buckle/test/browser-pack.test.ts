@@ -29,7 +29,7 @@ async function run(input: JsonObject, options: Partial<BrowserPackOptions> = {},
     agentBrowserCommand: 'agent-browser',
     sessionDirectory: PROFILE,
     headed: false,
-    agentBrowser: { path: 'agent-browser' },
+    agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' },
     approvedLists: [],
     runProcess: async request => {
       calls.push(request)
@@ -258,7 +258,7 @@ describe('the environment the browser is spawned with', () => {
         agentBrowserCommand: 'agent-browser',
         sessionDirectory: PROFILE,
         headed: false,
-        agentBrowser: { path: 'agent-browser' },
+        agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' },
         approvedLists: [],
         runProcess: async request => {
           calls.push(request)
@@ -415,7 +415,7 @@ describe('file arguments reach agent-browser only through a private transfer', (
     const calls: ProcessRequest[] = []
     const pack = createBrowserPack({
       cwd: input.workspace, paths: createPathView({ root: input.workspace, mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: input.sessions,
-      headed: false, agentBrowser: { path: 'agent-browser' }, approvedLists: [],
+      headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [],
       runProcess: async (request) => { calls.push(request); return input.process?.(request) ?? stubResult() },
     })
     const execute = pack.tools[0]!.prepare({ command: input.command, args: input.args }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal, ...input.context })

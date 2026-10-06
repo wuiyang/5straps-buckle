@@ -2,7 +2,7 @@ import { logger } from '../../../runtime/log.js'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { resolve } from 'pathe'
-import { resolveProgram, type ProgramResolver } from '../../../domain/executable.js'
+import { resolveProgram, rootsOf, type Program, type ProgramResolver } from '../../../domain/executable.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { connectLspSocket, spawnLspServer, type LspConnection } from './lsp-client.js'
 import { serverForLanguage } from './servers.js'
@@ -15,10 +15,10 @@ export interface LspSession {
 }
 
 /**
- * One connection per language per workspace, reused across calls. A server is spawned by the absolute path `program`
+ * One connection per language per workspace, reused across calls. A server is spawned by the real path `program`
  * resolves for it, never by its bare name, which Windows would look up in the workspace first (resolveProgram).
  */
-export function createSessionPool(cwd: string, program: ProgramResolver = name => resolveProgram(name, { untrustedRoots: [cwd] })) {
+export function createSessionPool(cwd: string, program: ProgramResolver = name => resolveProgram(name, { untrustedRoots: rootsOf('workspace', [cwd]) })) {
   const sessions = new Map<string, Promise<LspSession>>()
 
   const open = async (language: string, attach: { port: number; host: string } | null): Promise<LspSession> => {
@@ -27,7 +27,7 @@ export function createSessionPool(cwd: string, program: ProgramResolver = name =
 
     const connection = attach
       ? await connectLspSocket(attach)
-      : spawnLspServer({ command: serverProgram(program, known.binaries[0] ?? language), args: known.spawnArgs, cwd })
+      : spawnLspServer({ program: serverProgram(program, known.binaries[0] ?? language), args: known.spawnArgs, cwd })
 
     try {
       await connection.request('initialize', {
@@ -70,10 +70,10 @@ export function createSessionPool(cwd: string, program: ProgramResolver = name =
   }
 }
 
-function serverProgram(program: ProgramResolver, name: string): string {
+function serverProgram(program: ProgramResolver, name: string): Program {
   const resolved = program(name)
   if (resolved.path === null) throw new ToolExecutionError(resolved.reason, { code: 'LSP_UNAVAILABLE' })
-  return resolved.path
+  return resolved
 }
 
 /** A server only answers about documents it has been told about. */

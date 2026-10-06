@@ -1,4 +1,5 @@
 import { buildChildEnvironment } from '../../../domain/environment.js'
+import type { Program } from '../../../domain/executable.js'
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import { connect } from 'node:net'
 import type { Readable, Writable } from 'node:stream'
@@ -136,8 +137,9 @@ export function createLspConnection(streams: { input: Readable; output: Writable
   }
 }
 
-export function spawnLspServer(input: { command: string; args: string[]; cwd: string }): LspConnection {
-  const child: ChildProcessByStdio<Writable, Readable, Readable> = spawn(input.command, input.args, {
+export function spawnLspServer(input: { program: Program; args: string[]; cwd: string }): LspConnection {
+  const child: ChildProcessByStdio<Writable, Readable, Readable> = spawn(input.program.path, input.args, {
+    argv0: input.program.argv0,
     cwd: input.cwd,
     env: buildChildEnvironment({ parent: process.env, extra: {} }),
     stdio: ['pipe', 'pipe', 'pipe'],

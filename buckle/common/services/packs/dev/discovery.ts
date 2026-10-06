@@ -1,4 +1,5 @@
 import { buildChildEnvironment } from '../../../domain/environment.js'
+import type { Program } from '../../../domain/executable.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { knownServerForCommand } from './servers.js'
@@ -19,13 +20,14 @@ const SOCKET_FLAG_PATTERN = /--(?:port|socket|tcp)[= ](\d{2,5})/
 
 export async function discoverServers(input: {
   runProcess: ProcessRunner
-  /** The absolute path `ps` is spawned by (resolveProgram), never its bare name. */
-  ps: string
+  /** The `ps` spawned (resolveProgram), by its real path, never its bare name. */
+  ps: Program
   timeoutMs: number
   signal: AbortSignal
 }): Promise<DiscoveredServer[]> {
   const result = await input.runProcess({
-    command: input.ps,
+    command: input.ps.path,
+    argv0: input.ps.argv0,
     args: ['-eo', 'pid=,args='],
     cwd: process.cwd(),
     timeoutMs: input.timeoutMs,

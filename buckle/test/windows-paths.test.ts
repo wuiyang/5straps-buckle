@@ -5,7 +5,7 @@ import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, MountPathSchema, WorkspacePolicySchema } from '@5straps/protocol'
 import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/adapters/beneath.js'
-import { resolveProgram } from '../common/domain/executable.js'
+import { resolveProgram, rootsOf } from '../common/domain/executable.js'
 import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox } from '../common/domain/filesystem-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { childPath, descent, isDriveRoot, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, resolvePath, typedPath, WHOLE_DRIVE, withForwardSlashes } from '../common/domain/paths.js'
@@ -511,8 +511,8 @@ describe('a drive\'s root on Windows, imitated', () => {
   })
 
   it('refuses a program found anywhere on a drive that is an untrusted root', () => {
-    expect(resolveProgram('rg', { untrustedRoots: ['D:/'], lookup: () => 'D:\\tools\\rg.exe', platform: 'win32' })).toMatchObject({ path: null, untrusted: true })
-    expect(resolveProgram('rg', { untrustedRoots: ['D:/'], lookup: () => 'C:\\tools\\rg.exe', platform: 'win32' })).toEqual({ path: 'C:/tools/rg.exe' })
+    expect(resolveProgram('rg', { untrustedRoots: rootsOf('workspace', ['D:/']), lookup: () => 'D:\\tools\\rg.exe', platform: 'win32' })).toMatchObject({ path: null, untrusted: true })
+    expect(resolveProgram('rg', { untrustedRoots: rootsOf('workspace', ['D:/']), lookup: () => 'C:\\tools\\rg.exe', platform: 'win32' })).toEqual({ path: 'C:/tools/rg.exe', argv0: 'C:/tools/rg.exe' })
   })
 
   // pathe takes `//./ws` for a relative path, so `C://./ws/secret/k.txt` was resolved from the working directory: from

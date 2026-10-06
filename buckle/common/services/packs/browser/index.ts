@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
 import type { JsonValue } from '@5straps/protocol'
 import { buildChildEnvironment } from '../../../domain/environment.js'
-import type { ResolvedProgram } from '../../../domain/executable.js'
+import type { Program, ResolvedProgram } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../../domain/tool.js'
@@ -46,7 +46,7 @@ export interface BrowserPackOptions {
   sessionDirectory: string
   /** Launch a visible window instead of headless. A per-call --headed flag still wins. */
   headed: boolean
-  /** The configured command resolved once (resolveProgram): the absolute path every call spawns, or why none is run. */
+  /** The configured command resolved once (resolveProgram): the real path every call spawns, or why none is run. */
   agentBrowser: ResolvedProgram
   /**
    * Each configured approved list, node ceiling first, empty when none is set. Passed on every
@@ -127,8 +127,10 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             if (options.headed && !input.args.includes('--headed')) args.push('--headed')
 
             writeFileSync(configFile, '{}\n', { mode: 0o600 })
+            const program = browserProgram(options)
             const ran = await options.runProcess({
-              command: browserProgram(options),
+              command: program.path,
+              argv0: program.argv0,
               args,
               cwd: options.sessionDirectory,
               timeoutMs: context.timeoutMs,
@@ -159,11 +161,12 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   }
 }
 
-/** The path agent-browser is spawned by; a pack without one is withheld, so no call reaches here. */
-function browserProgram(options: BrowserPackOptions): string {
+/** The agent-browser spawned; a pack without one is withheld, so no call reaches here. */
+function browserProgram(options: BrowserPackOptions): Program {
   if (options.agentBrowser.path === null) throw new ToolExecutionError(BROWSER_UNAVAILABLE, { code: 'BROWSER_COMMAND_FAILED' })
-  return options.agentBrowser.path
+  return options.agentBrowser
 }
+
 
 /** How long shutdown waits for the browser daemons to close, all of them together. */
 const CLOSE_TIMEOUT_MS = 5_000
@@ -180,8 +183,10 @@ async function closeSessions(input: { options: BrowserPackOptions; sessions: Jso
   if (closing.length === 0) return
   const bound = AbortSignal.timeout(CLOSE_TIMEOUT_MS)
   await Promise.all(closing.map(async (session) => {
+    const program = browserProgram(input.options)
     const result = await input.options.runProcess({
-      command: browserProgram(input.options),
+      command: program.path,
+      argv0: program.argv0,
       args: ['close', '--session', session, '--json'],
       cwd: input.options.sessionDirectory,
       timeoutMs: CLOSE_TIMEOUT_MS,
