@@ -12,6 +12,7 @@ const WORKFLOWS = fileURLToPath(new URL('../.github/workflows/', import.meta.url
 const read = (file: string) => readFileSync(join(WORKFLOWS, file), 'utf8')
 const RELEASE = read('release.yml')
 const PREPARE = read('release-prepare.yml')
+const CHECK = read('release-check.yml')
 
 /** The lines under `key:` at `indent` spaces, up to the next line at that indentation or less. */
 function block(text: string, key: string, indent: number): string[] {
@@ -38,7 +39,7 @@ function runScripts(text: string): string[] {
 }
 
 describe('the release workflows', () => {
-  it.each([['release.yml', RELEASE], ['release-prepare.yml', PREPARE]])('%s pins every action to a full commit, with its version beside it', (_, text) => {
+  it.each([['release.yml', RELEASE], ['release-prepare.yml', PREPARE], ['release-check.yml', CHECK]])('%s pins every action to a full commit, with its version beside it', (_, text) => {
     const uses = text.split('\n').filter(line => /^\s*(?:- )?uses:/.test(line))
     expect(uses.length).toBeGreaterThan(0)
     for (const line of uses) expect(line).toMatch(/uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/)
