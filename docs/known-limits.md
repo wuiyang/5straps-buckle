@@ -44,6 +44,17 @@ decision binds the whole call, whatever the display hides.
   `X_SECRET_SETUP` holding `touch x; rm -rf build` reads `[redacted]`, so the approver cannot see
   what it runs.
 
+## Paths and Windows
+
+- On Linux and macOS, Buckle reads a backslash in a path as a separator, so a tool call naming
+  `notes\draft.md` is refused there, and a file whose name holds a backslash is left out of
+  listings and cannot be read or written with the file tools.
+- Windows has no open that refuses a symbolic link, so there Buckle checks the path for a link or
+  junction just before opening it and compares the file it opened with the one it checked: a
+  link swapped in and back out between those two steps can still be followed.
+- On Windows, a workspace or state directory on a network share, such as
+  `\\server\share\project`, or on a mapped drive, is refused: use a folder on a local drive.
+
 ## The command line
 
 - `buckle serve --help` and `buckle mcp --help` start the service rather than print help.

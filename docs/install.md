@@ -12,6 +12,10 @@ disk.
   none. CI runs on Linux only, x64 and arm64, so the macOS and Windows columns below come from
   the code paths, not from a CI run.
 
+On Windows, Buckle starts, its file tools read and write in the workspace, and Ctrl-C,
+Ctrl-Break, or closing its console stops it after its close steps. Windows is checked by hand,
+not by CI. [Known limits](known-limits.md#paths-and-windows) lists the differences.
+
 Buckle looks for these programs on `PATH`. Without one, the matching pack or tool is withheld,
 except for a language server: a missing one withholds nothing, and a call that needs it fails
 when it runs. `buckle manifest` says why a pack is withheld; without `rg`, the
