@@ -236,7 +236,11 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     const authorization = (method: string, path: string, body: string) => signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: 'local-dev', nodeKey: keyIdOf(nodePublicKey), workspace: 'default', method, path, body })
     const buckle = serve(node)
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
-    const running = () => execFileSync('ps', ['-eo', 'args'], { encoding: 'utf8' }).split('\n').some(line => line.trim() === `sleep ${marker}`)
+    // Unsandboxed, the command word is spawned by the path PATH gives, so ps shows `/usr/bin/sleep <marker>` or the like.
+    const running = () => execFileSync('ps', ['-eo', 'args'], { encoding: 'utf8' }).split('\n').some(line => {
+      const [program, ...args] = line.trim().split(' ')
+      return /(^|\/)sleep$/.test(program ?? '') && args.join(' ') === marker
+    })
     const waiting = fetch(`http://127.0.0.1:${node.port}/v1/invoke`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-agent-token', 'content-type': 'application/json' },
       body: JSON.stringify({ requestId: 'long-shell', tool: 'shell_exec', args: { command: 'sleep', args: [marker] } }) })
     // The shell stays held until an enrolled device verifies and signs its exact action.
