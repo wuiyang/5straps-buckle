@@ -55,12 +55,19 @@ for this start with `BUCKLE_PORT=4321 buckle serve`, or edit the `BUCKLE_PORT` l
 
 ## The state directory has the wrong modes
 
-Buckle creates `~/.5straps/buckle` with mode 700 and its files with mode 600. When other users
-can reach the directory, every command, `buckle serve`, and `buckle mcp` refuse to start:
+On Linux and macOS, Buckle creates `~/.5straps/buckle` with mode 700 and its files with mode 600.
+When other users can reach the directory, every command, `buckle serve`, and `buckle mcp` refuse
+to start:
 
 ```
-Directory /home/you/.5straps/buckle is accessible to other users (mode 755); it holds credentials and must be owner-only: chmod 700 /home/you/.5straps/buckle
+Directory /home/you/.5straps/buckle is accessible to other users (mode 755); it holds credentials and must be owner-only: chmod 700 /home/you/.5straps/buckle, or pass --skip-owner-only-check to use it as it is
 ```
+
+Run the `chmod` it names. Where modes cannot be set, for example on a Windows drive mounted in
+WSL, add `--skip-owner-only-check` to the command, before or after the command word, as in
+`buckle serve --skip-owner-only-check`. Buckle then logs one warning naming the directory and
+starts. The flag covers the node's signing key and the device key of `buckle client` the same
+way. On Windows, Buckle checks no modes at all.
 
 When only the settings file is readable by others, Buckle starts and logs a warning:
 

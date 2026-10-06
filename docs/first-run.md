@@ -14,8 +14,8 @@ buckle init
 ```
 
 `buckle init` writes one file, `buckle.env`, in the state directory: `~/.5straps/buckle`, or
-the absolute path in `BUCKLE_STATE_DIR`. It creates that directory with mode 700 and the file
-with mode 600, readable by you alone. It never writes into the project. `--out <file>`, or
+the absolute path in `BUCKLE_STATE_DIR`. On Linux and macOS it creates that directory with mode
+700 and the file with mode 600, readable by you alone. It never writes into the project. `--out <file>`, or
 `BUCKLE_ENV_FILE`, puts the file elsewhere; then name that file with `BUCKLE_ENV_FILE` whenever
 you start Buckle. An existing file is kept unless you pass `--force`.
 

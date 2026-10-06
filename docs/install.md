@@ -114,8 +114,11 @@ it, so copy `actions.jsonl` first if you want the record.
 ## What the state directory holds
 
 The state directory is `~/.5straps/buckle`, or the absolute path in `BUCKLE_STATE_DIR`; a
-relative path is refused. Buckle creates it owner-only (mode 700), writes its state files
-owner-only (mode 600), and refuses to start when other users can reach the directory. It refuses to start when the state directory sits inside the workspace root, because
+relative path is refused. On Linux and macOS, Buckle creates it owner-only (mode 700), writes
+its state files owner-only (mode 600), and refuses to start when other users can reach the
+directory, unless you pass `--skip-owner-only-check`. On Windows, Buckle does not check or change
+file permissions: Windows protects the state directory under your user profile, and a state
+directory you move elsewhere with `BUCKLE_STATE_DIR` is yours to protect. It refuses to start when the state directory sits inside the workspace root, because
 an agent can write anywhere in the workspace. Buckle's file tools refuse to read or write
 anything under `~/.5straps` or the state directory. Only a process sandbox hides both from shell
 commands: with `BUCKLE_SANDBOX=none`, a shell command can read and write them, and Buckle does
