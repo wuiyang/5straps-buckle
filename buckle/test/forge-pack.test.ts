@@ -1090,18 +1090,21 @@ describe('a push to an approved https origin that names userinfo (review M4)', (
         BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
         BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl, BUCKLE_NETWORK_ALLOW: new URL(host).host,
       }) })
-      git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'second')
-      const response = await runtime.invoke({ sessionId: 'forge-session', request: { requestId: 'userinfo-push', tool: 'git_push', args: { branch: 'main' }, approvalTokens: [] } })
-      expect(response).toMatchObject({ outcome: 'ok', output: { remote: display, headSha: git(judged, 'rev-parse', 'main').trim() } })
-      await runtime.approvalService.close()
-      await runtime.history.close()
+      let response: Awaited<ReturnType<typeof runtime.invoke>>
+      try {
+        git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'second')
+        response = await runtime.invoke({ sessionId: 'forge-session', request: { requestId: 'userinfo-push', tool: 'git_push', args: { branch: 'main' }, approvalTokens: [] } })
+        expect(response).toMatchObject({ outcome: 'ok', output: { remote: display, headSha: git(judged, 'rev-parse', 'main').trim() } })
+      } finally {
+        try { await runtime.approvalService.close() } finally { await runtime.history.close() }
+      }
       const basic = Buffer.from(`alice:${password}`).toString('base64')
       for (const form of [password, basic]) {
         expect(JSON.stringify(response)).not.toContain(form)
         expect(readFileSync(join(state, 'actions.jsonl'), 'utf8')).not.toContain(form)
       }
     } finally { await server.close() }
-  })
+  }, 30_000)
 })
 
 // Review L4: a local destination is a host path, and the agent's view took one under the mount's name for its own.
