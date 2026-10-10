@@ -21,6 +21,10 @@
 - **An older preparation has no tag.** This predates the atomic flow. Review that original
   preparation commit and its source checks before repairing its tag. Do not blindly prepare a
   new version or move an existing tag.
+- **npm rejects publishing with `E403` and `OIDC permission denied for this action`.** Inspect
+  the active npm trusted publisher's `npm publish` allowance on each package, using the exact
+  [setup fields](releasing.md#one-time-setup). After correcting npm settings, re-run the failed
+  jobs on the same Publish Buckle run. Keep its version and tag; do not run Prepare release again.
 - **Publish Buckle failed.** Use "Re-run failed jobs" on the same run within GitHub's 30-day
   window. The run retains its commit and uploaded tarballs. Publishing skips packages already
   on npm, and GitHub release creation leaves an existing release alone.

@@ -39,13 +39,22 @@ trusted publisher for GitHub Actions:
 | Environment name | `npm` |
 | Allowed actions | `npm publish` |
 
-npm checks these fields only when a publish arrives, so a mistyped one shows up as a failed
-publish. npm's documentation names `ENEEDAUTH`, but behind the `.npmrc` that setup-node writes, the
-error reads `E404 Not Found` or `E401` on the PUT. A trusted publisher made after 3 September 2026
-allows only `npm stage publish` until `npm publish` is selected. No npm token is stored: npm
-trades the publishing job's GitHub identity for a short-lived one. After a first release this way,
-each package can require two-factor authentication and disallow tokens; publishing by hand then
-asks for a one-time code.
+Check the active trusted publisher on each package. New connections created after 3 September
+2026 allow only `npm stage publish` by default. This workflow runs `npm publish`, so its active
+configuration must explicitly allow that action.
+See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) and
+[the direct publishing opt-in change](https://github.blog/changelog/2026-09-03-multiple-trusted-publishing-configurations-for-npm/).
+
+`E403` with `OIDC permission denied for this action` makes the connection's allowed action the
+first setting to inspect. A stage-only connection is a likely cause; the error alone does not
+prove its private npm settings. Confirm the table's identity fields and `npm publish` allowance
+for `@5straps/protocol`, `@5straps/runtime`, and `@5straps/buckle`. After correcting settings,
+[re-run the failed publishing jobs](releasing-02.md#repeating-a-failed-release) on the same run.
+
+An identity mismatch can instead appear as `ENEEDAUTH`, `E404 Not Found`, or `E401`.
+No npm token is stored: npm trades the publishing job's GitHub identity for a short-lived one.
+After a first release this way, each package can require two-factor authentication and disallow
+tokens; publishing by hand then asks for a one-time code.
 
 On GitHub:
 
