@@ -60,7 +60,7 @@ export function blockingJobs({ sha, runs, required = REQUIRED_JOBS }) {
 }
 
 /** `run(command, args)` returns stdout; injected so a test can answer for git and gh without a network. */
-export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY }) {
+export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, githubActions = process.env.GITHUB_ACTIONS === 'true' }) {
   if (run('git', ['status', '--porcelain']).trim() !== '') {
     return { ok: false, message: 'The working tree has uncommitted changes: a release publishes what CI checked, so commit or remove them first' }
   }
@@ -76,7 +76,7 @@ export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY }) {
   try {
     runs = releaseCheckRuns({ run, slug, sha, checks: JSON.parse(run('gh', ['api', `repos/${slug}/commits/${sha}/check-runs?per_page=100`])).check_runs ?? [] })
   } catch (error) {
-    return { ok: false, message: ghFailure({ error, slug }) }
+    return { ok: false, message: ghFailure({ error, slug, githubActions }) }
   }
   const blocking = blockingJobs({ sha, runs })
   if (blocking.length > 0) {
@@ -101,7 +101,11 @@ function releaseCheckRuns({ run, slug, sha, checks }) {
 }
 
 /** One line for a gh call that could not run or answer, in place of its stack trace: the release reads CI through gh. */
-function ghFailure({ error, slug }) {
+function ghFailure({ error, slug, githubActions }) {
+  if (githubActions) {
+    if (error?.code === 'ENOENT') return 'The GitHub CLI, gh, is not installed on this Actions runner: install it, then retry the job'
+    return `gh could not read the CI results for ${slug} in GitHub Actions: check that the pack job grants checks: read and actions: read to GITHUB_TOKEN and repository policy permits them. After a workflow fix, wait for both required checks on the updated commit and start a new Publish Buckle run`
+  }
   if (error?.code === 'ENOENT') return `The GitHub CLI, gh, is not installed: a release reads CI results through it. Install gh, run gh auth login with an account that can read ${slug}, then release again`
   return `gh could not read the CI results for ${slug}: run gh auth login with an account that can read it, check gh api works, then release again`
 }

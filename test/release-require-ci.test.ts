@@ -81,10 +81,33 @@ describe('the CI requirement before publishing', () => {
     ['gh is not installed', Object.assign(new Error('spawnSync gh ENOENT'), { code: 'ENOENT' }), 'The GitHub CLI, gh, is not installed'],
     ['gh cannot answer', Object.assign(new Error('Command failed: gh api'), { status: 4 }), 'gh could not read the CI results for owner/repo'],
   ])('refuses in one line naming gh and its login when %s', (_, failure, reason) => {
-    const result = requireCi({ run: fake({ gh: failure }).run, repository: '' })
+    const result = requireCi({ run: fake({ gh: failure }).run, repository: '', githubActions: false })
     expect(result).toEqual({ ok: false, message: expect.stringContaining(reason) })
     expect(result.message).toContain('gh auth login')
     expect(result.message).not.toContain('\n')
+  })
+
+  it.each(['checks', 'workflow runs'])('explains workflow token permissions when Actions cannot read %s', (endpoint) => {
+    const failure = Object.assign(new Error('gh: Resource not accessible by integration (HTTP 403)'), { status: 1 })
+    const runs = [run('verify', 'success'), run('package-arm64', 'success', { id: 2 })]
+    const git = fake({ runs, ...(endpoint === 'checks' ? { gh: failure } : { workflowRunGh: failure }) })
+    const result = requireCi({ run: git.run, repository: '', githubActions: true })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('checks: read and actions: read to GITHUB_TOKEN')
+    expect(result.message).toContain('repository policy')
+    expect(result.message).toContain('both required checks on the updated commit')
+    expect(result.message).toContain('start a new Publish Buckle run')
+    expect(result.message).not.toContain('gh auth login')
+    expect(result.message).not.toContain('HTTP 403')
+    expect(result.message).not.toContain('\n')
+  })
+
+  it('asks for gh installation on an Actions runner without an interactive login', () => {
+    const failure = Object.assign(new Error('spawnSync gh ENOENT'), { code: 'ENOENT' })
+    const result = requireCi({ run: fake({ gh: failure }).run, repository: '', githubActions: true })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('not installed on this Actions runner')
+    expect(result.message).not.toContain('gh auth login')
   })
 
   it('counts only the runs GitHub Actions made: a check another app posted under a job\'s name is not that job', () => {

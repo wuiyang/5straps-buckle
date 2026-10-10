@@ -120,7 +120,7 @@ describe('the release workflows', () => {
     for (const text of [RELEASE, PREPARE]) expect(text).toContain('\npermissions: {}\n')
     expect(permissions(PREPARE, 'prepare')).toEqual(['contents: read'])
     expect(permissions(PREPARE, 'commit')).toEqual(['contents: write', 'actions: write'])
-    expect(permissions(RELEASE, 'pack')).toEqual(['contents: read', 'checks: read'])
+    expect(permissions(RELEASE, 'pack')).toEqual(['contents: read', 'checks: read', 'actions: read'])
     expect(permissions(RELEASE, 'tag')).toEqual(['contents: write'])
     expect(permissions(RELEASE, 'publish')).toEqual(['id-token: write'])
     expect(permissions(RELEASE, 'github-release')).toEqual(['contents: write'])
