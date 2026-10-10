@@ -11,11 +11,6 @@ name: Prepare release
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: The version to release, plain MAJOR.MINOR.PATCH such as 0.2.0, greater than the current one
-        required: true
-        type: string
 
 permissions: {}
 
@@ -32,6 +27,8 @@ jobs:
   prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
     # Runs changelogen and its dependencies, so it can read the repository and nothing more.
     permissions:
       contents: read
@@ -57,9 +54,8 @@ jobs:
       - name: Install pinned dependencies
         # changelogen is all this job needs, so no install script runs.
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Set the version and write its changelog section
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
+      - name: Infer the version and write its changelog section
+        id: prepare
         run: node scripts/release/prepare.mjs
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -105,11 +101,11 @@ jobs:
           done
       - name: Refuse anything beyond the version and the changelog section
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: node scripts/release/check-prepared.mjs
       - name: Commit the release
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -125,7 +121,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           gh workflow run release-check.yml --ref main
           {

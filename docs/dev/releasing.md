@@ -15,7 +15,7 @@ binary. Buckle depends on the other two, so they publish first. The three share 
 
 A release runs from the repository's Actions tab, in two workflows started by hand on `main`:
 
-1. Actions, Prepare release, Run workflow on `main`, enter the version.
+1. Actions, Prepare release, Run workflow on `main`; the version is inferred.
 2. Wait for `verify` and `package-arm64` to pass on that exact preparation commit.
 3. Actions, Publish Buckle, Run workflow on `main`. Select `dry_run` to check and pack first.
 
@@ -63,12 +63,16 @@ npm adds one on each trusted publish on its own.
 
 ## Step one: Prepare release
 
-Actions, Prepare release, Run workflow, on `main`, with the version: plain `MAJOR.MINOR.PATCH`
-with no `v`, such as `0.2.0`, greater than the current one.
+Actions, Prepare release, Run workflow, on `main`. No version input or override is needed.
+Changelogen infers the next shared version from conventional commits since `v<current>`.
+Its pinned 0.6.2 rules make `fix` a patch, `feat` a minor, and a breaking change a major.
+Before 1.0.0, a feature becomes a patch and a breaking change becomes a minor instead.
+Documentation, refactor, build, performance, and types commits also request a patch.
+If no commit requests a release, preparation stops without changing the release files.
 
 `scripts/release/prepare.mjs` refuses, changing nothing, unless:
 
-- the version is plain and greater than the one the three packages share;
+- the three packages share one plain version and changelogen infers a greater one;
 - the working tree is clean;
 - the tag of the current version, such as `v0.1.0`, where the new changelog section starts, exists;
 - neither the tag `v<version>` nor that version on npm exists yet.
@@ -80,10 +84,11 @@ the new section at the top of `CHANGELOG.md` with
 
 The workflow has two jobs, so no installed dependency runs where `main` can be pushed. `prepare`
 can only read: it installs with install scripts off, runs `prepare.mjs`, and hands over the four
-files. `commit` holds the write token, installs nothing, and copies just those files over a fresh
+files and the inferred version. `commit` holds the write token, installs nothing, and copies just those files over a fresh
 checkout of the same commit. `scripts/release/check-prepared.mjs`, which needs only Node and git,
 then refuses unless `git status` names exactly the four, each `package.json` differs from `HEAD`
-only in its version, and `CHANGELOG.md` only gains the new top section. The job commits as
+only in its version, matching the inferred output and one allowed bump from `HEAD`, and
+`CHANGELOG.md` only gains the new top section. The job commits as
 `github-actions[bot]`, subject `chore(release): v<version>`, and pushes to `main` without force; if
 `main` moved since the run started, the push is refused. A push made with the workflow token starts
 no workflow, so the job starts Release checks (`release-check.yml`) on `main` itself, and the run

@@ -36,10 +36,10 @@ export function writeStepOutputs(outputs, file = process.env.GITHUB_OUTPUT) {
  * Runs `main` when the module is the script node started: prints what it returns, or a refusal's
  * message, and sets the exit code. Any other error keeps its stack trace.
  */
-export function runAsScript(moduleUrl, main) {
+export async function runAsScript(moduleUrl, main) {
   if (!process.argv[1] || resolve(process.argv[1]) !== fileURLToPath(moduleUrl)) return
   try {
-    process.stdout.write(`${main()}\n`)
+    process.stdout.write(`${await main()}\n`)
   } catch (error) {
     if (!(error instanceof Refusal)) throw error
     process.stderr.write(`${error.message}\n`)

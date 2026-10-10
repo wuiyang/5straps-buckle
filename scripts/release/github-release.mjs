@@ -77,7 +77,7 @@ function releaseExists({ run, repository, tag }) {
   }
 }
 
-runAsScript(import.meta.url, () => {
+await runAsScript(import.meta.url, () => {
   const input = { repository: process.env.GITHUB_REPOSITORY, version: process.env.RELEASE_VERSION, sha: process.env.RELEASE_COMMIT }
   if (process.argv[2] === 'tag') return createReleaseTag(input)
   if (process.argv[2] === 'release') return createGitHubRelease({ ...input, notes: process.env.RELEASE_NOTES })

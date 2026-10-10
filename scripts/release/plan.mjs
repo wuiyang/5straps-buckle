@@ -73,7 +73,7 @@ export function prepareArtifact({ destination, root = REPOSITORY_ROOT, run = run
   return { ...plan, tarballs }
 }
 
-runAsScript(import.meta.url, () => {
+await runAsScript(import.meta.url, () => {
   if (!process.argv[2]) throw new Refusal('Usage: node scripts/release/plan.mjs <directory for the tarballs and notes>')
   const plan = prepareArtifact({ destination: resolve(process.argv[2]) })
   writeStepOutputs({ version: plan.version, sha: plan.sha })

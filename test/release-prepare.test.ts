@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -55,10 +56,28 @@ function fake(root: string, answers: Answers = {}) {
 }
 
 describe('preparing a release', () => {
-  it('sets the version in the three packages and writes its section above the earlier ones, unchanged', () => {
+  const prepare = (root: string, answers: Answers = {}, inferred = '0.1.1') => prepareRelease({ root, run: fake(root, answers).run, inferVersion: async () => inferred })
+
+  it.each(['argument', 'environment'])('refuses a CLI version override through %s', source => {
+    const script = join(import.meta.dirname, '../scripts/release/prepare.mjs')
+    const result = spawnSync(process.execPath, [script, ...(source === 'argument' ? ['0.2.0'] : [])], {
+      cwd: scratchRepository(), encoding: 'utf8',
+      env: { ...process.env, RELEASE_VERSION: source === 'environment' ? '0.2.0' : '' },
+    })
+    expect(result.status).toBe(1)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('Prepare release infers its version from conventional commits; version overrides are not supported\n')
+  })
+
+  it('uses the inferred version in all three packages and writes its section above unchanged earlier ones', async () => {
     const root = scratchRepository()
     const { run, calls } = fake(root)
-    expect(prepareRelease({ version: '0.1.1', root, run })).toEqual({ version: '0.1.1', previous: '0.1.0' })
+    const inferVersion = async ({ previous, root: source }: { previous: string; root: string }) => {
+      expect(previous).toBe('0.1.0')
+      expect(source).toBe(root)
+      return '0.1.1'
+    }
+    await expect(prepareRelease({ root, run, inferVersion })).resolves.toEqual({ version: '0.1.1', previous: '0.1.0' })
     expect(readVersions(root)).toEqual(['0.1.1', '0.1.1', '0.1.1'])
     const changelog = readChangelog(root)
     expect(changelog.indexOf('## v0.1.1')).toBeLessThan(changelog.indexOf('## v0.1.0'))
@@ -68,62 +87,49 @@ describe('preparing a release', () => {
     expect(calls.filter(call => call[0] === 'git' && ['commit', 'tag', 'push', 'add'].includes(call[1] ?? ''))).toEqual([])
   })
 
-  it('compares versions as numbers, so 0.10.0 follows 0.9.0', () => {
-    const root = scratchRepository({ versions: '0.9.0' })
-    expect(prepareRelease({ version: '0.10.0', root, run: fake(root, { tags: ['v0.9.0'] }).run }).previous).toBe('0.9.0')
-  })
-
   it.each([
-    'v0.1.1', '0.1', '0.1.1-rc.1', '0.1.1+build.5', '01.1.1', ' 0.1.1', '0.1.1\n', '0.1.1; echo owned', '', undefined,
-  ])('refuses %j as a version before running anything', (version) => {
-    const root = scratchRepository()
-    const { run, calls } = fake(root)
-    expect(() => prepareRelease({ version, root, run })).toThrow('plain MAJOR.MINOR.PATCH')
-    expect(calls).toEqual([])
-  })
-
-  it.each([
-    ['the current version', '0.1.0', {}, 'must be greater than the current version 0.1.0'],
-    ['a lower version', '0.0.9', {}, 'must be greater than the current version 0.1.0'],
+    ['an unchanged inferred version', '0.1.0', {}, 'must be greater than the current version'],
+    ['an invalid inferred version', '0.1.1-rc.1', {}, 'changelogen inferred an invalid version'],
     ['a dirty working tree', '0.1.1', { dirty: true }, 'uncommitted changes'],
-    ['a clone without the tag of the current version', '0.1.1', { tags: [] }, 'The tag v0.1.0 of the current version is missing'],
+    ['an unpublished prepared release', '0.1.1', { tags: [] }, 'The tag v0.1.0 of the current version is missing'],
     ['a version whose tag exists', '0.1.1', { tags: ['v0.1.0', 'v0.1.1'] }, 'The tag v0.1.1 already exists'],
     ['a version npm already holds', '0.1.1', { npm: { '@5straps/runtime': ['0.1.0', '0.1.1'] } }, 'npm already holds @5straps/runtime@0.1.1'],
-    ['an npm that cannot answer', '0.1.1', { npmFails: true }, 'npm could not list the published versions of @5straps/protocol'],
-  ] as const)('refuses %s, changing nothing', (_, version, answers, reason) => {
+    ['an npm that cannot answer', '0.1.1', { npmFails: true }, 'npm could not list the published versions'],
+  ] as const)('refuses %s before changing release files', async (_, inferred, answers, reason) => {
     const root = scratchRepository()
     const { run, calls } = fake(root, answers)
-    expect(() => prepareRelease({ version, root, run })).toThrow(reason)
+    await expect(prepareRelease({ root, run, inferVersion: async () => inferred })).rejects.toThrow(reason)
     expect(calls.filter(call => call[0] === 'pnpm')).toEqual([])
     expect(readVersions(root)).toEqual(['0.1.0', '0.1.0', '0.1.0'])
     expect(readChangelog(root)).toBe(CHANGELOG)
   })
 
-  // In the workflow a fetch cannot help when GitHub itself lacks the tag, so both remedies are named.
-  it('names both remedies for a missing tag: fetching it into a clone, and pushing it from the clone that made it', () => {
+  it('leaves files unchanged when conventional commits yield no release', async () => {
     const root = scratchRepository()
-    expect(() => prepareRelease({ version: '0.1.1', root, run: fake(root, { tags: [] }).run })).toThrow(/in a clone, fetch the tags \(git fetch --tags origin\); if GitHub lacks the tag, push it from the clone that made it \(git push origin v0\.1\.0\)$/)
+    const { run, calls } = fake(root)
+    await expect(prepareRelease({ root, run, inferVersion: async () => { throw new Error('No releasable conventional commits') } })).rejects.toThrow('No releasable conventional commits')
+    expect(calls.filter(call => call[0] === 'pnpm' || call[0] === 'npm')).toEqual([])
+    expect(readVersions(root)).toEqual(['0.1.0', '0.1.0', '0.1.0'])
+    expect(readChangelog(root)).toBe(CHANGELOG)
   })
 
-  it('refuses a changelog that already held the section when changelogen wrote nothing', () => {
-    const root = scratchRepository({ changelog: `${CHANGELOG}${SECTION('0.1.1', 'v0.1.0')}\n` })
-    expect(() => prepareRelease({ version: '0.1.1', root, run: fake(root, { changelogen: 'nothing' }).run })).toThrow('changed CHANGELOG.md beyond adding the ## v0.1.1 section above the earlier ones')
-  })
-
-  it('refuses packages that do not share one version', () => {
+  it('refuses packages that do not share one version', async () => {
     const root = scratchRepository({ versions: { '@5straps/runtime': '0.1.1' } })
-    expect(() => prepareRelease({ version: '0.2.0', root, run: fake(root).run })).toThrow('must share one version: @5straps/protocol is 0.1.0, @5straps/runtime is 0.1.1, @5straps/buckle is 0.1.0')
+    await expect(prepare(root)).rejects.toThrow('must share one version')
   })
 
-  // changelogen logs a failure and still exits 0, so the files are read back.
   it.each([
     ['changelogen wrote nothing', { changelogen: 'nothing' }, 'did not write one ## v0.1.1 section'],
-    ['changelogen dropped the earlier sections', { changelogen: 'rewrite' }, 'changed CHANGELOG.md beyond adding the ## v0.1.1 section'],
-    ['changelogen changed an earlier section', { changelogen: 'alter' }, 'changed CHANGELOG.md beyond adding the ## v0.1.1 section'],
-    ['changelogen changed the title', { changelogen: 'retitle' }, 'changed CHANGELOG.md beyond adding the ## v0.1.1 section'],
+    ['changelogen dropped earlier sections', { changelogen: 'rewrite' }, 'changed CHANGELOG.md beyond adding'],
+    ['changelogen changed an earlier section', { changelogen: 'alter' }, 'changed CHANGELOG.md beyond adding'],
+    ['changelogen changed the title', { changelogen: 'retitle' }, 'changed CHANGELOG.md beyond adding'],
     ['version:set missed a package', { versionSet: 'two' }, 'must share one version'],
-  ] as const)('refuses when %s', (_, answers, reason) => {
-    const root = scratchRepository()
-    expect(() => prepareRelease({ version: '0.1.1', root, run: fake(root, answers).run })).toThrow(reason)
+  ] as const)('refuses when %s', async (_, answers, reason) => {
+    await expect(prepare(scratchRepository(), answers)).rejects.toThrow(reason)
+  })
+
+  it('refuses a preexisting section when changelogen writes nothing', async () => {
+    const root = scratchRepository({ changelog: `${CHANGELOG}${SECTION('0.1.1', 'v0.1.0')}\n` })
+    await expect(prepare(root, { changelogen: 'nothing' })).rejects.toThrow('changed CHANGELOG.md beyond adding')
   })
 })

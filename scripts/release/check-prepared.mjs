@@ -13,7 +13,9 @@ import { CHANGELOG, PACKAGES, RELEASE_FILES, addsOnlySection, compareVersions, i
 export function checkPrepared({ version, root = REPOSITORY_ROOT, run = runCommand }) {
   if (!isPlainVersion(version)) throw new Refusal(`The version must be plain MAJOR.MINOR.PATCH; got ${JSON.stringify(version ?? '')}`)
   checkChangedPaths({ run })
-  for (const { directory } of PACKAGES) checkManifest({ file: `${directory}/package.json`, version, root, run })
+  const previous = PACKAGES.map(({ directory }) => checkManifest({ file: `${directory}/package.json`, version, root, run }))
+  if (new Set(previous).size !== 1) throw new Refusal('The three packages must share one version at HEAD')
+  if (!isNextVersion({ previous: previous[0], version })) throw new Refusal(`${version} must be a single changelogen version bump after ${previous[0]}`)
   const before = run('git', ['show', `HEAD:${CHANGELOG}`])
   if (!addsOnlySection({ before, after: readFileSync(join(root, CHANGELOG), 'utf8'), version })) {
     throw new Refusal(`${CHANGELOG} must differ from HEAD only by a new ## ${tagOf(version)} section above the earlier ones`)
@@ -43,6 +45,14 @@ function checkManifest({ file, version, root, run }) {
   if (after !== before.replace(field(previous), field(version)) || JSON.parse(after).version !== version) {
     throw new Refusal(`${file} must differ from HEAD only in its version, set to ${version}`)
   }
+  return previous
 }
 
-runAsScript(import.meta.url, () => checkPrepared({ version: process.env.RELEASE_VERSION }))
+function isNextVersion({ previous, version }) {
+  const [major, minor, patch] = previous.split('.').map(BigInt)
+  const candidates = [`${major}.${minor}.${patch + 1n}`, `${major}.${minor + 1n}.0`]
+  if (major > 0n) candidates.push(`${major + 1n}.0.0`)
+  return candidates.includes(version)
+}
+
+await runAsScript(import.meta.url, () => checkPrepared({ version: process.env.RELEASE_VERSION }))

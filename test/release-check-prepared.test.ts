@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { checkPrepared } from '../scripts/release/check-prepared.mjs'
 import { RELEASE_FILES } from '../scripts/release/packages.mjs'
-import { CHANGELOG, DIRECTORIES, NAMES, type Run, readChangelog, scratchRepository, setVersion } from './support/release-repository'
+import { CHANGELOG, DIRECTORIES, NAMES, type Run, readChangelog, scratchRepository, setVersion, type PackageName } from './support/release-repository'
 
 // The Prepare release commit job holds the push token and takes four files from a job that ran
 // changelogen and its dependencies. Before it commits, this check refuses anything beyond the version
@@ -13,8 +13,8 @@ const SECTION = '\n## v0.1.1\n\n[compare changes](https://github.com/wuiyang/5st
 const MODIFIED = RELEASE_FILES.map(file => ` M ${file}`)
 
 /** A clone at 0.1.0 whose four files then hold 0.1.1 as the prepare job writes them, and git answering as it would there. */
-function prepared(status: readonly string[] = MODIFIED) {
-  const root = scratchRepository()
+function prepared(status: readonly string[] = MODIFIED, versions: string | Partial<Record<PackageName, string>> = '0.1.0') {
+  const root = scratchRepository({ versions })
   const head = Object.fromEntries(RELEASE_FILES.map(file => [file, readFileSync(join(root, file), 'utf8')]))
   for (const name of NAMES) setVersion(root, name, '0.1.1')
   const at = CHANGELOG.indexOf('## v0.1.0')
@@ -66,6 +66,35 @@ describe('the prepared release check', () => {
 
   it.each(['v0.1.1', '0.1.1\n', '', undefined])('refuses %j as a version before reading anything', (version) => {
     expect(() => prepared().check(version)).toThrow('plain MAJOR.MINOR.PATCH')
+  })
+
+  it('refuses artifacts whose shared version differs from the inferred output', () => {
+    const release = prepared()
+    for (const name of NAMES) setVersion(release.root, name, '0.1.2')
+    writeFileSync(join(release.root, 'CHANGELOG.md'), readChangelog(release.root).replaceAll('v0.1.1', 'v0.1.2'))
+    expect(() => release.check('0.1.1')).toThrow('must differ from HEAD only in its version, set to 0.1.1')
+  })
+
+  it.each([
+    ['0.1.0', '0.1.1'], ['0.1.0', '0.2.0'],
+    ['1.2.3', '1.2.4'], ['1.2.3', '1.3.0'], ['1.2.3', '2.0.0'],
+  ])('accepts the bounded bump from %s to %s', (previous, version) => {
+    const release = prepared(MODIFIED, previous)
+    for (const name of NAMES) setVersion(release.root, name, version)
+    writeFileSync(join(release.root, 'CHANGELOG.md'), readChangelog(release.root).replaceAll('v0.1.1', `v${version}`))
+    expect(() => release.check(version)).not.toThrow()
+  })
+
+  it('refuses differing package versions at HEAD', () => {
+    const release = prepared(MODIFIED, { '@5straps/runtime': '0.0.9' })
+    expect(() => release.check('0.1.1')).toThrow('must share one version at HEAD')
+  })
+
+  it('refuses an arbitrary higher version from the dependency job', () => {
+    const release = prepared()
+    for (const name of NAMES) setVersion(release.root, name, '9.9.9')
+    writeFileSync(join(release.root, 'CHANGELOG.md'), readChangelog(release.root).replaceAll('v0.1.1', 'v9.9.9'))
+    expect(() => release.check('9.9.9')).toThrow('must be a single changelogen version bump after 0.1.0')
   })
 
   it.each([

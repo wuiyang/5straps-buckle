@@ -135,6 +135,14 @@ describe('Prepare release', () => {
   const prepare = job(PREPARE, 'prepare')
   const commit = job(PREPARE, 'commit')
 
+  it('infers the version without an input and binds the commit check to that output', () => {
+    expect(PREPARE).not.toContain('inputs.version')
+    expect(block(PREPARE, 'on', 0).map(line => line.trim())).toEqual(['workflow_dispatch:'])
+    expect(prepare.join('\n')).toContain('version: ${{ steps.prepare.outputs.version }}')
+    expect(prepare.join('\n')).toContain('id: prepare')
+    expect(commit.join('\n')).toContain('RELEASE_VERSION: ${{ needs.prepare.outputs.version }}')
+  })
+
   it('runs changelogen with read access, no install script, no stored credential, and hands over the four files', () => {
     expect(prepare.join('\n')).toContain('persist-credentials: false')
     expect(runScripts(prepare.join('\n'))).toContain('pnpm install --frozen-lockfile --ignore-scripts')

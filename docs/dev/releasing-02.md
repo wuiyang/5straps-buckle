@@ -57,21 +57,23 @@ git switch main
 git pull --ff-only origin main
 git fetch origin --tags
 pnpm install --frozen-lockfile
-pnpm release:prepare 0.2.0
+pnpm release:prepare
 ```
 
 `release:prepare` runs `scripts/release/prepare.mjs`, with the same checks and changes as step
 one, on the local `HEAD`: the new changelog section covers the commits from the last tag to that
-`HEAD`, so bring `main` up to date first, as above. Read the diff, commit the four files as
-`chore(release): v0.2.0`, push to `main`, and wait for both checks, which a push by a person
+`HEAD`, so bring `main` up to date first, as above. The version is inferred automatically.
+Read the printed version and diff, commit the four files as `chore(release): v<version>`, push to `main`, and wait for both checks, which a push by a person
 starts. Then:
 
 ```bash
 git fetch origin
 pnpm release
-git tag v0.2.0
-git push origin v0.2.0
+git tag v<version>
+git push origin v<version>
 ```
+
+Replace `<version>` with the version preparation printed.
 
 `pnpm release` runs three steps and stops at the first failure:
 
