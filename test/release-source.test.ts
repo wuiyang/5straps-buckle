@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -114,27 +114,4 @@ describe('CI inheritance for prepared release metadata', () => {
     repo.git('update-ref', 'refs/remotes/origin/main', merge)
     expect(() => preparedSource({ run: repo.run })).toThrow('exactly one parent')
   })
-
-  it('allows the local release command only with its version tag on HEAD', () => {
-    const repo = repository()
-    expect(requireCi({ run: repo.run, repository: 'owner/repo', release: true, root: repo.root }).ok).toBe(true)
-  })
-
-  it.each(['missing', 'moved'])('refuses a local source release with a %s version tag before reading CI', state => {
-    const repo = repository(() => {}, 'fix: checked source with a prepared version')
-    repo.git('tag', '-d', 'v0.1.1')
-    if (state === 'moved') repo.git('tag', 'v0.1.1', repo.source)
-    expect(requireCi({ run: repo.run, repository: 'owner/repo', release: true, root: repo.root })).toMatchObject({ ok: false, message: expect.stringContaining('The tag v0.1.1') })
-    expect(repo.calls.filter(call => call[0] === 'gh')).toEqual([])
-  })
-
-  it('rejects mixing source-only CI with release validation through the helper or CLI', () => {
-    const repo = repository()
-    expect(requireCi({ run: repo.run, sourceOnly: true, release: true })).toMatchObject({ ok: false, message: 'Source-only CI and release validation cannot be combined' })
-    expect(repo.calls).toEqual([])
-    const result = spawnSync(process.execPath, [join(import.meta.dirname, '../scripts/release/require-ci.mjs'), '--source', '--release'], { encoding: 'utf8' })
-    expect(result.status).toBe(1)
-    expect(result.stderr).toBe('Usage: node scripts/release/require-ci.mjs [--source|--release]\n')
-  })
-
 })

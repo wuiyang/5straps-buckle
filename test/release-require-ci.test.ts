@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { blockingJobs, isReleaseCheckRun, repositoryOf, requireCi, workflowRunId } from '../scripts/release/require-ci.mjs'
 
-// The Publish Buckle workflow and `pnpm release` publish only when verify and package-arm64 both succeeded
-// on the exact commit being released, in release-check.yml on a push to main or a run started on main,
-// from a clean tree, and that commit is what origin holds for the branch. git and gh are answered by
-// the test.
+// Source CI must pass in release-check.yml on main. A tagged metadata release may reuse only its
+// strictly validated source parent's checks; release-source.test.ts covers that exemption.
+// git and gh are answered here.
 
 const SHA = 'a'.repeat(40)
 const OTHER = 'b'.repeat(40)
@@ -97,7 +96,7 @@ describe('the CI requirement before publishing', () => {
     expect(result.message).toContain('checks: read and actions: read to GITHUB_TOKEN')
     expect(result.message).toContain('repository policy')
     expect(result.message).toContain('both required checks on the updated commit')
-    expect(result.message).toContain('start a new Publish Buckle run')
+    expect(result.message).toContain('start a new Stage Buckle run')
     expect(result.message).not.toContain('gh auth login')
     expect(result.message).not.toContain('HTTP 403')
     expect(result.message).not.toContain('\n')

@@ -3,8 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { preparedSource } from './check-prepared.mjs'
-import { REPOSITORY_ROOT, Refusal } from './command.mjs'
-import { requireLocalReleaseTag, sharedVersion } from './packages.mjs'
+import { Refusal } from './command.mjs'
 
 export const REQUIRED_JOBS = ['verify', 'package-arm64']
 /** The app that runs the workflow's jobs; a check run another app posted under the same name does not count. */
@@ -60,8 +59,7 @@ export function blockingJobs({ sha, runs, required = REQUIRED_JOBS }) {
 }
 
 /** `run(command, args)` returns stdout; injected so a test can answer for git and gh without a network. */
-export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, githubActions = process.env.GITHUB_ACTIONS === 'true', sourceOnly = false, release = false, root = REPOSITORY_ROOT }) {
-  if (sourceOnly && release) return { ok: false, message: 'Source-only CI and release validation cannot be combined' }
+export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, githubActions = process.env.GITHUB_ACTIONS === 'true', sourceOnly = false }) {
   if (run('git', ['status', '--porcelain']).trim() !== '') {
     return { ok: false, message: 'The working tree has uncommitted changes: a release publishes what CI checked, so commit or remove them first' }
   }
@@ -71,14 +69,6 @@ export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, git
   const pushed = tryRun(run, 'git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`])
   if (pushed !== sha) {
     return { ok: false, message: `HEAD ${sha} is not what origin/${branch} holds${pushed ? ` (${pushed})` : ''} in this clone: fetch first (git fetch origin; this check compares with the local origin/${branch} and never fetches), then push it and let CI run on it before releasing` }
-  }
-  if (release) {
-    try {
-      requireLocalReleaseTag({ run, version: sharedVersion(root), sha })
-    } catch (error) {
-      if (!(error instanceof Refusal)) throw error
-      return { ok: false, message: error.message }
-    }
   }
   let checkedSha = sha
   if (!sourceOnly) {
@@ -122,7 +112,7 @@ function releaseCheckRuns({ run, slug, sha, checks }) {
 function ghFailure({ error, slug, githubActions }) {
   if (githubActions) {
     if (error?.code === 'ENOENT') return 'The GitHub CLI, gh, is not installed on this Actions runner: install it, then retry the job'
-    return `gh could not read the CI results for ${slug} in GitHub Actions: check that the pack job grants checks: read and actions: read to GITHUB_TOKEN and repository policy permits them. After a workflow fix, wait for both required checks on the updated commit and start a new Publish Buckle run`
+    return `gh could not read the CI results for ${slug} in GitHub Actions: check that the pack job grants checks: read and actions: read to GITHUB_TOKEN and repository policy permits them. After a workflow fix, wait for both required checks on the updated commit and start a new Stage Buckle run`
   }
   if (error?.code === 'ENOENT') return `The GitHub CLI, gh, is not installed: a release reads CI results through it. Install gh, run gh auth login with an account that can read ${slug}, then release again`
   return `gh could not read the CI results for ${slug}: run gh auth login with an account that can read it, check gh api works, then release again`
@@ -143,9 +133,9 @@ function run(command, args) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2)
-  const result = args.length > 1 || args.some(arg => !['--source', '--release'].includes(arg))
-    ? { ok: false, message: 'Usage: node scripts/release/require-ci.mjs [--source|--release]' }
-    : requireCi({ run, sourceOnly: args[0] === '--source', release: args[0] === '--release' })
+  const result = args.length > 1 || args.some(arg => arg !== '--source')
+    ? { ok: false, message: 'Usage: node scripts/release/require-ci.mjs [--source]' }
+    : requireCi({ run, sourceOnly: args[0] === '--source' })
   process[result.ok ? 'stdout' : 'stderr'].write(`${result.message}\n`)
   process.exitCode = result.ok ? 0 : 1
 }

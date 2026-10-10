@@ -1,14 +1,13 @@
-name: Publish Buckle
+name: Stage Buckle
 
-# Publish the release commit and tag already pushed by Prepare release. pack validates its metadata
-# against its CI-checked source parent. publish holds npm identity and runs no repository code.
-# Re-run failed jobs to retain the packed commit and tarballs and finish a partially published version.
+# Stage the prepared tarballs for human npm approval. Only an all-public rerun creates the GitHub
+# release. Repository dependencies run in pack; stage installs only the pinned first-party npm CLI.
 
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Check and pack only; publish nothing and make no release
+        description: Check and pack only; stage nothing and make no release
         type: boolean
         default: false
 
@@ -94,7 +93,7 @@ jobs:
           RELEASE_COMMIT: ${{ needs.pack.outputs.sha }}
         run: node scripts/release/github-release.mjs check-tag
 
-  publish:
+  stage:
     needs: [pack, confirm-tag]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-24.04
@@ -102,27 +101,32 @@ jobs:
     # npm's trusted publisher names this environment. Its deployment rule, set in the repository
     # settings, admits main alone; the main test in pack binds only this copy of the file.
     environment: npm
-    # The npm identity lives here only: no checkout, no install, no repository code.
+    # No checkout or repository code. Only the pinned first-party CLI is installed, without scripts.
     permissions:
       id-token: write
+    outputs:
+      all_public: ${{ steps.stage.outputs.all_public }}
     steps:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
-      - name: Require npm 11.5.1 or newer, which trusted publishing needs
+      - name: Install the pinned npm CLI with staging support
+        run: npm install --global npm@11.15.0 --ignore-scripts
+      - name: Require npm 11.15.0 or newer, which staged publishing needs
         run: |
           npm_version="$(npm --version)"
-          if ! printf '11.5.1\n%s\n' "$npm_version" | sort --version-sort --check=quiet; then
-            echo "::error::npm ${npm_version} cannot publish through trusted publishing, which needs 11.5.1 or newer"
+          if ! printf '11.15.0\n%s\n' "$npm_version" | sort --version-sort --check=quiet; then
+            echo "::error::npm ${npm_version} cannot stage packages, which needs 11.15.0 or newer"
             exit 1
           fi
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release
           path: release
-      - name: Publish protocol, runtime, then buckle
+      - name: Stage protocol, runtime, then buckle
+        id: stage
         env:
           VERSION: ${{ needs.pack.outputs.version }}
         run: |
@@ -136,23 +140,34 @@ jobs:
               exit 1
             fi
           done
+          all_public=true
           for name in protocol runtime buckle; do
-            # The registry, not npm view, says whether the version exists: no credential is involved.
+            # Public versions can be skipped. Pending stages are private; a duplicate stage fails.
             status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "https://registry.npmjs.org/@5straps%2f${name}/${VERSION}")"
             case "$status" in
               200) echo "@5straps/${name}@${VERSION} is already on npm; skipping it" ;;
               # The leading ./ makes npm read a file, never a GitHub owner/repository shorthand.
-              404) npm publish "./release/5straps-${name}-${VERSION}.tgz" --access public ;;
+              404)
+                npm stage publish "./release/5straps-${name}-${VERSION}.tgz" --access public | tee -a "$GITHUB_STEP_SUMMARY"
+                all_public=false
+                ;;
               *)
                 echo "::error::The registry answered HTTP ${status} for @5straps/${name}@${VERSION}"
                 exit 1
                 ;;
             esac
           done
+          echo "all_public=${all_public}" >> "$GITHUB_OUTPUT"
+          if [ "$all_public" = true ]; then
+            echo "All three packages at v${VERSION} are public. The GitHub release can now be created." >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' 'Approve the staged packages on npmjs.com, or run `npm stage approve <stage-id>` from an authenticated local CLI.' >> "$GITHUB_STEP_SUMMARY"
+            echo "Approve protocol, runtime, then buckle. After all three are public and main still names this release commit, choose Re-run all jobs on this run to create the GitHub release." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   github-release:
-    needs: [pack, publish]
-    if: ${{ !inputs.dry_run }}
+    needs: [pack, stage]
+    if: ${{ !inputs.dry_run && needs.stage.outputs.all_public == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

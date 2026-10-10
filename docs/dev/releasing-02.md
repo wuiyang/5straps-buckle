@@ -1,87 +1,66 @@
-# Releasing: repeats and by hand
+# Releasing: repeats and approval
 
 ## Overview
 
-- [Repeating a failed release](#repeating-a-failed-release): recover the prepared version.
-- [Releasing by hand](#releasing-by-hand): publish when Actions cannot.
+- [Repeating a failed release](#repeating-a-failed-release): keep the prepared version and its stages.
+- [Approving staged packages](#approving-staged-packages): human approval and GitHub finalization.
+- [Switching an older release to staging](#switching-an-older-release-to-staging): use the updated workflow on a new prepared version.
 
 ## Repeating a failed release
 
-[Releasing](releasing.md) covers setup and the workflows;
+[Releasing](releasing.md) covers setup and the flow;
 [what ships](releasing-03.md) covers package contents.
 
-- **Source checks failed.** Fix the source on `main` and wait for both `verify` and
-  `package-arm64` to pass before Prepare release.
-- **Prepare release failed before its atomic push.** Neither the release commit nor tag reached
-  GitHub. Fix the cause and run preparation again.
-- **Its push was refused.** Check branch and tag rules. If `main` moved, wait for checks on its
-  new source commit and run preparation again. The atomic push updates both refs or neither.
-- **Preparation succeeded.** Run Publish Buckle on that prepared `main` commit. Release checks
-  are skipped for its generated metadata; publishing validates the diff and its parent's checks.
-- **An older preparation has no tag.** This predates the atomic flow. Review that original
-  preparation commit and its source checks before repairing its tag. Do not blindly prepare a
-  new version or move an existing tag.
-- **npm rejects publishing with `E403` and `OIDC permission denied for this action`.** Inspect
-  the active npm trusted publisher's `npm publish` allowance on each package, using the exact
-  [setup fields](releasing.md#one-time-setup). After correcting npm settings, re-run the failed
-  jobs on the same Publish Buckle run. Keep its version and tag; do not run Prepare release again.
-- **Publish Buckle failed.** Use "Re-run failed jobs" on the same run within GitHub's 30-day
-  window. The run retains its commit and uploaded tarballs. Publishing skips packages already
-  on npm, and GitHub release creation leaves an existing release alone.
-- **A check was cancelled or failed without a source fix.** Re-run the failed jobs on the source
-  Release checks run. Publishing reads the latest eligible run of each required job.
-- **A fix changes source after preparation.** Push the fix, pass source checks, then prepare the
-  next version. The prepared tag binds the earlier version to its original commit; a new Publish
-  Buckle run on another commit cannot finish that version. Finish any partial publication by
-  re-running its original run.
-- **A tag names another commit or is missing.** Publishing stops before npm. Inspect the
-  preparation result and tag history; publishing never creates or moves the tag.
-- **A repeat immediately after publishing fails on an npm duplicate.** Registry visibility can
-  lag. Re-run the failed jobs later.
+- **Source checks failed.** Fix the source and pass `verify` and `package-arm64` on its exact
+  commit before Prepare release.
+- **Prepare failed before its atomic push.** Neither the release commit nor tag reached GitHub.
+  Fix the cause and repeat preparation. A refused branch or tag update refuses both refs.
+- **Preparation succeeded.** Run Stage Buckle on the prepared commit. Generated metadata skips
+  Release checks; staging validates its diff and source parent's checks.
+- **Some packages staged before failure.** Inspect npm's Staged Packages page and approve those
+  stages before re-running failed jobs on the same run. The workflow skips now-public versions
+  and stages the remaining packages. Keep the version and tag; do not prepare again.
+- **npm reports a duplicate version while the public registry returns 404.** A pending stage
+  can reserve that version. Inspect and approve the existing stage rather than resubmitting it.
+  OIDC cannot list or inspect stages.
+- **All staging jobs succeeded.** Approve all three packages, then "Re-run all jobs" to create
+  the GitHub release. "Re-run failed jobs" is insufficient when finalization was skipped.
+- **Tag missing or moved.** Staging stops. Inspect preparation and tag history; release jobs
+  never create or move tags.
+- **A source fix is required.** Finish existing stages first. A new source commit needs its
+  own checks and preparation for the next version. Do not move the old version's tag.
+- **A runner fault affects source checks.** Re-run those source checks without changing source.
+  Release gates use the latest eligible run of each required job.
 
-## Releasing by hand
+A job re-run retains the original run's workflow and commit. Keep `main` on the prepared commit
+until approval and finalization finish. GitHub allows re-runs for 30 days after the run started.
 
-The fallback needs an npm account allowed to publish under `@5straps`, and the GitHub CLI, `gh`,
-logged in. Keep tokens out of the repository and shell history.
+## Approving staged packages
+
+Use a human npm account with permission to publish each package and 2FA. The staging job prints
+stage IDs. On npmjs.com, open Staged Packages, wait for scanning, review and
+approve `@5straps/protocol`, then `@5straps/runtime`, then `@5straps/buckle`.
+
+The CLI alternative requires npm 11.15.0 or newer:
 
 ```bash
-git switch main
-git pull --ff-only origin main
-git fetch origin --tags
-pnpm install --frozen-lockfile
-node scripts/release/require-ci.mjs --source
-pnpm release:prepare
-```
-
-The CI gate must pass on the source commit before preparation. `release:prepare` only generates
-the version and changelog locally; it does not commit, tag, or push. The version is inferred
-without an override. Review its four changed files and use the printed version below:
-
-```bash
-git add -- CHANGELOG.md packages/protocol/package.json packages/runtime/package.json buckle/package.json
-git commit --message "chore(release): v<version> [skip ci]"
-git tag v<version>
-git push --atomic origin HEAD:refs/heads/main refs/tags/v<version>
-git fetch origin
 npm login
-npm whoami
-pnpm release
+npm stage approve <stage-id>
 ```
 
-Replace `<version>` with the printed version. The atomic push updates both refs or neither.
-No Release checks run is needed on this generated metadata commit.
+Repeat for each package in order. OIDC cannot approve or reject stages, list them, or view their
+status. Approval makes that package version public. After all three versions are public, choose
+"Re-run all jobs" on the same Stage Buckle run to create the GitHub release.
+See [npm staged publishing](https://docs.npmjs.com/staged-publishing/).
 
-`pnpm release` first runs `scripts/release/require-ci.mjs --release`. It requires a clean tree,
-an attached branch with `HEAD` equal to the fetched `origin/<branch>`, the shared version's tag
-on `HEAD`, and successful eligible `verify` and `package-arm64` checks. An ordinary source commit needs its own checks. A canonical release
-commit may use its single parent's checks only after its exact tag and strict four-file diff
-validate. The script never fetches itself. It reads GitHub check and workflow runs through `gh`,
-using `GITHUB_REPOSITORY` or the `origin` URL to identify the repository.
+`pnpm release:prepare` remains available to generate metadata locally. There is no root
+`pnpm release` command or automatic direct-publication fallback.
 
-It then runs `pnpm -r publish --access public` in dependency order. Each `prepack` builds its
-package. It does not repeat the full release check on generated metadata. Use pnpm because it
-replaces `workspace:*` dependencies with the exact version; publishing from a package directory
-with npm does not.
+## Switching an older release to staging
 
-The prepared tag starts the next changelog range. Running Publish Buckle while `main` still
-names that release commit adds the GitHub release and skips packages npm already holds.
+An older failed Publish Buckle run still uses its original direct `npm publish` command when
+re-run. It cannot pick up the new staging workflow.
+
+Push the staging workflow change, pass source checks, run Prepare release for the next inferred
+version, then run Stage Buckle. Leave earlier tags in place. The new run submits staged packages
+for human approval and only creates the GitHub release once all three versions are public.

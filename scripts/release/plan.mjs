@@ -1,7 +1,7 @@
-// The second release step's packing, run by the Publish Buckle workflow once require-ci.mjs has passed:
+// The second release step's packing, run by the Stage Buckle workflow once require-ci.mjs has passed:
 //   node scripts/release/plan.mjs <empty or new directory>
 // It plans the release of the checked-out commit, packs the three tarballs with pnpm, and writes the
-// release notes, so the publishing job only publishes what this wrote.
+// release notes, so the staging job only stages what this wrote.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { REPOSITORY_ROOT, Refusal, runAsScript, runCommand, writeStepOutputs } from './command.mjs'
@@ -79,8 +79,8 @@ await runAsScript(import.meta.url, () => {
   const waiting = PACKAGES.map(({ name }) => name).filter(name => !plan.published.includes(name))
   return [
     `Release ${tagOf(plan.version)} of ${plan.sha}.`,
-    `To publish: ${waiting.join(', ') || 'nothing, npm holds all three'}.`,
-    `Already on npm: ${plan.published.join(', ') || 'none'}.`,
+    `Not public yet: ${waiting.join(', ') || 'nothing, npm holds all three'}.`,
+    `Already public on npm: ${plan.published.join(', ') || 'none'}.`,
     `Tag ${tagOf(plan.version)}: already on this commit.`,
     `Packed: ${plan.tarballs.join(', ')}.`,
   ].join('\n')

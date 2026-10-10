@@ -1,13 +1,15 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { PACKAGES, RELEASE_FILES, tarballOf } from '../scripts/release/packages.mjs'
+import { scratchDirectory } from './support/release-repository'
 
 // No workflow can run here, so the release workflows are held to their rules by reading them: every
-// action pinned to a commit, no expression inside a shell line, no installed dependency in a job that
-// can push or publish, the npm identity in a job that runs only what an allowlist names, the tag made
-// before publishing, and the publish loop in step with the release scripts.
+// action pinned to a commit, no expression inside a shell line, only the first-party npm CLI installed
+// in the identity job, which runs only what an allowlist names, and the tag made
+// before publishing, and the stage loop in step with the release scripts.
 
 const WORKFLOWS = fileURLToPath(new URL('../.github/workflows/', import.meta.url))
 const read = (file: string) => readFileSync(join(WORKFLOWS, file), 'utf8')
@@ -65,19 +67,26 @@ function keys(lines: string[]): string[] {
   return found
 }
 
-// The publish job's allowlist. Its actions are setup-node and download-artifact; its keys are the
+// The stage job's allowlist. Its actions are setup-node and download-artifact; its keys are the
 // ones it has now, so a `shell:` or an environment variable such as NODE_OPTIONS fails; and each shell
-// line is the npm version check, the registry check, npm publish of a packed tarball, or plain control.
-const PUBLISH_ACTIONS = ['actions/setup-node', 'actions/download-artifact']
-const PUBLISH_KEYS = new Set(['needs', 'if', 'runs-on', 'timeout-minutes', 'environment', 'permissions', 'id-token', 'steps', 'uses', 'with', 'node-version', 'registry-url', 'package-manager-cache', 'name', 'path', 'run', 'env', 'VERSION'])
-const PUBLISH_COMMANDS = [
+// line is the pinned CLI bootstrap, version or registry check, tarball staging, summary, or plain control.
+const STAGE_ACTIONS = ['actions/setup-node', 'actions/download-artifact']
+const STAGE_KEYS = new Set(['needs', 'if', 'runs-on', 'timeout-minutes', 'environment', 'permissions', 'id-token', 'outputs', 'all_public', 'steps', 'uses', 'with', 'node-version', 'registry-url', 'package-manager-cache', 'name', 'path', 'run', 'env', 'VERSION', 'id'])
+const STAGE_COMMANDS = [
+  'npm install --global npm@11.15.0 --ignore-scripts',
   'npm_version="$(npm --version)"',
-  `if ! printf '11.5.1\\n%s\\n' "$npm_version" | sort --version-sort --check=quiet; then`,
+  `if ! printf '11.15.0\\n%s\\n' "$npm_version" | sort --version-sort --check=quiet; then`,
   `status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "https://registry.npmjs.org/@5straps%2f\${name}/\${VERSION}")"`,
-  `npm publish "./release/${tarballOf('@5straps/${name}', '${VERSION}')}" --access public`,
+  `npm stage publish "./release/${tarballOf('@5straps/${name}', '${VERSION}')}" --access public | tee -a "$GITHUB_STEP_SUMMARY"`,
+  'all_public=true',
+  'all_public=false',
+  'echo "all_public=${all_public}" >> "$GITHUB_OUTPUT"',
+  'echo "All three packages at v${VERSION} are public. The GitHub release can now be created." >> "$GITHUB_STEP_SUMMARY"',
+  "printf '%s\\n' 'Approve the staged packages on npmjs.com, or run `npm stage approve <stage-id>` from an authenticated local CLI.' >> \"$GITHUB_STEP_SUMMARY\"",
+  'echo "Approve protocol, runtime, then buckle. After all three are public and main still names this release commit, choose Re-run all jobs on this run to create the GitHub release." >> "$GITHUB_STEP_SUMMARY"',
 ]
 const SHELL_CONTROL = [
-  /^(?:then|else|fi|done|esac|;;|\*\)|exit 1)$/,
+  /^(?:then|else|fi|done|esac|;;|(?:\d+|\*)\)|exit 1)$/,
   /^for name in [a-z ]+; do$/,
   /^case "\$status" in$/,
   // A test of words and variables: no command substitution, pipe, list, or second command.
@@ -86,20 +95,20 @@ const SHELL_CONTROL = [
   /^echo "(?:[^"`$\\]|\$\{?\w+\}?)*"$/,
 ]
 
-function allowedPublishLine(raw: string): boolean {
+function allowedStageLine(raw: string): boolean {
   // A case branch, `200) ... ;;`, is read for what it runs.
   const line = raw.trim().replace(/^(?:\d+|\*)\) /, '').replace(/ ;;$/, '')
-  return line === '' || line.startsWith('#') || PUBLISH_COMMANDS.includes(line) || SHELL_CONTROL.some(pattern => pattern.test(line))
+  return line === '' || line.startsWith('#') || STAGE_COMMANDS.includes(line) || SHELL_CONTROL.some(pattern => pattern.test(line))
 }
 
-/** What the publish job holds beyond its allowlist; empty when it runs nothing else. */
-function publishProblems(workflow: string): string[] {
-  const publish = job(workflow, 'publish')
-  const used = actions(publish)
+/** What the stage job holds beyond its allowlist; empty when it runs nothing else. */
+function stageProblems(workflow: string): string[] {
+  const stage = job(workflow, 'stage')
+  const used = actions(stage)
   return [
-    ...(JSON.stringify(used) === JSON.stringify(PUBLISH_ACTIONS) ? [] : [`uses ${used.join(', ')}`]),
-    ...keys(publish).filter(key => !PUBLISH_KEYS.has(key)).map(key => `key ${key}`),
-    ...runScripts(publish.join('\n')).flatMap(script => script.split('\n')).filter(line => !allowedPublishLine(line)).map(line => `runs ${line.trim()}`),
+    ...(JSON.stringify(used) === JSON.stringify(STAGE_ACTIONS) ? [] : [`uses ${used.join(', ')}`]),
+    ...keys(stage).filter(key => !STAGE_KEYS.has(key)).map(key => `key ${key}`),
+    ...runScripts(stage.join('\n')).flatMap(script => script.split('\n')).filter(line => !allowedStageLine(line)).map(line => `runs ${line.trim()}`),
   ]
 }
 
@@ -122,7 +131,7 @@ describe('the release workflows', () => {
     expect(permissions(PREPARE, 'commit')).toEqual(['contents: write'])
     expect(permissions(RELEASE, 'pack')).toEqual(['contents: read', 'checks: read', 'actions: read'])
     expect(permissions(RELEASE, 'confirm-tag')).toEqual(['contents: read'])
-    expect(permissions(RELEASE, 'publish')).toEqual(['id-token: write'])
+    expect(permissions(RELEASE, 'stage')).toEqual(['id-token: write'])
     expect(permissions(RELEASE, 'github-release')).toEqual(['contents: write'])
   })
 
@@ -174,48 +183,181 @@ describe('Release', () => {
     expect(scripts).toContain('node scripts/release/require-ci.mjs --source')
     expect(scripts.indexOf('node scripts/release/require-ci.mjs --source')).toBeLessThan(scripts.indexOf('pnpm install --frozen-lockfile --ignore-scripts'))
     expect(RELEASE).not.toContain('  tag:\n')
-    expect(job(RELEASE, 'publish')[0]?.trim()).toBe('needs: [pack, confirm-tag]')
+    expect(job(RELEASE, 'stage')[0]?.trim()).toBe('needs: [pack, confirm-tag]')
     const confirm = job(RELEASE, 'confirm-tag')
     expect(actions(confirm)).toEqual(['actions/checkout', 'actions/setup-node'])
     expect(runScripts(confirm.join('\n'))).toEqual(['node scripts/release/github-release.mjs check-tag'])
     expect(confirm.join('\n')).not.toMatch(/pnpm|node_modules|npm (?:ci|install)|npx/)
-    expect(job(RELEASE, 'github-release')[0]?.trim()).toBe('needs: [pack, publish]')
+    expect(job(RELEASE, 'github-release')[0]?.trim()).toBe('needs: [pack, stage]')
     expect(runScripts(job(RELEASE, 'github-release').join('\n'))).toEqual(['RELEASE_NOTES="$RUNNER_TEMP/release/notes.md" node scripts/release/github-release.mjs release'])
   })
 
-  it('publishes in the npm environment, skipped on a dry run', () => {
-    const publish = job(RELEASE, 'publish').map(line => line.trim())
-    expect(publish).toContain('environment: npm')
-    expect(publish).toContain('if: ${{ !inputs.dry_run }}')
-    expect(publish).toContain("registry-url: 'https://registry.npmjs.org'")
+  it('stages in the npm environment, skipped on a dry run', () => {
+    const stage = job(RELEASE, 'stage').map(line => line.trim())
+    expect(stage).toContain('environment: npm')
+    expect(stage).toContain('if: ${{ !inputs.dry_run }}')
+    expect(stage).toContain("registry-url: 'https://registry.npmjs.org'")
   })
 
-  it('publishes from a job that runs only what its allowlist names', () => {
-    expect(publishProblems(RELEASE)).toEqual([])
+  it('stages from a job that runs only what its allowlist names', () => {
+    expect(stageProblems(RELEASE)).toEqual([])
   })
 
-  const PUBLISH_STEP = '      - name: Publish protocol, runtime, then buckle\n'
+  it('stages with npm 11.15.0 and finalizes only after all packages are public', () => {
+    expect(RELEASE).toContain('name: Stage Buckle')
+    expect(RELEASE).toContain('npm install --global npm@11.15.0 --ignore-scripts')
+    expect(RELEASE).toContain('npm stage publish')
+    expect(RELEASE).not.toMatch(/(?:^|\s)npm publish /)
+    expect(RELEASE).not.toContain('npm stage approve <stage-id> --')
+    expect(job(RELEASE, 'github-release').join('\n')).toContain("if: ${{ !inputs.dry_run && needs.stage.outputs.all_public == 'true' }}")
+    const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    expect(manifest.scripts.release).toBeUndefined()
+  })
+
+  const STAGE_STEP = '      - name: Stage protocol, runtime, then buckle\n'
   const CASE = '            case "$status" in\n'
   it.each([
-    ['a node step', [PUBLISH_STEP, `      - run: node scripts/release/plan.mjs\n${PUBLISH_STEP}`]],
-    ['an npx step', [PUBLISH_STEP, `      - run: npx --yes some-tool\n${PUBLISH_STEP}`]],
-    ['an npm run step', [PUBLISH_STEP, `      - run: npm run build\n${PUBLISH_STEP}`]],
-    ['a bash step', [PUBLISH_STEP, `      - name: Publish\n        run: |\n          bash scripts/publish.sh\n${PUBLISH_STEP}`]],
-    ['a node line in the publish loop', [CASE, `            node -e 'require("./release/x.js")'\n${CASE}`]],
+    ['a node step', [STAGE_STEP, `      - run: node scripts/release/plan.mjs\n${STAGE_STEP}`]],
+    ['an npx step', [STAGE_STEP, `      - run: npx --yes some-tool\n${STAGE_STEP}`]],
+    ['an npm run step', [STAGE_STEP, `      - run: npm run build\n${STAGE_STEP}`]],
+    ['a bash step', [STAGE_STEP, `      - name: Publish\n        run: |\n          bash scripts/publish.sh\n${STAGE_STEP}`]],
+    ['a node line in the stage loop', [CASE, `            node -e 'require("./release/x.js")'\n${CASE}`]],
     ['a command inside an echo', [CASE, `            echo "$(node -e 1)"\n${CASE}`]],
     ['a command after a test', [CASE, `            if [ -f x ]; then node x.js; fi\n${CASE}`]],
-    ['a checkout', [PUBLISH_STEP, `      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n${PUBLISH_STEP}`]],
-    ['a shell that is node', [PUBLISH_STEP, `      - shell: node {0}\n        run: console.log(1)\n${PUBLISH_STEP}`]],
+    ['a checkout', [STAGE_STEP, `      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n${STAGE_STEP}`]],
+    ['a shell that is node', [STAGE_STEP, `      - shell: node {0}\n        run: console.log(1)\n${STAGE_STEP}`]],
     ['NODE_OPTIONS for npm', ['          VERSION: ${{ needs.pack.outputs.version }}\n', '          VERSION: ${{ needs.pack.outputs.version }}\n          NODE_OPTIONS: --require ./release/x.js\n']],
-  ] as const)('fails the allowlist once the publish job holds %s', (_, [from, to]) => {
+  ] as const)('fails the allowlist once the stage job holds %s', (_, [from, to]) => {
     const workflow = RELEASE.replace(from, to)
     expect(workflow).not.toBe(RELEASE)
-    expect(publishProblems(workflow)).not.toEqual([])
+    expect(stageProblems(workflow)).not.toEqual([])
   })
 
-  it('publishes the tarballs plan.mjs packs, in the order the packages depend on each other', () => {
-    const publish = job(RELEASE, 'publish').join('\n')
-    expect(publish).toContain(`for name in ${PACKAGES.map(({ name }) => name.replace('@5straps/', '')).join(' ')}; do`)
-    expect(publish).toContain(`./release/${tarballOf('@5straps/${name}', '${VERSION}')}`)
+  it('stages the tarballs plan.mjs packs, in the order the packages depend on each other', () => {
+    const stage = job(RELEASE, 'stage').join('\n')
+    expect(stage).toContain(`for name in ${PACKAGES.map(({ name }) => name.replace('@5straps/', '')).join(' ')}; do`)
+    expect(stage).toContain(`./release/${tarballOf('@5straps/${name}', '${VERSION}')}`)
+  })
+})
+
+type Package = 'protocol' | 'runtime' | 'buckle'
+interface StageAnswers {
+  statuses?: Partial<Record<Package, number>>
+  failStage?: Package
+  networkFailure?: boolean
+  missing?: Package
+  version?: string
+}
+
+function runStaging(answers: StageAnswers = {}) {
+  const root = scratchDirectory('stage-workflow-')
+  const bin = join(root, 'bin')
+  mkdirSync(bin)
+  mkdirSync(join(root, 'release'))
+  for (const name of ['protocol', 'runtime', 'buckle']) {
+    if (name !== answers.missing) writeFileSync(join(root, `release/5straps-${name}-0.1.2.tgz`), '')
+  }
+  const executable = (name: string, source: string) => {
+    const file = join(bin, name)
+    writeFileSync(file, `#!${process.execPath}\n${source}`)
+    chmodSync(file, 0o755)
+  }
+  const callsFile = join(root, 'npm-calls.jsonl')
+  executable('npm', `
+    const fs = require('node:fs');
+    const args = process.argv.slice(2);
+    fs.appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(args) + '\\n');
+    const name = /^\\.\\/release\\/5straps-(protocol|runtime|buckle)-0\\.1\\.2\\.tgz$/.exec(args[2] ?? '')?.[1];
+    if (args[0] !== 'stage' || args[1] !== 'publish' || args[3] !== '--access' || args[4] !== 'public' || args.length !== 5 || !name) process.exit(99);
+    if (name === ${JSON.stringify(answers.failStage ?? '')}) { process.stderr.write('Duplicate pending stage or staging failure\\n'); process.exit(1); }
+    process.stdout.write('+ @5straps/' + name + '@0.1.2 (staged with id stage-' + name + ')\\n');
+  `)
+  executable('curl', `
+    if (${answers.networkFailure ?? false}) process.exit(7);
+    const statuses = ${JSON.stringify(answers.statuses ?? {})};
+    const name = /%2f([^/]+)/.exec(process.argv.at(-1))?.[1];
+    process.stdout.write(String(statuses[name] ?? 404));
+  `)
+  const script = runScripts(job(RELEASE, 'stage').join('\n')).find(value => value.includes('all_public=true'))
+  if (!script) throw new Error('No staging shell block')
+  const output = join(root, 'output')
+  const summary = join(root, 'summary')
+  const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, VERSION: answers.version ?? '0.1.2', GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary },
+  })
+  return {
+    ...result,
+    output: existsSync(output) ? readFileSync(output, 'utf8') : '',
+    summary: existsSync(summary) ? readFileSync(summary, 'utf8') : '',
+    calls: existsSync(callsFile) ? readFileSync(callsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : [],
+  }
+}
+
+describe('executing the npm staging shell', () => {
+  it('stages the exact tarballs in dependency order and defers GitHub release until approval', () => {
+    const result = runStaging()
+    expect(result.status).toBe(0)
+    expect(result.calls).toEqual(['protocol', 'runtime', 'buckle'].map(name => ['stage', 'publish', `./release/5straps-${name}-0.1.2.tgz`, '--access', 'public']))
+    expect(result.output).toBe('all_public=false\n')
+    for (const name of ['protocol', 'runtime', 'buckle']) expect(result.summary).toContain(`staged with id stage-${name}`)
+    expect(result.summary).toContain('`npm stage approve <stage-id>`')
+    expect(result.summary).toContain('main still names this release commit')
+    expect(result.summary).toContain('Re-run all jobs')
+  })
+
+  it('allows GitHub finalization only when every package version is already public', () => {
+    const result = runStaging({ statuses: { protocol: 200, runtime: 200, buckle: 200 } })
+    expect(result.status).toBe(0)
+    expect(result.calls).toEqual([])
+    expect(result.output).toBe('all_public=true\n')
+    expect(result.summary).toContain('All three packages at v0.1.2 are public')
+  })
+
+  it('skips public packages and stages only the remaining version', () => {
+    const result = runStaging({ statuses: { protocol: 200, runtime: 200 } })
+    expect(result.status).toBe(0)
+    expect(result.calls).toEqual([['stage', 'publish', './release/5straps-buckle-0.1.2.tgz', '--access', 'public']])
+    expect(result.output).toBe('all_public=false\n')
+  })
+
+  it('keeps earlier stage IDs when a later stage fails and does not finalize', () => {
+    const result = runStaging({ failStage: 'runtime' })
+    expect(result.status).not.toBe(0)
+    expect(result.calls.map(call => call[2])).toEqual(['./release/5straps-protocol-0.1.2.tgz', './release/5straps-runtime-0.1.2.tgz'])
+    expect(result.summary).toContain('staged with id stage-protocol')
+    expect(result.output).toBe('')
+  })
+
+  it('fails on a duplicate pending stage rather than treating its public 404 as success', () => {
+    const result = runStaging({ failStage: 'protocol' })
+    expect(result.status).not.toBe(0)
+    expect(result.calls).toHaveLength(1)
+    expect(result.output).toBe('')
+  })
+
+  it.each([403, 500])('refuses registry HTTP %s before staging anything', status => {
+    const result = runStaging({ statuses: { protocol: status } })
+    expect(result.status).not.toBe(0)
+    expect(result.calls).toEqual([])
+    expect(result.output).toBe('')
+  })
+
+  it('refuses a registry network failure before staging anything', () => {
+    const result = runStaging({ networkFailure: true })
+    expect(result.status).not.toBe(0)
+    expect(result.calls).toEqual([])
+    expect(result.output).toBe('')
+  })
+
+  it.each([
+    ['an invalid version', { version: '0.1.2;bad' }],
+    ['a missing tarball', { missing: 'buckle' as const }],
+  ])('refuses %s before staging anything', (_, answers) => {
+    const result = runStaging(answers)
+    expect(result.status).not.toBe(0)
+    expect(result.calls).toEqual([])
+    expect(result.output).toBe('')
   })
 })

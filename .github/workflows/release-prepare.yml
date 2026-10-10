@@ -122,5 +122,5 @@ jobs:
           {
             echo "Prepared and tagged v${VERSION} at $(git rev-parse HEAD)."
             echo
-            echo "Source checks passed. Generated release metadata skips CI. Run Publish Buckle on main."
+            echo "Source checks passed. Generated release metadata skips CI. Run Stage Buckle on main."
           } >> "$GITHUB_STEP_SUMMARY"
