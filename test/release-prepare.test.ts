@@ -91,7 +91,7 @@ describe('preparing a release', () => {
     ['an unchanged inferred version', '0.1.0', {}, 'must be greater than the current version'],
     ['an invalid inferred version', '0.1.1-rc.1', {}, 'changelogen inferred an invalid version'],
     ['a dirty working tree', '0.1.1', { dirty: true }, 'uncommitted changes'],
-    ['an unpublished prepared release', '0.1.1', { tags: [] }, 'The tag v0.1.0 of the current version is missing'],
+    ['a released version whose tag is missing', '0.1.1', { tags: [] }, 'The tag v0.1.0 of the current version is missing'],
     ['a version whose tag exists', '0.1.1', { tags: ['v0.1.0', 'v0.1.1'] }, 'The tag v0.1.1 already exists'],
     ['a version npm already holds', '0.1.1', { npm: { '@5straps/runtime': ['0.1.0', '0.1.1'] } }, 'npm already holds @5straps/runtime@0.1.1'],
     ['an npm that cannot answer', '0.1.1', { npmFails: true }, 'npm could not list the published versions'],
@@ -102,6 +102,33 @@ describe('preparing a release', () => {
     expect(calls.filter(call => call[0] === 'pnpm')).toEqual([])
     expect(readVersions(root)).toEqual(['0.1.0', '0.1.0', '0.1.0'])
     expect(readChangelog(root)).toBe(CHANGELOG)
+  })
+
+  it('prioritizes publishing a prepared version without inferring or changing another version', async () => {
+    const changelog = `# Changelog\n${SECTION('0.1.1', 'v0.1.0')}\n\n${CHANGELOG.slice(CHANGELOG.indexOf('## v0.1.0'))}`
+    const root = scratchRepository({ versions: '0.1.1', changelog })
+    const { run, calls } = fake(root, { npmFails: true })
+    let inferred = false
+    await expect(prepareRelease({ root, run, inferVersion: async () => { inferred = true; return '0.1.2' } })).rejects.toThrow(
+      'The tag v0.1.1 of the current version is missing from this clone, but CHANGELOG.md already has its section. If this version was just prepared, wait for verify and package-arm64 to pass on main, then run Publish Buckle; publishing creates its tag. Do not run Prepare release again or create the tag by hand for that pending release. If this version was already released, fetch existing tags (git fetch --tags origin); if its tag is also missing on GitHub, check the release history before restoring it',
+    )
+    expect(inferred).toBe(false)
+    expect(calls.filter(call => call[0] === 'npm' || call[0] === 'pnpm')).toEqual([])
+    expect(calls.filter(call => call[0] === 'git' && ['commit', 'tag', 'push', 'add'].includes(call[1] ?? ''))).toEqual([])
+    expect(readVersions(root)).toEqual(['0.1.1', '0.1.1', '0.1.1'])
+    expect(readChangelog(root)).toBe(changelog)
+  })
+
+  it('keeps tag recovery guidance for a published version with a missing tag', async () => {
+    const root = scratchRepository()
+    await expect(prepare(root, { tags: [] })).rejects.toThrow('If this version was already released, fetch existing tags (git fetch --tags origin)')
+  })
+
+  it('keeps tag recovery guidance when no changelog section identifies a prepared version', async () => {
+    const root = scratchRepository({ changelog: '# Changelog\n' })
+    const { run, calls } = fake(root, { tags: [] })
+    await expect(prepareRelease({ root, run })).rejects.toThrow('The tag v0.1.0 of the current version is missing')
+    expect(calls.filter(call => call[0] === 'npm' || call[0] === 'pnpm')).toEqual([])
   })
 
   it('leaves files unchanged when conventional commits yield no release', async () => {

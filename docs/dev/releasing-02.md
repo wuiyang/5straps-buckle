@@ -19,6 +19,9 @@ Every step can be started again: what is already done is checked, not done twice
   from the new `main`.
 - **It pushed, but starting the checks failed.** Start them by hand: Actions, Release checks, Run
   workflow, on `main`.
+- **Prepare says the current version's tag is missing after a successful preparation.**
+  Wait for both checks, then run Publish Buckle. Publishing creates the tag; do not prepare
+  again or create that pending release's tag by hand.
 - **A check failed on the release commit.** Push the fix to `main` as usual, which runs the checks
   on it, then run Publish Buckle: it releases that later commit under the prepared version. Do not
   prepare again, since the version is already set. The fix is not in the changelog section; add it

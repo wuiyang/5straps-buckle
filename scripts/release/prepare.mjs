@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { REPOSITORY_ROOT, Refusal, runAsScript, runCommand, writeStepOutputs } from './command.mjs'
 import { nextReleaseVersion } from './next-version.mjs'
-import { CHANGELOG, PACKAGES, addsOnlySection, compareVersions, isPlainVersion, localTagCommit, packagesOnNpm, sharedVersion, tagOf } from './packages.mjs'
+import { CHANGELOG, PACKAGES, addsOnlySection, changelogSection, compareVersions, isPlainVersion, localTagCommit, packagesOnNpm, sharedVersion, tagOf } from './packages.mjs'
 
 export async function prepareRelease({ root = REPOSITORY_ROOT, run = runCommand, inferVersion = nextReleaseVersion } = {}) {
   const previous = prepareReleaseGuard({ root, run })
@@ -18,7 +18,13 @@ export async function prepareRelease({ root = REPOSITORY_ROOT, run = runCommand,
 function prepareReleaseGuard({ root, run }) {
   if (run('git', ['status', '--porcelain']).trim() !== '') throw new Refusal('The working tree has uncommitted changes: the release commit must hold only the version and the changelog')
   const previous = sharedVersion(root)
-  if (!localTagCommit({ run, tag: tagOf(previous) })) throw new Refusal(`The tag ${tagOf(previous)} of the current version is missing from this clone, and the new changelog section starts there: in a clone, fetch the tags (git fetch --tags origin); if GitHub lacks the tag, push it from the clone that made it (git push origin ${tagOf(previous)})`)
+  if (!localTagCommit({ run, tag: tagOf(previous) })) {
+    const prepared = changelogSection(readFileSync(join(root, CHANGELOG), 'utf8'), previous)
+    if (prepared) {
+      throw new Refusal(`The tag ${tagOf(previous)} of the current version is missing from this clone, but ${CHANGELOG} already has its section. If this version was just prepared, wait for verify and package-arm64 to pass on main, then run Publish Buckle; publishing creates its tag. Do not run Prepare release again or create the tag by hand for that pending release. If this version was already released, fetch existing tags (git fetch --tags origin); if its tag is also missing on GitHub, check the release history before restoring it`)
+    }
+    throw new Refusal(`The tag ${tagOf(previous)} of the current version is missing from this clone, and the new changelog section starts there: in a clone, fetch the tags (git fetch --tags origin); if GitHub lacks the tag, push it from the clone that made it (git push origin ${tagOf(previous)})`)
+  }
   return previous
 }
 
