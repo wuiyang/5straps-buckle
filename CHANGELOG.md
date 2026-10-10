@@ -1,6 +1,18 @@
 # Changelog
 
 
+## v0.1.2
+
+[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.1...v0.1.2)
+
+### 🚀 Enhancements
+
+- **release:** Infer versions with changelogen ([f34556d](https://github.com/wuiyang/5straps-buckle/commit/f34556d))
+
+### 🩹 Fixes
+
+- **release:** Grant CI gate access to workflow runs ([242f683](https://github.com/wuiyang/5straps-buckle/commit/242f683))
+
 ## v0.1.1
 
 [compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.0...v0.1.1)
