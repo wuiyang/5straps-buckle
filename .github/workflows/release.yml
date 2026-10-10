@@ -1,4 +1,4 @@
-name: Release
+name: Publish Buckle
 
 # Release step two, started by hand from the Actions tab on main once release-prepare.yml has committed
 # the version and verify and package-arm64 have passed on that commit. pack checks and packs, tag puts

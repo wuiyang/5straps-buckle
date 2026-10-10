@@ -1,4 +1,4 @@
-// The second release step's packing, run by the Release workflow once require-ci.mjs has passed:
+// The second release step's packing, run by the Publish Buckle workflow once require-ci.mjs has passed:
 //   node scripts/release/plan.mjs <empty or new directory>
 // It plans the release of the checked-out commit, packs the three tarballs with pnpm, and writes the
 // release notes, so the publishing job only publishes what this wrote.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { blockingJobs, isReleaseCheckRun, repositoryOf, requireCi, workflowRunId } from '../scripts/release/require-ci.mjs'
 
-// The Release workflow and `pnpm release` publish only when verify and package-arm64 both succeeded
+// The Publish Buckle workflow and `pnpm release` publish only when verify and package-arm64 both succeeded
 // on the exact commit being released, in release-check.yml on a push to main or a run started on main,
 // from a clean tree, and that commit is what origin holds for the branch. git and gh are answered by
 // the test.

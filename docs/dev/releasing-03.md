@@ -1,10 +1,15 @@
 # Releasing: what ships
 
+## Overview
+
+- [What each package ships](#what-each-package-ships): files included in each npm package.
+- [Check the tarballs](#check-the-tarballs): inspect the packages before publishing.
+
+## What each package ships
+
 What each of the three packages holds, and how to look inside the tarballs before a release.
 [Releasing](releasing.md) covers the two release workflows, and
 [Releasing: repeats and by hand](releasing-02.md) covers a failed run and the manual fallback.
-
-## What each package ships
 
 npm always adds `package.json` and `README.md`. The rest is each package's `files` list:
 
@@ -24,7 +29,7 @@ Buckle reads its version from its own `package.json` at run time
 
 ## Check the tarballs
 
-The Release workflow's `pack` job checks its own tarballs. To look at them on a machine:
+The Publish Buckle workflow's `pack` job checks its own tarballs. To look at them on a machine:
 
 ```bash
 mkdir -p ../buckle-pack

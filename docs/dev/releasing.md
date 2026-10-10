@@ -1,12 +1,26 @@
 # Releasing
 
+## Overview
+
+- [Release flow](#release-flow): prepare, verify, and publish manually.
+- [One-time setup](#one-time-setup): npm trusted publishing and GitHub rules.
+- [Prepare release](#step-one-prepare-release): set the version and changelog.
+- [Publish Buckle](#step-two-publish-buckle): check, pack, and publish.
+
+## Release flow
+
 Three packages publish to npm: `@5straps/protocol`, the wire schemas; `@5straps/runtime`, the
 runtime primitives; and `@5straps/buckle`, the approval and sandbox runtime with its `buckle`
 binary. Buckle depends on the other two, so they publish first. The three share one version.
 
 A release runs from the repository's Actions tab, in two workflows started by hand on `main`:
-Prepare release, then Release. [Repeats and by hand](releasing-02.md) covers a failed run and the
-manual fallback; [what ships](releasing-03.md) covers what each package holds.
+
+1. Actions, Prepare release, Run workflow on `main`, enter the version.
+2. Wait for `verify` and `package-arm64` to pass on that exact preparation commit.
+3. Actions, Publish Buckle, Run workflow on `main`. Select `dry_run` to check and pack first.
+
+[Repeats and by hand](releasing-02.md) covers a failed run and the manual fallback;
+[what ships](releasing-03.md) covers what each package holds.
 
 ## One-time setup
 
@@ -31,16 +45,17 @@ asks for a one-time code.
 
 On GitHub:
 
-- The publishing job runs in an environment named `npm`, which the first Release run creates. Once
-  the repository is public, open Settings, Environments, `npm`, and allow deployments from `main`
-  only; a required reviewer is optional. Until then, only a test inside `release.yml` holds
-  publishing to `main`, and a run on another branch uses that branch's copy. On GitHub Free,
+- The publishing job runs in an environment named `npm`. Before the first real publish, make the
+  repository public, then create this environment in Settings, Environments, and allow deployments
+  from `main` only; a required reviewer is optional. A `dry_run` skips the publishing job and does
+  not create the environment. Until the deployment rule is set, only a test inside `release.yml`
+  holds publishing to `main`, and a run on another branch uses that branch's copy. On GitHub Free,
   environments are configurable only for public repositories
   ([Managing environments for deployment](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)).
 - A branch rule or ruleset on `main` that requires pull requests, status checks, or signed commits
   (the release commit is unsigned), or that restricts who may update `main`, refuses the push
   Prepare release makes, and the release stops there.
-- A tag rule that stops the workflow token from creating `v*` tags stops Release before it
+- A tag rule that stops the workflow token from creating `v*` tags stops Publish Buckle before it
   publishes.
 
 While the repository is private, npm publishes without a provenance statement. Once it is public,
@@ -76,11 +91,11 @@ summary names the release commit.
 
 Wait for both jobs of that Release checks run, `verify` and `package-arm64`, to pass.
 
-## Step two: Release
+## Step two: Publish Buckle
 
-Start Release only after both checks have passed on the release commit: Actions, Release, Run
-workflow, on `main`. The run releases the commit `main` held when Run workflow was clicked, even
-while it waits behind another release run. Tick `dry_run` to check and pack only: the tarballs and
+Start Publish Buckle only after both checks have passed on the release commit: Actions,
+Publish Buckle, Run workflow, on `main`. The run releases the commit `main` held when Run workflow
+was clicked, even while it waits behind another release run. Tick `dry_run` to check and pack only: the tarballs and
 notes are kept as the run's `release` artifact, and nothing is tagged or published.
 
 **`pack`** reads the repository and its check runs, and holds no publishing identity.

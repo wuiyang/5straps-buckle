@@ -1,4 +1,4 @@
-// The GitHub side of a release, run by two jobs of the Release workflow through gh:
+// The GitHub side of a release, run by two jobs of the Publish Buckle workflow through gh:
 //   RELEASE_VERSION=<version> RELEASE_COMMIT=<sha> node scripts/release/github-release.mjs tag
 //   RELEASE_VERSION=<version> RELEASE_COMMIT=<sha> RELEASE_NOTES=<file> node scripts/release/github-release.mjs release
 // `tag` runs before anything is published: it creates the tag v<version> on the packed commit, or

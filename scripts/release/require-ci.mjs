@@ -1,4 +1,4 @@
-// The ARM64 job blocks a release as the AMD64 job does. The Release workflow and `pnpm release` run
+// The ARM64 job blocks a release as the AMD64 job does. The Publish Buckle workflow and `pnpm release` run
 // this first: it refuses to publish unless the working tree is clean, HEAD is exactly what origin
 // holds for the current branch, and both CI jobs, `verify` and `package-arm64`, finished successfully
 // on that exact commit in release-check.yml, run by GitHub Actions on a push to main or started on main.

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { packRelease, planRelease, prepareArtifact } from '../scripts/release/plan.mjs'
 import { NAMES, type Run, commandFailure, scratchDirectory, scratchRepository } from './support/release-repository'
 
-// The Release workflow's pack job: the plan refuses a commit that cannot be released, pnpm packs the
+// The Publish Buckle workflow's pack job: the plan refuses a commit that cannot be released, pnpm packs the
 // three tarballs, each packed manifest is read back, and the notes are the version's changelog
 // section. git, npm, pnpm, and tar are answered here.
 

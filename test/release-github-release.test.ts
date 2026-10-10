@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createGitHubRelease, createReleaseTag } from '../scripts/release/github-release.mjs'
 import { type Run, commandFailure } from './support/release-repository'
 
-// The Release workflow's tag job puts v<version> on the packed commit before anything is published,
+// The Publish Buckle workflow's tag job puts v<version> on the packed commit before anything is published,
 // and refuses a tag on another commit, so a version is only ever finished from the commit that
 // started it. Its last job creates the GitHub release on that tag. Both do nothing when their part
 // already exists, so a failed run can be repeated. gh is answered here.

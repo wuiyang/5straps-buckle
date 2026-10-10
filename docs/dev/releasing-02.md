@@ -1,10 +1,15 @@
 # Releasing: repeats and by hand
 
+## Overview
+
+- [Repeating a failed release](#repeating-a-failed-release): recover the same version safely.
+- [Releasing by hand](#releasing-by-hand): publish when Actions cannot.
+
+## Repeating a failed release
+
 What to do when a release run fails, and how to release without GitHub Actions.
 [Releasing](releasing.md) covers the one-time setup and the two workflows, and
 [Releasing: what ships](releasing-03.md) covers what each package holds.
-
-## Repeating a failed release
 
 Every step can be started again: what is already done is checked, not done twice.
 
@@ -15,18 +20,18 @@ Every step can be started again: what is already done is checked, not done twice
 - **It pushed, but starting the checks failed.** Start them by hand: Actions, Release checks, Run
   workflow, on `main`.
 - **A check failed on the release commit.** Push the fix to `main` as usual, which runs the checks
-  on it, then run Release: it releases that later commit under the prepared version. Do not
+  on it, then run Publish Buckle: it releases that later commit under the prepared version. Do not
   prepare again, since the version is already set. The fix is not in the changelog section; add it
   there in the same push if it matters.
 - **A check failed or was cancelled with nothing to fix**, such as a runner fault. Re-run it with
-  "Re-run failed jobs" on that Release checks run. Release reads the latest run of each job, so
-  push nothing.
-- **Release failed.** Finish it with "Re-run failed jobs" on the same run, which GitHub allows for
-  30 days after the run started. The re-run keeps the run's commit and the tarballs `pack`
+  "Re-run failed jobs" on that Release checks run. Publish Buckle reads the latest run of each
+  job, so push nothing.
+- **Publish Buckle failed.** Finish it with "Re-run failed jobs" on the same run, which GitHub
+  allows for 30 days after the run started. The re-run keeps the run's commit and the tarballs `pack`
   uploaded: `tag` finds its tag in place, `publish` skips every package the registry already
   holds, and `github-release` leaves an existing release as it is. Finish a half-published version
   this way, never with a new version.
-- **A new Release run** is for when nothing reached npm, or when the fix must change `main`. It
+- **A new Publish Buckle run** is for when nothing reached npm, or when the fix must change `main`. It
   releases the head of `main`, and the failed run's `tag` job may have left `v<version>` on the
   earlier commit, which stops a run from any other commit before it publishes. When nothing
   reached npm, delete that tag by hand (`git push origin :refs/tags/v<version>`, or on GitHub),
@@ -90,5 +95,5 @@ git push origin v0.2.0
 exact version in its place; `npm publish` from a package directory does not, so publish by hand
 with pnpm.
 
-The tag gives the next changelog section its starting point. Running Release while `main` is still
-at that commit adds the GitHub release: it skips the packages npm holds and keeps the tag.
+The tag gives the next changelog section its starting point. Running Publish Buckle while `main`
+is still at that commit adds the GitHub release: it skips the packages npm holds and keeps the tag.
