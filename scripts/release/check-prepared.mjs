@@ -7,20 +7,43 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { REPOSITORY_ROOT, Refusal, runAsScript, runCommand } from './command.mjs'
-import { CHANGELOG, PACKAGES, RELEASE_FILES, addsOnlySection, compareVersions, isPlainVersion, tagOf } from './packages.mjs'
+import { CHANGELOG, PACKAGES, RELEASE_FILES, addsOnlySection, compareVersions, isPlainVersion, requireLocalReleaseTag, tagOf } from './packages.mjs'
 
 /** Refuses a working tree that holds anything beyond the prepared release of `version`. */
 export function checkPrepared({ version, root = REPOSITORY_ROOT, run = runCommand }) {
   if (!isPlainVersion(version)) throw new Refusal(`The version must be plain MAJOR.MINOR.PATCH; got ${JSON.stringify(version ?? '')}`)
   checkChangedPaths({ run })
-  const previous = PACKAGES.map(({ directory }) => checkManifest({ file: `${directory}/package.json`, version, root, run }))
+  checkReleaseFiles({ version, beforeRef: 'HEAD', readAfter: file => readFileSync(join(root, file), 'utf8'), run })
+  return `The prepared files change only the version of the three packages, set to ${version}, and add the ${tagOf(version)} section of ${CHANGELOG}.`
+}
+
+export function preparedSource({ run }) {
+  const subject = run('git', ['show', '--no-patch', '--format=%s', 'HEAD']).trim()
+  const version = /^chore\(release\): v(\d+\.\d+\.\d+)(?: \[skip ci\])?$/.exec(subject)?.[1]
+  if (!version) return null
+  if (!isPlainVersion(version)) throw new Refusal('The release commit must name a plain version')
+  const parents = run('git', ['show', '--no-patch', '--format=%P', 'HEAD']).trim().split(/\s+/)
+  if (parents.length !== 1 || !/^[0-9a-f]{40}$/.test(parents[0])) throw new Refusal('The prepared release commit must have exactly one parent')
+  const source = parents[0]
+  const sha = run('git', ['rev-parse', 'HEAD']).trim()
+  requireLocalReleaseTag({ run, version, sha })
+  const changed = run('git', ['diff', '--raw', '--no-abbrev', source, 'HEAD', '--']).trim().split('\n')
+  const paths = changed.map(line => /^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M\t(.+)$/.exec(line)?.[1])
+  if (paths.length !== RELEASE_FILES.length || !RELEASE_FILES.every(file => paths.includes(file))) {
+    throw new Refusal('The prepared release commit must modify exactly the four regular release files, without mode changes')
+  }
+  checkReleaseFiles({ version, beforeRef: source, readAfter: file => run('git', ['show', `HEAD:${file}`]), run })
+  return source
+}
+
+function checkReleaseFiles({ version, beforeRef, readAfter, run }) {
+  const previous = PACKAGES.map(({ directory }) => checkManifest({ file: `${directory}/package.json`, version, beforeRef, readAfter, run }))
   if (new Set(previous).size !== 1) throw new Refusal('The three packages must share one version at HEAD')
   if (!isNextVersion({ previous: previous[0], version })) throw new Refusal(`${version} must be a single changelogen version bump after ${previous[0]}`)
-  const before = run('git', ['show', `HEAD:${CHANGELOG}`])
-  if (!addsOnlySection({ before, after: readFileSync(join(root, CHANGELOG), 'utf8'), version })) {
+  const before = run('git', ['show', `${beforeRef}:${CHANGELOG}`])
+  if (!addsOnlySection({ before, after: readAfter(CHANGELOG), version })) {
     throw new Refusal(`${CHANGELOG} must differ from HEAD only by a new ## ${tagOf(version)} section above the earlier ones`)
   }
-  return `The prepared files change only the version of the three packages, set to ${version}, and add the ${tagOf(version)} section of ${CHANGELOG}.`
 }
 
 /** git status must name the four files, each changed in the working tree, and nothing else. */
@@ -36,12 +59,12 @@ function checkChangedPaths({ run }) {
  * The file must be its HEAD text with the version value replaced, character for character, so no
  * other field, duplicate key, or formatting change rides along, and the version must go up.
  */
-function checkManifest({ file, version, root, run }) {
-  const before = run('git', ['show', `HEAD:${file}`])
+function checkManifest({ file, version, beforeRef, readAfter, run }) {
+  const before = run('git', ['show', `${beforeRef}:${file}`])
   const previous = JSON.parse(before).version
   if (!isPlainVersion(previous) || compareVersions(version, previous) <= 0) throw new Refusal(`${version} must be greater than ${JSON.stringify(previous)}, the version of ${file} at HEAD`)
   const field = value => `"version": ${JSON.stringify(value)}`
-  const after = readFileSync(join(root, file), 'utf8')
+  const after = readAfter(file)
   if (after !== before.replace(field(previous), field(version)) || JSON.parse(after).version !== version) {
     throw new Refusal(`${file} must differ from HEAD only in its version, set to ${version}`)
   }

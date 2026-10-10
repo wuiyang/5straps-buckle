@@ -1,10 +1,4 @@
-// The GitHub side of a release, run by two jobs of the Publish Buckle workflow through gh:
-//   RELEASE_VERSION=<version> RELEASE_COMMIT=<sha> node scripts/release/github-release.mjs tag
-//   RELEASE_VERSION=<version> RELEASE_COMMIT=<sha> RELEASE_NOTES=<file> node scripts/release/github-release.mjs release
-// `tag` runs before anything is published: it creates the tag v<version> on the packed commit, or
-// confirms it is there, and refuses a tag on another commit, so a version can only ever be finished
-// from the commit that started it. `release` runs after publishing and creates the GitHub release on
-// that tag, which must already name the commit; a release that already exists is left as it is.
+// Creates the GitHub release on the existing prepared tag after npm publishing.
 import { Refusal, runAsScript, runCommand } from './command.mjs'
 import { isPlainVersion, tagOf } from './packages.mjs'
 
@@ -13,26 +7,19 @@ const REPOSITORY = /^[\w.-]+\/[\w.-]+$/
 /** How many annotated tags deep a tag may point before the commit; git itself allows nesting. */
 const TAG_DEPTH = 5
 
-/** Creates the lightweight tag on `sha`, or confirms it is there, and returns what it did. */
-export function createReleaseTag({ repository, version, sha, run = runCommand }) {
+export function requirePreparedTag({ repository, version, sha, run = runCommand }) {
   const tag = releaseTag({ repository, version, sha })
   const tagged = remoteTagCommit({ run, repository, tag })
-  if (tagged === sha) return `The tag ${tag} is already on ${sha}; nothing to do.`
-  if (tagged) throw anotherCommit({ tag, tagged, sha, version })
-  // --raw-field sends each value as a string; --field would read a SHA of digits alone as a number.
-  run('gh', ['api', `repos/${repository}/git/refs`, '--method', 'POST', '--raw-field', `ref=refs/tags/${tag}`, '--raw-field', `sha=${sha}`])
-  const made = remoteTagCommit({ run, repository, tag })
-  if (made !== sha) throw new Refusal(`The tag ${tag} was created, but it names ${made ?? 'nothing'}, not ${sha}: fix the tag by hand before publishing`)
-  return `Created the tag ${tag} on ${sha}.`
+  if (!tagged) throw new Refusal(`The tag ${tag} is missing on GitHub: Prepare release must push it before publishing`)
+  if (tagged !== sha) throw anotherCommit({ tag, tagged, sha, version })
+  return `The prepared tag ${tag} names ${sha}.`
 }
 
-/** Creates the release on the tag the tag job made, or confirms it exists, and returns what it did. */
+/** Creates the release on the tag Prepare release pushed, or confirms it exists, and returns what it did. */
 export function createGitHubRelease({ repository, version, sha, notes, run = runCommand }) {
   const tag = releaseTag({ repository, version, sha })
   if (!notes) throw new Refusal('The release notes file is missing')
-  const tagged = remoteTagCommit({ run, repository, tag })
-  if (!tagged) throw new Refusal(`The tag ${tag} is missing on GitHub, and the tag job makes it before publishing: create it on ${sha} by hand, then run this job again`)
-  if (tagged !== sha) throw anotherCommit({ tag, tagged, sha, version })
+  requirePreparedTag({ repository, version, sha, run })
   if (releaseExists({ run, repository, tag })) return `The release ${tag} already exists on ${sha}; nothing to do.`
   run('gh', ['release', 'create', tag, '--repo', repository, '--title', tag, '--notes-file', notes, '--verify-tag'])
   return `Created the release ${tag} on the tag ${tag}, which names ${sha}.`
@@ -79,7 +66,7 @@ function releaseExists({ run, repository, tag }) {
 
 await runAsScript(import.meta.url, () => {
   const input = { repository: process.env.GITHUB_REPOSITORY, version: process.env.RELEASE_VERSION, sha: process.env.RELEASE_COMMIT }
-  if (process.argv[2] === 'tag') return createReleaseTag(input)
+  if (process.argv[2] === 'check-tag') return requirePreparedTag(input)
   if (process.argv[2] === 'release') return createGitHubRelease({ ...input, notes: process.env.RELEASE_NOTES })
-  throw new Refusal('Usage: node scripts/release/github-release.mjs tag|release')
+  throw new Refusal('Usage: node scripts/release/github-release.mjs check-tag|release')
 })

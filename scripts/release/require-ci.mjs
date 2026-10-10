@@ -1,10 +1,10 @@
-// The ARM64 job blocks a release as the AMD64 job does. The Publish Buckle workflow and `pnpm release` run
-// this first: it refuses to publish unless the working tree is clean, HEAD is exactly what origin
-// holds for the current branch, and both CI jobs, `verify` and `package-arm64`, finished successfully
-// on that exact commit in release-check.yml, run by GitHub Actions on a push to main or started on main.
+// Source commits require exact-commit CI; a strictly validated tagged release commit reuses its single parent.
 import { execFileSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { preparedSource } from './check-prepared.mjs'
+import { REPOSITORY_ROOT, Refusal } from './command.mjs'
+import { requireLocalReleaseTag, sharedVersion } from './packages.mjs'
 
 export const REQUIRED_JOBS = ['verify', 'package-arm64']
 /** The app that runs the workflow's jobs; a check run another app posted under the same name does not count. */
@@ -60,7 +60,8 @@ export function blockingJobs({ sha, runs, required = REQUIRED_JOBS }) {
 }
 
 /** `run(command, args)` returns stdout; injected so a test can answer for git and gh without a network. */
-export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, githubActions = process.env.GITHUB_ACTIONS === 'true' }) {
+export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, githubActions = process.env.GITHUB_ACTIONS === 'true', sourceOnly = false, release = false, root = REPOSITORY_ROOT }) {
+  if (sourceOnly && release) return { ok: false, message: 'Source-only CI and release validation cannot be combined' }
   if (run('git', ['status', '--porcelain']).trim() !== '') {
     return { ok: false, message: 'The working tree has uncommitted changes: a release publishes what CI checked, so commit or remove them first' }
   }
@@ -71,18 +72,35 @@ export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, git
   if (pushed !== sha) {
     return { ok: false, message: `HEAD ${sha} is not what origin/${branch} holds${pushed ? ` (${pushed})` : ''} in this clone: fetch first (git fetch origin; this check compares with the local origin/${branch} and never fetches), then push it and let CI run on it before releasing` }
   }
+  if (release) {
+    try {
+      requireLocalReleaseTag({ run, version: sharedVersion(root), sha })
+    } catch (error) {
+      if (!(error instanceof Refusal)) throw error
+      return { ok: false, message: error.message }
+    }
+  }
+  let checkedSha = sha
+  if (!sourceOnly) {
+    try {
+      checkedSha = preparedSource({ run }) ?? sha
+    } catch (error) {
+      if (!(error instanceof Refusal)) throw error
+      return { ok: false, message: error.message }
+    }
+  }
   const slug = repository || repositoryOf(run('git', ['remote', 'get-url', 'origin']))
   let runs
   try {
-    runs = releaseCheckRuns({ run, slug, sha, checks: JSON.parse(run('gh', ['api', `repos/${slug}/commits/${sha}/check-runs?per_page=100`])).check_runs ?? [] })
+    runs = releaseCheckRuns({ run, slug, sha: checkedSha, checks: JSON.parse(run('gh', ['api', `repos/${slug}/commits/${checkedSha}/check-runs?per_page=100`])).check_runs ?? [] })
   } catch (error) {
     return { ok: false, message: ghFailure({ error, slug, githubActions }) }
   }
-  const blocking = blockingJobs({ sha, runs })
+  const blocking = blockingJobs({ sha: checkedSha, runs })
   if (blocking.length > 0) {
-    return { ok: false, message: `CI has not passed on ${sha}: ${blocking.map(job => `${job.name} ${job.reason}`).join('; ')}. Both ${REQUIRED_JOBS.join(' and ')} must succeed ${WHERE} before publishing.` }
+    return { ok: false, message: `CI has not passed on ${checkedSha}: ${blocking.map(job => `${job.name} ${job.reason}`).join('; ')}. Both ${REQUIRED_JOBS.join(' and ')} must succeed ${WHERE} before publishing.` }
   }
-  return { ok: true, message: `CI passed on ${sha}: ${REQUIRED_JOBS.join(' and ')} succeeded ${WHERE}.` }
+  return { ok: true, message: `CI passed on ${checkedSha}${checkedSha === sha ? '' : `, the validated source parent of tagged release ${sha}`}: ${REQUIRED_JOBS.join(' and ')} succeeded ${WHERE}.` }
 }
 
 /**
@@ -124,7 +142,10 @@ function run(command, args) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const result = requireCi({ run })
+  const args = process.argv.slice(2)
+  const result = args.length > 1 || args.some(arg => !['--source', '--release'].includes(arg))
+    ? { ok: false, message: 'Usage: node scripts/release/require-ci.mjs [--source|--release]' }
+    : requireCi({ run, sourceOnly: args[0] === '--source', release: args[0] === '--release' })
   process[result.ok ? 'stdout' : 'stderr'].write(`${result.message}\n`)
   process.exitCode = result.ok ? 0 : 1
 }

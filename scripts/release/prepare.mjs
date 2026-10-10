@@ -21,7 +21,7 @@ function prepareReleaseGuard({ root, run }) {
   if (!localTagCommit({ run, tag: tagOf(previous) })) {
     const prepared = changelogSection(readFileSync(join(root, CHANGELOG), 'utf8'), previous)
     if (prepared) {
-      throw new Refusal(`The tag ${tagOf(previous)} of the current version is missing from this clone, but ${CHANGELOG} already has its section. If this version was just prepared, wait for verify and package-arm64 to pass on main, then run Publish Buckle; publishing creates its tag. Do not run Prepare release again or create the tag by hand for that pending release. If this version was already released, fetch existing tags (git fetch --tags origin); if its tag is also missing on GitHub, check the release history before restoring it`)
+      throw new Refusal(`The tag ${tagOf(previous)} of the current version is missing from this clone, but ${CHANGELOG} already has its section. Prepare release must push its release commit and tag together. Fetch tags (git fetch --tags origin), then inspect the preparation run and release history before retrying; publishing never creates a missing tag. If this version was already released, fetch existing tags (git fetch --tags origin); if its tag is also missing on GitHub, check the release history before restoring it`)
     }
     throw new Refusal(`The tag ${tagOf(previous)} of the current version is missing from this clone, and the new changelog section starts there: in a clone, fetch the tags (git fetch --tags origin); if GitHub lacks the tag, push it from the clone that made it (git push origin ${tagOf(previous)})`)
   }

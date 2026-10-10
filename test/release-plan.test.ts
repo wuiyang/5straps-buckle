@@ -52,7 +52,7 @@ function fake(answers: Answers = {}) {
     calls.push([command, ...args])
     if (command === 'git' && args.join(' ') === 'rev-parse HEAD') return `${HEAD}\n`
     if (command === 'git' && args[0] === 'rev-parse') {
-      if (answers.tag && args[3] === 'refs/tags/v0.1.1^{commit}') return `${answers.tag}\n`
+      if (answers.tag !== '' && args[3] === 'refs/tags/v0.1.1^{commit}') return `${answers.tag ?? HEAD}\n`
       throw commandFailure(1)
     }
     if (command === 'npm' && args[0] === 'view') return JSON.stringify(answers.npm?.[args[1] ?? ''] ?? ['0.1.0'])
@@ -79,7 +79,7 @@ describe('planning a release', () => {
       version: '0.1.1',
       sha: HEAD,
       notes: '[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.0...v0.1.1)\n\n### Fixes\n\n- Something new ([c0ffee1](https://github.com/wuiyang/5straps-buckle/commit/c0ffee1))',
-      tagged: false,
+      tagged: true,
       published: [],
     })
   })
@@ -92,6 +92,7 @@ describe('planning a release', () => {
   })
 
   it.each([
+    ['the tag is missing', { versions: '0.1.1', changelog: CHANGELOG }, { tag: '' }, 'Prepare release must push the release commit and tag before publishing'],
     ['the tag names another commit', { versions: '0.1.1', changelog: CHANGELOG }, { tag: OTHER }, `The tag v0.1.1 names ${OTHER}, not ${HEAD}`],
     ['the changelog has no section for the version', { versions: '0.1.2', changelog: CHANGELOG }, {}, 'CHANGELOG.md has no v0.1.2 section'],
     ['the packages disagree', { versions: { '@5straps/protocol': '0.1.1', '@5straps/runtime': '0.1.1' }, changelog: CHANGELOG }, {}, '@5straps/buckle is 0.1.0'],

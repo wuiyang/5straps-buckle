@@ -110,7 +110,7 @@ describe('preparing a release', () => {
     const { run, calls } = fake(root, { npmFails: true })
     let inferred = false
     await expect(prepareRelease({ root, run, inferVersion: async () => { inferred = true; return '0.1.2' } })).rejects.toThrow(
-      'The tag v0.1.1 of the current version is missing from this clone, but CHANGELOG.md already has its section. If this version was just prepared, wait for verify and package-arm64 to pass on main, then run Publish Buckle; publishing creates its tag. Do not run Prepare release again or create the tag by hand for that pending release. If this version was already released, fetch existing tags (git fetch --tags origin); if its tag is also missing on GitHub, check the release history before restoring it',
+      'The tag v0.1.1 of the current version is missing from this clone, but CHANGELOG.md already has its section. Prepare release must push its release commit and tag together. Fetch tags (git fetch --tags origin), then inspect the preparation run and release history before retrying; publishing never creates a missing tag. If this version was already released, fetch existing tags (git fetch --tags origin); if its tag is also missing on GitHub, check the release history before restoring it',
     )
     expect(inferred).toBe(false)
     expect(calls.filter(call => call[0] === 'npm' || call[0] === 'pnpm')).toEqual([])

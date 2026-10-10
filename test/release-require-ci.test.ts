@@ -29,6 +29,7 @@ function fake(input: { onOrigin?: boolean; originAt?: string; dirty?: boolean; d
       if (input.onOrigin === false) throw new Error('exit 1')
       return `${input.originAt ?? SHA}\n`
     }
+    if (command === 'git' && args.join(' ') === 'show --no-patch --format=%s HEAD') return 'fix: source change\n'
     if (command === 'git' && args[0] === 'remote') return `${input.origin ?? 'git@github.com-alias:owner/repo.git'}\n`
     if (command === 'gh' && input.gh) throw input.gh
     const workflowRun = /^repos\/[^/]+\/[^/]+\/actions\/runs\/(\d+)$/.exec(args[1] ?? '')?.[1]

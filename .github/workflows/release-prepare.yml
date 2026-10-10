@@ -1,13 +1,8 @@
 name: Prepare release
 
-# Release step one, started by hand from the Actions tab on main: sets the version in the three
-# packages, writes its changelog section, commits that to main, and starts the release checks on the
-# new commit. Step two is release.yml, once verify and package-arm64 have passed on it.
-#
-# Two jobs, so that no installed dependency runs where main can be pushed. prepare installs and runs
-# changelogen with read access only, and hands over the four files it wrote. commit holds the write
-# token, installs nothing, takes only those four files over a fresh checkout, and refuses unless they
-# change only the version and add only the changelog section before it commits and pushes.
+# Preparation validates source CI, generates metadata with read access, then commits and atomically
+# pushes main and its version tag. Generated release metadata skips CI; publishing validates its diff.
+# Dependencies run only in prepare; commit copies and validates just the four release files.
 
 on:
   workflow_dispatch:
@@ -32,6 +27,8 @@ jobs:
     # Runs changelogen and its dependencies, so it can read the repository and nothing more.
     permissions:
       contents: read
+      checks: read
+      actions: read
     env:
       CI: 'true'
     steps:
@@ -51,6 +48,10 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Require passing release checks on the source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/require-ci.mjs --source
       - name: Install pinned dependencies
         # changelogen is all this job needs, so no install script runs.
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -76,13 +77,12 @@ jobs:
     # repository script that imports nothing beyond Node itself.
     permissions:
       contents: write
-      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The commit the prepare job read.
           ref: ${{ github.sha }}
-          # The token reaches only the last two steps, which push and start the checks.
+          # The token reaches only the final push step.
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -110,22 +110,17 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -- CHANGELOG.md packages/protocol/package.json packages/runtime/package.json buckle/package.json
-          git commit --message "chore(release): v${VERSION}"
-      - name: Push to main
-        # A plain push: if main moved since this run started, it is refused and nothing is released.
+          git commit --message "chore(release): v${VERSION} [skip ci]"
+          git tag "v${VERSION}"
+      - name: Push the release commit and tag together
+        # Atomic and without force: a moved main or existing tag refuses both updates.
         env:
           GH_TOKEN: ${{ github.token }}
-        run: git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/main
-      - name: Start the release checks on the new commit
-        # A push made with the workflow token starts no workflow, so release-check.yml is started here.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          gh workflow run release-check.yml --ref main
+          git push --atomic "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/main "refs/tags/v${VERSION}"
           {
-            echo "Prepared v${VERSION} at $(git rev-parse HEAD)."
+            echo "Prepared and tagged v${VERSION} at $(git rev-parse HEAD)."
             echo
-            echo "When verify and package-arm64 pass on that commit, run the Publish Buckle workflow on main."
+            echo "Source checks passed. Generated release metadata skips CI. Run Publish Buckle on main."
           } >> "$GITHUB_STEP_SUMMARY"

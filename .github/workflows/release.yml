@@ -1,17 +1,14 @@
 name: Publish Buckle
 
-# Release step two, started by hand from the Actions tab on main once release-prepare.yml has committed
-# the version and verify and package-arm64 have passed on that commit. pack checks and packs, tag puts
-# the version's tag on the packed commit before anything is published, publish holds the npm identity
-# and runs no repository code, and github-release creates the release on the tag. Finish a failed run
-# with "Re-run failed jobs", which keeps the commit and the tarballs: what npm or GitHub already holds
-# for this version is skipped, and a tag on another commit stops the run before it publishes.
+# Publish the release commit and tag already pushed by Prepare release. pack validates its metadata
+# against its CI-checked source parent. publish holds npm identity and runs no repository code.
+# Re-run failed jobs to retain the packed commit and tarballs and finish a partially published version.
 
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Check and pack only; publish nothing and make no tag or release
+        description: Check and pack only; publish nothing and make no release
         type: boolean
         default: false
 
@@ -56,7 +53,7 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Require verify and package-arm64 to have passed on this commit
+      - name: Require passing source CI and validate prepared release metadata
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release/require-ci.mjs
@@ -74,16 +71,13 @@ jobs:
           overwrite: true
           retention-days: 30
 
-  tag:
+  confirm-tag:
     needs: pack
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # The tag binds the version to the packed commit before any package reaches npm, so a later run
-    # from another commit stops at its own pack or tag job instead of finishing this version from
-    # there. Nothing is installed.
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,15 +87,15 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Tag the packed commit, or confirm the tag is there
+      - name: Confirm the prepared tag still names the packed commit on GitHub
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.pack.outputs.version }}
           RELEASE_COMMIT: ${{ needs.pack.outputs.sha }}
-        run: node scripts/release/github-release.mjs tag
+        run: node scripts/release/github-release.mjs check-tag
 
   publish:
-    needs: [pack, tag]
+    needs: [pack, confirm-tag]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15

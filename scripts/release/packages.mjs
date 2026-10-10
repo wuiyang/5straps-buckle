@@ -61,6 +61,14 @@ export function localTagCommit({ run, tag }) {
   }
 }
 
+export function requireLocalReleaseTag({ run, version, sha }) {
+  const tag = tagOf(version)
+  const tagged = localTagCommit({ run, tag })
+  if (!tagged) throw new Refusal(`The tag ${tag} is missing: Prepare release must push the release commit and tag before publishing`)
+  if (tagged !== sha) throw new Refusal(`The tag ${tag} names ${tagged}, not ${sha}: ${version} was released from another commit`)
+  return tagged
+}
+
 /** The packages npm already holds at `version`. Failing to ask stops the release: guessing could publish twice or skip one. */
 export function packagesOnNpm({ run, version }) {
   return PACKAGES.filter(({ name }) => {

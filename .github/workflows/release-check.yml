@@ -36,7 +36,7 @@ jobs:
 
   package-arm64:
     # Linux ARM64 runs the package suites and the packaged installs, and blocks a release as verify
-    # does: scripts/release/require-ci.mjs checks both jobs on the released commit. node-pty builds
+    # does: scripts/release/require-ci.mjs checks both jobs on the source commit. node-pty builds
     # from source here through onlyBuiltDependencies (pnpm-workspace.yaml); it is an optional
     # dependency, so a failed build still installs, and the next step proves it loads.
     runs-on: ubuntu-24.04-arm

@@ -1,11 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { createGitHubRelease, createReleaseTag } from '../scripts/release/github-release.mjs'
+import { createGitHubRelease, requirePreparedTag } from '../scripts/release/github-release.mjs'
 import { type Run, commandFailure } from './support/release-repository'
 
-// The Publish Buckle workflow's tag job puts v<version> on the packed commit before anything is published,
-// and refuses a tag on another commit, so a version is only ever finished from the commit that
-// started it. Its last job creates the GitHub release on that tag. Both do nothing when their part
-// already exists, so a failed run can be repeated. gh is answered here.
+// The final publish job creates a GitHub release on the existing prepared tag, never creating a tag.
 
 const SHA = 'a'.repeat(40)
 const OTHER = 'b'.repeat(40)
@@ -14,7 +11,7 @@ const REPOSITORY = 'wuiyang/5straps-buckle'
 
 type Ref = { ref: string; object: { sha: string; type: 'commit' | 'tag' } }
 
-interface Answers { refs?: readonly Ref[]; refsAfter?: readonly Ref[]; annotated?: { sha: string; type: 'commit' | 'tag' }; release?: 'exists' | 'missing' | 'fails' }
+interface Answers { refs?: readonly Ref[]; annotated?: { sha: string; type: 'commit' | 'tag' }; release?: 'exists' | 'missing' | 'fails' }
 
 const commitRef = (sha: string, tag = 'v0.1.1'): Ref => ({ ref: `refs/tags/${tag}`, object: { sha, type: 'commit' } })
 const ANNOTATED: Ref = { ref: 'refs/tags/v0.1.1', object: { sha: TAG_OBJECT, type: 'tag' } }
@@ -22,16 +19,11 @@ const ANNOTATED: Ref = { ref: 'refs/tags/v0.1.1', object: { sha: TAG_OBJECT, typ
 /** Answers gh as GitHub would; once the tag is created, it reads as `refsAfter`, or on SHA. */
 function fake(answers: Answers = {}) {
   const calls: string[][] = []
-  let created = false
   const run: Run = (command, args) => {
     calls.push([command, ...args])
     const path = args[1] ?? ''
-    if (command === 'gh' && path === `repos/${REPOSITORY}/git/matching-refs/tags/v0.1.1`) return JSON.stringify(created ? answers.refsAfter ?? [commitRef(SHA)] : answers.refs ?? [])
+    if (command === 'gh' && path === `repos/${REPOSITORY}/git/matching-refs/tags/v0.1.1`) return JSON.stringify(answers.refs ?? [])
     if (command === 'gh' && path === `repos/${REPOSITORY}/git/tags/${TAG_OBJECT}`) return JSON.stringify({ object: answers.annotated })
-    if (command === 'gh' && path === `repos/${REPOSITORY}/git/refs`) {
-      created = true
-      return '{}'
-    }
     if (command === 'gh' && path === `repos/${REPOSITORY}/releases/tags/v0.1.1`) {
       if (answers.release === 'exists') return JSON.stringify({ tag_name: 'v0.1.1' })
       throw commandFailure(1, answers.release === 'fails' ? 'gh: Bad credentials (HTTP 401)\n' : 'gh: Not Found (HTTP 404)\n')
@@ -47,46 +39,28 @@ function fake(answers: Answers = {}) {
   }
 }
 
-const tag = (run: Run, input: Partial<{ repository: string; version: string; sha: string }> = {}) =>
-  createReleaseTag({ repository: REPOSITORY, version: '0.1.1', sha: SHA, run, ...input })
 const release = (run: Run, input: Partial<{ repository: string; version: string; sha: string; notes: string }> = {}) =>
   createGitHubRelease({ repository: REPOSITORY, version: '0.1.1', sha: SHA, notes: 'release/notes.md', run, ...input })
 
-describe('the release tag', () => {
-  it('creates a lightweight tag on the packed commit when GitHub has none', () => {
-    const gh = fake()
-    expect(tag(gh.run)).toBe(`Created the tag v0.1.1 on ${SHA}.`)
-    expect(gh.tagCreations()).toEqual([['gh', 'api', `repos/${REPOSITORY}/git/refs`, '--method', 'POST', '--raw-field', 'ref=refs/tags/v0.1.1', '--raw-field', `sha=${SHA}`]])
-  })
-
-  // A tag only matches by prefix through matching-refs: v0.1.10 is not v0.1.1.
-  it('reads a tag that only shares the prefix as no tag', () => {
-    const gh = fake({ refs: [commitRef(OTHER, 'v0.1.10')] })
-    tag(gh.run)
-    expect(gh.tagCreations()).toHaveLength(1)
-  })
-
+describe('confirming the prepared tag before npm publishing', () => {
   it.each([
     ['a lightweight tag', { refs: [commitRef(SHA)] }],
     ['an annotated tag', { refs: [ANNOTATED], annotated: { sha: SHA, type: 'commit' } }],
-  ] as const)('does nothing when %s already names the packed commit', (_, answers) => {
+  ] as const)('accepts %s without creating or moving anything', (_, answers) => {
     const gh = fake(answers)
-    expect(tag(gh.run)).toBe(`The tag v0.1.1 is already on ${SHA}; nothing to do.`)
-    expect(gh.tagCreations()).toEqual([])
+    expect(requirePreparedTag({ repository: REPOSITORY, version: '0.1.1', sha: SHA, run: gh.run })).toBe(`The prepared tag v0.1.1 names ${SHA}.`)
+    expect(gh.calls.every(call => call[1] === 'api' && call.length === 3)).toBe(true)
   })
 
-  // A repeated Release from a main that moved after a partial publish stops here, before publishing.
   it.each([
-    ['the tag names another commit', { refs: [commitRef(OTHER)] }, `The tag v0.1.1 names ${OTHER}, not the released commit ${SHA}`],
-    ['an annotated tag leads to another commit', { refs: [ANNOTATED], annotated: { sha: OTHER, type: 'commit' } }, `names ${OTHER}`],
-  ] as const)('refuses, creating nothing, when %s', (_, answers, reason) => {
+    ['a missing tag', {}],
+    ['a prefix-only tag', { refs: [commitRef(SHA, 'v0.1.10')] }],
+    ['a moved tag', { refs: [commitRef(OTHER)] }],
+    ['a moved annotated tag', { refs: [ANNOTATED], annotated: { sha: OTHER, type: 'commit' } }],
+  ] as const)('refuses %s without making a tag', (_, answers) => {
     const gh = fake(answers)
-    expect(() => tag(gh.run)).toThrow(reason)
-    expect(gh.tagCreations()).toEqual([])
-  })
-
-  it('refuses when the created tag reads back on another commit', () => {
-    expect(() => tag(fake({ refsAfter: [commitRef(OTHER)] }).run)).toThrow(`it names ${OTHER}, not ${SHA}`)
+    expect(() => requirePreparedTag({ repository: REPOSITORY, version: '0.1.1', sha: SHA, run: gh.run })).toThrow()
+    expect(gh.calls.every(call => call[1] === 'api' && call.length === 3)).toBe(true)
   })
 })
 
@@ -122,13 +96,13 @@ describe('the GitHub release', () => {
   })
 })
 
-describe('the inputs of both jobs', () => {
+describe('the GitHub release inputs', () => {
   it.each([
     ['a repository that is not owner/name', { repository: 'wuiyang/5straps-buckle/extra' }, 'owner/name'],
     ['a version that is not plain', { version: 'v0.1.1' }, 'plain MAJOR.MINOR.PATCH'],
     ['a short commit', { sha: 'abc1234' }, 'full SHA'],
   ])('refuse %s before asking GitHub anything', (_, input, reason) => {
-    for (const step of [tag, release]) {
+    for (const step of [release, (run: Run, input: Partial<{ repository: string; version: string; sha: string }>) => requirePreparedTag({ repository: REPOSITORY, version: '0.1.1', sha: SHA, run, ...input })]) {
       const gh = fake()
       expect(() => step(gh.run, input)).toThrow(reason)
       expect(gh.calls).toEqual([])

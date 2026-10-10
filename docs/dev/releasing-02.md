@@ -2,103 +2,82 @@
 
 ## Overview
 
-- [Repeating a failed release](#repeating-a-failed-release): recover the same version safely.
+- [Repeating a failed release](#repeating-a-failed-release): recover the prepared version.
 - [Releasing by hand](#releasing-by-hand): publish when Actions cannot.
 
 ## Repeating a failed release
 
-What to do when a release run fails, and how to release without GitHub Actions.
-[Releasing](releasing.md) covers the one-time setup and the two workflows, and
-[Releasing: what ships](releasing-03.md) covers what each package holds.
+[Releasing](releasing.md) covers setup and the workflows;
+[what ships](releasing-03.md) covers package contents.
 
-Every step can be started again: what is already done is checked, not done twice.
-
-- **Prepare release failed before its push.** Nothing reached GitHub. Fix the cause and run it
-  again.
-- **Its push was refused** because `main` moved after the run started. Run it again; it starts
-  from the new `main`.
-- **It pushed, but starting the checks failed.** Start them by hand: Actions, Release checks, Run
-  workflow, on `main`.
-- **Prepare says the current version's tag is missing after a successful preparation.**
-  Wait for both checks, then run Publish Buckle. Publishing creates the tag; do not prepare
-  again or create that pending release's tag by hand.
-- **A check failed on the release commit.** Push the fix to `main` as usual, which runs the checks
-  on it, then run Publish Buckle: it releases that later commit under the prepared version. Do not
-  prepare again, since the version is already set. The fix is not in the changelog section; add it
-  there in the same push if it matters.
-- **A check failed or was cancelled with nothing to fix**, such as a runner fault. Re-run it with
-  "Re-run failed jobs" on that Release checks run. Publish Buckle reads the latest run of each
-  job, so push nothing.
-- **Publish Buckle failed.** Finish it with "Re-run failed jobs" on the same run, which GitHub
-  allows for 30 days after the run started. The re-run keeps the run's commit and the tarballs `pack`
-  uploaded: `tag` finds its tag in place, `publish` skips every package the registry already
-  holds, and `github-release` leaves an existing release as it is. Finish a half-published version
-  this way, never with a new version.
-- **A new Publish Buckle run** is for when nothing reached npm, or when the fix must change `main`. It
-  releases the head of `main`, and the failed run's `tag` job may have left `v<version>` on the
-  earlier commit, which stops a run from any other commit before it publishes. When nothing
-  reached npm, delete that tag by hand (`git push origin :refs/tags/v<version>`, or on GitHub),
-  then start the new run. When a package did reach npm, that version is abandoned: prepare the
-  next version, with the fix. The abandoned version leaves its tag behind, to delete by hand once
-  the next version is prepared, since preparing reads the tag of the current version.
-- **A repeat right after a publish** can find the registry not yet answering for that package, try
-  it again, and fail on npm's refusal of the duplicate. Nothing is harmed; re-run the failed jobs
-  later.
-- **A tag `v<version>` names another commit.** `pack`, `tag`, and `github-release` all stop, before
-  anything is published: that version came from somewhere else. Find out where before moving or
-  deleting the tag.
+- **Source checks failed.** Fix the source on `main` and wait for both `verify` and
+  `package-arm64` to pass before Prepare release.
+- **Prepare release failed before its atomic push.** Neither the release commit nor tag reached
+  GitHub. Fix the cause and run preparation again.
+- **Its push was refused.** Check branch and tag rules. If `main` moved, wait for checks on its
+  new source commit and run preparation again. The atomic push updates both refs or neither.
+- **Preparation succeeded.** Run Publish Buckle on that prepared `main` commit. Release checks
+  are skipped for its generated metadata; publishing validates the diff and its parent's checks.
+- **An older preparation has no tag.** This predates the atomic flow. Review that original
+  preparation commit and its source checks before repairing its tag. Do not blindly prepare a
+  new version or move an existing tag.
+- **Publish Buckle failed.** Use "Re-run failed jobs" on the same run within GitHub's 30-day
+  window. The run retains its commit and uploaded tarballs. Publishing skips packages already
+  on npm, and GitHub release creation leaves an existing release alone.
+- **A check was cancelled or failed without a source fix.** Re-run the failed jobs on the source
+  Release checks run. Publishing reads the latest eligible run of each required job.
+- **A fix changes source after preparation.** Push the fix, pass source checks, then prepare the
+  next version. The prepared tag binds the earlier version to its original commit; a new Publish
+  Buckle run on another commit cannot finish that version. Finish any partial publication by
+  re-running its original run.
+- **A tag names another commit or is missing.** Publishing stops before npm. Inspect the
+  preparation result and tag history; publishing never creates or moves the tag.
+- **A repeat immediately after publishing fails on an npm duplicate.** Registry visibility can
+  lag. Re-run the failed jobs later.
 
 ## Releasing by hand
 
-The fallback when Actions cannot publish. It needs an npm login (`npm login`, then `npm whoami`)
-with an account that may publish under the `@5straps` scope, and the GitHub CLI, `gh`, logged in:
-`pnpm release` asks it for the CI results. Keep tokens out of the repository and out of the shell
-history.
+The fallback needs an npm account allowed to publish under `@5straps`, and the GitHub CLI, `gh`,
+logged in. Keep tokens out of the repository and shell history.
 
 ```bash
 git switch main
 git pull --ff-only origin main
 git fetch origin --tags
 pnpm install --frozen-lockfile
+node scripts/release/require-ci.mjs --source
 pnpm release:prepare
 ```
 
-`release:prepare` runs `scripts/release/prepare.mjs`, with the same checks and changes as step
-one, on the local `HEAD`: the new changelog section covers the commits from the last tag to that
-`HEAD`, so bring `main` up to date first, as above. The version is inferred automatically.
-Read the printed version and diff, commit the four files as `chore(release): v<version>`, push to `main`, and wait for both checks, which a push by a person
-starts. Then:
+The CI gate must pass on the source commit before preparation. `release:prepare` only generates
+the version and changelog locally; it does not commit, tag, or push. The version is inferred
+without an override. Review its four changed files and use the printed version below:
 
 ```bash
-git fetch origin
-pnpm release
+git add -- CHANGELOG.md packages/protocol/package.json packages/runtime/package.json buckle/package.json
+git commit --message "chore(release): v<version> [skip ci]"
 git tag v<version>
-git push origin v<version>
+git push --atomic origin HEAD:refs/heads/main refs/tags/v<version>
+git fetch origin
+npm login
+npm whoami
+pnpm release
 ```
 
-Replace `<version>` with the version preparation printed.
+Replace `<version>` with the printed version. The atomic push updates both refs or neither.
+No Release checks run is needed on this generated metadata commit.
 
-`pnpm release` runs three steps and stops at the first failure:
+`pnpm release` first runs `scripts/release/require-ci.mjs --release`. It requires a clean tree,
+an attached branch with `HEAD` equal to the fetched `origin/<branch>`, the shared version's tag
+on `HEAD`, and successful eligible `verify` and `package-arm64` checks. An ordinary source commit needs its own checks. A canonical release
+commit may use its single parent's checks only after its exact tag and strict four-file diff
+validate. The script never fetches itself. It reads GitHub check and workflow runs through `gh`,
+using `GITHUB_REPOSITORY` or the `origin` URL to identify the repository.
 
-1. `scripts/release/require-ci.mjs` refuses unless:
-   - the working tree has no uncommitted changes;
-   - `HEAD` is on a branch, not detached, and equals the local `origin/<branch>` (it compares
-     with what the last fetch saw and never fetches itself);
-   - both CI jobs, `verify` and `package-arm64`, have a latest run on that exact commit that
-     completed successfully, counting only `release-check.yml` on a push to `main` or a run
-     started on `main`. It reads the check runs with
-     `gh api repos/<owner>/<repo>/commits/<sha>/check-runs`, and the workflow run each one names
-     with `gh api repos/<owner>/<repo>/actions/runs/<id>`, taking the repository from
-     `GITHUB_REPOSITORY` or from the `origin` URL.
-2. `pnpm release:check` runs the whole gate locally: runtime pins, route tables, typecheck, every
-   test suite, the builds, the packaged smoke, and the dependency audit.
-3. `pnpm -r publish --access public` publishes each package in dependency order. The release
-   check has just built every package, and each `prepack` script builds it again where scripts
-   run, so a stale `dist/` is never published.
+It then runs `pnpm -r publish --access public` in dependency order. Each `prepack` builds its
+package. It does not repeat the full release check on generated metadata. Use pnpm because it
+replaces `workspace:*` dependencies with the exact version; publishing from a package directory
+with npm does not.
 
-`@5straps/buckle` names the other two as `workspace:*`. `pnpm publish` and `pnpm pack` write the
-exact version in its place; `npm publish` from a package directory does not, so publish by hand
-with pnpm.
-
-The tag gives the next changelog section its starting point. Running Publish Buckle while `main`
-is still at that commit adds the GitHub release: it skips the packages npm holds and keeps the tag.
+The prepared tag starts the next changelog range. Running Publish Buckle while `main` still
+names that release commit adds the GitHub release and skips packages npm already holds.

@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { REPOSITORY_ROOT, Refusal, runAsScript, runCommand, writeStepOutputs } from './command.mjs'
-import { CHANGELOG, PACKAGES, changelogSection, localTagCommit, packagesOnNpm, sharedVersion, tagOf, tarballOf } from './packages.mjs'
+import { CHANGELOG, PACKAGES, changelogSection, requireLocalReleaseTag, packagesOnNpm, sharedVersion, tagOf, tarballOf } from './packages.mjs'
 
 export const NOTES = 'notes.md'
 
@@ -20,8 +20,7 @@ export function planRelease({ root = REPOSITORY_ROOT, run = runCommand }) {
   const notes = changelogSection(readFileSync(join(root, CHANGELOG), 'utf8'), version)
   if (!notes) throw new Refusal(`${CHANGELOG} has no ${tag} section: prepare ${version} first (the Prepare release workflow, or scripts/release/prepare.mjs)`)
   const sha = run('git', ['rev-parse', 'HEAD']).trim()
-  const tagged = localTagCommit({ run, tag })
-  if (tagged && tagged !== sha) throw new Refusal(`The tag ${tag} names ${tagged}, not ${sha}: ${version} was released from another commit`)
+  const tagged = requireLocalReleaseTag({ run, version, sha })
   return { version, sha, notes, tagged: tagged !== null, published: packagesOnNpm({ run, version }) }
 }
 
@@ -82,7 +81,7 @@ await runAsScript(import.meta.url, () => {
     `Release ${tagOf(plan.version)} of ${plan.sha}.`,
     `To publish: ${waiting.join(', ') || 'nothing, npm holds all three'}.`,
     `Already on npm: ${plan.published.join(', ') || 'none'}.`,
-    `Tag ${tagOf(plan.version)}: ${plan.tagged ? 'already on this commit' : 'made on this commit by the tag job, before publishing'}.`,
+    `Tag ${tagOf(plan.version)}: already on this commit.`,
     `Packed: ${plan.tarballs.join(', ')}.`,
   ].join('\n')
 })
