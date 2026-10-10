@@ -1,6 +1,80 @@
 # Changelog
 
 
+## v0.1.1
+
+[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.0...v0.1.1)
+
+### 🚀 Enhancements
+
+- **repo:** Release scripts prepare a version, pack it, and create its GitHub release ([e4a66f2](https://github.com/wuiyang/5straps-buckle/commit/e4a66f2))
+
+### 🩹 Fixes
+
+- **runtime:** No file mode is read or changed on Windows, so an owner-only directory check always passes there ([35a270b](https://github.com/wuiyang/5straps-buckle/commit/35a270b))
+- **buckle:** Buckle starts on Windows, and --skip-owner-only-check lets an open state directory or key through with a warning ([13b4617](https://github.com/wuiyang/5straps-buckle/commit/13b4617))
+- **buckle:** The file tools walk a Windows path from its own drive and open no link there ([4250a5b](https://github.com/wuiyang/5straps-buckle/commit/4250a5b))
+- **repo:** A release counts verify and package-arm64 only from release-check.yml on main ([d688a29](https://github.com/wuiyang/5straps-buckle/commit/d688a29))
+- **repo:** Prepare release pushes from a job that installs nothing, once the four prepared files change only the version and the changelog ([ab8ea62](https://github.com/wuiyang/5straps-buckle/commit/ab8ea62))
+- **repo:** Release tags the packed commit before publishing, publishes in the npm environment, and holds publish to an allowlist ([0b8687c](https://github.com/wuiyang/5straps-buckle/commit/0b8687c))
+- **buckle:** Every Buckle path is named with pathe, read into its form where the system or a person hands one over ([44b4383](https://github.com/wuiyang/5straps-buckle/commit/44b4383))
+- **buckle:** A stop on Windows runs the close steps, from Ctrl-C at a question, Ctrl-Break, or closing the console ([9216caf](https://github.com/wuiyang/5straps-buckle/commit/9216caf))
+- **buckle:** A state file write on Windows waits out a reader that holds the file open ([b9de633](https://github.com/wuiyang/5straps-buckle/commit/b9de633))
+- **buckle:** Init prints the command that starts the node in the form the platform's shell reads ([175d24e](https://github.com/wuiyang/5straps-buckle/commit/175d24e))
+- **buckle:** A plugin added by its Windows path loads instead of showing as unavailable ([494aadb](https://github.com/wuiyang/5straps-buckle/commit/494aadb))
+- **buckle:** A folder named like a drive, such as c: on Linux, is inside its workspace, and two drives are apart on Windows ([376c61b](https://github.com/wuiyang/5straps-buckle/commit/376c61b))
+- **buckle:** A path pathe folds onto a drive is refused on Linux and macOS, and a file stream name on Windows ([57004cd](https://github.com/wuiyang/5straps-buckle/commit/57004cd))
+- **buckle:** The Windows open that follows no link neither creates nor truncates through a link swapped in after its check ([0892796](https://github.com/wuiyang/5straps-buckle/commit/0892796))
+- **buckle:** Every program Buckle runs is spawned by the path PATH gives, and one found where the agent writes is refused ([446dddf](https://github.com/wuiyang/5straps-buckle/commit/446dddf))
+- **buckle:** History leaves out a backslash-named entry on Linux and a file held open on Windows, rather than failing every write ([167d105](https://github.com/wuiyang/5straps-buckle/commit/167d105))
+- **buckle:** Content search leaves out an rg-listed name holding a backslash on Linux and macOS, rather than opening another file ([479f019](https://github.com/wuiyang/5straps-buckle/commit/479f019))
+- **buckle:** The working directory, scratch roots, and init's state check compare paths in the disk's case ([127cec3](https://github.com/wuiyang/5straps-buckle/commit/127cec3))
+- **buckle:** The name search and the staged editor match globs as node:path does again, ignoring case on Windows and macOS ([7d5791c](https://github.com/wuiyang/5straps-buckle/commit/7d5791c))
+- **buckle:** Init prints each Windows shell's form of a hint on its own labelled line, the restrict example included ([f66f7b8](https://github.com/wuiyang/5straps-buckle/commit/f66f7b8))
+- **buckle:** A workspace at a drive's root holds every path on that drive and none on another, and a climb stops at the drive ([ee7eb11](https://github.com/wuiyang/5straps-buckle/commit/ee7eb11))
+- **buckle:** On Windows a whole drive is refused as the workspace root, a scratch root, the state directory, or the client directory ([4df8174](https://github.com/wuiyang/5straps-buckle/commit/4df8174))
+- **buckle:** On Linux and macOS a name shaped like a drive stays a name in every walk, and a path that lands on one at the root is refused ([c091646](https://github.com/wuiyang/5straps-buckle/commit/c091646))
+- **buckle:** A workspace rule named like a drive covers that folder on Linux and macOS, and no longer fails every file call ([b49decf](https://github.com/wuiyang/5straps-buckle/commit/b49decf))
+- **buckle:** The Windows open that creates nothing never uses an entry that appeared after its check ([8802fbc](https://github.com/wuiyang/5straps-buckle/commit/8802fbc))
+- **buckle:** The sandbox program is refused where the agent writes, and then the shell tools are withheld ([2eef027](https://github.com/wuiyang/5straps-buckle/commit/2eef027))
+- **buckle:** On Windows a PATH entry with a root but no drive is not searched ([9fa067a](https://github.com/wuiyang/5straps-buckle/commit/9fa067a))
+- **buckle:** A drive followed by repeated separators and a dot stays on that drive, and a whole drive is refused however Windows spells it ([8114625](https://github.com/wuiyang/5straps-buckle/commit/8114625))
+- **buckle:** No program Buckle runs comes from any workspace, scratch root, or mount of the node, whichever workspace runs it ([adca36f](https://github.com/wuiyang/5straps-buckle/commit/adca36f))
+- **buckle:** A link onto a root folder named like a drive is left out of a listing or a name search, which no longer fails as a whole ([0359b0c](https://github.com/wuiyang/5straps-buckle/commit/0359b0c))
+- **buckle:** The Windows open names an entry that appeared after its check as an entry, not a link ([df452ba](https://github.com/wuiyang/5straps-buckle/commit/df452ba))
+- **buckle:** A program is refused where any link on its way lies in a workspace, and runs from where it really is ([c4f3449](https://github.com/wuiyang/5straps-buckle/commit/c4f3449))
+- **buckle:** The programs Buckle runs get a PATH that leads to nothing an agent wrote, and the validator is judged by every root ([1f186c5](https://github.com/wuiyang/5straps-buckle/commit/1f186c5))
+- **buckle:** On Windows a path is judged with its names trimmed as Windows trims them, and one it trims to nothing is refused ([46c7587](https://github.com/wuiyang/5straps-buckle/commit/46c7587))
+- **buckle:** Git_blame hands git the file its check judged, named from the repository git runs in ([eccb716](https://github.com/wuiyang/5straps-buckle/commit/eccb716))
+
+### 📖 Documentation
+
+- **repo:** Releasing describes the two release workflows, a failed run, and the fallback by hand ([a7ffced](https://github.com/wuiyang/5straps-buckle/commit/a7ffced))
+- **buckle:** The owner-only modes hold on Linux and macOS, Windows checks none, and the flag goes on past an open directory ([8b986a8](https://github.com/wuiyang/5straps-buckle/commit/8b986a8))
+- **repo:** Releasing describes the two prepare jobs, the tag before publishing, the npm environment, and how to finish a failed release ([946eaf4](https://github.com/wuiyang/5straps-buckle/commit/946eaf4))
+- **repo:** The README index links the tarball page of the releasing guide ([1fb2e31](https://github.com/wuiyang/5straps-buckle/commit/1fb2e31))
+- **buckle:** What works on Windows, checked by hand, and the path limits there and on Linux and macOS ([ac0c86c](https://github.com/wuiyang/5straps-buckle/commit/ac0c86c))
+- **buckle:** Where Windows support comes from, and the path limits on Linux, macOS, and Windows ([30888a3](https://github.com/wuiyang/5straps-buckle/commit/30888a3))
+- **buckle:** The comments rewritten for the Windows path fixes name no review item ([01d4b8a](https://github.com/wuiyang/5straps-buckle/commit/01d4b8a))
+- **buckle:** A whole drive is no root on Windows, the open race only without file IDs, and programs refused where the agent writes ([eb818a1](https://github.com/wuiyang/5straps-buckle/commit/eb818a1))
+- **buckle:** The path races left on Windows and macOS, a whole drive however spelled, and programs refused from every root of the node ([c4bc9eb](https://github.com/wuiyang/5straps-buckle/commit/c4bc9eb))
+- **buckle:** Programs refused through a link or a writable mount, a PATH without the agent's places, and programs kept while a workspace runs ([23b685c](https://github.com/wuiyang/5straps-buckle/commit/23b685c))
+
+### 📦 Build
+
+- **buckle:** Pathe 2.0.3 is a dependency of the Buckle package ([90d181a](https://github.com/wuiyang/5straps-buckle/commit/90d181a))
+
+### ✅ Tests
+
+- **buckle:** The shutdown test finds the unsandboxed sleep by its program's name, now that it runs by the path PATH gives ([7acc1f5](https://github.com/wuiyang/5straps-buckle/commit/7acc1f5))
+- **forge:** Allow fixture setup time and guarantee cleanup ([ab807f4](https://github.com/wuiyang/5straps-buckle/commit/ab807f4))
+
+### 🤖 CI
+
+- **repo:** A release is prepared and published from the Actions tab, through npm trusted publishing ([e0cf2c5](https://github.com/wuiyang/5straps-buckle/commit/e0cf2c5))
+- **repo:** The release checks pin each action to the commit of its newest v4 release ([e64df1c](https://github.com/wuiyang/5straps-buckle/commit/e64df1c))
+- **buckle:** Clarify manual publish workflow and setup ([49f0a21](https://github.com/wuiyang/5straps-buckle/commit/49f0a21))
+
 ## v0.1.0
 
 [compare changes](https://github.com/wuiyang/5straps-buckle/compare/400459e...v0.1.0)
