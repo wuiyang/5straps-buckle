@@ -78,19 +78,28 @@ jobs:
     permissions:
       contents: read
     steps:
+      # pack ran dependency code, so the commit it reports is held to this run's before any checkout.
+      - name: Require the packed commit to be this run's commit
+        env:
+          RELEASE_COMMIT: ${{ needs.pack.outputs.sha }}
+        run: |
+          if [ "$RELEASE_COMMIT" != "$GITHUB_SHA" ]; then
+            echo "::error::The pack job reported another commit than this run's ${GITHUB_SHA}"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.pack.outputs.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Confirm the prepared tag still names the packed commit on GitHub
+      - name: Confirm the prepared tag still names this run's commit on GitHub
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.pack.outputs.version }}
-          RELEASE_COMMIT: ${{ needs.pack.outputs.sha }}
+          RELEASE_COMMIT: ${{ github.sha }}
         run: node scripts/release/github-release.mjs check-tag
 
   stage:
@@ -173,9 +182,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      # pack ran dependency code, so the commit it reports is held to this run's before any checkout.
+      - name: Require the packed commit to be this run's commit
+        env:
+          RELEASE_COMMIT: ${{ needs.pack.outputs.sha }}
+        run: |
+          if [ "$RELEASE_COMMIT" != "$GITHUB_SHA" ]; then
+            echo "::error::The pack job reported another commit than this run's ${GITHUB_SHA}"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.pack.outputs.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -189,5 +207,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.pack.outputs.version }}
-          RELEASE_COMMIT: ${{ needs.pack.outputs.sha }}
+          RELEASE_COMMIT: ${{ github.sha }}
         run: RELEASE_NOTES="$RUNNER_TEMP/release/notes.md" node scripts/release/github-release.mjs release

@@ -67,6 +67,28 @@ function keys(lines: string[]): string[] {
   return found
 }
 
+/** A job's steps, each its trimmed lines from its `- ` to the next step. */
+function steps(lines: string[]): string[][] {
+  const found: string[][] = []
+  for (const line of lines) {
+    if (/^ {6}- /.test(line)) found.push([])
+    found.at(-1)?.push(line.trim())
+  }
+  return found
+}
+
+/** The step that holds the commit pack reports to this run's, before a job holding a token checks out. */
+const SAME_COMMIT = [
+  "- name: Require the packed commit to be this run's commit",
+  'env:',
+  'RELEASE_COMMIT: ${{ needs.pack.outputs.sha }}',
+  'run: |',
+  'if [ "$RELEASE_COMMIT" != "$GITHUB_SHA" ]; then',
+  `echo "::error::The pack job reported another commit than this run's \${GITHUB_SHA}"`,
+  'exit 1',
+  'fi',
+]
+
 // The stage job's allowlist. Its actions are setup-node and download-artifact; its keys are the
 // ones it has now, so a `shell:` or an environment variable such as NODE_OPTIONS fails; and each shell
 // line is the pinned CLI bootstrap, version or registry check, tarball staging, summary, or plain control.
@@ -186,10 +208,29 @@ describe('Release', () => {
     expect(job(RELEASE, 'stage')[0]?.trim()).toBe('needs: [pack, confirm-tag]')
     const confirm = job(RELEASE, 'confirm-tag')
     expect(actions(confirm)).toEqual(['actions/checkout', 'actions/setup-node'])
-    expect(runScripts(confirm.join('\n'))).toEqual(['node scripts/release/github-release.mjs check-tag'])
+    expect(runScripts(confirm.join('\n')).slice(1)).toEqual(['node scripts/release/github-release.mjs check-tag'])
     expect(confirm.join('\n')).not.toMatch(/pnpm|node_modules|npm (?:ci|install)|npx/)
     expect(job(RELEASE, 'github-release')[0]?.trim()).toBe('needs: [pack, stage]')
-    expect(runScripts(job(RELEASE, 'github-release').join('\n'))).toEqual(['RELEASE_NOTES="$RUNNER_TEMP/release/notes.md" node scripts/release/github-release.mjs release'])
+    expect(runScripts(job(RELEASE, 'github-release').join('\n')).slice(1)).toEqual(['RELEASE_NOTES="$RUNNER_TEMP/release/notes.md" node scripts/release/github-release.mjs release'])
+  })
+
+  it.each(['confirm-tag', 'github-release'])('%s holds the packed commit to this run\'s, then checks out this run\'s commit', (name) => {
+    const [guard, checkout] = steps(job(RELEASE, name))
+    expect(guard).toEqual(SAME_COMMIT)
+    expect(checkout?.[0]).toMatch(/^- uses: actions\/checkout@/)
+    expect(checkout?.slice(1)).toEqual(['with:', 'ref: ${{ github.sha }}', 'persist-credentials: false'])
+    expect(job(RELEASE, name).join('\n').match(/needs\.pack\.outputs\.sha/g)).toHaveLength(1)
+    expect(job(RELEASE, name).map(line => line.trim())).toContain('RELEASE_COMMIT: ${{ github.sha }}')
+  })
+
+  it.each([
+    ['passes when pack reports this run\'s commit', 'a'.repeat(40), 0],
+    ['fails when pack reports another commit', 'b'.repeat(40), 1],
+    ['fails when pack reports nothing', '', 1],
+  ])('the same-commit step %s', (_, reported, status) => {
+    const script = runScripts(job(RELEASE, 'confirm-tag').join('\n'))[0] ?? ''
+    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], { encoding: 'utf8', env: { ...process.env, RELEASE_COMMIT: reported, GITHUB_SHA: 'a'.repeat(40) } })
+    expect(result.status).toBe(status)
   })
 
   it('stages in the npm environment, skipped on a dry run', () => {
