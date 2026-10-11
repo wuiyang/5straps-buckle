@@ -245,7 +245,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     directory: workbenchesDirectory({ stateDirectory: config.stateDirectory, root: config.cwd }),
     sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
     protectedRoots: protectedStateRoots(config), actions, history,
-    ripgrep: resolveProgram('rg', untrusted()).path, environment: hostEnvironment(untrusted), spawnPty: spawnPtyProcess,
+    ripgrep: () => resolveProgram('rg', untrusted()).path, environment: hostEnvironment(untrusted), spawnPty: spawnPtyProcess,
     policyHash: () => workbenchHash(JSON.stringify([compiled.policy, ceiling?.policy ?? null])),
     authorizeTool: tool => toolDenial(tool) === null,
     authorizePath: (path, operation) => !['deny', 'ask'].includes(resolveFilesystemPermission({ path, operation, policy: compiled.policy, ceiling: ceiling?.policy })),

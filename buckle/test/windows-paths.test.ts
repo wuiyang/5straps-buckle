@@ -532,7 +532,7 @@ describe('history beside a name holding a backslash, on Linux', () => {
     mkdirSync(join(workspace, 'sub'), { recursive: true })
     writeFileSync(`${workspace}/sub/a\\b`, '')
     await expect(collectShellHiddenPaths({ roots: [workspace], protectedPaths: [], signal: AbortSignal.timeout(5_000) })).rejects.toThrow('The workspace holds sub/a\\b, a name with a backslash, which Buckle cannot hide from shell commands')
-    const files = createWorkbenchFiles({ sourceRoot: workspace, directory: join(root, 'workbenches'), maxBytes: 1_000_000, protectedRoots: [], authorizePath: () => true, ripgrep: null })
+    const files = createWorkbenchFiles({ sourceRoot: workspace, directory: join(root, 'workbenches'), maxBytes: 1_000_000, protectedRoots: [], authorizePath: () => true, ripgrep: () => null })
     expect(() => files.prepare('staged')).toThrow('The workspace holds sub/a\\b, a name Buckle would read as another path, which the staged editor cannot judge')
   })
 })

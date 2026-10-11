@@ -20,8 +20,11 @@ export interface WorkbenchFileOptions {
   maxBytes: number
   protectedRoots: string[]
   authorizePath(path: string, operation: 'read' | 'write'): boolean
-  /** The ripgrep the staged editor's search runs, by its absolute path (resolveProgram); null leaves search out. */
-  ripgrep: string | null
+  /**
+   * The ripgrep the staged editor's search runs, by its absolute path (resolveProgram), resolved at each call, so a
+   * workspace registered since counts at once; null leaves search out.
+   */
+  ripgrep: () => string | null
   /** The environment ripgrep runs with (hostEnvironment); the staged copy's own roots alone when absent. */
   environment?: HostEnvironment
 }
@@ -108,7 +111,7 @@ export function createWorkbenchFiles(options: WorkbenchFileOptions) {
       if (process.platform === 'linux') return invokePinnedWorkbenchFile({ root: root(id), tool, args, permitted })
       if (!['fs_read', 'fs_write', 'fs_list', 'fs_find_names', 'fs_search_content'].includes(tool)) throw new WorkbenchError('Tool is unavailable in the staged workbench', 400)
       const paths = createPathView({ root: root(id), mount: '/workspace' })
-      const pack = createFsPack({ paths, runProcess, ripgrep: options.ripgrep, ...(options.environment ? { environment: options.environment } : {}) })
+      const pack = createFsPack({ paths, runProcess, ripgrep: options.ripgrep(), ...(options.environment ? { environment: options.environment } : {}) })
       const prepared = createToolRegistry(pack.tools).get(tool).prepare(args)
       for (const effect of prepared.effects) {
         if (effect.kind === 'read_path' || effect.kind === 'write_path') await authorize(id, effect.path, effect.kind === 'read_path' ? 'read' : 'write')
