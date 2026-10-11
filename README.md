@@ -122,8 +122,8 @@ On Linux, shell tools work on private copies of the workspace by default and pub
 changes through conflict-checked checkpoints; `BUCKLE_SHELL_ISOLATION=false` selects
 shared-workspace execution. Host Git and forge tools (`BUCKLE_ALLOW_HOST_GIT`) and host
 language servers (`BUCKLE_ALLOW_HOST_LSP`) are off by default, because they run outside the
-sandbox. `buckle manifest` explains a withheld pack; without `rg`, `fs_search_content` is simply
-absent, unexplained.
+sandbox. `buckle manifest` explains a withheld pack; without `rg`, `fs_search_content` is absent,
+unexplained.
 
 ## Audit log
 
@@ -171,7 +171,7 @@ For developers:
 - [Architecture](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/architecture.md) ([state and packs](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/architecture-02.md)),
   [Building and testing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/building-and-testing.md),
   and [Releasing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing.md)
-  ([repeats and npm approval](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing-02.md) and [tarballs](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing-03.md)).
+  ([setup](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing-04.md), [repeats](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing-02.md), and [tarballs](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/releasing-03.md)).
 - Research records: [command matching](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/research/command-matching.md) and
   [transport and terminal packages](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/research/packages.md).
 

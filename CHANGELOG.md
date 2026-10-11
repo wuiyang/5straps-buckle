@@ -3,6 +3,8 @@
 
 ## v0.1.2
 
+Tagged on GitHub only; this version never reached npm, and its changes first ship with the next published version.
+
 [compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.1...v0.1.2)
 
 ### 🚀 Enhancements
@@ -14,6 +16,8 @@
 - **release:** Grant CI gate access to workflow runs ([242f683](https://github.com/wuiyang/5straps-buckle/commit/242f683))
 
 ## v0.1.1
+
+Tagged on GitHub only; this version never reached npm, and its changes first ship with the next published version.
 
 [compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.0...v0.1.1)
 
@@ -67,7 +71,7 @@
 - **repo:** The README index links the tarball page of the releasing guide ([1fb2e31](https://github.com/wuiyang/5straps-buckle/commit/1fb2e31))
 - **buckle:** What works on Windows, checked by hand, and the path limits there and on Linux and macOS ([ac0c86c](https://github.com/wuiyang/5straps-buckle/commit/ac0c86c))
 - **buckle:** Where Windows support comes from, and the path limits on Linux, macOS, and Windows ([30888a3](https://github.com/wuiyang/5straps-buckle/commit/30888a3))
-- **buckle:** The comments rewritten for the Windows path fixes name no review item ([01d4b8a](https://github.com/wuiyang/5straps-buckle/commit/01d4b8a))
+- **buckle:** The comments on the Windows path fixes describe the code alone ([01d4b8a](https://github.com/wuiyang/5straps-buckle/commit/01d4b8a))
 - **buckle:** A whole drive is no root on Windows, the open race only without file IDs, and programs refused where the agent writes ([eb818a1](https://github.com/wuiyang/5straps-buckle/commit/eb818a1))
 - **buckle:** The path races left on Windows and macOS, a whole drive however spelled, and programs refused from every root of the node ([c4bc9eb](https://github.com/wuiyang/5straps-buckle/commit/c4bc9eb))
 - **buckle:** Programs refused through a link or a writable mount, a PATH without the agent's places, and programs kept while a workspace runs ([23b685c](https://github.com/wuiyang/5straps-buckle/commit/23b685c))
