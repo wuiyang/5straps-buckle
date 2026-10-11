@@ -1,6 +1,42 @@
 # Changelog
 
 
+## v0.1.3
+
+[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.2...v0.1.3)
+
+### 🩹 Fixes
+
+- **release:** Explain pending version without a tag ([2f8ef9b](https://github.com/wuiyang/5straps-buckle/commit/2f8ef9b))
+- **release:** Tag prepared versions and reuse source CI ([7c9ef95](https://github.com/wuiyang/5straps-buckle/commit/7c9ef95))
+- **release:** Stage npm packages for human approval ([eca4cb7](https://github.com/wuiyang/5straps-buckle/commit/eca4cb7))
+- **buckle:** A program Buckle runs gets each PATH entry as the real place it judged, not as written ([43f25d6](https://github.com/wuiyang/5straps-buckle/commit/43f25d6))
+- **buckle:** The git tools read only a repository inside the root they run in ([0f18262](https://github.com/wuiyang/5straps-buckle/commit/0f18262))
+- **buckle:** On Windows a name that ends in a dot or a space is refused, never trimmed ([9257d90](https://github.com/wuiyang/5straps-buckle/commit/9257d90))
+- **buckle:** A refused program is named by its setting alone, never by its path or a link's target ([32c7e3c](https://github.com/wuiyang/5straps-buckle/commit/32c7e3c))
+- **buckle:** The staged editor resolves ripgrep at each call ([4039762](https://github.com/wuiyang/5straps-buckle/commit/4039762))
+- **release:** A tag on another commit says the version was prepared there, not released ([6711460](https://github.com/wuiyang/5straps-buckle/commit/6711460))
+- **release:** Confirm-tag and github-release check out this run's commit ([8f232ed](https://github.com/wuiyang/5straps-buckle/commit/8f232ed))
+- **release:** The GitHub release takes its notes from the tagged checkout's changelog ([8bb1e80](https://github.com/wuiyang/5straps-buckle/commit/8bb1e80))
+- **release:** Prepare release pushes leased on main still naming the source commit ([0bd93fd](https://github.com/wuiyang/5straps-buckle/commit/0bd93fd))
+- **release:** A CI check counts only from a successful release-check.yml run that lists it as a job ([6a9f91c](https://github.com/wuiyang/5straps-buckle/commit/6a9f91c))
+- **release:** The source CI check names Prepare release and its prepare job ([6598e47](https://github.com/wuiyang/5straps-buckle/commit/6598e47))
+- **release:** The stage summary prints each tarball's integrity for the approver ([23d60c8](https://github.com/wuiyang/5straps-buckle/commit/23d60c8))
+
+### 📖 Documentation
+
+- **release:** Explain npm OIDC action denial ([511c997](https://github.com/wuiyang/5straps-buckle/commit/511c997))
+- **buckle:** Mounts are read-only, hard links on PATH, git inside its root, and Windows names that end in a dot or a space ([327c090](https://github.com/wuiyang/5straps-buckle/commit/327c090))
+- **buckle:** The forge and git pack texts use plain punctuation in place of em dashes ([728e9fd](https://github.com/wuiyang/5straps-buckle/commit/728e9fd))
+- **release:** Split one-time setup out, and finish a release by comparing each stage's integrity ([76e1dce](https://github.com/wuiyang/5straps-buckle/commit/76e1dce))
+- **repo:** V0.1.1 and v0.1.2 are marked as never on npm, and both READMEs link the setup page ([99b0df2](https://github.com/wuiyang/5straps-buckle/commit/99b0df2))
+- **install:** Windows is experimental until a run on a Windows machine ([312eb43](https://github.com/wuiyang/5straps-buckle/commit/312eb43))
+
+### ✅ Tests
+
+- **release:** Bind Stage Buckle's triggers, pack's main-only step, and the workflow-level keys ([55a5d15](https://github.com/wuiyang/5straps-buckle/commit/55a5d15))
+- **buckle:** The forge pack test drops its em dash and takes the Oxford comma ([f1001ca](https://github.com/wuiyang/5straps-buckle/commit/f1001ca))
+
 ## v0.1.2
 
 Tagged on GitHub only; this version never reached npm, and its changes first ship with the next published version.
