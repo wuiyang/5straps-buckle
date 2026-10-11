@@ -130,24 +130,38 @@ export function runnableCommand(command: string, input: ProgramSearch & Untruste
 }
 
 /**
- * PATH for a program Buckle runs on the host: only its entries that name one place whatever the working directory
- * (isFullPath), none of whose places (walkLinks) lies inside an untrusted root, as named. A trusted script that starts
- * `#!/usr/bin/env node`, such as the environment validator, agent-browser, or a node-based language server, looks
- * `node` up on this PATH, so the `node` an agent planted in `<ws>/node_modules/.bin`, which `npx` and `pnpm exec` put
- * first, is never it. Empty while the roots are unknown, as an entry could lie in a root not listed.
+ * PATH for a program Buckle runs on the host: each entry that names one place whatever the working directory
+ * (isFullPath), handed over as the real place it leads to (walkLinks), and dropped where any place on its way lies inside
+ * an untrusted root. A trusted script that starts `#!/usr/bin/env node`, such as the environment validator,
+ * agent-browser, or a node-based language server, looks `node` up on this PATH, so the `node` an agent planted in
+ * `<ws>/node_modules/.bin`, which `npx` and `pnpm exec` put first, is never it. The child is handed the path that was
+ * judged, never the entry as written: its kernel walks a spelling again, a link first and then a `..`, so
+ * `<ws>/lnk/../../bin` judged as text reached the agent's `<ws>/bin`, and a folder the walk passed could become a link
+ * after it. An entry through `/proc/self`, `/proc/thread-self`, or `/dev/fd` names a place of whichever process reads
+ * it (OWN_PROCESS_PLACES), so it is dropped. On Windows each entry is handed over in the native backslash spelling.
+ * Empty while the roots are unknown, as an entry could lie in a root not listed.
  */
 export function trustedSearchPath(searchPath: string | undefined, roots: UntrustedRoots, platform: NodeJS.Platform = process.platform): string {
   if (roots.rootsUnknown) return ''
   const delimiter = searchPathDelimiter(platform)
-  return (searchPath ?? '').split(delimiter).filter(entry => {
-    if (!entry) return false
+  return (searchPath ?? '').split(delimiter).flatMap(entry => {
+    if (!entry) return []
     try {
       const directory = nativePath(entry, platform)
-      if (!isFullPath(directory, platform)) return false
+      if (!isFullPath(directory, platform)) return []
       const walked = walkLinks(directory, platform)
-      return !rootHolding(roots.untrustedRoots, [directory, ...walked.passed, walked.real], platform)
-    } catch { return false }
+      const places = [directory, ...walked.passed, walked.real]
+      if (places.some(place => namesOwnProcess(place, platform)) || rootHolding(roots.untrustedRoots, places, platform)) return []
+      return [platform === 'win32' ? walked.real.replaceAll('/', '\\') : walked.real]
+    } catch { return [] }
   }).join(delimiter)
+}
+
+/** Folders that name a place of whichever process reads them: its working directory, root, and open files. */
+const OWN_PROCESS_PLACES = ['/proc/self', '/proc/thread-self', '/dev/fd']
+
+function namesOwnProcess(place: string, platform: NodeJS.Platform): boolean {
+  return OWN_PROCESS_PLACES.some(folder => isInsideComparable(folder, place, ignoresCase(platform), platform))
 }
 
 /** The first untrusted root that holds any of `places`. */

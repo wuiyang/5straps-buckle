@@ -1,8 +1,8 @@
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { executableCandidates, findExecutable, isPathReference, rootsOf, trustedSearchPath } from '../common/domain/executable.js'
+import { executableCandidates, findExecutable, isPathReference, rootsOf, trustedSearchPath, type UntrustedRoots } from '../common/domain/executable.js'
 
 const root = mkdtempSync(join(tmpdir(), 'buckle-exec-'))
 
@@ -93,13 +93,67 @@ describe('trustedSearchPath', () => {
   symlinkSync(join(base, 'hop'), join(base, 'through-hop'))
   const roots = { untrustedRoots: rootsOf('workspace', [workspace]) }
 
-  it('keeps the entries outside every root, in order, and drops each one inside a root, as named, where it leads, or on the way', () => {
+  it('keeps the entries outside every root, in order, as their real paths, and drops each one inside a root, as named, where it leads, or on the way', () => {
     const entries = [join(workspace, 'node_modules', '.bin'), '/usr/bin', join(base, 'linked-tools'), tools, join(base, 'through-hop', 'sub'), '/bin']
-    expect(trustedSearchPath(entries.join(':'), roots, 'linux')).toBe(['/usr/bin', tools, '/bin'].join(':'))
+    expect(trustedSearchPath(entries.join(':'), roots, 'linux')).toBe([realpathSync('/usr/bin'), tools, realpathSync('/bin')].join(':'))
   })
 
   it('drops an empty or relative entry, which names a folder in whichever directory a program starts in', () => {
-    expect(trustedSearchPath(['', '.', 'bin', './node_modules/.bin', '/usr/bin'].join(':'), roots, 'linux')).toBe('/usr/bin')
+    expect(trustedSearchPath(['', '.', 'bin', './node_modules/.bin', '/usr/bin'].join(':'), roots, 'linux')).toBe(realpathSync('/usr/bin'))
+  })
+
+  // The child's kernel walks an entry again, a link first and then a `..` (realpathSync.native walks as it does): an entry
+  // judged as folded text but handed over as written ran the node an agent planted.
+  describe('hands the child the path it judged, never the entry as written', () => {
+    function fixture(): { base: string; workspace: string; roots: UntrustedRoots } {
+      const fixtureBase = mkdtempSync(join(root, 'search-shapes-'))
+      const fixtureWorkspace = join(fixtureBase, 'ws')
+      mkdirSync(fixtureWorkspace)
+      return { base: fixtureBase, workspace: fixtureWorkspace, roots: { untrustedRoots: rootsOf('workspace', [fixtureWorkspace]) } }
+    }
+    const directories = (...paths: string[]) => { for (const path of paths) mkdirSync(path, { recursive: true }) }
+
+    it('an agent link and a `..` in the entry: the folded place, never the workspace folder the spelling reaches', () => {
+      const { base: at, workspace: ws, roots: wsRoots } = fixture()
+      directories(join(ws, 'a', 'b'), join(ws, 'tools', 'bin'), join(at, 'tools', 'bin'))
+      symlinkSync(join(ws, 'a', 'b'), join(ws, 'lnk'))
+      const entry = `${ws}/lnk/../../tools/bin`
+      expect(realpathSync.native(entry)).toBe(realpathSync(join(ws, 'tools', 'bin')))
+      expect(trustedSearchPath(entry, wsRoots, 'linux')).toBe(realpathSync(join(at, 'tools', 'bin')))
+    })
+
+    it('a link outside every root that leads into one, then a `..`: the folded place outside', () => {
+      const { base: at, workspace: ws, roots: wsRoots } = fixture()
+      directories(join(ws, 'sub'), join(ws, 'bin'), join(at, 'out', 'bin'))
+      symlinkSync(join(ws, 'sub'), join(at, 'out', 'lnkout'))
+      const entry = `${at}/out/lnkout/../bin`
+      expect(realpathSync.native(entry)).toBe(realpathSync(join(ws, 'bin')))
+      expect(trustedSearchPath(entry, wsRoots, 'linux')).toBe(realpathSync(join(at, 'out', 'bin')))
+    })
+
+    it('an entry through the reading process\'s own folders is dropped, as it names the child\'s places, not Buckle\'s', () => {
+      const { roots: wsRoots } = fixture()
+      const entries = ['/proc/self/cwd/node_modules/.bin', '/proc/thread-self/cwd/bin', '/dev/fd/3', '/proc/self/../self/root/usr/bin']
+      expect(trustedSearchPath(entries.join(':'), wsRoots, 'linux')).toBe('')
+    })
+
+    it('an owner link whose target passes through a root: its real path, which a folder swapped in the root no longer moves', () => {
+      const { base: at, workspace: ws, roots: wsRoots } = fixture()
+      directories(join(ws, 'a'), join(ws, 'evil', 'x', 'y'), join(ws, 'evil', 'trusted', 'bin'), join(at, 'trusted', 'bin'), join(at, 'owner'))
+      symlinkSync('../ws/a/../../trusted/bin', join(at, 'owner', 'tools'))
+      const judged = trustedSearchPath(join(at, 'owner', 'tools'), wsRoots, 'linux')
+      expect(judged).toBe(realpathSync(join(at, 'trusted', 'bin')))
+      renameSync(join(ws, 'a'), join(ws, 'a.old'))
+      symlinkSync(join(ws, 'evil', 'x', 'y'), join(ws, 'a'))
+      expect(realpathSync.native(join(at, 'owner', 'tools'))).toBe(realpathSync(join(ws, 'evil', 'trusted', 'bin')))
+      expect(realpathSync(judged)).toBe(realpathSync(join(at, 'trusted', 'bin')))
+      expect(trustedSearchPath(join(at, 'owner', 'tools'), wsRoots, 'linux')).toBe('')
+    })
+
+    it('on Windows the folded place, in the native spelling', () => {
+      const windowsRoots = { untrustedRoots: rootsOf('workspace', ['C:/ws']) }
+      expect(trustedSearchPath('C:\\Tools\\x\\..\\bin;C:\\ws\\a\\..\\..\\Tools', windowsRoots, 'win32')).toBe('C:\\Tools\\bin;C:\\Tools')
+    })
   })
 
   it('keeps nothing while the roots are unknown', () => {
