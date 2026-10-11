@@ -329,7 +329,7 @@ describe('git_push', () => {
     for (const form of [TOKEN, encoded]) expect(JSON.stringify(output)).not.toContain(form)
   })
 
-  it('runs every git call with the workspace hooks, proxies, configs and programs out of reach', async () => {
+  it('runs every git call with the workspace hooks, proxies, configs, and programs out of reach', async () => {
     const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     const calls: ProcessRequest[] = []
     await call({ repository, tool: 'git_push', args: { branch: 'forge-live-check' }, runner: scriptedGit(calls, `${apiUrl}/5straps/demo.git`) })
@@ -375,7 +375,7 @@ describe('git_push', () => {
       writeFileSync(join(repository, 'kept.txt'), 'kept\n')
       await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
 
-      // The recording origin is not a git server, so the push fails there — at the right host.
+      // The recording origin is not a git server, so the push fails there, at the right host.
       await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } })).rejects.toThrow()
       expect(proxy.connections()).toBe(0)
       expect(origin.paths).toContain('/5straps/demo.git/info/refs?service=git-receive-pack')
@@ -1197,7 +1197,7 @@ describe('pr_read', () => {
     expect(String(full.diff)).toHaveLength(524_288)
   })
 
-  it('strips the credential from every field it returns: title, diff, files and comments', async () => {
+  it('strips the credential from every field it returns: title, diff, files, and comments', async () => {
     const repository = workRepository({ origin: `${apiUrl}/5straps/demo.git` })
     const full = await call({ repository, tool: 'pr_read', args: { number: 8, include: ['diff', 'files', 'comments'] } }) as JsonObject
     const text = JSON.stringify(full)
