@@ -1,7 +1,7 @@
 name: Prepare release
 
 # Preparation validates source CI, generates metadata with read access, then commits and atomically
-# pushes main and its version tag. Generated release metadata skips CI; publishing validates its diff.
+# pushes main and its version tag. Generated release metadata skips CI; Stage Buckle validates its diff.
 # Dependencies run only in prepare; commit copies and validates just the four release files.
 
 on:
@@ -73,7 +73,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Holds the push token, so it installs nothing and runs no dependency: only Node, git, gh, and a
+    # Holds the push token, so it installs nothing and runs no dependency: only Node, git, and a
     # repository script that imports nothing beyond Node itself.
     permissions:
       contents: write

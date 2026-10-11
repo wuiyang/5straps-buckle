@@ -8,9 +8,10 @@ import { PACKAGES, RELEASE_FILES, tarballOf } from '../scripts/release/packages.
 import { scratchDirectory } from './support/release-repository'
 
 // No workflow can run here, so the release workflows are held to their rules by reading them: every
-// action pinned to a commit, no expression inside a shell line, only the first-party npm CLI installed
-// in the identity job, which runs only what an allowlist names, and the tag made
-// before publishing, and the stage loop in step with the release scripts.
+// action pinned to a commit, no expression inside a shell line, nothing set for every job at the top,
+// the tag made by Prepare release alone, and Stage Buckle's jobs bound: pack on main only, the jobs
+// that hold a token on this run's commit, and the identity job installing only the first-party npm CLI
+// and running only what an allowlist names, its stage loop in step with the release scripts.
 
 const WORKFLOWS = fileURLToPath(new URL('../.github/workflows/', import.meta.url))
 const read = (file: string) => readFileSync(join(WORKFLOWS, file), 'utf8')
@@ -164,6 +165,14 @@ describe('the release workflows', () => {
   it('shares one concurrency group that never cancels a run in progress', () => {
     for (const text of [RELEASE, PREPARE]) expect(block(text, 'concurrency', 0).map(line => line.trim())).toEqual(['group: release', 'cancel-in-progress: false'])
   })
+
+  // A workflow-level env reaches every job, the stage job too, as does a default shell such as
+  // `node {0}`. bash itself is the default the stage loop needs: it runs with pipefail, so a failed
+  // npm stage publish piped into tee still fails the step.
+  it.each([['release.yml', RELEASE], ['release-prepare.yml', PREPARE]])('%s sets no env for every job, and no default but the bash shell', (_, text) => {
+    expect(text.split('\n').flatMap(line => /^([\w-]+):/.exec(line)?.[1] ?? [])).toEqual(['name', 'on', 'permissions', 'concurrency', 'defaults', 'jobs'])
+    expect(block(text, 'defaults', 0).map(line => line.trim())).toEqual(['run:', 'shell: bash'])
+  })
 })
 
 describe('Prepare release', () => {
@@ -211,7 +220,24 @@ describe('Prepare release', () => {
   })
 })
 
-describe('Release', () => {
+describe('Stage Buckle', () => {
+  it('starts only by hand, with a dry run that stages nothing', () => {
+    expect(block(RELEASE, 'on', 0).map(line => line.trim())).toEqual([
+      'workflow_dispatch:', 'inputs:', 'dry_run:', 'description: Check and pack only; stage nothing and make no release', 'type: boolean', 'default: false',
+    ])
+  })
+
+  it('packs only on main, from a full clone that keeps no credential', () => {
+    const [main, checkout] = steps(job(RELEASE, 'pack'))
+    expect(main).toEqual(['- name: Run only on main', 'run: |', 'if [ "$GITHUB_REF" != refs/heads/main ]; then', 'echo "::error::Release from main, not $GITHUB_REF"', 'exit 1', 'fi'])
+    expect(checkout?.[0]).toMatch(/^- uses: actions\/checkout@/)
+    expect(checkout?.slice(1)).toEqual(['with:', 'fetch-depth: 0', 'persist-credentials: false'])
+  })
+
+  it('confirms the tag after pack, skipped on a dry run', () => {
+    expect(job(RELEASE, 'confirm-tag').slice(0, 2).map(line => line.trim())).toEqual(['needs: pack', 'if: ${{ !inputs.dry_run }}'])
+  })
+
   it('requires source CI before generation and keeps tag creation in preparation', () => {
     const scripts = runScripts(job(PREPARE, 'prepare').join('\n'))
     expect(scripts).toContain('node scripts/release/require-ci.mjs --source')

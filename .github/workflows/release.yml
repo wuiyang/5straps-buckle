@@ -1,7 +1,8 @@
 name: Stage Buckle
 
-# Stage the prepared tarballs for human npm approval. Only an all-public rerun creates the GitHub
-# release. Repository dependencies run in pack; stage installs only the pinned first-party npm CLI.
+# Stage the prepared tarballs for human npm approval. A run that finds all three versions public
+# creates the GitHub release. Repository dependencies run in pack; stage installs only the pinned
+# first-party npm CLI.
 
 on:
   workflow_dispatch:
@@ -44,7 +45,8 @@ jobs:
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The plan reads the release tag, if it exists.
+          # The full history: plan.mjs requires the prepared tag, and require-ci.mjs diffs the
+          # release commit against its parent.
           fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
