@@ -107,10 +107,27 @@ describe('the CI requirement before publishing', () => {
     expect(result.message).toContain('checks: read and actions: read to GITHUB_TOKEN')
     expect(result.message).toContain('repository policy')
     expect(result.message).toContain('both required checks on the updated commit')
+    expect(result.message).toContain('check that the pack job in release.yml grants')
     expect(result.message).toContain('start a new Stage Buckle run')
     expect(result.message).not.toContain('gh auth login')
     expect(result.message).not.toContain('HTTP 403')
     expect(result.message).not.toContain('\n')
+  })
+
+  // --source runs in Prepare release, before any release commit exists.
+  it('names the prepare job and a new Prepare release run when the source check cannot read CI in Actions', () => {
+    const failure = Object.assign(new Error('gh: Resource not accessible by integration (HTTP 403)'), { status: 1 })
+    const result = requireCi({ run: fake({ gh: failure }).run, repository: '', githubActions: true, sourceOnly: true })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('check that the prepare job in release-prepare.yml grants checks: read and actions: read to GITHUB_TOKEN')
+    expect(result.message).toContain('start a new Prepare release run')
+    expect(result.message).not.toMatch(/pack job|Stage Buckle/)
+  })
+
+  it('says the source check blocks preparing a release, and the release check blocks publishing', () => {
+    const runs = [run('verify', 'success'), run('package-arm64', 'failure', { id: 2 })]
+    expect(requireCi({ run: fake({ runs }).run, repository: '', sourceOnly: true }).message).toMatch(/must succeed in \.github\/workflows\/release-check\.yml on main before preparing a release\.$/)
+    expect(requireCi({ run: fake({ runs }).run, repository: '' }).message).toMatch(/on main before publishing\.$/)
   })
 
   it('asks for gh installation on an Actions runner without an interactive login', () => {

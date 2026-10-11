@@ -99,11 +99,11 @@ export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, git
   try {
     runs = releaseCheckRuns({ run, slug, sha: checkedSha, checks: JSON.parse(run('gh', ['api', `repos/${slug}/commits/${checkedSha}/check-runs?per_page=100`])).check_runs ?? [] })
   } catch (error) {
-    return { ok: false, message: ghFailure({ error, slug, githubActions }) }
+    return { ok: false, message: ghFailure({ error, slug, githubActions, sourceOnly }) }
   }
   const blocking = blockingJobs({ sha: checkedSha, runs })
   if (blocking.length > 0) {
-    return { ok: false, message: `CI has not passed on ${checkedSha}: ${blocking.map(job => `${job.name} ${job.reason}`).join('; ')}. Both ${REQUIRED_JOBS.join(' and ')} must succeed ${WHERE} before publishing.` }
+    return { ok: false, message: `CI has not passed on ${checkedSha}: ${blocking.map(job => `${job.name} ${job.reason}`).join('; ')}. Both ${REQUIRED_JOBS.join(' and ')} must succeed ${WHERE} ${sourceOnly ? 'before preparing a release' : 'before publishing'}.` }
   }
   return { ok: true, message: `CI passed on ${checkedSha}${checkedSha === sha ? '' : `, the validated source parent of tagged release ${sha}`}: ${REQUIRED_JOBS.join(' and ')} succeeded ${WHERE}.` }
 }
@@ -137,10 +137,12 @@ function releaseCheckRuns({ run, slug, sha, checks }) {
 }
 
 /** One line for a gh call that could not run or answer, in place of its stack trace: the release reads CI through gh. */
-function ghFailure({ error, slug, githubActions }) {
+function ghFailure({ error, slug, githubActions, sourceOnly }) {
   if (githubActions) {
     if (error?.code === 'ENOENT') return 'The GitHub CLI, gh, is not installed on this Actions runner: install it, then retry the job'
-    return `gh could not read the CI results for ${slug} in GitHub Actions: check that the pack job grants checks: read and actions: read to GITHUB_TOKEN and repository policy permits them. After a workflow fix, wait for both required checks on the updated commit and start a new Stage Buckle run`
+    // --source runs in Prepare release's prepare job; otherwise in Stage Buckle's pack job.
+    const [job, workflow] = sourceOnly ? ['the prepare job in release-prepare.yml', 'Prepare release'] : ['the pack job in release.yml', 'Stage Buckle']
+    return `gh could not read the CI results for ${slug} in GitHub Actions: check that ${job} grants checks: read and actions: read to GITHUB_TOKEN and repository policy permits them. After a workflow fix, wait for both required checks on the updated commit and start a new ${workflow} run`
   }
   if (error?.code === 'ENOENT') return `The GitHub CLI, gh, is not installed: a release reads CI results through it. Install gh, run gh auth login with an account that can read ${slug}, then release again`
   return `gh could not read the CI results for ${slug}: run gh auth login with an account that can read it, check gh api works, then release again`
