@@ -46,51 +46,53 @@ decision binds the whole call, whatever the display hides.
 
 ## Paths and Windows
 
-- On Linux and macOS, Buckle reads a backslash in a path as a separator and a leading `C:` as a
-  Windows drive, so a tool path holding a backslash or starting with a drive letter is refused
-  there: `notes\draft.md`, `c:/notes`, and `./C:/notes`, which folds to `C:/notes`. So is a
-  folder named like a drive at the filesystem root, `/c:`, whether a path climbs there or a link
-  leads there.
-- There, an entry whose name holds a backslash is left out of listings, searches, and history,
-  and the file tools cannot read or write it. History logs it once, and lists a change to it as not
-  restorable. The shell sandbox and the staged editor refuse to run while it exists.
+- On Linux and macOS, a tool path holding a backslash or starting with a drive letter is refused,
+  as Buckle reads them as a separator and a Windows drive: `notes\draft.md`, `c:/notes`, and
+  `./C:/notes`, which folds to `C:/notes`. So is a folder at the filesystem root named like a
+  drive, `/c:`, reached by a climb or a link.
+- On Windows, a name ending in a dot or a space, such as `notes.`, is refused: programs Buckle
+  starts read it as another name.
+- An entry named either way is left out of listings, searches, and history, and the file tools
+  cannot read or write it. History logs it once, and lists a change to it as not restorable. The
+  shell sandbox and the staged editor refuse to run while it exists.
 - On Windows, a path holding a colon other than a leading drive's, as in `C:\`, is refused:
   Windows reads `notes.txt:payload` and `.env::$DATA` as hidden streams of the file, and
   `D:notes` from that drive's working directory.
 - Windows has no open that refuses a symbolic link, so there Buckle checks the path for a link or
   junction just before opening it, opens it without creating or truncating it, compares the file
-  it opened with the one it checked, and checks the path again before it truncates. A name that
+  it opened with the one it checked, and checks again before truncating. A name that
   was absent at the check is created only while still absent, and an open that creates nothing
   never uses an entry that appeared after the check.
-- Two gaps remain. On Windows and macOS, Buckle checks each folder above a file and then opens
-  that folder by its path, so a folder swapped for a link between the check and the open is
-  followed. On a Windows volume that reports no file IDs, the file opened cannot be compared
-  with the one checked at all, so a file swapped for a link before the open, and back before the
-  second check, is followed.
+- Two gaps remain. On Windows and macOS, Buckle checks each folder above a file, then opens that
+  folder by its path, so a folder swapped for a link in between is followed. On a Windows volume
+  without file IDs, the file opened cannot be compared with the one checked, so a file swapped
+  for a link before the open, and back before the second check, is followed.
 - On Windows, a workspace or state directory on a network share, such as
   `\\server\share\project`, or on a mapped drive, is refused: use a folder on a local drive.
-- On Windows, a whole drive cannot be a Buckle root: the workspace root, a scratch root, the
-  state directory, and the client directory must each be a folder, not `D:\`. That holds through
-  a link to the drive, and with the dots and spaces Windows drops from the end of a name, as in
-  `D:\...`. Buckle started in `D:\` without `BUCKLE_WORKSPACE_ROOT` refuses to start for the same
-  reason.
+- On Windows, a whole drive such as `D:\`, or a link to one, cannot be the workspace root, a
+  scratch root, the state directory, or the client directory. Buckle started in `D:\` without
+  `BUCKLE_WORKSPACE_ROOT` refuses to start.
 
 ## Programs Buckle runs
 
 - Buckle runs each program it needs, such as `rg`, `git`, the sandbox program `bwrap`, or the
   environment validator, from where `PATH` really leads, and refuses one an agent could have
-  written: one found in, or through a link in, any workspace or scratch root this node knows, or
-  a folder `BUCKLE_MOUNTS` shares writable, whichever workspace runs it. A folder it shares
-  read-only is no such place. `npx` and `pnpm exec` put a workspace's `node_modules/.bin` first
-  on `PATH`, so an `rg` there leaves content search out of every workspace, and a `bwrap` there
-  leaves no sandbox: the shell tools are withheld rather than run without one. A node started
-  while its workspace registry cannot be read runs no program: repair the registry, then restart
-  the node.
+  written: one found in, or through a link in, any workspace or scratch root this node knows,
+  whichever workspace runs it. `BUCKLE_MOUNTS` shares folders read-only, so a program there
+  runs. `npx` and `pnpm exec` put a workspace's `node_modules/.bin` first on `PATH`, so an
+  `rg` there leaves content search out of every workspace, and a `bwrap` there leaves no sandbox:
+  the shell tools are withheld rather than run without one. A node started while its workspace
+  registry cannot be read runs no program: repair the registry, then restart the node.
 - Each program Buckle runs gets a `PATH` with those places taken out, so a script it runs that
   starts `#!/usr/bin/env node` never finds a `node` an agent planted. The shell keeps the agent's
   `PATH`.
 - A running workspace keeps the programs it found: a workspace registered later counts for them
   from the running one's next policy change, or for the sandbox program, its next start.
+- A program outside every root that hard-links a file inside one runs, as Buckle cannot see a
+  file's other names: keep such links off `PATH`.
+- The git tools refuse a repository reaching outside the workspace or scratch root holding the
+  folder named, such as a home folder kept in git, a bare repository, or one whose git directory
+  lies elsewhere.
 
 ## The command line
 

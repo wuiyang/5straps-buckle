@@ -103,6 +103,7 @@ function registryStore(filePath: string, lockDeadlineMs?: number) {
  */
 export function nodeRootsOf(config: BuckleConfig, platform: NodeJS.Platform = process.platform): NodeRoots {
   const registry = registryStore(join(config.stateDirectory, 'workspaces.json'), config.stateLockDeadlineMs)
+  // BUCKLE_MOUNTS shares every folder read-only today, so this is empty: it guards a writable mount added later.
   const writableMounts = (config.sandboxMounts ?? []).filter(mount => !mount.readOnly).map(mount => mount.source)
   return createNodeRoots({
     fixed: [...rootsOf('workspace', [config.cwd]), ...rootsOf('scratch root', config.scratchRoots), ...rootsOf('writable mount', writableMounts)],
