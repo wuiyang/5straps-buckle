@@ -197,6 +197,14 @@ describe('Prepare release', () => {
     expect(scripts[3]).toContain('HEAD:refs/heads/main \"refs/tags/v${VERSION}\"')
     expect(scripts.join('\n')).not.toContain('gh workflow run')
   })
+
+  // Without the lease, a main rewound to an ancestor of the source commit is fast-forwarded back.
+  it('pushes the commit and tag atomically, leased on main still naming the source commit', () => {
+    const push = steps(commit).find(step => step[0] === '- name: Push the release commit and tag together') ?? []
+    expect(push).toContain('GITHUB_SHA: ${{ github.sha }}')
+    expect(push[push.indexOf('run: |') + 1]).toBe('git push --atomic --force-with-lease="refs/heads/main:${GITHUB_SHA}" "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/main "refs/tags/v${VERSION}"')
+    expect(runScripts(commit.join('\n')).join('\n').match(/git push/g)).toHaveLength(1)
+  })
 })
 
 describe('Release', () => {

@@ -113,12 +113,15 @@ jobs:
           git commit --message "chore(release): v${VERSION} [skip ci]"
           git tag "v${VERSION}"
       - name: Push the release commit and tag together
-        # Atomic and without force: a moved main or existing tag refuses both updates.
+        # Atomic, and leased on the source commit: unless main still names the commit this run
+        # checked out, and no tag of this version exists, neither update reaches GitHub. The release
+        # commit's parent is that commit, so the update stays a fast-forward.
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_SHA: ${{ github.sha }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          git push --atomic "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/main "refs/tags/v${VERSION}"
+          git push --atomic --force-with-lease="refs/heads/main:${GITHUB_SHA}" "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/main "refs/tags/v${VERSION}"
           {
             echo "Prepared and tagged v${VERSION} at $(git rev-parse HEAD)."
             echo
