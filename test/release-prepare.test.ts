@@ -104,13 +104,13 @@ describe('preparing a release', () => {
     expect(readChangelog(root)).toBe(CHANGELOG)
   })
 
-  it('prioritizes publishing a prepared version without inferring or changing another version', async () => {
+  it('refuses a prepared version whose tag is missing, without inferring or changing another version', async () => {
     const changelog = `# Changelog\n${SECTION('0.1.1', 'v0.1.0')}\n\n${CHANGELOG.slice(CHANGELOG.indexOf('## v0.1.0'))}`
     const root = scratchRepository({ versions: '0.1.1', changelog })
     const { run, calls } = fake(root, { npmFails: true })
     let inferred = false
     await expect(prepareRelease({ root, run, inferVersion: async () => { inferred = true; return '0.1.2' } })).rejects.toThrow(
-      'The tag v0.1.1 of the current version is missing from this clone, but CHANGELOG.md already has its section. Prepare release must push its release commit and tag together. Fetch tags (git fetch --tags origin), then inspect the preparation run and release history before retrying; publishing never creates a missing tag. If this version was already released, fetch existing tags (git fetch --tags origin); if its tag is also missing on GitHub, check the release history before restoring it',
+      'The tag v0.1.1 of the current version is missing from this clone, but CHANGELOG.md already has its section. Prepare release must push its release commit and tag together. Fetch tags (git fetch --tags origin); if the tag is also missing on GitHub, inspect the preparation run and the release history before restoring it, since publishing never creates a missing tag',
     )
     expect(inferred).toBe(false)
     expect(calls.filter(call => call[0] === 'npm' || call[0] === 'pnpm')).toEqual([])
@@ -121,7 +121,7 @@ describe('preparing a release', () => {
 
   it('keeps tag recovery guidance for a published version with a missing tag', async () => {
     const root = scratchRepository()
-    await expect(prepare(root, { tags: [] })).rejects.toThrow('If this version was already released, fetch existing tags (git fetch --tags origin)')
+    await expect(prepare(root, { tags: [] })).rejects.toThrow('Fetch tags (git fetch --tags origin); if the tag is also missing on GitHub')
   })
 
   it('keeps tag recovery guidance when no changelog section identifies a prepared version', async () => {

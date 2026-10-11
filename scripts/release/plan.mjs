@@ -11,8 +11,8 @@ export const NOTES = 'notes.md'
 
 /**
  * What releasing the checked-out commit would do: its version, commit, and notes, whether its tag
- * exists, and which packages npm already holds at that version. A tag on another commit refuses,
- * since that version was released from somewhere else.
+ * exists, and which packages npm already holds at that version. A tag on another commit refuses:
+ * that version was prepared on another commit, and Prepare release makes the next one.
  */
 export function planRelease({ root = REPOSITORY_ROOT, run = runCommand }) {
   const version = sharedVersion(root)

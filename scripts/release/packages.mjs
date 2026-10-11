@@ -65,7 +65,7 @@ export function requireLocalReleaseTag({ run, version, sha }) {
   const tag = tagOf(version)
   const tagged = localTagCommit({ run, tag })
   if (!tagged) throw new Refusal(`The tag ${tag} is missing: Prepare release must push the release commit and tag before publishing`)
-  if (tagged !== sha) throw new Refusal(`The tag ${tag} names ${tagged}, not ${sha}: ${version} was released from another commit`)
+  if (tagged !== sha) throw new Refusal(`The tag ${tag} names ${tagged}, not ${sha}: ${version} was prepared on another commit. Prepare release makes the next version once main has moved on; never move the tag`)
   return tagged
 }
 

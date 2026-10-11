@@ -93,7 +93,7 @@ describe('planning a release', () => {
 
   it.each([
     ['the tag is missing', { versions: '0.1.1', changelog: CHANGELOG }, { tag: '' }, 'Prepare release must push the release commit and tag before publishing'],
-    ['the tag names another commit', { versions: '0.1.1', changelog: CHANGELOG }, { tag: OTHER }, `The tag v0.1.1 names ${OTHER}, not ${HEAD}`],
+    ['the tag names another commit', { versions: '0.1.1', changelog: CHANGELOG }, { tag: OTHER }, `The tag v0.1.1 names ${OTHER}, not ${HEAD}: 0.1.1 was prepared on another commit. Prepare release makes the next version once main has moved on; never move the tag`],
     ['the changelog has no section for the version', { versions: '0.1.2', changelog: CHANGELOG }, {}, 'CHANGELOG.md has no v0.1.2 section'],
     ['the packages disagree', { versions: { '@5straps/protocol': '0.1.1', '@5straps/runtime': '0.1.1' }, changelog: CHANGELOG }, {}, '@5straps/buckle is 0.1.0'],
   ] as const)('refuses when %s', (_, repository, answers, reason) => {
