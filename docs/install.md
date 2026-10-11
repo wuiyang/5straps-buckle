@@ -76,7 +76,7 @@ cd buckle && npm link
 
 ```bash
 buckle --help       # the command list; reads no configuration
-buckle --version    # 0.1.0 for this release
+buckle --version    # the version npm installed
 buckle tools        # each tool this machine offers, with its risk level
 buckle manifest     # packs, the sandbox mode, and why any pack is withheld
 ```

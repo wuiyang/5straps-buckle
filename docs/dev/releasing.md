@@ -3,10 +3,10 @@
 ## Overview
 
 - [Release flow](#release-flow): verify source, prepare and tag, stage, then approve.
-- [One-time setup](#one-time-setup): npm trusted publishing and GitHub rules.
+- [One-time setup](releasing-04.md): npm trusted publishing and GitHub rules, on their own page.
 - [Prepare release](#step-one-prepare-release): set the version and changelog.
 - [Stage Buckle](#step-two-stage-buckle): check, pack, and submit staged packages.
-- [Approve and finalize](#step-three-approve-and-finalize): publish with human approval, then create the GitHub release.
+- [Finishing the release](releasing-02.md#finishing-the-release): approve each stage, then create the GitHub release.
 
 ## Release flow
 
@@ -20,52 +20,17 @@ A release runs from the repository's Actions tab, in two workflows started by ha
 2. Actions, Prepare release, Run workflow on `main`; it infers the version, commits the release
    metadata, and atomically pushes `main` and `v<version>`.
 3. Actions, Stage Buckle, Run workflow on `main`. Select `dry_run` to check and pack first.
-4. Approve the staged packages on npm, in order: protocol, runtime, then buckle.
-5. With `main` still on the prepared commit, choose "Re-run all jobs" on that Stage Buckle run
-   to confirm all three versions are public and create the GitHub release.
+4. Approve the staged packages on npm, in order: protocol, runtime, then buckle, each only when
+   its integrity matches the line in the run summary.
+5. Choose "Re-run all jobs" on that Stage Buckle run to confirm all three versions are public
+   and create the GitHub release.
 
 The generated release commit changes only versions and the changelog. It skips Release checks;
 staging validates that diff and uses the successful checks on its source parent.
 
-[Repeats and approval](releasing-02.md) covers failed runs and npm approval;
+[One-time setup](releasing-04.md) comes first on a new repository;
+[repeats and approval](releasing-02.md) covers finishing, failed runs, and npm approval;
 [what ships](releasing-03.md) covers what each package holds.
-
-## One-time setup
-
-On npmjs.com, open each of the three packages, then Settings, then Trusted publishing, and add a
-trusted publisher for GitHub Actions:
-
-| Field | Value |
-|---|---|
-| Organization or user | `wuiyang` |
-| Repository | `5straps-buckle` |
-| Workflow filename | `release.yml` |
-| Environment name | `npm` |
-| Allowed actions | `npm stage publish`, always allowed by trusted publishing |
-
-Direct `npm publish` permission is not needed. New connections created after 3 September 2026
-allow staged publishing by default. Check the active connection's identity fields on every package.
-See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) and
-[staged publishing](https://docs.npmjs.com/staged-publishing/).
-
-No npm token is stored. npm trades the staging job's GitHub identity for a short-lived one.
-Approving stages requires a human npm account with package publishing permission and 2FA;
-OIDC cannot approve, reject, list, or inspect stages.
-
-On GitHub:
-
-- The staging job runs in an environment named `npm`. Before the first real publish, make the
-  repository public, then create this environment in Settings, Environments, and allow deployments
-  from `main` only; a required reviewer is optional. A `dry_run` skips the staging job and does
-  not create the environment. Until the deployment rule is set, only a test inside `release.yml`
-  holds staging to `main`, and a run on another branch uses that branch's copy. On GitHub Free,
-  environments are configurable only for public repositories
-  ([Managing environments for deployment](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)).
-- A branch rule or ruleset on `main` that requires pull requests, status checks, or signed commits
-  (the release commit is unsigned), or that restricts who may update `main`, refuses the push
-  Prepare release makes, and the release stops there.
-- A tag rule that stops the workflow token from creating `v*` tags refuses the atomic push
-  Prepare release makes. Neither the branch nor the tag changes.
 
 ## Step one: Prepare release
 
@@ -96,11 +61,12 @@ files and the inferred version. `commit` holds the write token, installs nothing
 those files over a fresh checkout of the same commit. `scripts/release/check-prepared.mjs`, which needs only Node and git,
 then refuses unless `git status` names exactly the four, each `package.json` differs from `HEAD`
 only in its version, matching the inferred output and one allowed bump from `HEAD`, and
-`CHANGELOG.md` only gains the new top section. The job commits as
-`github-actions[bot]`, subject `chore(release): v<version> [skip ci]`, creates the lightweight
-`v<version>` tag, and atomically pushes `main` and that tag without force. If `main` moved or either
-update is refused, neither update reaches GitHub. It starts no Release checks on the generated
-commit. The run summary names the release commit and tag.
+`CHANGELOG.md` only gains the new top section, with no other heading of level one or two. The job
+commits as `github-actions[bot]`, subject `chore(release): v<version> [skip ci]`, creates the
+lightweight `v<version>` tag, and atomically pushes `main` and that tag, leased on the source
+commit. Unless `main` still names the source commit, or if either update is refused, neither update
+reaches GitHub. It starts no Release checks on the generated commit. The run summary names the
+release commit and tag.
 
 ## Step two: Stage Buckle
 
@@ -112,41 +78,34 @@ The prepared tag already exists.
 
 **`pack`** reads the repository and check runs, without an npm identity.
 
-1. `scripts/release/require-ci.mjs` requires a clean tree and `HEAD` equal to `origin/main`.
-   An ordinary source commit needs its own successful `verify` and `package-arm64` checks.
+1. `scripts/release/require-ci.mjs` requires a clean tree and `HEAD` equal to `origin/main`. In
+   Actions the checkout sets `origin/main` to the run's commit, so that comparison guards local
+   runs only. An ordinary source commit needs its own successful `verify` and `package-arm64` checks.
    A release chore may use its single parent's checks only after its exact tag and strict
-   four-file metadata diff validate. Only eligible `release-check.yml` runs on `main` count.
+   four-file metadata diff validate. A check counts only from a `release-check.yml` run on `main`
+   that succeeded and lists the check among its jobs.
 2. `scripts/release/plan.mjs` requires the shared version, its changelog section, and
    `v<version>` on this commit. It reports which versions are already public on npm.
 3. `pnpm pack` builds through `prepack`, replaces `workspace:*` with exact sibling versions,
    and checks the tarballs' dependencies and entry points.
 4. The job uploads the tarballs and changelog release notes.
 
-**`confirm-tag`** holds only `contents: read`, installs nothing, and verifies that GitHub's
-prepared tag still names the packed commit. No release job creates or moves that tag.
+**`confirm-tag`** holds only `contents: read` and installs nothing. It first requires the commit
+pack reports to be the run's own, checks out that commit, and verifies that GitHub's prepared tag
+still names it. No release job creates or moves that tag.
 
 **`stage`** runs in the `npm` environment with only `id-token: write`. It checks out no code,
 runs no repository script, and installs the pinned official `npm@11.15.0` CLI with install
 scripts disabled. It downloads the artifact, then submits protocol, runtime, and buckle with
-`npm stage publish <tarball> --access public`. Already-public versions are skipped.
-Keep the stage IDs printed by npm in the job log and run summary.
+`npm stage publish <tarball> --access public`. Already-public versions are skipped. Before each
+submission it prints the tarball's integrity, `sha512-` and the base64 of its SHA-512, beside the
+package name and version. Keep the integrity lines and stage IDs from the job log and run summary.
 
 Successful staging does not publish the packages. If the job stages any package, it skips the
 GitHub release. A public registry 404 cannot distinguish an unused version from a pending stage;
 [handle existing stages before retrying](releasing-02.md#repeating-a-failed-release).
 
-## Step three: Approve and finalize
-
-Open npmjs.com's Staged Packages page with a package maintainer account. Wait for scanning,
-review each stage, and approve protocol, runtime, then buckle with 2FA.
-Alternatively use `npm stage approve <stage-id>` with npm 11.15.0 or newer and a human login.
-The workflow's OIDC identity cannot perform this approval.
-
-When all three versions are public, choose "Re-run all jobs" on the same Stage Buckle run,
-with `main` still on the prepared commit. Its staging job skips the public versions and allows
-**`github-release`** to create the GitHub release on the prepared tag, using the changelog notes.
-An existing GitHub release is left alone. Staging alone never creates this release.
-
 Both release workflows share one concurrency group. A running release is never cancelled;
 GitHub retains one waiting run, which a third start replaces. Waiting runs keep their starting
-commit. Keep `main` on the prepared commit until staging, approval, and finalization finish.
+commit, and so does a re-run, so `main` may move once Stage Buckle has started. Only a new Stage
+Buckle run needs `main` on the prepared commit.

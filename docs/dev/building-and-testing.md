@@ -103,8 +103,9 @@ uses no network and pushes nothing, and it skips, saying so, when `bash` is miss
 pnpm release:check
 ```
 
-This is the gate CI runs on every pull request, every push to `main`, and every release commit,
-where the [Prepare release](releasing.md#step-one-prepare-release) workflow starts it. It runs
+This is the gate CI runs on every pull request and every push to `main`. The release commit
+[Prepare release](releasing.md#step-one-prepare-release) pushes skips it, and Stage Buckle reuses
+the checks of its parent. It runs
 `check:runtime-pins` (Nitro, h3, and db0 at their reviewed versions), `check:routes` (no two
 Nitro routes claim one path and method), `typecheck`, `test`, `pnpm -r build`, `test:package`,
 and `audit:release` (`pnpm audit --prod`, plus the packages bundled into `.output`).

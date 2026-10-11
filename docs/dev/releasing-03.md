@@ -36,8 +36,8 @@ mkdir -p ../buckle-pack
 for name in protocol runtime buckle; do
   pnpm --filter "@5straps/$name" pack --pack-destination "$PWD/../buckle-pack"
 done
-tar -xzOf ../buckle-pack/5straps-buckle-0.2.0.tgz package/package.json | grep '@5straps/'
-tar -tzf ../buckle-pack/5straps-buckle-0.2.0.tgz | less
+tar -xzOf ../buckle-pack/5straps-buckle-*.tgz package/package.json | grep '@5straps/'
+tar -tzf ../buckle-pack/5straps-buckle-*.tgz | less
 ```
 
 pnpm names a tarball after the package without its `@`, the slash made a hyphen, then the
