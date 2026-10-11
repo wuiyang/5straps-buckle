@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { executableCandidates, findExecutable, isPathReference, rootsOf, trustedSearchPath, type UntrustedRoots } from '../common/domain/executable.js'
+import { executableCandidates, findExecutable, isPathReference, resolveProgram, rootsOf, trustedSearchPath, type UntrustedRoots } from '../common/domain/executable.js'
 
 const root = mkdtempSync(join(tmpdir(), 'buckle-exec-'))
 
@@ -37,6 +37,25 @@ describe('findExecutable', () => {
   it('checks an explicit path directly instead of scanning PATH', () => {
     const path = writeExecutable('buckle-explicit-tool')
     expect(findExecutable(path, { PATH: '' }, 'linux')).toBe(path)
+  })
+})
+
+// The validator's configured path may lie outside every workspace: a refusal the agent reads names it by its setting.
+describe('resolveProgram', () => {
+  it('names a refused program by what it is shown as, never by its path or a link\'s target', () => {
+    const at = mkdtempSync(join(root, 'shown-'))
+    const shownAs = 'The validator BUCKLE_ENV_VALIDATOR_COMMAND names'
+    const executable = (path: string) => { writeFileSync(path, '#!/bin/sh\nexit 0\n'); chmodSync(path, 0o755); return path }
+    for (const directory of ['owner-private\\tools', 'real\\secret', 'opt']) mkdirSync(join(at, directory))
+    const backslashed = executable(join(at, 'owner-private\\tools', 'varlock'))
+    symlinkSync(executable(join(at, 'real\\secret', 'varlock')), join(at, 'opt', 'varlock'))
+    for (const program of [backslashed, join(at, 'opt', 'varlock')]) {
+      const refused = resolveProgram(program, { untrustedRoots: [], shownAs, platform: 'linux' })
+      expect(refused, program).toMatchObject({ path: null })
+      const reason = refused.path === null ? refused.reason : ''
+      expect(reason.startsWith(shownAs), reason).toBe(true)
+      expect(reason, reason).not.toMatch(/owner-private|secret|varlock|\//)
+    }
   })
 })
 

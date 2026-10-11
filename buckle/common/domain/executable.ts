@@ -107,11 +107,12 @@ export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoo
   if (found === null) return { path: null, reason: `${shown} is not installed on this node`, untrusted: false }
   if (input.rootsUnknown) return { path: null, reason: `${shown} is not run while ${input.rootsUnknown}`, untrusted: true }
   let path: string
-  try { path = nativePath(found, platform) } catch (error) { return { path: null, reason: messageOf(error), untrusted: false } }
+  // A refusal names the program by `shown` alone: the path found, or a link's target, may lie outside the workspace.
+  try { path = nativePath(found, platform) } catch { return { path: null, reason: `${shown} is a path Buckle cannot read as the system does, so Buckle does not run it`, untrusted: false } }
   if (pathRoot(path) === '') return { path: null, reason: `${shown} is a relative path, which Buckle does not run from a working directory`, untrusted: false }
   let walked: LinkWalk
   // A chain Buckle cannot follow may be one an agent built, so it is refused as one found where an agent writes.
-  try { walked = walkLinks(path, platform) } catch (error) { return { path: null, reason: `${shown} cannot be followed to where it really is: ${messageOf(error)}`, untrusted: true } }
+  try { walked = walkLinks(path, platform) } catch { return { path: null, reason: `${shown} cannot be followed to where it really is, so Buckle does not run it`, untrusted: true } }
   const root = rootHolding(input.untrustedRoots, [path, ...walked.passed, walked.real], platform)
   if (root) return { path: null, reason: `${shown} is found in or through ${ROOT_NAMES[root.kind]} of this node, where an agent can write, so Buckle does not run it`, untrusted: true }
   return { path: walked.real, argv0: path }
@@ -210,10 +211,6 @@ function walkLinks(path: string, platform: NodeJS.Platform): LinkWalk {
 
 function isLink(path: string): boolean {
   try { return lstatSync(path).isSymbolicLink() } catch { return false }
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 /** Where a path really is, in pathe's form, or the path itself where it cannot be resolved. */
