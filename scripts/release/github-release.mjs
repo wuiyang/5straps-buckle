@@ -1,6 +1,9 @@
-// Creates the GitHub release on the existing prepared tag after npm publishing.
-import { Refusal, runAsScript, runCommand } from './command.mjs'
-import { isPlainVersion, tagOf } from './packages.mjs'
+// Confirms the prepared tag before staging, and creates the GitHub release on it once all three
+// versions are public on npm. The release names the tag and its notes only and attaches no files.
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { REPOSITORY_ROOT, Refusal, runAsScript, runCommand } from './command.mjs'
+import { CHANGELOG, changelogSection, isPlainVersion, tagOf } from './packages.mjs'
 
 const COMMIT = /^[0-9a-f]{40}$/
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/
@@ -15,13 +18,17 @@ export function requirePreparedTag({ repository, version, sha, run = runCommand 
   return `The prepared tag ${tag} names ${sha}.`
 }
 
-/** Creates the release on the tag Prepare release pushed, or confirms it exists, and returns what it did. */
-export function createGitHubRelease({ repository, version, sha, notes, run = runCommand }) {
+/**
+ * Creates the release on the tag Prepare release pushed, or confirms it exists, and returns what it
+ * did. The notes are the version's section of CHANGELOG.md in this checkout, the tagged commit.
+ */
+export function createGitHubRelease({ repository, version, sha, root = REPOSITORY_ROOT, run = runCommand }) {
   const tag = releaseTag({ repository, version, sha })
-  if (!notes) throw new Refusal('The release notes file is missing')
+  const notes = changelogSection(readFileSync(join(root, CHANGELOG), 'utf8'), version)
+  if (!notes) throw new Refusal(`${CHANGELOG} has no ${tag} section to take the release notes from`)
   requirePreparedTag({ repository, version, sha, run })
   if (releaseExists({ run, repository, tag })) return `The release ${tag} already exists on ${sha}; nothing to do.`
-  run('gh', ['release', 'create', tag, '--repo', repository, '--title', tag, '--notes-file', notes, '--verify-tag'])
+  run('gh', ['release', 'create', tag, '--repo', repository, '--title', tag, '--notes', notes, '--verify-tag'])
   return `Created the release ${tag} on the tag ${tag}, which names ${sha}.`
 }
 
@@ -67,6 +74,6 @@ function releaseExists({ run, repository, tag }) {
 await runAsScript(import.meta.url, () => {
   const input = { repository: process.env.GITHUB_REPOSITORY, version: process.env.RELEASE_VERSION, sha: process.env.RELEASE_COMMIT }
   if (process.argv[2] === 'check-tag') return requirePreparedTag(input)
-  if (process.argv[2] === 'release') return createGitHubRelease({ ...input, notes: process.env.RELEASE_NOTES })
+  if (process.argv[2] === 'release') return createGitHubRelease(input)
   throw new Refusal('Usage: node scripts/release/github-release.mjs check-tag|release')
 })

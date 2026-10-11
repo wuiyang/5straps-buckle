@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { createGitHubRelease, requirePreparedTag } from '../scripts/release/github-release.mjs'
-import { type Run, commandFailure } from './support/release-repository'
+import { CHANGELOG, type Run, commandFailure, scratchRepository } from './support/release-repository'
 
-// The final publish job creates a GitHub release on the existing prepared tag, never creating a tag.
+// Stage Buckle's confirm-tag job checks the prepared tag before staging, and its github-release job
+// creates the GitHub release on that tag once all three versions are public, never creating a tag.
+// The notes are the version's changelog section in the checkout. gh is answered here.
 
 const SHA = 'a'.repeat(40)
 const OTHER = 'b'.repeat(40)
@@ -16,7 +18,7 @@ interface Answers { refs?: readonly Ref[]; annotated?: { sha: string; type: 'com
 const commitRef = (sha: string, tag = 'v0.1.1'): Ref => ({ ref: `refs/tags/${tag}`, object: { sha, type: 'commit' } })
 const ANNOTATED: Ref = { ref: 'refs/tags/v0.1.1', object: { sha: TAG_OBJECT, type: 'tag' } }
 
-/** Answers gh as GitHub would; once the tag is created, it reads as `refsAfter`, or on SHA. */
+/** Answers gh as GitHub would for the tag's refs, an annotated tag object, and the release. */
 function fake(answers: Answers = {}) {
   const calls: string[][] = []
   const run: Run = (command, args) => {
@@ -39,8 +41,12 @@ function fake(answers: Answers = {}) {
   }
 }
 
-const release = (run: Run, input: Partial<{ repository: string; version: string; sha: string; notes: string }> = {}) =>
-  createGitHubRelease({ repository: REPOSITORY, version: '0.1.1', sha: SHA, notes: 'release/notes.md', run, ...input })
+const NOTES = '[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.0...v0.1.1)\n\n### Fixes\n\n- Something new'
+/** A checkout of the release commit: its changelog holds the v0.1.1 section above the earlier ones. */
+const checkout = () => scratchRepository({ versions: '0.1.1', changelog: `# Changelog\n\n\n## v0.1.1\n\n${NOTES}\n\n${CHANGELOG.slice(CHANGELOG.indexOf('## v0.1.0'))}` })
+
+const release = (run: Run, input: Partial<{ repository: string; version: string; sha: string; root: string }> = {}) =>
+  createGitHubRelease({ repository: REPOSITORY, version: '0.1.1', sha: SHA, root: checkout(), run, ...input })
 
 describe('confirming the prepared tag before npm publishing', () => {
   it.each([
@@ -68,7 +74,7 @@ describe('the GitHub release', () => {
   it('creates the release on the tag already on the released commit, never making or moving a tag', () => {
     const gh = fake({ refs: [commitRef(SHA)] })
     expect(release(gh.run)).toBe(`Created the release v0.1.1 on the tag v0.1.1, which names ${SHA}.`)
-    expect(gh.releaseCreations()).toEqual([['gh', 'release', 'create', 'v0.1.1', '--repo', REPOSITORY, '--title', 'v0.1.1', '--notes-file', 'release/notes.md', '--verify-tag']])
+    expect(gh.releaseCreations()).toEqual([['gh', 'release', 'create', 'v0.1.1', '--repo', REPOSITORY, '--title', 'v0.1.1', '--notes', NOTES, '--verify-tag']])
     expect(gh.tagCreations()).toEqual([])
   })
 
@@ -109,9 +115,9 @@ describe('the GitHub release inputs', () => {
     }
   })
 
-  it('refuses a release with no notes file before asking GitHub anything', () => {
+  it('refuses a checkout whose changelog has no section for the version before asking GitHub anything', () => {
     const gh = fake()
-    expect(() => release(gh.run, { notes: '' })).toThrow('notes file is missing')
+    expect(() => release(gh.run, { root: scratchRepository({ versions: '0.1.1' }) })).toThrow('CHANGELOG.md has no v0.1.1 section to take the release notes from')
     expect(gh.calls).toEqual([])
   })
 })

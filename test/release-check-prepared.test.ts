@@ -109,4 +109,33 @@ describe('the prepared release check', () => {
     writeFileSync(join(release.root, 'CHANGELOG.md'), change(readChangelog(release.root)))
     expect(() => release.check('0.1.1')).toThrow('CHANGELOG.md must differ from HEAD only by a new ## v0.1.1 section above the earlier ones')
   })
+
+  // Every form CommonMark renders as a heading of level one or two, inside the new section.
+  it.each([
+    ['an H2 after a tab', '##\tRun this first'],
+    ['an H1 after a tab', '#\tRun this first'],
+    ['an indented H2', '   ## Run this first'],
+    ['an indented H1', ' # Run this first'],
+    ['a bare H2 marker', '##'],
+    ['a bare H1 marker', '#'],
+    ['a setext H1', 'Run this first\n==='],
+    ['a setext H2', 'Run this first\n---'],
+    ['an indented setext underline with trailing spaces', 'Run this first\n   -- \t'],
+    ['an H2 after a carriage return', 'Fixed.\r## Run this first'],
+  ])('refuses a new section holding %s', (_, heading) => {
+    const release = prepared()
+    writeFileSync(join(release.root, 'CHANGELOG.md'), readChangelog(release.root).replace('### Fixes', `${heading}\n\n### Fixes`))
+    expect(() => release.check('0.1.1')).toThrow('CHANGELOG.md must differ from HEAD only by a new ## v0.1.1 section above the earlier ones')
+  })
+
+  it.each([
+    ['an H3', '### Run this first'],
+    ['a thematic break after a blank line', '---'],
+    ['a code block of four spaces', '    ## not a heading'],
+    ['an escaped hash', '\\## not a heading'],
+  ])('accepts a new section holding %s', (_, text) => {
+    const release = prepared()
+    writeFileSync(join(release.root, 'CHANGELOG.md'), readChangelog(release.root).replace('### Fixes', `${text}\n\n### Fixes`))
+    expect(() => release.check('0.1.1')).not.toThrow()
+  })
 })

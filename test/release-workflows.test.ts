@@ -211,7 +211,14 @@ describe('Release', () => {
     expect(runScripts(confirm.join('\n')).slice(1)).toEqual(['node scripts/release/github-release.mjs check-tag'])
     expect(confirm.join('\n')).not.toMatch(/pnpm|node_modules|npm (?:ci|install)|npx/)
     expect(job(RELEASE, 'github-release')[0]?.trim()).toBe('needs: [pack, stage]')
-    expect(runScripts(job(RELEASE, 'github-release').join('\n')).slice(1)).toEqual(['RELEASE_NOTES="$RUNNER_TEMP/release/notes.md" node scripts/release/github-release.mjs release'])
+    expect(runScripts(job(RELEASE, 'github-release').join('\n')).slice(1)).toEqual(['node scripts/release/github-release.mjs release'])
+  })
+
+  it('takes the release notes from the checkout, never from what pack uploaded', () => {
+    const release = job(RELEASE, 'github-release')
+    expect(actions(release)).toEqual(['actions/checkout', 'actions/setup-node'])
+    expect(release.join('\n')).not.toMatch(/RELEASE_NOTES|notes\.md|download-artifact/)
+    expect(release.join('\n')).not.toMatch(/pnpm|node_modules|npm (?:ci|install)|npx/)
   })
 
   it.each(['confirm-tag', 'github-release'])('%s holds the packed commit to this run\'s, then checks out this run\'s commit', (name) => {

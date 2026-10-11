@@ -91,16 +91,24 @@ export function changelogSection(changelog, version) {
   return lines.slice(start + 1, next === -1 ? undefined : next).join('\n').trim() || null
 }
 
+/** A heading of level one or two as CommonMark reads it: up to three spaces, # or ##, then a space, a tab, or the line's end. */
+const ATX_HEADING = /^ {0,3}#{1,2}(?:[ \t]|$)/
+/** A setext underline, which makes the line above it, when that line is not blank, a heading of level one or two. */
+const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)[ \t]*$/
+const BLANK = /^[ \t]*$/
+
 /**
  * Whether `after` is the changelog `before` with one section, headed `## v<version>`, added above
  * its earlier sections: the title and every earlier section kept byte for byte, and nothing else added.
+ * Below its own heading, the section holds no heading of level one or two in any form CommonMark reads.
  */
 export function addsOnlySection({ before, after, version }) {
   const first = before.search(/^## /m)
   const [title, earlier] = first === -1 ? [before, ''] : [before.slice(0, first), before.slice(first)]
   if (after.length < title.length + earlier.length || !after.startsWith(title) || !after.endsWith(earlier)) return false
-  const added = after.slice(title.length, after.length - earlier.length).split('\n')
+  // CommonMark ends a line at a carriage return as well as at a line feed.
+  const added = after.slice(title.length, after.length - earlier.length).split(/\r\n?|\n/)
   const start = added.findIndex(line => line.trim() !== '')
   if (start === -1 || added[start].trimEnd() !== `## ${tagOf(version)}`) return false
-  return added.slice(start + 1).every(line => !/^##? /.test(line))
+  return added.every((line, index) => index <= start || !(ATX_HEADING.test(line) || (SETEXT_UNDERLINE.test(line) && !BLANK.test(added[index - 1]))))
 }
