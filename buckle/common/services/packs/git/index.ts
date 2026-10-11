@@ -1,18 +1,18 @@
-import { statSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { defineTool, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
+import { defineTool, ToolExecutionError, ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
 import { configuredFilterPrograms, ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
 import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { withForwardSlashes } from '../../../domain/paths.js'
-import { ownRoots, type ResolvedProgram } from '../../../domain/executable.js'
+import { isInside, nativePath, parentDirectory, withForwardSlashes } from '../../../domain/paths.js'
+import { ownRoots, realPathOr, type ResolvedProgram } from '../../../domain/executable.js'
 
 const PACK_ID = 'git'
 /** Unit separator: safe inside commit subjects and branch names, unlike any printable delimiter. */
@@ -23,6 +23,8 @@ const FIELD_SEPARATOR = '\x1f'
  * line does.
  */
 const PATCH_SAFETY_ARGS = ['--no-ext-diff', '--no-textconv']
+/** What git is asked before it runs: the work tree, the git directory, and the common one of the repository it finds. */
+const REPOSITORY_QUERY = ['rev-parse', '--path-format=absolute', '--show-toplevel', '--absolute-git-dir', '--git-common-dir']
 
 const repoInput = z.object({ repo: z.string().default('.') })
 const statusInput = repoInput.extend({ untracked: z.boolean().default(true) })
@@ -50,11 +52,14 @@ export interface GitPackOptions {
   git: ResolvedProgram
   /** The environment git runs with (hostEnvironment); the workspace's own roots alone when absent. */
   environment?: HostEnvironment
+  /** The host's unless a test imitates another. */
+  platform?: NodeJS.Platform
 }
 
 export function createGitPack(options: GitPackOptions): Pack {
   const environment = options.environment ?? hostEnvironment(() => ownRoots(options.paths))
-  const spawnGit = (input: { cwd: string; args: string[]; config: GitConfig[]; timeoutMs: number; signal: AbortSignal }): Promise<ProcessResult> => {
+  const platform = options.platform ?? process.platform
+  const spawnGit = (input: { cwd: string; args: string[]; config: GitConfig[]; boundary: string; timeoutMs: number; signal: AbortSignal }): Promise<ProcessResult> => {
     if (options.git.path === null) throw new ToolExecutionError(options.git.reason, { code: 'GIT_FAILED' })
     return options.runProcess({
       command: options.git.path,
@@ -62,7 +67,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       args: input.args,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
-      environment: environment({ ...ISOLATION_ENVIRONMENT, ...gitConfigEnvironment(input.config) }),
+      environment: environment({ ...ISOLATION_ENVIRONMENT, ...ceilingEnvironment(input.boundary), ...gitConfigEnvironment(input.config) }),
       signal: input.signal,
     })
   }
@@ -73,14 +78,17 @@ export function createGitPack(options: GitPackOptions): Pack {
     args: string[] | ((repository: string) => string[])
   }): Promise<string> => {
     const cwd = resolveRepository({ paths: options.paths, repo: input.repo, context: input })
+    const boundary = repositoryBoundary(options.paths, cwd, platform)
     const isolation = isolationConfig(ensureHooksDirectory(options.stateDirectory))
+    const spawnHere = (args: string[], config: GitConfig[]) => spawnGit({ cwd, args, config, boundary, timeoutMs: input.timeoutMs, signal: input.signal })
+    assertRepositoryInside({ answer: await spawnHere(REPOSITORY_QUERY, isolation), boundary, repo: input.repo, platform })
     const keys = await configuredFilterPrograms({
-      spawn: args => spawnGit({ cwd, args, config: isolation, timeoutMs: input.timeoutMs, signal: input.signal }),
+      spawn: args => spawnHere(args, isolation),
       describeFailure: result => describeProcessFailure('git config --list', result),
     })
     const config = [...isolation, ...filterProgramOverrides(keys)]
     const args = typeof input.args === 'function' ? input.args(cwd) : input.args
-    const result = await spawnGit({ cwd, args, config, timeoutMs: input.timeoutMs, signal: input.signal })
+    const result = await spawnHere(args, config)
     if (result.exitCode !== 0) {
       throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
     }
@@ -186,6 +194,39 @@ function resolveRepository(input: { paths: PathView; repo: string; context: Pick
   if (!stats) throw new ToolExecutionError(`No such directory in this workspace: ${input.paths.display(cwd)}`, { code: 'GIT_NO_REPOSITORY' })
   if (!stats.isDirectory()) throw new ToolExecutionError(`Not a directory: ${input.paths.display(cwd)}`, { code: 'GIT_NO_REPOSITORY' })
   return cwd
+}
+
+/**
+ * The real root git must find its whole repository in: the workspace root or the scratch root that holds the judged
+ * directory, as each really is, or, for a directory outside them all that a read approval judged, that directory.
+ */
+function repositoryBoundary(paths: PathView, judged: string, platform: NodeJS.Platform): string {
+  return [paths.root, ...paths.scratchRoots].map(root => realPathOr(root, platform)).find(root => isInside(root, judged, platform)) ?? judged
+}
+
+/** Git looks for a repository no higher than `boundary`: GIT_CEILING_DIRECTORIES names the folder above it. */
+function ceilingEnvironment(boundary: string): Record<string, string> {
+  const parent = parentDirectory(boundary)
+  return parent === boundary ? {} : { GIT_CEILING_DIRECTORIES: parent }
+}
+
+/**
+ * Refused unless the repository git finds where it runs, asked under the isolation scope, keeps its work tree, its git
+ * directory, and its common one inside `boundary`. Started in a folder that holds no repository of its own, git climbed
+ * to one above the workspace, and a `.git` file, a `commondir`, or `core.worktree` points it at another: status, diff,
+ * and log then showed files and commits no permission check judged, through a mount too. A bare repository has no work
+ * tree to name, so it is refused with the rest.
+ */
+function assertRepositoryInside(input: { answer: ProcessResult; boundary: string; repo: string; platform: NodeJS.Platform }): void {
+  if (input.answer.exitCode !== 0) throw new ToolExecutionError(`git finds no repository with a work tree at ${input.repo} inside the root it lies in`, { code: 'GIT_NO_REPOSITORY' })
+  const places = input.answer.stdout.split('\n').filter(Boolean).map(place => realPlace(place, input.platform))
+  if (places.length === 3 && places.every(place => place !== null && isInside(input.boundary, place, input.platform))) return
+  throw new ToolInputError(`The repository git finds at ${input.repo} keeps its files or history outside the root it lies in, where no permission check looked, so git is not run there`, { code: 'PERMISSION_DENIED' })
+}
+
+/** Where a place git named really is, in pathe's form, or null when it cannot be found. */
+function realPlace(place: string, platform: NodeJS.Platform): string | null {
+  try { return nativePath(realpathSync.native(place), platform) } catch { return null }
 }
 
 function parseStatus(output: string): JsonValue {

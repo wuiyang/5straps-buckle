@@ -90,7 +90,8 @@ function builtins(input: { table: (root: string) => Record<string, string> }) {
     mountReadOnlyPaths: [],
     approvedUrls: null,
     approvedLists: [],
-    runProcess: async request => { spawned.push(request); return { exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false } },
+    // git is answered as if the workspace were its repository, which the git pack asks before it runs.
+    runProcess: async request => { spawned.push(request); return { exitCode: 0, signal: null, stdout: request.args[0] === 'rev-parse' ? `${root}\n${root}\n${root}\n` : '', stderr: '', truncated: false, timedOut: false } },
     sandbox: createNoneSandbox(),
     writableRoots: [root],
     allowedHosts: [],

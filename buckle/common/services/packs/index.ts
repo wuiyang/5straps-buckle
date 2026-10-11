@@ -101,7 +101,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const packs: Pack[] = [
     createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: program('rg').path, protectedRoots: options.hiddenPaths, environment }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, allowedHosts: options.allowedHosts, approved: options.approvedUrls }),
-    createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment }),
+    createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
     createForgePack({
       paths: options.paths,
       runProcess: options.runProcess,
