@@ -42,7 +42,10 @@ function repository(change: (root: string) => void = () => {}, subject = 'chore(
       })) : [] })
     }
     if (command === 'gh' && args[1] === 'repos/owner/repo/actions/runs/7') {
-      return JSON.stringify({ path: '.github/workflows/release-check.yml', event: 'push', head_branch: 'main', head_sha: source })
+      return JSON.stringify({ id: 7, path: '.github/workflows/release-check.yml', event: 'push', head_branch: 'main', head_sha: source, conclusion: 'success' })
+    }
+    if (command === 'gh' && args[1] === 'repos/owner/repo/actions/runs/7/jobs?filter=all&per_page=100') {
+      return JSON.stringify({ total_count: 2, jobs: [{ id: 1, run_id: 7 }, { id: 2, run_id: 7 }] })
     }
     throw new Error(`unexpected ${command} ${args.join(' ')}`)
   }

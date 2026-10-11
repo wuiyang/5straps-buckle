@@ -26,9 +26,19 @@ function isRequiredCheck(check, { sha, required = REQUIRED_JOBS }) {
   return required.includes(check.name) && check.head_sha === sha && (check.app?.slug ?? CI_APP) === CI_APP
 }
 
-/** The workflow run id in a GitHub Actions check run's details_url, `.../actions/runs/<id>/job/<job>`, or null. */
+/**
+ * The workflow run id in a GitHub Actions check run's details_url,
+ * `https://github.com/<owner>/<repo>/actions/runs/<id>/job/<job>`, or null for any other host or shape.
+ */
 export function workflowRunId(check) {
-  return /\/actions\/runs\/(\d+)(?:\/|$)/.exec(String(check.details_url ?? ''))?.[1] ?? null
+  let url
+  try {
+    url = new URL(String(check.details_url ?? ''))
+  } catch {
+    return null
+  }
+  if (url.origin !== 'https://github.com') return null
+  return /^\/[^/]+\/[^/]+\/actions\/runs\/(\d+)\/job\/\d+$/.exec(url.pathname)?.[1] ?? null
 }
 
 /**
@@ -44,7 +54,8 @@ export function isReleaseCheckRun(workflowRun, sha) {
 
 /**
  * What stops a release on this commit: each required job with no run on it, or whose latest run did
- * not succeed. A re-run replaces an earlier run of the same job. `runs` are the check runs that count.
+ * not succeed, or ran in a workflow run that did not conclude success. A re-run replaces an earlier
+ * run of the same job. `runs` are the check runs that count, each carrying its `workflow_run`.
  */
 export function blockingJobs({ sha, runs, required = REQUIRED_JOBS }) {
   return required.flatMap((name) => {
@@ -54,6 +65,10 @@ export function blockingJobs({ sha, runs, required = REQUIRED_JOBS }) {
     if (!latest) return [{ name, reason: `has not run on this commit ${WHERE}` }]
     if (latest.status !== 'completed') return [{ name, reason: `is ${latest.status}` }]
     if (latest.conclusion !== 'success') return [{ name, reason: `concluded ${latest.conclusion}` }]
+    const workflowRun = latest.workflow_run
+    if (workflowRun?.conclusion !== 'success') {
+      return [{ name, reason: `ran in workflow run ${workflowRun?.id ?? 'unknown'}, which ${workflowRun?.conclusion ? `concluded ${workflowRun.conclusion}` : 'has not concluded'}` }]
+    }
     return []
   })
 }
@@ -94,17 +109,30 @@ export function requireCi({ run, repository = process.env.GITHUB_REPOSITORY, git
 }
 
 /**
- * The check runs that count: a required job's, by GitHub Actions on `sha`, whose workflow run, named
- * by its details_url, is release-check.yml on main. A job of the same name in another workflow file,
- * or from a pull request or another branch, does not count. Each workflow run is read once.
+ * The check runs that count: a required job's, by GitHub Actions on `sha`, whose details_url names a
+ * workflow run on github.com that is release-check.yml on main and lists the check run among its jobs.
+ * A job of the same name in another workflow file, from a pull request or another branch, or posted
+ * through the Checks API under a real run's URL, does not count. Each one carries its workflow run's
+ * id and conclusion, which blockingJobs requires to be success. Each workflow run is read once.
  */
 function releaseCheckRuns({ run, slug, sha, checks }) {
   const workflowRuns = new Map()
-  return checks.filter((check) => {
+  const read = (id) => {
+    if (!workflowRuns.has(id)) {
+      const workflowRun = JSON.parse(run('gh', ['api', `repos/${slug}/actions/runs/${id}`]))
+      // Every attempt's jobs, so a job an earlier attempt ran is still found after a re-run.
+      const jobs = isReleaseCheckRun(workflowRun, sha) ? JSON.parse(run('gh', ['api', `repos/${slug}/actions/runs/${id}/jobs?filter=all&per_page=100`])).jobs ?? [] : null
+      workflowRuns.set(id, { workflowRun, jobs })
+    }
+    return workflowRuns.get(id)
+  }
+  return checks.flatMap((check) => {
     const id = isRequiredCheck(check, { sha }) ? workflowRunId(check) : null
-    if (!id) return false
-    if (!workflowRuns.has(id)) workflowRuns.set(id, JSON.parse(run('gh', ['api', `repos/${slug}/actions/runs/${id}`])))
-    return isReleaseCheckRun(workflowRuns.get(id), sha)
+    if (!id) return []
+    const { workflowRun, jobs } = read(id)
+    // GitHub gives a workflow job the id of its check run.
+    if (!jobs?.some(job => job.id === check.id)) return []
+    return [{ ...check, workflow_run: { id: workflowRun.id ?? Number(id), conclusion: workflowRun.conclusion ?? null } }]
   })
 }
 
