@@ -27,11 +27,11 @@ export interface WorkbenchFileOptions {
 }
 
 /**
- * A listed name pathe reads as itself; one it would read as another path (a backslash on Linux) cannot be judged, and is
- * named relative to the root, as listed.
+ * A listed name pathe reads as itself; one read as another path (a backslash on Linux, or a dot or a space that ends it
+ * on Windows, isPlainName) cannot be judged, and is named relative to the root, as listed.
  */
 function plainName(entry: { root: string; directory: string; name: string }): string {
-  if (!isPlainName(entry.name)) throw new WorkbenchError(`The workspace holds ${entryBelowRoot(entry.root, entry.directory, entry.name)}, a name with a backslash, which the staged editor cannot judge`, 403)
+  if (!isPlainName(entry.name)) throw new WorkbenchError(`The workspace holds ${entryBelowRoot(entry.root, entry.directory, entry.name)}, a name Buckle would read as another path, which the staged editor cannot judge`, 403)
   return entry.name
 }
 

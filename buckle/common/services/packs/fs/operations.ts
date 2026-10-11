@@ -156,7 +156,7 @@ export async function listTree(
 ): Promise<JsonValue> {
   const root = context.paths.resolve(input.path)
   const entries: JsonValue[] = []
-  await withDirectoryBeneath(root, context, (directory, real) => walkTree({ real, shown: '', directory, depth: input.depth, includeIgnored: input.includeIgnored, entries, authorizeRead: context.authorizeRead }))
+  await withDirectoryBeneath(root, context, (directory, real) => walkTree({ real, shown: '', directory, depth: input.depth, includeIgnored: input.includeIgnored, entries, authorizeRead: context.authorizeRead, platform: context.platform ?? process.platform }))
   return { path: context.paths.display(root), entries, truncated: entries.length >= MAX_TREE_ENTRIES }
 }
 
@@ -202,6 +202,7 @@ async function walkTree(input: {
   includeIgnored: boolean
   entries: JsonValue[]
   authorizeRead?: (path: string) => Promise<boolean>
+  platform: NodeJS.Platform
 }): Promise<void> {
   if (input.entries.length >= MAX_TREE_ENTRIES) return
   const children = (await readdir(input.directory.self, { withFileTypes: true }))
@@ -210,8 +211,8 @@ async function walkTree(input: {
   for (const child of children) {
     if (input.entries.length >= MAX_TREE_ENTRIES) return
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
-    // A name pathe would read as another path (a backslash on Linux) would be judged there: left out.
-    if (!isPlainName(child.name)) continue
+    // A name read as another path (a backslash on Linux, a dot or a space that ends it on Windows) would be judged there: left out.
+    if (!isPlainName(child.name, input.platform)) continue
 
     const real = childPath(input.real, child.name)
     const shown = join(input.shown, child.name)
@@ -249,7 +250,7 @@ async function walkNames(input: {
   for (const child of await readdir(input.directory.self, { withFileTypes: true })) {
     if (input.matches.length >= input.limit) return
     if (child.isDirectory() && isIgnoredDirectory(child.name, input.includeIgnored)) continue
-    if (!isPlainName(child.name)) continue
+    if (!isPlainName(child.name, input.platform)) continue
 
     const real = childPath(input.real, child.name)
     const shown = join(input.shown, child.name)

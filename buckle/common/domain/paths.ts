@@ -25,17 +25,28 @@ export function isInsideAny(directories: string[], candidate: string, platform?:
  * slashes, `.` and `..` folded, a drive letter in upper case. What unsupportedPath names is refused rather than read as
  * another place. On Linux and macOS only a leading `/` is absolute and a leading `//` is the root, as the kernel reads
  * them, where pathe would keep `//x` as a Windows share and read `//.x` as relative; the folded path is refused where it
- * lands on a drive (refuseDrive). On Windows each name is then trimmed as Windows trims it when it opens the path
- * (windowsTrimmed), so `.github\workflows.\ci.yml` is judged at `.github/workflows`, where Windows creates it, and a
- * path with a name Windows trims to nothing, `.`, or `..` is refused.
+ * lands on a drive (refuseDrive). On Windows nothing is trimmed, and a path that holds a name ending in a dot or a space
+ * once `.` and `..` are folded is refused (TRIMMED_NAME).
  */
 export function nativePath(path: string, platform: NodeJS.Platform = process.platform): string {
-  const named = withForwardSlashes(path, platform)
+  const named = forwardSlashes(path, platform)
   const folded = refuseDrive(onDrive([platform === 'win32' ? named : named.replace(/^\/{2,}/, '/')], first => normalize(first)), path, platform)
-  if (platform !== 'win32') return folded
-  const opened = windowsTrimmed(folded)
-  if (opened.emptied) throw unsupported(path, 'holds a name Windows trims to nothing, `.`, or `..` when it opens the path')
-  return opened.path
+  if (platform === 'win32' && holdsTrimmedName(folded)) throw unsupported(path, TRIMMED_NAME)
+  return folded
+}
+
+/**
+ * Why a Windows path holding a name that ends in a dot or a space is refused. Node opens every path with the `\\?\`
+ * prefix, which Windows reads as written, so Buckle's own opens reach `workflows.` itself. A program Buckle starts there
+ * is another matter: a child's working directory reaches CreateProcessW without the prefix, and Windows then trims
+ * every dot and space that ends the last name, and one dot that ends each name before it, so git started in a judged
+ * `.ssh.\repo` ran in `.ssh\repo`. Trimmed instead, a real `C:\code\app.` would be judged as its sibling `app`.
+ */
+const TRIMMED_NAME = 'holds a name that ends in a dot or a space, which Windows programs read as another name'
+
+/** Whether a Windows path in pathe's form holds a name other than `.` and `..` that ends in a dot or a space. */
+function holdsTrimmedName(path: string): boolean {
+  return path.split('/').some(name => name !== '.' && name !== '..' && /[. ]$/.test(name))
 }
 
 /**
@@ -94,34 +105,14 @@ const ROOTED_DRIVE = /^\/[A-Za-z]:(?:\/|$)/
 export const WHOLE_DRIVE = 'a whole drive cannot be a Buckle root; use a folder'
 
 /**
- * Whether a path names a whole drive on Windows (`C:/`, `C:\`, or `/`, the current drive's root): refused there as a
- * workspace root, scratch root, state directory, or client directory (WHOLE_DRIVE). It is judged as written and with
- * its names trimmed as Windows trims them once `.` and `..` are folded (windowsTrimmed), so `C:\ ` and `C:\...` are the
- * drive's root, while `C:\x\.. ` is `C:\x\`, as `.. ` is no `..` to Windows. Elsewhere never.
+ * Whether a path names a whole drive on Windows (`C:/`, `C:\`, or `/`, the current drive's root) once `.` and `..` are
+ * folded, so `C:\x\..` is the drive's root: refused there as a workspace root, scratch root, state directory, or client
+ * directory (WHOLE_DRIVE). A spelling with a name that ends in a dot or a space (`C:\ `, `C:\x\.. `) never reaches it,
+ * as nativePath refuses it first (TRIMMED_NAME). Elsewhere never.
  */
 export function isDriveRoot(path: string, platform: NodeJS.Platform = process.platform): boolean {
   if (platform !== 'win32') return false
-  const folded = resolvePath(path)
-  return [folded, windowsTrimmed(folded).path].some(spelling => /^(?:[A-Za-z]:)?\/$/.test(resolvePath(spelling)))
-}
-
-/**
- * A Windows path in pathe's form, `.` and `..` already folded, with each name trimmed as Windows trims it when it opens
- * the path: every dot and space that ends the last name, and one dot that ends each name before it, so `C:\test.\file`
- * is `C:\test\file`. After a trailing separator, the name before it loses only that one dot. `emptied` is set where a
- * name is left empty, `.`, or `..`: Windows then opens the folder above (`C:\x\.. ` is `C:\x\`), or a name no folder
- * holds, never the one written, and resolvePath would read a `..` left here as a climb.
- */
-function windowsTrimmed(path: string): { path: string; emptied: boolean } {
-  const names = path.split('/')
-  let emptied = false
-  const trimmed = names.map((name, index) => {
-    if (name === '' || name === '.' || name === '..') return name
-    const kept = name.replace(index === names.length - 1 ? /[. ]+$/ : /\.$/, '')
-    emptied ||= kept === '' || kept === '.' || kept === '..'
-    return kept
-  })
-  return { path: trimmed.join('/'), emptied }
+  return /^(?:[A-Za-z]:)?\/$/.test(resolvePath(path))
 }
 
 /** The working directory in pathe's form (nativePath). */
@@ -145,9 +136,17 @@ export function typedPath(path: string, platform: NodeJS.Platform = process.plat
 
 /**
  * A path with its separators as pathe writes them and nothing folded, for a link target, whose `..` climbs from where
- * the component before it really lands. Refused where unsupportedPath says.
+ * the component before it really lands. Refused where unsupportedPath says, and on Windows where a name other than `.`
+ * and `..` ends in a dot or a space (TRIMMED_NAME).
  */
 export function withForwardSlashes(path: string, platform: NodeJS.Platform = process.platform): string {
+  const named = forwardSlashes(path, platform)
+  if (platform === 'win32' && holdsTrimmedName(named)) throw unsupported(path, TRIMMED_NAME)
+  return named
+}
+
+/** withForwardSlashes before its names are read: nativePath judges them once `.` and `..` are folded. */
+function forwardSlashes(path: string, platform: NodeJS.Platform): string {
   const reason = unsupportedPath(path, platform)
   if (reason) throw unsupported(path, reason)
   return platform === 'win32' ? path.replaceAll('\\', '/') : path
@@ -221,10 +220,11 @@ export function childPath(parent: string, name: string): string {
 /**
  * Whether a directory entry's name is one name pathe reads as itself. On Linux and macOS a name may hold a backslash,
  * which pathe reads as a separator, so `a\..\..\x` would be judged as a path two levels up while the kernel opens the
- * entry itself; such an entry is skipped or refused, never judged as another path.
+ * entry itself; on Windows a name that ends in a dot or a space is another name to a program Buckle starts there
+ * (TRIMMED_NAME). Such an entry is skipped or refused, never judged as another path.
  */
-export function isPlainName(name: string): boolean {
-  return name !== '' && name !== '.' && name !== '..' && !/[\\/]/.test(name)
+export function isPlainName(name: string, platform: NodeJS.Platform = process.platform): boolean {
+  return name !== '' && name !== '.' && name !== '..' && !/[\\/]/.test(name) && !(platform === 'win32' && /[. ]$/.test(name))
 }
 
 /**

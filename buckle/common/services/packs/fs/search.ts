@@ -79,14 +79,15 @@ export async function searchContent(input: {
 }
 
 /**
- * The path a name rg listed (`./src/a.ts`) names. Off Windows a segment that is not one plain name (a backslash, which
- * pathe reads as a separator) would name another path than the file rg found, so such a name is left out: null. There
- * the names are appended to the root as text (childPath), which pathe would fold onto a drive under `/` (`/c:/x`).
+ * The path a name rg listed (`./src/a.ts`) names. A segment that is not one plain name (isPlainName: a backslash off
+ * Windows, which pathe reads as a separator, or a dot or a space that ends it on Windows) would name another path than
+ * the file rg found, so such a name is left out: null. Off Windows the names are appended to the root as text
+ * (childPath), which pathe would fold onto a drive under `/` (`/c:/x`).
  */
 function listedPath(root: string, name: string, platform: NodeJS.Platform): string | null {
-  if (platform === 'win32') return resolve(root, name)
+  if (platform === 'win32') return name.replace(/^\.[\\/]/, '').split(/[\\/]/).every(segment => isPlainName(segment, platform)) ? resolve(root, name) : null
   const below = name.replace(/^\.\//, '')
-  return below.split('/').every(isPlainName) ? childPath(root, below) : null
+  return below.split('/').every(segment => isPlainName(segment, platform)) ? childPath(root, below) : null
 }
 
 /** A real path in pathe's form; null for one pathe cannot name as the system does (nativePath), which is left out. */

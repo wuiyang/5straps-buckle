@@ -11,7 +11,8 @@ import { childPath, entryBelowRoot, isInside, isInsideAny, isPlainName, nativePa
  * every change set, listed as not restorable when it changes, and a restore that would remove a directory holding one
  * is a conflict. `excluded`: a hard-linked file under a node_modules directory below a snapshot root (pnpm links its
  * store there), or, in history, an entry whose name holds a backslash on Linux or macOS, which pathe would read as
- * another path; its key is its directory and its name joined as listed. `unreadable`: on Windows, a file another
+ * another path, or ends in a dot or a space on Windows, which a program there reads as another name (isPlainName); its
+ * key is its directory and its name joined as listed. `unreadable`: on Windows, a file another
  * program held open without read sharing (EBUSY), so its content could not be read.
  */
 export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), hash: z.string().optional(), target: z.string().optional() })
@@ -26,7 +27,8 @@ export type Entry = z.infer<typeof entrySchema>
  * snapshots). A hard link anywhere else is still refused, since restoring one would write through to the
  * other names of the same file.
  *
- * `onBackslashName`: given, an entry whose name is not one plain name (a backslash on Linux or macOS) is recorded as
+ * `onBackslashName`: given, an entry whose name is not one plain name (a backslash on Linux or macOS, or on Windows a dot
+ * or a space that ends it, isPlainName) is recorded as
  * `excluded` and named to it relative to its root, backslash as listed, so one such name does not stop every write;
  * absent, the snapshot is refused and the refusal names it the same way. pathe would read the name as another path,
  * so it is never captured or restored as one. `platform`: on Windows a file another program holds open without read
@@ -48,7 +50,7 @@ export function snapshot(input: { roots: string[]; excluded: string[]; maxBytes:
     else if (stat.isDirectory()) {
       result[path] = { kind: 'directory', mode }
       for (const name of readdirSync(path)) {
-        if (isPlainName(name)) visit(childPath(path, name), root)
+        if (isPlainName(name, platform)) visit(childPath(path, name), root)
         else excludeName({ directory: path, name, root })
       }
     } else if (stat.isFile()) {
@@ -69,7 +71,7 @@ export function snapshot(input: { roots: string[]; excluded: string[]; maxBytes:
   /** Joined as listed, never by pathe, which would read the backslash as a separator. */
   function excludeName(entry: { directory: string; name: string; root: string }): void {
     const shown = entryBelowRoot(entry.root, entry.directory, entry.name)
-    if (!input.onBackslashName) throw new Error(`History cannot capture ${shown}, whose name holds a backslash, which Buckle reads as a separator`)
+    if (!input.onBackslashName) throw new Error(`History cannot capture ${shown}, whose name Buckle would read as another path: a backslash, a separator to Buckle, or on Windows a dot or a space that ends it`)
     if (++count > 100_000) throw new Error('History snapshot exceeds 100,000 entries; narrow the workspace')
     const path = `${entry.directory.endsWith('/') ? entry.directory : `${entry.directory}/`}${entry.name}`
     const stat = lstatSync(path, { throwIfNoEntry: false })
@@ -259,7 +261,7 @@ export function assertSnapshotMatches(input: { current: Snapshot; expected: Snap
     if (Object.keys(input.current).some(child => child.startsWith(below) && !Object.hasOwn(input.expected, child))) throw new Error(`${input.operation} conflict: a directory contains newer files`)
     // Removing it would remove a file history never captured and leaves untouched.
     const uncaptured = [...Object.entries(input.current), ...Object.entries(input.expected)].filter(([child, entry]) => isUncaptured(entry) && child.startsWith(below))
-    if (uncaptured.some(([child]) => child.includes('\\'))) throw new Error(`${input.operation} conflict: a directory holds a name with a backslash, which history does not capture; rename or remove it and restore again`)
+    if (uncaptured.some(([child]) => child.includes('\\') || /[. ]$/.test(child))) throw new Error(`${input.operation} conflict: a directory holds a name Buckle would read as another path, which history does not capture; rename or remove it and restore again`)
     if (uncaptured.some(([, entry]) => entry.kind === 'unreadable')) throw new Error(`${input.operation} conflict: a directory holds a file another program held open, which history could not read; close that program and restore again`)
     if (uncaptured.length) throw new Error(`${input.operation} conflict: a directory holds hard-linked dependency files history does not capture; remove only those hard-linked files (a package manager puts them back) and restore again`)
   }

@@ -67,13 +67,13 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const excluded = [...input.excluded, input.directory]
   const lockDeadlineMs = input.lockDeadlineMs ?? EXECUTION_LOCK_DEADLINE_MS
   await section(connection => connection.exec(SCHEMA))
-  // Each entry left out for a backslash in its name is named once, not at every capture.
+  // Each entry left out for its name (isPlainName) is named once, not at every capture.
   const warnedNames = new Set<string>()
   const warnBackslashName = (shown: string, root: string): void => {
     const key = JSON.stringify([root, shown])
     if (warnedNames.has(key)) return
     warnedNames.add(key)
-    logger.warn('History leaves out an entry whose name holds a backslash, which Buckle reads as a separator: it is not captured or restored, and a change to it is listed as not restorable', { root, name: shown })
+    logger.warn('History leaves out an entry whose name Buckle would read as another path (a backslash, or on Windows a dot or a space that ends it): it is not captured or restored, and a change to it is listed as not restorable', { root, name: shown })
   }
 
   function section<T>(body: (connection: DatabaseSync) => T): Promise<T> {

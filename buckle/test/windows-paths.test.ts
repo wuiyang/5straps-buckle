@@ -8,7 +8,7 @@ import { openHandleNoFollow, openNoFollow, openRealDirectory } from '../common/a
 import { resolveProgram, rootsOf } from '../common/domain/executable.js'
 import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox } from '../common/domain/filesystem-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { childPath, descent, isDriveRoot, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, resolvePath, typedPath, WHOLE_DRIVE, withForwardSlashes } from '../common/domain/paths.js'
+import { childPath, descent, isDriveRoot, isInside, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, resolvePath, typedPath, WHOLE_DRIVE, withForwardSlashes, workingDirectory } from '../common/domain/paths.js'
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
 import { clientDirectory } from '../cli/client.js'
 import { runInit } from '../cli/init.js'
@@ -21,7 +21,8 @@ import { openChangeHistory } from '../common/services/history/journal.js'
 import { applySnapshot, restoredLinkType, restoreLink, snapshot } from '../common/services/history/snapshot.js'
 import { collectShellHiddenPaths } from '../common/services/shell/shell-filesystem.js'
 import { createWorkbenchFiles } from '../common/services/workbench/files.js'
-import { searchInput } from '../common/services/packs/fs/schemas.js'
+import { findNames, listTree } from '../common/services/packs/fs/operations.js'
+import { findInput, listInput, searchInput } from '../common/services/packs/fs/schemas.js'
 import { searchContent } from '../common/services/packs/fs/search.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
@@ -67,18 +68,18 @@ describe('a path from Windows, read into pathe\'s form', () => {
   })
 
   /**
-   * How Windows opens a path: folded as node's own Windows normalize folds it, then each name trimmed, every dot and
-   * space off the last name and one dot off each name before it. Null where a name is left empty, `.`, or `..`, which
-   * Buckle refuses, as Windows would open the folder above or a name no folder holds.
+   * How Buckle reads a path on Windows: folded as node's own Windows normalize folds it, `.` and `..` alone, with no name
+   * trimmed, as Node opens every path with the `\\?\` prefix, which Windows reads as written. Null exactly where
+   * trimming the dots and spaces that end a name would change one, which Buckle refuses: a program it starts there, handed
+   * a path without that prefix (its working directory), trims them and reaches another name.
    */
-  function windowsOpens(typed: string): string | null {
-    const names = win32.normalize(typed).split('\\')
-    const trimmed = names.map((name, index) => ['', '.', '..'].includes(name) ? name : name.replace(index === names.length - 1 ? /[. ]+$/ : /\.$/, ''))
-    return trimmed.some((name, index) => ['', '.', '..'].includes(name) && name !== names[index]) ? null : trimmed.join('/')
+  function buckleReads(typed: string): string | null {
+    const normalized = win32.normalize(typed)
+    return normalized.split('\\').some(name => !['.', '..'].includes(name) && name.replace(/[. ]+$/, '') !== name) ? null : normalized.replaceAll('\\', '/')
   }
 
   // Every spelling of up to four pieces after `C:` and a separator, each a separator, a dot, two dots, a name, or a
-  // space, folded as node's own Windows normalize folds it and trimmed as Windows trims its names, or refused.
+  // space, folded as node's own Windows normalize folds it, or refused where a name ends in a dot or a space.
   it('folds every drive-rooted spelling as Windows does, whatever separators, dots, names, and spaces follow the drive', () => {
     const pieces = ['/', '\\', '.', '..', 'x', ' ', 'a b']
     const tails = (length: number): string[] => length === 0 ? [''] : tails(length - 1).flatMap(head => pieces.map(piece => head + piece))
@@ -88,9 +89,9 @@ describe('a path from Windows, read into pathe\'s form', () => {
       for (let length = 0; length <= 4; length++) {
         for (const tail of tails(length)) {
           const typed = `C:${separator}${tail}`
-          const opened = windowsOpens(typed)
+          const opened = buckleReads(typed)
           if (opened === null) {
-            expect(() => nativePath(typed, 'win32'), typed).toThrow(/holds a name Windows trims to nothing, `\.`, or `\.\.`/)
+            expect(() => nativePath(typed, 'win32'), typed).toThrow(/holds a name that ends in a dot or a space, which Windows programs read as another name/)
             refused++
           } else {
             expect(nativePath(typed, 'win32'), typed).toBe(opened)
@@ -101,7 +102,8 @@ describe('a path from Windows, read into pathe\'s form', () => {
     }
     expect(folded + refused).toBe(2 * (1 + 7 + 49 + 343 + 2401))
     expect(refused).toBeGreaterThan(0)
-    expect(nativePath('C:\\x.\\.github.\\workflows. ', 'win32')).toBe('C:/x/.github/workflows')
+    expect(nativePath('C:\\x.\\..\\.github\\workflows', 'win32')).toBe('C:/.github/workflows')
+    expect(() => nativePath('C:\\x.\\.github.\\workflows. ', 'win32')).toThrow(/ends in a dot or a space/)
   })
 })
 
@@ -231,32 +233,51 @@ describe('the agent\'s paths on a Windows workspace, imitated', () => {
     expect(nativePath('notes.txt:payload', 'linux')).toBe('notes.txt:payload')
   })
 
-  // Windows removes every dot and space that ends a path's last name, and one dot that ends each name before it: a write
-  // of `.github\workflows.\ci.yml` with its parents created made `.github\workflows\ci.yml`, while Buckle judged
-  // `workflows.`, which a write deny on an absent `.github/workflows` did not meet.
-  it('judges a name Windows trims where Windows opens it, so a deny on the folder it trims to is met', () => {
-    for (const named of ['.github\\workflows.\\ci.yml', '.github.\\workflows\\ci.yml. ', 'C:\\ws\\.github\\workflows.\\ci.yml . ', '.github\\workflows.\\x\\..\\ci.yml']) {
-      expect(view.resolve(named)).toBe('C:/ws/.github/workflows/ci.yml')
+  // Node opens every path with the `\\?\` prefix, so Buckle's own open of `.github\workflows.\ci.yml` reaches a literal
+  // `workflows.`. A program handed a path without it is another matter: a child's working directory reaches
+  // CreateProcessW unprefixed, which trims the dots and spaces that end a name, so git started in a judged `.ssh.\repo`
+  // ran in `.ssh\repo`. A name that ends in a dot or a space is refused, never trimmed to a sibling's.
+  it('refuses a path holding a name that ends in a dot or a space, wherever it is and whatever trimming would leave', () => {
+    for (const named of ['.github\\workflows.\\ci.yml', '.github.\\workflows\\ci.yml. ', 'C:\\ws\\.github\\workflows.\\ci.yml . ', '.github\\workflows .\\ci.yml', 'secret \\', 'secret..\\', '.ssh...\\repo', 'notes\\...', '.github\\.. ', 'src\\ ', 'a\\...\\b', 'C:\\ws\\. .', 'a \\b']) {
+      expect(() => nativePath(named, 'win32'), named).toThrow(`${named} holds a name that ends in a dot or a space, which Windows programs read as another name, so Buckle refuses it rather than read it as another path`)
+      expect(() => view.resolve(named), named).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
     }
-    expect(view.resolve('.github\\workflows .\\ci.yml')).toBe('C:/ws/.github/workflows /ci.yml')
-    // realpathSync.native answers as Windows would: the drive exists, and `.github/workflows` does not yet.
-    vi.spyOn(realpathSync, 'native').mockImplementation(((path: string) => {
-      if (path === 'C:/') return 'C:\\'
-      throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' })
-    }) as typeof realpathSync.native)
-    try {
-      const policy = WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: '.github/workflows', write: 'deny' }] } })
-      expect(filesystemPathDecision({ root: 'C:/ws', path: view.resolve('.github\\workflows.\\ci.yml'), policy, operation: 'write', platform: 'win32' })).toBe('deny')
-    } finally { vi.restoreAllMocks() }
+    // `.` and `..` are still folded, and a name with a dot or a space inside it is kept.
+    expect(view.resolve('.github\\workflows.\\..\\ci.yml')).toBe('C:/ws/.github/ci.yml')
+    expect(view.resolve('a b\\c.d\\.e')).toBe('C:/ws/a b/c.d/.e')
     // Linux and macOS keep every name as written.
     expect(nativePath('/ws/src./a.ts. ', 'linux')).toBe('/ws/src./a.ts. ')
   })
 
-  it('refuses a name Windows trims to nothing, `.`, or `..`, which would open the folder above or no name written', () => {
-    for (const named of ['notes\\...', '.github\\.. ', 'src\\ ', 'a\\...\\b', 'C:\\ws\\. .']) {
-      expect(() => nativePath(named, 'win32')).toThrow(/holds a name Windows trims to nothing/)
-      expect(() => view.resolve(named)).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
-    }
+  // The system's answers are read the same way: a real path, a link's target, or the working directory with such a name
+  // is refused, never renamed (a root `C:\code\app.` was judged as its sibling `app`).
+  it('refuses such a name in a real path, a link target, or the working directory', () => {
+    expect(() => nativePath('C:\\code\\app.', 'win32')).toThrow(/ends in a dot or a space/)
+    expect(() => withForwardSlashes('..\\.ssh.\\repo', 'win32')).toThrow(/ends in a dot or a space/)
+    expect(withForwardSlashes('..\\a\\..\\b', 'win32')).toBe('../a/../b')
+    vi.spyOn(process, 'cwd').mockReturnValue('C:\\ws\\app ')
+    try { expect(() => workingDirectory('win32')).toThrow(/ends in a dot or a space/) } finally { vi.restoreAllMocks() }
+    expect(isPlainName('app.', 'win32')).toBe(false)
+    expect(isPlainName('app ', 'win32')).toBe(false)
+    expect(isPlainName('.env', 'win32')).toBe(true)
+    expect(isPlainName('app.', 'linux')).toBe(true)
+  })
+
+  it('leaves an entry with such a name out of a listing, a name search, and a content search', async () => {
+    const root = scratch()
+    for (const name of ['app.', 'notes ', 'kept.txt']) writeFileSync(join(root, name), 'needle')
+    const context = { paths: createPathView({ root, mount: null }), platform: 'win32' as const }
+    const listed = await listTree(listInput.parse({ path: '.' }), context) as { entries: Array<{ name: string }> }
+    expect(listed.entries.map(entry => entry.name)).toEqual(['kept.txt'])
+    expect(await findNames(findInput.parse({ pattern: '*' }), context)).toMatchObject({ matches: ['kept.txt'] })
+    const match = JSON.stringify({ type: 'match', data: { lines: { text: 'needle\n' }, line_number: 1, submatches: [{ start: 0, end: 6 }] } })
+    const answer = (stdout: string) => ({ exitCode: 0, signal: null, stdout, stderr: '', truncated: false, timedOut: false })
+    const found = await searchContent({
+      args: searchInput.parse({ pattern: 'needle' }), paths: context.paths, ripgrep: '/usr/bin/rg', protectedRoots: [], platform: 'win32',
+      runProcess: async request => answer(request.args[0] === '--files' ? '.\\app.\0.\\notes \0.\\kept.txt\0' : `${match}\n`),
+      timeoutMs: 5_000, signal: AbortSignal.timeout(5_000), authorizeRead: async () => true,
+    })
+    expect(found).toMatchObject({ matches: [{ path: '.\\kept.txt' }], excludedFiles: 2 })
   })
 })
 
@@ -461,7 +482,18 @@ describe('history on Windows, imitated', () => {
     mkdirSync(join(root, 'sub'))
     // Joined by hand: pathe's join would read the backslashes as separators.
     writeFileSync(`${root}/sub/inside\\..\\..\\x`, 'literal')
-    expect(() => snapshot({ roots: [root], excluded: [], maxBytes: 1_000_000, save: () => {} })).toThrow('History cannot capture sub/inside\\..\\..\\x, whose name holds a backslash, which Buckle reads as a separator')
+    expect(() => snapshot({ roots: [root], excluded: [], maxBytes: 1_000_000, save: () => {} })).toThrow('History cannot capture sub/inside\\..\\..\\x, whose name Buckle would read as another path: a backslash, a separator to Buckle, or on Windows a dot or a space that ends it')
+  })
+
+  it('leaves out a name that ends in a dot or a space, and names it from its root as listed', () => {
+    const root = scratch()
+    mkdirSync(join(root, 'sub'))
+    for (const name of ['app.', 'notes ', 'kept.txt']) writeFileSync(join(root, 'sub', name), name)
+    const named: string[] = []
+    const captured = snapshot({ roots: [root], excluded: [], maxBytes: 1_000_000, save: () => {}, onBackslashName: shown => { named.push(shown) }, platform: 'win32' })
+    expect(named.sort()).toEqual(['sub/app.', 'sub/notes '])
+    expect(captured[join(root, 'sub', 'app.')]).toMatchObject({ kind: 'excluded' })
+    expect(captured[join(root, 'sub', 'kept.txt')]).toMatchObject({ kind: 'file' })
   })
 })
 
@@ -485,7 +517,7 @@ describe('history beside a name holding a backslash, on Linux', () => {
       expect(second!.notRestorable).toEqual([`${workspace}/made/a\\b`])
       const named = warn.mock.calls.filter(([message]) => message.startsWith('History leaves out')).map(([, fields]) => fields)
       expect(named).toEqual([{ root: workspace, name: 'inside\\..\\..\\x' }, { root: workspace, name: 'made/a\\b' }])
-      await expect(history.restore(second!.id)).rejects.toThrow('Restore conflict: a directory holds a name with a backslash, which history does not capture')
+      await expect(history.restore(second!.id)).rejects.toThrow('Restore conflict: a directory holds a name Buckle would read as another path, which history does not capture')
       expect(readFileSync(`${workspace}/made/a\\b`, 'utf8')).toBe('made')
       expect(readFileSync(`${workspace}/inside\\..\\..\\x`, 'utf8')).toBe('literal')
     } finally {
@@ -501,7 +533,7 @@ describe('history beside a name holding a backslash, on Linux', () => {
     writeFileSync(`${workspace}/sub/a\\b`, '')
     await expect(collectShellHiddenPaths({ roots: [workspace], protectedPaths: [], signal: AbortSignal.timeout(5_000) })).rejects.toThrow('The workspace holds sub/a\\b, a name with a backslash, which Buckle cannot hide from shell commands')
     const files = createWorkbenchFiles({ sourceRoot: workspace, directory: join(root, 'workbenches'), maxBytes: 1_000_000, protectedRoots: [], authorizePath: () => true, ripgrep: null })
-    expect(() => files.prepare('staged')).toThrow('The workspace holds sub/a\\b, a name with a backslash, which the staged editor cannot judge')
+    expect(() => files.prepare('staged')).toThrow('The workspace holds sub/a\\b, a name Buckle would read as another path, which the staged editor cannot judge')
   })
 })
 
@@ -598,15 +630,16 @@ describe('a whole drive as a Buckle root on Windows, imitated', () => {
     expect(isDriveRoot('/', 'linux')).toBe(false)
   })
 
-  // Windows trims the dots and spaces that end a name, once `.` and `..` are folded, so each of these first opens the
-  // drive's root there. `.. ` is no `..` to Windows, so `C:\x\.. ` is `C:\x\`, a folder.
-  it('is named with the dots and spaces that end a name, as Windows trims them', () => {
-    for (const drive of ['C:\\ ', 'C:/.', 'C:\\...', 'C:\\. .', 'D:\\x\\..\\ .', '\\ ', 'D:\\.. .', typedPath('E:\\x.\\..', 'win32')]) expect(isDriveRoot(drive, 'win32')).toBe(true)
-    for (const folder of ['C:\\x.', 'C:\\x ', 'C:\\x\\. ', 'C:\\x. \\y', 'C:\\x\\.. ']) expect(isDriveRoot(folder, 'win32')).toBe(false)
+  // `.` and `..` are folded first, so `C:\x\..` is the drive's root. A spelling with a name that ends in a dot or a space,
+  // such as `C:\ ` or `C:\x\.. ` (`.. ` is no `..`), is refused before it is judged at all, wherever it would land.
+  it('is named once `.` and `..` are folded, and a name that ends in a dot or a space is refused first', () => {
+    for (const drive of ['C:/.', 'C:\\x\\..', typedPath('E:\\x.\\..', 'win32')]) expect(isDriveRoot(drive, 'win32')).toBe(true)
     expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: 'E:\\x.\\..' }, 'win32')).toThrow(`BUCKLE_STATE_DIR is E:/: ${refused}`)
-    // A name Windows trims to nothing is refused before it is judged at all, wherever it would land.
-    expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: 'E:\\ ' }, 'win32')).toThrow(/E:\\ {2}holds a name Windows trims to nothing/)
-    expect(() => clientDirectory({ BUCKLE_CLIENT_DIR: 'D:\\.. .' }, 'win32')).toThrow(/D:\\\.\. \. holds a name Windows trims to nothing/)
+    for (const named of ['C:\\ ', 'C:\\...', 'C:\\. .', 'D:\\x\\..\\ .', '\\ ', 'D:\\.. .', 'C:\\x.', 'C:\\x\\.. ']) {
+      expect(() => typedPath(named, 'win32'), named).toThrow(/holds a name that ends in a dot or a space/)
+    }
+    expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: 'E:\\ ' }, 'win32')).toThrow(/E:\\ {2}holds a name that ends in a dot or a space/)
+    expect(() => clientDirectory({ BUCKLE_CLIENT_DIR: 'D:\\.. .' }, 'win32')).toThrow(/D:\\\.\. \. holds a name that ends in a dot or a space/)
   })
 
   it('is refused as the state directory or the client directory where it really is, through a link', () => {
