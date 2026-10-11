@@ -55,14 +55,14 @@ export const ISOLATION_ENVIRONMENT: Record<string, string> = {
  * cannot win it back.
  *
  * Deliberately not overridden, with the reason each is safe to leave:
- * - `http.sslBackend`, `credential.useHttpPath` — neither names a path to run: one picks a TLS
+ * - `http.sslBackend`, `credential.useHttpPath`: neither names a path to run: one picks a TLS
  *   library compiled into git, the other only changes how a helper keys its lookup, and the
  *   helper list is reset to empty here anyway.
- * - `merge.tool`, `diff.tool`, `difftool.*`, `mergetool.*` — only `git mergetool` and
+ * - `merge.tool`, `diff.tool`, `difftool.*`, `mergetool.*`: only `git mergetool` and
  *   `git difftool` run them, and no pack invokes either.
- * - `core.sshCommand`, `core.gitProxy` — `classifyRemote` refuses an ssh or git:// origin, so
+ * - `core.sshCommand`, `core.gitProxy`: `classifyRemote` refuses an ssh or git:// origin, so
  *   neither transport is ever started, and the read-only git pack reaches no remote at all.
- * - `remote.<name>.receivepack` and `uploadpack` — git keeps the *first* value it reads, so this
+ * - `remote.<name>.receivepack` and `uploadpack`: git keeps the *first* value it reads, so this
  *   scope cannot reset them; `git_push` passes `--receive-pack` on the command line, which does
  *   win, and no forge tool fetches, so `uploadpack` is never consulted.
  * - `https.proxy` is reset below although git reads the `http` section for https URLs too; the

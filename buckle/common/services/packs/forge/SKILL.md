@@ -23,7 +23,7 @@ variable is missing.
 Because git hands its environment to anything it runs, every git call here runs with hooks and
 configs disabled: `core.hooksPath` points at an empty directory Buckle owns, the system and
 global configs are out of reach, and every repository key that names a program or re-routes a
-request is reset — `credential.helper`, `core.askpass`, the signing keys, the editors, the pager,
+request is reset: `credential.helper`, `core.askpass`, the signing keys, the editors, the pager,
 `diff.external`, and the proxy and TLS keys, at the origin's own URL scope as well as plainly. A
 `pre-commit` or `pre-push` hook in the workspace will not run for these tools; run it yourself
 with `shell_exec` if you want it.
@@ -31,7 +31,7 @@ with `shell_exec` if you want it.
 Two things are refused rather than reset, because config cannot reach them. A repository that
 defines a `filter` driver, or gives a committed path a `filter=` attribute, is refused by
 `git_commit`: a clean filter is a program `git add` runs, and `filter.<name>.*` is a whole config
-section no override can empty. A repository using git-lfs is refused for that reason — commit
+section no override can empty. A repository using git-lfs is refused for that reason. Commit
 through `shell_exec` instead. And `remote.origin.receivepack` is first-wins in git, so `git_push`
 passes `--receive-pack` on the command line, where it does win. For a repository on this
 filesystem that is git itself with the same resets as `-c` options, so the destination's own hooks

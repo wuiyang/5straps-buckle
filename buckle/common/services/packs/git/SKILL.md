@@ -27,9 +27,9 @@ and ask for approval first. That is deliberate.
 ## The repository's own git config cannot run programs here
 
 Every call runs with the system and global configs out of view, hooks pointed at an empty
-Buckle-owned directory, and every repository key that names a program — `core.fsmonitor`, a
-pager, an editor, a credential helper, an external diff or textconv driver, a clean or smudge
-filter — emptied or refused. A read tool never runs workspace code.
+Buckle-owned directory, and every repository key that names a program emptied or refused:
+`core.fsmonitor`, a pager, an editor, a credential helper, an external diff or textconv driver,
+and a clean or smudge filter. A read tool never runs workspace code.
 
 The one visible effect: where a repository defines a content filter, `git_diff` and `git_blame`
 show the bytes on disk rather than the converted form, so a Git LFS path reads as its pointer.

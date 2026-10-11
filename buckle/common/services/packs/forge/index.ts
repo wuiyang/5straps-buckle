@@ -437,8 +437,8 @@ function assertNoRewrite(input: { configured: PushUrl; actual: PushUrl }): void 
 
 /**
  * What the one git call that reaches the network is configured with. The credential is scoped to
- * the single origin URL it belongs to, so a redirect to another repository — even on the same
- * host — is served no header at all, and the proxy and TLS resets are repeated at that same scope
+ * the single origin URL it belongs to, so a redirect to another repository, even on the same
+ * host, is served no header at all, and the proxy and TLS resets are repeated at that same scope
  * because a URL-scoped key in the repository config outranks the plain one. On the forge host the
  * credential is the forge token; elsewhere it is the userinfo the approved origin names, since git is
  * handed the URL without it and isolation leaves git no helper or prompt to ask (review M4).
