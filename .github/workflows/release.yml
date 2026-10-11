@@ -155,8 +155,11 @@ jobs:
             status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "https://registry.npmjs.org/@5straps%2f${name}/${VERSION}")"
             case "$status" in
               200) echo "@5straps/${name}@${VERSION} is already on npm; skipping it" ;;
-              # The leading ./ makes npm read a file, never a GitHub owner/repository shorthand.
+              # The approver compares this integrity with the one npm lists for the stage before
+              # approving. The leading ./ makes npm read a file, never a GitHub owner/repository shorthand.
               404)
+                integrity="sha512-$(openssl dgst -sha512 -binary "./release/5straps-${name}-${VERSION}.tgz" | openssl base64 -A)"
+                echo "- @5straps/${name}@${VERSION}: integrity ${integrity}" | tee -a "$GITHUB_STEP_SUMMARY"
                 npm stage publish "./release/5straps-${name}-${VERSION}.tgz" --access public | tee -a "$GITHUB_STEP_SUMMARY"
                 all_public=false
                 ;;
@@ -171,7 +174,7 @@ jobs:
             echo "All three packages at v${VERSION} are public. The GitHub release can now be created." >> "$GITHUB_STEP_SUMMARY"
           else
             printf '%s\n' 'Approve the staged packages on npmjs.com, or run `npm stage approve <stage-id>` from an authenticated local CLI.' >> "$GITHUB_STEP_SUMMARY"
-            echo "Approve protocol, runtime, then buckle. After all three are public and main still names this release commit, choose Re-run all jobs on this run to create the GitHub release." >> "$GITHUB_STEP_SUMMARY"
+            echo "Approve protocol, runtime, then buckle, each only when the integrity npm lists for its stage matches its line above. After all three are public, choose Re-run all jobs on this run to create the GitHub release." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   github-release:

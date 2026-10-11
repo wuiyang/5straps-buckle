@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -91,7 +92,8 @@ const SAME_COMMIT = [
 
 // The stage job's allowlist. Its actions are setup-node and download-artifact; its keys are the
 // ones it has now, so a `shell:` or an environment variable such as NODE_OPTIONS fails; and each shell
-// line is the pinned CLI bootstrap, version or registry check, tarball staging, summary, or plain control.
+// line is the pinned CLI bootstrap, version or registry check, tarball integrity, tarball staging,
+// summary, or plain control.
 const STAGE_ACTIONS = ['actions/setup-node', 'actions/download-artifact']
 const STAGE_KEYS = new Set(['needs', 'if', 'runs-on', 'timeout-minutes', 'environment', 'permissions', 'id-token', 'outputs', 'all_public', 'steps', 'uses', 'with', 'node-version', 'registry-url', 'package-manager-cache', 'name', 'path', 'run', 'env', 'VERSION', 'id'])
 const STAGE_COMMANDS = [
@@ -99,13 +101,15 @@ const STAGE_COMMANDS = [
   'npm_version="$(npm --version)"',
   `if ! printf '11.15.0\\n%s\\n' "$npm_version" | sort --version-sort --check=quiet; then`,
   `status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "https://registry.npmjs.org/@5straps%2f\${name}/\${VERSION}")"`,
+  `integrity="sha512-$(openssl dgst -sha512 -binary "./release/${tarballOf('@5straps/${name}', '${VERSION}')}" | openssl base64 -A)"`,
+  'echo "- @5straps/${name}@${VERSION}: integrity ${integrity}" | tee -a "$GITHUB_STEP_SUMMARY"',
   `npm stage publish "./release/${tarballOf('@5straps/${name}', '${VERSION}')}" --access public | tee -a "$GITHUB_STEP_SUMMARY"`,
   'all_public=true',
   'all_public=false',
   'echo "all_public=${all_public}" >> "$GITHUB_OUTPUT"',
   'echo "All three packages at v${VERSION} are public. The GitHub release can now be created." >> "$GITHUB_STEP_SUMMARY"',
   "printf '%s\\n' 'Approve the staged packages on npmjs.com, or run `npm stage approve <stage-id>` from an authenticated local CLI.' >> \"$GITHUB_STEP_SUMMARY\"",
-  'echo "Approve protocol, runtime, then buckle. After all three are public and main still names this release commit, choose Re-run all jobs on this run to create the GitHub release." >> "$GITHUB_STEP_SUMMARY"',
+  'echo "Approve protocol, runtime, then buckle, each only when the integrity npm lists for its stage matches its line above. After all three are public, choose Re-run all jobs on this run to create the GitHub release." >> "$GITHUB_STEP_SUMMARY"',
 ]
 const SHELL_CONTROL = [
   /^(?:then|else|fi|done|esac|;;|(?:\d+|\*)\)|exit 1)$/,
@@ -305,13 +309,17 @@ interface StageAnswers {
   version?: string
 }
 
+/** What each fake tarball holds, and the integrity npm would record for it. */
+const tarball = (name: string) => `the ${name} tarball`
+const integrityOf = (name: string) => `sha512-${createHash('sha512').update(tarball(name)).digest('base64')}`
+
 function runStaging(answers: StageAnswers = {}) {
   const root = scratchDirectory('stage-workflow-')
   const bin = join(root, 'bin')
   mkdirSync(bin)
   mkdirSync(join(root, 'release'))
   for (const name of ['protocol', 'runtime', 'buckle']) {
-    if (name !== answers.missing) writeFileSync(join(root, `release/5straps-${name}-0.1.2.tgz`), '')
+    if (name !== answers.missing) writeFileSync(join(root, `release/5straps-${name}-0.1.2.tgz`), tarball(name))
   }
   const executable = (name: string, source: string) => {
     const file = join(bin, name)
@@ -357,10 +365,13 @@ describe('executing the npm staging shell', () => {
     expect(result.status).toBe(0)
     expect(result.calls).toEqual(['protocol', 'runtime', 'buckle'].map(name => ['stage', 'publish', `./release/5straps-${name}-0.1.2.tgz`, '--access', 'public']))
     expect(result.output).toBe('all_public=false\n')
-    for (const name of ['protocol', 'runtime', 'buckle']) expect(result.summary).toContain(`staged with id stage-${name}`)
+    // Each tarball's integrity sits beside its package, name, and version, just above npm's stage line.
+    for (const name of ['protocol', 'runtime', 'buckle']) expect(result.summary).toContain(`- @5straps/${name}@0.1.2: integrity ${integrityOf(name)}\n+ @5straps/${name}@0.1.2 (staged with id stage-${name})`)
     expect(result.summary).toContain('`npm stage approve <stage-id>`')
-    expect(result.summary).toContain('main still names this release commit')
-    expect(result.summary).toContain('Re-run all jobs')
+    expect(result.summary).toContain('each only when the integrity npm lists for its stage matches its line above')
+    expect(result.summary).toContain('After all three are public, choose Re-run all jobs on this run')
+    // A re-run keeps the run's commit, so main may move once staging has started.
+    expect(result.summary).not.toContain('main still')
   })
 
   it('allows GitHub finalization only when every package version is already public', () => {
@@ -376,6 +387,8 @@ describe('executing the npm staging shell', () => {
     expect(result.status).toBe(0)
     expect(result.calls).toEqual([['stage', 'publish', './release/5straps-buckle-0.1.2.tgz', '--access', 'public']])
     expect(result.output).toBe('all_public=false\n')
+    expect(result.summary.match(/: integrity sha512-/g)).toHaveLength(1)
+    expect(result.summary).toContain(`- @5straps/buckle@0.1.2: integrity ${integrityOf('buckle')}`)
   })
 
   it('keeps earlier stage IDs when a later stage fails and does not finalize', () => {
