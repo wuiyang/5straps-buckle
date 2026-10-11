@@ -12,9 +12,9 @@ disk.
   none. CI runs on Linux only, x64 and arm64; the macOS column below comes from the code.
 
 On Windows, Buckle starts, its file tools work in the workspace, and Ctrl-C, Ctrl-Break, or
-closing its console stops it after its close steps. Windows support comes from reading the code
-and from Linux tests that imitate Windows paths, signals, and file locks; it has not run on a
-Windows machine, and CI does not run there. [Known limits](known-limits.md#paths-and-windows)
+closing its console stops it after its close steps. Windows is experimental: it rests on reading
+the code and on Linux tests that imitate Windows paths, signals, and file locks, not on a run on
+Windows, and CI does not run there. [Known limits](known-limits.md#paths-and-windows)
 lists the differences.
 
 Buckle looks for these programs on `PATH`. Without one, the matching pack or tool is withheld,
