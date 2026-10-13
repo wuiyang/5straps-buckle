@@ -154,16 +154,16 @@ describe('the browser the owner\'s settings choose', () => {
     const description = (mode: BrowserMode) => createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { mode }, runProcess: async () => stubResult() }).tools[0]!.capability.description
     expect(description({ kind: 'fresh' })).toBe('Run one agent-browser command against an isolated browser session; close discards browser state.')
     expect(description(PROFILE_MODE)).toContain('logins and cookies outlive close')
-    expect(description(ATTACHED)).toContain('every session shares that browser and its logins, close only disconnects')
+    expect(description(ATTACHED)).toContain('every session shares that browser and its logins, and close only disconnects')
     // The approved list does not hold inside these browsers, and the description says what still is judged.
-    for (const mode of [PROFILE_MODE, ATTACHED]) expect(description(mode)).toContain('Buckle judges only the page each command names')
-    expect(description({ kind: 'fresh' })).not.toContain('judges only the page')
+    for (const mode of [PROFILE_MODE, ATTACHED]) expect(description(mode)).toContain('Buckle still judges the page each command names, every file path, and every flag; only where a page goes after it loads is no longer held to the list')
+    expect(description({ kind: 'fresh' })).not.toContain('no longer held to the list')
     expect(description(ATTACHED)).not.toContain('9222')
   })
 
   it('tells the agent in its skill that the list does not hold in a profile folder or an attached browser', () => {
     const skill = loadPackSkill('browser').content.replace(/\s+/g, ' ')
-    expect(skill).toContain('That holds for a fresh browser only: agent-browser refuses the list with a profile folder or an attached browser, so there only the page a command names is judged')
+    expect(skill).toContain('That holds for a fresh browser only: agent-browser refuses the list with a profile folder or an attached browser. There Buckle still judges the page each command names, every file path, and every flag; only where a page goes after it loads is no longer held to the list')
   })
 
   it('relaunch notices come from a fresh browser alone, as only a fresh browser is passed the hosts', async () => {

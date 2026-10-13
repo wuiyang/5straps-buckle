@@ -34,7 +34,8 @@ import saved state.
 
 The browser runs headless unless the node sets `BUCKLE_BROWSER_HEADED=true`, and it is held by a
 background daemon that outlives each call, so a later command reuses the browser already running.
-Close the session to force a fresh launch after changing that setting.
+After the node restarts with another setting, the next call closes the old browser and starts one
+under the new setting.
 
 ## What the browser may not reach
 
@@ -48,9 +49,10 @@ a command names is judged by Buckle's rules, down to its port and path. When an 
 set (the node's or the workspace's), Buckle also starts the browser with the hosts both lists
 allow as agent-browser's `--allowed-domains`, so clicks, redirects, and page requests to other
 hosts are blocked inside the browser. That holds for a fresh browser only: agent-browser refuses
-the list with a profile folder or an attached browser, so there only the page a command names is
-judged, and every login in that browser is within reach. Use only the logins the task needs. The
-containment is by host: for an entry such as `localhost:3000` or `https://app.example.com/admin`,
+the list with a profile folder or an attached browser. There Buckle still judges the page each
+command names, every file path, and every flag; only where a page goes after it loads is no longer
+held to the list, and every login in that browser is within reach. Use only the logins the task
+needs. The containment is by host: for an entry such as `localhost:3000` or `https://app.example.com/admin`,
 the port and path hold for the page a command names, but inside the page that host is reachable
 on any port and path. When the node and
 workspace lists share no host and port, the browser does not start, and the refusal names the
@@ -67,8 +69,9 @@ rather than guessing a second spelling. `--proxy`, `--proxy-bypass`, and `--allo
 because Buckle owns the network policy. Also refused on purpose are `--profile`, `--executable-path`,
 `--args`, `--extension`, `--init-script`, `--config`, `--cdp`, `--auto-connect`, `--provider`,
 `--ca-cert`, `--allow-file-access`, and the flags that read or write an unjudged path,
-`--screenshot-dir`, `--download-path`, `--params`, and `--payload`. `--session`, `--state`, and
-`--restore` are refused by name too: the owner's settings alone choose the browser.
+`--screenshot-dir`, `--download-path`, `--params`, and `--payload`. `--session`, `--namespace`,
+`--restore`, `--restore-save`, `--state`, `--load`, `--credential-provider`, and `--action-policy`
+are refused by name too: the owner's settings alone choose the browser and its session.
 
 The runtime ignores ambient `AGENT_BROWSER_*` settings and uses an explicit empty configuration.
 Browser file operations require explicit paths; screenshots and downloads are checkpointed.
@@ -84,8 +87,11 @@ Never guess a ref. Take a snapshot and use what it returns.
 
 ## Sessions
 
-Pass `session` to name a browser within the current caller. Buckle scopes the alias to the supplied caller and optional stage ID. A new stage starts
-a separate browser; labels group work and are not authentication identities. Close each browser when the
-task ends. State expires after five idle minutes; close explicitly when running headed. On a
-profile folder, `session` names no separate browser, and cookies and logins stay in the folder; on
-an attached browser, idle expiry only disconnects.
+Pass `session` to name a browser within the current caller. Buckle scopes the alias to the
+supplied caller and optional stage ID. A new stage starts a separate browser; on an attached
+browser a stage or alias is a separate connection to the owner's one Chrome, not a separate
+browser. Labels group work and are not authentication identities. Close each browser when the task
+ends. State expires after five idle minutes; close explicitly when running headed. On a profile
+folder, no stage or `session` names a separate browser, cookies and logins stay in the folder, and `close`
+ends the browser for every session, so close it only when the work is done; on an attached
+browser, idle expiry only disconnects.

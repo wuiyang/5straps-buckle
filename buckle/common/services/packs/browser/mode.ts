@@ -29,8 +29,8 @@ const MODE_SETTINGS: Record<BrowserModeName, string | null> = { fresh: null, pro
 /** Fixed text per mode, so the agent reads what close keeps and what the browser holds to before it calls. */
 export const MODE_DESCRIPTIONS: Record<BrowserModeName, string> = {
   fresh: 'Run one agent-browser command against an isolated browser session; close discards browser state.',
-  profile: 'Run one agent-browser command in the one browser on the owner\'s profile folder, which every session shares; logins and cookies outlive close, and Buckle judges only the page each command names.',
-  attached: 'Run one agent-browser command in the owner\'s own Chrome over its DevTools port; every session shares that browser and its logins, close only disconnects, and Buckle judges only the page each command names.',
+  profile: 'Run one agent-browser command in the one browser on the owner\'s profile folder, which every session shares; logins and cookies outlive close. Buckle still judges the page each command names, every file path, and every flag; only where a page goes after it loads is no longer held to the list.',
+  attached: 'Run one agent-browser command in the owner\'s own Chrome over its DevTools port; every session shares that browser and its logins, and close only disconnects. Buckle still judges the page each command names, every file path, and every flag; only where a page goes after it loads is no longer held to the list.',
 }
 
 /**

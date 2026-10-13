@@ -3,8 +3,9 @@
 Buckle, the approval and sandbox runtime on your machine, gives every agent session a fresh
 browser by default: no cookies, no saved logins, and nothing kept after `close`. Three node
 settings let the owner choose otherwise: a profile folder that keeps logins, your own Chrome
-attached over its DevTools port, or extra Chromium arguments. Only the environment file sets them,
-and nothing an agent sends can select one. Restart `buckle serve` or `buckle mcp` after a change.
+attached over its DevTools port, or extra Chromium arguments. Only the owner's settings set them,
+in `buckle.env` or the shell Buckle starts from, whose value wins; nothing an agent sends can
+select one. Restart `buckle serve` or `buckle mcp` after a change.
 
 ## Logging in without a setting
 
@@ -104,8 +105,9 @@ Still judged in every mode:
 
 - the page each command names, by the network rules down to its port and path;
 - every file a screenshot, PDF, download, or upload names, by the path rules;
-- every flag, refused by name unless Buckle knows it. `--cdp`, `--auto-connect`, `--profile`,
-  `--args`, `--state`, `--restore`, and `--session` stay refused to the agent.
+- every flag, refused by name unless Buckle knows it. `--cdp`, `--auto-connect`, `--profile`, and
+  `--args` stay refused to the agent, and so do `--session`, `--namespace`, `--restore`,
+  `--restore-save`, `--state`, `--load`, `--credential-provider`, and `--action-policy`.
 
 No longer judged in those modes: where a page goes after it loads, and what it requests. Every
 login kept in that profile folder or that browser is within the agent's reach, which is why it
