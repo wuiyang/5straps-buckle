@@ -162,6 +162,8 @@ function argumentPaths(args: string, platform: NodeJS.Platform): string[] {
  * every root, and the folder, as named and where it lands, holds none. A path Buckle cannot read or follow is null too.
  */
 function judgedFolder(path: string, roots: readonly string[], platform: NodeJS.Platform): string | null {
+  // On Windows a path rooted at a slash alone names whichever drive is current, so no one place (isFullPath).
+  if (platform === 'win32' && /^[/\\](?![/\\])/.test(path)) return null
   let named: string
   let places: string[]
   try {

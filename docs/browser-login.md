@@ -9,8 +9,8 @@ select one. Restart `buckle serve` or `buckle mcp` after a change.
 
 ## Logging in without a setting
 
-Often no setting is needed. With `BUCKLE_BROWSER_HEADED=true` the browser opens a visible window,
-and a person logs in there by hand. The agent never sees the credentials, only the pages after.
+With `BUCKLE_BROWSER_HEADED=true` the browser opens a visible window, and a person logs in there
+by hand. The agent never sees the credentials, only the pages after.
 That session lives until `close`, 5 idle minutes, or a change to the approved hosts, which
 relaunches the browser.
 
@@ -33,7 +33,7 @@ that does not exist yet. A path an argument names, such as `--load-extension=<fo
 the same way. The browser pack is then withheld, and its reason names the setting, never the path.
 `buckle manifest` shows it.
 
-For example, to pass the argument most often asked for:
+For example:
 
 ```bash
 BUCKLE_BROWSER_ARGS=--disable-blink-features=AutomationControlled
@@ -44,8 +44,9 @@ refuses to start, naming the setting, when the value holds:
 
 - an argument that is not a switch, such as a page, a path, or what follows a comma inside a switch;
   a `/` starts a switch on Windows alone;
-- a value that names a path without naming one place, such as `./ext`, `ext/sub`, or `~/ext`:
-  give the absolute path, which is judged like the profile folder;
+- a path spelled with a `..` segment, a leading `./` or `~`, or on Windows a drive or a root alone:
+  give the absolute path, which is judged like the profile folder. A bare relative name, such as
+  `ext`, resolves against Buckle's browser state directory, where no agent writes;
 - `--user-data-dir` or `--profile-directory`: name a profile folder with `BUCKLE_BROWSER_PROFILE`;
 - `--restore-last-session`, `--restore-session`, `--app`, `--app-id`,
   `--app-launch-url-for-shortcuts-menu-item`, or `--load-and-launch-app`, which restore or open

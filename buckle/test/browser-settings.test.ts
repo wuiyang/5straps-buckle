@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ARGS_UNTRUSTED, browserArgumentsRefusal } from '../common/domain/browser-arguments.js'
+import { browserArgumentsRefusal } from '../common/domain/browser-arguments.js'
 import { rootsOf } from '../common/domain/executable.js'
 import { actionsPath, loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
@@ -90,19 +90,30 @@ describe('reading the browser settings', () => {
     expect(load).not.toThrow('never-shown')
   })
 
+  // Read as on Linux whatever host runs the test, where a leading slash is never a switch.
   it.each(['https://never-shown.example', '--lang=en-GB,never-shown.example', '/never-shown/folder', '/never-shown', '/lang=en-GB', 'file:///never-shown', '--window-size=1280,720'])('refuses %j, which is not a switch off Windows, without echoing it', value => {
+    const refusal = browserArgumentsRefusal(value, 'linux')
+    expect(refusal).toContain('BUCKLE_BROWSER_ARGS holds an argument that is not a switch, such as a page, a path, or the part of one switch after a comma')
+    expect(refusal).not.toContain('never-shown')
+  })
+
+  const UNPLACED = 'BUCKLE_BROWSER_ARGS names a path by a spelling Buckle cannot place: a .. segment, a leading ./ or ~, or on Windows a drive or a root alone; give its absolute path, which Buckle judges where it lies'
+
+  // A .. climbs out of Buckle's browser state directory, where Chrome resolves a relative value, and ~ is the home folder.
+  it.each(['./never-shown', '../never-shown', 'a/../never-shown', 'never-shown/..', '~/never-shown', '~', '.\\never-shown', 'a\\..\\never-shown'])('refuses --load-extension=%s with its own fixed text', value => {
+    expect(browserArgumentsRefusal(`--lang=en-GB,--load-extension=${value}`, 'linux')).toBe(UNPLACED)
+  })
+
+  it('refuses a relative path at start through the node\'s configuration', () => {
     const { environment } = base()
-    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value })
-    expect(load).toThrow('BUCKLE_BROWSER_ARGS holds an argument that is not a switch, such as a page, a path, or the part of one switch after a comma')
+    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: '--disk-cache-dir=../never-shown' })
+    expect(load).toThrow(UNPLACED)
     expect(load).not.toThrow('never-shown')
   })
 
-  // Chrome resolves such a value against its working directory, Buckle's browser state, or the home folder.
-  it.each(['--load-extension=never-shown/ext', '--disk-cache-dir=./never-shown', '--load-extension=../../never-shown', '--load-extension=~/never-shown', '--disk-cache-dir=.never-shown', '--load-extension=never-shown\\ext'])('refuses %j, a path that names no one place, with the fixed text', value => {
-    const { environment } = base()
-    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: `--lang=en-GB,${value}` })
-    expect(load).toThrow(ARGS_UNTRUSTED)
-    expect(load).not.toThrow('never-shown')
+  // A bare relative name resolves against Buckle's browser state directory, where no agent writes.
+  it.each(['--accept-lang=text/plain', '--proxy-server=socks5://host:1080', '--host-rules=10.0.0.0/8', '--cookie-domain=.example.com', '--scale=.5', '--load-extension=ext', '--disk-cache-dir=cache/sub'])('passes %s, which names no path Buckle cannot place', value => {
+    expect(browserArgumentsRefusal(value, 'linux')).toBeNull()
   })
 
   it('passes a URL value and an absolute path, which the pack judges where it lies', () => {
@@ -115,8 +126,12 @@ describe('reading the browser settings', () => {
     expect(browserArgumentsRefusal('/lang=en-GB', 'win32')).toBeNull()
     expect(browserArgumentsRefusal('/user-data-dir=C:/elsewhere', 'win32')).toContain('BUCKLE_BROWSER_ARGS may not pass --user-data-dir')
     expect(browserArgumentsRefusal('/load-and-launch-app=C:/x', 'win32')).toContain('BUCKLE_BROWSER_ARGS may not pass --load-and-launch-app')
-    expect(browserArgumentsRefusal('--load-extension=C:ext', 'win32')).toBe(ARGS_UNTRUSTED)
+    expect(browserArgumentsRefusal('--load-extension=C:ext', 'win32')).toBe(UNPLACED)
+    expect(browserArgumentsRefusal('--load-extension=\\ext', 'win32')).toBe(UNPLACED)
+    expect(browserArgumentsRefusal('--load-extension=/ext', 'win32')).toBe(UNPLACED)
     expect(browserArgumentsRefusal('--load-extension=C:/extensions/reader', 'win32')).toBeNull()
+    expect(browserArgumentsRefusal('--load-extension=\\\\server\\share\\reader', 'win32')).toBeNull()
+    expect(browserArgumentsRefusal('--load-extension=/opt/reader', 'linux')).toBeNull()
     for (const platform of ['linux', 'darwin'] as const) expect(browserArgumentsRefusal('/etc', platform)).toContain('holds an argument that is not a switch')
   })
 
@@ -173,6 +188,15 @@ describe('where a profile folder may lie', () => {
     symlinkSync(join(workspace), join(root, 'into-workspace'))
     mkdirSync(join(workspace, 'profile'))
     expect(choose(join(root, 'into-workspace', 'profile'))).toEqual({ refusal: UNTRUSTED })
+  })
+
+  it('refuses on Windows a folder rooted at a slash alone, which names whichever drive is current', () => {
+    const untrusted = { untrustedRoots: [], rootsUnknown: null }
+    for (const folder of ['/owner/profile', '\\owner\\profile']) {
+      expect(chooseBrowser({ profile: folder, untrusted, protectedRoots: [], platform: 'win32' })).toEqual({ refusal: UNTRUSTED })
+    }
+    expect(chooseBrowser({ args: '--load-extension=/owner/ext', untrusted, protectedRoots: [], platform: 'win32' }))
+      .toEqual({ refusal: 'BUCKLE_BROWSER_ARGS names a path inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not pass it' })
   })
 
   it('refuses a folder that is itself the workspace, a scratch root, or the state directory', () => {

@@ -406,7 +406,8 @@ function parseBrowserCdp(value: string | undefined): string | undefined {
 function parseBrowserProfile(value: string | undefined, platform: NodeJS.Platform): string | undefined {
   const raw = value?.trim()
   if (!raw) return undefined
-  if (!isAbsolute(raw)) throw new Error('BUCKLE_BROWSER_PROFILE must be an absolute path: Buckle never resolves a browser profile against the working directory')
+  // On Windows a path rooted at a slash alone names whichever drive is current, so it is no absolute path either.
+  if (!isAbsolute(raw) || (platform === 'win32' && /^[/\\](?![/\\])/.test(raw))) throw new Error('BUCKLE_BROWSER_PROFILE must be an absolute path: Buckle never resolves a browser profile against the working directory')
   try {
     return typedPath(raw, platform)
   } catch {
