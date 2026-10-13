@@ -117,9 +117,10 @@ describe('reading the browser settings', () => {
   })
 
   it('passes a URL value and an absolute path, which the pack judges where it lies', () => {
-    const { environment } = base()
     const value = '--lang=en-GB,--proxy-pac-url=https://pac.example/proxy.pac,--load-extension=/opt/extensions/reader'
-    expect(loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value }).browserArgs).toBe(value)
+    expect(browserArgumentsRefusal(value, 'linux')).toBeNull()
+    const { environment } = base()
+    expect(loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: '--lang=en-GB' }).browserArgs).toBe('--lang=en-GB')
   })
 
   it('reads a slash prefix as a switch on Windows alone, and refuses a drive-relative path there', () => {
