@@ -151,6 +151,20 @@ describe('where a profile folder may lie', () => {
     expect(choose(join(root, 'into-workspace', 'profile'))).toEqual({ refusal: UNTRUSTED })
   })
 
+  it('refuses a folder that is itself the workspace, a scratch root, or the state directory', () => {
+    const { workspace, scratch, state, choose } = folders()
+    mkdirSync(state, { recursive: true })
+    for (const folder of [workspace, scratch, state]) expect(choose(folder)).toEqual({ refusal: UNTRUSTED })
+  })
+
+  it('refuses a case variant of a root where the disk ignores case, and the source of a writable mount', () => {
+    const { workspace, outside, state } = folders()
+    const darwin = chooseBrowser({ profile: join(workspace.toUpperCase(), 'profile'), untrusted: { untrustedRoots: rootsOf('workspace', [workspace]), rootsUnknown: null }, protectedRoots: [state], platform: 'darwin' })
+    expect(darwin).toEqual({ refusal: UNTRUSTED })
+    const mounted = chooseBrowser({ profile: join(outside, 'profile'), untrusted: { untrustedRoots: rootsOf('writable mount', [outside]), rootsUnknown: null }, protectedRoots: [state] })
+    expect(mounted).toEqual({ refusal: UNTRUSTED })
+  })
+
   it('refuses a folder that holds a workspace, as Chrome reads every folder beneath its profile', () => {
     const { root, choose } = folders()
     expect(choose(root)).toEqual({ refusal: UNTRUSTED })
@@ -191,10 +205,14 @@ describe('where a profile folder may lie', () => {
       .toEqual({ refusal: 'BUCKLE_BROWSER_ARGS is not passed while the workspace registry cannot be read' })
   })
 
-  it('withholds the browser pack of a real runtime, naming the setting', async () => {
-    const { environment, workspace } = base()
-    mkdirSync(join(workspace, 'profile'))
-    const runtime = await createRuntime({ config: loadConfig({ ...environment, BUCKLE_AGENT_BROWSER_COMMAND: process.execPath, BUCKLE_BROWSER_PROFILE: join(workspace, 'profile') }) })
+  it.each(['the workspace', 'the state directory', 'a scratch root'])('withholds the browser pack of a real runtime for a folder inside %s, naming the setting', async (place) => {
+    const { root, environment, workspace, state } = base()
+    const scratch = join(root, 'scratch')
+    mkdirSync(scratch)
+    mkdirSync(state, { recursive: true })
+    const folder = join({ 'the workspace': workspace, 'the state directory': state, 'a scratch root': scratch }[place]!, 'profile')
+    mkdirSync(folder)
+    const runtime = await createRuntime({ config: loadConfig({ ...environment, BUCKLE_SCRATCH_ROOTS: scratch, BUCKLE_AGENT_BROWSER_COMMAND: process.execPath, BUCKLE_BROWSER_PROFILE: folder }) })
     const pack = runtime.manifest().packs.find(item => item.id === 'browser')
     expect(pack?.unavailableReason).toBe(UNTRUSTED)
     expect(runtime.registry().has('browser_command')).toBe(false)
@@ -218,6 +236,20 @@ async function runtimeFixture(settings: NodeJS.ProcessEnv, options: { answer?: s
 
 describe('what a real runtime hands a fake agent-browser in each mode', () => {
   const fixture = (settings: NodeJS.ProcessEnv) => runtimeFixture(settings)
+
+  // The approved list does not hold inside these browsers, but the page a command names is judged as ever.
+  it.each(['profile', 'attached'])('judges the page a command opens in %s mode, and runs nothing for a page the list leaves out', async (mode) => {
+    const { root } = base()
+    const profile = join(root, 'judged-profile')
+    mkdirSync(profile)
+    const settings = mode === 'profile' ? { BUCKLE_BROWSER_PROFILE: profile } : { BUCKLE_BROWSER_CDP: '9222' }
+    const denied = await runtimeFixture(settings, { args: { command: 'open', args: ['https://other.test/'] } })
+    expect(denied.response).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
+    expect(denied.calls).toEqual([])
+    const allowed = await runtimeFixture(settings, { args: { command: 'open', args: ['example.com'] } })
+    expect(allowed.response.outcome).toBe('ok')
+    expect(allowed.call.slice(0, 2)).toEqual(['open', 'https://example.com/'])
+  })
   const valueOf = (args: string[], flag: string) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined
 
   it('holds a fresh browser to the approved list, with the owner\'s arguments, and reports it fresh', async () => {

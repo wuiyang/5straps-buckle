@@ -7,6 +7,7 @@ import { browserEffects, refusedFlag } from '../common/services/packs/browser/ef
 import { createPathView } from '../common/domain/path-view.js'
 import { createBrowserPack, type BrowserPackOptions } from '../common/services/packs/browser/index.js'
 import type { BrowserMode } from '../common/services/packs/browser/mode.js'
+import { loadPackSkill } from '../common/services/packs/pack-skill.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import type { ProcessRequest, ProcessResult } from '../common/types/ports/process-runner.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
@@ -101,6 +102,24 @@ describe('the browser the owner\'s settings choose', () => {
     expect(args).not.toContain('--cdp')
   })
 
+  // With no setting the argv is the one Buckle passed before the owner could choose a browser, flag for flag.
+  it('hands a fresh browser the whole argv it always had, with and without a list or a window', async () => {
+    const directory = freshDirectory()
+    const config = join(directory, 'fresh-config.json')
+    const session = expect.stringMatching(/^buckle-[0-9a-f-]{36}$/)
+    expect((await run({ command: 'snapshot', args: [] }, { sessionDirectory: directory, approvedLists: approved })).args)
+      .toEqual(['snapshot', '--json', '--config', config, '--session', session, '--idle-timeout', '300000', '--allowed-domains', 'example.com'])
+    expect((await run({ command: 'open', args: ['example.com'] }, { sessionDirectory: directory, approvedLists: approved })).args)
+      .toEqual(['open', 'https://example.com/', '--json', '--config', config, '--session', session, '--idle-timeout', '300000', '--allowed-domains', 'example.com'])
+    const other = freshDirectory()
+    expect((await run({ command: 'snapshot', args: [] }, { sessionDirectory: other })).args)
+      .toEqual(['snapshot', '--json', '--config', join(other, 'fresh-config.json'), '--session', session, '--idle-timeout', '300000'])
+    const headed = freshDirectory()
+    expect((await run({ command: 'snapshot', args: [] }, { sessionDirectory: headed, headed: true, approvedLists: approved })).args)
+      .toEqual(['snapshot', '--json', '--config', join(headed, 'fresh-config.json'), '--session', session, '--idle-timeout', '300000', '--allowed-domains', 'example.com', '--headed'])
+    for (const folder of [directory, other, headed]) rmSync(folder, { recursive: true, force: true })
+  })
+
   it('passes no --args when the owner set none', async () => {
     const { args } = await run({ command: 'snapshot', args: [] })
     expect(args).not.toContain('--args')
@@ -134,7 +153,15 @@ describe('the browser the owner\'s settings choose', () => {
     expect(description({ kind: 'fresh' })).toBe('Run one agent-browser command against an isolated browser session; close discards browser state.')
     expect(description(PROFILE_MODE)).toContain('logins and cookies outlive close')
     expect(description(ATTACHED)).toContain('every session shares that browser and its logins, close only disconnects')
+    // The approved list does not hold inside these browsers, and the description says what still is judged.
+    for (const mode of [PROFILE_MODE, ATTACHED]) expect(description(mode)).toContain('Buckle judges only the page each command names')
+    expect(description({ kind: 'fresh' })).not.toContain('judges only the page')
     expect(description(ATTACHED)).not.toContain('9222')
+  })
+
+  it('tells the agent in its skill that the list does not hold in a profile folder or an attached browser', () => {
+    const skill = loadPackSkill('browser').content.replace(/\s+/g, ' ')
+    expect(skill).toContain('That holds for a fresh browser only: agent-browser refuses the list with a profile folder or an attached browser, so there only the page a command names is judged')
   })
 
   it('relaunch notices come from a fresh browser alone, as only a fresh browser is passed the hosts', async () => {
@@ -186,6 +213,21 @@ describe('a session left by a run under other browser settings', () => {
     expect(sessionOf(calls[3]!)).toMatch(/^buckle-/)
     expect(sessionOf(calls[3]!)).not.toBe(first)
     expect(readFileSync(join(directory, 'sessions.json'), 'utf8')).not.toContain('9222')
+    rmSync(directory, { recursive: true, force: true })
+  })
+})
+
+describe('shutdown in an attached browser', () => {
+  it('sends close to each session it opened, which agent-browser answers by disconnecting, and forgets it', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-shutdown-'))
+    const calls: ProcessRequest[] = []
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { mode: { kind: 'attached', endpoint: '9222' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
+    await pack.tools[0]!.prepare({ command: 'open', args: ['example.com'] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
+    const session = calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]!
+    expect(calls[0]!.args).toContain('--cdp')
+    await pack.close?.()
+    expect(calls[1]!.args).toEqual(['close', '--session', session, '--json'])
+    expect(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8'))).toEqual({ sessions: {}, allowedDomains: {}, modes: {} })
     rmSync(directory, { recursive: true, force: true })
   })
 })
