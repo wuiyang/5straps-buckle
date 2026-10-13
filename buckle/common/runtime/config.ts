@@ -65,6 +65,12 @@ export interface BuckleConfig {
   agentBrowserCommand: string
   /** Show the browser window. Headless by default, because a Buckle node usually has no display. */
   browserHeaded: boolean
+  /** BUCKLE_BROWSER_CDP: the DevTools port or URL of the owner's own Chrome, which every browser command attaches to. */
+  browserCdp?: string
+  /** BUCKLE_BROWSER_PROFILE: a profile folder the browser keeps cookies and storage in across launches, as the disk names it. */
+  browserProfile?: string
+  /** BUCKLE_BROWSER_ARGS: Chromium arguments for a browser Buckle launches, as agent-browser's `--args` reads them. */
+  browserArgs?: string
   /** How long a gated call is held for an answer, in milliseconds; null holds it until someone answers (BUCKLE_APPROVAL_TIMEOUT_MS=0). */
   approvalTimeoutMs: number | null
   /** Where to announce a pending approval, so a person can be reached away from the machine. */
@@ -151,6 +157,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     forgeGitAuthor: parseGitAuthor(environment.BUCKLE_FORGE_GIT_AUTHOR),
     agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND ?? 'agent-browser',
     browserHeaded: environment.BUCKLE_BROWSER_HEADED === 'true',
+    ...parseBrowserSettings(environment, platform),
     approvalTimeoutMs: parseApprovalTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_TIMEOUT_MS),
     approvalWebhook: environment.BUCKLE_APPROVAL_WEBHOOK || undefined,
     policy: parsePolicy(environment),
@@ -357,6 +364,64 @@ function parseGitAuthor(value: string | undefined): { name: string; email: strin
   const match = GIT_AUTHOR_PATTERN.exec(raw)
   if (!match) throw new Error(`Invalid BUCKLE_FORGE_GIT_AUTHOR: ${raw}; expected "Name <email>"`)
   return { name: match[1]!.trim(), email: match[2]! }
+}
+
+/**
+ * The owner's browser choices. An attached browser is the one its owner started, with its own profile, arguments,
+ * and window, so BUCKLE_BROWSER_CDP is refused beside the settings that would choose them. A refusal names the
+ * settings, never a value: a DevTools URL can carry a token, and a profile path is the owner's.
+ */
+function parseBrowserSettings(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): Pick<BuckleConfig, 'browserCdp' | 'browserProfile' | 'browserArgs'> {
+  const browserCdp = parseBrowserCdp(environment.BUCKLE_BROWSER_CDP)
+  const browserProfile = parseBrowserProfile(environment.BUCKLE_BROWSER_PROFILE, platform)
+  const browserArgs = parseBrowserArgs(environment.BUCKLE_BROWSER_ARGS)
+  const beside = [browserProfile && 'BUCKLE_BROWSER_PROFILE', browserArgs && 'BUCKLE_BROWSER_ARGS', environment.BUCKLE_BROWSER_HEADED === 'true' && 'BUCKLE_BROWSER_HEADED']
+    .filter((name): name is string => Boolean(name))
+  if (browserCdp && beside.length > 0) {
+    throw new Error(`BUCKLE_BROWSER_CDP cannot be set with ${beside.join(' or ')}: an attached browser keeps the profile, arguments, and window its owner started it with`)
+  }
+  return {
+    ...(browserCdp ? { browserCdp } : {}),
+    ...(browserProfile ? { browserProfile } : {}),
+    ...(browserArgs ? { browserArgs } : {}),
+  }
+}
+
+/** A DevTools port, or a ws:// or http:// URL, as agent-browser's `--cdp` takes them. */
+function parseBrowserCdp(value: string | undefined): string | undefined {
+  const raw = value?.trim()
+  if (!raw) return undefined
+  const port = /^\d{1,5}$/.test(raw) ? Number(raw) : NaN
+  if (port >= 1 && port <= 65_535) return raw
+  if (/^(?:ws|http):\/\//i.test(raw) && URL.canParse(raw)) return raw
+  throw new Error('Invalid BUCKLE_BROWSER_CDP: expected a DevTools port such as 9222, or a ws:// or http:// URL')
+}
+
+/** Absolute, so it names one folder whatever directory a command starts in. Where it lies is judged when the pack is built. */
+function parseBrowserProfile(value: string | undefined, platform: NodeJS.Platform): string | undefined {
+  const raw = value?.trim()
+  if (!raw) return undefined
+  if (!isAbsolute(raw)) throw new Error('BUCKLE_BROWSER_PROFILE must be an absolute path: Buckle never resolves a browser profile against the working directory')
+  try {
+    return typedPath(raw, platform)
+  } catch {
+    throw new Error('BUCKLE_BROWSER_PROFILE is a path Buckle cannot read as the system does')
+  }
+}
+
+/** Chromium switches that choose a profile folder, which BUCKLE_BROWSER_PROFILE alone names, under its path rule. */
+const PROFILE_SWITCHES = ['user-data-dir', 'profile-directory']
+
+/**
+ * Passed whole as agent-browser's `--args`, which splits it at commas and new lines. A switch is read as agent-browser
+ * reads one, after `--`, `-`, or `/` and up to `=` or a space, so no spelling of a profile switch slips past.
+ */
+function parseBrowserArgs(value: string | undefined): string | undefined {
+  const raw = value?.trim()
+  if (!raw) return undefined
+  const chosen = raw.split(/[,\n]/).map(argument => argument.trim().replace(/^(?:--|-|\/)/, '').split(/[= ]/)[0]!.toLowerCase()).find(name => PROFILE_SWITCHES.includes(name))
+  if (chosen) throw new Error(`BUCKLE_BROWSER_ARGS may not pass --${chosen}: name a profile folder with BUCKLE_BROWSER_PROFILE, which Buckle checks against the places an agent can write`)
+  return raw
 }
 
 /** Each entry is checked at load, so a malformed pattern stops the node rather than covering nothing. */
