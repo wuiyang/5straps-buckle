@@ -5,8 +5,15 @@ description: Drive a real browser from a 5straps Buckle node via agent-browser. 
 
 # Buckle browser
 
-Wraps [agent-browser](https://agent-browser.dev). Each caller/session alias gets a fresh browser.
-Commands reuse it until `close`; the next launch has no cookies or saved authentication.
+Wraps [agent-browser](https://agent-browser.dev). The tool description says which browser this
+node runs, and only the node owner chooses it:
+
+- Fresh, the default: each caller/session alias gets a fresh browser. Commands reuse it until
+  `close`; the next launch has no cookies or saved authentication.
+- A profile folder: each launch opens the owner's folder, so logins and cookies outlive `close`.
+  Chrome lets one browser use the folder at a time, so close one session before starting another.
+- The owner's own Chrome, attached: every session shares that one browser, its cookies, and its
+  tabs. `close` only disconnects; the browser and its logins stay open.
 
 ```
 buckle browser command open example.com
@@ -18,7 +25,8 @@ buckle browser command screenshot page.png
 ## First run on a node
 
 The owner installs agent-browser and runs `agent-browser install` outside the agent interface.
-The browser tool cannot install browsers, attach an existing browser or import saved state.
+The browser tool cannot install browsers, and no call can attach a browser, choose a profile, or
+import saved state.
 
 The browser runs headless unless the node sets `BUCKLE_BROWSER_HEADED=true`, and it is held by a
 background daemon that outlives each call, so a later command reuses the browser already running.
@@ -34,25 +42,29 @@ answer in `buckle approvals --watch` on the Buckle machine, then retry. A page n
 plain HTTP, so write `http://localhost:3000` for one. `open` takes exactly one page. Only the page
 a command names is judged by Buckle's rules, down to its port and path. When an approved list is
 set (the node's or the workspace's), Buckle also starts the browser with the hosts both lists
-allow as agent-browser's `--allowed-domains`, so clicks, redirects and page requests to other
-hosts are blocked inside the browser. That containment is by host: for an entry such as
-`localhost:3000` or `https://app.example.com/admin`, the port and path hold for the page a command
-names, but inside the page that host is reachable on any port and path. When the node and
+allow as agent-browser's `--allowed-domains`, so clicks, redirects, and page requests to other
+hosts are blocked inside the browser. That holds for a fresh browser only: agent-browser refuses
+the list with a profile folder or an attached browser, so there only the page a command names is
+judged, and every login in that browser is within reach. Use only the logins the task needs. The
+containment is by host: for an entry such as `localhost:3000` or `https://app.example.com/admin`,
+the port and path hold for the page a command names, but inside the page that host is reachable
+on any port and path. When the node and
 workspace lists share no host and port, the browser does not start, and the refusal names the
-list to change. When the allowed hosts change, the next call relaunches the browser, which resets
-open tabs and cookies, and its result carries a `notice` saying so. Without an approved list,
-clicks and redirects are not judged.
+list to change. When the allowed hosts change, the next call relaunches a fresh browser, which
+resets open tabs and cookies, and its result carries a `notice` saying so. Without an approved
+list, clicks and redirects are not judged.
 
-Paths given to `screenshot`, `pdf`, `upload` and `download` are judged by the same path rules as
+Paths given to `screenshot`, `pdf`, `upload`, and `download` are judged by the same path rules as
 `fs` tools, so writing outside the workspace asks. Name such a path as a positional argument,
 which is where the rules look.
 
 Flags are an allowlist: anything Buckle does not know is refused by name, so read the refusal
-rather than guessing a second spelling. `--proxy`, `--proxy-bypass` and `--allowed-domains` are refused
+rather than guessing a second spelling. `--proxy`, `--proxy-bypass`, and `--allowed-domains` are refused
 because Buckle owns the network policy. Also refused on purpose are `--profile`, `--executable-path`,
 `--args`, `--extension`, `--init-script`, `--config`, `--cdp`, `--auto-connect`, `--provider`,
 `--ca-cert`, `--allow-file-access`, and the flags that read or write an unjudged path,
-`--screenshot-dir`, `--download-path`, `--params` and `--payload`.
+`--screenshot-dir`, `--download-path`, `--params`, and `--payload`. `--session`, `--state`, and
+`--restore` are refused by name too: the owner's settings alone choose the browser.
 
 The runtime ignores ambient `AGENT_BROWSER_*` settings and uses an explicit empty configuration.
 Browser file operations require explicit paths; screenshots and downloads are checkpointed.
@@ -70,4 +82,6 @@ Never guess a ref. Take a snapshot and use what it returns.
 
 Pass `session` to name a browser within the current caller. Buckle scopes the alias to the supplied caller and optional stage ID. A new stage starts
 a separate browser; labels group work and are not authentication identities. Close each browser when the
-task ends. State expires after five idle minutes; close explicitly when running headed.
+task ends. State expires after five idle minutes; close explicitly when running headed. On a
+profile folder, cookies and logins stay in the folder; on an attached browser, idle expiry only
+disconnects.

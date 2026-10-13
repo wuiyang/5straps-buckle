@@ -102,14 +102,17 @@ rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.
 ## The browser's allowed hosts
 
 `browser_command` runs one `agent-browser` command in a session of its own, headless unless
-`BUCKLE_BROWSER_HEADED=true`. It cannot attach to an existing browser or load saved state. The
-owner installs the browser itself with `agent-browser install`, outside any agent.
+`BUCKLE_BROWSER_HEADED=true`. By default each session gets a fresh browser with no saved state; the
+owner can choose a profile folder that keeps logins, or their own Chrome, as
+[Using your own browser](browser-login.md) describes. No agent call can. The owner installs the
+browser itself with `agent-browser install`, outside any agent.
 
-With an approved list, Buckle passes its hosts to `agent-browser` as `--allowed-domains`, so
-clicks, redirects, and page requests stay on them. The browser matches host names only, so inside
-a page an allowed host is reachable on any port and path, while the page a command opens is still
-judged with port and path. With no approved list, no flag is passed and public hosts are open.
-When a list has no usable host, Buckle does not start the browser and says which list to fix.
+For a fresh browser with an approved list, Buckle passes its hosts to `agent-browser` as
+`--allowed-domains`, so clicks, redirects, and page requests stay on them. The browser matches
+host names only, so inside a page an allowed host is reachable on any port and path, while the
+page a command opens is still judged with port and path. With no approved list, no flag is passed
+and public hosts are open. When a list has no usable host, Buckle does not start the browser and
+says which list to fix.
 
 ## Change history
 

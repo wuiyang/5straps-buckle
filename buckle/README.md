@@ -15,7 +15,7 @@ Buckle needs Node.js 24 or newer.
 npm i -g @5straps/buckle
 ```
 
-To build from a clone (pnpm 10.33.2, pinned in `package.json`):
+To build from a clone (pnpm 10.33.2):
 
 ```bash
 pnpm install
@@ -63,7 +63,7 @@ claude mcp add buckle -- buckle mcp
 ```
 
 **HTTP**: `buckle serve` listens on `127.0.0.1:4320`, with native RPC under `/v1` and MCP on
-`/mcp`, each behind the agent token as a bearer credential. There is no TLS built in; put a
+`/mcp`, each behind the agent token as a bearer credential. No TLS is built in; put a
 proxy in front for anything beyond the local host.
 
 ## Approvals
@@ -79,7 +79,7 @@ credential shapes hidden
 ([known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md#credential-hiding)),
 and the decision binds the whole call.
 
-The answer can come from wherever the person is: a prompt in the terminal running `buckle
+The answer can come from anywhere: a prompt in the terminal running `buckle
 serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
 `buckle approve <token>` from another terminal. Buckle can also post each pending approval to
 the relay `BUCKLE_APPROVAL_WEBHOOK` names, so a person can be reached away from the machine. A
@@ -122,13 +122,11 @@ On Linux, shell tools work on private copies of the workspace by default and pub
 changes through conflict-checked checkpoints; `BUCKLE_SHELL_ISOLATION=false` selects
 shared-workspace execution. Host Git and forge tools (`BUCKLE_ALLOW_HOST_GIT`) and host
 language servers (`BUCKLE_ALLOW_HOST_LSP`) are off by default, because they run outside the
-sandbox. `buckle manifest` explains a withheld pack; without `rg`, `fs_search_content` is absent,
-unexplained.
+sandbox. Without `rg`, `fs_search_content` is absent, unexplained.
 
 ## Audit log
 
-Each workspace records what Buckle did in `actions.jsonl` in its state directory. Read it
-back with:
+Each workspace records what Buckle did in `actions.jsonl` in its state directory. Read it with:
 
 ```bash
 buckle log --limit 20
@@ -160,6 +158,8 @@ For users:
   when a restart is needed.
 - [Sandbox and tools](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, and shell
   isolation.
+- [Using your own browser](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login.md): profile folders, your own Chrome, and
+  Chromium arguments.
 - [The audit log](https://github.com/wuiyang/5straps-buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
 - [Rings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/rings.md): the optional pairing and its settings.
 - [Troubleshooting](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting.md) ([refused commands](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting-02.md)): the first
