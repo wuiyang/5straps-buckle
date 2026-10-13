@@ -50,9 +50,10 @@ const MODES: Array<[string, BrowserMode]> = [
 ]
 
 describe.each(MODES)('on %s', (_, mode) => {
-  it.each(['connect', 'state', 'auth', 'cookies', 'profiles', 'batch'])('refuses the %s command by name', async command => {
-    const { calls, tool, context } = fixture(mode)
-    await expect(tool.prepare({ command }).execute(context)).rejects.toThrow(`${command} is not run: Buckle's browser cannot attach, restore, or override session identity`)
+  // Refused while effects are built, so the owner is never asked about a call that cannot run.
+  it.each(['connect', 'state', 'auth', 'cookies', 'profiles', 'batch'])('refuses the %s command by name before anything is judged', command => {
+    const { calls, tool } = fixture(mode)
+    expect(() => tool.prepare({ command })).toThrow(`${command} is not run: Buckle's browser cannot attach, restore, or override session identity`)
     expect(calls).toHaveLength(0)
   })
 
@@ -64,10 +65,10 @@ describe.each(MODES)('on %s', (_, mode) => {
     expect(calls).toHaveLength(0)
   })
 
-  it.each(['--state', '--restore', '--session'])('refuses %s by name, in either spelling', async flag => {
-    const { calls, tool, context } = fixture(mode)
-    await expect(tool.prepare({ command: 'snapshot', args: [flag, 'saved'] }).execute(context)).rejects.toThrow(`${flag} is not allowed: Buckle's browser cannot attach`)
-    await expect(tool.prepare({ command: 'snapshot', args: [`${flag.toUpperCase()}=saved`] }).execute(context)).rejects.toThrow(`${flag} is not allowed`)
+  it.each(['--state', '--restore', '--session'])('refuses %s by name before anything is judged, in either spelling', flag => {
+    const { calls, tool } = fixture(mode)
+    expect(() => tool.prepare({ command: 'open', args: ['http://127.0.0.1:3000', flag, 'saved'] })).toThrow(`${flag} is not allowed: Buckle's browser cannot attach`)
+    expect(() => tool.prepare({ command: 'snapshot', args: [`${flag.toUpperCase()}=saved`] })).toThrow(`${flag} is not allowed`)
     expect(calls).toHaveLength(0)
   })
 })

@@ -126,7 +126,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
         tags: ['browser', 'agent-browser', 'network'],
         input: commandInput,
         effects: input => {
-          // Before anything is judged, so the owner is never asked about a browser that cannot start.
+          // Before anything is judged, so the owner is never asked about a call that cannot run.
+          assertRunnable(input)
           if ('refusal' in allowedDomains) throw new ToolInputError(allowedDomains.refusal, { code: 'PERMISSION_DENIED' })
           return [
             { kind: 'exec', command: options.agentBrowserCommand, args: [input.command, ...input.args] },
@@ -135,9 +136,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
         },
         run: async (input, context): Promise<JsonValue> => {
           const running = browserMode(mode)
-          if (!FRESH_COMMANDS.has(input.command)) throw new ToolInputError(`${input.command} is not run: ${SESSION_REFUSAL}`)
-          const identity = input.args.map(arg => arg.split('=')[0]!.toLowerCase()).find(name => SESSION_FLAGS.includes(name))
-          if (identity) throw new ToolInputError(`${identity} is not allowed: ${SESSION_REFUSAL}`)
+          assertRunnable(input)
           const refused = refusedFlag(input.args)
           if (refused) throw new ToolInputError(flagRefusal(refused))
 
@@ -208,6 +207,13 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
       }),
     ],
   }
+}
+
+/** Refuses a command Buckle does not run, or a flag that would choose the session, its saved state, or its policy. */
+function assertRunnable(input: { command: string; args: string[] }): void {
+  if (!FRESH_COMMANDS.has(input.command)) throw new ToolInputError(`${input.command} is not run: ${SESSION_REFUSAL}`)
+  const identity = input.args.map(arg => arg.split('=')[0]!.toLowerCase()).find(name => SESSION_FLAGS.includes(name))
+  if (identity) throw new ToolInputError(`${identity} is not allowed: ${SESSION_REFUSAL}`)
 }
 
 /** The mode a call runs in; a pack whose profile folder was refused is withheld, so no call reaches here without one. */
