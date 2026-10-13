@@ -248,6 +248,22 @@ describe('shutdown in an attached browser', () => {
   })
 })
 
+// Every Buckle process on the node shares the one browser on a profile folder, so no process's exit may close it.
+describe('shutdown with a profile folder', () => {
+  it('sends nothing for the shared browser, which the close command and its idle timeout end', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-shutdown-'))
+    const calls: ProcessRequest[] = []
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { mode: { kind: 'profile', directory: '/owner/profile' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
+    await pack.tools[0]!.prepare({ command: 'open', args: ['example.com'] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
+    await pack.close?.()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.args[0]).toBe('open')
+    // The store still names the shared session, so the next process finds it running.
+    expect(Object.values(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')).sessions)).toEqual([calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]])
+    rmSync(directory, { recursive: true, force: true })
+  })
+})
+
 describe('the warning a browser without in-browser containment logs at pack start', () => {
   // A fresh module each time, so each case sees the once-per-process warning anew.
   async function warnings(browser: BrowserPackOptions['browser']) {

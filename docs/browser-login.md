@@ -109,8 +109,9 @@ login kept in that profile folder or that browser is within the agent's reach, w
 should hold only the logins the agent's work needs.
 
 Chrome opens a profile folder in one browser at a time, so every agent session, in every
-workspace, shares the one browser on it, with its tabs and logins, and `close` from any session
-closes it for all. With a profile folder no host list is passed, so a changed approved list
+workspace and every Buckle process, shares the one browser on it, with its tabs and logins. A
+Buckle process that stops leaves it running; `close` from any session, or 5 idle minutes, ends it
+for all. With a profile folder no host list is passed, so a changed approved list
 relaunches nothing.
 
 ## Checking the mode

@@ -108,7 +108,9 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
   const unavailableReason = options.agentBrowser.path !== null ? ('refusal' in choice ? choice.refusal : null) : options.agentBrowser.untrusted ? BROWSER_UNTRUSTED : BROWSER_UNAVAILABLE
   if (unavailableReason === null && mode) logContainmentOff(mode)
-  // The browser daemons this pack started and has not closed, which outlive single calls.
+  // The browser daemons this pack started and has not closed, which outlive single calls and end at its shutdown. The
+  // one browser on a profile folder is never among them: other Buckle processes share it, so only the close command
+  // and its idle timeout end it.
   const opened = new Set<string>()
   return {
     id: PACK_ID,
@@ -194,7 +196,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               opened.delete(session)
               await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key]; delete state.modes[key] })
             } else {
-              opened.add(session)
+              if (running.kind !== 'profile') opened.add(session)
               await sessions.update(state => { state.allowedDomains[key] = flag })
             }
             const relaunched = running.kind === 'fresh' && input.command !== 'close' && previous !== undefined && previous !== flag
