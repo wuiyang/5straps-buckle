@@ -302,6 +302,34 @@ describe('a session left by a run under other browser settings', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
+  it('leaves the sibling\'s entry in place when this process closes its own browser on another folder', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-sibling-'))
+    const calls: ProcessRequest[] = []
+    await call(directory, PROFILE_A, calls)
+    const first = sessionOf(calls[0]!)
+    writtenBy(directory, process.ppid)
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], runProcess: async (request) => { calls.push(request); return stubResult() }, ...PROFILE_B })
+    await pack.tools[0]!.prepare({ command: 'close', args: [] }).execute({ requestId: 'r2', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
+    expect(sessionOf(calls[1]!)).not.toBe(first)
+    const stored = JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')) as { sessions: Record<string, string>; writers: Record<string, number> }
+    expect(Object.values(stored.sessions)).toEqual([first])
+    expect(Object.values(stored.writers)).toEqual([process.ppid])
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  // A Buckle sibling runs as the owner, so a process it may not signal is not one.
+  it.skipIf(process.getuid?.() === 0)('counts a writer it may not signal as stopped, and closes and replaces its session', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-sibling-'))
+    const calls: ProcessRequest[] = []
+    await call(directory, PROFILE_A, calls)
+    const first = sessionOf(calls[0]!)
+    writtenBy(directory, 1)
+    await call(directory, { ...PROFILE_A, launchArgs: '--lang=en-GB' }, calls)
+    expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
+    expect(writers(directory)).toEqual([process.pid])
+    rmSync(directory, { recursive: true, force: true })
+  })
+
   it('is closed and replaced, and this process recorded as its writer, when the process that wrote other settings has stopped', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-sibling-'))
     const calls: ProcessRequest[] = []

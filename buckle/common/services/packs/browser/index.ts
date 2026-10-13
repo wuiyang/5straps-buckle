@@ -209,7 +209,15 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             await transfer.deliver()
             if (input.command === 'close') {
               opened.delete(session)
-              await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key]; delete state.modes[key]; delete state.writers[key] })
+              // The entry is forgotten only while it names this session: on another profile folder beside a live sibling,
+              // the shared key still records the sibling's.
+              await sessions.update((state) => {
+                if (state.sessions[key] !== session) return
+                delete state.sessions[key]
+                delete state.allowedDomains[key]
+                delete state.modes[key]
+                delete state.writers[key]
+              })
             } else {
               if (running.kind !== 'profile') opened.add(session)
               await sessions.update(state => { state.allowedDomains[key] = flag })
