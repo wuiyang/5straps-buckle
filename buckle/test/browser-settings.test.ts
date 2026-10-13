@@ -27,16 +27,27 @@ function base(): { root: string; workspace: string; state: string; environment: 
 }
 
 describe('reading the browser settings', () => {
-  it('reads a DevTools port, a ws:// URL, and an http:// URL as written', () => {
+  it('reads a DevTools port, and a ws://, wss://, http://, or https:// URL, as written', () => {
     const { environment } = base()
-    for (const value of ['9222', 'ws://127.0.0.1:9222/devtools/browser/abc', 'http://127.0.0.1:9222']) {
+    for (const value of ['9222', 'ws://127.0.0.1:9222/devtools/browser/abc', 'wss://browser.example/?token=t', 'http://127.0.0.1:9222', 'https://browser.example:9443']) {
       expect(loadConfig({ ...environment, BUCKLE_BROWSER_CDP: value }).browserCdp).toBe(value)
     }
   })
 
-  it.each(['chrome', '0', '70000', 'https://browser.example/?token=never-shown', 'file:///tmp/devtools'])('refuses %s as BUCKLE_BROWSER_CDP without echoing it', value => {
+  // agent-browser reads the scheme in lower case only, and quotes the whole value when it cannot.
+  it.each([
+    ['WS://127.0.0.1:9222/devtools/browser/Abc', 'ws://127.0.0.1:9222/devtools/browser/Abc'],
+    ['Wss://browser.example/?token=Kept', 'wss://browser.example/?token=Kept'],
+    ['HTTP://127.0.0.1:9222', 'http://127.0.0.1:9222'],
+    ['HTTPS://browser.example:9443', 'https://browser.example:9443'],
+  ])('lowers the scheme of %s and keeps the rest as written', (value, passed) => {
     const { environment } = base()
-    expect(() => loadConfig({ ...environment, BUCKLE_BROWSER_CDP: value })).toThrow('Invalid BUCKLE_BROWSER_CDP: expected a DevTools port such as 9222, or a ws:// or http:// URL')
+    expect(loadConfig({ ...environment, BUCKLE_BROWSER_CDP: value }).browserCdp).toBe(passed)
+  })
+
+  it.each(['chrome', '0', '70000', 'ftp://browser.example/?token=never-shown', 'file:///tmp/devtools'])('refuses %s as BUCKLE_BROWSER_CDP without echoing it', value => {
+    const { environment } = base()
+    expect(() => loadConfig({ ...environment, BUCKLE_BROWSER_CDP: value })).toThrow('Invalid BUCKLE_BROWSER_CDP: expected a DevTools port such as 9222, or a ws://, wss://, http://, or https:// URL')
     expect(() => loadConfig({ ...environment, BUCKLE_BROWSER_CDP: value })).not.toThrow(value)
   })
 

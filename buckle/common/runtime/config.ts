@@ -387,14 +387,18 @@ function parseBrowserSettings(environment: NodeJS.ProcessEnv, platform: NodeJS.P
   }
 }
 
-/** A DevTools port, or a ws:// or http:// URL, as agent-browser's `--cdp` takes them. */
+/**
+ * A DevTools port, or a ws://, wss://, http://, or https:// URL, as agent-browser's `--cdp` takes them. agent-browser
+ * reads the scheme in lower case only and quotes the whole value when it cannot, so the scheme is lowered here.
+ */
 function parseBrowserCdp(value: string | undefined): string | undefined {
   const raw = value?.trim()
   if (!raw) return undefined
   const port = /^\d{1,5}$/.test(raw) ? Number(raw) : NaN
   if (port >= 1 && port <= 65_535) return raw
-  if (/^(?:ws|http):\/\//i.test(raw) && URL.canParse(raw)) return raw
-  throw new Error('Invalid BUCKLE_BROWSER_CDP: expected a DevTools port such as 9222, or a ws:// or http:// URL')
+  const scheme = /^(?:wss?|https?):\/\//i.exec(raw)?.[0]
+  if (scheme && URL.canParse(raw)) return `${scheme.toLowerCase()}${raw.slice(scheme.length)}`
+  throw new Error('Invalid BUCKLE_BROWSER_CDP: expected a DevTools port such as 9222, or a ws://, wss://, http://, or https:// URL')
 }
 
 /** Absolute, so it names one folder whatever directory a command starts in. Where it lies is judged when the pack is built. */
