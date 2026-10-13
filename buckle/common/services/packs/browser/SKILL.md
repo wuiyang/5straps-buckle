@@ -13,7 +13,9 @@ node runs, and only the node owner chooses it:
 - A profile folder: each launch opens the owner's folder, so logins and cookies outlive `close`.
   Chrome lets one browser use the folder at a time, so close one session before starting another.
 - The owner's own Chrome, attached: every session shares that one browser, its cookies, and its
-  tabs. `close` only disconnects; the browser and its logins stay open.
+  tabs. A session starts on one of the owner's open tabs, so begin with `tab new <url>` to leave
+  it alone, and never close a tab you did not open. `close` only disconnects; the browser and its
+  logins stay open.
 
 ```
 buckle browser command open example.com

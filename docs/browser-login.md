@@ -18,7 +18,7 @@ relaunches the browser.
 | Setting | Value | What Buckle passes to `agent-browser` |
 |---|---|---|
 | `BUCKLE_BROWSER_PROFILE` | an absolute folder that already exists | `--profile <folder>`, so cookies, storage, and cache survive `close`, idle shutdown, and node restarts |
-| `BUCKLE_BROWSER_CDP` | a DevTools port such as `9222`, or a `ws://` or `http://` URL | `--cdp <value>` on every command, which then runs in your Chrome |
+| `BUCKLE_BROWSER_CDP` | a DevTools port such as `9222`, or a `ws://`, `wss://`, `http://`, or `https://` URL | `--cdp <value>` on every command, which then runs in your Chrome |
 | `BUCKLE_BROWSER_ARGS` | Chromium arguments, separated by commas or new lines | `--args <value>` for a browser Buckle launches |
 
 `BUCKLE_BROWSER_CDP` stands alone. An attached browser keeps the profile, arguments, and window
@@ -28,8 +28,9 @@ you started it with, so Buckle refuses to start when it is set beside `BUCKLE_BR
 The profile folder is judged by the rule that judges `BUCKLE_AGENT_BROWSER_COMMAND`: Buckle does
 not load from where an agent can write. A folder inside or around a workspace, a scratch root, or
 the node's state directory, or one reached through a link there, is refused, and so is a folder
-that does not exist yet. The browser pack is then withheld, and its reason names the setting,
-never the path. `buckle manifest` shows it.
+that does not exist yet. A path an argument names, such as `--load-extension=<folder>`, is judged
+the same way. The browser pack is then withheld, and its reason names the setting, never the path.
+`buckle manifest` shows it.
 
 For example, to pass the argument most often asked for:
 
@@ -37,31 +38,55 @@ For example, to pass the argument most often asked for:
 BUCKLE_BROWSER_ARGS=--disable-blink-features=AutomationControlled
 ```
 
-`agent-browser` splits the value at commas, so one argument cannot itself hold a comma.
-`--user-data-dir` and `--profile-directory` are refused in it: name a profile folder with
-`BUCKLE_BROWSER_PROFILE`, where its rule applies. Whatever is set, a site decides for itself what
-it accepts, and it may still refuse a browser it takes for an automated one.
+`agent-browser` splits the value at commas, so one argument cannot itself hold a comma. Buckle
+refuses to start, naming the setting, when the value holds:
+
+- an argument that is not a switch, such as a page, a path, or what follows a comma inside a switch;
+- `--user-data-dir` or `--profile-directory`: name a profile folder with `BUCKLE_BROWSER_PROFILE`;
+- `--restore-last-session`, `--restore-session`, `--app`, `--app-id`,
+  `--app-launch-url-for-shortcuts-menu-item`, or `--load-and-launch-app`, which restore or open
+  pages, so `agent-browser` refuses them beside an approved list.
+
+Whatever is set, a site decides for itself what it accepts, and it may still refuse a browser it
+takes for an automated one.
 
 ## Attaching your own Chrome
 
-Start Chrome with a DevTools port and a profile folder of its own:
+Start Chrome with a DevTools port and a profile folder of its own. On Linux:
 
 ```bash
 google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/buckle-chrome"
 ```
 
+On macOS:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir="$HOME/buckle-chrome"
+```
+
+On Windows, in PowerShell:
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:USERPROFILE\buckle-chrome"
+```
+
 Since Chrome 136, Chrome ignores the port on its default profile, so keep a second profile folder
 for Buckle, sign in there to the sites the agent needs, and leave your everyday profile out of it.
-Then set `BUCKLE_BROWSER_CDP=9222` in `buckle.env` and restart.
+Then set `BUCKLE_BROWSER_CDP=9222` in `buckle.env` and restart. In `agent-browser`'s source, an
+approval prompt is expected only from remote debugging turned on at
+`chrome://inspect/#remote-debugging` (Chrome 144 and later), which serves your everyday profile on
+a changing port; a port given on Chrome's command line, as above, is reached without it. If Chrome
+does show one, approve it and have the agent retry.
 
 Buckle never closes that browser. `close` only disconnects, and so does an idle session after 5
 minutes or Buckle's own shutdown: your browser, its tabs, and its logins stay open. Every agent
 session works in that one browser: sessions share its cookies, and the agent can see and use every
-tab open there.
+tab open there. A session starts on a tab you already have open, so its first `open` replaces
+that tab's page, and `tab close` can close any of your tabs but the last.
 
 The DevTools port answers anything on this machine that reaches it. Shell commands have no
-network unless `BUCKLE_SHELL_NETWORK=true`; with it on, a command could drive the browser around
-Buckle's rules.
+network unless `BUCKLE_SHELL_NETWORK=true` or `BUCKLE_SANDBOX=none`; with either, a command could
+drive the browser around Buckle's rules.
 
 ## What containment is lost, and what is still judged
 
