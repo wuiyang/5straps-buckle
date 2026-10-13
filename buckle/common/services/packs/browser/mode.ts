@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
-import { isAbsolute } from 'pathe'
+import { posix, win32 } from 'node:path'
 import { ARGS_UNTRUSTED, browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
 import { placesOnTheWay, type UntrustedRoots } from '../../../domain/executable.js'
 import { ignoresCase, isInsideComparable, typedPath } from '../../../domain/paths.js'
@@ -149,11 +149,17 @@ export function chooseBrowser(input: {
   return { mode: { kind: 'profile', directory } }
 }
 
-/** Each absolute path a switch in the owner's arguments takes as its value; a relative one was refused at start. */
+/**
+ * Each switch value the system reads as an absolute path, as node's own path module for the node's platform reads it:
+ * `//./home/x` on Linux and macOS, and a device or share path such as `\\.\C:\x` on Windows, are absolute there although
+ * pathe reads them otherwise. Every other spelling of a path was refused at start (browserArgumentsRefusal), or is a
+ * bare name in Buckle's browser state directory.
+ */
 function argumentPaths(args: string, platform: NodeJS.Platform): string[] {
+  const absolute = platform === 'win32' ? win32.isAbsolute : posix.isAbsolute
   return browserArguments(args).flatMap((argument) => {
     const value = chromiumSwitch(argument, platform)?.value
-    return value && isAbsolute(value) ? [value] : []
+    return value && absolute(value) ? [value] : []
   })
 }
 

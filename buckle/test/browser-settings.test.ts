@@ -97,10 +97,10 @@ describe('reading the browser settings', () => {
     expect(refusal).not.toContain('never-shown')
   })
 
-  const UNPLACED = 'BUCKLE_BROWSER_ARGS names a path by a spelling Buckle cannot place: a .. segment, a leading ./ or ~, or on Windows a drive or a root alone; give its absolute path, which Buckle judges where it lies'
+  const UNPLACED = 'BUCKLE_BROWSER_ARGS names a path by a spelling Buckle cannot place: a .. segment, a leading ./ or ~, a file: URL, or on Windows a drive or a root alone; give its absolute path, which Buckle judges where it lies'
 
   // A .. climbs out of Buckle's browser state directory, where Chrome resolves a relative value, and ~ is the home folder.
-  it.each(['./never-shown', '../never-shown', 'a/../never-shown', 'never-shown/..', '~/never-shown', '~', '.\\never-shown', 'a\\..\\never-shown'])('refuses --load-extension=%s with its own fixed text', value => {
+  it.each(['./never-shown', '../never-shown', 'a/../never-shown', 'never-shown/..', '~/never-shown', '~', '.\\never-shown', 'a\\..\\never-shown', 'file:///never-shown', 'FILE://host/never-shown'])('refuses --load-extension=%s with its own fixed text', value => {
     expect(browserArgumentsRefusal(`--lang=en-GB,--load-extension=${value}`, 'linux')).toBe(UNPLACED)
   })
 
@@ -112,8 +112,17 @@ describe('reading the browser settings', () => {
   })
 
   // A bare relative name resolves against Buckle's browser state directory, where no agent writes.
-  it.each(['--accept-lang=text/plain', '--proxy-server=socks5://host:1080', '--host-rules=10.0.0.0/8', '--cookie-domain=.example.com', '--scale=.5', '--load-extension=ext', '--disk-cache-dir=cache/sub'])('passes %s, which names no path Buckle cannot place', value => {
+  it.each(['--accept-lang=text/plain', '--proxy-server=socks5://host:1080', '--host-rules=10.0.0.0/8', '--cookie-domain=.example.com', '--scale=.5', '--load-extension=ext', '--disk-cache-dir=cache/sub'])('passes %s, which names no path Buckle cannot place, on Linux and on Windows', value => {
     expect(browserArgumentsRefusal(value, 'linux')).toBeNull()
+    expect(browserArgumentsRefusal(value, 'win32')).toBeNull()
+    expect(chooseBrowser({ args: value, untrusted: { untrustedRoots: [], rootsUnknown: null }, protectedRoots: [], platform: 'win32' })).toEqual({ mode: { kind: 'fresh' } })
+  })
+
+  it('refuses on Windows, through the configuration, a profile folder rooted at a slash alone', () => {
+    const load = () => loadConfig({ BUCKLE_WORKSPACE_ROOT: 'C:/work', BUCKLE_STATE_DIR: 'C:/state', BUCKLE_BROWSER_PROFILE: '/owner/never-shown' }, 'win32')
+    expect(load).toThrow('BUCKLE_BROWSER_PROFILE must be an absolute path')
+    expect(load).not.toThrow('never-shown')
+    expect(loadConfig({ BUCKLE_WORKSPACE_ROOT: 'C:/work', BUCKLE_STATE_DIR: 'C:/state', BUCKLE_BROWSER_PROFILE: 'C:/owner/profile' }, 'win32').browserProfile).toBe('C:/owner/profile')
   })
 
   it('passes a URL value and an absolute path, which the pack judges where it lies', () => {
@@ -244,6 +253,18 @@ describe('where a profile folder may lie', () => {
     expect(withArgs(`--${name}=${join(outside, 'ext')}`)).toEqual({ mode: { kind: 'fresh' } })
     expect(chooseBrowser({ args: `--${name}=${join(workspace, 'ext')}`, profile: join(outside, 'profile'), untrusted, protectedRoots: [state] })).toEqual(refused)
     expect(choose(join(outside, 'profile'))).toEqual({ mode: { kind: 'profile', directory: join(outside, 'profile') } })
+  })
+
+  // The system reads these as absolute although pathe reads them otherwise, so each is judged, never passed unjudged.
+  it('judges a path spelled //./ on Linux, and refuses a device path on Windows', () => {
+    const { workspace, outside, state } = folders()
+    const untrusted = { untrustedRoots: rootsOf('workspace', [workspace]), rootsUnknown: null }
+    const refused = { refusal: 'BUCKLE_BROWSER_ARGS names a path inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not pass it' }
+    expect(chooseBrowser({ args: `--load-extension=//.${workspace}/ext`, untrusted, protectedRoots: [state], platform: 'linux' })).toEqual(refused)
+    expect(chooseBrowser({ args: `--load-extension=//.${outside}/ext`, untrusted, protectedRoots: [state], platform: 'linux' })).toEqual({ mode: { kind: 'fresh' } })
+    for (const device of ['\\\\.\\C:\\ws\\ext', '\\\\?\\C:\\ws\\ext']) {
+      expect(chooseBrowser({ args: `--load-extension=${device}`, untrusted: { untrustedRoots: rootsOf('workspace', ['C:/ws']), rootsUnknown: null }, protectedRoots: [], platform: 'win32' })).toEqual(refused)
+    }
   })
 
   it('passes arguments that name no path whatever the roots, and refuses a path while the registry cannot be read', () => {

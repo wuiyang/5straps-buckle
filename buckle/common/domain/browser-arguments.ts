@@ -7,7 +7,7 @@ const PAGE_SWITCHES = ['restore-last-session', 'restore-session', 'app', 'app-id
 const NOT_A_SWITCH = 'BUCKLE_BROWSER_ARGS holds an argument that is not a switch, such as a page, a path, or the part of one switch after a comma: agent-browser splits the value at commas and new lines, and refuses a page or a path beside an approved list'
 
 /** Fixed text for a path an argument spells so that Buckle cannot place it, which never names the path. */
-const RELATIVE_PATH = 'BUCKLE_BROWSER_ARGS names a path by a spelling Buckle cannot place: a .. segment, a leading ./ or ~, or on Windows a drive or a root alone; give its absolute path, which Buckle judges where it lies'
+const RELATIVE_PATH = 'BUCKLE_BROWSER_ARGS names a path by a spelling Buckle cannot place: a .. segment, a leading ./ or ~, a file: URL, or on Windows a drive or a root alone; give its absolute path, which Buckle judges where it lies'
 
 /** Fixed text for a path an argument names where Buckle does not load from, which never names the path. */
 export const ARGS_UNTRUSTED = 'BUCKLE_BROWSER_ARGS names a path inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not pass it'
@@ -36,13 +36,14 @@ export function chromiumSwitch(argument: string, platform: NodeJS.Platform = pro
 
 /**
  * A switch value that spells a path Buckle cannot place: a `..` segment, which climbs out of where it starts; a leading
- * `~`, the home folder; a leading `./` or `.\`; and on Windows a drive-relative `C:x`, or a value rooted at `/` or `\`
- * alone, which names whichever drive is current, as isFullPath reads it. A bare relative name resolves against Chrome's
- * working directory, Buckle's browser state directory, where no agent writes, and anything else, such as text/plain,
- * 10.0.0.0/8, or .example.com, is no path Buckle reads; an absolute path is judged where it lies.
+ * `~`, the home folder; a leading `./` or `.\`; a `file:` URL; and on Windows a drive-relative `C:x`, or a value rooted
+ * at `/` or `\` alone, which names whichever drive is current, as isFullPath reads it. A bare relative name resolves
+ * against Chrome's working directory, Buckle's browser state directory, where no agent writes, and anything else, such
+ * as text/plain, 10.0.0.0/8, or .example.com, is no path Buckle reads. A value the system reads as absolute is judged
+ * where it lies when the pack is built (argumentPaths).
  */
 function unplacedPath(value: string, platform: NodeJS.Platform): boolean {
-  if (/(?:^|[/\\])\.\.(?:[/\\]|$)/.test(value) || value.startsWith('~') || /^\.[/\\]/.test(value)) return true
+  if (/(?:^|[/\\])\.\.(?:[/\\]|$)/.test(value) || value.startsWith('~') || /^\.[/\\]/.test(value) || /^file:/i.test(value)) return true
   return platform === 'win32' && (/^[a-z]:(?![/\\])/i.test(value) || /^[/\\](?![/\\])/.test(value))
 }
 
