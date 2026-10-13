@@ -42,6 +42,37 @@ const CONTAINMENT_OFF: Record<Exclude<BrowserModeName, 'fresh'>, string> = {
 const PROFILE_UNTRUSTED = 'BUCKLE_BROWSER_PROFILE names a folder inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not load it'
 const PROFILE_MISSING = 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first'
 
+/**
+ * Each form a setting's value takes in agent-browser's output, longest first, and the text shown in its place: the
+ * setting's name. agent-browser names the endpoint it could not reach by its host and port, a bare port as
+ * 127.0.0.1 and that port, and folds Chrome's own launch errors, which name the profile folder, into its failure text.
+ */
+function settingForms(mode: BrowserMode): string[] {
+  if (mode.kind === 'profile') return [mode.directory]
+  if (mode.kind === 'fresh') return []
+  const endpoint = mode.endpoint
+  if (/^\d+$/.test(endpoint)) return [endpoint, ...['127.0.0.1', 'localhost', '[::1]'].map(host => `${host}:${endpoint}`), `port ${endpoint}`]
+  const url = new URL(endpoint)
+  // agent-browser probes port 9222 when an http:// value names none.
+  // A host alone is left as written: without its port it names pages the agent opens too.
+  const port = url.port || (url.protocol.startsWith('http') ? '9222' : '')
+  const host = port ? `${url.hostname}:${port}` : ''
+  const userinfo = url.username ? `${url.username}${url.password ? `:${url.password}` : ''}@` : ''
+  const rest = `${url.pathname === '/' ? '' : url.pathname}${url.search}`
+  return [endpoint, url.href, host, userinfo, rest, url.search].filter(form => form.length > 1)
+}
+
+/**
+ * Shows agent-browser's output with the setting's value replaced by its name, as written and as JSON writes it, so a
+ * failure to reach the owner's Chrome or to open the profile folder never prints the value into a tool result.
+ */
+export function settingScrubber(mode: BrowserMode): (text: string) => string {
+  const setting = MODE_SETTINGS[mode.kind]
+  const forms = settingForms(mode).flatMap(form => [form, JSON.stringify(form).slice(1, -1)])
+  const longestFirst = [...new Set(forms)].sort((a, b) => b.length - a.length)
+  return text => setting === null ? text : longestFirst.reduce((shown, form) => shown.replaceAll(form, setting), text)
+}
+
 /** The mode the node's settings choose, as `/setup/status` reports it: a word, and the setting, never its value. */
 export function browserModeStatus(settings: { browserCdp?: string; browserProfile?: string }): { mode: BrowserModeName; setting: string | null } {
   const mode: BrowserModeName = settings.browserCdp ? 'attached' : settings.browserProfile ? 'profile' : 'fresh'

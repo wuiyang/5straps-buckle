@@ -15,7 +15,7 @@ import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
-import { containmentWarning, FRESH_BROWSER, MODE_DESCRIPTIONS, type BrowserChoice, type BrowserMode } from './mode.js'
+import { containmentWarning, FRESH_BROWSER, MODE_DESCRIPTIONS, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
@@ -96,6 +96,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const allowedDomains = browserAllowedDomains(options.approvedLists)
   const choice = options.browser ?? { mode: FRESH_BROWSER }
   const mode: BrowserMode | null = 'mode' in choice ? choice.mode : null
+  // agent-browser's output names the endpoint or the profile folder when it cannot reach or open them.
+  const scrub = settingScrubber(mode ?? FRESH_BROWSER)
   // agent-browser refuses --allowed-domains with a profile or an attached browser, so only a fresh one is passed the list.
   const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
   const unavailableReason = options.agentBrowser.path !== null ? ('refusal' in choice ? choice.refusal : null) : options.agentBrowser.untrusted ? BROWSER_UNTRUSTED : BROWSER_UNAVAILABLE
@@ -162,7 +164,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               environment: browserEnvironment(options),
               signal: context.signal,
             })
-            const result = { ...ran, stdout: transfer.shown(ran.stdout), stderr: transfer.shown(ran.stderr) }
+            const result = { ...ran, stdout: scrub(transfer.shown(ran.stdout)), stderr: scrub(transfer.shown(ran.stderr)) }
             if (result.exitCode !== 0) {
               throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
             }

@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import type { JsonObject } from '@5straps/protocol'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { rootsOf } from '../common/domain/executable.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { actionsPath, loadConfig } from '../common/runtime/config.js'
+import { logger } from '../common/runtime/log.js'
 import { chooseBrowser } from '../common/services/packs/browser/mode.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -144,20 +146,23 @@ describe('where a profile folder may lie', () => {
   })
 })
 
+/** A fake agent-browser that records its arguments and answers as `answer` writes, success by default. */
+async function runtimeFixture(settings: NodeJS.ProcessEnv, options: { answer?: string; args?: JsonObject } = {}) {
+  const { root, environment } = base()
+  const log = join(root, 'calls.jsonl')
+  const binary = join(root, 'agent-browser')
+  writeFileSync(binary, `#!/usr/bin/env node\nconst argv = process.argv.slice(2)\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(argv) + '\\n')\n${options.answer ?? 'process.stdout.write(\'{"success":true}\')'}\n`)
+  chmodSync(binary, 0o755)
+  const config = loadConfig({ ...environment, BUCKLE_AGENT_BROWSER_COMMAND: binary, BUCKLE_NETWORK_ALLOW: 'example.com', ...settings })
+  const runtime = await createRuntime({ config })
+  const response = await runtime.invoke({ request: { requestId: `browse-${randomUUID()}`, tool: 'browser_command', args: options.args ?? { command: 'snapshot', args: [] }, approvalTokens: [] }, sessionId: 'browsing-agent' })
+  const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
+  const status = await createSetupViews().status({ config, runtime })
+  return { root, config, runtime, response, calls, call: calls[0] ?? [], status, description: runtime.registry().capabilities().find(tool => tool.name === 'browser_command')?.description }
+}
+
 describe('what a real runtime hands a fake agent-browser in each mode', () => {
-  async function fixture(settings: NodeJS.ProcessEnv) {
-    const { root, environment } = base()
-    const log = join(root, 'calls.jsonl')
-    const binary = join(root, 'agent-browser')
-    writeFileSync(binary, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nprocess.stdout.write('{"success":true}')\n`)
-    chmodSync(binary, 0o755)
-    const config = loadConfig({ ...environment, BUCKLE_AGENT_BROWSER_COMMAND: binary, BUCKLE_NETWORK_ALLOW: 'example.com', ...settings })
-    const runtime = await createRuntime({ config })
-    const response = await runtime.invoke({ request: { requestId: `browse-${randomUUID()}`, tool: 'browser_command', args: { command: 'snapshot', args: [] }, approvalTokens: [] }, sessionId: 'browsing-agent' })
-    const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
-    const status = await createSetupViews().status({ config, runtime })
-    return { root, response, call: calls[0] ?? [], status, description: runtime.registry().capabilities().find(tool => tool.name === 'browser_command')?.description }
-  }
+  const fixture = (settings: NodeJS.ProcessEnv) => runtimeFixture(settings)
   const valueOf = (args: string[], flag: string) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined
 
   it('holds a fresh browser to the approved list, with the owner\'s arguments, and reports it fresh', async () => {
@@ -191,5 +196,52 @@ describe('what a real runtime hands a fake agent-browser in each mode', () => {
     expect(status.browser).toEqual({ mode: 'attached', setting: 'BUCKLE_BROWSER_CDP' })
     expect(JSON.stringify(status)).not.toContain('never-shown')
     expect(description).toContain('close only disconnects')
+  })
+})
+
+// agent-browser names the endpoint it could not reach, and folds Chrome's launch errors, which name the profile
+// folder, into its own; neither value may reach the agent or the action log.
+describe('a failing agent-browser in an owner-chosen mode', () => {
+  // Prints the endpoint as written and by its host and port, or the profile folder in a Chrome lock error, and fails.
+  const FAILING = [
+    `const after = flag => argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : null`,
+    `const cdp = after('--cdp'), profile = after('--profile')`,
+    `if (profile) process.stderr.write('[ERROR:process_singleton] Failed to create ' + profile + '/SingletonLock: File exists\\n')`,
+    `const host = cdp && (/^\\d+$/.test(cdp) ? '127.0.0.1:' + cdp : new URL(cdp).host)`,
+    `if (cdp) process.stdout.write(JSON.stringify({ success: false, error: 'All CDP discovery methods failed for ' + host + ': ' + cdp }))`,
+    `process.exit(1)`,
+  ].join('\n')
+
+  async function failing(settings: NodeJS.ProcessEnv) {
+    const warn = vi.spyOn(logger, 'warn')
+    const fixture = await runtimeFixture(settings, { answer: FAILING })
+    const logged = JSON.stringify(warn.mock.calls)
+    warn.mockRestore()
+    if (fixture.response.outcome !== 'error') throw new Error(`expected an error, got ${fixture.response.outcome}`)
+    const audit = readFileSync(actionsPath(fixture.config), 'utf8')
+    return { ...fixture, message: fixture.response.error.message, audit, logged }
+  }
+
+  it.each([
+    ['a bare port', '9222', ['127.0.0.1:9222', '9222']],
+    ['an http:// URL', 'http://cdp-host.test:9333', ['cdp-host.test:9333']],
+    ['a ws:// URL with a password and a browser id', 'ws://owner:secret@127.0.0.1:9222/devtools/browser/never-shown', ['secret', 'never-shown', '127.0.0.1:9222']],
+  ])('shows BUCKLE_BROWSER_CDP in place of %s', async (_, endpoint, hidden) => {
+    const { message, audit, logged, status, description, call } = await failing({ BUCKLE_BROWSER_CDP: endpoint })
+    expect(call[call.indexOf('--cdp') + 1]).toBe(endpoint)
+    expect(message).toContain('All CDP discovery methods failed for BUCKLE_BROWSER_CDP')
+    for (const text of [message, audit, logged, JSON.stringify(status), description ?? '']) {
+      for (const value of hidden) expect(text).not.toContain(value)
+    }
+  })
+
+  it('shows BUCKLE_BROWSER_PROFILE in place of the folder Chrome names in its launch error', async () => {
+    const { root } = base()
+    const profile = join(root, 'owner-profile-never-shown')
+    mkdirSync(profile)
+    const { message, audit } = await failing({ BUCKLE_BROWSER_PROFILE: profile })
+    expect(message).toContain('Failed to create BUCKLE_BROWSER_PROFILE/SingletonLock')
+    expect(message).not.toContain('never-shown')
+    expect(audit).not.toContain('never-shown')
   })
 })
