@@ -74,6 +74,28 @@ describe('reading the browser settings', () => {
     expect(() => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value })).toThrow(/BUCKLE_BROWSER_ARGS may not pass --(?:user-data-dir|profile-directory): name a profile folder with BUCKLE_BROWSER_PROFILE/)
   })
 
+  // agent-browser refuses these beside an approved list, at every launch, so they are refused at start.
+  it.each([
+    ['--restore-last-session', 'restore-last-session'],
+    ['--lang=en-GB,--Restore-Session', 'restore-session'],
+    ['--app=https://never-shown.example', 'app'],
+    ['-app-id=never-shown', 'app-id'],
+    ['--app-launch-url-for-shortcuts-menu-item=https://never-shown.example', 'app-launch-url-for-shortcuts-menu-item'],
+    ['/load-and-launch-app=/never-shown', 'load-and-launch-app'],
+  ])('refuses %j, which restores or opens pages, naming the switch alone', (value, name) => {
+    const { environment } = base()
+    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value })
+    expect(load).toThrow(`BUCKLE_BROWSER_ARGS may not pass --${name}: it restores or opens pages before the approved list holds, so agent-browser refuses it beside one`)
+    expect(load).not.toThrow('never-shown')
+  })
+
+  it.each(['https://never-shown.example', '--lang=en-GB,never-shown.example', '/never-shown/folder', 'file:///never-shown', '--window-size=1280,720'])('refuses %j, which is not a switch, without echoing it', value => {
+    const { environment } = base()
+    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value })
+    expect(load).toThrow('BUCKLE_BROWSER_ARGS holds an argument that is not a switch, such as a page, a path, or the part of one switch after a comma')
+    expect(load).not.toThrow('never-shown')
+  })
+
   it.each([
     [{ BUCKLE_BROWSER_PROFILE: '/owner/profile' }, 'BUCKLE_BROWSER_PROFILE'],
     [{ BUCKLE_BROWSER_ARGS: '--lang=en-GB' }, 'BUCKLE_BROWSER_ARGS'],
