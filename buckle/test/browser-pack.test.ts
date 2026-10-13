@@ -229,7 +229,7 @@ describe('a session left by a run under other browser settings', () => {
     await call(directory, { browser: { mode: after } }, calls)
     expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
     expect(sessionOf(calls[2]!)).not.toBe(first)
-    expect(calls[2]!.args).toContain(after.kind === 'attached' ? after.endpoint : after.directory)
+    expect(calls[2]!.args).toContain(after.kind === 'attached' ? after.endpoint : after.kind === 'profile' ? after.directory : '')
     rmSync(directory, { recursive: true, force: true })
   })
 

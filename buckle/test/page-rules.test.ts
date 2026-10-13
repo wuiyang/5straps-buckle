@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 const PACKAGE = join(dirname(fileURLToPath(import.meta.url)), '..')
 const REPOSITORY = join(PACKAGE, '..')
 const MAX_WORDS = 1100
-const LONG_DASH = /[–—]/
+const LONG_DASH = /[\u2013\u2014]/
 
 function filesUnder(directory: string, matches: (name: string) => boolean): string[] {
   return readdirSync(directory).flatMap((name) => {
