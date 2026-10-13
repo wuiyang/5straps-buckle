@@ -2,10 +2,11 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonObject } from '@5straps/protocol'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { browserEffects, refusedFlag } from '../common/services/packs/browser/effects.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { createBrowserPack, type BrowserPackOptions } from '../common/services/packs/browser/index.js'
+import type { BrowserMode } from '../common/services/packs/browser/mode.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import type { ProcessRequest, ProcessResult } from '../common/types/ports/process-runner.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
@@ -80,6 +81,112 @@ describe('the arguments the browser pack builds', () => {
     const { args } = await run({ command: 'open', args: ['https://example.com'], session: 'tester' })
     expect(args[args.indexOf('--session') + 1]).toMatch(/^buckle-/)
     expect(args).not.toContain('tester')
+  })
+})
+
+describe('the browser the owner\'s settings choose', () => {
+  const PROFILE_MODE: BrowserMode = { kind: 'profile', directory: '/owner/browser-profile' }
+  const ATTACHED: BrowserMode = { kind: 'attached', endpoint: 'ws://127.0.0.1:9222/devtools/browser/abc' }
+  const approved = [{ name: 'workspace' as const, entries: ['example.com'] }]
+  const valueOf = (args: string[], flag: string) => args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined
+  const freshDirectory = () => mkdtempSync(join(tmpdir(), 'buckle-browser-mode-'))
+
+  it('holds a fresh browser to the approved hosts and passes the owner\'s arguments with them', async () => {
+    const { args } = await run({ command: 'snapshot', args: [] }, { approvedLists: approved, launchArgs: '--disable-blink-features=AutomationControlled' })
+    expect(valueOf(args, '--allowed-domains')).toBe('example.com')
+    expect(valueOf(args, '--args')).toBe('--disable-blink-features=AutomationControlled')
+    expect(valueOf(args, '--idle-timeout')).toBe('300000')
+    expect(args).not.toContain('--profile')
+    expect(args).not.toContain('--cdp')
+  })
+
+  it('passes no --args when the owner set none', async () => {
+    const { args } = await run({ command: 'snapshot', args: [] })
+    expect(args).not.toContain('--args')
+  })
+
+  it('launches a profile folder with its arguments and window, and never with --allowed-domains, which agent-browser refuses there', async () => {
+    const { args } = await run({ command: 'snapshot', args: [] }, { browser: { mode: PROFILE_MODE }, approvedLists: approved, headed: true, launchArgs: '--lang=en-GB' })
+    expect(valueOf(args, '--profile')).toBe('/owner/browser-profile')
+    expect(valueOf(args, '--args')).toBe('--lang=en-GB')
+    expect(args).toContain('--headed')
+    expect(args).not.toContain('--allowed-domains')
+    expect(valueOf(args, '--idle-timeout')).toBe('300000')
+  })
+
+  it('attaches with --cdp alone: no list, window, profile, or arguments, and the same idle timeout, which only disconnects', async () => {
+    const { args } = await run({ command: 'snapshot', args: [] }, { browser: { mode: ATTACHED }, approvedLists: approved, headed: true, launchArgs: '--lang=en-GB' })
+    expect(valueOf(args, '--cdp')).toBe('ws://127.0.0.1:9222/devtools/browser/abc')
+    for (const flag of ['--allowed-domains', '--headed', '--profile', '--args']) expect(args).not.toContain(flag)
+    expect(valueOf(args, '--idle-timeout')).toBe('300000')
+    expect(valueOf(args, '--session')).toMatch(/^buckle-/)
+  })
+
+  it('attaches on close too, which agent-browser answers by disconnecting', async () => {
+    const { args } = await run({ command: 'close', args: [] }, { browser: { mode: ATTACHED } })
+    expect(args.slice(0, 2)).toEqual(['close', '--json'])
+    expect(valueOf(args, '--cdp')).toBe('ws://127.0.0.1:9222/devtools/browser/abc')
+  })
+
+  it('tells the agent in the tool description what close keeps in each mode', () => {
+    const description = (mode: BrowserMode) => createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { mode }, runProcess: async () => stubResult() }).tools[0]!.capability.description
+    expect(description({ kind: 'fresh' })).toBe('Run one agent-browser command against an isolated browser session; close discards browser state.')
+    expect(description(PROFILE_MODE)).toContain('logins and cookies outlive close')
+    expect(description(ATTACHED)).toContain('every session shares that browser and its logins, close only disconnects')
+    expect(description(ATTACHED)).not.toContain('9222')
+  })
+
+  it('relaunch notices come from a fresh browser alone, as only a fresh browser is passed the hosts', async () => {
+    const notice = (output: unknown) => (output as { notice?: string }).notice
+    const fresh = freshDirectory()
+    await run({ command: 'snapshot', args: [] }, { sessionDirectory: fresh, approvedLists: approved })
+    const changed = await run({ command: 'snapshot', args: [] }, { sessionDirectory: fresh, approvedLists: [{ name: 'workspace', entries: ['docs.test'] }] })
+    expect(notice(changed.output)).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
+    for (const mode of [PROFILE_MODE, ATTACHED]) {
+      const directory = freshDirectory()
+      await run({ command: 'snapshot', args: [] }, { sessionDirectory: directory, browser: { mode }, approvedLists: approved })
+      const again = await run({ command: 'snapshot', args: [] }, { sessionDirectory: directory, browser: { mode }, approvedLists: [{ name: 'workspace', entries: ['docs.test'] }] })
+      expect(notice(again.output)).toBeUndefined()
+      rmSync(directory, { recursive: true, force: true })
+    }
+    rmSync(fresh, { recursive: true, force: true })
+  })
+
+  it('withholds the pack, naming the setting, when the profile folder was refused', () => {
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { refusal: 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first' }, runProcess: async () => stubResult() })
+    expect(pack.unavailableReason).toBe('BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first')
+  })
+})
+
+describe('the warning a browser without in-browser containment logs at pack start', () => {
+  // A fresh module each time, so each case sees the once-per-process warning anew.
+  async function warnings(browser: BrowserPackOptions['browser']) {
+    vi.resetModules()
+    const log = await import('../common/runtime/log.js')
+    const warn = vi.spyOn(log.logger, 'warn').mockImplementation(() => {})
+    const { createBrowserPack: create } = await import('../common/services/packs/browser/index.js')
+    const options = { cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], runProcess: async () => stubResult(), ...(browser ? { browser } : {}) }
+    create(options)
+    create(options)
+    const calls = warn.mock.calls
+    warn.mockRestore()
+    return calls
+  }
+
+  it('names the setting once, says containment is off and every login is reachable, and never prints the value', async () => {
+    const attached = await warnings({ mode: { kind: 'attached', endpoint: 'ws://127.0.0.1:9222/devtools/browser/secret-id' } })
+    expect(attached).toHaveLength(1)
+    expect(attached[0]![0]).toContain('BUCKLE_BROWSER_CDP is set: the browser is not held to the approved list inside its pages, and every login in that browser is within the agent\'s reach')
+    expect(attached[0]![1]).toEqual({ setting: 'BUCKLE_BROWSER_CDP' })
+    expect(JSON.stringify(attached)).not.toContain('secret-id')
+    const profile = await warnings({ mode: { kind: 'profile', directory: '/owner/private-profile' } })
+    expect(profile).toHaveLength(1)
+    expect(profile[0]![1]).toEqual({ setting: 'BUCKLE_BROWSER_PROFILE' })
+    expect(JSON.stringify(profile)).not.toContain('private-profile')
+  })
+
+  it('stays quiet for a fresh browser', async () => {
+    expect(await warnings(undefined)).toEqual([])
   })
 })
 
