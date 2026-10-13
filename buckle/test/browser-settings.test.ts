@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ARGS_UNTRUSTED, browserArgumentsRefusal } from '../common/domain/browser-arguments.js'
 import { rootsOf } from '../common/domain/executable.js'
 import { actionsPath, loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
@@ -69,7 +70,7 @@ describe('reading the browser settings', () => {
     expect(loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: '--disable-blink-features=AutomationControlled,--lang=en-GB' }).browserArgs).toBe('--disable-blink-features=AutomationControlled,--lang=en-GB')
   })
 
-  it.each(['--user-data-dir=/elsewhere', '--lang=en-GB,-User-Data-Dir /elsewhere', '--lang=en-GB\n--profile-directory=Default', '/user-data-dir=/elsewhere'])('refuses arguments that choose a profile folder: %j', value => {
+  it.each(['--user-data-dir=/elsewhere', '--lang=en-GB,-User-Data-Dir /elsewhere', '--lang=en-GB\n--profile-directory=Default'])('refuses arguments that choose a profile folder: %j', value => {
     const { environment } = base()
     expect(() => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value })).toThrow(/BUCKLE_BROWSER_ARGS may not pass --(?:user-data-dir|profile-directory): name a profile folder with BUCKLE_BROWSER_PROFILE/)
   })
@@ -81,7 +82,7 @@ describe('reading the browser settings', () => {
     ['--app=https://never-shown.example', 'app'],
     ['-app-id=never-shown', 'app-id'],
     ['--app-launch-url-for-shortcuts-menu-item=https://never-shown.example', 'app-launch-url-for-shortcuts-menu-item'],
-    ['/load-and-launch-app=/never-shown', 'load-and-launch-app'],
+    ['--load-and-launch-app=/never-shown', 'load-and-launch-app'],
   ])('refuses %j, which restores or opens pages, naming the switch alone', (value, name) => {
     const { environment } = base()
     const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value })
@@ -89,11 +90,34 @@ describe('reading the browser settings', () => {
     expect(load).not.toThrow('never-shown')
   })
 
-  it.each(['https://never-shown.example', '--lang=en-GB,never-shown.example', '/never-shown/folder', 'file:///never-shown', '--window-size=1280,720'])('refuses %j, which is not a switch, without echoing it', value => {
+  it.each(['https://never-shown.example', '--lang=en-GB,never-shown.example', '/never-shown/folder', '/never-shown', '/lang=en-GB', 'file:///never-shown', '--window-size=1280,720'])('refuses %j, which is not a switch off Windows, without echoing it', value => {
     const { environment } = base()
     const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value })
     expect(load).toThrow('BUCKLE_BROWSER_ARGS holds an argument that is not a switch, such as a page, a path, or the part of one switch after a comma')
     expect(load).not.toThrow('never-shown')
+  })
+
+  // Chrome resolves such a value against its working directory, Buckle's browser state, or the home folder.
+  it.each(['--load-extension=never-shown/ext', '--disk-cache-dir=./never-shown', '--load-extension=../../never-shown', '--load-extension=~/never-shown', '--disk-cache-dir=.never-shown', '--load-extension=never-shown\\ext'])('refuses %j, a path that names no one place, with the fixed text', value => {
+    const { environment } = base()
+    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: `--lang=en-GB,${value}` })
+    expect(load).toThrow(ARGS_UNTRUSTED)
+    expect(load).not.toThrow('never-shown')
+  })
+
+  it('passes a URL value and an absolute path, which the pack judges where it lies', () => {
+    const { environment } = base()
+    const value = '--lang=en-GB,--proxy-pac-url=https://pac.example/proxy.pac,--load-extension=/opt/extensions/reader'
+    expect(loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value }).browserArgs).toBe(value)
+  })
+
+  it('reads a slash prefix as a switch on Windows alone, and refuses a drive-relative path there', () => {
+    expect(browserArgumentsRefusal('/lang=en-GB', 'win32')).toBeNull()
+    expect(browserArgumentsRefusal('/user-data-dir=C:/elsewhere', 'win32')).toContain('BUCKLE_BROWSER_ARGS may not pass --user-data-dir')
+    expect(browserArgumentsRefusal('/load-and-launch-app=C:/x', 'win32')).toContain('BUCKLE_BROWSER_ARGS may not pass --load-and-launch-app')
+    expect(browserArgumentsRefusal('--load-extension=C:ext', 'win32')).toBe(ARGS_UNTRUSTED)
+    expect(browserArgumentsRefusal('--load-extension=C:/extensions/reader', 'win32')).toBeNull()
+    for (const platform of ['linux', 'darwin'] as const) expect(browserArgumentsRefusal('/etc', platform)).toContain('holds an argument that is not a switch')
   })
 
   it.each([

@@ -42,6 +42,9 @@ BUCKLE_BROWSER_ARGS=--disable-blink-features=AutomationControlled
 refuses to start, naming the setting, when the value holds:
 
 - an argument that is not a switch, such as a page, a path, or what follows a comma inside a switch;
+  a `/` starts a switch on Windows alone;
+- a value that names a path without naming one place, such as `./ext`, `ext/sub`, or `~/ext`:
+  give the absolute path, which is judged like the profile folder;
 - `--user-data-dir` or `--profile-directory`: name a profile folder with `BUCKLE_BROWSER_PROFILE`;
 - `--restore-last-session`, `--restore-session`, `--app`, `--app-id`,
   `--app-launch-url-for-shortcuts-menu-item`, or `--load-and-launch-app`, which restore or open

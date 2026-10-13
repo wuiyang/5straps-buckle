@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { isAbsolute } from 'pathe'
-import { browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
+import { ARGS_UNTRUSTED, browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
 import { placesOnTheWay, type UntrustedRoots } from '../../../domain/executable.js'
 import { ignoresCase, isInsideComparable, typedPath } from '../../../domain/paths.js'
 
@@ -44,7 +44,6 @@ const CONTAINMENT_OFF: Record<Exclude<BrowserModeName, 'fresh'>, string> = {
 
 const PROFILE_UNTRUSTED = 'BUCKLE_BROWSER_PROFILE names a folder inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not load it'
 const PROFILE_MISSING = 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first'
-const ARGS_UNTRUSTED = 'BUCKLE_BROWSER_ARGS names a path inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not pass it'
 
 /**
  * Each form a setting's value takes in agent-browser's output, longest first, and the text shown in its place: the
@@ -129,7 +128,7 @@ export function chooseBrowser(input: {
   if (input.cdp) return { mode: { kind: 'attached', endpoint: input.cdp } }
   const platform = input.platform ?? process.platform
   const roots = [...input.untrusted.untrustedRoots.map(root => root.path), ...input.protectedRoots]
-  const named = argumentPaths(input.args ?? '')
+  const named = argumentPaths(input.args ?? '', platform)
   if (named.length > 0 && input.untrusted.rootsUnknown) return { refusal: `BUCKLE_BROWSER_ARGS is not passed while ${input.untrusted.rootsUnknown}` }
   if (named.some(path => judgedFolder(path, roots, platform) === null)) return { refusal: ARGS_UNTRUSTED }
   if (!input.profile) return { mode: FRESH_BROWSER }
@@ -140,10 +139,10 @@ export function chooseBrowser(input: {
   return { mode: { kind: 'profile', directory } }
 }
 
-/** Each absolute path a switch in the owner's arguments takes as its value, as the disk's platform spells it. */
-function argumentPaths(args: string): string[] {
+/** Each absolute path a switch in the owner's arguments takes as its value; a relative one was refused at start. */
+function argumentPaths(args: string, platform: NodeJS.Platform): string[] {
   return browserArguments(args).flatMap((argument) => {
-    const value = chromiumSwitch(argument)?.value
+    const value = chromiumSwitch(argument, platform)?.value
     return value && isAbsolute(value) ? [value] : []
   })
 }

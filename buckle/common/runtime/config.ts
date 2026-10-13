@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'pathe'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
 import { approvalKey, type ApprovalKey } from '@5straps/protocol/envelope'
-import { browserArguments, chromiumSwitch } from '../domain/browser-arguments.js'
+import { browserArgumentsRefusal } from '../domain/browser-arguments.js'
 import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
 import { childPath, homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
@@ -375,7 +375,7 @@ function parseGitAuthor(value: string | undefined): { name: string; email: strin
 function parseBrowserSettings(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): Pick<BuckleConfig, 'browserCdp' | 'browserProfile' | 'browserArgs'> {
   const browserCdp = parseBrowserCdp(environment.BUCKLE_BROWSER_CDP)
   const browserProfile = parseBrowserProfile(environment.BUCKLE_BROWSER_PROFILE, platform)
-  const browserArgs = parseBrowserArgs(environment.BUCKLE_BROWSER_ARGS)
+  const browserArgs = parseBrowserArgs(environment.BUCKLE_BROWSER_ARGS, platform)
   const beside = [browserProfile && 'BUCKLE_BROWSER_PROFILE', browserArgs && 'BUCKLE_BROWSER_ARGS', environment.BUCKLE_BROWSER_HEADED === 'true' && 'BUCKLE_BROWSER_HEADED']
     .filter((name): name is string => Boolean(name))
   if (browserCdp && beside.length > 0) {
@@ -414,29 +414,12 @@ function parseBrowserProfile(value: string | undefined, platform: NodeJS.Platfor
   }
 }
 
-/** Chromium switches that choose a profile folder, which BUCKLE_BROWSER_PROFILE alone names, under its path rule. */
-const PROFILE_SWITCHES = ['user-data-dir', 'profile-directory']
-
-/** Switches that restore or open pages, which agent-browser refuses beside an approved list (its allowed_domains_disallowed_chrome_arg). */
-const PAGE_SWITCHES = ['restore-last-session', 'restore-session', 'app', 'app-id', 'app-launch-url-for-shortcuts-menu-item', 'load-and-launch-app']
-
-const NOT_A_SWITCH = 'BUCKLE_BROWSER_ARGS holds an argument that is not a switch, such as a page, a path, or the part of one switch after a comma: agent-browser splits the value at commas and new lines, and refuses a page or a path beside an approved list'
-
-/**
- * Passed whole as agent-browser's `--args`. Every argument agent-browser would refuse beside an approved list is
- * refused here, at start, as an approved list can be set while the node runs: a page or path, and a switch that
- * restores or opens pages. So is a profile switch, which BUCKLE_BROWSER_PROFILE alone names. A refusal names the
- * switch from these lists, never what the owner wrote.
- */
-function parseBrowserArgs(value: string | undefined): string | undefined {
+/** Passed whole as agent-browser's `--args`, once nothing in it is refused (browserArgumentsRefusal). */
+function parseBrowserArgs(value: string | undefined, platform: NodeJS.Platform): string | undefined {
   const raw = value?.trim()
   if (!raw) return undefined
-  for (const argument of browserArguments(raw)) {
-    const name = chromiumSwitch(argument)?.name
-    if (name === undefined) throw new Error(NOT_A_SWITCH)
-    if (PROFILE_SWITCHES.includes(name)) throw new Error(`BUCKLE_BROWSER_ARGS may not pass --${name}: name a profile folder with BUCKLE_BROWSER_PROFILE, which Buckle checks against the places an agent can write`)
-    if (PAGE_SWITCHES.includes(name)) throw new Error(`BUCKLE_BROWSER_ARGS may not pass --${name}: it restores or opens pages before the approved list holds, so agent-browser refuses it beside one`)
-  }
+  const refusal = browserArgumentsRefusal(raw, platform)
+  if (refusal) throw new Error(refusal)
   return raw
 }
 
