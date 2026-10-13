@@ -45,9 +45,9 @@ refuses to start, naming the setting, when the value holds:
 
 - an argument that is not a switch, such as a page, a path, or what follows a comma inside a switch;
   a `/` starts a switch on Windows alone;
-- a path spelled with a `..` segment, a leading `./` or `~`, or on Windows a drive or a root alone:
-  give the absolute path, which is judged like the profile folder. A bare relative name, such as
-  `ext`, resolves against Buckle's browser state directory, where no agent writes;
+- a path spelled with a `..` segment, a leading `./` or `~`, a `file:` URL, or on Windows a drive
+  or a root alone: give the absolute path, which is judged like the profile folder. A bare relative
+  name, such as `ext`, resolves against Buckle's browser state directory, where no agent writes;
 - `--user-data-dir` or `--profile-directory`: name a profile folder with `BUCKLE_BROWSER_PROFILE`;
 - `--restore-last-session`, `--restore-session`, `--app`, `--app-id`,
   `--app-launch-url-for-shortcuts-menu-item`, or `--load-and-launch-app`, which restore or open
@@ -78,11 +78,10 @@ On Windows, in PowerShell:
 
 Since Chrome 136, Chrome ignores the port on its default profile, so keep a second profile folder
 for Buckle, sign in there to the sites the agent needs, and leave your everyday profile out of it.
-Then set `BUCKLE_BROWSER_CDP=9222` in `buckle.env` and restart every Buckle process. In `agent-browser`'s source, an
-approval prompt is expected only from remote debugging turned on at
-`chrome://inspect/#remote-debugging` (Chrome 144 and later), which serves your everyday profile on
-a changing port; a port given on Chrome's command line, as above, is reached without it. If Chrome
-does show one, approve it and have the agent retry.
+Then set `BUCKLE_BROWSER_CDP=9222` in `buckle.env` and restart every Buckle process.
+`agent-browser` expects an approval prompt only from the switch at
+`chrome://inspect/#remote-debugging` (Chrome 144 and later), not from a port on Chrome's command
+line; if Chrome shows one, approve it and have the agent retry.
 
 Buckle never closes that browser. `close` only disconnects, and so does an idle session after 5
 minutes or Buckle's own shutdown: your browser, its tabs, and its logins stay open. Every agent
@@ -118,8 +117,8 @@ should hold only the logins the agent's work needs.
 Chrome opens a profile folder in one browser at a time, so every agent session, in every
 workspace and every Buckle process, shares the one browser on it, with its tabs and logins. A
 Buckle process that stops leaves it running; `close` from any session, or 5 idle minutes, ends it
-for all. With a profile folder no host list is passed, so a changed approved list
-relaunches nothing.
+for all. Buckle tells its processes apart by process id alone, so after a settings change restart
+every one rather than rely on it to close or reuse the right browser.
 
 ## Checking the mode
 
