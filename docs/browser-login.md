@@ -115,5 +115,6 @@ relaunches nothing.
 
 ## Checking the mode
 
-The setup face's `/setup/status` reports `browser.mode` as `fresh`, `profile`, or `attached`, and
-`browser.setting` as the setting that chose it, never its value.
+The setup face's `/setup/status` reports `browser.mode` as `fresh`, `profile`, or `attached`,
+`browser.setting` as the setting that chose it, never its value, and `browser.withheld` as the
+reason the browser pack is withheld, or null while it runs.

@@ -212,10 +212,25 @@ describe('where a profile folder may lie', () => {
     mkdirSync(state, { recursive: true })
     const folder = join({ 'the workspace': workspace, 'the state directory': state, 'a scratch root': scratch }[place]!, 'profile')
     mkdirSync(folder)
-    const runtime = await createRuntime({ config: loadConfig({ ...environment, BUCKLE_SCRATCH_ROOTS: scratch, BUCKLE_AGENT_BROWSER_COMMAND: process.execPath, BUCKLE_BROWSER_PROFILE: folder }) })
+    const config = loadConfig({ ...environment, BUCKLE_SCRATCH_ROOTS: scratch, BUCKLE_AGENT_BROWSER_COMMAND: process.execPath, BUCKLE_BROWSER_PROFILE: folder })
+    const runtime = await createRuntime({ config })
     const pack = runtime.manifest().packs.find(item => item.id === 'browser')
     expect(pack?.unavailableReason).toBe(UNTRUSTED)
     expect(runtime.registry().has('browser_command')).toBe(false)
+    // The status says the mode the settings chose and that it is withheld, naming the setting, never the folder.
+    const status = await createSetupViews().status({ config, runtime })
+    expect(status.browser).toEqual({ mode: 'profile', setting: 'BUCKLE_BROWSER_PROFILE', withheld: UNTRUSTED })
+    expect(JSON.stringify(status.browser)).not.toContain(folder)
+  })
+
+  it('reports the browser pack withheld when BUCKLE_PACKS leaves it out, or when agent-browser is missing', async () => {
+    const { environment } = base()
+    const left = loadConfig({ ...environment, BUCKLE_PACKS: 'fs' })
+    expect((await createSetupViews().status({ config: left, runtime: await createRuntime({ config: left }) })).browser)
+      .toEqual({ mode: 'fresh', setting: null, withheld: 'BUCKLE_PACKS leaves the browser pack out' })
+    const missing = loadConfig({ ...environment, BUCKLE_AGENT_BROWSER_COMMAND: join(environment.BUCKLE_WORKSPACE_ROOT!, '..', 'no-such-agent-browser') })
+    expect((await createSetupViews().status({ config: missing, runtime: await createRuntime({ config: missing }) })).browser)
+      .toEqual({ mode: 'fresh', setting: null, withheld: 'agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it' })
   })
 })
 
@@ -257,7 +272,7 @@ describe('what a real runtime hands a fake agent-browser in each mode', () => {
     expect(response.outcome).toBe('ok')
     expect(valueOf(call, '--allowed-domains')).toBe('example.com')
     expect(valueOf(call, '--args')).toBe('--disable-blink-features=AutomationControlled')
-    expect(status.browser).toEqual({ mode: 'fresh', setting: null })
+    expect(status.browser).toEqual({ mode: 'fresh', setting: null, withheld: null })
   })
 
   it('launches the profile folder without the list, and reports the mode by its setting alone', async () => {
@@ -269,7 +284,7 @@ describe('what a real runtime hands a fake agent-browser in each mode', () => {
     expect(valueOf(call, '--profile')).toBe(profile)
     expect(call).toContain('--headed')
     expect(call).not.toContain('--allowed-domains')
-    expect(status.browser).toEqual({ mode: 'profile', setting: 'BUCKLE_BROWSER_PROFILE' })
+    expect(status.browser).toEqual({ mode: 'profile', setting: 'BUCKLE_BROWSER_PROFILE', withheld: null })
     expect(JSON.stringify(status)).not.toContain('owner-profile')
     expect(description).toContain('logins and cookies outlive close')
   })
@@ -280,7 +295,7 @@ describe('what a real runtime hands a fake agent-browser in each mode', () => {
     expect(valueOf(call, '--cdp')).toBe('ws://127.0.0.1:9222/devtools/browser/never-shown')
     for (const flag of ['--allowed-domains', '--headed', '--profile', '--args']) expect(call).not.toContain(flag)
     expect(valueOf(call, '--idle-timeout')).toBe('300000')
-    expect(status.browser).toEqual({ mode: 'attached', setting: 'BUCKLE_BROWSER_CDP' })
+    expect(status.browser).toEqual({ mode: 'attached', setting: 'BUCKLE_BROWSER_CDP', withheld: null })
     expect(JSON.stringify(status)).not.toContain('never-shown')
     expect(description).toContain('close only disconnects')
   })
