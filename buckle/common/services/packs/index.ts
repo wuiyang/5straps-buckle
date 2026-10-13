@@ -134,7 +134,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       sessionDirectory: options.browserStateDirectory,
       headed: options.browserHeaded,
       // A profile folder is judged as the agent-browser program is, against every root an agent can write, and Buckle's state.
-      browser: chooseBrowser({ cdp: options.browserCdp, profile: options.browserProfile, untrusted: untrusted(), protectedRoots: options.hiddenPaths, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
+      browser: chooseBrowser({ cdp: options.browserCdp, profile: options.browserProfile, args: options.browserArgs, untrusted: untrusted(), protectedRoots: options.hiddenPaths, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
       ...(options.browserArgs ? { launchArgs: options.browserArgs } : {}),
       agentBrowser: program(options.agentBrowserCommand),
       environment,

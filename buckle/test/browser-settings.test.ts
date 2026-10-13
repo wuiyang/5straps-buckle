@@ -169,6 +169,28 @@ describe('where a profile folder may lie', () => {
       .toEqual({ refusal: 'BUCKLE_BROWSER_PROFILE is not loaded while the workspace registry cannot be read' })
   })
 
+  it.each(['load-extension', 'disk-cache-dir'])('refuses an argument whose --%s names a folder inside or around a root, or through a link there', (name) => {
+    const { root, workspace, scratch, state, outside, choose } = folders()
+    const untrusted = { untrustedRoots: [...rootsOf('workspace', [workspace]), ...rootsOf('scratch root', [scratch])], rootsUnknown: null }
+    const withArgs = (args: string) => chooseBrowser({ args, untrusted, protectedRoots: [state] })
+    const refused = { refusal: 'BUCKLE_BROWSER_ARGS names a path inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not pass it' }
+    symlinkSync(join(workspace), join(root, 'into-workspace'))
+    for (const folder of [join(workspace, 'ext'), join(scratch, 'ext'), join(state, 'ext'), workspace, root, join(root, 'into-workspace', 'ext')]) {
+      expect(withArgs(`--lang=en-GB,--${name}=${folder}`)).toEqual(refused)
+    }
+    expect(withArgs(`--${name}=${join(outside, 'ext')}`)).toEqual({ mode: { kind: 'fresh' } })
+    expect(chooseBrowser({ args: `--${name}=${join(workspace, 'ext')}`, profile: join(outside, 'profile'), untrusted, protectedRoots: [state] })).toEqual(refused)
+    expect(choose(join(outside, 'profile'))).toEqual({ mode: { kind: 'profile', directory: join(outside, 'profile') } })
+  })
+
+  it('passes arguments that name no path whatever the roots, and refuses a path while the registry cannot be read', () => {
+    const { outside } = folders()
+    const unknown = { untrustedRoots: [], rootsUnknown: 'the workspace registry cannot be read' }
+    expect(chooseBrowser({ args: '--lang=en-GB,--disable-blink-features=AutomationControlled', untrusted: unknown, protectedRoots: [] })).toEqual({ mode: { kind: 'fresh' } })
+    expect(chooseBrowser({ args: `--load-extension=${join(outside, 'ext')}`, untrusted: unknown, protectedRoots: [] }))
+      .toEqual({ refusal: 'BUCKLE_BROWSER_ARGS is not passed while the workspace registry cannot be read' })
+  })
+
   it('withholds the browser pack of a real runtime, naming the setting', async () => {
     const { environment, workspace } = base()
     mkdirSync(join(workspace, 'profile'))

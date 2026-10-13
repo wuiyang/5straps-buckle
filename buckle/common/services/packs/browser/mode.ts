@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
+import { isAbsolute } from 'pathe'
+import { browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
 import { placesOnTheWay, type UntrustedRoots } from '../../../domain/executable.js'
-import { ignoresCase, isInsideComparable } from '../../../domain/paths.js'
+import { ignoresCase, isInsideComparable, typedPath } from '../../../domain/paths.js'
 
 /**
  * Which browser `browser_command` drives, chosen by the owner's settings alone: a fresh one for each session (the
@@ -42,6 +44,7 @@ const CONTAINMENT_OFF: Record<Exclude<BrowserModeName, 'fresh'>, string> = {
 
 const PROFILE_UNTRUSTED = 'BUCKLE_BROWSER_PROFILE names a folder inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not load it'
 const PROFILE_MISSING = 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first'
+const ARGS_UNTRUSTED = 'BUCKLE_BROWSER_ARGS names a path inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not pass it'
 
 /**
  * Each form a setting's value takes in agent-browser's output, longest first, and the text shown in its place: the
@@ -100,27 +103,52 @@ export function containmentWarning(mode: BrowserMode): { message: string; settin
  * The browser the settings choose. A profile folder is judged as the agent-browser command is (resolveProgram): it is
  * refused where the path named, a link on its way, or where it lands lies inside a root an agent can write or Buckle's
  * state, or holds one, as Chrome reads every folder beneath its profile. It is handed on as the folder it really is.
+ * A path the owner's arguments name (`--load-extension=<folder>`, `--disk-cache-dir=<folder>`) is judged the same way,
+ * as Chrome loads code from it or writes to it.
  */
 export function chooseBrowser(input: {
   cdp?: string
   profile?: string
+  args?: string
   untrusted: UntrustedRoots
   protectedRoots: readonly string[]
   platform?: NodeJS.Platform
 }): BrowserChoice {
   if (input.cdp) return { mode: { kind: 'attached', endpoint: input.cdp } }
+  const platform = input.platform ?? process.platform
+  const roots = [...input.untrusted.untrustedRoots.map(root => root.path), ...input.protectedRoots]
+  const named = argumentPaths(input.args ?? '')
+  if (named.length > 0 && input.untrusted.rootsUnknown) return { refusal: `BUCKLE_BROWSER_ARGS is not passed while ${input.untrusted.rootsUnknown}` }
+  if (named.some(path => judgedFolder(path, roots, platform) === null)) return { refusal: ARGS_UNTRUSTED }
   if (!input.profile) return { mode: FRESH_BROWSER }
   if (input.untrusted.rootsUnknown) return { refusal: `BUCKLE_BROWSER_PROFILE is not loaded while ${input.untrusted.rootsUnknown}` }
-  const platform = input.platform ?? process.platform
-  const profile = input.profile
+  const directory = judgedFolder(input.profile, roots, platform)
+  if (directory === null) return { refusal: PROFILE_UNTRUSTED }
+  try { if (!statSync(directory).isDirectory()) return { refusal: PROFILE_MISSING } } catch { return { refusal: PROFILE_MISSING } }
+  return { mode: { kind: 'profile', directory } }
+}
+
+/** Each absolute path a switch in the owner's arguments takes as its value, as the disk's platform spells it. */
+function argumentPaths(args: string): string[] {
+  return browserArguments(args).flatMap((argument) => {
+    const value = chromiumSwitch(argument)?.value
+    return value && isAbsolute(value) ? [value] : []
+  })
+}
+
+/**
+ * Where a folder really is, or null where it lies where Buckle does not load from: every place on its way lies outside
+ * every root, and the folder, as named and where it lands, holds none. A path Buckle cannot read or follow is null too.
+ */
+function judgedFolder(path: string, roots: readonly string[], platform: NodeJS.Platform): string | null {
+  let named: string
   let places: string[]
-  try { places = placesOnTheWay(profile, platform) } catch { return { refusal: PROFILE_UNTRUSTED } }
-  const roots = [...input.untrusted.untrustedRoots.map(root => root.path), ...input.protectedRoots]
+  try {
+    named = typedPath(path, platform)
+    places = placesOnTheWay(named, platform)
+  } catch { return null }
   const directory = places.at(-1)!
   const caseless = ignoresCase(platform)
   const inside = (outer: string, inner: string) => isInsideComparable(outer, inner, caseless, platform)
-  // Every place on the way lies outside every root, and the folder, as named and where it lands, holds none.
-  if (roots.some(root => places.some(place => inside(root, place)) || [profile, directory].some(folder => inside(folder, root)))) return { refusal: PROFILE_UNTRUSTED }
-  try { if (!statSync(directory).isDirectory()) return { refusal: PROFILE_MISSING } } catch { return { refusal: PROFILE_MISSING } }
-  return { mode: { kind: 'profile', directory } }
+  return roots.some(root => places.some(place => inside(root, place)) || [named, directory].some(folder => inside(folder, root))) ? null : directory
 }
