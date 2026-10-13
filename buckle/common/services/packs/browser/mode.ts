@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { placesOnTheWay, type UntrustedRoots } from '../../../domain/executable.js'
 import { ignoresCase, isInsideComparable } from '../../../domain/paths.js'
@@ -71,6 +72,17 @@ export function settingScrubber(mode: BrowserMode): (text: string) => string {
   const forms = settingForms(mode).flatMap(form => [form, JSON.stringify(form).slice(1, -1)])
   const longestFirst = [...new Set(forms)].sort((a, b) => b.length - a.length)
   return text => setting === null ? text : longestFirst.reduce((shown, form) => shown.replaceAll(form, setting), text)
+}
+
+/**
+ * What a browser daemon was started with that a later call cannot change: the mode, its endpoint or folder, the
+ * owner's arguments, and the window. agent-browser fixes these in a daemon when it spawns and reuses a running daemon
+ * by its session name, so a session started under other settings, left by a stop that skipped the close step, is
+ * never reused. Hashed, so the sessions store holds no endpoint or path.
+ */
+export function modeFingerprint(mode: BrowserMode, settings: { launchArgs?: string; headed: boolean }): string {
+  const target = mode.kind === 'attached' ? mode.endpoint : mode.kind === 'profile' ? mode.directory : ''
+  return createHash('sha256').update(JSON.stringify([mode.kind, target, settings.launchArgs ?? '', settings.headed])).digest('hex').slice(0, 16)
 }
 
 /** The mode the node's settings choose, as `/setup/status` reports it: a word, and the setting, never its value. */

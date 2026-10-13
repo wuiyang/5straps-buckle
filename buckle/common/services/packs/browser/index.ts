@@ -15,7 +15,7 @@ import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
-import { containmentWarning, FRESH_BROWSER, MODE_DESCRIPTIONS, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
+import { containmentWarning, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
@@ -41,6 +41,8 @@ const SessionsSchema = z.object({
   sessions: z.record(z.string(), z.string()),
   /** The --allowed-domains each session last ran with, null for none, so a change can be told. */
   allowedDomains: z.record(z.string(), z.string().nullable()).default({}),
+  /** The settings each session's daemon was started with (modeFingerprint), so one from other settings is replaced. */
+  modes: z.record(z.string(), z.string()).default({}),
 })
 
 const commandInput = z.object({
@@ -91,13 +93,14 @@ export const BROWSER_UNTRUSTED = 'BUCKLE_AGENT_BROWSER_COMMAND names a program i
 export function createBrowserPack(options: BrowserPackOptions): Pack {
   // A node that stopped mid-call leaves its transfer copies behind; each pack start clears them (review L4 of the second re-review).
   sweepTransfers({ directory: options.sessionDirectory, staleAfterMs: 2 * (options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS) })
-  const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: { sessions: {}, allowedDomains: {} } })
+  const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: { sessions: {}, allowedDomains: {}, modes: {} } })
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
   const allowedDomains = browserAllowedDomains(options.approvedLists)
   const choice = options.browser ?? { mode: FRESH_BROWSER }
   const mode: BrowserMode | null = 'mode' in choice ? choice.mode : null
   // agent-browser's output names the endpoint or the profile folder when it cannot reach or open them.
   const scrub = settingScrubber(mode ?? FRESH_BROWSER)
+  const fingerprint = modeFingerprint(mode ?? FRESH_BROWSER, { launchArgs: options.launchArgs, headed: options.headed })
   // agent-browser refuses --allowed-domains with a profile or an attached browser, so only a fresh one is passed the list.
   const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
   const unavailableReason = options.agentBrowser.path !== null ? ('refusal' in choice ? choice.refusal : null) : options.agentBrowser.untrusted ? BROWSER_UNTRUSTED : BROWSER_UNAVAILABLE
@@ -149,7 +152,22 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const passed = input.args.map((argument, index) => targets.get(index) ?? transfer.argument(argument) ?? realPath(argument, options.paths))
             const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
             const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
-            const { session, previous } = await sessions.update(state => ({ session: state.sessions[key] ??= `buckle-${randomUUID()}`, previous: state.allowedDomains[key] }))
+            const { session, previous, replaced } = await sessions.update((state) => {
+              const known = state.sessions[key]
+              // A daemon started under other settings keeps them, so its session is closed and a new one named.
+              const replaced = known !== undefined && state.modes[key] !== fingerprint ? known : null
+              if (known === undefined || replaced !== null) {
+                state.sessions[key] = `buckle-${randomUUID()}`
+                delete state.allowedDomains[key]
+              }
+              state.modes[key] = fingerprint
+              return { session: state.sessions[key]!, previous: state.allowedDomains[key], replaced }
+            })
+            if (replaced !== null) {
+              opened.delete(replaced)
+              const closed = await closeSession(options, replaced, AbortSignal.timeout(CLOSE_TIMEOUT_MS))
+              if (!closed) logger.warn('A browser session from other settings did not close; its idle timeout ends it')
+            }
             args.push('--config', configFile, '--session', session, ...modeArguments(running, { flag, headed: options.headed && !input.args.includes('--headed'), launchArgs: options.launchArgs }))
             if (flag !== null && 'loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
 
@@ -171,7 +189,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             await transfer.deliver()
             if (input.command === 'close') {
               opened.delete(session)
-              await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key] })
+              await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key]; delete state.modes[key] })
             } else {
               opened.add(session)
               await sessions.update(state => { state.allowedDomains[key] = flag })
@@ -236,25 +254,34 @@ async function closeSessions(input: { options: BrowserPackOptions; sessions: Jso
   if (closing.length === 0) return
   const bound = AbortSignal.timeout(CLOSE_TIMEOUT_MS)
   await Promise.all(closing.map(async (session) => {
-    const program = browserProgram(input.options)
-    const result = await input.options.runProcess({
-      command: program.path,
-      argv0: program.argv0,
-      args: ['close', '--session', session, '--json'],
-      cwd: input.options.sessionDirectory,
-      timeoutMs: CLOSE_TIMEOUT_MS,
-      environment: browserEnvironment(input.options),
-      signal: bound,
-    }).catch((error: unknown) => ({ exitCode: null, error }))
-    if (result.exitCode !== 0) logger.warn('A browser session did not close at shutdown; its idle timeout ends it', { exitCode: result.exitCode })
+    if (!await closeSession(input.options, session, bound)) logger.warn('A browser session did not close at shutdown; its idle timeout ends it')
   }))
   await input.sessions.update((state) => {
     for (const [key, session] of Object.entries(state.sessions)) {
       if (!closing.includes(session)) continue
       delete state.sessions[key]
       delete state.allowedDomains[key]
+      delete state.modes[key]
     }
   })
+}
+
+/**
+ * Sends close to one session's daemon, as the close command would: it closes a browser agent-browser launched and
+ * only disconnects from an attached one. Whether it closed; a daemon that will not is left to its idle timeout.
+ */
+async function closeSession(options: BrowserPackOptions, session: string, signal: AbortSignal): Promise<boolean> {
+  const program = browserProgram(options)
+  const result = await options.runProcess({
+    command: program.path,
+    argv0: program.argv0,
+    args: ['close', '--session', session, '--json'],
+    cwd: options.sessionDirectory,
+    timeoutMs: CLOSE_TIMEOUT_MS,
+    environment: browserEnvironment(options),
+    signal,
+  }).catch(() => ({ exitCode: null }))
+  return result.exitCode === 0
 }
 
 const loggedLoosened = new Set<string>()

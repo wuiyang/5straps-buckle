@@ -47,7 +47,8 @@ async function run(input: JsonObject, options: Partial<BrowserPackOptions> = {},
     timeoutMs: 1000,
     signal: new AbortController().signal,
   })
-  return { args: calls[0]?.args ?? [], output }
+  // The command's own call is the last: a session left under other settings is closed before it.
+  return { args: calls.at(-1)?.args ?? [], output }
 }
 
 describe('the arguments the browser pack builds', () => {
@@ -155,6 +156,37 @@ describe('the browser the owner\'s settings choose', () => {
   it('withholds the pack, naming the setting, when the profile folder was refused', () => {
     const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { refusal: 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first' }, runProcess: async () => stubResult() })
     expect(pack.unavailableReason).toBe('BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first')
+  })
+})
+
+// A stop that skipped the close step leaves a daemon running for its idle timeout, with the settings it was spawned
+// with fixed in it; agent-browser reuses a running daemon by its session name.
+describe('a session left by a run under other browser settings', () => {
+  async function call(sessionDirectory: string, options: Partial<BrowserPackOptions>, calls: ProcessRequest[]) {
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], runProcess: async (request) => { calls.push(request); return stubResult() }, ...options })
+    await pack.tools[0]!.prepare({ command: 'snapshot', args: [] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
+  }
+  const sessionOf = (request: ProcessRequest) => request.args[request.args.indexOf('--session') + 1]
+
+  it.each<[string, Partial<BrowserPackOptions>]>([
+    ['an attached browser', { browser: { mode: { kind: 'attached', endpoint: '9222' } } }],
+    ['a profile folder', { browser: { mode: { kind: 'profile', directory: '/owner/profile' } } }],
+    ['other arguments', { launchArgs: '--lang=en-GB' }],
+    ['a window', { headed: true }],
+  ])('is closed and replaced when the node now runs %s', async (_, changed) => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-replaced-'))
+    const calls: ProcessRequest[] = []
+    await call(directory, {}, calls)
+    await call(directory, {}, calls)
+    expect(calls).toHaveLength(2)
+    const first = sessionOf(calls[0]!)
+    expect(sessionOf(calls[1]!)).toBe(first)
+    await call(directory, changed, calls)
+    expect(calls[2]!.args).toEqual(['close', '--session', first, '--json'])
+    expect(sessionOf(calls[3]!)).toMatch(/^buckle-/)
+    expect(sessionOf(calls[3]!)).not.toBe(first)
+    expect(readFileSync(join(directory, 'sessions.json'), 'utf8')).not.toContain('9222')
+    rmSync(directory, { recursive: true, force: true })
   })
 })
 
