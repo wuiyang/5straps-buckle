@@ -46,6 +46,8 @@ const SessionsSchema = z.object({
   allowedDomains: z.record(z.string(), z.string().nullable()).default({}),
   /** The settings each session's daemon was started with (modeFingerprint), so one from other settings is replaced. */
   modes: z.record(z.string(), z.string()).default({}),
+  /** The process that wrote each session's settings, so a live sibling's daemon is reused rather than closed. */
+  writers: z.record(z.string(), z.number().int()).default({}),
 })
 
 const commandInput = z.object({
@@ -96,7 +98,7 @@ export const BROWSER_UNTRUSTED = 'BUCKLE_AGENT_BROWSER_COMMAND names a program i
 export function createBrowserPack(options: BrowserPackOptions): Pack {
   // A node that stopped mid-call leaves its transfer copies behind; each pack start clears them (review L4 of the second re-review).
   sweepTransfers({ directory: options.sessionDirectory, staleAfterMs: 2 * (options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS) })
-  const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: { sessions: {}, allowedDomains: {}, modes: {} } })
+  const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: { sessions: {}, allowedDomains: {}, modes: {}, writers: {} } })
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
   const allowedDomains = browserAllowedDomains(options.approvedLists)
   const choice = options.browser ?? { mode: FRESH_BROWSER }
@@ -157,17 +159,27 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
             // Every caller shares the one browser on a profile folder; elsewhere each caller, stage, and alias has its own.
             const key = running.kind === 'profile' ? SHARED_PROFILE_KEY : JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
-            const { session, previous, replaced } = await sessions.update((state) => {
+            const own = running.kind === 'profile' ? profileSession(running.directory) : null
+            const { session, previous, replaced, sibling } = await sessions.update((state) => {
               const known = state.sessions[key]
+              const mismatch = known !== undefined && state.modes[key] !== fingerprint
+              // A live Buckle process on other settings keeps its daemon: closing it would relaunch on each call either makes.
+              const writer = state.writers[key]
+              if (mismatch && writer !== undefined && writer !== process.pid && processAlive(writer)) {
+                if (own === null || own === known) return { session: known, previous: state.allowedDomains[key], replaced: null, sibling: true }
+                return { session: own, previous: undefined, replaced: null, sibling: true }
+              }
               // A daemon started under other settings keeps them, so its session is closed and a new one named.
-              const replaced = known !== undefined && state.modes[key] !== fingerprint ? known : null
+              const replaced = mismatch ? known : null
               if (known === undefined || replaced !== null) {
-                state.sessions[key] = running.kind === 'profile' ? profileSession(running.directory) : `buckle-${randomUUID()}`
+                state.sessions[key] = own ?? `buckle-${randomUUID()}`
                 delete state.allowedDomains[key]
               }
               state.modes[key] = fingerprint
-              return { session: state.sessions[key]!, previous: state.allowedDomains[key], replaced }
+              state.writers[key] = process.pid
+              return { session: state.sessions[key]!, previous: state.allowedDomains[key], replaced, sibling: false }
             })
+            if (sibling) logSiblingSettings()
             if (replaced !== null) {
               opened.delete(replaced)
               const closed = await closeSession(options, replaced, AbortSignal.timeout(CLOSE_TIMEOUT_MS))
@@ -195,7 +207,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             await transfer.deliver()
             if (input.command === 'close') {
               opened.delete(session)
-              await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key]; delete state.modes[key] })
+              await sessions.update(state => { delete state.sessions[key]; delete state.allowedDomains[key]; delete state.modes[key]; delete state.writers[key] })
             } else {
               if (running.kind !== 'profile') opened.add(session)
               await sessions.update(state => { state.allowedDomains[key] = flag })
@@ -275,6 +287,7 @@ async function closeSessions(input: { options: BrowserPackOptions; sessions: Jso
       delete state.sessions[key]
       delete state.allowedDomains[key]
       delete state.modes[key]
+      delete state.writers[key]
     }
   })
 }
@@ -295,6 +308,25 @@ async function closeSession(options: BrowserPackOptions, session: string, signal
     signal,
   }).catch(() => ({ exitCode: null }))
   return result.exitCode === 0
+}
+
+/** Whether a process is running; one that exists under another user is running too. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+let loggedSibling = false
+
+/** Once per process: fixed text naming the settings, never their values. */
+function logSiblingSettings(): void {
+  if (loggedSibling) return
+  loggedSibling = true
+  logger.warn('Another Buckle process on this node runs the browser under other BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, or BUCKLE_BROWSER_HEADED settings; its browser session is reused, not closed. Restart every Buckle process after changing them')
 }
 
 const loggedLoosened = new Set<string>()

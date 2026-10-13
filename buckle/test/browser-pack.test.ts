@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonObject } from '@5straps/protocol'
@@ -8,6 +9,7 @@ import { createPathView } from '../common/domain/path-view.js'
 import { createBrowserPack, type BrowserPackOptions } from '../common/services/packs/browser/index.js'
 import type { BrowserMode } from '../common/services/packs/browser/mode.js'
 import { loadPackSkill } from '../common/services/packs/pack-skill.js'
+import { logger } from '../common/runtime/log.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import type { ProcessRequest, ProcessResult } from '../common/types/ports/process-runner.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
@@ -215,6 +217,60 @@ describe('a session left by a run under other browser settings', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
+  // The endpoint and the folder are part of the settings: a daemon on another endpoint or folder is never reused.
+  it.each<[string, BrowserMode, BrowserMode]>([
+    ['an attached endpoint', { kind: 'attached', endpoint: '9222' }, { kind: 'attached', endpoint: '9333' }],
+    ['a profile folder', { kind: 'profile', directory: '/owner/profile-a' }, { kind: 'profile', directory: '/owner/profile-b' }],
+  ])('is closed and replaced when %s changes', async (_, before, after) => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-replaced-'))
+    const calls: ProcessRequest[] = []
+    await call(directory, { browser: { mode: before } }, calls)
+    const first = sessionOf(calls[0]!)
+    await call(directory, { browser: { mode: after } }, calls)
+    expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
+    expect(sessionOf(calls[2]!)).not.toBe(first)
+    expect(calls[2]!.args).toContain(after.kind === 'attached' ? after.endpoint : after.directory)
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  // Two Buckle processes on different settings would otherwise close each other's daemon on every call.
+  it('is reused, with one warning, when a live sibling process wrote other settings', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-sibling-'))
+    const calls: ProcessRequest[] = []
+    await call(directory, {}, calls)
+    const first = sessionOf(calls[0]!)
+    const store = join(directory, 'sessions.json')
+    const state = JSON.parse(readFileSync(store, 'utf8')) as { writers: Record<string, number> }
+    for (const key of Object.keys(state.writers)) state.writers[key] = process.ppid
+    writeFileSync(store, JSON.stringify(state))
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    await call(directory, { launchArgs: '--lang=en-GB' }, calls)
+    await call(directory, { launchArgs: '--lang=en-GB' }, calls)
+    const warned = warn.mock.calls.filter(([message]) => message.startsWith('Another Buckle process on this node'))
+    warn.mockRestore()
+    expect(calls.slice(1).map(request => request.args[0])).toEqual(['snapshot', 'snapshot'])
+    expect(calls.slice(1).map(sessionOf)).toEqual([first, first])
+    expect(warned).toHaveLength(1)
+    expect(JSON.stringify(warned)).not.toContain('en-GB')
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('is closed and replaced when the process that wrote other settings has stopped', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-sibling-'))
+    const calls: ProcessRequest[] = []
+    await call(directory, {}, calls)
+    const first = sessionOf(calls[0]!)
+    const stopped = spawnSync(process.execPath, ['-e', '']).pid
+    const store = join(directory, 'sessions.json')
+    const state = JSON.parse(readFileSync(store, 'utf8')) as { writers: Record<string, number> }
+    for (const key of Object.keys(state.writers)) state.writers[key] = stopped
+    writeFileSync(store, JSON.stringify(state))
+    await call(directory, { launchArgs: '--lang=en-GB' }, calls)
+    expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
+    expect(sessionOf(calls[2]!)).not.toBe(first)
+    rmSync(directory, { recursive: true, force: true })
+  })
+
   // The profile folder's one shared session is named from the folder, so a caller's old session is never it.
   it('is never the profile folder\'s shared session, and that session is replaced when its arguments change', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-replaced-'))
@@ -243,7 +299,7 @@ describe('shutdown in an attached browser', () => {
     expect(calls[0]!.args).toContain('--cdp')
     await pack.close?.()
     expect(calls[1]!.args).toEqual(['close', '--session', session, '--json'])
-    expect(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8'))).toEqual({ sessions: {}, allowedDomains: {}, modes: {} })
+    expect(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8'))).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
     rmSync(directory, { recursive: true, force: true })
   })
 })
