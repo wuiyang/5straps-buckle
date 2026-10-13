@@ -29,7 +29,7 @@ const MODE_SETTINGS: Record<BrowserModeName, string | null> = { fresh: null, pro
 /** Fixed text per mode, so the agent reads what close keeps and what the browser holds to before it calls. */
 export const MODE_DESCRIPTIONS: Record<BrowserModeName, string> = {
   fresh: 'Run one agent-browser command against an isolated browser session; close discards browser state.',
-  profile: 'Run one agent-browser command in a browser on the owner\'s profile folder; logins and cookies outlive close, and Buckle judges only the page each command names.',
+  profile: 'Run one agent-browser command in the one browser on the owner\'s profile folder, which every session shares; logins and cookies outlive close, and Buckle judges only the page each command names.',
   attached: 'Run one agent-browser command in the owner\'s own Chrome over its DevTools port; every session shares that browser and its logins, close only disconnects, and Buckle judges only the page each command names.',
 }
 
@@ -86,6 +86,14 @@ export function settingScrubber(mode: BrowserMode): (text: string) => string {
 export function modeFingerprint(mode: BrowserMode, settings: { launchArgs?: string; headed: boolean }): string {
   const target = mode.kind === 'attached' ? mode.endpoint : mode.kind === 'profile' ? mode.directory : ''
   return createHash('sha256').update(JSON.stringify([mode.kind, target, settings.launchArgs ?? '', settings.headed])).digest('hex').slice(0, 16)
+}
+
+/**
+ * The one agent-browser session for a profile folder. Chrome opens a folder in one browser at a time, so every caller
+ * in every workspace on the node shares this session, named from the folder so each process reaches the same daemon.
+ */
+export function profileSession(directory: string): string {
+  return `buckle-profile-${createHash('sha256').update(directory).digest('hex').slice(0, 16)}`
 }
 
 /** The mode the node's settings choose, as `/setup/status` reports it: a word, and the setting, never its value. */

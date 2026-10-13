@@ -197,7 +197,6 @@ describe('a session left by a run under other browser settings', () => {
 
   it.each<[string, Partial<BrowserPackOptions>]>([
     ['an attached browser', { browser: { mode: { kind: 'attached', endpoint: '9222' } } }],
-    ['a profile folder', { browser: { mode: { kind: 'profile', directory: '/owner/profile' } } }],
     ['other arguments', { launchArgs: '--lang=en-GB' }],
     ['a window', { headed: true }],
   ])('is closed and replaced when the node now runs %s', async (_, changed) => {
@@ -213,6 +212,23 @@ describe('a session left by a run under other browser settings', () => {
     expect(sessionOf(calls[3]!)).toMatch(/^buckle-/)
     expect(sessionOf(calls[3]!)).not.toBe(first)
     expect(readFileSync(join(directory, 'sessions.json'), 'utf8')).not.toContain('9222')
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  // The profile folder's one shared session is named from the folder, so a caller's old session is never it.
+  it('is never the profile folder\'s shared session, and that session is replaced when its arguments change', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-replaced-'))
+    const calls: ProcessRequest[] = []
+    const profile: Partial<BrowserPackOptions> = { browser: { mode: { kind: 'profile', directory: '/owner/profile' } } }
+    await call(directory, {}, calls)
+    await call(directory, profile, calls)
+    const shared = sessionOf(calls[1]!)
+    expect(shared).toMatch(/^buckle-profile-/)
+    expect(shared).not.toBe(sessionOf(calls[0]!))
+    await call(directory, { ...profile, launchArgs: '--lang=en-GB' }, calls)
+    expect(calls[2]!.args).toEqual(['close', '--session', shared, '--json'])
+    expect(sessionOf(calls[3]!)).toBe(shared)
+    expect(readFileSync(join(directory, 'sessions.json'), 'utf8')).not.toContain('/owner/profile')
     rmSync(directory, { recursive: true, force: true })
   })
 })

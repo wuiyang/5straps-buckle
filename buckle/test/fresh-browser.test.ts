@@ -86,6 +86,23 @@ it('rejects a global flag smuggled into the command field', () => {
   expect(() => tool.prepare({ command: '--profile', args: ['Default'] })).toThrow()
 })
 
+// Chrome opens a profile folder in one browser at a time, so every caller shares one session on it.
+it('shares one browser on a profile folder among every caller, stage, alias, and workspace', async () => {
+  const mode: BrowserMode = { kind: 'profile', directory: '/owner/profile' }
+  const one = fixture(mode)
+  const other = fixture(mode)
+  await one.tool.prepare({ command: 'snapshot' }).execute(one.context)
+  await one.tool.prepare({ command: 'snapshot', session: 'tester' }).execute({ ...one.context, sessionId: 'other-agent', stageId: 'second-message' })
+  await other.tool.prepare({ command: 'snapshot' }).execute({ ...other.context, sessionId: 'third-agent' })
+  const sessions = [...one.calls, ...other.calls].map(browserSession)
+  expect(new Set(sessions).size).toBe(1)
+  expect(sessions[0]).toMatch(/^buckle-profile-[0-9a-f]{16}$/)
+  expect(sessions[0]).not.toContain('owner')
+  const elsewhere = fixture({ kind: 'profile', directory: '/owner/another-profile' })
+  await elsewhere.tool.prepare({ command: 'snapshot' }).execute(elsewhere.context)
+  expect(browserSession(elsewhere.calls[0]!)).not.toBe(sessions[0])
+})
+
 it('starts separate browsers for different message stages in the same caller session', async () => {
   const { calls, tool, context } = fixture()
   await tool.prepare({ command: 'snapshot' }).execute({ ...context, stageId: 'first-message' })

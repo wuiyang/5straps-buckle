@@ -10,8 +10,9 @@ node runs, and only the node owner chooses it:
 
 - Fresh, the default: each caller/session alias gets a fresh browser. Commands reuse it until
   `close`; the next launch has no cookies or saved authentication.
-- A profile folder: each launch opens the owner's folder, so logins and cookies outlive `close`.
-  Chrome lets one browser use the folder at a time, so close one session before starting another.
+- A profile folder: every session shares one browser on the owner's folder, as Chrome opens a
+  folder in one browser at a time. Logins and cookies outlive `close`, which closes that browser
+  for every session.
 - The owner's own Chrome, attached: every session shares that one browser, its cookies, and its
   tabs. A session starts on one of the owner's open tabs, so begin with `tab new <url>` to leave
   it alone, and never close a tab you did not open. `close` only disconnects; the browser and its
@@ -85,5 +86,5 @@ Never guess a ref. Take a snapshot and use what it returns.
 Pass `session` to name a browser within the current caller. Buckle scopes the alias to the supplied caller and optional stage ID. A new stage starts
 a separate browser; labels group work and are not authentication identities. Close each browser when the
 task ends. State expires after five idle minutes; close explicitly when running headed. On a
-profile folder, cookies and logins stay in the folder; on an attached browser, idle expiry only
-disconnects.
+profile folder, `session` names no separate browser, and cookies and logins stay in the folder; on
+an attached browser, idle expiry only disconnects.

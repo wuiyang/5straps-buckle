@@ -15,7 +15,7 @@ import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
-import { containmentWarning, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
+import { containmentWarning, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
@@ -27,6 +27,9 @@ const SESSION_FLAGS = ['--session', '--namespace', '--restore', '--restore-save'
 
 /** Mode-neutral: a profile or an attached browser is the owner's choice, never one an agent's call can make. */
 const SESSION_REFUSAL = 'Buckle\'s browser cannot attach, restore, or override session identity'
+
+/** The sessions store's key for the one session every caller shares on a profile folder. */
+const SHARED_PROFILE_KEY = JSON.stringify(['profile'])
 
 /** How long an idle daemon lives. It closes a browser Buckle launched, and only disconnects from an attached one. */
 const IDLE_TIMEOUT_MS = '300000'
@@ -151,13 +154,14 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const targets = navigationTargets(input.command, input.args)
             const passed = input.args.map((argument, index) => targets.get(index) ?? transfer.argument(argument) ?? realPath(argument, options.paths))
             const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
-            const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
+            // Every caller shares the one browser on a profile folder; elsewhere each caller, stage, and alias has its own.
+            const key = running.kind === 'profile' ? SHARED_PROFILE_KEY : JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
             const { session, previous, replaced } = await sessions.update((state) => {
               const known = state.sessions[key]
               // A daemon started under other settings keeps them, so its session is closed and a new one named.
               const replaced = known !== undefined && state.modes[key] !== fingerprint ? known : null
               if (known === undefined || replaced !== null) {
-                state.sessions[key] = `buckle-${randomUUID()}`
+                state.sessions[key] = running.kind === 'profile' ? profileSession(running.directory) : `buckle-${randomUUID()}`
                 delete state.allowedDomains[key]
               }
               state.modes[key] = fingerprint
