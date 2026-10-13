@@ -5,7 +5,8 @@ browser by default: no cookies, no saved logins, and nothing kept after `close`.
 settings let the owner choose otherwise: a profile folder that keeps logins, your own Chrome
 attached over its DevTools port, or extra Chromium arguments. Only the owner's settings set them,
 in `buckle.env` or the shell Buckle starts from, whose value wins; nothing an agent sends can
-select one. Restart `buckle serve` or `buckle mcp` after a change.
+select one. After a change, restart every Buckle process on the node: `buckle serve` and each
+`buckle mcp`.
 
 ## Logging in without a setting
 
@@ -77,7 +78,7 @@ On Windows, in PowerShell:
 
 Since Chrome 136, Chrome ignores the port on its default profile, so keep a second profile folder
 for Buckle, sign in there to the sites the agent needs, and leave your everyday profile out of it.
-Then set `BUCKLE_BROWSER_CDP=9222` in `buckle.env` and restart. In `agent-browser`'s source, an
+Then set `BUCKLE_BROWSER_CDP=9222` in `buckle.env` and restart every Buckle process. In `agent-browser`'s source, an
 approval prompt is expected only from remote debugging turned on at
 `chrome://inspect/#remote-debugging` (Chrome 144 and later), which serves your everyday profile on
 a changing port; a port given on Chrome's command line, as above, is reached without it. If Chrome
@@ -99,8 +100,8 @@ With a fresh browser and an approved list, Buckle passes the list's hosts as `ag
 `--allowed-domains`, so clicks, redirects, and page requests stay on them inside the browser.
 `agent-browser` refuses that flag with a profile folder and with an attached browser, because
 Chrome can open or restore pages before the containment is installed. In those modes Buckle passes
-no list, logs one warning naming the setting when the pack starts, and says so in the tool
-description and the agent's skill.
+no list, and says so in a warning naming the setting at pack start, in the tool description, and
+in the agent's skill.
 
 Still judged in every mode:
 
