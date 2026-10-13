@@ -46,34 +46,44 @@ const PROFILE_UNTRUSTED = 'BUCKLE_BROWSER_PROFILE names a folder inside or aroun
 const PROFILE_MISSING = 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first'
 
 /**
- * Each form a setting's value takes in agent-browser's output, longest first, and the text shown in its place: the
- * setting's name. agent-browser names the endpoint it could not reach by its host and port, a bare port as
- * 127.0.0.1 and that port, and folds Chrome's own launch errors, which name the profile folder, into its failure text.
+ * Each form a setting's value takes in agent-browser's output, and the text shown in its place. agent-browser names the
+ * endpoint it could not reach by its host and port, a bare port as 127.0.0.1 and that port, and folds Chrome's own
+ * launch errors, which name the profile folder, into its failure text; Chrome on Windows writes that folder with
+ * backslashes. A host alone, or a bare port, is left to the failure rule (settingScrubber): either can be page text.
  */
-function settingForms(mode: BrowserMode): string[] {
-  if (mode.kind === 'profile') return [mode.directory]
+function settingForms(mode: BrowserMode, setting: string, platform: NodeJS.Platform): Array<[string, string]> {
   if (mode.kind === 'fresh') return []
+  if (mode.kind === 'profile') {
+    const spellings = platform === 'win32' ? [mode.directory, mode.directory.replaceAll('/', '\\')] : [mode.directory]
+    return spellings.map(spelling => [spelling, setting])
+  }
   const endpoint = mode.endpoint
-  if (/^\d+$/.test(endpoint)) return [endpoint, ...['127.0.0.1', 'localhost', '[::1]'].map(host => `${host}:${endpoint}`), `port ${endpoint}`]
+  if (/^\d+$/.test(endpoint)) return [...['127.0.0.1', 'localhost', '[::1]'].map((host): [string, string] => [`${host}:${endpoint}`, setting]), [`port ${endpoint}`, `port ${setting}`]]
   const url = new URL(endpoint)
-  // agent-browser probes port 9222 when an http:// value names none.
-  // A host alone is left as written: without its port it names pages the agent opens too.
-  const port = url.port || (url.protocol.startsWith('http') ? '9222' : '')
+  // agent-browser probes port 9222 for an http value that names a path and no port; one with no path it reaches over ws.
+  const port = url.port || (url.protocol.startsWith('http') && url.pathname !== '/' ? '9222' : '')
   const host = port ? `${url.hostname}:${port}` : ''
   const userinfo = url.username ? `${url.username}${url.password ? `:${url.password}` : ''}@` : ''
   const rest = `${url.pathname === '/' ? '' : url.pathname}${url.search}`
-  return [endpoint, url.href, host, userinfo, rest, url.search].filter(form => form.length > 1)
+  return [endpoint, url.href, host, userinfo, rest, url.search].filter(form => form.length > 1).map(form => [form, setting])
 }
 
 /**
- * Shows agent-browser's output with the setting's value replaced by its name, as written and as JSON writes it, so a
- * failure to reach the owner's Chrome or to open the profile folder never prints the value into a tool result.
+ * Shows agent-browser's output with the setting's value replaced, as written and as JSON writes it, so a failure to
+ * reach the owner's Chrome or to open the profile folder never prints the value into a tool result. A bare port is
+ * replaced in failure text alone, and never inside a longer number: a successful result carries page text, which can
+ * hold the same digits.
  */
-export function settingScrubber(mode: BrowserMode): (text: string) => string {
+export function settingScrubber(mode: BrowserMode, platform: NodeJS.Platform = process.platform): (text: string, failed: boolean) => string {
   const setting = MODE_SETTINGS[mode.kind]
-  const forms = settingForms(mode).flatMap(form => [form, JSON.stringify(form).slice(1, -1)])
-  const longestFirst = [...new Set(forms)].sort((a, b) => b.length - a.length)
-  return text => setting === null ? text : longestFirst.reduce((shown, form) => shown.replaceAll(form, setting), text)
+  if (setting === null) return text => text
+  const forms = settingForms(mode, setting, platform).flatMap(([form, shown]): Array<[string, string]> => [[form, shown], [JSON.stringify(form).slice(1, -1), shown]])
+  const longestFirst = [...new Map(forms)].sort(([a], [b]) => b.length - a.length)
+  const barePort = mode.kind === 'attached' && /^\d+$/.test(mode.endpoint) ? new RegExp(`(?<!\\d)${mode.endpoint}(?!\\d)`, 'g') : null
+  return (text, failed) => {
+    const shown = longestFirst.reduce((written, [form, replacement]) => written.replaceAll(form, replacement), text)
+    return failed && barePort ? shown.replace(barePort, setting) : shown
+  }
 }
 
 /**

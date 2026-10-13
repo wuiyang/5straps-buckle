@@ -8,7 +8,7 @@ import { ARGS_UNTRUSTED, browserArgumentsRefusal } from '../common/domain/browse
 import { rootsOf } from '../common/domain/executable.js'
 import { actionsPath, loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
-import { chooseBrowser } from '../common/services/packs/browser/mode.js'
+import { chooseBrowser, settingScrubber } from '../common/services/packs/browser/mode.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -369,5 +369,41 @@ describe('a failing agent-browser in an owner-chosen mode', () => {
     expect(message).toContain('Failed to create BUCKLE_BROWSER_PROFILE/SingletonLock')
     expect(message).not.toContain('never-shown')
     expect(audit).not.toContain('never-shown')
+  })
+})
+
+describe('the forms of a setting the scrub replaces', () => {
+  const attached = (endpoint: string) => settingScrubber({ kind: 'attached', endpoint }, 'linux')
+
+  it('leaves the digits of a bare port in a successful result, and replaces them in failure text alone', () => {
+    const scrub = attached('9222')
+    const page = JSON.stringify({ success: true, data: { snapshot: 'Order 9222 ships with 19222 and 92220 units' } })
+    expect(scrub(page, false)).toBe(page)
+    expect(scrub('All CDP discovery methods failed for 127.0.0.1:9222: Cannot connect to Chrome on port 9222; 9222 refused, 19222 not', true))
+      .toBe('All CDP discovery methods failed for BUCKLE_BROWSER_CDP: Cannot connect to Chrome on port BUCKLE_BROWSER_CDP; BUCKLE_BROWSER_CDP refused, 19222 not')
+    expect(scrub('connected to localhost:9222', false)).toBe('connected to BUCKLE_BROWSER_CDP')
+  })
+
+  it('replaces the URL as URL writes it, with a trailing slash', () => {
+    expect(attached('http://cdp-host.test')('could not reach http://cdp-host.test/', true)).toBe('could not reach BUCKLE_BROWSER_CDP')
+  })
+
+  it('replaces the host on the port agent-browser probes for an http value with a path and no port', () => {
+    expect(attached('http://cdp-host.test/json')('All CDP discovery methods failed for cdp-host.test:9222: refused', true))
+      .toBe('All CDP discovery methods failed for BUCKLE_BROWSER_CDP: refused')
+  })
+
+  it('replaces a value as JSON writes it when that differs', () => {
+    const endpoint = 'ws://127.0.0.1:9333/devtools/browser/never"shown'
+    const scrubbed = attached(endpoint)(JSON.stringify({ success: false, error: `CDP connection failed: ${endpoint}` }), true)
+    expect(scrubbed).toBe(JSON.stringify({ success: false, error: 'CDP connection failed: BUCKLE_BROWSER_CDP' }))
+  })
+
+  it('replaces a profile folder in the backslash spelling Chrome writes on Windows, and as JSON doubles it', () => {
+    const scrub = settingScrubber({ kind: 'profile', directory: 'C:/Users/owner/never-shown' }, 'win32')
+    const line = 'Failed to create C:\\Users\\owner\\never-shown\\SingletonLock'
+    expect(scrub(line, true)).toBe('Failed to create BUCKLE_BROWSER_PROFILE\\SingletonLock')
+    expect(scrub(JSON.stringify({ error: line }), true)).toBe(JSON.stringify({ error: 'Failed to create BUCKLE_BROWSER_PROFILE\\SingletonLock' }))
+    expect(scrub('C:/Users/owner/never-shown/Default', false)).toBe('BUCKLE_BROWSER_PROFILE/Default')
   })
 })

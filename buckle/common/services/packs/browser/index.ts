@@ -187,7 +187,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               environment: browserEnvironment(options),
               signal: context.signal,
             })
-            const result = { ...ran, stdout: scrub(transfer.shown(ran.stdout)), stderr: scrub(transfer.shown(ran.stderr)) }
+            const failed = ran.exitCode !== 0
+            const result = { ...ran, stdout: scrub(transfer.shown(ran.stdout), failed), stderr: scrub(transfer.shown(ran.stderr), failed) }
             if (result.exitCode !== 0) {
               throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
             }
