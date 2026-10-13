@@ -15,13 +15,26 @@ import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
+import { containmentWarning, FRESH_BROWSER, MODE_DESCRIPTIONS, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
 
 const FRESH_COMMANDS = new Set(['open', 'snapshot', 'click', 'dblclick', 'fill', 'type', 'press', 'keydown', 'keyup', 'hover', 'focus', 'check', 'uncheck', 'select', 'scroll', 'scrollintoview', 'drag', 'upload', 'download', 'screenshot', 'pdf', 'get', 'is', 'wait', 'eval', 'back', 'forward', 'reload', 'tab', 'frame', 'dialog', 'console', 'errors', 'highlight', 'close', 'find', 'mouse', 'touch', 'set'])
 
-/** Fixed text, so the agent reads the same sentence whichever browser was reset. */
+/** The flags that pick the browser's session, its saved state, or its policy, which Buckle alone sets. */
+const SESSION_FLAGS = ['--session', '--namespace', '--restore', '--restore-save', '--state', '--load', '--credential-provider', '--action-policy']
+
+/** Mode-neutral: a profile or an attached browser is the owner's choice, never one an agent's call can make. */
+const SESSION_REFUSAL = 'Buckle\'s browser cannot attach, restore, or override session identity'
+
+/** How long an idle daemon lives. It closes a browser Buckle launched, and only disconnects from an attached one. */
+const IDLE_TIMEOUT_MS = '300000'
+
+/**
+ * Fixed text, so the agent reads the same sentence whichever browser was reset. Only a fresh browser is passed
+ * allowed domains, so only a fresh browser relaunches when they change.
+ */
 const RELAUNCH_NOTICE = 'The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.'
 
 const SessionsSchema = z.object({
@@ -44,8 +57,12 @@ export interface BrowserPackOptions {
   agentBrowserCommand: string
   /** Protected daemon mapping and configuration, never a browser profile. */
   sessionDirectory: string
-  /** Launch a visible window instead of headless. A per-call --headed flag still wins. */
+  /** Launch a visible window instead of headless. A per-call --headed flag still wins. Never passed to an attached browser. */
   headed: boolean
+  /** The browser the owner's settings choose (chooseBrowser), or why none is run; a fresh one when absent. */
+  browser?: BrowserChoice
+  /** BUCKLE_BROWSER_ARGS as the owner wrote it, passed as agent-browser's --args to a browser Buckle launches. */
+  launchArgs?: string
   /** The configured command resolved once (resolveProgram): the real path every call spawns, or why none is run. */
   agentBrowser: ResolvedProgram
   /** The environment it runs with (hostEnvironment); the workspace's own roots alone when absent. */
@@ -77,7 +94,12 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: { sessions: {}, allowedDomains: {} } })
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
   const allowedDomains = browserAllowedDomains(options.approvedLists)
-  const flag = 'value' in allowedDomains ? allowedDomains.value : null
+  const choice = options.browser ?? { mode: FRESH_BROWSER }
+  const mode: BrowserMode | null = 'mode' in choice ? choice.mode : null
+  // agent-browser refuses --allowed-domains with a profile or an attached browser, so only a fresh one is passed the list.
+  const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
+  const unavailableReason = options.agentBrowser.path !== null ? ('refusal' in choice ? choice.refusal : null) : options.agentBrowser.untrusted ? BROWSER_UNTRUSTED : BROWSER_UNAVAILABLE
+  if (unavailableReason === null && mode) logContainmentOff(mode)
   // The browser daemons this pack started and has not closed, which outlive single calls.
   const opened = new Set<string>()
   return {
@@ -85,12 +107,13 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     version: '1.0.0',
     skills: [loadPackSkill(PACK_ID)],
     // Fixed text: the manifest carrying it is read with the agent token, and the configured path is the owner's.
-    unavailableReason: options.agentBrowser.path !== null ? null : options.agentBrowser.untrusted ? BROWSER_UNTRUSTED : BROWSER_UNAVAILABLE,
+    unavailableReason,
     close: () => closeSessions({ options, sessions, opened }),
     tools: [
       defineTool(PACK_ID, {
         name: 'browser_command',
-        description: 'Run one agent-browser command against an isolated browser session; close discards browser state.',
+        // Only a profile folder is refused, and a withheld pack's tool is never offered, so its text is the profile one.
+        description: MODE_DESCRIPTIONS[mode?.kind ?? 'profile'],
         risk: 'execute',
         tags: ['browser', 'agent-browser', 'network'],
         input: commandInput,
@@ -103,8 +126,10 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           ]
         },
         run: async (input, context): Promise<JsonValue> => {
-          const forbidden = ['--session', '--namespace', '--restore', '--restore-save', '--state', '--load', '--credential-provider', '--action-policy']
-          if ((!FRESH_COMMANDS.has(input.command) || input.args.some(arg => forbidden.includes(arg.split('=')[0]!)))) throw new ToolInputError('Fresh browsers cannot attach, restore, or override session identity')
+          const running = browserMode(mode)
+          if (!FRESH_COMMANDS.has(input.command)) throw new ToolInputError(`${input.command} is not run: ${SESSION_REFUSAL}`)
+          const identity = input.args.map(arg => arg.split('=')[0]!.toLowerCase()).find(name => SESSION_FLAGS.includes(name))
+          if (identity) throw new ToolInputError(`${identity} is not allowed: ${SESSION_REFUSAL}`)
           const refused = refusedFlag(input.args)
           if (refused) throw new ToolInputError(flagRefusal(refused))
 
@@ -123,10 +148,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
             const key = JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
             const { session, previous } = await sessions.update(state => ({ session: state.sessions[key] ??= `buckle-${randomUUID()}`, previous: state.allowedDomains[key] }))
-            args.push('--config', configFile, '--session', session, '--idle-timeout', '300000')
-            if (flag !== null) args.push('--allowed-domains', flag)
-            if ('loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
-            if (options.headed && !input.args.includes('--headed')) args.push('--headed')
+            args.push('--config', configFile, '--session', session, ...modeArguments(running, { flag, headed: options.headed && !input.args.includes('--headed'), launchArgs: options.launchArgs }))
+            if (flag !== null && 'loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
 
             writeFileSync(configFile, '{}\n', { mode: 0o600 })
             const program = browserProgram(options)
@@ -151,7 +174,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               opened.add(session)
               await sessions.update(state => { state.allowedDomains[key] = flag })
             }
-            const relaunched = input.command !== 'close' && previous !== undefined && previous !== flag
+            const relaunched = running.kind === 'fresh' && input.command !== 'close' && previous !== undefined && previous !== flag
             if (relaunched) logger.warn('Browser relaunched because its allowed domains changed', { previous: previous ?? 'none', current: flag ?? 'none' })
             return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated, ...(relaunched ? { notice: RELAUNCH_NOTICE } : {}) }
           } finally {
@@ -161,6 +184,28 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
       }),
     ],
   }
+}
+
+/** The mode a call runs in; a pack whose profile folder was refused is withheld, so no call reaches here without one. */
+function browserMode(mode: BrowserMode | null): BrowserMode {
+  if (mode === null) throw new ToolExecutionError('BUCKLE_BROWSER_PROFILE names a folder Buckle does not load', { code: 'BROWSER_COMMAND_FAILED' })
+  return mode
+}
+
+/**
+ * The flags each mode adds after the session. A fresh browser takes the allowed domains; a profile folder takes
+ * --profile instead, as agent-browser refuses the two together; both take the owner's --args and --headed. An
+ * attached browser takes --cdp alone: it keeps the profile, arguments, and window its owner started it with, and
+ * agent-browser's close and idle shutdown only disconnect from it.
+ */
+function modeArguments(mode: BrowserMode, input: { flag: string | null; headed: boolean; launchArgs: string | undefined }): string[] {
+  const args = ['--idle-timeout', IDLE_TIMEOUT_MS]
+  if (mode.kind === 'attached') return [...args, '--cdp', mode.endpoint]
+  if (mode.kind === 'profile') args.push('--profile', mode.directory)
+  if (input.flag !== null) args.push('--allowed-domains', input.flag)
+  if (input.launchArgs) args.push('--args', input.launchArgs)
+  if (input.headed) args.push('--headed')
+  return args
 }
 
 /** The agent-browser spawned; a pack without one is withheld, so no call reaches here. */
@@ -211,6 +256,15 @@ async function closeSessions(input: { options: BrowserPackOptions; sessions: Jso
 }
 
 const loggedLoosened = new Set<string>()
+const loggedContainmentOff = new Set<string>()
+
+/** At pack start, once per process for each setting: which setting turned containment off, never its value. */
+function logContainmentOff(mode: BrowserMode): void {
+  const warning = containmentWarning(mode)
+  if (!warning || loggedContainmentOff.has(warning.setting)) return
+  loggedContainmentOff.add(warning.setting)
+  logger.warn(warning.message, { setting: warning.setting })
+}
 
 /** At the first browser call rather than at pack build, which every CLI command does; once per process for each set. */
 function logLoosened(loosened: LoosenedEntry[]): void {

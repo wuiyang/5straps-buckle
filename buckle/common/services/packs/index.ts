@@ -13,6 +13,7 @@ import type { ProcessRunner } from '../../types/ports/process-runner.js'
 import type { Sandbox } from '../../types/ports/sandbox.js'
 import type { ApprovedList } from './browser/allowed-domains.js'
 import { createBrowserPack } from './browser/index.js'
+import { chooseBrowser } from './browser/mode.js'
 import { createDevPack } from './dev/index.js'
 import { createForgePack } from './forge/index.js'
 import { createFsPack } from './fs/index.js'
@@ -48,6 +49,12 @@ export interface BuiltinPackOptions {
   /** The longest a call may run, which bounds how long a browser transfer directory can be in use; the node's default when absent. */
   maxTimeoutMs?: number
   browserHeaded: boolean
+  /** BUCKLE_BROWSER_CDP: the owner's own Chrome, which every browser command attaches to. */
+  browserCdp?: string
+  /** BUCKLE_BROWSER_PROFILE: the profile folder a launched browser keeps, judged where it lies (chooseBrowser). */
+  browserProfile?: string
+  /** BUCKLE_BROWSER_ARGS: Chromium arguments for a browser Buckle launches. */
+  browserArgs?: string
   allowHostGit?: boolean
   allowHostLsp?: boolean
   enableShell: boolean
@@ -75,7 +82,7 @@ export const BUILTIN_PACKS: ReadonlyArray<{ id: string; summary: string }> = [
   { id: 'git', summary: 'read the repository: status, diff, log, blame, branches (needs host Git on)' },
   { id: 'forge', summary: 'commit, push and open pull requests (needs host Git on and a forge token)' },
   { id: 'dev', summary: 'language-server navigation and diagnostics' },
-  { id: 'browser', summary: 'drive an isolated agent-browser session' },
+  { id: 'browser', summary: 'drive a browser through agent-browser, fresh for each session by default' },
   { id: 'shell', summary: 'run commands in the sandbox (needs the shell on)' },
   { id: 'environment', summary: 'validate environment configuration (needs BUCKLE_ENV_VALIDATOR_COMMAND)' },
 ]
@@ -126,6 +133,9 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       agentBrowserCommand: options.agentBrowserCommand,
       sessionDirectory: options.browserStateDirectory,
       headed: options.browserHeaded,
+      // A profile folder is judged as the agent-browser program is, against every root an agent can write, and Buckle's state.
+      browser: chooseBrowser({ cdp: options.browserCdp, profile: options.browserProfile, untrusted: untrusted(), protectedRoots: options.hiddenPaths, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
+      ...(options.browserArgs ? { launchArgs: options.browserArgs } : {}),
       agentBrowser: program(options.agentBrowserCommand),
       environment,
       approvedLists: options.approvedLists,

@@ -6,6 +6,7 @@ import { actionsPath } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { WorkspacePatchSchema, WorkspaceRegistrationSchema, WorkspaceTokenInputSchema, type ManagedWorkspace, type WorkspaceManager, type WorkspaceRegistration } from '../workspaces/workspace-manager.js'
 import { browseDirectories, DirectoryQuerySchema } from './directory-browser.js'
+import { browserModeStatus } from '../packs/browser/mode.js'
 
 /** A setup request the owner's face refuses before doing anything: HTTP 400 with a fixed message. */
 export class SetupRequestError extends Error implements ServiceFailure {
@@ -52,6 +53,8 @@ export function createSetupViews(): SetupViews {
         workspace: { root: config.cwd, mount: effective.mount, displayRoot: runtime.paths().displayRoot },
         sandbox: manifest.sandbox,
         packs: manifest.packs,
+        // Which browser browser_command drives, as a word and the setting that chose it, never the setting's value.
+        browser: browserModeStatus(config),
         policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },
         reporting: runtime.reporter.configured,
         // Unavailable while this workspace's audit log refuses writes: its tool calls are refused until it is repaired (B19).

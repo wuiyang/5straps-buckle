@@ -158,6 +158,17 @@ export function trustedSearchPath(searchPath: string | undefined, roots: Untrust
   }).join(delimiter)
 }
 
+/**
+ * Every place an absolute path in pathe's form passes on its way, as resolveProgram judges a program by them: the path
+ * as named, each link met and where each leads, and where it lands, last (walkLinks). A folder the owner names for
+ * Buckle to load from, a browser profile, is refused where any of these lies where an agent can write. Throws where the
+ * chain cannot be followed.
+ */
+export function placesOnTheWay(path: string, platform: NodeJS.Platform = process.platform): string[] {
+  const walked = walkLinks(path, platform)
+  return [path, ...walked.passed, walked.real]
+}
+
 /** Folders that name a place of whichever process reads them: its working directory, root, and open files. */
 const OWN_PROCESS_PLACES = ['/proc/self', '/proc/thread-self', '/dev/fd']
 

@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBrowserPack } from '../common/services/packs/browser/index.js'
+import type { BrowserMode } from '../common/services/packs/browser/mode.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -9,10 +10,10 @@ import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
 const roots: string[] = []
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-function fixture() {
+function fixture(mode: BrowserMode = { kind: 'fresh' }) {
   const root = mkdtempSync('/tmp/buckle-fresh-browser-'); roots.push(root)
   const calls: ProcessRequest[] = []
-  const pack = createBrowserPack({ cwd: root, paths: createPathView({ root, mount: null }), sessionDirectory: join(root, 'state'), agentBrowserCommand: 'agent-browser', agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, headed: false, approvedLists: [], runProcess: async request => { calls.push(request); return { exitCode: 0, signal: null, stdout: '{}', stderr: '', truncated: false, timedOut: false } } })
+  const pack = createBrowserPack({ cwd: root, paths: createPathView({ root, mount: null }), sessionDirectory: join(root, 'state'), agentBrowserCommand: 'agent-browser', agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, headed: false, approvedLists: [], browser: { mode }, runProcess: async request => { calls.push(request); return { exitCode: 0, signal: null, stdout: '{}', stderr: '', truncated: false, timedOut: false } } })
   const context = { requestId: 'request', sessionId: 'owner-agent', timeoutMs: 1000, signal: new AbortController().signal }
   return { root, calls, tool: pack.tools[0]!, context }
 }
@@ -42,10 +43,33 @@ it('ignores ambient attach, profile and restore settings', async () => {
   expect(calls[0]!.args).toContain('--config')
 })
 
-it.each(['connect', 'state', 'auth', 'profiles', 'batch'])('refuses %s in fresh mode', async command => {
-  const { calls, tool, context } = fixture()
-  await expect(tool.prepare({ command }).execute(context)).rejects.toThrow('Fresh browsers')
-  expect(calls).toHaveLength(0)
+const MODES: Array<[string, BrowserMode]> = [
+  ['a fresh browser', { kind: 'fresh' }],
+  ['a profile folder', { kind: 'profile', directory: '/owner/profile' }],
+  ['an attached browser', { kind: 'attached', endpoint: '9222' }],
+]
+
+describe.each(MODES)('on %s', (_, mode) => {
+  it.each(['connect', 'state', 'auth', 'cookies', 'profiles', 'batch'])('refuses the %s command by name', async command => {
+    const { calls, tool, context } = fixture(mode)
+    await expect(tool.prepare({ command }).execute(context)).rejects.toThrow(`${command} is not run: Buckle's browser cannot attach, restore, or override session identity`)
+    expect(calls).toHaveLength(0)
+  })
+
+  // The owner's settings alone choose the browser: the flags that would choose another stay refused by name.
+  it.each(['--cdp', '--auto-connect', '--profile', '--args'])('refuses %s by name before anything is judged', flag => {
+    const { calls, tool } = fixture(mode)
+    expect(() => tool.prepare({ command: 'snapshot', args: [flag, 'value'] })).toThrow(`${flag} is not allowed`)
+    expect(() => tool.prepare({ command: 'snapshot', args: [`${flag}=value`] })).toThrow(`${flag} is not allowed`)
+    expect(calls).toHaveLength(0)
+  })
+
+  it.each(['--state', '--restore', '--session'])('refuses %s by name, in either spelling', async flag => {
+    const { calls, tool, context } = fixture(mode)
+    await expect(tool.prepare({ command: 'snapshot', args: [flag, 'saved'] }).execute(context)).rejects.toThrow(`${flag} is not allowed: Buckle's browser cannot attach`)
+    await expect(tool.prepare({ command: 'snapshot', args: [`${flag.toUpperCase()}=saved`] }).execute(context)).rejects.toThrow(`${flag} is not allowed`)
+    expect(calls).toHaveLength(0)
+  })
 })
 
 it('exposes only browser tools when the owner selects the browser pack', async () => {
