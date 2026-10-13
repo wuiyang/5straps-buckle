@@ -157,17 +157,19 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const targets = navigationTargets(input.command, input.args)
             const passed = input.args.map((argument, index) => targets.get(index) ?? transfer.argument(argument) ?? realPath(argument, options.paths))
             const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
-            // Every caller shares the one browser on a profile folder; elsewhere each caller, stage, and alias has its own.
-            const key = running.kind === 'profile' ? SHARED_PROFILE_KEY : JSON.stringify([context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
+            // Every caller shares the one browser on a profile folder. Elsewhere each caller, stage, and alias has its own,
+            // keyed by the mode and its settings too, so no process ever reaches a session started in another mode.
+            const key = running.kind === 'profile' ? SHARED_PROFILE_KEY : JSON.stringify([running.kind, fingerprint, context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
             const own = running.kind === 'profile' ? profileSession(running.directory) : null
             const { session, previous, replaced, sibling } = await sessions.update((state) => {
               const known = state.sessions[key]
+              // Only the shared profile key can hold other settings: every other key carries its own.
               const mismatch = known !== undefined && state.modes[key] !== fingerprint
-              // A live Buckle process on other settings keeps its daemon: closing it would relaunch on each call either makes.
+              // A live Buckle process on other profile settings keeps its daemon: closing it would relaunch Chrome on each
+              // call either makes. The same folder's session is reused; another folder's is left alone beside this one.
               const writer = state.writers[key]
-              if (mismatch && writer !== undefined && writer !== process.pid && processAlive(writer)) {
-                if (own === null || own === known) return { session: known, previous: state.allowedDomains[key], replaced: null, sibling: true }
-                return { session: own, previous: undefined, replaced: null, sibling: true }
+              if (own !== null && mismatch && writer !== undefined && writer !== process.pid && processAlive(writer)) {
+                return own === known ? { session: known, previous: state.allowedDomains[key], replaced: null, sibling: true } : { session: own, previous: undefined, replaced: null, sibling: true }
               }
               // A daemon started under other settings keeps them, so its session is closed and a new one named.
               const replaced = mismatch ? known : null
@@ -310,13 +312,16 @@ async function closeSession(options: BrowserPackOptions, session: string, signal
   return result.exitCode === 0
 }
 
-/** Whether a process is running; one that exists under another user is running too. */
+/**
+ * Whether a process this user runs is alive: a Buckle sibling runs as the owner, so one Buckle may not signal (EPERM)
+ * is another user's, and the session it wrote is the owner's to replace. A signal of 0 tests and sends nothing.
+ */
 function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  } catch {
+    return false
   }
 }
 
@@ -326,7 +331,7 @@ let loggedSibling = false
 function logSiblingSettings(): void {
   if (loggedSibling) return
   loggedSibling = true
-  logger.warn('Another Buckle process on this node runs the browser under other BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, or BUCKLE_BROWSER_HEADED settings; its browser session is reused, not closed. Restart every Buckle process after changing them')
+  logger.warn('Another Buckle process on this node runs the browser under other BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, or BUCKLE_BROWSER_HEADED settings; its browser session is reused, not closed. Restart every Buckle process on the node after changing them')
 }
 
 const loggedLoosened = new Set<string>()

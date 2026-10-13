@@ -194,80 +194,124 @@ describe('a session left by a run under other browser settings', () => {
   async function call(sessionDirectory: string, options: Partial<BrowserPackOptions>, calls: ProcessRequest[]) {
     const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], runProcess: async (request) => { calls.push(request); return stubResult() }, ...options })
     await pack.tools[0]!.prepare({ command: 'snapshot', args: [] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
+    return pack
   }
   const sessionOf = (request: ProcessRequest) => request.args[request.args.indexOf('--session') + 1]
+  const PROFILE_A: Partial<BrowserPackOptions> = { browser: { mode: { kind: 'profile', directory: '/owner/profile-a' } } }
+  const PROFILE_B: Partial<BrowserPackOptions> = { browser: { mode: { kind: 'profile', directory: '/owner/profile-b' } } }
+  /** Marks every session in the store as written by `pid`, as a sibling process would have. */
+  function writtenBy(directory: string, pid: number) {
+    const store = join(directory, 'sessions.json')
+    const state = JSON.parse(readFileSync(store, 'utf8')) as { writers: Record<string, number> }
+    for (const key of Object.keys(state.writers)) state.writers[key] = pid
+    writeFileSync(store, JSON.stringify(state))
+  }
+  const writers = (directory: string) => Object.values((JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')) as { writers: Record<string, number> }).writers)
 
+  // Fresh and attached sessions are keyed by their mode and settings, so a session from other ones is never reached.
   it.each<[string, Partial<BrowserPackOptions>]>([
     ['an attached browser', { browser: { mode: { kind: 'attached', endpoint: '9222' } } }],
     ['other arguments', { launchArgs: '--lang=en-GB' }],
     ['a window', { headed: true }],
-  ])('is closed and replaced when the node now runs %s', async (_, changed) => {
+  ])('is never reused when the node now runs %s', async (_, changed) => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-replaced-'))
     const calls: ProcessRequest[] = []
     await call(directory, {}, calls)
     await call(directory, {}, calls)
-    expect(calls).toHaveLength(2)
     const first = sessionOf(calls[0]!)
     expect(sessionOf(calls[1]!)).toBe(first)
     await call(directory, changed, calls)
-    expect(calls[2]!.args).toEqual(['close', '--session', first, '--json'])
-    expect(sessionOf(calls[3]!)).toMatch(/^buckle-/)
-    expect(sessionOf(calls[3]!)).not.toBe(first)
+    expect(calls).toHaveLength(3)
+    expect(sessionOf(calls[2]!)).toMatch(/^buckle-/)
+    expect(sessionOf(calls[2]!)).not.toBe(first)
     expect(readFileSync(join(directory, 'sessions.json'), 'utf8')).not.toContain('9222')
     rmSync(directory, { recursive: true, force: true })
   })
 
-  // The endpoint and the folder are part of the settings: a daemon on another endpoint or folder is never reused.
-  it.each<[string, BrowserMode, BrowserMode]>([
-    ['an attached endpoint', { kind: 'attached', endpoint: '9222' }, { kind: 'attached', endpoint: '9333' }],
-    ['a profile folder', { kind: 'profile', directory: '/owner/profile-a' }, { kind: 'profile', directory: '/owner/profile-b' }],
-  ])('is closed and replaced when %s changes', async (_, before, after) => {
+  it('is never reused when the attached endpoint changes', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-replaced-'))
     const calls: ProcessRequest[] = []
-    await call(directory, { browser: { mode: before } }, calls)
-    const first = sessionOf(calls[0]!)
-    await call(directory, { browser: { mode: after } }, calls)
-    expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
-    expect(sessionOf(calls[2]!)).not.toBe(first)
-    expect(calls[2]!.args).toContain(after.kind === 'attached' ? after.endpoint : after.kind === 'profile' ? after.directory : '')
+    await call(directory, { browser: { mode: { kind: 'attached', endpoint: '9222' } } }, calls)
+    await call(directory, { browser: { mode: { kind: 'attached', endpoint: '9333' } } }, calls)
+    expect(calls.map(request => request.args[0])).toEqual(['snapshot', 'snapshot'])
+    expect(sessionOf(calls[1]!)).not.toBe(sessionOf(calls[0]!))
+    expect(calls[1]!.args).toContain('9333')
     rmSync(directory, { recursive: true, force: true })
   })
 
-  // Two Buckle processes on different settings would otherwise close each other's daemon on every call.
-  it('is reused, with one warning, when a live sibling process wrote other settings', async () => {
+  // The bypass this keying closes: a process with no setting must never drive a sibling's attached Chrome.
+  it('gives a fresh process its own browser, held to the list, beside a live attached sibling', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-sibling-'))
     const calls: ProcessRequest[] = []
-    await call(directory, {}, calls)
+    await call(directory, { browser: { mode: { kind: 'attached', endpoint: '9222' } } }, calls)
+    writtenBy(directory, process.ppid)
+    await call(directory, { approvedLists: [{ name: 'workspace', entries: ['example.com'] }] }, calls)
+    expect(calls).toHaveLength(2)
+    expect(sessionOf(calls[1]!)).not.toBe(sessionOf(calls[0]!))
+    expect(calls[1]!.args).not.toContain('--cdp')
+    expect(calls[1]!.args[calls[1]!.args.indexOf('--allowed-domains') + 1]).toBe('example.com')
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('is closed and replaced when the profile folder changes and no live process wrote it', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-replaced-'))
+    const calls: ProcessRequest[] = []
+    await call(directory, PROFILE_A, calls)
     const first = sessionOf(calls[0]!)
-    const store = join(directory, 'sessions.json')
-    const state = JSON.parse(readFileSync(store, 'utf8')) as { writers: Record<string, number> }
-    for (const key of Object.keys(state.writers)) state.writers[key] = process.ppid
-    writeFileSync(store, JSON.stringify(state))
+    await call(directory, PROFILE_B, calls)
+    expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
+    expect(sessionOf(calls[2]!)).not.toBe(first)
+    expect(calls[2]!.args).toContain('/owner/profile-b')
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  // Two Buckle processes on one folder with different settings would otherwise close each other's daemon on every call.
+  it('is reused on the same profile folder, with one warning, when a live sibling wrote other settings, and never closed at shutdown', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-sibling-'))
+    const calls: ProcessRequest[] = []
+    await call(directory, PROFILE_A, calls)
+    const first = sessionOf(calls[0]!)
+    writtenBy(directory, process.ppid)
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-    await call(directory, { launchArgs: '--lang=en-GB' }, calls)
-    await call(directory, { launchArgs: '--lang=en-GB' }, calls)
+    await call(directory, { ...PROFILE_A, launchArgs: '--lang=en-GB' }, calls)
+    const pack = await call(directory, { ...PROFILE_A, launchArgs: '--lang=en-GB' }, calls)
     const warned = warn.mock.calls.filter(([message]) => message.startsWith('Another Buckle process on this node'))
     warn.mockRestore()
     expect(calls.slice(1).map(request => request.args[0])).toEqual(['snapshot', 'snapshot'])
     expect(calls.slice(1).map(sessionOf)).toEqual([first, first])
     expect(warned).toHaveLength(1)
+    expect(warned[0]![0]).toContain('Restart every Buckle process on the node')
     expect(JSON.stringify(warned)).not.toContain('en-GB')
+    expect(writers(directory)).toEqual([process.ppid])
+    await pack.close?.()
+    expect(calls).toHaveLength(3)
     rmSync(directory, { recursive: true, force: true })
   })
 
-  it('is closed and replaced when the process that wrote other settings has stopped', async () => {
+  it('uses its own session on another profile folder beside a live sibling, and leaves the sibling\'s alone', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-sibling-'))
     const calls: ProcessRequest[] = []
-    await call(directory, {}, calls)
+    await call(directory, PROFILE_A, calls)
     const first = sessionOf(calls[0]!)
-    const stopped = spawnSync(process.execPath, ['-e', '']).pid
-    const store = join(directory, 'sessions.json')
-    const state = JSON.parse(readFileSync(store, 'utf8')) as { writers: Record<string, number> }
-    for (const key of Object.keys(state.writers)) state.writers[key] = stopped
-    writeFileSync(store, JSON.stringify(state))
-    await call(directory, { launchArgs: '--lang=en-GB' }, calls)
+    writtenBy(directory, process.ppid)
+    await call(directory, PROFILE_B, calls)
+    expect(calls).toHaveLength(2)
+    expect(sessionOf(calls[1]!)).toMatch(/^buckle-profile-/)
+    expect(sessionOf(calls[1]!)).not.toBe(first)
+    expect(calls[1]!.args).toContain('/owner/profile-b')
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('is closed and replaced, and this process recorded as its writer, when the process that wrote other settings has stopped', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-sibling-'))
+    const calls: ProcessRequest[] = []
+    await call(directory, PROFILE_A, calls)
+    const first = sessionOf(calls[0]!)
+    writtenBy(directory, spawnSync(process.execPath, ['-e', '']).pid!)
+    await call(directory, { ...PROFILE_A, launchArgs: '--lang=en-GB' }, calls)
     expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
-    expect(sessionOf(calls[2]!)).not.toBe(first)
+    expect(sessionOf(calls[2]!)).toBe(first)
+    expect(writers(directory)).toEqual([process.pid])
     rmSync(directory, { recursive: true, force: true })
   })
 
