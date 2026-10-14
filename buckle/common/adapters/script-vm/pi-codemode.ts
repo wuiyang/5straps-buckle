@@ -76,6 +76,7 @@ export function createPiCodemodeVm(options: { workspace?: string } = {}): Script
           timeoutMs: input.limits.deadlineMs,
           ...(input.signal ? { signal: input.signal } : {}),
           ...(input.onStarted ? { onStarted: input.onStarted } : {}),
+          ...(input.onIdle ? { onIdle: (seq: number) => input.onIdle!(seq) } : {}),
           onCall(call) {
             if (call.target === 'tool') toolIds.push(call.id)
             input.onCall({ id: call.id, target: call.target, name: call.name, args: call.args as JsonValue | undefined })

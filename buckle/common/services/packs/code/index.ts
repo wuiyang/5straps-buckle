@@ -189,9 +189,24 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const cancel = new AbortController()
   let run: ScriptVmRun | undefined
 
+  // The results handed to the VM, in order without a gap, and the last one it applied.
+  const handed = new Set<number>()
+  let handedThrough = 0
+  let applied: number | undefined
+  const hand = (seq: number, now: number, id: number, outcome: ScriptVmOutcome) => {
+    run?.deliver(seq, now, id, outcome)
+    handed.add(seq)
+    while (handed.has(handedThrough + 1)) handedThrough++
+  }
+
   const stopping = () => asks.length > 0 || broken !== undefined || diverged || spun
-  // The VM stops once nothing it started still runs, so every call that ran is in the journal.
-  const settleIfStopping = () => { if (stopping() && running.size === 0) stop.abort(new Error('A call the script made needs approval')) }
+  // The VM stops once nothing it started still runs, so every call that ran is in the journal, and, at an ask, once it
+  // has applied every result it was handed, so every call it made in that turn has reached onCall and calls made at
+  // once come back together however the threads are scheduled (review of the code-mode slice, finding tests 242).
+  const settleIfStopping = () => {
+    if (!stopping() || running.size > 0) return
+    if (diverged || spun || applied !== undefined && applied >= handedThrough) stop.abort(new Error('A call the script made needs approval'))
+  }
   // No queued call starts once the script stops at an ask or has ended: the re-sent script makes it again.
   const startQueued = () => { while (running.size < MAX_IN_FLIGHT && queued.length > 0 && !stopping() && !cancel.signal.aborted) queued.shift()!() }
   const answer = (call: ScriptVmCall, target: string, outcome: ScriptVmOutcome, args = fingerprintOf(target, call.args)) => {
@@ -202,13 +217,13 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       if (overflowed) fresh.length = 0
       else fresh.push(entry)
     }
-    if (!stopping()) run?.deliver(entry.seq, entry.now, entry.id, entry.outcome)
+    if (!stopping()) hand(entry.seq, entry.now, entry.id, entry.outcome)
   }
   // Journal entries go back in their order, each once the VM has made its call again.
   const flush = () => {
     for (let entry = replay[replayed]; entry !== undefined && issued.has(entry.id); entry = replay[replayed]) {
       replayed++
-      if (!stopping()) run?.deliver(entry.seq, entry.now, entry.id, entry.outcome)
+      if (!stopping()) hand(entry.seq, entry.now, entry.id, entry.outcome)
     }
   }
   const diverge = () => {
@@ -231,6 +246,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     onStarted(name) {
       vmName = name
       if (journal?.vm !== undefined && journal.vm !== name) diverge()
+    },
+    onIdle(seq) {
+      applied = seq
+      settleIfStopping()
     },
     onCall(call) {
       issued.add(call.id)

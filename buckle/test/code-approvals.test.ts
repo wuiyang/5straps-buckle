@@ -473,7 +473,13 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     roots.push(directory)
     const script = 'const slow = tools.echo({ n: 1 }); await tools.gate({}); return await slow'
     let release: (() => void) | undefined
-    const first = codeRun(directory, call => call.tool === 'gate' ? Promise.resolve(ask(call)) : new Promise(resolve => { release = () => resolve(ok(call, 'slow result')) }))(script)
+    // The slow call answers as the invoker does once its signal fires, so a VM stopped before it settles journals a
+    // cut call and the replay below fails (review of the code-mode slice, finding tests 242).
+    const slow = (call: NestedCall) => new Promise<InvokeResponse>((resolve) => {
+      call.signal?.addEventListener('abort', () => resolve(cut(call)))
+      release = () => resolve(ok(call, 'slow result'))
+    })
+    const first = codeRun(directory, call => call.tool === 'gate' ? Promise.resolve(ask(call)) : slow(call))(script)
     await vi.waitFor(() => expect(release).toBeDefined())
     setTimeout(() => release!(), 50)
 

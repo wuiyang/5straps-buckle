@@ -60,6 +60,12 @@ export interface ScriptVmRunInput {
   onStarted?(fingerprint: string): void
   /** The script made a call; answer it with `ScriptVmRun.deliver`, now or later. */
   onCall(call: ScriptVmCall): void
+  /**
+   * The VM applied result `seq` (0: the script's first turn, before any result) and waits again. Every call it made
+   * by then reached `onCall` first, so a host that stops the run once the VM has applied all it was handed loses no
+   * call the script made in that turn.
+   */
+  onIdle?(seq: number): void
 }
 
 export interface ScriptVmCall {
