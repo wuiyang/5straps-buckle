@@ -5,6 +5,7 @@ import type { Pack } from '../../../domain/pack.js'
 import { keepEndsOfText } from '../../../domain/script-output.js'
 import { defineTool, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
 import type { ScriptVm, ScriptVmCall, ScriptVmOutcome, ScriptVmResult, ScriptVmRun, ScriptVmTool } from '../../../types/ports/script-vm.js'
+import { logger } from '../../../runtime/log.js'
 import { requestFingerprint } from '../../invocation/executions.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { codeRunDescription, declare } from './declarations.js'
@@ -76,6 +77,8 @@ export function createCodePack(options: CodePackOptions): Pack {
         outsideScripts: true,
         input: runInput,
         timeoutMs: input => input.timeoutMs,
+        // The script alone names its calls and its journal: a re-send with another timeoutMs resumes it.
+        replayKey: input => ({ script: input.script }),
         // None of its own: each call it makes carries its own, and is judged when it is made.
         effects: () => [],
         run: (input, context) => runScript({ script: input.script, context, vm: options.vm, journals, reachable }),
@@ -119,8 +122,8 @@ function fingerprintOf(target: string, args: JsonValue | undefined): string {
 }
 
 /**
- * One script, start to end (D82, points 4 to 8). A script that has a journal from a run that stopped at an ask is
- * answered from it first, call for call, with the same clock start, seed, and tools, so it makes the same calls
+ * One script, start to end (D82, points 4 to 8). A script that has a journal from a run that stopped before its end
+ * is answered from it first, call for call, with the same clock start, seed, and tools, so it makes the same calls
  * again; past the journal its calls run live and are appended. When a call needs a person, no new call starts, the
  * calls already running settle into the journal, the VM stops, and every ask goes back to the invoker together.
  */
@@ -212,7 +215,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       made.add(call.id)
       const pending = invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal }).then((response) => {
         if (response.outcome === 'approval_required') asks.push(...response.approvals)
-        else answer(call, target, outcomeOf(response))
+        // A call cut by the script's end, a cancel, or a shutdown is never journaled: the re-sent script makes it
+        // again, and Buckle's re-send records answer it if it ran (review of the code-mode slice, finding
+        // approvals-replay 228).
+        else if (!cancel.signal.aborted && !context.signal.aborted) answer(call, target, outcomeOf(response))
       }).catch((error: unknown) => { broken ??= { error } }).finally(() => {
         running.delete(call.id)
         settleIfStopping()
@@ -230,19 +236,33 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   cancel.abort(new ScriptEndedError())
   await Promise.allSettled([...running.values()])
 
-  if (broken) throw broken.error
   if (diverged) {
-    throw new ToolExecutionError('This script stopped at an ask earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
+    throw new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
   }
-  if (asks.length > 0 && stop.signal.aborted) {
-    const kept = !overflowed && await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), tools, entries: [...replay, ...fresh] })
-    if (!kept) throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
+  // The record of what ran, for the re-sent script; false when it passes its bound, and then none is left behind.
+  const keep = async (): Promise<boolean> => {
+    if (!overflowed && await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), tools, entries: [...replay, ...fresh] })) return true
+    journals.remove(key)
+    return false
+  }
+  if (broken) {
+    await keep()
+    throw broken.error
+  }
+  if (asks.length > 0) {
+    if (!await keep()) throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
     throw new NestedApprovalRequired(asks)
   }
-  journals.remove(key)
-  // A script that ended by itself is done: sending it again is a new run, whose calls run again. One stopped by its
-  // deadline, a cancel, or a shutdown leaves its finished calls answered for ten minutes, so none runs twice.
-  if (result.ok || result.error?.kind === 'script') context.forgetNested?.([...replay.map(entry => entry.id), ...made])
+  // A script that returned, threw, or exited is done: its record goes, and sending it again is a new run whose calls
+  // run again. One stopped by its deadline, a cancel, a shutdown, or its sandbox keeps the record of what ran, so the
+  // same script sent again within ten minutes, after a restart too, goes on where it stopped and no call runs twice
+  // (review of the code-mode slice, finding approvals-replay 240).
+  if (result.ok || result.error?.kind === 'script') {
+    journals.remove(key)
+    context.forgetNested?.([...replay.map(entry => entry.id), ...made])
+  } else if (replay.length + fresh.length > 0) {
+    await keep().catch((error: unknown) => { logger.warn('Could not keep the replay record of a stopped script; sent again, it runs from its start', { error: error instanceof Error ? error.message : 'Unknown error' }) })
+  }
   return shapeResult(result, began)
 }
 

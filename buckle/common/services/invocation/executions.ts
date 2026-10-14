@@ -43,7 +43,7 @@ export function requestFingerprint(request: Pick<InvokeRequest, 'tool' | 'args'>
 
 /**
  * The key a script's calls are named under, `code:<key>:<call number>` (owner decision D82, point 4), and its replay
- * journal is filed under: the session, the actor, and the outer call's tool and canonical arguments, hashed.
+ * journal is filed under: the session, the actor, and the outer call's tool and what names its script, hashed.
  */
 export function nestedCallKey(key: Pick<ExecutionKey, 'sessionId' | 'actor' | 'fingerprint'>): string {
   return createHash('sha256').update(JSON.stringify([key.sessionId, key.actor ?? null, key.fingerprint])).digest('hex')

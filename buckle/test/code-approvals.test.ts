@@ -290,6 +290,42 @@ describe('the replay journal', () => {
     expect(await createJournalStore({ directory, now: () => now, journalBytes: 500 }).write(journal('e'.repeat(64)))).toBe(false)
   })
 
+  // Review of the code-mode slice, findings approvals-replay 240, invoker-audit 134, and tests 243: a script stopped
+  // from outside keeps its record, so the same script sent again, after a restart too, runs none of its calls again,
+  // and its clock repeats, so a call whose arguments read it is replayed rather than refused.
+  it.each(['deadline', 'cancel', 'shutdown'])('keeps the record of a script stopped by its %s, so the re-sent script runs none of its calls again, after a restart too', async (stop) => {
+    const { root, workspace, config } = setup()
+    const spin = 'const read = await tools.fs_read({ path: "notes.md" }); await tools.fs_find_names({ path: ".", pattern: "x" + Date.now() }); text(read.content); while (true) {}'
+    const first = await open(config)
+    const caller = new AbortController()
+    const running = send(first, spin, { timeoutMs: stop === 'deadline' ? 1_500 : 20_000, signal: caller.signal })
+    await vi.waitFor(() => expect(results(first, 'fs_find_names')).toHaveLength(1), { timeout: 10_000 })
+    if (stop === 'cancel') caller.abort(new Error('stopped by the caller'))
+    if (stop === 'shutdown') await first.cancelInvocations()
+    await running.catch(() => undefined)
+    expect(journals(root)).toHaveLength(1)
+    await first.history.close()
+
+    writeFileSync(join(workspace, 'notes.md'), 'changed')
+    const after = await open(config)
+    const prepared = [vi.spyOn(after.registry().get('fs_read'), 'prepare'), vi.spyOn(after.registry().get('fs_find_names'), 'prepare')]
+    expect(await send(after, spin, { timeoutMs: 1_500 })).toMatchObject({ outcome: 'ok', output: { ok: false, output: 'hello', error: { kind: 'timeout' } } })
+    for (const spy of prepared) expect(spy).not.toHaveBeenCalled()
+    await after.history.close()
+  }, 30_000)
+
+  it('resumes the same script sent again with another timeoutMs: the script alone names it', async () => {
+    const { workspace, runtime } = await node()
+    const [approval] = asked(await send(runtime, READ_THEN_WRITE, { timeoutMs: 20_000, approvalWait: { mode: 'none' } }))
+    await answer(runtime, approval!.token)
+    const read = vi.spyOn(runtime.registry().get('fs_read'), 'prepare')
+
+    expect(await send(runtime, READ_THEN_WRITE, { timeoutMs: 25_000, approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'ok', output: { ok: true } })
+    expect(read).not.toHaveBeenCalled()
+    expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
+    await runtime.history.close()
+  })
+
   it('refuses a script that, replayed, makes other calls than its first run did', async () => {
     const { root, runtime } = await node()
     asked(await run(runtime, READ_THEN_WRITE))
@@ -305,14 +341,61 @@ describe('the replay journal', () => {
 describe('the journal of a script stopped at an ask, made by the pack', () => {
   const echo: ToolCapability = { name: 'echo', description: 'Echo.', inputSchema: { type: 'object' }, risk: 'read', tags: [], pack: 'test' }
   const gate: ToolCapability = { ...echo, name: 'gate', description: 'Asks.' }
+  const waiter: ToolCapability = { ...echo, name: 'waiter', description: 'Waits for a person.' }
   const ok = (call: NestedCall, output: JsonValue): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'ok', output, meta: { durationMs: 0, truncated: false } })
+  /** What the invoker answers for a call its signal cut, as the pack's teardown does. */
+  const cut = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'error', error: { code: 'SCRIPT_ENDED', message: 'cut', retryable: false } })
   const ask = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'approval_required', approvals: [{ token: `token-${call.id}`, rule: 'write_scope', subject: '/w', reason: 'asks', tool: call.tool, offeredScopes: ['once'], expiresAt: new Date(Date.now() + 60_000).toISOString() }] })
 
-  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>) {
-    const pack = createCodePack({ vm: createPiCodemodeVm(), reachableTools: () => [echo, gate], journalDirectory: directory, unavailableReason: null })
-    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: 60_000, signal: new AbortController().signal, nestedKey: 'f'.repeat(64), invokeNested, forgetNested: () => {} }
+  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>, input: { timeoutMs?: number; signal?: AbortSignal; forgetNested?: (ids: readonly number[]) => void } = {}) {
+    const pack = createCodePack({ vm: createPiCodemodeVm(), reachableTools: () => [echo, gate, waiter], journalDirectory: directory, unavailableReason: null })
+    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: input.timeoutMs ?? 60_000, signal: input.signal ?? new AbortController().signal, nestedKey: 'f'.repeat(64), invokeNested, forgetNested: input.forgetNested ?? (() => {}) }
     return (script: string) => pack.tools[0]!.prepare({ script }).execute(context)
   }
+
+  function kept(directory: string): Journal[] {
+    return readdirSync(directory).filter(name => name.endsWith('.json')).map(name => JSON.parse(readFileSync(join(directory, name), 'utf8')) as Journal)
+  }
+
+  function scratch(): string {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-pack-'))
+    roots.push(directory)
+    return directory
+  }
+
+  // Review of the code-mode slice, finding tests 243: the condition that forgets the records is pinned both ways.
+  it('forgets the re-send records only of a script that ended by itself, and keeps the journal of one stopped from outside', async () => {
+    const ending = async (script: string, input: { timeoutMs?: number; abortAfterCall?: boolean } = {}) => {
+      const directory = scratch()
+      const caller = new AbortController()
+      const forgetNested = vi.fn()
+      const echoed = async (call: NestedCall) => {
+        if (input.abortAfterCall) setTimeout(() => caller.abort(new Error('stopped by the caller')), 50)
+        return ok(call, 'echoed')
+      }
+      const result = await codeRun(directory, echoed, { ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}), signal: caller.signal, forgetNested })(script) as { error?: { kind: string } }
+      return { kind: result.error?.kind ?? 'ok', forgotten: forgetNested.mock.calls, journal: kept(directory).map(journal => journal.entries.map(entry => entry.tool)) }
+    }
+
+    expect(await ending('await tools.echo({}); return 1')).toEqual({ kind: 'ok', forgotten: [[[1]]], journal: [] })
+    expect(await ending('await tools.echo({}); throw new Error("boom")')).toEqual({ kind: 'script', forgotten: [[[1]]], journal: [] })
+    expect(await ending('await tools.echo({}); while (true) {}', { timeoutMs: 300 })).toEqual({ kind: 'timeout', forgotten: [], journal: [['echo']] })
+    expect(await ending('await tools.echo({}); while (true) {}', { abortAfterCall: true })).toEqual({ kind: 'aborted', forgotten: [], journal: [['echo']] })
+  })
+
+  // Review of the code-mode slice, finding approvals-replay 228.
+  it('never journals a call the script\'s end cut, and makes it again when the script is sent again', async () => {
+    const directory = scratch()
+    const script = 'const waiting = tools.waiter({}); await tools.gate({}); return await waiting'
+    // The waiter waits for a person past the script's deadline, and answers as the invoker does once cut.
+    const cutAtTheEnd = (call: NestedCall) => call.tool === 'gate' ? Promise.resolve(ask(call)) : new Promise<InvokeResponse>(resolve => call.signal?.addEventListener('abort', () => resolve(cut(call))))
+    await expect(codeRun(directory, cutAtTheEnd, { timeoutMs: 1_000 })(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    expect(kept(directory).map(journal => journal.entries)).toEqual([[]])
+
+    const again = vi.fn(async (call: NestedCall) => ok(call, call.tool))
+    expect(await codeRun(directory, again)(script)).toMatchObject({ ok: true, value: 'waiter' })
+    expect(again.mock.calls.map(([call]) => call.tool).sort()).toEqual(['gate', 'waiter'])
+  })
 
   it('lets a call already running settle into the journal before the script stops, and replays it after', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-code-inflight-'))

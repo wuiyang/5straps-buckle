@@ -72,6 +72,12 @@ export interface ToolDefinition<TInput, TJudged = undefined> {
   outsideScripts?: boolean
   /** The call's own time limit from its input, within the node's maximum; the request's when it names none. */
   timeoutMs?: (input: TInput) => number | undefined
+  /**
+   * Beside `reachesTools`: what of the input names its nested calls and their replay record, in place of the whole
+   * input. code_run's is its script alone, so a re-send with another timeoutMs resumes the same script (review of
+   * the code-mode slice, finding docs-rules SKILL.md:67).
+   */
+  replayKey?: (input: TInput) => JsonObject
   name: string
   /** Read whenever the tool is listed, so a description built from other tools follows them (code_run's). */
   description: string | (() => string)
@@ -107,6 +113,7 @@ export interface PreparedCall {
   exclusive?: boolean
   reachesTools?: boolean
   timeoutMs?: number
+  replayKey?: JsonObject
   effects: ToolEffect[]
   execute(context: ToolContext): Promise<JsonValue>
 }
@@ -190,6 +197,7 @@ export function defineTool<TInput, TJudged = undefined>(pack: string, definition
         exclusive: definition.exclusive,
         ...(definition.reachesTools ? { reachesTools: true } : {}),
         ...(definition.timeoutMs ? { timeoutMs: definition.timeoutMs(input) } : {}),
+        ...(definition.replayKey ? { replayKey: definition.replayKey(input) } : {}),
         effects: definition.effects(input, judged),
         execute: context => definition.run(input, context, judged),
       }

@@ -179,7 +179,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const execute = () => {
             owned.started()
             ran = true
-            const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key, callerSignal: signal, isCancel, approvalWait } : undefined
+            // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
+            const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
+            const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait } : undefined
             return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute, timeoutMs: prepared.timeoutMs, nesting })
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
