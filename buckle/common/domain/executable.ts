@@ -46,8 +46,8 @@ export interface Located {
 }
 
 /** How a reason names PATH, and a path the owner configured, which is looked at alone. */
-const ON_PATH = 'on PATH'
-const AS_NAMED = 'as named'
+export const ON_PATH = 'on PATH'
+export const AS_NAMED = 'as named'
 
 /**
  * Where a binary is: a path is looked at alone; a bare name in each PATH entry, then in each owner place, for an

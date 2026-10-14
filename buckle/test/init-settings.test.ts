@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit, serveCommand, type InitPrompt } from '../cli/init.js'
+import type { ProgramSearch } from '../common/domain/executable.js'
 import { defaultEnvironmentFile } from '../common/runtime/environment.js'
 
 let workspace: string
@@ -194,5 +195,78 @@ describe('workspace-first initialization defaults', () => {
     const env = parseEnv((await init(scripted([]), ['--root', workspace, '--mount', '/project', '--name', 'Demo node', '--yes'])).written)
     expect(env.BUCKLE_WORKSPACE_MOUNT).toBe('/project')
     expect(env.BUCKLE_SERVER_NAME).toBe('Demo node')
+  })
+})
+
+// buckle init checks the programs Buckle runs, so a missing agent-browser shows at setup rather than as a withheld
+// pack later. The owner's terminal, unlike a pack's reason, shows the paths.
+describe('buckle init checks the programs Buckle runs', () => {
+  async function programs(input: { platform: NodeJS.Platform; programSearch: ProgramSearch; interactive?: boolean }): Promise<string> {
+    let printed = ''
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
+    try {
+      const prompt = scripted(input.interactive ? [workspace, '', 'Fixture'] : [], input.interactive ?? false)
+      const result = await runInit(['--root', workspace, '--out', out, '--port', '4399', '--yes', '--force'], prompt, { platform: input.platform, programSearch: input.programSearch })
+      expect(result.exitCode).toBe(0)
+    } finally { stdout.mockRestore() }
+    return printed.slice(printed.indexOf('Programs\n'), printed.indexOf('\nNext:'))
+  }
+  function executable(path: string): string {
+    mkdirSync(join(path, '..'), { recursive: true })
+    writeFileSync(path, '#!/bin/sh\nexit 0\n')
+    chmodSync(path, 0o755)
+    return path
+  }
+
+  it('says where each is found, and for each one missing where it looked and what it unlocks, after the settings, with --yes too', async () => {
+    const bin = join(workspace, '..', 'bin')
+    const nodeBin = join(workspace, '..', 'node-bin')
+    executable(join(bin, 'git'))
+    executable(join(nodeBin, 'rg'))
+    vi.stubEnv('BUCKLE_AGENT_BROWSER_COMMAND', '')
+    const printed = await programs({ platform: 'linux', programSearch: { environment: { PATH: bin }, places: [{ directory: nodeBin, label: 'beside node' }] } })
+    expect(printed).toBe([
+      'Programs',
+      '  bwrap           not found on PATH (1 directory) or beside node; it unlocks the sandboxed shell pack',
+      `  rg              found at ${join(nodeBin, 'rg')} (beside node)`,
+      `  git             found at ${join(bin, 'git')}`,
+      '  agent-browser   not found on PATH (1 directory) or beside node; it unlocks the browser pack; install it with npm i -g agent-browser, then run agent-browser install',
+      '',
+    ].join('\n'))
+    vi.unstubAllEnvs()
+  })
+
+  it('looks the browser up by BUCKLE_AGENT_BROWSER_COMMAND, and says why one it found is not run', async () => {
+    const planted = executable(join(workspace, 'bin', 'git'))
+    vi.stubEnv('BUCKLE_AGENT_BROWSER_COMMAND', join(workspace, '..', 'tools', 'agent-browser'))
+    const printed = await programs({ platform: 'linux', programSearch: { environment: { PATH: join(workspace, 'bin') }, places: [] } })
+    expect(printed).toContain(`  git             found at ${planted}, not run: git is found in or through a workspace of this node, where an agent can write, so Buckle does not run it\n`)
+    expect(printed).toContain(`  agent-browser   not found at ${join(workspace, '..', 'tools', 'agent-browser')}; it unlocks the browser pack;`)
+    vi.unstubAllEnvs()
+  })
+
+  it('on Windows, imitated, names a script a shim starts, the native program behind one, and a shim it cannot read, leaving bwrap out', async () => {
+    const npm = join(workspace, '..', 'npm')
+    const script = join(npm, 'node_modules', 'agent-browser', 'bin', 'agent-browser.js')
+    const exe = join(npm, 'node_modules', 'rg', 'rg.exe')
+    for (const file of [script, exe]) { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, '') }
+    writeFileSync(join(npm, 'agent-browser.cmd'), '@ECHO off\r\nSET dp0=%~dp0\r\n"%_prog%" "%dp0%\\node_modules\\agent-browser\\bin\\agent-browser.js" %*\r\n')
+    writeFileSync(join(npm, 'rg.cmd'), '@ECHO off\r\n"%~dp0node_modules\\rg\\rg.exe" %*\r\n')
+    writeFileSync(join(npm, 'git.cmd'), '@ECHO off\r\n"%~dp0\\git" %*\r\n')
+    vi.stubEnv('BUCKLE_AGENT_BROWSER_COMMAND', '')
+    const table: Record<string, string> = { 'agent-browser': join(npm, 'agent-browser.cmd'), 'rg': join(npm, 'rg.cmd'), 'git': join(npm, 'git.cmd') }
+    const printed = await programs({ platform: 'win32', interactive: true, programSearch: { lookup: name => table[name] ?? null } })
+    const windows = (path: string) => path.replaceAll('/', '\\')
+    expect(printed).toBe([
+      'Programs',
+      `  rg              found at ${windows(exe)}, through a shim`,
+      `  git             found ${windows(join(npm, 'git.cmd'))}, a shim Buckle cannot read`,
+      `  agent-browser   found at ${windows(script)}, a script run with Buckle's Node`,
+      '',
+    ].join('\n'))
+    writeFileSync(join(npm, 'agent-browser.cmd'), '@ECHO off\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser" %*\r\n')
+    expect(await programs({ platform: 'win32', programSearch: { lookup: name => table[name] ?? null } }))
+      .toContain(`  agent-browser   found ${windows(join(npm, 'agent-browser.cmd'))}, a shim Buckle cannot read; set BUCKLE_AGENT_BROWSER_COMMAND to the agent-browser .exe inside its package\n`)
+    vi.unstubAllEnvs()
   })
 })

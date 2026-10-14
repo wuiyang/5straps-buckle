@@ -6,7 +6,9 @@ import { parseArgs } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
 import { stateDirectoryOf, workspaceHolds } from '../common/runtime/config.js'
 import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/environment.js'
+import { AS_NAMED, findProgram, ON_PATH, rootsOf, type ProgramSearch, type UntrustedRoots } from '../common/domain/executable.js'
 import { isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
+import { BROWSER_INSTALL } from '../common/services/packs/browser/index.js'
 import { BUILTIN_PACKS } from '../common/services/packs/index.js'
 import { writeEnvironmentFile } from './environment-file.js'
 import { findNodeSetting, normaliseSetting } from './node-settings.js'
@@ -59,8 +61,11 @@ export interface NodeChoices {
 
 const DEFAULT_CHOICES: NodeChoices = { packs: null, shell: true, hostGit: false, networkAllow: null, allowedHosts: null }
 
-/** `options.platform`: the host's unless a test imitates another; on Windows the hints are printed in each shell's form. */
-export async function runInit(argv: string[], prompt: InitPrompt = terminalPrompt(), options: { home?: string; platform?: NodeJS.Platform } = {}): Promise<CliResult> {
+/**
+ * `options.platform`: the host's unless a test imitates another; on Windows the hints are printed in each shell's form.
+ * `options.programSearch`: where the programs section looks, the host's unless a test names its own.
+ */
+export async function runInit(argv: string[], prompt: InitPrompt = terminalPrompt(), options: { home?: string; platform?: NodeJS.Platform; programSearch?: ProgramSearch } = {}): Promise<CliResult> {
   const platform = options.platform ?? process.platform
   const { values } = parseArgs({
     args: argv,
@@ -144,6 +149,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   Seen as     ${mount ?? root}
   Name        ${name}
 ${describeChoices(choices)}${interactive ? '' : 'These are the defaults, kept because nothing was asked. Change one with: buckle settings set <key> <value>\n'}
+${describePrograms({ root, platform, search: options.programSearch ?? {} })}
 
 Next:
 ${hintStep('  1. Start the node:', serveCommand(out, process.env, platform))}
@@ -281,6 +287,48 @@ function describeChoices(choices: NodeChoices): string {
   Host Git    ${choices.hostGit ? 'on' : 'off'}
   Network     ${choices.networkAllow ?? 'no approved list'}; private hosts ${choices.allowedHosts ?? 'none'}
 `
+}
+
+/** A program `buckle init` checks, by the name it is looked up by, with what it unlocks as docs/install.md words it. */
+interface CheckedProgram {
+  label: string
+  name: string
+  unlocks: string
+  /** Where a program that is not found comes from, and the setting that names one it cannot run. */
+  install?: string
+  setting?: string
+}
+
+/**
+ * The programs Buckle runs, checked as a pack resolves each (findProgram) against the workspace just chosen: a line
+ * each, saying where it was found and how it runs, or why not and what it unlocks (program detection brief,
+ * 2026-10-14). Unlike a pack's reason, which an agent may read, this prints the paths: it is the owner's terminal.
+ */
+function describePrograms(input: { root: string; platform: NodeJS.Platform; search: ProgramSearch }): string {
+  const programs: CheckedProgram[] = [
+    ...(input.platform === 'linux' ? [{ label: 'bwrap', name: 'bwrap', unlocks: 'the sandboxed shell pack' }] : []),
+    { label: 'rg', name: 'rg', unlocks: 'the fs_search_content tool' },
+    { label: 'git', name: 'git', unlocks: 'the git and forge packs, once host Git is turned on' },
+    { label: 'agent-browser', name: process.env.BUCKLE_AGENT_BROWSER_COMMAND || 'agent-browser', unlocks: 'the browser pack', install: BROWSER_INSTALL, setting: 'BUCKLE_AGENT_BROWSER_COMMAND' },
+  ]
+  const search = { ...input.search, platform: input.platform, untrustedRoots: rootsOf('workspace', [input.root]) }
+  const lines = programs.map(program => `  ${program.label.padEnd(15)} ${programLine(program, search)}`)
+  return `Programs\n${lines.join('\n')}`
+}
+
+/** One program's line: the path it runs, or the path of what was found and why it is not run, or where it was looked for. */
+function programLine(program: CheckedProgram, search: ProgramSearch & UntrustedRoots & { platform: NodeJS.Platform }): string {
+  const { resolved, found } = findProgram(program.name, search)
+  const shown = (path: string) => search.platform === 'win32' ? path.replaceAll('/', '\\') : path
+  if (resolved.path !== null) {
+    const place = found === null || found.place === ON_PATH || found.place === AS_NAMED ? '' : ` (${found.place})`
+    const runs = resolved.args.length > 0 ? ', a script run with Buckle\'s Node' : found?.shim ? ', through a shim' : ''
+    return `found at ${shown(resolved.args[0] ?? resolved.path)}${place}${runs}`
+  }
+  const unlocks = `it unlocks ${program.unlocks}${program.install ? `; ${program.install}` : ''}`
+  if (found === null) return `not found ${resolved.searched ?? `at ${shown(program.name)}`}; ${unlocks}`
+  if (resolved.shim) return `found ${shown(found.path)}, ${resolved.shim.why}${program.setting ? `; set ${program.setting} to the ${program.label} .exe inside its package` : ''}`
+  return `found at ${shown(found.path)}, not run: ${resolved.reason}`
 }
 
 /** Only an answer that moved off the default adds a line; the rest stay as commented placeholders. */
