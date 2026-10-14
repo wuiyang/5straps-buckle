@@ -510,11 +510,17 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     const byId = new Map([...replayUnanswered, ...toolCallsMade.values()].map(entry => [entry.id, entry]))
     return [...byId.values()].filter(entry => !answered.has(entry.id)).sort((left, right) => left.id - right.id)
   }
-  const write = (named: readonly string[], entries: JournalEntry[], kept?: Journal) => journals.write({
-    key, startedAt, seed, ...(kept ? (kept.vm === undefined ? {} : { vm: kept.vm }) : vmName === undefined ? {} : { vm: vmName }), script: input.script,
-    ...(named.length > 0 ? { asks: [...named] } : {}), ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries, globals,
-    unanswered: unansweredBeside(entries),
-  }, kept ? { expiresAt: kept.expiresAt } : {})
+  // The VM a record names stays named: a send whose sandbox failed before the VM reported itself has no name of its
+  // own, and writing none would let any later send replay on another VM (recheck 4 of the final review of 0.1.4,
+  // finding code index.ts:497).
+  const write = (named: readonly string[], entries: JournalEntry[], kept?: Journal) => {
+    const vm = kept ? kept.vm : vmName ?? journal?.vm
+    return journals.write({
+      key, startedAt, seed, ...(vm === undefined ? {} : { vm }), script: input.script,
+      ...(named.length > 0 ? { asks: [...named] } : {}), ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries, globals,
+      unanswered: unansweredBeside(entries),
+    }, kept ? { expiresAt: kept.expiresAt } : {})
+  }
   const keepWhole = async (named: readonly string[]): Promise<boolean> => !record.overflowed && await write(named, record.whole())
   const keepStubs = async (named: readonly string[]): Promise<boolean> => {
     const stubs = record.stubs()

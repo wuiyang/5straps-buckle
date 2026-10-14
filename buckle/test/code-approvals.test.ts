@@ -1116,6 +1116,26 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     })
   })
 
+  // Recheck 4 of the final review of 0.1.4, finding code index.ts:497: a resumed send whose sandbox fails before the VM
+  // names itself keeps the record's VM name, so a later send on another VM is still refused.
+  it('keeps the record\'s VM name through a send whose sandbox failed before it started', async () => {
+    const directory = scratch()
+    const script = 'await tools.echo({ push: true }); await tools.gate({}); return "end"'
+    await expect(codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'pushed'))(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    const [named] = kept(directory).map(journal => journal.vm)
+    expect(named).toEqual(expect.any(String))
+
+    const real = createPiCodemodeVm()
+    const failsAtStart: ScriptVm = { ...real, start: () => ({ deliver() {}, finished: true, result: Promise.resolve({ ok: false, output: [], outputTruncated: false, calls: [], error: { kind: 'sandbox', message: 'worker file gone' } }) }) }
+    expect(await codeRun(directory, async call => ok(call, 'ran again'), { vm: failsAtStart })(script)).toMatchObject({ ok: false, error: { kind: 'sandbox' } })
+    expect(kept(directory).map(journal => journal.vm)).toEqual([named])
+
+    const another: ScriptVm = { ...real, start: input => real.start({ ...input, onStarted: () => input.onStarted?.('another-vm 2.0') }) }
+    const third = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
+    await expect(codeRun(directory, third, { vm: another })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+    expect(third).not.toHaveBeenCalled()
+  })
+
   // Recheck 3 of the final review of 0.1.4, finding code index.ts:483: a call the first run cut before it ran is made
   // live by the next send, which then diverges on a stub the script handled. The record it keeps gains that call and
   // keeps its expiry, so the send after a restart replays it rather than running it a second time.
