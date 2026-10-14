@@ -8,10 +8,12 @@ script to, the setting, and how to read a script in the audit log.
 
 Once the person answers, the agent sends the same script again. Buckle recognises it by the
 session, the caller, and the script's text; `timeoutMs` may change. It replays the script: each
-call the first run made gets the result it got then, read from a record Buckle kept, without
+tool call the first run made gets the result it got then, read from a record Buckle kept, without
 running again. The script then reaches the call that asked, which now runs with the person's
 answer, and carries on. A script is deterministic for this: its clock and random numbers repeat
-its first run's, and its calls still name its first `code_run` call as their parent. A call refused or failed
+its first run's, and its calls still name its first `code_run` call as their parent.
+`describeTool` and `searchTools` read nothing, so they are answered afresh on every run, never
+recorded, and leave the script's clock where it was. A call refused or failed
 with a retryable error once the script stopped at an ask is made again on the re-send, and a turn
 asking more than a session's 50 pending asks asks again for the rest.
 
@@ -25,23 +27,24 @@ stops, so a crash or kill of the Buckle process mid-script loses the calls since
 the next unchanged send runs them again.
 
 A call still running when the script stopped is in the record only if its tool had begun to run.
-The script sent again, after a restart too, then gets `REQUEST_ALREADY_EXECUTED` for it, its
-effects unknown, and Buckle does not run it again. A call cut before its tool ran, such as one
+Every unchanged send for ten minutes, after a restart too, then gets `REQUEST_ALREADY_EXECUTED`
+for it, its effects unknown, and Buckle does not run it again. A call cut before its tool ran, such as one
 waiting for a person, is made again.
 
 Each call in the answer has a status: `ok`, `error`, `cancelled` when the script's end or a stop cut
 it, or `skipped` when it never started.
 
 A script that returns, throws, or calls `exit()` leaves no record, and sending it again runs every
-call again.
+call again, unless its replay handed it a call that ran as `REQUEST_ALREADY_EXECUTED`. Its record
+then stays until it expires, so no unchanged send in those ten minutes repeats a call.
 
 ## Limits of the replay
 
 - The record is kept for ten minutes. Sent later, the script runs from its start, and the calls
   that ran before run again.
 - A script whose results pass 32 MiB cannot be resumed, but its calls are not repeated: the
-  record keeps them without their results, and sent again, the script gets
-  `REQUEST_ALREADY_EXECUTED` for each. At an ask, `code_run` answers `CODE_REPLAY_TOO_LARGE`
+  record keeps them without their results for ten minutes, and every unchanged send in that time
+  gets `REQUEST_ALREADY_EXECUTED` for each. At an ask, `code_run` answers `CODE_REPLAY_TOO_LARGE`
   and withdraws the asks. A workspace keeps 128 MiB of records, dropping the oldest first.
 - Without its record, only the Buckle process remembers, in memory and for ten minutes, which of
   a script's calls ran: the script sent again gets `REQUEST_ALREADY_EXECUTED` for those, or

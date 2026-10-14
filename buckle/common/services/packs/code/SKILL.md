@@ -98,7 +98,8 @@ check what it did, then change the script to run it again.
 
 - A script is at most 262144 characters.
 - At most 256 calls per script, refused ones and those before an ask counted; past it, the call
-  fails inside the script with `CODE_CALL_LIMIT`, and a script that keeps calling is ended. Eight
+  fails inside the script with `CODE_CALL_LIMIT`, and a script that keeps calling is ended.
+  `describeTool` and `searchTools` count apart: past 10000, `CODE_GLOBAL_LIMIT` ends the script. Eight
   run at once, and the rest wait their turn, so `Promise.all` over many files works; a batch tool
   such as `fs_read_batch` makes fewer calls.
 - One call's arguments, as JSON, are held to the node's request size, 1 MiB by default; past it the

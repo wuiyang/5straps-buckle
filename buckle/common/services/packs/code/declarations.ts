@@ -82,7 +82,7 @@ const GUIDE = [
   '- After a timeout or a cancel, the same script sent again within ten minutes goes on where it stopped; past 32 MiB of results it cannot, and each call that ran answers `REQUEST_ALREADY_EXECUTED` instead. Change one character of it to run it from its start.',
   '- `text(value)` and `console.log(...)` print one line each; `return value` gives the result; `exit()` ends the script.',
   '- `ALL_TOOLS` lists `{ name, description }`; `await searchTools(query, { limit })` resolves to the ones whose name or description holds every word, 8 by default; `await describeTool(name)` resolves to a tool\'s declaration; `code_api` returns them all.',
-  '- At most 256 calls per script, refused ones counted; 8 run at once and the rest wait their turn; one call\'s arguments are held to the node\'s request size. Output and the return value are cut to 1048576 characters each, keeping the start and the end; past 100000 output lines or 16777216 characters the script fails.',
+  '- At most 256 calls per script, refused ones counted, and 10000 describeTool and searchTools calls; 8 run at once and the rest wait their turn; one call\'s arguments are held to the node\'s request size. Output and the return value are cut to 1048576 characters each, keeping the start and the end; past 100000 output lines or 16777216 characters the script fails.',
 ].join('\n')
 
 /** code_run's description: the guide, the declarations within the budget, and the names of the rest. */

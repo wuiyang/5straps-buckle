@@ -12,6 +12,7 @@ script to, the setting that turns code mode off, and how to read a script in the
 | calls per script | 256, counting refused calls and calls before an ask; past it a call fails with `CODE_CALL_LIMIT`, and a script that keeps calling is ended |
 | one call's arguments | `BUCKLE_MAX_REQUEST_BYTES` as JSON, 1 MiB by default, as for a direct call; past it the call fails with `REQUEST_TOO_LARGE` |
 | calls running at once | 8, and a call past them waits for a free slot |
+| `describeTool` and `searchTools` calls | 10000 per script, apart from the 256; past it the script is ended with `CODE_GLOBAL_LIMIT` |
 | memory | 256 MiB per script |
 | time | the call's timeout, or `timeoutMs`, up to `BUCKLE_MAX_TIMEOUT_MS`; a wait for a person counts |
 | output, and the returned value | 1048576 characters each, keeping the start and the end |

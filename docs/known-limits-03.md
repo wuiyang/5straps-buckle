@@ -11,10 +11,10 @@ paths, and [part two](known-limits-02.md) the programs Buckle starts itself.
 - A script that stopped at an ask, its deadline, a cancel, or a shutdown resumes only within ten
   minutes, as long as Buckle keeps its record of the calls that ran. Sent again later, the script
   runs from its start, and the calls before the stop run again.
-- A script whose calls returned more than 32 MiB cannot be resumed: sent again, it gets
-  `REQUEST_ALREADY_EXECUTED` for each call that ran, and at an ask `code_run` answers
-  `CODE_REPLAY_TOO_LARGE` and withdraws the asks. A workspace keeps 128 MiB of such records and
-  drops the oldest first.
+- A script whose calls returned more than 32 MiB cannot be resumed: for the ten minutes its
+  record is kept, every unchanged send gets `REQUEST_ALREADY_EXECUTED` for each call that ran, and
+  at an ask `code_run` answers `CODE_REPLAY_TOO_LARGE` and withdraws the asks. A workspace keeps
+  128 MiB of such records and drops the oldest first.
 - Without its record, only the Buckle process remembers, in memory and for ten minutes, which of a
   script's calls ran, and answers them `REQUEST_ALREADY_EXECUTED`. A restart forgets that, and
   once a send has ended on that error, the next unchanged send runs every call again.
