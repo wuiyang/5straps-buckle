@@ -368,19 +368,28 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     journals.remove(key)
     throw new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
   }
-  // The record of what ran, for the re-sent script; false when it passes its bound, and then none is left behind.
-  const keep = async (): Promise<boolean> => {
-    const named = { script: input.script, ...(asks.length > 0 ? { asks: asks.map(ask => ask.token) } : {}), ...(parent === undefined ? {} : { parentRequestId: parent }) }
-    if (!overflowed && await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), ...named, tools, entries: [...replay, ...fresh] })) return true
-    journals.remove(key)
-    return false
-  }
   // The caller's own cancel withdraws the asks the script already collected, as it withdraws a waiting call's: the
   // caller has gone, and nobody is told of them (re-review of the code-mode slice, finding new-surface index.ts:338).
   // They come out of `asks` first, so the record names none, and are withdrawn only once the record is written, as
   // CODE_REPLAY_TOO_LARGE does; a withdrawal that fails is logged, and the record stays (re-check of round 2,
   // finding journal-turn index.ts:365).
   const leftBehind = asks.length > 0 && context.callerCancelled?.() === true ? asks.splice(0) : []
+  // The asks the record names: those of the runs before this one with this run's, so a resumed run that stops before
+  // it reaches its ask again still names that ask, which stays pending, for `buckle approvals show` and for the
+  // withdrawal a later divergence makes; never one the caller's cancel withdraws (final review of 0.1.4, finding code
+  // index.ts:371).
+  const pendingAsks = (): string[] => {
+    const withdrawn = new Set(leftBehind.map(ask => ask.token))
+    return [...new Set([...journal?.asks ?? [], ...asks.map(ask => ask.token)])].filter(token => !withdrawn.has(token))
+  }
+  // The record of what ran, for the re-sent script; false when it passes its bound, and then none is left behind.
+  const keep = async (): Promise<boolean> => {
+    const named = pendingAsks()
+    const fields = { script: input.script, ...(named.length > 0 ? { asks: named } : {}), ...(parent === undefined ? {} : { parentRequestId: parent }) }
+    if (!overflowed && await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), ...fields, tools, entries: [...replay, ...fresh] })) return true
+    journals.remove(key)
+    return false
+  }
   try {
     if (broken) {
       await keep()
@@ -388,8 +397,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     }
     if (asks.length > 0) {
       if (!await keep()) {
-        // No call will spend these asks: the script cannot resume, so they leave the queue as a denied sibling's do.
-        await context.withdrawNested?.(asks.map(ask => ask.token))
+        // No call will spend these asks, nor those of the runs before it, which no record names any more: the script
+        // cannot resume, so they leave the queue as a denied sibling's do (final review of 0.1.4, finding code
+        // index.ts:371).
+        await context.withdrawNested?.(pendingAsks())
         throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
       }
       throw new NestedApprovalRequired(asks)

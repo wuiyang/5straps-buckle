@@ -12,8 +12,8 @@ import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { NestedApprovalRequired, ToolExecutionError, type NestedCall, type ToolContext } from '../common/domain/tool.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
-import { CODE_CALL_LIMIT, createCodePack, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
-import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
+import { CODE_CALL_LIMIT, CODE_REPLAY_DIVERGED, createCodePack, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
+import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, scriptOfAsk, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { runCli } from '../cli/main.js'
@@ -889,6 +889,30 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(record?.asks).toBeUndefined()
     expect(record?.entries.map(entry => [entry.tool, entry.outcome.ok ? 'ok' : (entry.outcome.properties as { code: string }).code])).toEqual([['echo', 'ok'], ['waiter', 'REQUEST_ALREADY_EXECUTED']])
   })
+
+  // Final review of 0.1.4, finding code index.ts:371: a re-send that stops before it reaches the call that asked keeps
+  // naming that ask, which is still pending, so `buckle approvals show` finds the script and a later divergence
+  // withdraws the ask.
+  it('keeps naming an earlier run\'s ask when a resumed run stops before it reaches that call again', async () => {
+    const directory = scratch()
+    const script = 'await tools.echo({}); let s = 0; for (let i = 0; i < 3e7; i++) s += i; await tools.gate({}); return s'
+    const invoked = async (call: NestedCall) => call.tool === 'gate' ? ask(call) : ok(call, 'echoed')
+    await expect(codeRun(directory, invoked)(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    expect(kept(directory).map(journal => journal.asks)).toEqual([['token-2']])
+
+    const withdrawNested = vi.fn(async () => {})
+    expect(await codeRun(directory, invoked, { timeoutMs: 300, withdrawNested })(script)).toMatchObject({ ok: false, error: { kind: 'timeout' } })
+    expect(kept(directory).map(journal => journal.asks)).toEqual([['token-2']])
+    expect(scriptOfAsk(directory, 'token-2')).toBe(script)
+    expect(withdrawNested).not.toHaveBeenCalled()
+
+    // Replayed on another VM, the record diverges, and the earlier run's ask goes with it.
+    const [file] = readdirSync(directory).filter(name => name.endsWith('.json'))
+    writeFileSync(join(directory, file!), JSON.stringify({ ...JSON.parse(readFileSync(join(directory, file!), 'utf8')), vm: 'another-vm' }))
+    await expect(codeRun(directory, invoked, { withdrawNested })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+    expect(withdrawNested).toHaveBeenCalledWith(['token-2'])
+    expect(kept(directory)).toEqual([])
+  }, 60_000)
 
   // Review of the code-mode slice, findings approvals-replay 210, invoker-audit 210, and tests 210.
   it(`holds a script to ${MAX_NESTED_CALLS} calls across its resume after an ask`, async () => {
