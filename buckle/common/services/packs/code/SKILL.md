@@ -40,8 +40,9 @@ The globals:
 - `text(value)` and `console.log(...)`: one line of output each.
 - `return value`: the script's result, as JSON. `exit()` ends the script at once.
 
-There is no `store()` or `load()`, so nothing carries over to the next script, and no `image()`.
-Scripts cannot start scripts: `code_run` and `code_api` are refused inside one.
+`store()`, `load()`, and `image()` are not supported: nothing carries over to the next script,
+and an image is dropped. Scripts cannot start scripts: `code_run` and `code_api` are refused
+inside one.
 
 ## Errors
 
