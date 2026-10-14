@@ -23,7 +23,7 @@ pnpm build
 cd buckle && npm link
 ```
 
-Shell tools need a sandbox: bubblewrap on Linux, Seatbelt on macOS ([Sandbox](#sandbox)).
+Shell tools need a sandbox: bubblewrap on Linux, Seatbelt on macOS (see [Sandbox](#sandbox)).
 
 ## First run
 
@@ -56,7 +56,7 @@ buckle fs read src/index.ts   # run a tool
 buckle manifest               # loaded packs, and why others did not load
 ```
 
-**MCP** over stdio, for any host:
+**MCP** over stdio, for any MCP host:
 
 ```bash
 claude mcp add buckle -- buckle mcp
@@ -156,8 +156,8 @@ For users:
 - [Policy](https://github.com/wuiyang/5straps-buckle/blob/main/docs/policy.md) ([what Buckle reads](https://github.com/wuiyang/5straps-buckle/blob/main/docs/policy-02.md),
   [what stays unread](https://github.com/wuiyang/5straps-buckle/blob/main/docs/policy-03.md)): command globs, network lists, files, and
   when a restart is needed.
-- [Sandbox and tools](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md) ([code mode](https://github.com/wuiyang/5straps-buckle/blob/main/docs/code-mode.md)): packs, sandboxing per platform, shell
-  isolation, and scripts.
+- [Sandbox and tools](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, shell isolation,
+  and [scripts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/code-mode.md).
 - [Using your own browser](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login.md): profile folders, your own Chrome, and
   Chromium arguments.
 - [The audit log](https://github.com/wuiyang/5straps-buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
