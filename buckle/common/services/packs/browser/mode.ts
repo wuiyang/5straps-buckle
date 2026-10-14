@@ -168,8 +168,8 @@ function argumentPaths(args: string, platform: NodeJS.Platform): string[] {
 }
 
 /** Why judgedFolder hands on no folder: one where Buckle does not load from, or one whose real place has no path. */
-const UNTRUSTED_FOLDER = Symbol('untrusted folder')
-const NO_FOLDER = Symbol('no folder')
+export const UNTRUSTED_FOLDER = Symbol('untrusted folder')
+export const NO_FOLDER = Symbol('no folder')
 
 /**
  * Where a folder really lands, which is what is handed on, or why none is: UNTRUSTED_FOLDER where it lies where Buckle
@@ -179,7 +179,7 @@ const NO_FOLDER = Symbol('no folder')
  * executable 485). Where it lands is its real landing place, or where the walk lands by spelling when it has none, so
  * a link to an absent drive that holds a root is still refused (recheck 4, finding mode.ts:192).
  */
-function judgedFolder(path: string, roots: readonly string[], platform: NodeJS.Platform, stored?: StoredPath): string | typeof UNTRUSTED_FOLDER | typeof NO_FOLDER {
+export function judgedFolder(path: string, roots: readonly string[], platform: NodeJS.Platform, stored?: StoredPath): string | typeof UNTRUSTED_FOLDER | typeof NO_FOLDER {
   // On Windows a path rooted at a slash alone names whichever drive is current, so no one place (isFullPath).
   if (platform === 'win32' && /^[/\\](?![/\\])/.test(path)) return UNTRUSTED_FOLDER
   let named: string

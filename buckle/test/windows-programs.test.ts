@@ -8,7 +8,7 @@ import { findExecutable, ownerPlaces, placesOnTheWay, resolveProgram, rootsOf, r
 import type { Pack } from '../common/domain/pack.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { BROWSER_UNTRUSTED } from '../common/services/packs/browser/index.js'
-import { chooseBrowser } from '../common/services/packs/browser/mode.js'
+import { chooseBrowser, judgedFolder, NO_FOLDER } from '../common/services/packs/browser/mode.js'
 import { ARGS_UNTRUSTED } from '../common/domain/browser-arguments.js'
 import { createBuiltinPacks } from '../common/services/packs/index.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
@@ -241,6 +241,9 @@ it('hands on no folder for a profile whose link leads to a drive that is not the
     const walked = placesOnTheWay('C:/Users/me/AppData/prof', 'win32', path => path)
     expect(walked.landing).toBeNull()
     expect(walked.places).toContain('Q:/profile')
+    // No folder is handed on, not the link's own place (recheck 4 of the final review of 0.1.4, finding
+    // windows-programs.test.ts:227): the refusal alone passed with the link handed on, as statSync then fails the same.
+    expect(judgedFolder('C:/Users/me/AppData/prof', [], 'win32', path => path)).toBe(NO_FOLDER)
     expect(chooseBrowser({ profile: 'C:\\Users\\me\\AppData\\prof', untrusted: { untrustedRoots: [], rootsUnknown: null }, protectedRoots: [], platform: 'win32', storedPath: path => path }))
       .toEqual({ refusal: 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first' })
   } finally { process.chdir(cwd) }
