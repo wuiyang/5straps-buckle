@@ -55,8 +55,8 @@ runs an agent's script that calls the other tools. Four pieces:
 - **The pack**, `common/services/packs/code/`: `code_run` and `code_api`. The pack never reaches
   the registry: `ToolDefinition.reachesTools` makes the invoker hand it `invokeNested`, and the
   invoker builds each nested request itself, with the outer call's session, actor, approval tokens,
-  wait, and signal, a stage of the outer call's stage, run, or requestId, and a requestId of
-  `code:<key>:<call number>`. A nested call goes through the workspace runtime's own `invoke`, so
+  wait, signal, and context, its stage unchanged so a script reaches the caller's browser sessions,
+  the outer requestId as the audited `parentRequestId`, and a requestId of `code:<key>:<call number>`. A nested call goes through the workspace runtime's own `invoke`, so
   it is judged, audited, counted, and cancelled at shutdown like any other. Its approval wait ends
   a second before the script's deadline. Buckle's own aborts leave its asks pending; the outer
   caller's own cancel withdraws them, and so do `CODE_REPLAY_TOO_LARGE` and `CODE_REPLAY_DIVERGED`.
@@ -67,7 +67,7 @@ runs an agent's script that calls the other tools. Four pieces:
 - **The journal**, `common/services/packs/code/journal.ts`: one file per script that stopped
   before its own end (an ask, its deadline, a cancel, a shutdown, or its sandbox),
   `<state>/code-journal/<workspace key>/<key>.json`, holding the clock start, the seed, the tools,
-  the first run's stage, the script, the tokens of its asks, and every result delivered, in order;
+  the first run's requestId, the script, the tokens of its asks, and every result delivered, in order;
   a call a stop cut after its tool began to run is recorded as run, its effects unknown. It is
   written when the script stops, so a crash mid-script loses what ran since the last stop.
   The key hashes the session, the actor, and the script's text, so `timeoutMs` may change. A

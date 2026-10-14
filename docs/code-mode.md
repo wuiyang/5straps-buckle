@@ -48,7 +48,9 @@ Naming a tool that is not in `ALL_TOOLS` throws a `TypeError` at once, and nothi
 The tools a script can call are the workspace's tools as `buckle manifest` lists them at that
 moment, after the node's and the workspace's tool policy, without `code_run` and `code_api`:
 scripts cannot start scripts. A script runs in the workspace whose token its call presented, and its
-calls reach only that workspace's tools, sessions, approvals, replay records, and audit log.
+calls reach only that workspace's tools, sessions, approvals, replay records, and audit log. They
+carry the caller's own session and stage, so a script's `browser_command` drives the browser the
+agent's direct calls opened, on the same page.
 
 ## Approvals inside a script
 
@@ -63,8 +65,8 @@ call that asked.
 
 Each ask is that call's own. The approver sees the call whole, in the terminal, in
 `buckle approvals`, in `--watch`, or in an MCP host's form, and that call is what they approve.
-Its summary line says a `code_run` script made it, names the stage the script's calls are filed
-under, and says that `buckle approvals show <token>` prints the script. That command prints the
+Its summary line says a `code_run` script made it, names the `requestId` of the `code_run` call that
+sent the script, and says that `buckle approvals show <token>` prints the script. That command prints the
 ask whole, decides nothing, and adds the script's text, which Buckle keeps with the script's
 replay record, owner-only, for ten minutes after the ask.
 

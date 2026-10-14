@@ -20,7 +20,7 @@ own timeout.
 
 The script is the body of an async function: top-level `await` and `return` work. It has no
 files, network, processes, timers, `require`, or modules of its own. Everything it reaches goes
-through `tools`.
+through `tools`, in your session: its `browser_command` drives the page your own calls opened.
 
 ```js
 const listed = await tools.fs_list({ path: 'docs' })

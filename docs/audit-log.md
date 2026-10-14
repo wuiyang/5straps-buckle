@@ -44,6 +44,7 @@ dangerously-allow switch (`policy_dangerously_allowed`), and each change of it
 | `detail` | an error code, or what an owner command changed |
 | `args` | the arguments' shape, trimmed as below |
 | `actorId` | who the transport authenticated, such as `local-owner` for the CLI or `agent:<token id>` over HTTP |
+| `parentRequestId` | on a call a [code mode](code-mode.md) script made, the `requestId` of the `code_run` call that sent the script; `buckle log` prints it as `parent request` |
 
 ## What is trimmed
 

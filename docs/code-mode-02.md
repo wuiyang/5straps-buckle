@@ -10,7 +10,7 @@ session, the caller, and the script's text; `timeoutMs` may change. It replays t
 call the first run made gets the result it got then, read from a record Buckle kept, without
 running again. The script then reaches the call that asked, which now runs with the person's
 answer, and carries on. A script is deterministic for this: its clock and random numbers repeat
-its first run's, and its calls stay filed under its first run's stage. A call refused or failed
+its first run's, and its calls still name its first `code_run` call as their parent. A call refused or failed
 with a retryable error once the script stopped at an ask is made again on the re-send, and a turn
 asking more than a session's 50 pending asks asks again for the rest.
 
@@ -88,11 +88,11 @@ The `code_run` call is one entry, with the script's size among its arguments, si
 the shape of arguments, not their text ([The audit log](audit-log.md)). `buckle approvals show
 <token>` prints a script that stopped at an ask, while its record is kept.
 
-Each call the script made is an entry of its own, with a `requestId` of `code:<key>:<number>` and a
-`stageId` that names the script: the stage the caller gave its first `code_run` call, or else that
-call's run, or else its `requestId`. A script resumed after an ask keeps that stage, so
-`buckle log --json` lists all its calls together, and the change history groups their writes the
-same way, whatever stage the retry carried.
+Each call the script made is an entry of its own, with a `requestId` of `code:<key>:<number>`, the
+caller's own `stageId`, as a direct call has, and a `parentRequestId` that names the script: the
+`requestId` of its first `code_run` call. A script resumed after an ask keeps that parent, so
+`buckle log --json` lists all its calls together. The change history groups their writes by the
+caller's stage or run, or else by that parent.
 
 A call answered from the replay record adds no entry: it did not run again. A call answered by
 Buckle's re-send records instead, once the replay record is gone, adds one whose detail is
