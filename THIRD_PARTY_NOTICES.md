@@ -2,7 +2,8 @@
 
 The build of `@5straps/buckle` bundles code from the packages below into its `.output` server.
 Each is published under the MIT License, whose text follows the list. Every other dependency
-is installed from npm with its own license file and is not copied into this package.
+is installed from npm and is not copied into this package. Each carries its own license file,
+except the code mode packages named below, whose notices this file keeps.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|
@@ -23,7 +24,7 @@ but not the engine's. Each is published under the MIT License, whose text follow
 |---|---|---|---|
 | @earendil-works/pi-codemode | 1.2.0 | MIT | Copyright (c) 2025 Mario Zechner |
 | quickjs-wasi | 3.6.2 | MIT | Copyright (c) 2026 Vercel, Inc. |
-| QuickJS-NG, the JavaScript engine compiled into quickjs-wasi's `quickjs.wasm` | as built into quickjs-wasi 3.6.2 | MIT | Copyright (c) 2017-2024 Fabrice Bellard and Charlie Gordon, and the QuickJS-NG authors |
+| QuickJS-NG, the JavaScript engine compiled into quickjs-wasi's `quickjs.wasm` | 0.17.0, as built into quickjs-wasi 3.6.2 | MIT | Copyright (c) 2017-2026 Fabrice Bellard; Copyright (c) 2017-2024 Charlie Gordon; Copyright (c) 2023-2026 Ben Noordhuis; Copyright (c) 2023-2026 Saúl Ibarra Corretgé |
 
 ## MIT License
 
