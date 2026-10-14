@@ -172,7 +172,10 @@ export function createInvoker(options: InvokerOptions): Invoker {
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
           gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, holdUntil, key, held, via })
-          stop?.throwIfAborted()
+          // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
+          // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
+          // finding deadline-announce invoker.ts:175).
+          if (!(via && gate.response?.outcome === 'approval_required')) stop?.throwIfAborted()
           if (gate.earlier) return await answerEarlier(gate.earlier)
           if (gate.response) return gate.response
           // Cleared: the gate claimed this key's one execution as it spent the call's approvals.
@@ -709,7 +712,10 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
     invokeNested: (call: NestedCall) => nesting.run({
       request: { requestId: requestIdOf(call.id), tool: call.tool, args: call.args, approvalTokens: request.approvalTokens, context: { ...request.context, stageId: stageOf(call) } },
       sessionId: input.sessionId,
-      signal: call.signal ? AbortSignal.any([input.signal, call.signal]) : input.signal,
+      // The pack's own cancel first: a signal read late reports the first of its sources that aborted, in this order,
+      // so a call its script's end cut is audited SCRIPT_ENDED even after the invoker's backstop timer has fired too
+      // (re-check of round 2, finding deadline-announce invoker.ts:712).
+      signal: call.signal ? AbortSignal.any([call.signal, input.signal]) : input.signal,
       ...(cancels ? { isCancel: cancels } : {}),
       ...(nesting.approvalWait ? { approvalWait: nesting.approvalWait } : {}),
       holdUntil: waitEnds,

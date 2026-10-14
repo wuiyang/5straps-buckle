@@ -278,6 +278,40 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     }
   }, 30_000)
 
+  // Re-check of round 2, finding deadline-announce invoker.ts:175: an ask the registry records only after the script's
+  // deadline, behind a slow approvals lock, is still handed back as approval_required, never a timeout.
+  it.each([2_600, 3_000])('answers approval_required when the approvals lock holds the ask %i ms, past a 2.5 s script', async (lockMs) => {
+    const { root, runtime } = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const ask = runtime.approvals.ask.bind(runtime.approvals)
+    vi.spyOn(runtime.approvals, 'ask').mockImplementation(async (input) => {
+      await new Promise(resolve => setTimeout(resolve, lockMs))
+      return await ask(input)
+    })
+    const [approval, ...others] = asked(await send(runtime, READ_THEN_WRITE, { timeoutMs: 2_500 }))
+    expect(others).toEqual([])
+    expect(runtime.approvalService.pending().map(request => request.token)).toEqual([approval!.token])
+    expect(journals(root)).toHaveLength(1)
+    expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
+    await runtime.history.close()
+  }, 30_000)
+
+  // Re-check of round 2, finding deadline-announce invoker.ts:712: a call that first reads its signal after the
+  // invoker's backstop timer fired too is still audited SCRIPT_ENDED, not logged as a failed tool.
+  it('audits SCRIPT_ENDED for a call that reads its signal only after the backstop timer fired', async () => {
+    const { runtime } = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const evaluate = runtime.approvals.evaluate.bind(runtime.approvals)
+    vi.spyOn(runtime.approvals, 'evaluate').mockImplementation(async (input) => {
+      if (input.tool === 'fs_write') await new Promise(resolve => setTimeout(resolve, 4_000))
+      return await evaluate(input)
+    })
+    const failed = vi.spyOn(logger, 'error')
+    expect(await send(runtime, READ_THEN_WRITE, { timeoutMs: 2_500 })).toMatchObject({ outcome: 'ok', output: { ok: false, error: { kind: 'timeout' } } })
+    expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'SCRIPT_ENDED']])
+    expect(failed.mock.calls.filter(([message]) => message === 'Tool invocation failed')).toEqual([])
+    failed.mockRestore()
+    await runtime.history.close()
+  }, 30_000)
+
   it('leaves the ask pending over stdio when Buckle shuts down during the wait, and withdraws it on the client\'s own cancel', async () => {
     const waiting = { timeoutMs: 20_000, approvalWait: { mode: 'finite' as const, ms: 10_000 }, isCancel: isExplicitCancel }
     const stopped = await node()
