@@ -212,6 +212,39 @@ it('climbs a relative link target from the real path of its folder, as Windows d
   } finally { process.chdir(cwd) }
 })
 
+// Recheck 4 of the final review of 0.1.4, finding executable 539: a link target rooted at a slash without a drive
+// (`\app\ext`) lies on the link's own volume, D: here, where the workspace is, never on whichever drive is current, and
+// no rootless path is handed on.
+it('judges a link target rooted without a drive on the drive of the link\'s folder', () => {
+  const root = scratch()
+  for (const directory of ['D:/app/ext', 'D:/links']) mkdirSync(join(root, directory), { recursive: true })
+  symlinkSync('\\app\\ext', join(root, 'D:/links/ext'))
+  const cwd = process.cwd()
+  process.chdir(root)
+  try {
+    expect(placesOnTheWay('D:/links/ext', 'win32', path => path).places).toContain('D:/app/ext')
+    expect(trustedSearchPath('D:\\links\\ext', { untrustedRoots: rootsOf('workspace', ['D:/app']) }, 'win32', path => path)).toBe('')
+  } finally { process.chdir(cwd) }
+})
+
+// Recheck 4 of the final review of 0.1.4, finding executable 531: Windows folds a relative target's `..` as text on the
+// joined name before following any link in it, so `C:\links\ext` to `far\..\..\ws\ext` reaches C:\ws\ext, the
+// workspace, whatever the link `far` leads to.
+it('folds a relative link target\'s dot-dot as text before following a link it names', () => {
+  const root = scratch()
+  for (const directory of ['C:/ws/ext', 'C:/links', 'D:/a/b', 'D:/ws/ext']) mkdirSync(join(root, directory), { recursive: true })
+  symlinkSync('D:/a/b', join(root, 'C:/links/far'))
+  symlinkSync('far\\..\\..\\ws\\ext', join(root, 'C:/links/ext'))
+  const untrusted = { untrustedRoots: rootsOf('workspace', ['C:/ws']), rootsUnknown: null }
+  const cwd = process.cwd()
+  process.chdir(root)
+  try {
+    expect(placesOnTheWay('C:/links/ext', 'win32', path => path).landing).toBe('C:/ws/ext')
+    expect(trustedSearchPath('C:\\links\\ext', untrusted, 'win32', path => path)).toBe('')
+    expect(chooseBrowser({ args: '--load-extension=C:\\links\\ext', untrusted, protectedRoots: [], platform: 'win32', storedPath: path => path })).toEqual({ refusal: ARGS_UNTRUSTED })
+  } finally { process.chdir(cwd) }
+})
+
 // Recheck 4 of the final review of 0.1.4, finding mode.ts:192: a BUCKLE_BROWSER_ARGS folder that is a link to a drive
 // not there now has no real landing place, but where it lands by spelling, Q:\, holds a workspace registered on that
 // drive, so it is refused, as the profile is.

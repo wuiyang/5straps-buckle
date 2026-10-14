@@ -462,6 +462,9 @@ export function trustedSearchPath(searchPath: string | undefined, roots: Untrust
       const walked = walkLinks(directory, platform, stored)
       const places = placesOf(directory, walked)
       if (places.some(place => namesOwnProcess(place, platform)) || rootHolding(roots.untrustedRoots, places, platform)) return []
+      // A place without a drive is one only on whichever drive is current, so it is never handed on (recheck 4 of the
+      // final review of 0.1.4, finding executable 539).
+      if (!isFullPath(walked.real, platform)) return []
       return [platform === 'win32' ? walked.real.replaceAll('/', '\\') : walked.real]
     } catch { return [] }
   }).join(delimiter)
@@ -537,7 +540,8 @@ function walkLinks(path: string, platform: NodeJS.Platform, stored: StoredPath =
       const target = withForwardSlashes(readlinkSync(next), platform)
       const root = pathRoot(target, platform)
       passed.push(next)
-      current = follow(root !== '' ? root : relativeBase(current, platform, stored), target.slice(root.length).split('/'))
+      const [start, names] = targetWalk({ folder: current, target, root, platform, stored })
+      current = follow(start, names)
       passed.push(current)
     }
     return current
@@ -577,12 +581,21 @@ function systemPath(real: string, stored: StoredPath): string | null {
 }
 
 /**
- * Where a relative link target starts from: the folder holding the link, and on Windows its real path (systemPath), as
- * Windows climbs a `..` on the device path, not on a subst drive's spelling, which stops at its root (recheck 3 of the
- * final review of 0.1.4, finding executable 526). Unchanged elsewhere.
+ * Where a link's target is walked from, and the names walked: a target with its own root from that root, and a relative
+ * one from the folder holding the link. On Windows that folder is placed by its real path (systemPath), as Windows climbs
+ * a `..` on the device path, not on a subst drive's spelling, which stops at its root (recheck 3 of the final review of
+ * 0.1.4, finding executable 526). There a target rooted at a slash without a drive (`\app\ext`) lies on the link's own
+ * volume, so it is joined to that folder's drive, never judged on whichever drive is current; and a relative target's
+ * `.` and `..` are folded as text against the folder before any link in it is followed, as Windows folds the joined
+ * name (recheck 4, findings executable 539 and 531). Unchanged elsewhere.
  */
-function relativeBase(folder: string, platform: NodeJS.Platform, stored: StoredPath): string {
-  return platform === 'win32' ? systemPath(folder, stored) ?? folder : folder
+function targetWalk(input: { folder: string; target: string; root: string; platform: NodeJS.Platform; stored: StoredPath }): [string, string[]] {
+  const { folder, target, root, platform, stored } = input
+  if (platform !== 'win32' || (root !== '' && root !== '/')) return [root !== '' ? root : folder, target.slice(root.length).split('/')]
+  const base = systemPath(folder, stored) ?? folder
+  const folded = nativePath(root === '' ? childPath(base, target) : childPath(pathRoot(base, platform), target.slice(root.length)), platform)
+  const start = pathRoot(folded, platform)
+  return [start, folded.slice(start.length).split('/')]
 }
 
 function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
