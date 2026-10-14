@@ -107,15 +107,12 @@ rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.
 `BUCKLE_BROWSER_HEADED=true`. By default each session gets a fresh browser with no saved state; the
 owner can choose a profile folder that keeps logins, or their own Chrome, as
 [Using your own browser](browser-login.md) describes. No agent call can. The first call in a mode
-launches the browser, which can take long enough for a client to time out; send the same call
-again, and it reuses the browser already launched.
+launches the browser and may outlast a client's wait; the same call again reuses it.
 
 The owner installs `agent-browser` outside any workspace (Buckle refuses one inside):
-`npm i -g agent-browser`, then `agent-browser install`, which downloads the browser.
-Buckle looks for it on `PATH`, then beside its own `buckle` command, where `npm i -g` puts both,
-beside its Node.js, and on Windows in `%APPDATA%\npm`. On Windows it reads, never runs, npm's
-`.cmd` shim, and runs the `.exe` or script it names. Without it, the pack's reason says where
-Buckle looked.
+`npm i -g agent-browser`, then `agent-browser install`, which downloads the browser. Buckle
+looks for it where it looks for every program ([Install](install.md#requirements)), reading, never
+running, npm's `.cmd` shim on Windows. Without it, the pack's reason says where Buckle looked.
 
 For a fresh browser with an approved list, Buckle passes its hosts to `agent-browser` as
 `--allowed-domains`, so clicks, redirects, and page requests stay on them. The browser matches
