@@ -46,6 +46,12 @@ export interface ToolContext {
    * sibling's are, when no call will ever spend them (review of the code-mode slice, coordinator decision 5).
    */
   withdrawNested?: (tokens: readonly string[]) => Promise<void>
+  /**
+   * Beside `invokeNested`: whether the outer caller itself cancelled, its own signal aborted with a reason its cancel
+   * test accepts, so asks the script already collected are withdrawn too; false for a deadline, an end, or a shutdown
+   * (re-review of the code-mode slice, finding new-surface index.ts:338).
+   */
+  callerCancelled?: () => boolean
 }
 
 /** One call a script makes: its number in the script, the tool, its arguments, and what cancels it. */

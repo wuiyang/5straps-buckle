@@ -64,6 +64,22 @@ function results(runtime: BuckleRuntime, tool: string) {
   return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.tool === tool)
 }
 
+/** fs_read made slow for one path, its tool ignoring its signal as a slow tool may; every run is counted by path. */
+function slowRead(runtime: BuckleRuntime, slowPath: string, ms: number): string[] {
+  const runs: string[] = []
+  const fsRead = runtime.registry().get('fs_read')
+  const prepare = fsRead.prepare.bind(fsRead)
+  vi.spyOn(fsRead, 'prepare').mockImplementation((args) => {
+    const prepared = prepare(args)
+    return { ...prepared, execute: async (context: ToolContext) => {
+      runs.push(String(args.path))
+      if (args.path === slowPath) await new Promise(resolve => setTimeout(resolve, ms))
+      return await prepared.execute(context)
+    } }
+  })
+  return runs
+}
+
 async function answer(runtime: BuckleRuntime, token: string, approved = true) {
   expect((await runtime.approvalService.answer({ decision: { token, approved, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
 }
@@ -238,6 +254,26 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     await cancelled.runtime.history.close()
   }, 30_000)
 
+  // Re-review of the code-mode slice, finding new-surface index.ts:338: an ask already collected is withdrawn by the
+  // caller's own cancel too, not only one still inside its wait.
+  it.each([
+    ['withdraws it over stdio, where the client cancelled', isExplicitCancel, 0],
+    ['leaves it pending over HTTP, where a dropped connection is no cancel', undefined, 1],
+  ])('when the caller leaves after the script collected an ask, %s', async (_how, isCancel, pending) => {
+    const { workspace, runtime } = await node()
+    writeFileSync(join(workspace, 'slow.md'), 'slow')
+    slowRead(runtime, 'slow.md', 2_000)
+    const caller = new AbortController()
+    const script = 'await Promise.all([tools.fs_write({ path: "one/a.md", content: "a" }), tools.fs_read({ path: "slow.md" })])'
+    const left = send(runtime, script, { timeoutMs: 20_000, approvalWait: { mode: 'finite', ms: 200 }, signal: caller.signal, ...(isCancel ? { isCancel } : {}) })
+    await vi.waitFor(() => expect(results(runtime, 'fs_write').map(entry => entry.outcome)).toEqual(['approval_required']), { timeout: 10_000 })
+    caller.abort(new Error('notifications/cancelled'))
+    await left.catch(() => undefined)
+
+    expect(runtime.approvalService.pending()).toHaveLength(pending)
+    await runtime.history.close()
+  }, 30_000)
+
   it('lets the script go on once the person answers while its call waits inside it', async () => {
     const { root, workspace, runtime } = await node()
     const running = send(runtime, READ_THEN_WRITE, { timeoutMs: 20_000, approvalWait: { mode: 'finite', ms: 10_000 } })
@@ -396,17 +432,7 @@ describe('the replay journal', () => {
     writeFileSync(join(workspace, 'slow.md'), 'slow')
     const script = 'const a = await tools.fs_read({ path: "notes.md" }); const b = await tools.fs_read({ path: "slow.md" }); return [a.content, b.content]'
     const first = await open(config)
-    const runs: string[] = []
-    const fsRead = first.registry().get('fs_read')
-    const prepare = fsRead.prepare.bind(fsRead)
-    vi.spyOn(fsRead, 'prepare').mockImplementation((args) => {
-      const prepared = prepare(args)
-      return { ...prepared, execute: async (context: ToolContext) => {
-        runs.push(String(args.path))
-        if (args.path === 'slow.md') await new Promise(resolve => setTimeout(resolve, 1_500))
-        return await prepared.execute(context)
-      } }
-    })
+    const runs = slowRead(first, 'slow.md', 1_500)
     const running = send(first, script, { timeoutMs: 20_000 })
     await vi.waitFor(() => expect(runs).toEqual(['notes.md', 'slow.md']), { timeout: 10_000 })
     await first.cancelInvocations()

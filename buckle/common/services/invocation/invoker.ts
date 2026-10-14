@@ -689,7 +689,7 @@ interface Nesting {
  * actor and the outer call, so a re-sent script names its calls as before: Buckle's own re-send dedupe never runs
  * one twice, and a call that asked joins its ask.
  */
-function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal; timeoutMs: number }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'nestedStage' | 'forgetNested' | 'withdrawNested'> {
+function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal; timeoutMs: number }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'nestedStage' | 'forgetNested' | 'withdrawNested' | 'callerCancelled'> {
   const { request, nesting } = input
   const nestedKey = nestedCallKey(nesting.key)
   const nestedStage = (request.context?.stageId ?? request.context?.runId ?? request.requestId).slice(0, MAX_LOGGED_ID)
@@ -720,6 +720,7 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
       for (const id of ids) input.options.executions.forget({ ...nesting.key, requestId: requestIdKey(requestIdOf(id)) })
     },
     withdrawNested: tokens => input.options.approvalService.withdraw([...tokens]),
+    callerCancelled: () => cancels?.() ?? false,
   }
 }
 

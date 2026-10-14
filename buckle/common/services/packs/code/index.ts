@@ -354,6 +354,13 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   if (diverged) {
     throw new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
   }
+  // The caller's own cancel withdraws the asks the script already collected, as it withdraws a waiting call's: the
+  // caller has gone, and nobody is told of them. The record of what ran is still kept (re-review of the code-mode
+  // slice, finding new-surface index.ts:338).
+  if (asks.length > 0 && context.callerCancelled?.() === true) {
+    await context.withdrawNested?.(asks.map(ask => ask.token))
+    asks.length = 0
+  }
   // The record of what ran, for the re-sent script; false when it passes its bound, and then none is left behind.
   const keep = async (): Promise<boolean> => {
     const named = { script: input.script, ...(asks.length > 0 ? { asks: asks.map(ask => ask.token) } : {}), ...(stage === undefined ? {} : { stage }) }
