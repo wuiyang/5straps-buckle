@@ -173,6 +173,8 @@ describe('a browser file transfer', () => {
     const outside = join(root, 'outside.txt')
     writeFileSync(outside, 'owner data')
     const stale = (Date.now() - 10 * 60_000) / 1_000
+    // The link leads to a stale regular file, so a sweep that followed links would take the link for one and remove it.
+    utimesSync(outside, stale, stale)
     writeFileSync(join(workspace, '.buckle-delivery-file'), 'half')
     utimesSync(join(workspace, '.buckle-delivery-file'), stale, stale)
     mkdirSync(join(workspace, '.buckle-delivery-folder'))
