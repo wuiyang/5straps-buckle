@@ -9,7 +9,7 @@ import { logger } from '../../../runtime/log.js'
 import { REQUEST_ALREADY_EXECUTED, requestFingerprint } from '../../invocation/executions.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { codeRunDescription, declare } from './declarations.js'
-import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, type GlobalEntry, type JournalEntry, type JournalStore, type RunTool } from './journal.js'
+import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, type GlobalEntry, type Journal, type JournalEntry, type JournalStore, type RunTool } from './journal.js'
 
 // Code mode (owner decision D82, proposed as BUCKLE-D22): an agent's script runs in a VM that can do nothing but call
 // this workspace's other tools, each call judged, approved, and audited as a direct call, and only what the script
@@ -487,6 +487,24 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     })
   }
 
+  // The record of what ran, for the re-sent script, naming the asks `named`: whole, so the script resumes where it
+  // stopped, or else, past its bound as this run counts it or as the store does, its calls as stubs, so the script
+  // cannot resume but none of its calls runs again (final review of 0.1.4, finding docs code-mode-02.md:19). False
+  // where even the stubs pass it, and then none is left behind. `kept` writes over a record that stays as it was
+  // made, its VM and its expiry, adding only the calls this send ran.
+  const write = (named: readonly string[], entries: JournalEntry[], kept?: Journal) => journals.write({
+    key, startedAt, seed, ...(kept ? (kept.vm === undefined ? {} : { vm: kept.vm }) : vmName === undefined ? {} : { vm: vmName }), script: input.script,
+    ...(named.length > 0 ? { asks: [...named] } : {}), ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries, globals,
+  }, kept ? { expiresAt: kept.expiresAt } : {})
+  const keepWhole = async (named: readonly string[]): Promise<boolean> => !record.overflowed && await write(named, record.whole())
+  const keepStubs = async (named: readonly string[]): Promise<boolean> => {
+    const stubs = record.stubs()
+    if (stubs !== null && await write(named, stubs)) return true
+    journals.remove(key)
+    return false
+  }
+  const keep = async (named: readonly string[]): Promise<boolean> => await keepWhole(named) || await keepStubs(named)
+
   if (diverged) {
     // A record that diverged diverges on every re-send, so the asks of its run go, which no call would ever spend
     // (re-review of the code-mode slice, finding docs-rules code-mode.md:76). The record itself is kept until it
@@ -494,6 +512,15 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     // after a restart run them all again (rechecks 2 and 3 of the final review of 0.1.4, findings code index.ts:477
     // and :487). Changing the script gives it a new record.
     await withdraw([...new Set([...journal?.asks ?? [], ...asks.map(ask => ask.token)])], 'that diverged')
+    // The calls this send ran live, such as one its first run cut before it ran, are added to the record, which keeps
+    // its expiry, so the next send after a restart runs none of them again (recheck 3 of the final review of 0.1.4,
+    // finding code index.ts:483).
+    const entries = record.overflowed ? record.stubs() : record.whole()
+    if (journal && record.count > 0 && entries !== null) {
+      await write([], entries, journal).catch((error: unknown) => {
+        logger.warn('Could not add the calls a diverged script ran to its replay record; sent again after a restart, they may run again', { error: error instanceof Error ? error.message : 'Unknown error' })
+      })
+    }
     throw new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
   }
   // The caller's own cancel withdraws the asks the script already collected, as it withdraws a waiting call's: the
@@ -510,22 +537,6 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     const withdrawn = new Set(leftBehind.map(ask => ask.token))
     return [...new Set([...journal?.asks ?? [], ...asks.map(ask => ask.token)])].filter(token => !withdrawn.has(token))
   }
-  const write = (named: readonly string[], entries: JournalEntry[]) => journals.write({
-    key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), script: input.script, ...(named.length > 0 ? { asks: [...named] } : {}),
-    ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries, globals,
-  })
-  // The record of what ran, for the re-sent script, naming the asks `named`: whole, so the script resumes where it
-  // stopped, or else, past its bound as this run counts it or as the store does, its
-  // calls as stubs, so the script cannot resume but none of its calls runs again (final review of 0.1.4, finding docs
-  // code-mode-02.md:19). False where even the stubs pass it, and then none is left behind.
-  const keepWhole = async (named: readonly string[]): Promise<boolean> => !record.overflowed && await write(named, record.whole())
-  const keepStubs = async (named: readonly string[]): Promise<boolean> => {
-    const stubs = record.stubs()
-    if (stubs !== null && await write(named, stubs)) return true
-    journals.remove(key)
-    return false
-  }
-  const keep = async (named: readonly string[]): Promise<boolean> => await keepWhole(named) || await keepStubs(named)
   try {
     if (broken) {
       await keep(pendingAsks())

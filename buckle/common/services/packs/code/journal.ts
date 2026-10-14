@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeSync } from 'node:fs'
 import { join } from 'pathe'
 import { z } from 'zod'
 import { JsonObjectSchema, JsonValueSchema } from '@5straps/protocol'
@@ -123,8 +123,11 @@ export function scriptOfAsk(directory: string, token: string, now = Date.now()):
 export interface JournalStore {
   /** The script's journal, or null when it has none or it expired (an expired one is removed). */
   read(key: string): Journal | null
-  /** Writes it whole, expiring JOURNAL_TTL_MS from now; false when its entries pass JOURNAL_BYTES and it was not kept. */
-  write(journal: Omit<Journal, 'expiresAt' | 'version'>): Promise<boolean>
+  /**
+   * Writes it whole, expiring JOURNAL_TTL_MS from now, or at `expiresAt` for a record rewritten as kept; false when its
+   * entries pass JOURNAL_BYTES and it was not kept.
+   */
+  write(journal: Omit<Journal, 'expiresAt' | 'version'>, options?: { expiresAt?: number }): Promise<boolean>
   remove(key: string): void
 }
 
@@ -192,8 +195,9 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
       return parsed.data
     },
 
-    async write(journal) {
-      const text = JSON.stringify({ version: 1, ...journal, expiresAt: now() + JOURNAL_TTL_MS } satisfies Journal)
+    async write(journal, options = {}) {
+      const expiresAt = options.expiresAt ?? now() + JOURNAL_TTL_MS
+      const text = JSON.stringify({ version: 1, ...journal, expiresAt } satisfies Journal)
       // The bound measures the entries' text alone, as the run's own does: the script, the tools, and the globals,
       // which MAX_GLOBAL_CALLS bounds, add their own size on top (recheck 3 of the final review of 0.1.4, finding
       // journal.ts:197).
@@ -214,6 +218,11 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
           closeSync(descriptor)
         }
         await replaceFile(temporary, pathOf(journal.key))
+        // A record rewritten with its old expiry keeps its age, so the sweep that goes by file times agrees with it.
+        if (options.expiresAt !== undefined) {
+          const madeAt = (options.expiresAt - JOURNAL_TTL_MS) / 1_000
+          utimesSync(pathOf(journal.key), madeAt, madeAt)
+        }
       } finally {
         rmSync(temporary, { force: true })
         prune()

@@ -1073,6 +1073,31 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(await codeRun(directory, async call => ok(call, 'opened'))(script)).toMatchObject({ ok: true, value: big.length })
   }, 120_000)
 
+  // Recheck 3 of the final review of 0.1.4, finding code index.ts:483: a call the first run cut before it ran is made
+  // live by the next send, which then diverges on a stub the script handled. The record it keeps gains that call and
+  // keeps its expiry, so the send after a restart replays it rather than running it a second time.
+  it('adds the calls a diverged send ran live to the kept record, its expiry unchanged, so none runs twice', async () => {
+    const directory = scratch()
+    const script = 'const w = tools.waiter({}).then(() => "waited", error => error.code); const failed = []; for (let i = 0; i < 3; i++) { try { await tools.echo({ i }) } catch (error) { failed.push(i) } } await tools.echo({ report: failed }); while (true) {}'
+    const waitsForAPerson = async (call: NestedCall) => call.tool === 'waiter' ? await new Promise<InvokeResponse>(resolve => call.signal?.addEventListener('abort', () => resolve(cut(call)))) : ok(call, 'x'.repeat(5_000))
+    expect(await codeRun(directory, waitsForAPerson, { journalBytes: 8_192, timeoutMs: 1_000 })(script)).toMatchObject({ ok: false, error: { kind: 'timeout' } })
+    const [first] = kept(directory)
+    expect(first?.entries.map(entry => entry.id)).toEqual([2, 3, 4, 5])
+
+    const waited: number[] = []
+    const approved = async (call: NestedCall) => {
+      if (call.tool !== 'waiter') return ok(call, 'ran again')
+      call.onExecute?.()
+      waited.push(call.id)
+      return ok(call, 'approved')
+    }
+    for (let send = 2; send <= 3; send++) {
+      await expect(codeRun(directory, approved, { journalBytes: 8_192 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      expect(kept(directory).map(journal => [journal.entries.map(entry => entry.id), journal.expiresAt])).toEqual([[[2, 3, 4, 5, 1], first!.expiresAt]])
+    }
+    expect(waited).toEqual([1])
+  }, 60_000)
+
   // Recheck 3 of the final review of 0.1.4, finding code index.ts:487: a stub record whose replay diverges before any
   // stub is handed, here on another VM, is kept too, so after a restart the third send still runs nothing.
   it('keeps a stub record whose replay diverges before handing out a stub, so the third send runs nothing', async () => {
