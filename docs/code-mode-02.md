@@ -38,9 +38,10 @@ call again.
 
 - The record is kept for ten minutes. Sent later, the script runs from its start, and the calls
   that ran before run again.
-- A script whose results pass 32 MiB cannot be resumed after an ask: `code_run` answers
-  `CODE_REPLAY_TOO_LARGE` and withdraws the asks. A workspace keeps 128 MiB of records, dropping
-  the oldest first.
+- A script whose results pass 32 MiB cannot be resumed, but its calls are not repeated: the
+  record keeps them without their results, and sent again, the script gets
+  `REQUEST_ALREADY_EXECUTED` for each. At an ask, `code_run` answers `CODE_REPLAY_TOO_LARGE`
+  and withdraws the asks. A workspace keeps 128 MiB of records, dropping the oldest first.
 - Without its record, only the Buckle process remembers, in memory and for ten minutes, which of
   a script's calls ran: the script sent again gets `REQUEST_ALREADY_EXECUTED` for those, or
   `CODE_REPLAY_DIVERGED` for a call whose arguments read the clock or a random number, since the

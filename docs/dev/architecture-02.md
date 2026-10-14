@@ -68,7 +68,9 @@ runs an agent's script that calls the other tools. Four pieces:
   before its own end (an ask, its deadline, a cancel, a shutdown, or its sandbox),
   `<state>/code-journal/<workspace key>/<key>.json`, holding the clock start, the seed, the tools,
   the first run's requestId, the script, the tokens of its asks, and every result delivered, in order;
-  a call a stop cut after its tool began to run is recorded as run, its effects unknown. It is
+  a call a stop cut after its tool began to run is recorded as run, its effects unknown. Past
+  32 MiB of results, every call is kept as a stub that says it ran, without its result, so the
+  script cannot resume but no call of it runs again. It is
   written when the script stops, so a crash mid-script loses what ran since the last stop.
   The key hashes the session, the actor, and the script's text, so `timeoutMs` may change. A
   re-sent script is answered from it call for call, and a call whose tool or arguments differ
