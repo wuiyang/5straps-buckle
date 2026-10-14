@@ -34,6 +34,8 @@ import saved state.
 
 The browser runs headless unless the node sets `BUCKLE_BROWSER_HEADED=true`, and it is held by a
 background daemon that outlives each call, so a later command reuses the browser already running.
+The first call in a mode launches that daemon and the browser, which can take long enough for your
+client to time out: send the same call again, and it reuses the browser already launched.
 After the owner changes a setting and restarts every Buckle process on the node, the next call
 starts the browser under the new setting.
 
