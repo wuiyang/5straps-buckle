@@ -381,3 +381,26 @@ describe('the places after PATH', () => {
     } finally { process.chdir(cwd) }
   })
 })
+
+// A refusal reaches the manifest an agent reads, so it names each place by its label and never a path; the owner sees
+// the paths in `buckle init`.
+describe('the reason a program is not run', () => {
+  const places = [{ directory: '/owner/npm-global/bin', label: 'beside buckle' }, { directory: '/owner/node/bin', label: 'beside node' }, { directory: 'C:/owner/npm', label: 'in %APPDATA%\\npm' }]
+  const empty = mkdtempSync(join(root, 'empty-'))
+
+  it('names PATH with its count of directories, then each place after it, as a list', () => {
+    const missing = (search: { PATH: string; places: typeof places }) => resolveProgram('buckle-missing-tool', { untrustedRoots: [], environment: { PATH: search.PATH }, platform: 'linux', places: search.places })
+    expect(missing({ PATH: [empty, empty, 'relative'].join(':'), places })).toEqual({
+      path: null, reason: 'buckle-missing-tool was not found on PATH (2 directories), beside buckle, beside node, or in %APPDATA%\\npm', untrusted: false,
+      searched: 'on PATH (2 directories), beside buckle, beside node, or in %APPDATA%\\npm',
+    })
+    expect(missing({ PATH: empty, places: places.slice(0, 1) })).toMatchObject({ reason: 'buckle-missing-tool was not found on PATH (1 directory) or beside buckle' })
+    expect(missing({ PATH: '', places: [] })).toMatchObject({ reason: 'buckle-missing-tool was not found on PATH (0 directories)' })
+  })
+
+  it('names a path the owner configured by what it is shown as, with no search', () => {
+    const configured = join(empty, 'owner-private', 'agent-browser')
+    const refused = resolveProgram(configured, { untrustedRoots: [], environment: { PATH: empty }, platform: 'linux', places, shownAs: 'BUCKLE_AGENT_BROWSER_COMMAND' })
+    expect(refused).toEqual({ path: null, reason: 'BUCKLE_AGENT_BROWSER_COMMAND is not installed on this node', untrusted: false })
+  })
+})

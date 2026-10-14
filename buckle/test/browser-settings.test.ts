@@ -300,7 +300,7 @@ describe('where a profile folder may lie', () => {
       .toEqual({ mode: 'fresh', setting: null, withheld: 'BUCKLE_PACKS leaves the browser pack out' })
     const missing = loadConfig({ ...environment, BUCKLE_AGENT_BROWSER_COMMAND: join(environment.BUCKLE_WORKSPACE_ROOT!, '..', 'no-such-agent-browser') })
     expect((await createSetupViews().status({ config: missing, runtime: await createRuntime({ config: missing }) })).browser)
-      .toEqual({ mode: 'fresh', setting: null, withheld: 'agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it' })
+      .toEqual({ mode: 'fresh', setting: null, withheld: 'BUCKLE_AGENT_BROWSER_COMMAND names a path that holds no program Buckle can run' })
   })
 })
 

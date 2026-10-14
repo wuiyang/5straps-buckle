@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
 import type { JsonValue } from '@5straps/protocol'
 import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
-import { ownRoots, type Program, type ResolvedProgram } from '../../../domain/executable.js'
+import { ownRoots, type Program, type ProgramRefusal, type ResolvedProgram } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError } from '../../../domain/tool.js'
@@ -91,9 +91,27 @@ export interface BrowserPackOptions {
 const DEFAULT_MAX_TIMEOUT_MS = 300_000
 
 /** Names the setting, never its value, which can be a path outside the workspace. */
-export const BROWSER_UNAVAILABLE = 'agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it'
+export const BROWSER_UNAVAILABLE = 'BUCKLE_AGENT_BROWSER_COMMAND names a path that holds no program Buckle can run'
 /** As BROWSER_UNAVAILABLE, for a command found where the agent writes. */
 export const BROWSER_UNTRUSTED = 'BUCKLE_AGENT_BROWSER_COMMAND names a program inside the workspace or a scratch root, where an agent can write, so Buckle does not run it'
+/** How the owner installs agent-browser where Buckle looks, outside any workspace (docs/browser-login.md). */
+export const BROWSER_INSTALL = 'install it with npm i -g agent-browser, then run agent-browser install'
+/** What runs without a shim: the native program agent-browser's package holds. */
+const BROWSER_EXECUTABLE = 'the agent-browser .exe inside its package'
+
+/**
+ * Why the browser pack is withheld for want of its program, in text the agent may read in the manifest: where Buckle
+ * looked, each place by its label, or the shim it found, by its file name, and never a path, as the configured value
+ * and the places are the owner's (program detection brief, 2026-10-14). `buckle init` shows the owner the paths.
+ */
+export function browserUnavailable(command: string, program: ProgramRefusal): string {
+  if (program.untrusted) return BROWSER_UNTRUSTED
+  const { shim, searched } = program
+  if (shim && shim.place === null) return `BUCKLE_AGENT_BROWSER_COMMAND names ${shim.why}; set it to ${BROWSER_EXECUTABLE}`
+  if (shim) return `${command} was found ${shim.place} as ${shim.file}, ${shim.why}; set BUCKLE_AGENT_BROWSER_COMMAND to ${BROWSER_EXECUTABLE}`
+  if (searched) return `${command} was not found ${searched}; ${BROWSER_INSTALL}`
+  return BROWSER_UNAVAILABLE
+}
 
 export function createBrowserPack(options: BrowserPackOptions): Pack {
   // A node that stopped mid-call leaves its transfer copies behind; each pack start clears them (review L4 of the second re-review).
@@ -108,7 +126,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const fingerprint = modeFingerprint(mode ?? FRESH_BROWSER, { launchArgs: options.launchArgs, headed: options.headed })
   // agent-browser refuses --allowed-domains with a profile or an attached browser, so only a fresh one is passed the list.
   const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
-  const unavailableReason = options.agentBrowser.path !== null ? ('refusal' in choice ? choice.refusal : null) : options.agentBrowser.untrusted ? BROWSER_UNTRUSTED : BROWSER_UNAVAILABLE
+  const unavailableReason = options.agentBrowser.path !== null ? ('refusal' in choice ? choice.refusal : null) : browserUnavailable(options.agentBrowserCommand, options.agentBrowser)
   if (unavailableReason === null && mode) logContainmentOff(mode)
   // The browser daemons this pack started and has not closed, which outlive single calls and end at its shutdown. The
   // one browser on a profile folder is never among them: other Buckle processes share it, so only the close command
@@ -118,7 +136,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     id: PACK_ID,
     version: '1.0.0',
     skills: [loadPackSkill(PACK_ID)],
-    // Fixed text: the manifest carrying it is read with the agent token, and the configured path is the owner's.
+    // No path: the manifest carrying it is read with the agent token, and the configured path is the owner's.
     unavailableReason,
     close: () => closeSessions({ options, sessions, opened }),
     tools: [

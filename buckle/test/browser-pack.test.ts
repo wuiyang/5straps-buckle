@@ -6,7 +6,7 @@ import type { JsonObject } from '@5straps/protocol'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { browserEffects, refusedFlag } from '../common/services/packs/browser/effects.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { createBrowserPack, type BrowserPackOptions } from '../common/services/packs/browser/index.js'
+import { BROWSER_UNTRUSTED, createBrowserPack, type BrowserPackOptions } from '../common/services/packs/browser/index.js'
 import type { BrowserMode } from '../common/services/packs/browser/mode.js'
 import { loadPackSkill } from '../common/services/packs/pack-skill.js'
 import { logger } from '../common/runtime/log.js'
@@ -446,8 +446,24 @@ describe('how the browser pack reports trouble', () => {
       approvedLists: [],
       runProcess: async () => stubResult(),
     })
-    expect(pack.unavailableReason).toBe('agent-browser is not installed on this node, or BUCKLE_AGENT_BROWSER_COMMAND does not name it')
+    expect(pack.unavailableReason).toBe('BUCKLE_AGENT_BROWSER_COMMAND names a path that holds no program Buckle can run')
     expect(pack.unavailableReason).not.toContain('/opt/private')
+  })
+
+  // The manifest reaches the agent: a reason names each place Buckle looked by its label, and a shim by its file name.
+  it('says where Buckle looked for agent-browser, or which shim it could not read, and never a path', () => {
+    const withheld = (agentBrowserCommand: string, agentBrowser: BrowserPackOptions['agentBrowser']) => createBrowserPack({
+      cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand, sessionDirectory: PROFILE, headed: false, agentBrowser, approvedLists: [], runProcess: async () => stubResult(),
+    }).unavailableReason
+    const searched = 'on PATH (12 directories), beside buckle, beside node, or in %APPDATA%\\npm'
+    expect(withheld('agent-browser', { path: null, reason: `agent-browser was not found ${searched}`, untrusted: false, searched }))
+      .toBe('agent-browser was not found on PATH (12 directories), beside buckle, beside node, or in %APPDATA%\\npm; install it with npm i -g agent-browser, then run agent-browser install')
+    const why = 'a shim Buckle cannot read'
+    expect(withheld('agent-browser', { path: null, reason: '', untrusted: false, shim: { file: 'agent-browser.cmd', place: 'in %APPDATA%\\npm', why } }))
+      .toBe('agent-browser was found in %APPDATA%\\npm as agent-browser.cmd, a shim Buckle cannot read; set BUCKLE_AGENT_BROWSER_COMMAND to the agent-browser .exe inside its package')
+    expect(withheld('C:\\Users\\me\\AppData\\Roaming\\npm\\agent-browser.cmd', { path: null, reason: '', untrusted: false, shim: { file: 'agent-browser.cmd', place: null, why } }))
+      .toBe('BUCKLE_AGENT_BROWSER_COMMAND names a shim Buckle cannot read; set it to the agent-browser .exe inside its package')
+    expect(withheld('agent-browser', { path: null, reason: 'agent-browser is found in or through a workspace of this node', untrusted: true })).toBe(BROWSER_UNTRUSTED)
   })
 })
 

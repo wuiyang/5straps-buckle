@@ -124,12 +124,20 @@ export function npmGlobalBin(real: string, platform: NodeJS.Platform): string {
   return basename(prefix) === 'lib' ? childPath(parentDirectory(prefix), 'bin') : parentDirectory(real)
 }
 
+/** How a reason names a search: PATH with its count of directories, then each owner place, joined as a list. */
+function searchDescription(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform, places: readonly SearchPlace[]): string {
+  const count = searchDirectories(environment, platform).length
+  const labels = [...new Set([`${ON_PATH} (${count} ${count === 1 ? 'directory' : 'directories'})`, ...places.map(place => place.label)])]
+  if (labels.length < 3) return labels.join(' or ')
+  return `${labels.slice(0, -1).join(', ')}, or ${labels.at(-1)!}`
+}
+
 /** How a program is looked up: findExecutable's signature, so a test can put another in its place. */
 export type ExecutableLookup = (binary: string, environment: NodeJS.ProcessEnv, platform: NodeJS.Platform) => string | null
 
 /** Where programs are looked up, and for which platform: the host's unless a test imitates another. */
 export interface ProgramSearch {
-  /** Answers in the scan's place, for PATH alone: no owner place is then searched. */
+  /** Answers in the scan's place, for PATH alone: no owner place is then searched or named. */
   lookup?: ExecutableLookup
   environment?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
@@ -153,6 +161,8 @@ export interface ProgramRefusal {
   path: null
   reason: string
   untrusted: boolean
+  /** For a bare name found nowhere, where it was looked for, by label (searchDescription), for a pack's own reason. */
+  searched?: string
   /** For a Windows shim Buckle does not run: its file name, its place's label (null for a configured path), and why. */
   shim?: { file: string; place: string | null; why: string }
 }
@@ -216,7 +226,7 @@ const ROOT_NAMES: Record<RootKind, string> = { 'workspace': 'a workspace', 'scra
  * a PATH entry linked to a folder in a workspace let the agent point the program there at a trusted one for the check
  * and at its own after it, and the PATH spelling then ran the agent's. On Windows a shim is read, never run, and the
  * program it starts is judged the same way (shimProgram). `shownAs` names the program in a refusal, where its
- * configured path, which may lie outside the workspace, is no business of the agent's.
+ * configured path, which may lie outside the workspace, is no business of the agent's; a place is named by its label.
  */
 export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoots & { shownAs?: string }): ResolvedProgram {
   return findProgram(name, input).resolved
@@ -227,10 +237,14 @@ export function findProgram(name: string, input: ProgramSearch & UntrustedRoots 
   const platform = input.platform ?? process.platform
   const environment = input.environment ?? process.env
   const shown = input.shownAs ?? name
-  // A lookup a test puts in the scan's place answers for PATH alone: no owner place is then searched.
+  // A lookup a test puts in the scan's place answers for PATH alone: no owner place is then searched, or named.
   const places = input.lookup ? [] : input.places ?? ownerPlaces(environment, platform)
   const located = input.lookup ? lookedUp(input.lookup(name, environment, platform), isPathReference(name, platform)) : locateExecutable(name, environment, platform, places)
-  if (located === null) return { resolved: { path: null, reason: `${shown} is not installed on this node`, untrusted: false }, found: null }
+  if (located === null) {
+    if (isPathReference(name, platform)) return refused({ path: null, reason: `${shown} is not installed on this node`, untrusted: false })
+    const searched = searchDescription(environment, platform, places)
+    return refused({ path: null, reason: `${shown} was not found ${searched}`, untrusted: false, searched })
+  }
   const finding = (resolved: ResolvedProgram, shim: string | null = null): ProgramFinding => ({ resolved, found: { path: located.path, place: located.place, shim } })
   if (input.rootsUnknown) return finding({ path: null, reason: `${shown} is not run while ${input.rootsUnknown}`, untrusted: true })
   let path: string
@@ -253,6 +267,10 @@ export function programOrNull(resolved: ResolvedProgram): Program | null {
 /** What a test's lookup answered, found as named for a path and on PATH for a bare name. */
 function lookedUp(path: string | null, named: boolean): Located | null {
   return path === null ? null : { path, place: named ? AS_NAMED : ON_PATH }
+}
+
+function refused(resolved: ProgramRefusal): ProgramFinding {
+  return { resolved, found: null }
 }
 
 /**

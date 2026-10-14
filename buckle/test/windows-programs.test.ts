@@ -4,7 +4,7 @@ import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { JsonObject } from '@5straps/protocol'
 import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
-import { findExecutable, resolveProgram, rootsOf, runnableCommand, type ExecutableLookup } from '../common/domain/executable.js'
+import { findExecutable, ownerPlaces, resolveProgram, rootsOf, runnableCommand, type ExecutableLookup } from '../common/domain/executable.js'
 import type { Pack } from '../common/domain/pack.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { BROWSER_UNTRUSTED } from '../common/services/packs/browser/index.js'
@@ -46,7 +46,7 @@ describe('a program resolved on Windows, imitated', () => {
   })
 
   it('is not run when PATH has none, or names it by a relative path', () => {
-    expect(resolveProgram('rg', { untrustedRoots, lookup: lookupFrom({}), platform: 'win32' })).toMatchObject({ path: null, reason: 'rg is not installed on this node', untrusted: false })
+    expect(resolveProgram('rg', { untrustedRoots, lookup: lookupFrom({}), environment: { PATH: 'C:\\Tools;tools;D:\\bin' }, platform: 'win32' })).toEqual({ path: null, reason: 'rg was not found on PATH (2 directories)', untrusted: false, searched: 'on PATH (2 directories)' })
     expect(resolveProgram('tools\\rg.exe', { untrustedRoots, lookup: lookupFrom({ 'tools\\rg.exe': 'tools\\rg.exe' }), platform: 'win32' })).toMatchObject({ path: null, untrusted: false })
   })
 
@@ -189,5 +189,41 @@ describe('the packs on Windows, imitated, with programs npm installed as shims',
     const { call, spawned } = builtins({ table: () => ({ tsc: tsc.shim }) })
     await call('shell', 'shell_exec', { command: 'tsc', args: ['--version'] })
     expect(spawned.at(-1)).toMatchObject({ command: process.execPath, args: [tsc.script, '--version'] })
+  })
+})
+
+// The withheld reason says where Buckle looked, each place by its label, and the shim it could not read by its file
+// name: the manifest carrying it is read by the agent, and the folders are the owner's.
+describe('the browser pack on Windows, imitated, without an agent-browser it can run', () => {
+  /** The browser pack's reason with PATH and %APPDATA%\\npm searched for real, under a scratch folder standing in for C:. */
+  function withheld(shim: string | null): string | null {
+    const root = scratch()
+    for (const directory of ['Windows', 'Users/me/AppData/Roaming/npm']) mkdirSync(join(root, 'C:', directory), { recursive: true })
+    if (shim !== null) writeFileSync(join(root, 'C:', 'Users/me/AppData/Roaming/npm/agent-browser.cmd'), shim)
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      const environment = { PATH: 'C:\\Windows;C:\\Windows\\System32', APPDATA: 'C:\\Users\\me\\AppData\\Roaming' }
+      const packs = createBuiltinPacks({
+        cwd: root, paths: createPathView({ root, mount: null }), hiddenPaths: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
+        runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
+        sandbox: createNoneSandbox(), writableRoots: [root], allowedHosts: [], stateDirectory: scratch(), agentBrowserCommand: 'agent-browser',
+        forge: { apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } }, browserStateDirectory: join(scratch(), 'browser'),
+        browserHeaded: false, enableShell: false, sandboxUnavailableReason: null,
+        programSearch: { environment, platform: 'win32', places: ownerPlaces(environment, 'win32', { entry: undefined, execPath: 'D:\\node\\node.exe' }) },
+      })
+      const reason = packs.find(pack => pack.id === 'browser')!.unavailableReason
+      expect(reason).not.toContain(root)
+      expect(reason).not.toMatch(/Users|me\\|Roaming|D:/)
+      return reason
+    } finally { process.chdir(cwd) }
+  }
+
+  it('names PATH with its count, beside node, and %APPDATA%\\npm, and how to install it', () => {
+    expect(withheld(null)).toBe('agent-browser was not found on PATH (2 directories), beside node, or in %APPDATA%\\npm; install it with npm i -g agent-browser, then run agent-browser install')
+  })
+
+  it('names a shim it found and could not read by its file and its place, and the setting that fixes it', () => {
+    expect(withheld('@ECHO off\r\n"%~dp0\\..\\agent-browser.sh" %*\r\n')).toBe('agent-browser was found in %APPDATA%\\npm as agent-browser.cmd, a shim Buckle cannot read; set BUCKLE_AGENT_BROWSER_COMMAND to the agent-browser .exe inside its package')
   })
 })
