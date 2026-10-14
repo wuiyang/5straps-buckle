@@ -87,3 +87,45 @@ describe('a variable named like an inherited property', () => {
     } finally { rmSync(workspace, { recursive: true, force: true }) }
   })
 })
+
+// Re-check of 2026-10-14: the merge that stopped looping walked every key for each name, so an agent's 20,000 names
+// held the node's event loop for 24 seconds. It is one pass over each side now, and the shell bounds the names.
+describe('a call that sets many variables', () => {
+  const many = (count: number): Record<string, string> => {
+    const extra: Record<string, string> = JSON.parse('{"constructor":"a","__proto__":"c"}') as Record<string, string>
+    for (let index = 0; index < count; index++) extra[`V${index.toString(36)}`] = String(index)
+    return extra
+  }
+
+  it.each(['linux', 'darwin', 'win32'] as const)('on %s merges 30,000 names in well under a second, the inherited names among them', (platform) => {
+    const extra = many(30_000)
+    const started = performance.now()
+    const child = buildChildEnvironment({ parent: { PATH: '/usr/bin', Path: 'C:\\Tools', SystemRoot: 'C:\\Windows' }, extra, platform })
+    expect(performance.now() - started).toBeLessThan(1_000)
+    expect(Object.keys(child).length).toBeGreaterThanOrEqual(30_002)
+    expect(Object.getOwnPropertyDescriptor(child, '__proto__')?.value).toBe('c')
+    expect(Object.getOwnPropertyDescriptor(child, 'constructor')?.value).toBe('a')
+  })
+
+  it('keeps one spelling per name on Windows, the last an extra gives', () => {
+    const child = buildChildEnvironment({ parent: { Path: 'C:\\Tools', Temp: 'C:\\Temp' }, extra: { PATH: 'C:\\One', path: 'C:\\Two' }, platform: 'win32' })
+    expect(child).toEqual({ path: 'C:\\Two', Temp: 'C:\\Temp' })
+  })
+
+  it('is refused by the shell past 256 variables or a 256-character name, and taken at the bound', () => {
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-env-bound-')))
+    try {
+      const pack = createShellPack({
+        paths: createPathView({ root: workspace, mount: null }), sandbox: createNoneSandbox(), writableRoots: [workspace], hiddenPaths: [], readOnlyPaths: [], unavailableReason: null,
+        runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
+      })
+      const bounded = (env: Record<string, string>) => () => pack.tools[0]!.prepare({ command: 'true', env })
+      const entries = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`V${index}`, 'x']))
+      expect(bounded(entries(256))).not.toThrow()
+      expect(bounded(entries(257))).toThrow()
+      expect(bounded({ [`N${'x'.repeat(255)}`]: 'x' })).not.toThrow()
+      expect(bounded({ [`N${'x'.repeat(256)}`]: 'x' })).toThrow()
+      for (const tool of pack.tools) expect(() => tool.prepare({ runtime: 'bash', script: 'true', command: 'true', env: entries(257) })).toThrow()
+    } finally { rmSync(workspace, { recursive: true, force: true }) }
+  })
+})

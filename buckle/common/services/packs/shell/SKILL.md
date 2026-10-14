@@ -21,6 +21,8 @@ buckle shell exec -- git status --porcelain
 buckle script run --runtime bash --script 'for f in *.log; do wc -l "$f"; done'
 ```
 
+Either tool's `env` sets at most 256 variables, each name at most 256 characters long.
+
 ## What gets gated
 
 Destructive commands ask for approval whether or not they are inside the sandbox:

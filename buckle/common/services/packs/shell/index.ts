@@ -27,11 +27,22 @@ const RUNTIMES = {
 
 const sensitiveFilesInput = z.array(z.string().min(1)).max(32).default([]).describe('Exact workspace files needed by this command. Sensitive files require WARNING approval, allow once only; approved files are mounted read-only.')
 
+/** How many variables a call may set, and how long a name may be: enough for any command, and too few to hold the node. */
+const MAX_ENV_ENTRIES = 256
+const MAX_ENV_NAME = 256
+/**
+ * Variables the call sets for its command. Bounded, so no request spends the node's event loop on them: one with
+ * 20,000 names held it for seconds while the environment was merged (re-check of 2026-10-14).
+ */
+const envInput = z.record(z.string().max(MAX_ENV_NAME), z.string())
+  .refine(env => Object.keys(env).length <= MAX_ENV_ENTRIES, `env holds at most ${MAX_ENV_ENTRIES} variables`)
+  .default({})
+
 const execInput = z.object({
   command: z.string().min(1).max(1_000),
   args: z.array(z.string().max(100_000)).max(1_000).default([]),
   cwd: z.string().default('.'),
-  env: z.record(z.string(), z.string()).default({}),
+  env: envInput,
   allowNetwork: z.boolean().default(false),
   sensitiveFiles: sensitiveFilesInput,
 })
@@ -40,7 +51,7 @@ const scriptInput = z.object({
   runtime: z.enum(['bash', 'node', 'python']),
   script: z.string().min(1).max(1_048_576),
   cwd: z.string().default('.'),
-  env: z.record(z.string(), z.string()).default({}),
+  env: envInput,
   allowNetwork: z.boolean().default(false),
   sensitiveFiles: sensitiveFilesInput,
 })

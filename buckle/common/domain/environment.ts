@@ -39,8 +39,12 @@ export function buildChildEnvironment(input: {
   const environment: NodeJS.ProcessEnv = {}
   if (platform === 'win32') {
     const wanted = new Set([...INHERITED, ...WINDOWS_INHERITED].map(name => name.toUpperCase()))
+    const taken = new Set<string>()
     for (const [name, value] of Object.entries(input.parent)) {
-      if (value !== undefined && wanted.has(name.toUpperCase()) && environmentKey(environment, name, platform) === undefined) environment[name] = value
+      const upper = name.toUpperCase()
+      if (value === undefined || !wanted.has(upper) || taken.has(upper)) continue
+      taken.add(upper)
+      environment[name] = value
     }
   } else {
     for (const name of INHERITED) {
@@ -65,17 +69,26 @@ function environmentKey(environment: NodeJS.ProcessEnv, name: string, platform: 
 }
 
 /**
- * `environment` with `extra` set over it, each extra name replacing every spelling of itself on Windows. The merge is
- * made on an object with no prototype and read by its own keys, so any name a caller sends, the agent's shell `env`
- * among them, is a variable like any other: `constructor` matched an inherited property and looped forever, and
- * `__proto__` would have been swallowed by the prototype setter (review of 2026-10-14). Nothing is refused by name.
+ * `environment` with `extra` set over it, each extra name replacing every spelling of itself on Windows, the last
+ * spelling an extra gives winning. The merge is made on an object with no prototype, so any name a caller sends, the
+ * agent's shell `env` among them, is a variable like any other: `constructor` matched an inherited property and looped
+ * forever, and `__proto__` would have been swallowed by the prototype setter (review of 2026-10-14). Nothing is refused
+ * by name. One pass over each side, as a merge that walked every key for each name held the node for seconds on an
+ * agent's 20,000 names (re-check of 2026-10-14).
  */
 function withExtra(environment: NodeJS.ProcessEnv, extra: Record<string, string>, platform: NodeJS.Platform): NodeJS.ProcessEnv {
   const merged: NodeJS.ProcessEnv = Object.assign(Object.create(null) as NodeJS.ProcessEnv, environment)
-  for (const [name, value] of Object.entries(extra)) {
-    for (const key of Object.keys(merged)) if (sameName(key, name, platform)) delete merged[key]
-    merged[name] = value
+  if (platform !== 'win32') {
+    for (const [name, value] of Object.entries(extra)) merged[name] = value
+    return Object.fromEntries(Object.entries(merged))
   }
+  const extras = new Map<string, [string, string]>()
+  for (const [name, value] of Object.entries(extra)) {
+    extras.delete(name.toUpperCase())
+    extras.set(name.toUpperCase(), [name, value])
+  }
+  for (const key of Object.keys(merged)) if (extras.has(key.toUpperCase())) delete merged[key]
+  for (const [name, value] of extras.values()) merged[name] = value
   return Object.fromEntries(Object.entries(merged))
 }
 
