@@ -35,7 +35,9 @@ In a terminal it asks, each question with a default that Enter keeps:
 `--yes`, or running without a terminal, takes every default and says so. The file also sets
 `BUCKLE_HOST=127.0.0.1`, `BUCKLE_PORT=4320`, and `BUCKLE_SANDBOX=auto`, and lists the other
 settings as comments. Change any of the questions' answers later with
-`buckle settings set <key> <value>`, and see them with `buckle settings show`.
+`buckle settings set <key> <value>`, and see them with `buckle settings show`. Its summary then
+lists the [programs Buckle runs](install.md#requirements): where each was found, or where Buckle
+looked and what a missing one unlocks.
 
 ### The two credentials
 

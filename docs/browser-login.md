@@ -8,6 +8,9 @@ in `buckle.env` or the shell Buckle starts from, whose value wins; nothing an ag
 select one. After a change, restart every Buckle process on the node: `buckle serve` and each
 `buckle mcp`.
 
+Install agent-browser, the browser Buckle drives, outside any workspace: `npm i -g agent-browser`,
+then `agent-browser install`; Buckle also looks beside `buckle` itself.
+
 ## Logging in without a setting
 
 With `BUCKLE_BROWSER_HEADED=true` the browser opens a visible window, and a person logs in there
@@ -29,10 +32,10 @@ you started it with, so Buckle refuses to start when it is set beside `BUCKLE_BR
 
 The profile folder is judged by the rule that judges `BUCKLE_AGENT_BROWSER_COMMAND`: Buckle does
 not load from where an agent can write. A folder inside or around a workspace, a scratch root, or
-the node's state directory, or one reached through a link there, is refused, and so is a folder
-that does not exist yet. A path an argument names, such as `--load-extension=<folder>`, is judged
-the same way. The browser pack is then withheld, and its reason names the setting, never the path.
-`buckle manifest` shows it.
+the node's state directory, or one reached through a link there, is refused, and so is one that
+does not exist yet. A path an argument names, such as `--load-extension=<folder>`, is judged
+the same way. The browser pack is then withheld, its reason naming the setting, never the path, in
+`buckle manifest`.
 
 For example:
 
@@ -53,8 +56,7 @@ refuses to start, naming the setting, when the value holds:
   `--app-launch-url-for-shortcuts-menu-item`, or `--load-and-launch-app`, which restore or open
   pages, so `agent-browser` refuses them beside an approved list.
 
-Whatever is set, a site decides for itself what it accepts, and it may still refuse a browser it
-takes for an automated one.
+Whatever is set, a site may still refuse a browser it takes for an automated one.
 
 ## Attaching your own Chrome
 
@@ -97,7 +99,7 @@ drive the browser around Buckle's rules.
 
 With a fresh browser and an approved list, Buckle passes the list's hosts as `agent-browser`'s
 `--allowed-domains`, so clicks, redirects, and page requests stay on them inside the browser.
-`agent-browser` refuses that flag with a profile folder and with an attached browser, because
+`agent-browser` refuses that flag with a profile folder or an attached browser, because
 Chrome can open or restore pages before the containment is installed. In those modes Buckle passes
 no list, and says so in a warning naming the setting at pack start, in the tool description, and
 in the agent's skill.
@@ -111,8 +113,8 @@ Still judged in every mode:
   `--restore-save`, `--state`, `--load`, `--credential-provider`, and `--action-policy`.
 
 No longer judged in those modes: where a page goes after it loads, and what it requests. Every
-login kept in that profile folder or that browser is within the agent's reach, which is why it
-should hold only the logins the agent's work needs.
+login kept in that profile folder or browser is within the agent's reach, so it should hold only
+the logins the agent's work needs.
 
 Chrome opens a profile folder in one browser at a time, so every agent session, in every
 workspace and every Buckle process, shares the one browser on it, with its tabs and logins. A
@@ -123,5 +125,5 @@ every one rather than rely on it to close or reuse the right browser.
 ## Checking the mode
 
 The setup face's `/setup/status` reports `browser.mode` as `fresh`, `profile`, or `attached`,
-`browser.setting` as the setting that chose it, never its value, and `browser.withheld` as the
-reason the browser pack is withheld, or null while it runs.
+`browser.setting` as the setting that chose it, never its value, and `browser.withheld` as why
+the browser pack is withheld, or null while it runs.

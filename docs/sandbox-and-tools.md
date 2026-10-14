@@ -15,7 +15,7 @@ is the exception: `fs_search_content` is left out without `rg`, and no reason is
 | `git` | `git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch` | `git` and `BUCKLE_ALLOW_HOST_GIT=true` |
 | `forge` | `git_commit`, `git_push`, `pr_open`, `pr_read` | the same, and `BUCKLE_FORGE_GITHUB_TOKEN` |
 | `dev` | `lsp_discover`, `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_rename`, `lsp_diagnostics` | `BUCKLE_ALLOW_HOST_LSP=true` and a language server |
-| `browser` | `browser_command` | `agent-browser`, or the command `BUCKLE_AGENT_BROWSER_COMMAND` names |
+| `browser` | `browser_command` | `agent-browser`, a browser for agents, or the command `BUCKLE_AGENT_BROWSER_COMMAND` names |
 | `environment` | `env_validate` | `BUCKLE_ENV_VALIDATOR_COMMAND` |
 
 `BUCKLE_PACKS=fs,web,shell` loads only the named packs, and naming any turns plugins off.
@@ -104,8 +104,14 @@ rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.
 `browser_command` runs one `agent-browser` command in a session of its own, headless unless
 `BUCKLE_BROWSER_HEADED=true`. By default each session gets a fresh browser with no saved state; the
 owner can choose a profile folder that keeps logins, or their own Chrome, as
-[Using your own browser](browser-login.md) describes. No agent call can. The owner installs the
-browser itself with `agent-browser install`, outside any agent.
+[Using your own browser](browser-login.md) describes. No agent call can.
+
+The owner installs `agent-browser` outside any workspace, as Buckle refuses one an agent could
+have written: `npm i -g agent-browser`, then `agent-browser install`, which downloads the browser.
+Buckle looks for it on `PATH`, then beside its own `buckle` command, where `npm i -g` puts both,
+beside its Node.js, and on Windows in `%APPDATA%\npm`. On Windows, Buckle reads npm's `.cmd`
+shim, never runs it, and runs the `.exe` or script it names. When none is found, the withheld
+pack's reason says where Buckle looked, and `buckle init` lists what it found.
 
 For a fresh browser with an approved list, Buckle passes its hosts to `agent-browser` as
 `--allowed-domains`, so clicks, redirects, and page requests stay on them. The browser matches

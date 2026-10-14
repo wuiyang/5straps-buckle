@@ -2,8 +2,7 @@
 
 Buckle is an approval and sandbox runtime for AI agents. It runs on one machine, runs the tool
 calls its owner allows, asks a person about the rest, and refuses what the owner ruled out. This
-page covers installing it, checking the install, upgrading, removing it, and what it keeps on
-disk.
+page covers installing, checking, upgrading, and removing it, and what it keeps on disk.
 
 ## Requirements
 
@@ -14,24 +13,27 @@ disk.
 On Windows, Buckle starts, its file tools work in the workspace, and Ctrl-C, Ctrl-Break, or
 closing its console stops it after its close steps. Windows is experimental: it rests on reading
 the code and on Linux tests that imitate Windows paths, signals, and file locks, not on a run on
-Windows, and CI does not run there. [Known limits](known-limits.md#paths-and-windows)
+Windows. [Known limits](known-limits.md#paths-and-windows)
 lists the differences.
 
-Buckle looks for these programs on `PATH`. Without one, the matching pack or tool is withheld,
-except for a language server: a missing one withholds nothing, and a call that needs it fails.
-`buckle manifest` says why a pack is withheld; without `rg`, `fs_search_content` is absent from
-the manifest, with no reason given.
+Buckle looks for these programs on `PATH`, then beside its `buckle` command and its Node.js, and
+on Windows in `%APPDATA%\npm`. Without one, the matching pack or tool is withheld, except a
+language server: a missing one withholds nothing, and a call needing it fails. `buckle init`
+lists what it found; `buckle manifest` says why a pack is withheld, and without `rg` leaves out
+`fs_search_content` with no reason.
 
 | Program | Unlocks |
 |---|---|
 | `bwrap` (bubblewrap), Linux | the sandboxed shell pack |
 | `rg` (ripgrep) | the `fs_search_content` tool |
 | `git` | the `git` and `forge` packs, once host Git is turned on |
-| `agent-browser` | the `browser` pack |
+| `agent-browser`, a browser for agents | the `browser` pack |
 | `typescript-language-server`, `rust-analyzer`, `gopls`, `pyright-langserver`, or `pylsp` | language support in the `dev` pack, once host language servers are turned on |
 
 On Linux, install bubblewrap from your distribution, for example `sudo apt install bubblewrap`
-or `sudo dnf install bubblewrap`.
+or `sudo dnf install bubblewrap`. On Windows, Buckle reads, never runs, the `.cmd` shim npm
+installs, and runs the `.exe` or Node.js script it names; for a shim it cannot read, point
+`BUCKLE_AGENT_BROWSER_COMMAND` at the package's `.exe`.
 
 ## Platform status by feature
 
@@ -44,8 +46,8 @@ or `sudo dnf install bubblewrap`.
 | Shell isolation in private copies | yes | no | no |
 | `node-pty` binary | built from source at install | prebuilt | prebuilt |
 
-The shell rows follow from two checks in the shell pack: isolated shell execution needs
-bubblewrap, and so does a workspace mount, such as `buckle init`'s `/workspace`.
+The shell rows follow from two checks: isolated shell execution needs bubblewrap, and so does a
+workspace mount, such as `buckle init`'s `/workspace`.
 [Sandbox and tools](sandbox-and-tools.md) explains both.
 
 ## Install
@@ -60,17 +62,7 @@ only the interactive terminal feature uses; on Linux it compiles during install,
 configured to skip install scripts leaves it unbuilt. Everything else still works:
 [Troubleshooting](troubleshooting.md#node-pty-was-not-built) has the fix.
 
-To build from a clone instead, with pnpm 10.33.2 as `packageManager` pins it:
-
-```bash
-git clone https://github.com/wuiyang/5straps-buckle.git
-cd 5straps-buckle
-pnpm install
-pnpm build
-cd buckle && npm link
-```
-
-[Building and testing](dev/building-and-testing.md) covers the clone in more detail.
+To build from a clone, follow [Building and testing](dev/building-and-testing.md).
 
 ## Check the install
 
@@ -113,8 +105,8 @@ npm uninstall -g @5straps/buckle
 
 This removes the program, not its state. Buckle keeps everything under `~/.5straps`: the state
 directory `~/.5straps/buckle`, settings-file locks in `~/.5straps/locks`, and the device key of
-`buckle client` in `~/.5straps/client`. Deleting `~/.5straps/buckle` deletes the audit log with
-it, so copy `actions.jsonl` first if you want the record.
+`buckle client` in `~/.5straps/client`. Deleting `~/.5straps/buckle` deletes the audit log, so
+copy `actions.jsonl` first to keep the record.
 
 ## What the state directory holds
 
@@ -122,9 +114,9 @@ The state directory is `~/.5straps/buckle`, or the absolute path in `BUCKLE_STAT
 relative path is refused. On Linux and macOS, Buckle creates it owner-only (mode 700), writes
 its state files owner-only (mode 600), and refuses to start when other users can reach the
 directory, unless you pass `--skip-owner-only-check`. On Windows, Buckle does not check or change
-file permissions: Windows protects the state directory under your user profile, and a state
-directory you move elsewhere with `BUCKLE_STATE_DIR` is yours to protect. It refuses to start when the state directory sits inside the workspace root, because
-an agent can write anywhere in the workspace. Buckle's file tools refuse to read or write
+file permissions: Windows protects the default one under your user profile, and one moved
+elsewhere is yours to protect. It refuses to start when the state directory sits inside the
+workspace root, where an agent writes anywhere. Buckle's file tools refuse to read or write
 anything under `~/.5straps` or the state directory. Only a process sandbox hides both from shell
 commands: with `BUCKLE_SANDBOX=none`, a shell command can read and write them, and Buckle does
 not ask about them.
