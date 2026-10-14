@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonObject } from '@5straps/protocol'
@@ -71,6 +71,55 @@ describe('a browser file transfer', () => {
     setImmediate(() => stop.abort(new Error('the call timed out')))
     await expect(prepareTransfer({ directory: session, paths, reads: ['large.bin'], writes: [], context: { signal: stop.signal }, protectedRoots: [] })).rejects.toThrow('the call timed out')
     expect(transfers(session)).toEqual([])
+  })
+
+  // On the owner's live node an HTTP client gave up while the call waited for an approval: the target was created and
+  // truncated before the abort was seen, and an empty screenshot was left in the workspace.
+  it('creates nothing when the call\'s signal fired before the delivery', async () => {
+    const { workspace, session } = fixture()
+    const stop = new AbortController()
+    const run = (request: ProcessRequest) => { writeFileSync(request.args[1]!, 'png bytes'); stop.abort(new Error('the caller went away')) }
+    const pack = createBrowserPack({
+      cwd: workspace, paths: createPathView({ root: workspace, mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: session, headed: false,
+      agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [],
+      runProcess: async (request): Promise<ProcessResult> => { run(request); return { exitCode: 0, signal: null, stdout: '{"success":true}', stderr: '', truncated: false, timedOut: false } },
+    })
+    await expect(pack.tools[0]!.prepare({ command: 'screenshot', args: ['shots/probe.png'] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1_000, signal: stop.signal })).rejects.toThrow('the caller went away')
+    expect(readdirSync(workspace)).toEqual([])
+    expect(transfers(session)).toEqual([])
+  })
+
+  it('leaves no partial file and the earlier target untouched when the signal fires mid-copy', async () => {
+    const { workspace, session, paths } = fixture()
+    writeFileSync(join(workspace, 'shot.png'), 'earlier')
+    const stop = new AbortController()
+    const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png'], context: { signal: stop.signal }, protectedRoots: [] })
+    const staged = transfer.argument('shot.png')!
+    writeFileSync(staged, '')
+    truncateSync(staged, 96 * 1_048_576)
+    const partials = () => readdirSync(workspace).filter(name => name.startsWith('.buckle-delivery-'))
+    let sawPartial = false
+    const watch = setInterval(() => { if (partials().length > 0) { sawPartial = true; stop.abort(new Error('the caller went away')) } }, 0)
+    try {
+      await expect(transfer.deliver()).rejects.toThrow('the caller went away')
+    } finally { clearInterval(watch); transfer.close() }
+    expect(sawPartial).toBe(true)
+    expect(partials()).toEqual([])
+    expect(readFileSync(join(workspace, 'shot.png'), 'utf8')).toBe('earlier')
+  })
+
+  it('replaces the target only once the copy is whole, keeping the target\'s mode', async () => {
+    const { workspace, session, paths } = fixture()
+    writeFileSync(join(workspace, 'shot.png'), 'earlier')
+    chmodSync(join(workspace, 'shot.png'), 0o640)
+    const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png', 'new.png'], context: { signal: new AbortController().signal }, protectedRoots: [] })
+    writeFileSync(transfer.argument('shot.png')!, 'later')
+    writeFileSync(transfer.argument('new.png')!, 'fresh')
+    try { await transfer.deliver() } finally { transfer.close() }
+    expect(readFileSync(join(workspace, 'shot.png'), 'utf8')).toBe('later')
+    expect(statSync(join(workspace, 'shot.png')).mode & 0o777).toBe(0o640)
+    expect(statSync(join(workspace, 'new.png')).mode & 0o777).toBe(0o600)
+    expect(readdirSync(workspace).sort()).toEqual(['new.png', 'shot.png'])
   })
 
   it('sweeps transfer directories a stopped node left at pack start, and keeps one a call may still use', async () => {

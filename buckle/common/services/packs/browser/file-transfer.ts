@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { closeSync, constants, fstatSync, mkdirSync, openSync, read, readdirSync, rmSync, statSync, write } from 'node:fs'
-import { basename, join } from 'pathe'
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, read, readdirSync, renameSync, rmSync, statSync, write } from 'node:fs'
+import { basename, dirname, join } from 'pathe'
 import { promisify } from 'node:util'
-import { withFileBeneathAsync } from '../../../adapters/beneath.js'
+import { LinkAppearedError, openBeneath, openRealDirectory, withFileBeneathAsync, type PinnedDirectory } from '../../../adapters/beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import { isMissingPathError } from '../../invocation/real-path.js'
@@ -14,7 +14,8 @@ import { isPlainName } from '../../../domain/paths.js'
  * a workspace path (review items 0 and 4 of the proof-of-possession fixes). Each file argument is
  * judged where it lands and swapped for a file in a private transfer directory: an upload is copied
  * there from its target, opened beneath a parent reached without following a link, and a screenshot,
- * PDF or download written there is copied to its target the same way once the command succeeds.
+ * PDF or download written there is copied beside its target the same way once the command succeeds,
+ * and renamed onto it once whole (replaceBeneath).
  * Copies are bounded by MAX_TRANSFER_BYTES and awaited chunk by chunk, so the call's signal (its
  * timeout, its caller, the shutdown) stops one and no copy holds the node (review L4 of the second
  * proof-of-possession re-review).
@@ -99,8 +100,14 @@ export function sweepTransfers(input: { directory: string; staleAfterMs: number;
   }
 }
 
-/** A file agent-browser left in the transfer directory goes to its judged target; one it did not write creates nothing. */
+/**
+ * A file agent-browser left in the transfer directory goes to its judged target; one it did not write creates nothing.
+ * Nothing is made once the call's signal has fired, and the copy goes into a new name beside the target (replaceBeneath),
+ * renamed onto it only once whole: truncating the target first left an empty screenshot in the workspace when the
+ * caller had gone while the call waited for an approval (owner's live node, 2026-10-14).
+ */
 async function deliver(file: Transferred, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
   let source: number
   try {
     source = openSync(file.staged, constants.O_RDONLY | constants.O_NOFOLLOW)
@@ -112,8 +119,46 @@ async function deliver(file: Transferred, signal: AbortSignal): Promise<void> {
     const info = fstatSync(source)
     if (!info.isFile()) throw new ToolInputError(`agent-browser did not write a regular file for ${file.named}`)
     if (info.size > MAX_TRANSFER_BYTES) throw tooLarge(file.named)
-    await withFileBeneathAsync(file.target, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC, createParents: true, shown: file.named }, target => copy({ source, target, named: file.named, signal }))
+    signal.throwIfAborted()
+    const directory = openRealDirectory(dirname(file.target), { create: true, refusal: { shown: file.named } })
+    try { await replaceBeneath({ directory, name: basename(file.target), named: file.named, source, signal }) } finally { directory.close() }
   } finally { closeSync(source) }
+}
+
+/** The name a delivery is copied into before it replaces its target: hidden, and new for each copy. */
+const PARTIAL_PREFIX = '.buckle-delivery-'
+
+/**
+ * Copies `source` into a new file beside `name` in a directory reached without following a link, created owner-only
+ * and exclusively, and renames it onto `name` once the whole copy succeeded and the signal has not fired. On any
+ * failure or abort the new file is removed and `name` is left as it was. A target that is a link, as one swapped in
+ * after the check, or not a regular file, is refused before anything is made; an existing target's mode is kept.
+ */
+async function replaceBeneath(input: { directory: PinnedDirectory; name: string; named: string; source: number; signal: AbortSignal }): Promise<void> {
+  const mode = existingMode(input.directory.child(input.name), input.named)
+  const partial = `${PARTIAL_PREFIX}${randomUUID()}`
+  const descriptor = openBeneath(input.directory, partial, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, { shown: input.named }, 0o600)
+  let replaced = false
+  try {
+    try {
+      await copy({ source: input.source, target: descriptor, named: input.named, signal: input.signal })
+      if (mode !== null) fchmodSync(descriptor, mode)
+    } finally { closeSync(descriptor) }
+    input.signal.throwIfAborted()
+    renameSync(input.directory.child(partial), input.directory.child(input.name))
+    replaced = true
+  } finally {
+    if (!replaced) rmSync(input.directory.child(partial), { force: true })
+  }
+}
+
+/** The permission bits of the regular file at `path`, null where there is none; a link or any other entry is refused. */
+function existingMode(path: string, named: string): number | null {
+  const entry = lstatSync(path, { throwIfNoEntry: false })
+  if (entry === undefined) return null
+  if (entry.isSymbolicLink()) throw new LinkAppearedError(named)
+  if (!entry.isFile()) throw new ToolInputError(`Not a regular file: ${named}`)
+  return entry.mode & 0o777
 }
 
 async function copyInto(input: { source: number; staged: string; named: string; signal: AbortSignal }): Promise<void> {
