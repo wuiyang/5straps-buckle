@@ -10,18 +10,61 @@ const INHERITED = [
   'SSL_CERT_DIR', 'SSL_CERT_FILE',
 ]
 
+/**
+ * Windows' own variables, which a program there needs as much as PATH: Node and Chromium misbehave without
+ * SystemRoot, a screenshot needs TEMP, and git needs USERPROFILE. Without them agent-browser's screenshot hung under
+ * Buckle on the owner's Windows node and worked by hand (2026-10-14). None holds a secret. Inherited on Windows alone.
+ */
+const WINDOWS_INHERITED = [
+  'SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT', 'OS', 'TEMP', 'TMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  'USERNAME', 'USERDOMAIN', 'COMPUTERNAME', 'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)',
+  'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'ALLUSERSPROFILE', 'PUBLIC',
+  'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION',
+]
+
 const SECRET_NAME_PATTERN = /(token|secret|password|passwd|credential|api_?key|private_?key)/i
 
+/**
+ * The variables a child inherits from `parent`, with `extra` set over them. On Windows the Windows list is added, and
+ * a name matches without regard to case, as Windows reads names, and passes under the spelling the parent used (`Path`
+ * reaches the child as `Path`); an `extra` name replaces every spelling of itself, so no two spellings reach the child.
+ * `platform`: the host's unless a test imitates another.
+ */
 export function buildChildEnvironment(input: {
   parent: NodeJS.ProcessEnv
   extra: Record<string, string>
+  platform?: NodeJS.Platform
 }): NodeJS.ProcessEnv {
+  const platform = input.platform ?? process.platform
   const environment: NodeJS.ProcessEnv = {}
-  for (const name of INHERITED) {
-    const value = input.parent[name]
-    if (value !== undefined) environment[name] = value
+  if (platform === 'win32') {
+    const wanted = new Set([...INHERITED, ...WINDOWS_INHERITED].map(name => name.toUpperCase()))
+    for (const [name, value] of Object.entries(input.parent)) {
+      if (value !== undefined && wanted.has(name.toUpperCase()) && environmentKey(environment, name, platform) === undefined) environment[name] = value
+    }
+  } else {
+    for (const name of INHERITED) {
+      const value = input.parent[name]
+      if (value !== undefined) environment[name] = value
+    }
   }
-  return { ...environment, ...input.extra }
+  return withExtra(environment, input.extra, platform)
+}
+
+/** The key `environment` holds `name` under: on Windows any spelling of it, elsewhere the name itself. */
+function environmentKey(environment: NodeJS.ProcessEnv, name: string, platform: NodeJS.Platform): string | undefined {
+  if (platform !== 'win32') return name in environment ? name : undefined
+  return Object.keys(environment).find(key => key.toUpperCase() === name.toUpperCase())
+}
+
+/** `environment` with `extra` set over it, each extra name replacing every spelling of itself on Windows. */
+function withExtra(environment: NodeJS.ProcessEnv, extra: Record<string, string>, platform: NodeJS.Platform): NodeJS.ProcessEnv {
+  const merged = { ...environment }
+  for (const [name, value] of Object.entries(extra)) {
+    for (let key = environmentKey(merged, name, platform); key !== undefined; key = environmentKey(merged, name, platform)) delete merged[key]
+    merged[name] = value
+  }
+  return merged
 }
 
 /** The environment of a program Buckle runs on the host, with `extra` set over it (hostEnvironment). */
@@ -35,11 +78,13 @@ export type HostEnvironment = (extra?: Record<string, string>) => NodeJS.Process
  */
 export function hostEnvironment(untrusted: () => UntrustedRoots, platform: NodeJS.Platform = process.platform): HostEnvironment {
   return (extra = {}) => {
-    const environment = buildChildEnvironment({ parent: process.env, extra: {} })
-    const searchPath = trustedSearchPath(environment.PATH, untrusted(), platform)
-    if (searchPath) environment.PATH = searchPath
-    else delete environment.PATH
-    return { ...environment, ...extra }
+    const environment = buildChildEnvironment({ parent: process.env, extra: {}, platform })
+    // On Windows PATH is usually spelled `Path`: the entry judged is the one the child would read, whatever its spelling.
+    const key = environmentKey(environment, 'PATH', platform) ?? 'PATH'
+    const searchPath = trustedSearchPath(environment[key], untrusted(), platform)
+    if (searchPath) environment[key] = searchPath
+    else delete environment[key]
+    return withExtra(environment, extra, platform)
   }
 }
 
