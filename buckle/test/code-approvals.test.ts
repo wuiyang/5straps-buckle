@@ -7,7 +7,7 @@ import type { ApprovalWait, InvokeResponse, JsonObject, JsonValue, ToolCapabilit
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { NestedApprovalRequired, type NestedCall, type ToolContext } from '../common/domain/tool.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
-import { createCodePack } from '../common/services/packs/code/index.js'
+import { CODE_CALL_LIMIT, createCodePack, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
 import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, type Journal } from '../common/services/packs/code/journal.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpServer } from '../mcp/server.js'
@@ -381,6 +381,19 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(await ending('await tools.echo({}); throw new Error("boom")')).toEqual({ kind: 'script', forgotten: [[[1]]], journal: [] })
     expect(await ending('await tools.echo({}); while (true) {}', { timeoutMs: 300 })).toEqual({ kind: 'timeout', forgotten: [], journal: [['echo']] })
     expect(await ending('await tools.echo({}); while (true) {}', { abortAfterCall: true })).toEqual({ kind: 'aborted', forgotten: [], journal: [['echo']] })
+  })
+
+  // Review of the code-mode slice, findings approvals-replay 210, invoker-audit 210, and tests 210.
+  it(`holds a script to ${MAX_NESTED_CALLS} calls across its resume after an ask`, async () => {
+    const directory = scratch()
+    const script = 'for (let i = 0; ; i++) { try { await tools.echo({ i }) } catch (error) { return [i, error.code] } }'
+    const first = vi.fn(async (call: NestedCall) => (call.args as { i: number }).i === 199 ? ask(call) : ok(call, null))
+    await expect(codeRun(directory, first)(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    expect(first).toHaveBeenCalledTimes(200)
+
+    const resumed = vi.fn(async (call: NestedCall) => ok(call, null))
+    expect(await codeRun(directory, resumed)(script)).toMatchObject({ ok: true, value: [MAX_NESTED_CALLS, CODE_CALL_LIMIT] })
+    expect(resumed).toHaveBeenCalledTimes(MAX_NESTED_CALLS - 199)
   })
 
   // Review of the code-mode slice, finding approvals-replay 228.

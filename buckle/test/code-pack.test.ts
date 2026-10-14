@@ -30,7 +30,7 @@ async function node(environment: Record<string, string> = {}) {
   return { root, workspace, config, runtime: await createRuntime({ config, interaction: fixedInteraction() }) }
 }
 
-type Ran = { ok: boolean; value?: JsonValue; output: string; calls: Array<{ id: number; tool: string; status: string }>; truncated: boolean; error?: { kind: string; name?: string; message: string } }
+type Ran = { ok: boolean; value?: JsonValue; output: string; calls: Array<{ id: number; tool: string; status: string }>; callsOmitted?: number; truncated: boolean; error?: { kind: string; name?: string; message: string; stack?: string } }
 
 let sequence = 0
 async function run(runtime: BuckleRuntime, script: string, input: { timeoutMs?: number; stageId?: string } = {}): Promise<InvokeResponse> {
@@ -242,6 +242,28 @@ describe('the limits on a script\'s calls', () => {
     `)
     expect(result.value).toEqual([MAX_NESTED_CALLS, CODE_CALL_LIMIT])
     expect(invoked).toHaveBeenCalledTimes(MAX_NESTED_CALLS)
+  })
+
+  // Review of the code-mode slice, coordinator decision 9 and finding sandbox-boundary 254.
+  it('counts refused calls toward the cap', async () => {
+    const invoked = vi.fn(async (call: NestedCall) => ok(call))
+    const result = await codeRun(invoked)(`
+      for (let i = 0; ; i++) { try { await tools.echo(i < 10 ? [i] : { i }) } catch (error) { if (error.code === '${CODE_CALL_LIMIT}') return i } }
+    `)
+    expect(result.value).toBe(MAX_NESTED_CALLS)
+    expect(invoked).toHaveBeenCalledTimes(MAX_NESTED_CALLS - 10)
+  })
+
+  it('ends a script that goes on calling past its cap, and hands back a bounded list of calls', async () => {
+    const invoked = vi.fn(async (call: NestedCall) => ok(call))
+    const began = performance.now()
+    const result = await codeRun(invoked)('for (;;) { try { await tools.echo({}) } catch (error) {} }')
+    expect(result).toMatchObject({ ok: false, truncated: true, error: { kind: 'script', message: expect.stringContaining(CODE_CALL_LIMIT) } })
+    expect(result.calls).toHaveLength(MAX_NESTED_CALLS)
+    expect(result.callsOmitted).toBeGreaterThan(MAX_NESTED_CALLS)
+    expect(invoked).toHaveBeenCalledTimes(MAX_NESTED_CALLS)
+    expect(JSON.stringify(result).length).toBeLessThan(64 * 1_024)
+    expect(performance.now() - began).toBeLessThan(10_000)
   })
 
   // Review of the code-mode slice, coordinator decision 2: a call past the slots waits for one, in order.

@@ -19,7 +19,10 @@ const PACK_ID = 'code'
 /** The code tools, which no script calls (D82, point 3) and no declaration lists. */
 export const CODE_TOOLS: readonly string[] = ['code_run', 'code_api']
 export const MAX_SCRIPT_CHARS = 262_144
-/** Calls one script may make; past it the call fails inside the script. */
+/**
+ * Tool calls one script may make, across its resumes, refused ones counted; past it the call fails inside the
+ * script, and a script refused as many calls again is ended. Also the most call records code_run hands back.
+ */
 export const MAX_NESTED_CALLS = 256
 /**
  * Calls one script has running at once; a call past it waits for a free slot, so `Promise.all` over many items works
@@ -154,6 +157,12 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   // Calls past MAX_IN_FLIGHT, started in the order the script made them as slots free.
   const queued: Array<() => void> = []
   const asks: ApprovalRequest[] = []
+  // Every tool call the script makes, in its order, replayed, refused, or run: one cap per script across its resumes,
+  // since a resumed run makes again every call its journal answers (review of the code-mode slice, findings
+  // approvals-replay 210, invoker-audit 210, and tests 210).
+  let toolCalls = 0
+  // Refused as many calls again past its cap, the script only spins, and is ended (finding sandbox-boundary 254).
+  let spun = false
   let broken: { error: unknown } | undefined
   let diverged = false
   let vmName: string | undefined
@@ -161,7 +170,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const cancel = new AbortController()
   let run: ScriptVmRun | undefined
 
-  const stopping = () => asks.length > 0 || broken !== undefined || diverged
+  const stopping = () => asks.length > 0 || broken !== undefined || diverged || spun
   // The VM stops once nothing it started still runs, so every call that ran is in the journal.
   const settleIfStopping = () => { if (stopping() && running.size === 0) stop.abort(new Error('A call the script made needs approval')) }
   // No queued call starts once the script stops at an ask or has ended: the re-sent script makes it again.
@@ -206,6 +215,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     },
     onCall(call) {
       issued.add(call.id)
+      if (call.target === 'tool') toolCalls++
       const target = call.target === 'global' ? `global:${call.name}` : call.name
       const recorded = replayById.get(call.id)
       if (recorded) {
@@ -215,9 +225,13 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       }
       if (call.target === 'global') return answer(call, target, call.name === DESCRIBE_TOOL ? describe(call.args) : failure('TOOL_NOT_FOUND', `No global ${call.name}`))
       if (stopping()) return
+      if (toolCalls > 2 * MAX_NESTED_CALLS) {
+        spun = true
+        return settleIfStopping()
+      }
+      if (toolCalls > MAX_NESTED_CALLS) return answer(call, target, failure(CODE_CALL_LIMIT, `A script makes at most ${MAX_NESTED_CALLS} calls, refused ones and those before an ask counted`))
       const args = call.args ?? {}
       if (!isObject(args)) return answer(call, target, failure('INVALID_TOOL_INPUT', 'A tool takes one object of arguments'))
-      if (made.size >= MAX_NESTED_CALLS) return answer(call, target, failure(CODE_CALL_LIMIT, `A script makes at most ${MAX_NESTED_CALLS} calls`))
       made.add(call.id)
       const start = () => running.set(call.id, invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal }).then((response) => {
         if (response.outcome === 'approval_required') asks.push(...response.approvals)
@@ -237,7 +251,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   if ('busy' in started) throw new ToolExecutionError(started.busy, { code: CODE_VM_BUSY, retryable: true })
   run = started
 
-  const result = await run.result
+  const ran = await run.result
+  // Ended for spinning past its cap, the script ended by its own doing, as one that throws does.
+  const result: ScriptVmResult = spun ? { ...ran, ok: false, error: { kind: 'script', name: 'RangeError', message: `${CODE_CALL_LIMIT}: this script made ${MAX_NESTED_CALLS} calls and went on calling, so Buckle ended it` } } : ran
   // A call the script left running when it ended is cancelled, as the VM's own record says, and waited for. Its own
   // reason, so the call is audited as SCRIPT_ENDED and an ask it waits on stays pending (review of the code-mode
   // slice, finding approvals-replay 685).
@@ -277,12 +293,17 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
 /** What code_run returns (D82, point 8). */
 function shapeResult(result: ScriptVmResult, began: number): JsonValue {
   const value = result.value === undefined ? undefined : capValue(result.value)
+  // The first MAX_NESTED_CALLS records, the calls the cap counts: past them every call was refused (review of the
+  // code-mode slice, finding sandbox-boundary 254).
+  const calls = result.calls.slice(0, MAX_NESTED_CALLS)
+  const callsOmitted = result.calls.length - calls.length
   return {
     ok: result.ok,
     ...(value === undefined ? {} : { value: value.value }),
     output: result.output.map(item => item.text).join('\n'),
-    calls: result.calls.map(call => ({ id: call.id, tool: call.name, status: call.status, durationMs: call.durationMs })),
-    truncated: result.outputTruncated || value?.truncated === true,
+    calls: calls.map(call => ({ id: call.id, tool: call.name, status: call.status, durationMs: call.durationMs })),
+    ...(callsOmitted > 0 ? { callsOmitted } : {}),
+    truncated: result.outputTruncated || value?.truncated === true || callsOmitted > 0,
     durationMs: Math.round(performance.now() - began),
     ...(result.error ? { error: { kind: result.error.kind, ...(result.error.name === undefined ? {} : { name: result.error.name }), message: result.error.message, ...(result.error.stack === undefined ? {} : { stack: result.error.stack }) } } : {}),
   }
