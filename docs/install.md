@@ -16,9 +16,9 @@ the code and on Linux tests that imitate Windows paths, signals, and file locks,
 Windows. [Known limits](known-limits.md#paths-and-windows)
 lists the differences.
 
-Buckle looks for these programs on `PATH`, then beside its `buckle` command and its Node.js, and
-on Windows in `%APPDATA%\npm`. Without one, the matching pack or tool is withheld, except a
-language server: a missing one withholds nothing, and a call needing it fails. `buckle init`
+Buckle looks for these programs on `PATH`, then beside its `buckle` command and Node.js, and on
+Windows in `%APPDATA%\npm`. Without one, the matching pack or tool is withheld; a missing
+language server withholds nothing, and a call needing it fails. `buckle init`
 checks the first four; `buckle manifest` says why a pack is withheld, and without `rg` leaves out
 `fs_search_content` with no reason.
 
@@ -31,8 +31,8 @@ checks the first four; `buckle manifest` says why a pack is withheld, and withou
 | `typescript-language-server`, `rust-analyzer`, `gopls`, `pyright-langserver`, or `pylsp` | language support in the `dev` pack, once host language servers are turned on |
 
 On Linux, install bubblewrap from your distribution, for example `sudo apt install bubblewrap`
-or `sudo dnf install bubblewrap`. On Windows, Buckle reads, never runs, the `.cmd` shim npm
-installs, and runs the `.exe` or Node.js script it names; for a shim it refuses, point
+or `sudo dnf install bubblewrap`. On Windows, Buckle reads, never runs, npm's `.cmd` shim, and
+runs the `.exe` or Node.js script it names; for a refused shim, point
 `BUCKLE_AGENT_BROWSER_COMMAND` at the package's `.exe` or script.
 
 ## Platform status by feature
@@ -113,9 +113,9 @@ copy `actions.jsonl` first to keep the record.
 The state directory is `~/.5straps/buckle`, or the absolute path in `BUCKLE_STATE_DIR`; a
 relative path is refused. On Linux and macOS, Buckle creates it owner-only (mode 700), writes
 its state files owner-only (mode 600), and refuses to start when other users can reach the
-directory, unless you pass `--skip-owner-only-check`. On Windows, Buckle does not check or change
-file permissions: Windows protects the default one under your user profile, and one moved
-elsewhere is yours to protect. It refuses to start when the state directory sits inside the
+directory, unless you pass `--skip-owner-only-check`. On Windows, Buckle leaves file permissions
+alone: Windows protects the default one under your profile, and one moved elsewhere is yours to
+protect. It refuses to start when the state directory sits inside the
 workspace root, where an agent writes anywhere. Buckle's file tools refuse to read or write
 anything under `~/.5straps` or the state directory. Only a process sandbox hides both from shell
 commands: with `BUCKLE_SANDBOX=none`, a shell command can read and write them, and Buckle does
@@ -131,6 +131,7 @@ not ask about them.
 | `actions.jsonl` | the [audit log](audit-log.md) |
 | `plugins.json` | plugins added with `buckle plugin add` |
 | `history/` | checkpoints of file changes, read by `buckle history` |
+| `code-journal/` | stopped scripts' text and calls' results, kept ten minutes |
 | `isolated-shell/` | the private workspace copies shell commands run in |
 | `browser-sessions/`, `workbenches/`, `receive-git-hooks/` | browser session state, workbench files, and the guard hook local pushes run |
 | `workspaces.json`, `workspaces/<id>/` | workspaces registered with `buckle workspace add`, each with a state directory of its own |
