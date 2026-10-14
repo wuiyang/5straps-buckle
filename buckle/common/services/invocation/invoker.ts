@@ -85,11 +85,11 @@ export interface InvokeInput {
    */
   via?: NestedOrigin
   /**
-   * Set only by the invoker on a call a script made: the longest its approval wait may hold, the time its script
-   * has left less a margin, so the wait ends before the script's deadline (review of the code-mode slice, finding
-   * approvals-replay 685).
+   * Set only by the invoker on a call a script made: when its approval wait must end at the latest, on the
+   * `performance.now()` clock, the script's deadline less a margin, read by the approval service just before it waits
+   * (review of the code-mode slice, finding approvals-replay 685; re-review, finding fixes-hold invoker.ts:712).
    */
-  holdAtMostMs?: number
+  holdUntil?: number
 }
 
 /** The call a script's call came from: its tool and the stage its calls are grouped under. */
@@ -119,7 +119,7 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
-    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdAtMostMs }) {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
@@ -169,7 +169,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
-          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, holdAtMostMs, key, held, via })
+          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, holdUntil, key, held, via })
           stop?.throwIfAborted()
           if (gate.earlier) return await answerEarlier(gate.earlier)
           if (gate.response) return gate.response
@@ -479,7 +479,7 @@ async function clearPermissions(input: {
   signal?: AbortSignal
   isCancel?: (reason: unknown) => boolean
   approvalWait?: ApprovalWait
-  holdAtMostMs?: number
+  holdUntil?: number
   key: ExecutionKey
   held: { claim?: ExecutionClaim }
   via?: NestedOrigin
@@ -532,7 +532,7 @@ async function clearPermissions(input: {
   const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}) }), effects: effects.map(summarizeEffect), complete: true as const }
   const waited = await options.approvalService.request({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
-    ...(input.holdAtMostMs === undefined ? {} : { holdAtMostMs: input.holdAtMostMs }), fingerprint: input.key.fingerprint, call,
+    ...(input.holdUntil === undefined ? {} : { holdUntil: input.holdUntil }), fingerprint: input.key.fingerprint, call,
   })
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
   const approvals = waited.approvals
@@ -709,7 +709,7 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
       signal: call.signal ? AbortSignal.any([input.signal, call.signal]) : input.signal,
       ...(cancels ? { isCancel: cancels } : {}),
       ...(nesting.approvalWait ? { approvalWait: nesting.approvalWait } : {}),
-      holdAtMostMs: Math.max(1, Math.round(waitEnds - performance.now())),
+      holdUntil: waitEnds,
       via: { tool: request.tool, stageId: stageOf(call) },
     }),
     forgetNested: (ids) => {

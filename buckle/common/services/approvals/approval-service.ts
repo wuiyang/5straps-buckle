@@ -49,11 +49,13 @@ export interface ApprovalAskInput {
   isCancel?: (reason: unknown) => boolean
   wait?: ApprovalWait
   /**
-   * The longest the call is held, whatever sets its hold: a script's call (owner decision D82) waits no longer than
-   * its script has left, so its wait ends as elapsed and it answers approval_required rather than being cut by the
-   * script's deadline (review of the code-mode slice, finding approvals-replay 685).
+   * When the call's hold must end at the latest, on the `performance.now()` clock, whatever sets the hold: a script's
+   * call (owner decision D82) waits no later than its script's deadline less a margin, so it answers
+   * approval_required rather than being cut by that deadline. The time left is read just before the wait starts,
+   * after the ask is recorded and announced, and the announce of such a call is held to it too (review of the
+   * code-mode slice, finding approvals-replay 685; re-review, finding fixes-hold invoker.ts:712).
    */
-  holdAtMostMs?: number
+  holdUntil?: number
   /** The call's tool and whole arguments, hashed (requestFingerprint): a re-send joins only with the same one. */
   fingerprint?: string
   /** The whole call as the node's signed challenge shows it (owner decisions D9 and D17): redacted arguments, their directory, the node's description and the judged effects. */
@@ -259,18 +261,28 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (issued.joined && approvals.length === 0) return { settled: true, approvals, answered }
       const tokens = approvals.map(approval => approval.token)
       if (!issued.joined) {
-        await announce(options.announce, approvals, input.call)
+        const announcing = announce(options.announce, approvals, input.call)
+        // A slow webhook never holds a script's call past its deadline: the post goes on in the background, and close
+        // still waits for it.
+        if (input.holdUntil === undefined) await announcing
+        else {
+          track(announcing)
+          await settledOrAt(announcing, input.holdUntil)
+        }
         scheduleSweep(approvals)
       }
       // Checked before any question is drawn: a caller that cancelled during the announce is asked about no more (review L5).
       await cancelIfCancelled({ key, tokens, signal: input.signal, isCancel: input.isCancel })
       if (closing.signal.aborted) return skip({ approvals, answered, reason: 'shutdown' })
-      const holdMs = atMost(holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait }), input.holdAtMostMs)
+      const ownHold = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
+      const holdMs = atMost(ownHold, input.holdUntil === undefined ? undefined : Math.max(0, Math.floor(input.holdUntil - performance.now())))
+      // No hold left for a script's call is a wait that elapsed, not one the caller declined.
+      const zeroHold: ApprovalSkipReason = ownHold === 0 ? 'caller_declined_wait' : 'wait_elapsed'
       // The hint sets how long the caller is held and never who is asked: a `grace` entry point asks
       // its terminal whatever the hint says, and keeps asking after the caller returns (owner ruling).
       const keepAsking = interaction.hold === 'grace'
       // A hold of 0 comes only from the caller's hint `none`: the node's own is positive or null (D3).
-      if (holdMs === 0 && !keepAsking) return skip({ approvals, answered, reason: 'caller_declined_wait' })
+      if (holdMs === 0 && !keepAsking) return skip({ approvals, answered, reason: zeroHold })
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
       const context = { correlationId: scope?.context.correlationId ?? input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId }
@@ -280,7 +292,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
       if (holdMs === 0) {
         if (ask.participants.size === 0) release({ ask, keepAsking: true })
-        return skip({ approvals, answered, reason: 'caller_declined_wait' })
+        return skip({ approvals, answered, reason: zeroHold })
       }
       const participant = new AbortController()
       ask.participants.add(participant)
@@ -621,6 +633,16 @@ export function shorterWait(left: ApprovalWait | undefined, right: ApprovalWait 
 export function holdFor(input: { hold: ApprovalHold; graceMs: number | null; hint?: ApprovalWait }): number | null {
   if (input.hint) return input.hint.mode === 'none' ? 0 : input.hint.ms
   return input.hold === 'grace' ? input.graceMs : null
+}
+
+/** Once `work` settles, or at `until` on the `performance.now()` clock, whichever comes first; never rejects. */
+async function settledOrAt(work: Promise<unknown>, until: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined
+  await Promise.race([
+    work.then(() => undefined, () => undefined),
+    new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.max(0, until - performance.now())) }),
+  ])
+  clearTimeout(timer)
 }
 
 /** A hold no longer than `limit`, when there is one: an endless hold becomes the limit. */

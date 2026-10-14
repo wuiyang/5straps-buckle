@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -194,6 +196,26 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     // The cut wait is the ask the outer call reports, not a failed tool.
     expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
     await runtime.history.close()
+  }, 30_000)
+
+  // Re-review of the code-mode slice, finding fixes-hold invoker.ts:712: the cap is a deadline read just before the
+  // wait, and a slow announce is held to it, so a slow approval webhook never turns the ask into a timeout.
+  it.each([1_300, 3_000])('answers approval_required before the deadline when the approval webhook takes %i ms, the ask still pending', async (delayMs) => {
+    const webhook = createServer((request, response) => { request.resume(); setTimeout(() => response.end('{}'), delayMs) })
+    await new Promise<void>(resolve => webhook.listen(0, '127.0.0.1', resolve))
+    try {
+      const { port } = webhook.address() as AddressInfo
+      const { root, runtime } = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000', BUCKLE_APPROVAL_WEBHOOK: `http://127.0.0.1:${port}/approvals` })
+      const [approval, ...others] = asked(await send(runtime, READ_THEN_WRITE, { timeoutMs: 2_500 }))
+      expect(others).toEqual([])
+      expect(runtime.approvalService.pending().map(request => request.token)).toEqual([approval!.token])
+      expect(journals(root)).toHaveLength(1)
+      expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
+      await runtime.history.close()
+    } finally {
+      webhook.closeAllConnections()
+      await new Promise(resolve => webhook.close(resolve))
+    }
   }, 30_000)
 
   it('leaves the ask pending over stdio when Buckle shuts down during the wait, and withdraws it on the client\'s own cancel', async () => {
