@@ -8,7 +8,7 @@ import type { ScriptVm, ScriptVmCall, ScriptVmOutcome, ScriptVmResult, ScriptVmR
 import { requestFingerprint } from '../../invocation/executions.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { codeRunDescription, declare } from './declarations.js'
-import { CODE_REPLAY_TOO_LARGE, createJournalStore, type JournalEntry, type JournalStore } from './journal.js'
+import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, type JournalEntry, type JournalStore } from './journal.js'
 
 // Code mode (owner decision D82, proposed as BUCKLE-D22): an agent's script runs in a VM that can do nothing but call
 // this workspace's other tools, each call judged, approved, and audited as a direct call, and only what the script
@@ -137,6 +137,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const replayById = new Map(replay.map(entry => [entry.id, entry]))
   let replayed = 0
   const fresh: JournalEntry[] = []
+  // Results are kept for a journal only up to its bound, so a script's memory here stays bounded too; past it, an
+  // ask cannot be resumed.
+  let journalBytes = Buffer.byteLength(JSON.stringify(replay))
+  let overflowed = false
   let nextSeq = replay.length + 1
   const issued = new Set<number>()
   const made = new Set<number>()
@@ -154,7 +158,12 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const settleIfStopping = () => { if (stopping() && running.size === 0) stop.abort(new Error('A call the script made needs approval')) }
   const answer = (call: ScriptVmCall, target: string, outcome: ScriptVmOutcome) => {
     const entry: JournalEntry = { seq: nextSeq++, now: Date.now(), id: call.id, tool: target, args: fingerprintOf(target, call.args), outcome }
-    fresh.push(entry)
+    if (!overflowed) {
+      journalBytes += Buffer.byteLength(JSON.stringify(entry))
+      overflowed = journalBytes > JOURNAL_BYTES
+      if (overflowed) fresh.length = 0
+      else fresh.push(entry)
+    }
     if (!stopping()) run?.deliver(entry.seq, entry.now, entry.id, entry.outcome)
   }
   // Journal entries go back in their order, each once the VM has made its call again.
@@ -204,7 +213,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       const pending = invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal }).then((response) => {
         if (response.outcome === 'approval_required') asks.push(...response.approvals)
         else answer(call, target, outcomeOf(response))
-      }, (error: unknown) => { broken ??= { error } }).finally(() => {
+      }).catch((error: unknown) => { broken ??= { error } }).finally(() => {
         running.delete(call.id)
         settleIfStopping()
       })
@@ -224,7 +233,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     throw new ToolExecutionError('This script stopped at an ask earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
   }
   if (asks.length > 0 && stop.signal.aborted) {
-    const kept = await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), tools, entries: [...replay, ...fresh] })
+    const kept = !overflowed && await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), tools, entries: [...replay, ...fresh] })
     if (!kept) throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
     throw new NestedApprovalRequired(asks)
   }

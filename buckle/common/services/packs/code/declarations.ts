@@ -12,7 +12,7 @@ const RETURNS: Readonly<Record<string, string>> = {
   fs_write: '{ path, size, hash }',
   fs_write_batch: '{ files: Array<{ path, size, hash }> }',
   fs_patch: '{ path, replacements: number[], size }',
-  fs_list: '{ path, entries: Array<{ path, name, type: "file" | "directory" | "symlink", size, modifiedAt }>, truncated }',
+  fs_list: '{ path, entries: Array<{ path (inside the listed path), name, type: "file" | "directory" | "symlink", size, modifiedAt }>, truncated }',
   fs_find_names: '{ path, matches: string[], truncated }',
   fs_search_content: '{ matches: Array<{ path, line, text, ranges }>, truncated, excludedFiles }',
   web_fetch: '{ url, status, headers, body: string, truncated }',

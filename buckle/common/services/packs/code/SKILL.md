@@ -25,7 +25,7 @@ through `tools`.
 ```js
 const listed = await tools.fs_list({ path: 'docs' })
 const pages = listed.entries.filter(entry => entry.type === 'file' && entry.name.endsWith('.md'))
-const read = await Promise.all(pages.slice(0, 8).map(page => tools.fs_read({ path: page.path })))
+const read = await Promise.all(pages.slice(0, 8).map(page => tools.fs_read({ path: `docs/${page.path}` })))
 for (const file of read) text(`${file.path}: ${file.content.split('\n')[0]}`)
 return read.length
 ```
@@ -49,7 +49,7 @@ A call that fails or is refused rejects with an `Error` whose message is `<code>
 carries `code` and `retryable` as properties. Catch it to go on:
 
 ```js
-try { await tools.fs_read({ path: '.env' }) } catch (error) { text(`skipped: ${error.code}`) }
+try { await tools.fs_read({ path: 'notes/missing.md' }) } catch (error) { text(`skipped: ${error.code}`) }
 ```
 
 A refusal (`PERMISSION_DENIED`) is in the audit log whether or not you catch it. When the script
@@ -61,7 +61,7 @@ kind: `script`, `timeout`, `aborted`, or `sandbox`. Calls made before a failure 
 Every call a script makes is judged as a direct call, with the same rules and approvals. A call
 that needs a person stops the script there: `code_run` answers `approval_required`, with the asks
 of every call that asked. Relay them as you would any ask. The person sees that one call whole,
-and a line saying a `code_run` script made it.
+with a note that a `code_run` script made it.
 
 Once they answer, send the same script again, unchanged. Buckle replays the calls that already ran
 from its record of the first run, without running them again, and then runs the call that asked.
