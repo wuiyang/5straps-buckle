@@ -69,7 +69,7 @@ describe('a browser file transfer', () => {
     truncateSync(join(workspace, 'large.bin'), 64 * 1_048_576)
     const stop = new AbortController()
     setImmediate(() => stop.abort(new Error('the call timed out')))
-    await expect(prepareTransfer({ directory: session, paths, reads: ['large.bin'], writes: [], context: { signal: stop.signal }, protectedRoots: [] })).rejects.toThrow('the call timed out')
+    await expect(prepareTransfer({ directory: session, paths, reads: ['large.bin'], writes: [], context: { signal: stop.signal }, protectedRoots: [], staleAfterMs: 600_000 })).rejects.toThrow('the call timed out')
     expect(transfers(session)).toEqual([])
   })
 
@@ -93,7 +93,7 @@ describe('a browser file transfer', () => {
     const { workspace, session, paths } = fixture()
     writeFileSync(join(workspace, 'shot.png'), 'earlier')
     const stop = new AbortController()
-    const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png'], context: { signal: stop.signal }, protectedRoots: [] })
+    const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png'], context: { signal: stop.signal }, protectedRoots: [], staleAfterMs: 600_000 })
     const staged = transfer.argument('shot.png')!
     writeFileSync(staged, '')
     truncateSync(staged, 96 * 1_048_576)
@@ -112,7 +112,7 @@ describe('a browser file transfer', () => {
     const { workspace, session, paths } = fixture()
     writeFileSync(join(workspace, 'shot.png'), 'earlier')
     chmodSync(join(workspace, 'shot.png'), 0o640)
-    const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png', 'new.png'], context: { signal: new AbortController().signal }, protectedRoots: [] })
+    const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png', 'new.png'], context: { signal: new AbortController().signal }, protectedRoots: [], staleAfterMs: 600_000 })
     writeFileSync(transfer.argument('shot.png')!, 'later')
     writeFileSync(transfer.argument('new.png')!, 'fresh')
     try { await transfer.deliver() } finally { transfer.close() }
@@ -120,6 +120,25 @@ describe('a browser file transfer', () => {
     expect(statSync(join(workspace, 'shot.png')).mode & 0o777).toBe(0o640)
     expect(statSync(join(workspace, 'new.png')).mode & 0o777).toBe(0o600)
     expect(readdirSync(workspace).sort()).toEqual(['new.png', 'shot.png'])
+  })
+
+  it('removes a partial delivery a stopped node left beside the target, once older than twice the longest call', async () => {
+    const { workspace, session } = fixture()
+    mkdirSync(join(workspace, 'shots'))
+    mkdirSync(join(workspace, 'other'))
+    const partial = (directory: string, name: string, ageMs: number) => {
+      const path = join(workspace, directory, `.buckle-delivery-${name}`)
+      writeFileSync(path, 'half a png')
+      utimesSync(path, (Date.now() - ageMs) / 1_000, (Date.now() - ageMs) / 1_000)
+    }
+    partial('shots', 'stale', 2 * 60_000 + 10_000)
+    partial('shots', 'recent', 60_000)
+    partial('other', 'stale', 10 * 60_000)
+    const run = (request: ProcessRequest) => { writeFileSync(request.args[1]!, 'png bytes') }
+    await browser({ workspace, session, args: { command: 'screenshot', args: ['shots/probe.png'] }, run, options: { maxTimeoutMs: 60_000 } })
+    expect(readdirSync(join(workspace, 'shots')).sort()).toEqual(['.buckle-delivery-recent', 'probe.png'])
+    expect(readFileSync(join(workspace, 'shots', 'probe.png'), 'utf8')).toBe('png bytes')
+    expect(readdirSync(join(workspace, 'other'))).toEqual(['.buckle-delivery-stale'])
   })
 
   it('sweeps transfer directories a stopped node left at pack start, and keeps one a call may still use', async () => {

@@ -48,6 +48,8 @@ export async function prepareTransfer(input: {
   context: Pick<ToolContext, 'authorizeReadTarget' | 'authorizeWrite' | 'signal'>
   /** Buckle's protected roots: an upload of a hard-linked file on their device is refused (review L3 of the second re-review). */
   protectedRoots: readonly string[]
+  /** How old a partial delivery beside a target is before it is removed: twice the longest a call may run, as sweepTransfers. */
+  staleAfterMs: number
 }): Promise<FileTransfer> {
   const directory = join(input.directory, `${TRANSFER_PREFIX}${randomUUID()}`)
   const files = new Map<string, Transferred>()
@@ -71,7 +73,7 @@ export async function prepareTransfer(input: {
   return {
     argument: named => files.get(named)?.staged,
     async deliver() {
-      for (const file of files.values()) if (file.kind === 'write') await deliver(file, signal)
+      for (const file of files.values()) if (file.kind === 'write') await deliver(file, signal, input.staleAfterMs)
     },
     shown(text) {
       let shown = text
@@ -106,7 +108,7 @@ export function sweepTransfers(input: { directory: string; staleAfterMs: number;
  * renamed onto it only once whole: truncating the target first left an empty screenshot in the workspace when the
  * caller had gone while the call waited for an approval (owner's live node, 2026-10-14).
  */
-async function deliver(file: Transferred, signal: AbortSignal): Promise<void> {
+async function deliver(file: Transferred, signal: AbortSignal, staleAfterMs: number): Promise<void> {
   signal.throwIfAborted()
   let source: number
   try {
@@ -121,7 +123,10 @@ async function deliver(file: Transferred, signal: AbortSignal): Promise<void> {
     if (info.size > MAX_TRANSFER_BYTES) throw tooLarge(file.named)
     signal.throwIfAborted()
     const directory = openRealDirectory(dirname(file.target), { create: true, refusal: { shown: file.named } })
-    try { await replaceBeneath({ directory, name: basename(file.target), named: file.named, source, signal }) } finally { directory.close() }
+    try {
+      sweepPartials(directory, staleAfterMs)
+      await replaceBeneath({ directory, name: basename(file.target), named: file.named, source, signal })
+    } finally { directory.close() }
   } finally { closeSync(source) }
 }
 
@@ -149,6 +154,20 @@ async function replaceBeneath(input: { directory: PinnedDirectory; name: string;
     replaced = true
   } finally {
     if (!replaced) rmSync(input.directory.child(partial), { force: true })
+  }
+}
+
+/**
+ * Removes the partial deliveries a node stopped mid-copy left in a target's directory: regular files named with
+ * PARTIAL_PREFIX older than `staleAfterMs`, which no call can still be writing, so none is left for good.
+ */
+function sweepPartials(directory: PinnedDirectory, staleAfterMs: number, now = Date.now()): void {
+  for (const name of readdirSync(directory.self).filter(entry => entry.startsWith(PARTIAL_PREFIX) && isPlainName(entry))) {
+    const path = directory.child(name)
+    try {
+      const entry = lstatSync(path)
+      if (entry.isFile() && now - entry.mtimeMs > staleAfterMs) rmSync(path, { force: true })
+    } catch { /* Gone meanwhile, or another process sweeps it. */ }
   }
 }
 

@@ -115,7 +115,8 @@ export function browserUnavailable(command: string, program: ProgramRefusal): st
 
 export function createBrowserPack(options: BrowserPackOptions): Pack {
   // A node that stopped mid-call leaves its transfer copies behind; each pack start clears them (review L4 of the second re-review).
-  sweepTransfers({ directory: options.sessionDirectory, staleAfterMs: 2 * (options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS) })
+  const staleAfterMs = 2 * (options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS)
+  sweepTransfers({ directory: options.sessionDirectory, staleAfterMs })
   const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: { sessions: {}, allowedDomains: {}, modes: {}, writers: {} } })
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
   const allowedDomains = browserAllowedDomains(options.approvedLists)
@@ -170,7 +171,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           if (['screenshot', 'pdf', 'download', 'upload'].includes(input.command) && reads.length + writes.length === 0) throw new ToolInputError('Browser file operations require an explicit path')
           mkdirSync(options.sessionDirectory, { recursive: true, mode: 0o700 })
           // Each file argument is judged where it lands and reaches agent-browser only through a private copy (review items 0 and 4 of the proof-of-possession fixes).
-          const transfer = await prepareTransfer({ directory: options.sessionDirectory, paths: options.paths, reads, writes, context, protectedRoots: options.protectedRoots ?? [] })
+          const transfer = await prepareTransfer({ directory: options.sessionDirectory, paths: options.paths, reads, writes, context, protectedRoots: options.protectedRoots ?? [], staleAfterMs })
           try {
             const targets = navigationTargets(input.command, input.args)
             const passed = input.args.map((argument, index) => targets.get(index) ?? transfer.argument(argument) ?? realPath(argument, options.paths))
