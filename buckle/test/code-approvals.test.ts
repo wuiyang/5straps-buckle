@@ -345,6 +345,31 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     await runtime.history.close()
   }, 30_000)
 
+  // Re-check of round 3, finding late-ask-audit invoker.ts:635: a call whose listener hears the invoker's backstop
+  // before the pack's own cancel, as when the main thread stalls across the script's deadline, is still audited
+  // SCRIPT_ENDED, not logged as a failed tool.
+  it('audits SCRIPT_ENDED when the backstop timer reaches a waiting call before the pack\'s cancel', async () => {
+    const { workspace, runtime } = await node()
+    writeFileSync(join(workspace, 'slow.md'), 'slow')
+    const fsRead = runtime.registry().get('fs_read')
+    const prepare = fsRead.prepare.bind(fsRead)
+    vi.spyOn(fsRead, 'prepare').mockImplementation(args => ({ ...prepare(args), execute: (context: ToolContext) => new Promise<JsonValue>((_resolve, reject) => {
+      context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true })
+    }) }))
+    const failed = vi.spyOn(logger, 'error')
+    // The main thread stalls from just before the script's deadline to past its backstop's, so both come due together.
+    const stall = setTimeout(() => { const until = performance.now() + 1_300; while (performance.now() < until) { /* stalled */ } }, 2_400)
+    try {
+      expect(await send(runtime, 'return await tools.fs_read({ path: "slow.md" })', { timeoutMs: 2_500 })).toMatchObject({ outcome: 'ok', output: { ok: false, error: { kind: 'timeout' } } })
+    } finally {
+      clearTimeout(stall)
+    }
+    expect(results(runtime, 'fs_read').map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'SCRIPT_ENDED']])
+    expect(failed.mock.calls.filter(([message]) => message === 'Tool invocation failed')).toEqual([])
+    failed.mockRestore()
+    await runtime.history.close()
+  }, 30_000)
+
   it('leaves the ask pending over stdio when Buckle shuts down during the wait, and withdraws it on the client\'s own cancel', async () => {
     const waiting = { timeoutMs: 20_000, approvalWait: { mode: 'finite' as const, ms: 10_000 }, isCancel: isExplicitCancel }
     const stopped = await node()

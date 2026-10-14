@@ -635,7 +635,10 @@ async function executeWithTimeout(input: {
   const timeoutMs = Math.min(input.timeoutMs ?? input.request.timeoutMs ?? input.options.defaultTimeoutMs, input.options.maxTimeoutMs)
   const controller = new AbortController()
   // A script's own deadline ends it first and reads as a timeout; this one only backs it (owner decision D82).
-  const timer = setTimeout(() => controller.abort(), input.nesting ? timeoutMs + NESTED_DEADLINE_GRACE_MS : timeoutMs)
+  // Past a script's deadline the script has ended: a call of its that hears this backstop before the pack's own cancel,
+  // as when the main thread stalls across both, is cut for that reason too, and audited SCRIPT_ENDED (re-check of
+  // round 3, finding late-ask-audit invoker.ts:635).
+  const timer = setTimeout(() => controller.abort(input.nesting ? new ScriptEndedError() : undefined), input.nesting ? timeoutMs + NESTED_DEADLINE_GRACE_MS : timeoutMs)
   const signal = input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal
   try {
     return await input.execute({
