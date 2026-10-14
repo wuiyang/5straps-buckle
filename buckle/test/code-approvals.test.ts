@@ -651,9 +651,9 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
   const cut = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'error', error: { code: 'SCRIPT_ENDED', message: 'cut', retryable: false } })
   const ask = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'approval_required', approvals: [{ token: `token-${call.id}`, rule: 'write_scope', subject: '/w', reason: 'asks', tool: call.tool, offeredScopes: ['once'], expiresAt: new Date(Date.now() + 60_000).toISOString() }] })
 
-  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>, input: { timeoutMs?: number; signal?: AbortSignal; forgetNested?: (ids: readonly number[]) => void; withdrawNested?: (tokens: readonly string[]) => Promise<void>; journalBytes?: number; vm?: ScriptVm } = {}) {
+  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>, input: { timeoutMs?: number; signal?: AbortSignal; forgetNested?: (ids: readonly number[]) => void; withdrawNested?: (tokens: readonly string[]) => Promise<void>; callerCancelled?: () => boolean; journalBytes?: number; vm?: ScriptVm } = {}) {
     const pack = createCodePack({ vm: input.vm ?? createPiCodemodeVm(), reachableTools: () => [echo, gate, waiter], journalDirectory: directory, unavailableReason: null, ...(input.journalBytes ? { journalBytes: input.journalBytes } : {}) })
-    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: input.timeoutMs ?? 60_000, signal: input.signal ?? new AbortController().signal, nestedKey: 'f'.repeat(64), invokeNested, forgetNested: input.forgetNested ?? (() => {}), ...(input.withdrawNested ? { withdrawNested: input.withdrawNested } : {}) }
+    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: input.timeoutMs ?? 60_000, signal: input.signal ?? new AbortController().signal, nestedKey: 'f'.repeat(64), invokeNested, forgetNested: input.forgetNested ?? (() => {}), ...(input.withdrawNested ? { withdrawNested: input.withdrawNested } : {}), ...(input.callerCancelled ? { callerCancelled: input.callerCancelled } : {}) }
     return (script: string) => pack.tools[0]!.prepare({ script }).execute(context)
   }
 
@@ -723,6 +723,38 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     const resumed = vi.fn(async (call: NestedCall) => ok(call, 'opened'))
     expect(await codeRun(directory, resumed)(script)).toMatchObject({ ok: true, value: 'echoed' })
     expect(resumed.mock.calls.map(([call]) => call.tool)).toEqual(['gate'])
+  })
+
+  // Re-check of round 2, finding journal-turn index.ts:365: on the caller's cancel the record is written before the
+  // collected asks are withdrawn, and a withdrawal that fails leaves it in place.
+  it('keeps the record before it withdraws the asks of a cancelled caller, and keeps it when the withdrawal fails', async () => {
+    const directory = scratch()
+    const caller = new AbortController()
+    let recordsAtWithdrawal = -1
+    const withdrawNested = vi.fn(async () => {
+      recordsAtWithdrawal = kept(directory).length
+      throw new Error('STATE_BUSY: Buckle state is busy in another process; retry shortly')
+    })
+    const invoked = async (call: NestedCall): Promise<InvokeResponse> => {
+      if (call.tool === 'gate') {
+        setTimeout(() => caller.abort(new Error('notifications/cancelled')), 100)
+        return ask(call)
+      }
+      if (call.tool === 'waiter') {
+        call.onExecute?.()
+        await new Promise(resolve => setTimeout(resolve, 400))
+      }
+      return ok(call, call.tool)
+    }
+    const script = 'await tools.echo({ n: 1 }); await Promise.all([tools.gate({}), tools.waiter({})])'
+    const result = await codeRun(directory, invoked, { signal: caller.signal, withdrawNested, callerCancelled: () => caller.signal.aborted })(script)
+
+    expect(result).toMatchObject({ ok: false, error: { kind: 'aborted' } })
+    expect(withdrawNested).toHaveBeenCalledWith(['token-2'])
+    expect(recordsAtWithdrawal).toBe(1)
+    const [record] = kept(directory)
+    expect(record?.asks).toBeUndefined()
+    expect(record?.entries.map(entry => [entry.tool, entry.outcome.ok ? 'ok' : (entry.outcome.properties as { code: string }).code])).toEqual([['echo', 'ok'], ['waiter', 'REQUEST_ALREADY_EXECUTED']])
   })
 
   // Review of the code-mode slice, findings approvals-replay 210, invoker-audit 210, and tests 210.

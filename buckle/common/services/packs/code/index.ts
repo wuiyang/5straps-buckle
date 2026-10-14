@@ -363,13 +363,6 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     journals.remove(key)
     throw new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
   }
-  // The caller's own cancel withdraws the asks the script already collected, as it withdraws a waiting call's: the
-  // caller has gone, and nobody is told of them. The record of what ran is still kept (re-review of the code-mode
-  // slice, finding new-surface index.ts:338).
-  if (asks.length > 0 && context.callerCancelled?.() === true) {
-    await context.withdrawNested?.(asks.map(ask => ask.token))
-    asks.length = 0
-  }
   // The record of what ran, for the re-sent script; false when it passes its bound, and then none is left behind.
   const keep = async (): Promise<boolean> => {
     const named = { script: input.script, ...(asks.length > 0 ? { asks: asks.map(ask => ask.token) } : {}), ...(stage === undefined ? {} : { stage }) }
@@ -377,29 +370,43 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     journals.remove(key)
     return false
   }
-  if (broken) {
-    await keep()
-    throw broken.error
-  }
-  if (asks.length > 0) {
-    if (!await keep()) {
-      // No call will spend these asks: the script cannot resume, so they leave the queue as a denied sibling's do.
-      await context.withdrawNested?.(asks.map(ask => ask.token))
-      throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
+  // The caller's own cancel withdraws the asks the script already collected, as it withdraws a waiting call's: the
+  // caller has gone, and nobody is told of them (re-review of the code-mode slice, finding new-surface index.ts:338).
+  // They come out of `asks` first, so the record names none, and are withdrawn only once the record is written, as
+  // CODE_REPLAY_TOO_LARGE does; a withdrawal that fails is logged, and the record stays (re-check of round 2,
+  // finding journal-turn index.ts:365).
+  const leftBehind = asks.length > 0 && context.callerCancelled?.() === true ? asks.splice(0) : []
+  try {
+    if (broken) {
+      await keep()
+      throw broken.error
     }
-    throw new NestedApprovalRequired(asks)
+    if (asks.length > 0) {
+      if (!await keep()) {
+        // No call will spend these asks: the script cannot resume, so they leave the queue as a denied sibling's do.
+        await context.withdrawNested?.(asks.map(ask => ask.token))
+        throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
+      }
+      throw new NestedApprovalRequired(asks)
+    }
+    // A script that returned, threw, or exited is done: its record goes, and sending it again is a new run whose calls
+    // run again. One stopped by its deadline, a cancel, a shutdown, or its sandbox keeps the record of what ran, so the
+    // same script sent again within ten minutes, after a restart too, goes on where it stopped and no call runs twice
+    // (review of the code-mode slice, finding approvals-replay 240).
+    if (result.ok || result.error?.kind === 'script') {
+      journals.remove(key)
+      context.forgetNested?.([...replay.map(entry => entry.id), ...made])
+    } else if (replay.length + fresh.length > 0) {
+      await keep().catch((error: unknown) => { logger.warn('Could not keep the replay record of a stopped script; sent again, it runs from its start', { error: error instanceof Error ? error.message : 'Unknown error' }) })
+    }
+    return shapeResult(result, began, skipped)
+  } finally {
+    if (leftBehind.length > 0) {
+      await context.withdrawNested?.(leftBehind.map(ask => ask.token)).catch((error: unknown) => {
+        logger.warn('Could not withdraw the asks of a script whose caller cancelled; they stay pending until they expire', { error: error instanceof Error ? error.message : 'Unknown error' })
+      })
+    }
   }
-  // A script that returned, threw, or exited is done: its record goes, and sending it again is a new run whose calls
-  // run again. One stopped by its deadline, a cancel, a shutdown, or its sandbox keeps the record of what ran, so the
-  // same script sent again within ten minutes, after a restart too, goes on where it stopped and no call runs twice
-  // (review of the code-mode slice, finding approvals-replay 240).
-  if (result.ok || result.error?.kind === 'script') {
-    journals.remove(key)
-    context.forgetNested?.([...replay.map(entry => entry.id), ...made])
-  } else if (replay.length + fresh.length > 0) {
-    await keep().catch((error: unknown) => { logger.warn('Could not keep the replay record of a stopped script; sent again, it runs from its start', { error: error instanceof Error ? error.message : 'Unknown error' }) })
-  }
-  return shapeResult(result, began, skipped)
 }
 
 /** searchTools(query, { limit? }) over the run's tools: every word of the query in a name or description, names first. */
