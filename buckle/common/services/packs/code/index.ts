@@ -195,7 +195,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const executing = new Set<number>()
   const running = new Map<number, Promise<void>>()
   // Calls past MAX_IN_FLIGHT, started in the order the script made them as slots free.
-  const queued: Array<() => void> = []
+  const queued: Array<{ id: number; start: () => void }> = []
+  // Tool calls that never started because the run ended or broke first: reported `skipped`, not `cancelled`.
+  const skipped = new Set<number>()
   const asks: ApprovalRequest[] = []
   // Every tool call the script makes, in its order, replayed, refused, or run: one cap per script across its resumes,
   // since a resumed run makes again every call its journal answers (review of the code-mode slice, findings
@@ -220,16 +222,30 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     while (handed.has(handedThrough + 1)) handedThrough++
   }
 
+  // Stopping: no result goes to the VM any more. Halted: no call of the script starts any more either. An ask stops
+  // the script without halting it, so the calls of the turn it came in, which reach onCall until the VM goes idle,
+  // still run or ask (re-review of the code-mode slice, findings new-surface and tests index.ts:287).
   const stopping = () => asks.length > 0 || broken !== undefined || diverged || spun
-  // The VM stops once nothing it started still runs, so every call that ran is in the journal, and, at an ask, once it
-  // has applied every result it was handed, so every call it made in that turn has reached onCall and calls made at
-  // once come back together however the threads are scheduled (review of the code-mode slice, finding tests 242).
+  const halted = () => broken !== undefined || diverged || spun
+  // Ended: the VM is done, so a queued call never starts (re-review, finding new-surface index.ts:224).
+  const ended = () => halted() || cancel.signal.aborted || run?.finished === true
+  const dropQueue = () => {
+    for (const item of queued) skipped.add(item.id)
+    queued.length = 0
+  }
+  // At an ask, the VM stops once its turn is over and every call of that turn has run or asked: nothing runs or waits
+  // in the queue, and the VM has applied every result it was handed, so every call it made has reached onCall. Calls
+  // made at once come back together however the threads are scheduled (review of the code-mode slice, finding tests
+  // 242).
   const settleIfStopping = () => {
     if (!stopping() || running.size > 0) return
-    if (diverged || spun || applied !== undefined && applied >= handedThrough) stop.abort(new Error('A call the script made needs approval'))
+    if (halted()) dropQueue()
+    if (halted() || queued.length === 0 && applied !== undefined && applied >= handedThrough) stop.abort(new Error('A call the script made needs approval'))
   }
-  // No queued call starts once the script stops at an ask or has ended: the re-sent script makes it again.
-  const startQueued = () => { while (running.size < MAX_IN_FLIGHT && queued.length > 0 && !stopping() && !cancel.signal.aborted) queued.shift()!() }
+  const startQueued = () => {
+    if (ended()) return dropQueue()
+    while (running.size < MAX_IN_FLIGHT && queued.length > 0) queued.shift()!.start()
+  }
   const answer = (call: ScriptVmCall, target: string, outcome: ScriptVmOutcome, args = fingerprintOf(target, call.args)) => {
     const entry: JournalEntry = { seq: nextSeq++, now: Date.now(), id: call.id, tool: target, args, outcome }
     if (!overflowed) {
@@ -292,7 +308,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       }
       const tooLarge = () => failure(REQUEST_TOO_LARGE, `This call's arguments are ${bytes} bytes as JSON, past the ${input.argumentBytes} a request to this node may carry; pass less, or split the call`)
       if (call.target === 'global') return answer(call, target, bytes !== null ? tooLarge() : global(call.name, call.args), fingerprint)
-      if (stopping()) return
+      if (halted()) {
+        skipped.add(call.id)
+        return
+      }
       if (toolCalls > 2 * MAX_NESTED_CALLS) {
         spun = true
         return settleIfStopping()
@@ -315,8 +334,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
         startQueued()
         settleIfStopping()
       }))
-      if (running.size < MAX_IN_FLIGHT) start()
-      else queued.push(start)
+      if (ended()) skipped.add(call.id)
+      else if (running.size < MAX_IN_FLIGHT) start()
+      else queued.push({ id: call.id, start })
     },
   })
   if ('busy' in started) throw new ToolExecutionError(started.busy, { code: CODE_VM_BUSY, retryable: true })
@@ -363,7 +383,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   } else if (replay.length + fresh.length > 0) {
     await keep().catch((error: unknown) => { logger.warn('Could not keep the replay record of a stopped script; sent again, it runs from its start', { error: error instanceof Error ? error.message : 'Unknown error' }) })
   }
-  return shapeResult(result, began)
+  return shapeResult(result, began, skipped)
 }
 
 /** searchTools(query, { limit? }) over the run's tools: every word of the query in a name or description, names first. */
@@ -381,7 +401,7 @@ function search(tools: readonly ScriptVmTool[], args: JsonValue | undefined): Sc
 }
 
 /** What code_run returns (D82, point 8). */
-function shapeResult(result: ScriptVmResult, began: number): JsonValue {
+function shapeResult(result: ScriptVmResult, began: number, skipped: ReadonlySet<number>): JsonValue {
   const value = result.value === undefined ? undefined : capValue(result.value)
   // The first MAX_NESTED_CALLS records, the calls the cap counts: past them every call was refused (review of the
   // code-mode slice, finding sandbox-boundary 254).
@@ -392,7 +412,7 @@ function shapeResult(result: ScriptVmResult, began: number): JsonValue {
     ok: result.ok,
     ...(value === undefined ? {} : { value: value.value }),
     output: result.output.map(item => item.text).join('\n'),
-    calls: calls.map(call => ({ id: call.id, tool: call.name, status: call.status, durationMs: call.durationMs })),
+    calls: calls.map(call => ({ id: call.id, tool: call.name, status: skipped.has(call.id) ? 'skipped' : call.status, durationMs: call.durationMs })),
     ...(callsOmitted > 0 ? { callsOmitted } : {}),
     truncated: result.outputTruncated || value?.truncated === true || callsOmitted > 0 || error?.truncated === true,
     durationMs: Math.round(performance.now() - began),

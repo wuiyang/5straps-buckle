@@ -567,6 +567,31 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(await ending('await tools.echo({}); while (true) {}', { abortAfterCall: true })).toEqual({ kind: 'aborted', forgotten: [], journal: [['echo']] })
   })
 
+  // Re-review of the code-mode slice, findings new-surface and tests index.ts:287: every call of the turn an ask came
+  // in runs or asks, however the threads are scheduled; the invoker here asks at once, the race the loaded suite lost.
+  it.each([
+    ['made at once', 'await Promise.all([tools.gate({ n: 1 }), tools.gate({ n: 2 })])'],
+    ['made in one turn with work between them', 'const a = tools.gate({ n: 1 }); let s = 0; for (let i = 0; i < 3e6; i++) s += i; const b = tools.gate({ n: 2 }); await Promise.all([a, b])'],
+  ])('hands back the asks of two calls %s, both invoked, when the first asks at once', async (_how, script) => {
+    const invoked = vi.fn(async (call: NestedCall) => ask(call))
+    const stopped = await codeRun(scratch(), invoked)(script).catch((error: unknown) => error)
+    expect(stopped).toBeInstanceOf(NestedApprovalRequired)
+    expect((stopped as NestedApprovalRequired).approvals.map(approval => approval.token)).toEqual(['token-1', 'token-2'])
+    expect(invoked).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs a call of the turn that arrives after an ask, journals it, and replays it on the retry', async () => {
+    const directory = scratch()
+    const script = 'const a = tools.gate({}); let s = 0; for (let i = 0; i < 3e6; i++) s += i; const b = tools.echo({ n: 2 }); await a; return await b'
+    const first = vi.fn(async (call: NestedCall) => call.tool === 'gate' ? ask(call) : ok(call, 'echoed'))
+    await expect(codeRun(directory, first)(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    expect(kept(directory).map(journal => journal.entries.map(entry => entry.tool))).toEqual([['echo']])
+
+    const resumed = vi.fn(async (call: NestedCall) => ok(call, 'opened'))
+    expect(await codeRun(directory, resumed)(script)).toMatchObject({ ok: true, value: 'echoed' })
+    expect(resumed.mock.calls.map(([call]) => call.tool)).toEqual(['gate'])
+  })
+
   // Review of the code-mode slice, findings approvals-replay 210, invoker-audit 210, and tests 210.
   it(`holds a script to ${MAX_NESTED_CALLS} calls across its resume after an ask`, async () => {
     const directory = scratch()

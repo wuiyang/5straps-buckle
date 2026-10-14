@@ -290,6 +290,39 @@ describe('the limits on a script\'s calls', () => {
   })
 
   // Review of the code-mode slice, coordinator decision 9 and finding sandbox-boundary 254.
+  // Re-review of the code-mode slice, finding new-surface index.ts:224: a queued call never starts once the VM has
+  // finished, though its result has not settled yet, and one that never started is reported skipped, not cancelled.
+  // A stub VM fixes the order: twelve calls, then the end, then the result once the test lets it settle.
+  it('starts no queued call once the script has ended, and reports those as skipped', async () => {
+    let settle!: () => void
+    const vm: ScriptVm = {
+      declare: () => '', identifier: name => name,
+      start(input) {
+        let finished = false
+        const calls = Array.from({ length: 12 }, (_, index) => ({ id: index + 1, name: 'echo', status: 'cancelled' as const, durationMs: 0 }))
+        const result = new Promise<ScriptVmResult>((resolve) => { settle = () => resolve({ ok: true, value: 'done', output: [], outputTruncated: false, calls }) })
+        queueMicrotask(() => {
+          for (const call of calls) input.onCall({ id: call.id, target: 'tool', name: 'echo', args: {} })
+          finished = true
+        })
+        return { deliver() {}, get finished() { return finished }, result }
+      },
+    }
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-ended-'))
+    roots.push(directory)
+    const invoked = vi.fn(async (call: NestedCall) => ok(call))
+    const pack = createCodePack({ vm, reachableTools: () => [echo], journalDirectory: directory, unavailableReason: null })
+    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: 60_000, signal: new AbortController().signal, nestedKey: 'd'.repeat(64), invokeNested: invoked, forgetNested: () => {} }
+    const running = pack.tools[0]!.prepare({ script: 'ignored' }).execute(context) as Promise<unknown> as Promise<Ran>
+    await vi.waitFor(() => expect(invoked).toHaveBeenCalledTimes(MAX_IN_FLIGHT))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    settle()
+
+    const result = await running
+    expect(invoked).toHaveBeenCalledTimes(MAX_IN_FLIGHT)
+    expect(result.calls.map(call => call.status)).toEqual([...Array.from({ length: MAX_IN_FLIGHT }, () => 'cancelled'), ...Array.from({ length: 12 - MAX_IN_FLIGHT }, () => 'skipped')])
+  })
+
   it('counts refused calls toward the cap', async () => {
     const invoked = vi.fn(async (call: NestedCall) => ok(call))
     const result = await codeRun(invoked)(`
