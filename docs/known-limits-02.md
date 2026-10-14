@@ -26,6 +26,10 @@ hiding, and paths, and [part three](known-limits-03.md) code mode and the comman
   from the running one's next policy change, or for the sandbox program, its next start.
 - A program outside every root that hard-links a file inside one runs, as Buckle cannot see a
   file's other names: keep such links off `PATH`.
+- On Windows, Buckle reads each folder on a program's way back as the disk stores it, so a path
+  spelled with an 8.3 short name such as `PROJEC~1` is judged by its long name, and a short name
+  it cannot read back is refused. Only an imitated Windows has tested this so far, not a Windows
+  machine.
 - The git tools refuse a repository reaching outside the workspace or scratch root holding the
   folder named, such as a home folder kept in git, a bare repository, or one whose git directory
   lies elsewhere.
