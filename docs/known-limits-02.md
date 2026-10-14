@@ -35,14 +35,14 @@ it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents
   through `cmd.exe`, which Buckle never runs: the agent's arguments would pass through its quoting.
   Buckle reads the shim instead, at most 64 KiB, and runs the `.exe` it names, or the script it
   names under Buckle's own Node.js. A `.exe` or `.com` of the same name in any place wins.
-- Buckle reads two shapes of shim, each matched whole and in order: the one npm writes for a script
-  it runs with Node.js, and the two-line form agent-browser's own install writes, `@ECHO off` and a
-  quoted `.exe`, `.com`, or script beside the shim followed by `%*`. A `REM` or `::` comment may
-  stand outside a block, if it holds none of `&`, `|`, `<`, `>`, `(`, or `)`. Every other shim is
-  refused rather than run without what it adds: one that sets an environment variable, passes
-  arguments or Node.js flags of its own, starts its script with another program than Node.js,
-  holds a caret, which escapes a character or joins two lines, or runs `/bin/sh`. The reason names
-  the shim's file, never its folder.
+- Buckle reads two shapes of shim, each matched exactly, line by line and in order: the one npm
+  writes for a script it runs with Node.js, and the two-line form agent-browser's own install
+  writes, `@ECHO off` and a quoted `.exe` or `.com` beside the shim followed by `%*`. A script
+  named in the two-line form is refused, as cmd would hand it to Windows Script Host, not Node.js.
+  A shim holding a comment, a caret, a character outside printable ASCII, or a space or tab where
+  its shape has none is refused too, and so is every other shim: one that sets an environment
+  variable, passes arguments or Node.js flags of its own, starts its script with another program,
+  or runs `/bin/sh`. The reason names the shim's file, never its folder.
 - pnpm's shim is neither shape, and sets `NODE_PATH` by default, so Buckle refuses every command
   pnpm installs. For agent-browser and the environment validator, point
   `BUCKLE_AGENT_BROWSER_COMMAND` or `BUCKLE_ENV_VALIDATOR_COMMAND` at the `.exe` or the script

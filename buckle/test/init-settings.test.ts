@@ -285,7 +285,12 @@ describe('buckle init checks the programs Buckle runs', () => {
     const script = join(npm, 'node_modules', 'agent-browser', 'bin', 'agent-browser.js')
     const exe = join(npm, 'node_modules', 'rg', 'rg.exe')
     for (const file of [script, exe]) { mkdirSync(join(file, '..'), { recursive: true }); writeFileSync(file, '') }
-    writeFileSync(join(npm, 'agent-browser.cmd'), '@ECHO off\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser.js" %*\r\n')
+    // npm's own shim, the one shape in which Buckle runs a script with its Node.
+    writeFileSync(join(npm, 'agent-browser.cmd'), [
+      '@ECHO off', 'GOTO start', ':find_dp0', 'SET dp0=%~dp0', 'EXIT /b', ':start', 'SETLOCAL', 'CALL :find_dp0', '',
+      'IF EXIST "%dp0%\\node.exe" (', '  SET "_prog=%dp0%\\node.exe"', ') ELSE (', '  SET "_prog=node"', '  SET PATHEXT=%PATHEXT:;.JS;=;%', ')', '',
+      'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\agent-browser\\bin\\agent-browser.js" %*', '',
+    ].join('\r\n'))
     writeFileSync(join(npm, 'rg.cmd'), '@ECHO off\r\n"%~dp0node_modules\\rg\\rg.exe" %*\r\n')
     writeFileSync(join(npm, 'git.cmd'), '@ECHO off\r\n"%~dp0\\git" %*\r\n')
     const table: Record<string, string> = { 'agent-browser': join(npm, 'agent-browser.cmd'), 'rg': join(npm, 'rg.cmd'), 'git': join(npm, 'git.cmd') }

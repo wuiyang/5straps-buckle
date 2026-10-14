@@ -338,71 +338,70 @@ function nodeRunning(script: string, platform: NodeJS.Platform): Program | null 
   } catch { return null }
 }
 
-/** A program a shim names beside itself, quoted: no variable, escape, or quote inside the path. */
-const BESIDE = String.raw`([^"%^\r\n]+)`
+/** A program a shim names beside itself, quoted: no variable, escape, quote, or tab inside the path. */
+const BESIDE = String.raw`([^"%^\t]+)`
+/** A separator in a template line: spaces and tabs, the ASCII ones cmd reads between words. */
+const GAP = '[ \\t]+'
+/** One template line, its words joined by GAP: matched whole, case aside, `indented` lines alone after spaces or tabs. */
+const line = (words: readonly string[], indented = false): RegExp => new RegExp(`^${indented ? '[ \\t]*' : ''}${words.join(GAP)}$`, 'i')
 
 /**
- * The shapes of shim Buckle reads, each matched whole, line by line and in order (review of 2026-10-14: a general
- * grammar of known lines let a chained command, a label in a block, or a line out of order through). npm's cmd-shim for
- * a script it runs with Node.js: its head, which sets `dp0` to the shim's folder, the probe for a `node.exe` beside it,
- * and the line that runs `"%_prog%"` on the script. And the two-line form, `@ECHO off` and the program beside the shim,
- * which agent-browser's own install writes for its `.exe`. `block` marks the lines inside a parenthesized block, where
- * no comment may stand.
+ * The shapes of shim Buckle reads, each matched exactly, line by line and in order, and nothing else, not even a
+ * comment, as no generator writes one (re-checks of 2026-10-14: a grammar of known lines, and then comments, let a
+ * chained command, a label in a block, a Ctrl-Z, or a line out of order through). npm's cmd-shim for a script it runs
+ * with Node.js: its head, which sets `dp0` to the shim's folder, the probe for a `node.exe` beside it, and the line
+ * that runs `"%_prog%"` on the script. And the two-line form agent-browser's own install writes, `@ECHO off` and the
+ * native program beside the shim: an `.exe` or `.com` alone, as cmd hands a script named alone to its file association,
+ * Windows Script Host for `.js`, never to Node.js.
  */
-const SHIM_TEMPLATES: ReadonlyArray<{ lines: readonly RegExp[]; block?: readonly [number, number]; scriptOnly: boolean }> = [
+const SHIM_TEMPLATES: ReadonlyArray<{ lines: readonly RegExp[]; takes: 'script' | 'native' }> = [
   {
     lines: [
-      /^@echo off$/i, /^goto start$/i, /^:find_dp0$/i, /^set dp0=%~dp0$/i, /^exit \/b$/i, /^:start$/i, /^setlocal$/i, /^call :find_dp0$/i,
-      /^if exist "%dp0%\\node\.exe" \($/i, /^set "_prog=%dp0%\\node\.exe"$/i, /^\) else \($/i, /^set "_prog=node"$/i,
-      /^set pathext=%pathext:;\.js;=;%$/i, /^\)$/,
-      new RegExp(String.raw`^endlocal & goto #_undefined_# 2>nul \|\| title %comspec% & "%_prog%"\s+"%dp0%\\${BESIDE}" %\*$`, 'i'),
+      line(['@echo', 'off']), line(['goto', 'start']), line([':find_dp0']), line(['set', 'dp0=%~dp0']), line(['exit', '\\/b']),
+      line([':start']), line(['setlocal']), line(['call', ':find_dp0']), line(['if', 'exist', '"%dp0%\\\\node\\.exe"', '\\(']),
+      line(['set', '"_prog=%dp0%\\\\node\\.exe"'], true), line(['\\)', 'else', '\\(']), line(['set', '"_prog=node"'], true),
+      line(['set', 'pathext=%pathext:;\\.js;=;%'], true), line(['\\)']),
+      line(['endlocal', '&', 'goto', '#_undefined_#', '2>nul', '\\|\\|', 'title', '%comspec%', '&', '"%_prog%"', `"%dp0%\\\\${BESIDE}"`, '%\\*']),
     ],
-    block: [8, 13],
-    scriptOnly: true,
+    takes: 'script',
   },
-  { lines: [/^@echo off$/i, new RegExp(String.raw`^"%~dp0${BESIDE}" %\*$`, 'i')], scriptOnly: false },
+  { lines: [line(['@echo', 'off']), line([`"%~dp0${BESIDE}"`, '%\\*'])], takes: 'native' },
 ]
-/** A comment: allowed outside a block, and only with no character that could start another command or a block. */
-const SHIM_COMMENT = /^(?:rem(?:\s.*)?|::.*)$/i
-const COMMAND_CHARACTERS = /[&|<>()]/
+/** Printable ASCII, the tab, and the line ends: a shim holding any other character (Ctrl-Z, a BOM, a no-break space) is unread. */
+const SHIM_CHARACTERS = /^[\t\n\r\x20-\x7e]*$/
 
 /**
- * What a shim starts, read from its text: a caret makes it unread at once, as cmd reads one as an escape or a line
- * continuation; otherwise the text must match one of SHIM_TEMPLATES whole, blank lines aside, with a comment allowed
- * only outside a block. The program is the path its last line names beside the shim: an `.exe`, a `.com`, or a script,
- * and only a script in npm's form, which runs it with Node.js.
+ * What a shim starts, read from its text: a character outside SHIM_CHARACTERS, which cmd may read as another line or
+ * another word, or a caret, which it reads as an escape or a line continuation, makes it unread at once. Otherwise each
+ * line, one CR at its end dropped and empty lines skipped, must be the next line of one of SHIM_TEMPLATES, to its end.
+ * The program is the path its last line names beside the shim, of the kind that template takes.
  */
 function shimTarget(text: string): { relative: string; script: boolean } | { why: string } {
   const unread = { why: UNREAD_SHIM }
-  if (text.includes('^')) return unread
-  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  if (!SHIM_CHARACTERS.test(text) || text.includes('^')) return unread
+  const lines = text.split('\n').map(each => each.replace(/\r$/, '')).filter(each => each !== '')
   for (const template of SHIM_TEMPLATES) {
-    const named = matchTemplate(lines, template)
+    const named = matchTemplate(lines, template.lines)
     if (named === null) continue
     const relative = named.replace(/^[\\/]+/, '')
     const script = hasExtension(relative, SCRIPT_EXTENSIONS)
-    if (relative === '' || (template.scriptOnly && !script) || (!script && !hasExtension(relative, WINDOWS_EXECUTABLE_EXTENSIONS))) return unread
+    const native = hasExtension(relative, WINDOWS_EXECUTABLE_EXTENSIONS)
+    if (relative === '' || (template.takes === 'script' ? !script : !native)) return unread
     return { relative, script }
   }
   return unread
 }
 
-/** The path a shim's lines name beside it where they are `template` whole and in order, comments aside; null otherwise. */
-function matchTemplate(lines: readonly string[], template: (typeof SHIM_TEMPLATES)[number]): string | null {
-  let at = 0
+/** The path a shim's lines name beside it where they are `template`, whole and in order; null otherwise. */
+function matchTemplate(lines: readonly string[], template: readonly RegExp[]): string | null {
+  if (lines.length !== template.length) return null
   let named: string | null = null
-  for (const line of lines) {
-    const inBlock = template.block !== undefined && at > template.block[0] && at <= template.block[1]
-    if (SHIM_COMMENT.test(line)) {
-      if (inBlock || COMMAND_CHARACTERS.test(line)) return null
-      continue
-    }
-    const match = template.lines[at]?.exec(line)
+  for (const [index, each] of lines.entries()) {
+    const match = template[index]!.exec(each)
     if (!match) return null
-    if (at === template.lines.length - 1) named = match[1] ?? null
-    at++
+    named = match[1] ?? named
   }
-  return at === template.lines.length ? named : null
+  return named
 }
 
 /** A file's text, or null where it cannot be read or holds more than `limit` bytes. */

@@ -220,20 +220,58 @@ describe('a Windows shim, imitated', () => {
     }
   })
 
-  it('reads npm\'s shim with comments outside its block, and refuses one with a comment inside it or a command in one', () => {
+  // Re-check of 2026-10-14, round 2: comments, characters outside printable ASCII, and whitespace cmd reads otherwise
+  // than a trim does let a shim say one thing to Buckle and another to cmd. Each shape is now matched exactly.
+  it('reads npm\'s shim and the two-line form exactly, with CRLF or LF ends and tabs as separators, and nothing more', () => {
     const file = 'node_modules/agent-browser/bin/agent-browser.js'
+    const exe = 'node_modules/agent-browser/bin/agent-browser-win32-x64.exe'
     const npm = NPM_SHIM('node', 'node_modules\\agent-browser\\bin\\agent-browser.js')
-    const commented = npm.replace('GOTO start\r\n', 'GOTO start\r\nREM written by npm\r\n:: a label comment\r\n')
-    const read = prefix({ shim: commented, files: [file] })
-    expect(resolve(read.shim)).toEqual({ path: process.execPath, argv0: process.execPath, args: [join(read.at, file)] })
-    for (const text of [
-      npm.replace('  SET "_prog=node"\r\n', '  SET "_prog=node"\r\n  REM inside the block\r\n'),
-      npm.replace('GOTO start\r\n', 'GOTO start\r\nREM a & b\r\n'),
-      npm.replace('GOTO start\r\n', 'GOTO start\r\n:: (x)\r\n'),
-    ]) {
-      const { shim } = prefix({ shim: text, files: [file] })
-      expect(resolve(shim), text).toEqual(refusal('agent-browser.cmd', UNREAD))
+    const runs = (text: string) => {
+      const { at, shim } = prefix({ shim: text, files: [file, exe] })
+      return { at, resolved: resolve(shim) }
     }
+    for (const text of [npm, npm.replaceAll('\r\n', '\n'), npm.replace('"%_prog%"  ', '"%_prog%"\t'), npm.replace('@ECHO off', '@ECHO\toff')]) {
+      const { at, resolved } = runs(text)
+      expect(resolved, JSON.stringify(text)).toEqual({ path: process.execPath, argv0: process.execPath, args: [join(at, file)] })
+    }
+    for (const text of [AGENT_BROWSER_SHIM, AGENT_BROWSER_SHIM.replace('" %*', '"\t%*'), AGENT_BROWSER_SHIM.replaceAll('\r\n', '\n')]) {
+      const { at, resolved } = runs(text)
+      expect(resolved, JSON.stringify(text)).toEqual({ path: join(at, exe), argv0: join(at, exe), args: [] })
+    }
+  })
+
+  it('refuses a comment anywhere, a character outside printable ASCII, and whitespace a template does not name', () => {
+    const files = ['node_modules/agent-browser/bin/agent-browser.js', 'node_modules/agent-browser/bin/agent-browser-win32-x64.exe', 'node_modules/agent-browser/bin/other.exe']
+    const npm = NPM_SHIM('node', 'node_modules\\agent-browser\\bin\\agent-browser.js')
+    const program = '"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*'
+    for (const text of [
+      npm.replace('GOTO start\r\n', 'GOTO start\r\nREM written by npm\r\n'),
+      npm.replace('GOTO start\r\n', 'GOTO start\r\n:: a label comment\r\n'),
+      npm.replace('  SET "_prog=node"\r\n', '  SET "_prog=node"\r\n  REM inside the block\r\n'),
+      `@ECHO off\r\nREM a\x1a"%~dp0node_modules\\agent-browser\\bin\\other.exe" %*\r\n${program}\r\n`,
+      npm.replace('CALL :find_dp0\r\n', 'CALL :find_dp0\r\nREM x\x1aSET dp0=%~dp0..\\other\\\r\n'),
+      `@ECHO off\r\nREM %~\r\n${program}\r\n`,
+      `@ECHO off\r\n:: %~\r\n${program}\r\n`,
+      npm.replace('SET dp0=%~dp0\r\n', 'SET dp0=%~dp0 \r\n'),
+      npm.replace('SET dp0=%~dp0\r\n', 'SET dp0=%~dp0\t\r\n'),
+      npm.replace('SET dp0=%~dp0\r\n', 'SET dp0=%~dp0\r \r\n'),
+      npm.replace('SET dp0=%~dp0', '﻿SET dp0=%~dp0'),
+      npm.replace('SET dp0=%~dp0', '　SET dp0=%~dp0'),
+      npm.replace('"%_prog%"  ', '"%_prog%" '),
+      npm.replace('"%_prog%"  ', '"%_prog%" '),
+      `﻿@ECHO off\r\n${program}\r\n`,
+      `@ECHO off\r\n ${program}\r\n`,
+      `@ECHO off\r\n${program} \r\n`,
+    ]) {
+      const { shim } = prefix({ shim: text, files })
+      expect(resolve(shim), JSON.stringify(text)).toEqual(refusal('agent-browser.cmd', UNREAD))
+    }
+  })
+
+  // cmd hands a script named alone to its file association, Windows Script Host for .js, never to Node.js.
+  it.each(['.js', '.mjs', '.cjs'])('refuses the two-line form naming a %s script, which only npm\'s shim runs with Node.js', (extension) => {
+    const { shim } = prefix({ shim: `@ECHO off\r\n"%~dp0node_modules\\pkg\\bin\\cli${extension}" %*\r\n`, files: [`node_modules/pkg/bin/cli${extension}`] })
+    expect(resolve(shim)).toEqual(refusal('agent-browser.cmd', UNREAD))
   })
 
   // The owner's ruling of 2026-10-14: a shim that does more than start its program is refused, never run without the rest.
@@ -394,7 +432,8 @@ describe('a Windows shim, imitated', () => {
 
   it('reads at most 64 KiB: a shim of that size is read, one byte more is refused', () => {
     const exe = 'node_modules/agent-browser/bin/agent-browser-win32-x64.exe'
-    const padded = (size: number) => `${AGENT_BROWSER_SHIM}REM ${'x'.repeat(size - AGENT_BROWSER_SHIM.length - 6)}\r\n`
+    // Padded with empty lines, the one thing a shim may hold beyond its template's lines.
+    const padded = (size: number) => `${AGENT_BROWSER_SHIM}${'\r\n'.repeat(Math.floor((size - AGENT_BROWSER_SHIM.length) / 2))}${(size - AGENT_BROWSER_SHIM.length) % 2 ? '\n' : ''}`
     expect(padded(MAX_SHIM_BYTES)).toHaveLength(MAX_SHIM_BYTES)
     const fits = prefix({ shim: padded(MAX_SHIM_BYTES), files: [exe] })
     expect(resolve(fits.shim)).toMatchObject({ path: join(fits.at, exe) })
