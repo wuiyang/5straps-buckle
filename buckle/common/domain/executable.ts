@@ -298,30 +298,30 @@ export const MAX_SHIM_BYTES = 64 * 1024
 
 /** Why a shim's program is not known: Buckle reads no other form, as it never asks cmd.exe what one runs. */
 const UNREAD_SHIM = 'a shim Buckle cannot read'
+/**
+ * Why a shim Buckle can read is still not run in its place: it does more than start its program, and Buckle would run
+ * the program without that. The owner's ruling of 2026-10-14: a refusal is honest, a silent drop is not.
+ */
+const SETS_VARIABLES = 'a shim that sets environment variables Buckle would not set'
+const PASSES_ARGUMENTS = 'a shim that passes arguments of its own, which Buckle would not pass'
+const OTHER_INTERPRETER = 'a shim that starts its script with a program other than Node.js'
 const SCRIPT_EXTENSIONS = ['.js', '.mjs', '.cjs']
 
 /**
- * The program a Windows shim starts, read from its text and never by running it (WINDOWS_SHIM_EXTENSIONS): on each line
- * that hands the shim's arguments on (`%*`), the last quoted path that starts at the shim's own folder, `%~dp0`, or
- * npm's `%dp0%\` once the shim sets `dp0` to it. The last, as the arguments follow it: npm's line runs `"%_prog%"`
- * before the script, pnpm's runs `"%~dp0\node.exe"` before it, and agent-browser's own install writes the native
- * `.exe` alone. Every such line must name the same path; one that names none, a variable inside the path, a file over
- * MAX_SHIM_BYTES, or a path that ends in neither an `.exe`, a `.com`, nor a script (one that runs `/bin/sh`) is not
- * read. The path is resolved against the shim's folder, a `..` folded as Windows folds it, and judged as every program
- * is (judgedPlace). A script is run by Buckle's own Node, `process.execPath`, with the script's real path first.
+ * The program a Windows shim starts, read from its text and never by running it (WINDOWS_SHIM_EXTENSIONS, shimTarget),
+ * resolved against the shim's folder, a `..` folded as Windows folds it, and judged as every program is (judgedPlace).
+ * A script is run by Buckle's own Node, `process.execPath`, with the script's real path first.
  */
 function shimProgram(input: { shim: string; real: string; shown: string; roots: readonly UntrustedRoot[]; platform: NodeJS.Platform }): Program | ProgramRefusal | { why: string } {
   const text = readCapped(input.real, MAX_SHIM_BYTES)
-  const named = text === null ? null : shimTarget(text)
-  if (named === null) return { why: UNREAD_SHIM }
+  const named = text === null ? { why: UNREAD_SHIM } : shimTarget(text)
+  if ('why' in named) return named
   let target: string
-  try { target = nativePath(`${parentDirectory(input.shim)}/${named}`, input.platform) } catch { return { why: UNREAD_SHIM } }
-  const script = hasExtension(target, SCRIPT_EXTENSIONS)
-  if (!script && !hasExtension(target, WINDOWS_EXECUTABLE_EXTENSIONS)) return { why: UNREAD_SHIM }
+  try { target = nativePath(`${parentDirectory(input.shim)}/${named.relative}`, input.platform) } catch { return { why: UNREAD_SHIM } }
   const judged = judgedPlace(target, input.shown, input.roots, input.platform)
   if (typeof judged !== 'string') return judged
   if (!isFile(judged)) return { why: 'a shim whose program is not there' }
-  return script ? nodeRunning(judged, input.platform) : { path: judged, argv0: target, args: [] }
+  return named.script ? nodeRunning(judged, input.platform) : { path: judged, argv0: target, args: [] }
 }
 
 /** Buckle's own Node, which runs Buckle itself, running a script: it never picks its interpreter from a PATH an agent may reach. */
@@ -333,15 +333,70 @@ function nodeRunning(script: string, platform: NodeJS.Platform): Program {
 const SHIM_FOLDER = /^(?:%~dp0|%dp0%\\)/i
 /** npm's shim sets `dp0` to its folder in a subroutine; `%dp0%` is read as that folder only where the shim does so. */
 const SETS_DP0 = /^\s*@?set\s+"?dp0=%~dp0"?\s*$/im
+/** A variable a shim sets, by SET or the PATH command, wherever a command starts on a line. */
+const SET_VARIABLE = /(?:^|[\s&(|@])set\s+(?:\/[ap]\s+)?"?([^=\s"]+)=|(?:^|[&(|@])\s*(path)(?:\s+|=)/gim
+/** The variables a shim sets to find its program, which never reach the program: npm's `dp0` and `_prog`, and PATHEXT. */
+const SHIM_VARIABLES = new Set(['DP0', '_PROG', 'PATHEXT'])
+/** Node.js, named bare or by a path, as a shim names the interpreter of its script. */
+const NODE = /(?:^|[\\/])node(?:\.exe)?$/i
 
-/** The path a shim's text starts its program by, relative to its folder, or null where it names none or several. */
-function shimTarget(text: string): string | null {
-  const named = text.split(/\r?\n/).filter(line => line.includes('%*')).map(line => line.split('"').filter((_, index) => index % 2 === 1).filter(quoted => SHIM_FOLDER.test(quoted)).at(-1) ?? null)
-  const [first] = named
-  if (first === undefined || first === null || named.some(path => path !== first)) return null
-  if (/^%dp0%/i.test(first) && !SETS_DP0.test(text)) return null
+/**
+ * What a shim starts, read from its text: each line that hands the shim's arguments on (`%*`) is one command, its last
+ * word starting at the shim's own folder, quoted, its program: `%~dp0`, or npm's `%dp0%\` once the shim sets `dp0` to
+ * it. The last, as the arguments follow it: npm's line runs `"%_prog%"` before the script, pnpm's runs
+ * `"%~dp0\node.exe"` before it, and agent-browser's own install writes the native `.exe` alone. Every such line must
+ * name the same program, an `.exe`, a `.com`, or a script, with no variable inside the path; otherwise the shim is one
+ * Buckle cannot read, such as one that runs `/bin/sh`. A shim that does more than start that program is refused rather
+ * than run without the rest: one that sets a variable other than its own (pnpm's `NODE_PATH`), passes arguments of its
+ * own (Node.js flags among them), or starts its script with another interpreter than Node.js.
+ */
+function shimTarget(text: string): { relative: string; script: boolean } | { why: string } {
+  const unread = { why: UNREAD_SHIM }
+  const commands = text.split(/\r?\n/).filter(line => line.includes('%*')).map(commandWords)
+  const at = commands.map(words => words.findLastIndex(word => word.startsWith('"') && SHIM_FOLDER.test(unquoted(word))))
+  if (commands.length === 0 || at.includes(-1)) return unread
+  const named = commands.map((words, index) => unquoted(words[at[index]!]!))
+  const first = named[0]!
+  if (named.some(path => path !== first) || (/^%dp0%/i.test(first) && !SETS_DP0.test(text))) return unread
   const relative = first.replace(SHIM_FOLDER, '').replace(/^[\\/]+/, '')
-  return relative === '' || relative.includes('%') ? null : relative
+  const script = hasExtension(relative, SCRIPT_EXTENSIONS)
+  if (relative === '' || relative.includes('%') || (!script && !hasExtension(relative, WINDOWS_EXECUTABLE_EXTENSIONS))) return unread
+  if ([...text.matchAll(SET_VARIABLE)].some(match => !SHIM_VARIABLES.has((match[1] ?? match[2]!).toUpperCase()))) return { why: SETS_VARIABLES }
+  for (const [index, words] of commands.entries()) {
+    const target = at[index]!
+    if (target > 1 || words.length !== target + 2 || words[target + 1] !== '%*') return { why: PASSES_ARGUMENTS }
+    if (target === 1 && !script) return unread
+    if (target === 1 && !runsNode(words[0]!, text)) return { why: OTHER_INTERPRETER }
+  }
+  return { relative, script }
+}
+
+/** The words of the last command on a batch line, as cmd starts one after each `&`, quotes kept and a leading `@` dropped. */
+function commandWords(line: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let quoted = false
+  for (const character of line) {
+    if (character === '"') quoted = !quoted
+    if (!quoted && character === '&') { words.length = 0; word = ''; continue }
+    if (!quoted && /\s/.test(character)) { if (word) words.push(word); word = ''; continue }
+    word += character
+  }
+  if (word) words.push(word)
+  if (words[0]?.startsWith('@')) words[0] = words[0].slice(1)
+  return words.filter(Boolean)
+}
+
+function unquoted(word: string): string {
+  return word.replace(/^"(.*)"$/, '$1')
+}
+
+/** Whether the interpreter a shim names before its script is Node.js: by name or path, or npm's `%_prog%` set only to it. */
+function runsNode(word: string, text: string): boolean {
+  const program = unquoted(word)
+  if (program.toLowerCase() !== '%_prog%') return NODE.test(program)
+  const values = [...text.matchAll(/set\s+"?_prog=([^"\r\n]*)"?/gi)].map(match => match[1]!.trim())
+  return values.length > 0 && values.every(value => NODE.test(value))
 }
 
 /** A file's text, or null where it cannot be read or holds more than `limit` bytes. */

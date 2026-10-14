@@ -327,7 +327,7 @@ function programLine(program: CheckedProgram, search: ProgramSearch & UntrustedR
   }
   const unlocks = `it unlocks ${program.unlocks}${program.install ? `; ${program.install}` : ''}`
   if (found === null) return `not found ${resolved.searched ?? `at ${shown(program.name)}`}; ${unlocks}`
-  if (resolved.shim) return `found ${shown(found.path)}, ${resolved.shim.why}${program.setting ? `; set ${program.setting} to the ${program.label} .exe inside its package` : ''}`
+  if (resolved.shim) return `found ${shown(found.path)}, ${resolved.shim.why}${program.setting ? `; set ${program.setting} to the ${program.label} .exe or script inside its package` : ''}`
   return `found at ${shown(found.path)}, not run: ${resolved.reason}`
 }
 

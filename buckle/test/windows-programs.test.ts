@@ -224,6 +224,6 @@ describe('the browser pack on Windows, imitated, without an agent-browser it can
   })
 
   it('names a shim it found and could not read by its file and its place, and the setting that fixes it', () => {
-    expect(withheld('@ECHO off\r\n"%~dp0\\..\\agent-browser.sh" %*\r\n')).toBe('agent-browser was found in %APPDATA%\\npm as agent-browser.cmd, a shim Buckle cannot read; set BUCKLE_AGENT_BROWSER_COMMAND to the agent-browser .exe inside its package')
+    expect(withheld('@ECHO off\r\n"%~dp0\\..\\agent-browser.sh" %*\r\n')).toBe('agent-browser was found in %APPDATA%\\npm as agent-browser.cmd, a shim Buckle cannot read; set BUCKLE_AGENT_BROWSER_COMMAND to the agent-browser .exe or script inside its package')
   })
 })

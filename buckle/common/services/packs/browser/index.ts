@@ -96,8 +96,8 @@ export const BROWSER_UNAVAILABLE = 'BUCKLE_AGENT_BROWSER_COMMAND names a path th
 export const BROWSER_UNTRUSTED = 'BUCKLE_AGENT_BROWSER_COMMAND names a program inside the workspace or a scratch root, where an agent can write, so Buckle does not run it'
 /** How the owner installs agent-browser where Buckle looks, outside any workspace (docs/browser-login.md). */
 export const BROWSER_INSTALL = 'install it with npm i -g agent-browser, then run agent-browser install'
-/** What runs without a shim: the native program agent-browser's package holds. */
-const BROWSER_EXECUTABLE = 'the agent-browser .exe inside its package'
+/** What runs without a shim: the native program agent-browser's package holds, or its script. */
+const BROWSER_EXECUTABLE = 'the agent-browser .exe or script inside its package'
 
 /**
  * Why the browser pack is withheld for want of its program, in text the agent may read in the manifest: where Buckle

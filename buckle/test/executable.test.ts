@@ -212,8 +212,27 @@ describe('a Windows shim, imitated', () => {
   })
 
   it('reads pnpm\'s shim, whose two lines name the same script', () => {
-    const { at, shim } = prefix({ shim: PNPM_SHIM('global\\5\\node_modules\\agent-browser\\bin\\agent-browser.js'), files: ['global/5/node_modules/agent-browser/bin/agent-browser.js'] })
+    const { at, shim } = prefix({ shim: PNPM_SHIM('global\\5\\node_modules\\agent-browser\\bin\\agent-browser.js', false), files: ['global/5/node_modules/agent-browser/bin/agent-browser.js'] })
     expect(resolve(shim)).toEqual({ path: process.execPath, argv0: process.execPath, args: [join(at, 'global/5/node_modules/agent-browser/bin/agent-browser.js')] })
+  })
+
+  // The owner's ruling of 2026-10-14: a shim that does more than start its program is refused, never run without the rest.
+  it('refuses a shim that sets a variable, passes arguments or Node.js flags of its own, or runs its script with another program', () => {
+    const script = 'node_modules\\agent-browser\\bin\\agent-browser.js'
+    const files = ['node_modules/agent-browser/bin/agent-browser.js', 'node_modules/agent-browser/bin/agent-browser-win32-x64.exe']
+    const refusals: Array<[string, string]> = [
+      [PNPM_SHIM(script, true), 'a shim that sets environment variables Buckle would not set'],
+      [`@ECHO off\r\nSET NODE_OPTIONS=--inspect\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n`, 'a shim that sets environment variables Buckle would not set'],
+      [`@ECHO off\r\nPATH %~dp0tools;%PATH%\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n`, 'a shim that sets environment variables Buckle would not set'],
+      [NPM_SHIM('node', script).replace('"%_prog%"  ', '"%_prog%" --max-old-space-size=4096 '), 'a shim that passes arguments of its own, which Buckle would not pass'],
+      [`@ECHO off\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" --headed %*\r\n`, 'a shim that passes arguments of its own, which Buckle would not pass'],
+      [NPM_SHIM('bun', script), 'a shim that starts its script with a program other than Node.js'],
+      [`@ECHO off\r\n"%~dp0node.exe" "%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n`, 'a shim Buckle cannot read'],
+    ]
+    for (const [text, why] of refusals) {
+      const { shim } = prefix({ shim: text, files })
+      expect(resolve(shim), text).toEqual(refusal('agent-browser.cmd', why))
+    }
   })
 
   it('runs a script the owner names by its path with Buckle\'s own Node on Windows, as a program elsewhere', () => {
@@ -306,10 +325,10 @@ function NPM_SHIM(program: string, target: string): string {
   ].join('\r\n')
 }
 
-/** pnpm's shim for a node bin, which tries the node.exe beside it first. */
-function PNPM_SHIM(target: string): string {
+/** pnpm's shim for a node bin, which tries the node.exe beside it first, and sets NODE_PATH where pnpm has one. */
+function PNPM_SHIM(target: string, nodePath: boolean): string {
   return [
-    '@SETLOCAL', '@IF NOT DEFINED NODE_PATH (', '  @SET "NODE_PATH=C:\\pnpm\\global\\5\\node_modules"', ') ELSE (', '  @SET "NODE_PATH=%NODE_PATH%;C:\\pnpm\\global\\5\\node_modules"', ')',
+    '@SETLOCAL', ...nodePath ? ['@IF NOT DEFINED NODE_PATH (', '  @SET "NODE_PATH=C:\\pnpm\\global\\5\\node_modules"', ') ELSE (', '  @SET "NODE_PATH=%NODE_PATH%;C:\\pnpm\\global\\5\\node_modules"', ')'] : [],
     '@IF EXIST "%~dp0\\node.exe" (', `  "%~dp0\\node.exe"  "%~dp0\\${target}" %*`, ') ELSE (', '  @SET PATHEXT=%PATHEXT:;.JS;=;%', `  node  "%~dp0\\${target}" %*`, ')', '',
   ].join('\r\n')
 }

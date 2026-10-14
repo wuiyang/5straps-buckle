@@ -32,8 +32,8 @@ lists what it found; `buckle manifest` says why a pack is withheld, and without 
 
 On Linux, install bubblewrap from your distribution, for example `sudo apt install bubblewrap`
 or `sudo dnf install bubblewrap`. On Windows, Buckle reads, never runs, the `.cmd` shim npm
-installs, and runs the `.exe` or Node.js script it names; for a shim it cannot read, point
-`BUCKLE_AGENT_BROWSER_COMMAND` at the package's `.exe`.
+installs, and runs the `.exe` or Node.js script it names; for a shim it refuses, point
+`BUCKLE_AGENT_BROWSER_COMMAND` at the package's `.exe` or script.
 
 ## Platform status by feature
 

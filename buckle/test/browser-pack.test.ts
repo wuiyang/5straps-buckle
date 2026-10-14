@@ -460,9 +460,9 @@ describe('how the browser pack reports trouble', () => {
       .toBe('agent-browser was not found on PATH (12 directories), beside buckle, beside node, or in %APPDATA%\\npm; install it with npm i -g agent-browser, then run agent-browser install')
     const why = 'a shim Buckle cannot read'
     expect(withheld('agent-browser', { path: null, reason: '', untrusted: false, shim: { file: 'agent-browser.cmd', place: 'in %APPDATA%\\npm', why } }))
-      .toBe('agent-browser was found in %APPDATA%\\npm as agent-browser.cmd, a shim Buckle cannot read; set BUCKLE_AGENT_BROWSER_COMMAND to the agent-browser .exe inside its package')
+      .toBe('agent-browser was found in %APPDATA%\\npm as agent-browser.cmd, a shim Buckle cannot read; set BUCKLE_AGENT_BROWSER_COMMAND to the agent-browser .exe or script inside its package')
     expect(withheld('C:\\Users\\me\\AppData\\Roaming\\npm\\agent-browser.cmd', { path: null, reason: '', untrusted: false, shim: { file: 'agent-browser.cmd', place: null, why } }))
-      .toBe('BUCKLE_AGENT_BROWSER_COMMAND names a shim Buckle cannot read; set it to the agent-browser .exe inside its package')
+      .toBe('BUCKLE_AGENT_BROWSER_COMMAND names a shim Buckle cannot read; set it to the agent-browser .exe or script inside its package')
     expect(withheld('agent-browser', { path: null, reason: 'agent-browser is found in or through a workspace of this node', untrusted: true })).toBe(BROWSER_UNTRUSTED)
   })
 })
