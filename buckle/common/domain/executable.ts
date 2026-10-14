@@ -287,7 +287,7 @@ function refused(resolved: ProgramRefusal): ProgramFinding {
 function judgedPlace(path: string, shown: string, roots: readonly UntrustedRoot[], platform: NodeJS.Platform, stored: StoredPath): string | ProgramRefusal {
   let walked: LinkWalk
   try { walked = walkLinks(path, platform, stored) } catch { return { path: null, reason: `${shown} cannot be followed to where it really is, so Buckle does not run it`, untrusted: true } }
-  const root = rootHolding(roots, [path, ...walked.passed, walked.real], platform)
+  const root = rootHolding(roots, placesOf(path, walked), platform)
   if (root) return { path: null, reason: `${shown} is found in or through ${ROOT_NAMES[root.kind]} of this node, where an agent can write, so Buckle does not run it`, untrusted: true }
   return walked.real
 }
@@ -460,7 +460,7 @@ export function trustedSearchPath(searchPath: string | undefined, roots: Untrust
       const directory = nativePath(entry, platform)
       if (!isFullPath(directory, platform)) return []
       const walked = walkLinks(directory, platform, stored)
-      const places = [directory, ...walked.passed, walked.real]
+      const places = placesOf(directory, walked)
       if (places.some(place => namesOwnProcess(place, platform)) || rootHolding(roots.untrustedRoots, places, platform)) return []
       return [platform === 'win32' ? walked.real.replaceAll('/', '\\') : walked.real]
     } catch { return [] }
@@ -474,8 +474,12 @@ export function trustedSearchPath(searchPath: string | undefined, roots: Untrust
  * chain cannot be followed.
  */
 export function placesOnTheWay(path: string, platform: NodeJS.Platform = process.platform, stored: StoredPath = storedPath): string[] {
-  const walked = walkLinks(path, platform, stored)
-  return [path, ...walked.passed, walked.real]
+  return placesOf(path, walkLinks(path, platform, stored))
+}
+
+/** Every place a walk passes, as each caller judges it: the path as named, each link and its target, where it lands, and on Windows the real path the system gives that. */
+function placesOf(path: string, walked: LinkWalk): string[] {
+  return [path, ...walked.passed, walked.real, ...(walked.system === undefined ? [] : [walked.system])]
 }
 
 /** Folders that name a place of whichever process reads them: its working directory, root, and open files. */
@@ -498,6 +502,8 @@ interface LinkWalk {
   real: string
   /** Each link met, where it really lies, and the place it leads, in the order met. */
   passed: string[]
+  /** On Windows, where the system resolves `real` (systemPath); absent where nothing on its way exists. */
+  system?: string
 }
 
 /**
@@ -528,7 +534,30 @@ function walkLinks(path: string, platform: NodeJS.Platform, stored: StoredPath =
     return current
   }
   const root = pathRoot(path, platform)
-  return { real: follow(root, path.slice(root.length).split('/')), passed }
+  const real = follow(root, path.slice(root.length).split('/'))
+  if (platform !== 'win32') return { real, passed }
+  const system = systemPath(real, stored)
+  return { real, passed, ...(system === null ? {} : { system }) }
+}
+
+/**
+ * Where Windows itself resolves a walked path (StoredPath, realpathSync.native on the host), judged beside it. A `subst`
+ * drive or a drive mapped to a folder reaches it under another drive letter, and no link on the way says so: `P:\app`
+ * for a workspace at `C:\Users\me\projects\app` was judged as written and let the agent's `node_modules\.bin\rg.exe`
+ * run (recheck of the final review of 0.1.4, finding executable 567). The deepest place on the way that exists is
+ * resolved and the rest appended; a place whose real path cannot be read, or lies on a network share, which Buckle does
+ * not use on Windows (nativePath), throws, and the place is refused. Null where nothing on the way exists, not even its
+ * drive, so no folder can stand behind it.
+ */
+function systemPath(real: string, stored: StoredPath): string | null {
+  const root = pathRoot(real, 'win32')
+  const names = real.slice(root.length).split('/').filter(name => name !== '')
+  for (let kept = names.length; kept >= 0; kept--) {
+    const place = names.slice(0, kept).reduce((parent, name) => childPath(parent, name), root)
+    if (lstatOrNull(place) === null) continue
+    return names.slice(kept).reduce((parent, name) => childPath(parent, name), nativePath(stored(place), 'win32'))
+  }
+  return null
 }
 
 function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {

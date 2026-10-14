@@ -4,7 +4,7 @@ import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { JsonObject } from '@5straps/protocol'
 import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
-import { findExecutable, ownerPlaces, resolveProgram, rootsOf, runnableCommand, trustedSearchPath, type ExecutableLookup } from '../common/domain/executable.js'
+import { findExecutable, ownerPlaces, placesOnTheWay, resolveProgram, rootsOf, runnableCommand, trustedSearchPath, type ExecutableLookup } from '../common/domain/executable.js'
 import type { Pack } from '../common/domain/pack.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { BROWSER_UNTRUSTED } from '../common/services/packs/browser/index.js'
@@ -101,12 +101,8 @@ describe('a program resolved on Windows, imitated', () => {
 // directory, and an injected StoredPath answers as Windows would for the short ones.
 describe('a program or PATH entry spelled with a Windows short name, imitated', () => {
   const workspace = rootsOf('workspace', ['C:/Users/me/projects-main'])
-  /** The real path Windows gives each short name here; any other name it cannot read back, so it stays as written. */
-  const disk = (path: string): string => {
-    const long = ({ 'C:/Users/me/PROJEC~1': 'C:\\Users\\me\\projects-main', 'C:/PROGRA~1': 'C:\\Program Files' } as Record<string, string>)[path]
-    if (long === undefined) throw new Error(`ENOENT: ${path}`)
-    return long
-  }
+  /** The real path Windows gives each short name here, and any other path as named, as a disk without short names does. */
+  const disk = (path: string): string => ({ 'C:/Users/me/PROJEC~1': 'C:\\Users\\me\\projects-main', 'C:/PROGRA~1': 'C:\\Program Files' } as Record<string, string>)[path] ?? path
   function short(run: () => void) {
     const root = scratch()
     for (const directory of ['Users/me/PROJEC~1/node_modules/.bin', 'PROGRA~1/Tools']) mkdirSync(join(root, 'C:', directory), { recursive: true })
@@ -133,6 +129,43 @@ describe('a program or PATH entry spelled with a Windows short name, imitated', 
   it('drops a PATH entry in the workspace named through its short name, and hands on the others by their long names', () => short(() => {
     const searchPath = 'C:\\Users\\me\\PROJEC~1\\node_modules\\.bin;C:\\PROGRA~1\\Tools;C:\\Users\\me\\LATER~1'
     expect(trustedSearchPath(searchPath, { untrustedRoots: workspace }, 'win32', disk)).toBe('C:\\Program Files\\Tools')
+  }))
+})
+
+// Recheck of the final review of 0.1.4, finding executable 567: a subst drive, or a drive mapped to a folder, names a
+// folder under another letter, with no link on the way to say so. Each walked place is also judged by the real path
+// Windows gives it. Here `P:` stands for the workspace's own folder, `Q:` for a tools folder outside every root, and
+// `S:` for a network share, which Buckle does not use on Windows.
+describe('a program or PATH entry on a subst drive, imitated', () => {
+  const workspace = rootsOf('workspace', ['C:/Users/me/projects/app'])
+  const backslashed = (rest: string) => rest.replaceAll('/', '\\')
+  const subst = (path: string): string => {
+    if (path.startsWith('P:/')) return `C:\\Users\\me\\projects\\app\\${backslashed(path.slice(3))}`
+    if (path.startsWith('Q:/')) return `D:\\tools\\${backslashed(path.slice(3))}`
+    if (path.startsWith('S:/')) return `\\\\server\\share\\${backslashed(path.slice(3))}`
+    return path
+  }
+  function drives(run: () => void) {
+    const root = scratch()
+    for (const directory of ['P:/node_modules/.bin', 'Q:', 'S:']) mkdirSync(join(root, directory), { recursive: true })
+    for (const file of ['P:/node_modules/.bin/rg.exe', 'Q:/rg.exe', 'S:/rg.exe']) writeFileSync(join(root, file), '')
+    const cwd = process.cwd()
+    process.chdir(root)
+    try { run() } finally { process.chdir(cwd) }
+  }
+  const found = (path: string) => lookupFrom({ rg: path })
+
+  it('refuses a program the drive leads into the workspace, on a share, or whose real path cannot be read, and runs one outside every root', () => drives(() => {
+    expect(resolveProgram('rg', { untrustedRoots: workspace, lookup: found('P:\\node_modules\\.bin\\rg.exe'), platform: 'win32', storedPath: subst })).toEqual({ path: null, reason: 'rg is found in or through a workspace of this node, where an agent can write, so Buckle does not run it', untrusted: true })
+    expect(resolveProgram('rg', { untrustedRoots: workspace, lookup: found('S:\\rg.exe'), platform: 'win32', storedPath: subst })).toEqual({ path: null, reason: 'rg cannot be followed to where it really is, so Buckle does not run it', untrusted: true })
+    expect(resolveProgram('rg', { untrustedRoots: workspace, lookup: found('Q:\\rg.exe'), platform: 'win32', storedPath: () => { throw new Error('EPERM') } })).toEqual({ path: null, reason: 'rg cannot be followed to where it really is, so Buckle does not run it', untrusted: true })
+    expect(resolveProgram('rg', { untrustedRoots: workspace, lookup: found('Q:\\rg.exe'), platform: 'win32', storedPath: subst })).toEqual({ path: 'Q:/rg.exe', argv0: 'Q:/rg.exe', args: [] })
+  }))
+
+  it('drops each PATH entry the drive leads into the workspace or onto a share, its root too, and keeps one outside every root', () => drives(() => {
+    expect(trustedSearchPath('P:\\node_modules\\.bin;P:\\;S:\\;Q:\\', { untrustedRoots: workspace }, 'win32', subst)).toBe('Q:\\')
+    // A browser profile folder is judged by the same places.
+    expect(placesOnTheWay('P:/profile', 'win32', subst)).toContain('C:/Users/me/projects/app/profile')
   }))
 })
 
@@ -252,7 +285,8 @@ describe('the browser pack on Windows, imitated, without an agent-browser it can
         sandbox: createNoneSandbox(), writableRoots: [root], allowedHosts: [], stateDirectory: scratch(), agentBrowserCommand: 'agent-browser',
         forge: { apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } }, browserStateDirectory: join(scratch(), 'browser'),
         browserHeaded: false, enableShell: false, sandboxUnavailableReason: null,
-        programSearch: { environment, platform: 'win32', places: ownerPlaces(environment, 'win32', { entry: undefined, execPath: 'D:\\node\\node.exe' }) },
+        // The scratch folders stand in for drives: each path resolves as named, as on a drive with no subst.
+        programSearch: { environment, platform: 'win32', places: ownerPlaces(environment, 'win32', { entry: undefined, execPath: 'D:\\node\\node.exe' }), storedPath: path => path },
       })
       const reason = packs.find(pack => pack.id === 'browser')!.unavailableReason
       expect(reason).not.toContain(root)
