@@ -262,8 +262,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   // script cannot resume, and its calls are kept as stubs that say they ran.
   const record = createRunRecord(replay, input.journalBytes)
   // Results reach the VM numbered without a gap, tools' and globals' alike. A global, describeTool or searchTools, is
-  // answered live on every run and its answer never recorded or counted toward the bound (recheck of the final review
-  // of 0.1.4, finding code index.ts:174), but each is recorded as a compact entry, its number and fingerprint alone:
+  // answered on every run from the run's own tool list, its answer never recorded or counted toward the bound
+  // (rechecks of the final review of 0.1.4, findings code index.ts:174 and :368), but each is recorded as a compact
+  // entry, its number and fingerprint alone:
   // a replay answers a global only on the number and with the arguments its first run had, and a call that lands on
   // another's number is refused before anything runs (recheck 2, finding code index.ts:363). A global's answer keeps
   // the script's clock where the result before it left it, so the replay reads the same time.
