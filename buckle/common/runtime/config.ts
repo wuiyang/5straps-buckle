@@ -48,6 +48,8 @@ export interface BuckleConfig {
   allowHostGit: boolean
   allowHostLsp: boolean
   enableShell: boolean
+  /** BUCKLE_ALLOW_CODE: code mode's code_run and code_api (owner decision D82). On unless it is false. */
+  allowCode: boolean
   shellNetwork: boolean
   isolateShell: boolean
   isolationMaxBytes: number
@@ -146,6 +148,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     allowHostGit: environment.BUCKLE_ALLOW_HOST_GIT === 'true',
     allowHostLsp: environment.BUCKLE_ALLOW_HOST_LSP === 'true',
     enableShell: environment.BUCKLE_ALLOW_SHELL !== 'false',
+    allowCode: environment.BUCKLE_ALLOW_CODE !== 'false',
     experimentalAdminHttp: environment.BUCKLE_EXPERIMENTAL_ADMIN_HTTP === 'true',
     shellNetwork: environment.BUCKLE_SHELL_NETWORK === 'true',
     isolateShell: environment.BUCKLE_SHELL_ISOLATION !== 'false',

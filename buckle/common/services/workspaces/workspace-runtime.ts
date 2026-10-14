@@ -229,7 +229,10 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   }
   const dangerouslyAllowed = () => dangerouslyAllow().effective
   let permissions = buildPermissionEngine({ config, compiled, ceiling, paths, dangerouslyAllowed })
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history, untrusted })
+  // What a code mode script reaches: this workspace's manifest as it stands at each call, after tool policy (owner
+  // decision D82, point 3), and never another workspace's (BUCKLE-D07: a token opens one workspace).
+  const manifestTools = (): ToolCapability[] => registry.capabilities().filter(tool => toolDenial(tool.name) === null)
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
@@ -275,7 +278,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     executionBudget,
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     inspectActiveWork: () => activeInvocations > 0 || workbenches.inspectActive() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
-    manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: registry.capabilities().filter(tool => toolDenial(tool.name) === null) }),
+    manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: manifestTools() }),
     toolCatalog: () => ({ tools: registry.capabilities(), unavailable: registry.capabilities().flatMap(tool => {
       const reason = toolDenial(tool.name)
       return reason ? [{ name: tool.name, reason }] : []
@@ -343,6 +346,8 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
         maxTimeoutMs: config.maxTimeoutMs,
         toolDenial,
         shutdown: stopping.signal,
+        // A script's calls run here too, so they are counted, cancelled at shutdown, and kept to this workspace.
+        nested: nestedCall => runtime.invoke(nestedCall),
       }).invoke(call)
       inFlight.add(running)
       try { return await running } finally {
@@ -366,7 +371,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
       compiled = compileEffective()
       paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
       permissions = buildPermissionEngine({ config, compiled, ceiling, paths, dangerouslyAllowed })
-      packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history, untrusted })
+      packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
       registry = createToolRegistry(availableTools(packs))
       for (const listener of listeners) listener()
     },
@@ -415,6 +420,7 @@ async function buildPacks(input: {
   browserStateDirectory: string
   history: ChangeHistory
   untrusted: () => UntrustedRoots
+  reachableTools: () => ToolCapability[]
 }): Promise<Pack[]> {
   const builtin = createBuiltinPacks({
     cwd: input.config.cwd,
@@ -444,6 +450,8 @@ async function buildPacks(input: {
     browserProfile: input.config.browserProfile,
     browserArgs: input.config.browserArgs,
     enableShell: input.config.enableShell,
+    allowCode: input.config.allowCode,
+    reachableTools: input.reachableTools,
     allowHostGit: input.config.allowHostGit,
     allowHostLsp: input.config.allowHostLsp,
     shellNetwork: input.config.shellNetwork,

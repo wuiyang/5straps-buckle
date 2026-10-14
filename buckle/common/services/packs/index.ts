@@ -1,5 +1,10 @@
+import { join } from 'pathe'
 import type { SandboxMount } from '../../domain/sandbox-mounts.js'
-import type { WorkspacePolicy } from '@5straps/protocol'
+import type { ToolCapability, WorkspacePolicy } from '@5straps/protocol'
+import { createPiCodemodeVm } from '../../adapters/script-vm/pi-codemode.js'
+import { workspaceStateKey } from '../../domain/workspace-key.js'
+import type { ScriptVm } from '../../types/ports/script-vm.js'
+import { createCodePack } from './code/index.js'
 import type { IsolatedShellOptions } from '../shell/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
 import { hostEnvironment } from '../../domain/environment.js'
@@ -58,6 +63,12 @@ export interface BuiltinPackOptions {
   allowHostGit?: boolean
   allowHostLsp?: boolean
   enableShell: boolean
+  /** BUCKLE_ALLOW_CODE: false withholds the code pack (owner decision D82). On when absent. */
+  allowCode?: boolean
+  /** What a script reaches: the workspace manifest's tools as they stand at each call, after tool policy. None when absent. */
+  reachableTools?: () => ToolCapability[]
+  /** The VM code mode runs scripts in; pi-codemode's when absent. */
+  scriptVm?: ScriptVm
   shellNetwork?: boolean
   shellIsolation?: IsolatedShellOptions
   environmentValidator?: string
@@ -84,6 +95,7 @@ export const BUILTIN_PACKS: ReadonlyArray<{ id: string; summary: string }> = [
   { id: 'dev', summary: 'language-server navigation and diagnostics' },
   { id: 'browser', summary: 'drive a browser through agent-browser, fresh for each session by default' },
   { id: 'shell', summary: 'run commands in the sandbox (needs the shell on)' },
+  { id: 'code', summary: 'run a script that calls the other tools, each call judged as a direct one' },
   { id: 'environment', summary: 'validate environment configuration (needs BUCKLE_ENV_VALIDATOR_COMMAND)' },
 ]
 
@@ -94,6 +106,7 @@ export const BUILTIN_PACKS: ReadonlyArray<{ id: string; summary: string }> = [
  */
 export function unmetPackPrerequisite(id: string, options: Pick<BuiltinPackOptions, 'environmentValidator'>): string | null {
   if (id === 'environment' && !options.environmentValidator) return 'BUCKLE_ENV_VALIDATOR_COMMAND is not set'
+  // The code pack is always built: BUCKLE_ALLOW_CODE=false withholds it with a reason, as BUCKLE_ALLOW_SHELL does the shell.
   return null
 }
 
@@ -161,6 +174,15 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     ...(options.programSearch ? { programSearch: options.programSearch } : {}),
   }))
 
+  // Built whether or not it may run, so `buckle manifest` explains a withheld one. Never withheld for want of an
+  // operating-system sandbox: its VM has no files, network, processes, timers, or modules (owner decision D82).
+  packs.push(createCodePack({
+    vm: options.scriptVm ?? createPiCodemodeVm(),
+    reachableTools: options.reachableTools ?? (() => []),
+    journalDirectory: join(options.stateDirectory, 'code-journal', workspaceStateKey(options.cwd)),
+    unavailableReason: options.allowCode === false ? CODE_OFF : null,
+  }))
+
   const validator = options.environmentValidator
   if (validator !== undefined && unmetPackPrerequisite('environment', options) === null) {
     // Named by its setting in a refusal the agent reads, never by its path, which may lie outside the workspace.
@@ -177,6 +199,8 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   }
   return packs
 }
+
+const CODE_OFF = 'Code mode is turned off by BUCKLE_ALLOW_CODE=false'
 
 function forgeUnavailableReason(options: BuiltinPackOptions, git: ResolvedProgram): string | null {
   if (!options.forge.token) return 'BUCKLE_FORGE_GITHUB_TOKEN is not set, so this node holds no forge credential and cannot commit, push or open a pull request'
