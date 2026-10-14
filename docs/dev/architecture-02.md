@@ -68,8 +68,8 @@ runs an agent's script that calls the other tools. Four pieces:
   before its own end (an ask, its deadline, a cancel, a shutdown, or its sandbox),
   `<state>/code-journal/<workspace key>/<key>.json`, holding the clock start, the seed, the tools,
   the first run's requestId, the script, the tokens of its asks, and every tool call's result, in
-  order, with each tool's input schema; `describeTool` and `searchTools` are answered afresh, and
-  only their numbers and arguments' fingerprints are recorded;
+  order, with each tool's input schema; `describeTool` and `searchTools` are answered from that list,
+  and only their numbers and arguments' fingerprints are recorded;
   a call a stop cut after its tool began to run is recorded as run, its effects unknown. Past
   32 MiB of results, every call is kept as a stub that says it ran, without its result, so the
   script cannot resume but no call of it runs again; a record whose replay handed out such a stub

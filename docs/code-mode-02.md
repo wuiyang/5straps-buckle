@@ -12,9 +12,9 @@ tool call the first run made gets the result it got then, read from a record Buc
 running again. The script then reaches the call that asked, which now runs with the person's
 answer, and carries on. A script is deterministic for this: its clock and random numbers repeat
 its first run's, and its calls still name its first `code_run` call as their parent.
-`describeTool` and `searchTools` are answered afresh on every run from the script's own tool list,
-and leave its clock where it was; the record keeps only their arguments, so a replay that calls
-them otherwise is refused before anything runs. A call refused or failed
+`describeTool` and `searchTools` are answered from the script's own tool list as its first run had
+it, whatever the tool policy says since, and leave its clock where it was. The record keeps only
+their numbers and arguments, so a replay that calls them otherwise is refused before anything runs. A call refused or failed
 with a retryable error once the script stopped at an ask is made again on the re-send, and a turn
 asking more than a session's 50 pending asks asks again for the rest.
 
