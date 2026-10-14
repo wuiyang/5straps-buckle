@@ -107,11 +107,13 @@ describe('the pi-codemode script VM', () => {
     }
     const runs = [hold(workspaces[0]!), hold(workspaces[0]!)].map(started)
 
-    expect(hold(workspaces[0]!)).toEqual({ busy: expect.stringContaining(`${MAX_LIVE_VMS_PER_WORKSPACE} scripts already run in this workspace`) })
+    const workspaceFull = { busy: expect.stringContaining(`${MAX_LIVE_VMS_PER_WORKSPACE} scripts already run in this workspace`) }
+    expect(hold(workspaces[0]!)).toEqual(workspaceFull)
+    // The same workspace's next adapter, as after a reload, shares its count; checked while the process still has
+    // slots, so only the workspace's share can refuse it (re-review of the code-mode slice, finding tests 114).
+    expect(hold(createPiCodemodeVm({ workspace: 'one' }))).toEqual(workspaceFull)
     runs.push(...[hold(workspaces[1]!), hold(workspaces[1]!)].map(started))
     expect(workspaces[2]!.start(input('return 1'))).toEqual({ busy: expect.stringContaining(`${MAX_LIVE_VMS} scripts already run in this Buckle process`) })
-    // The same workspace's next adapter, as after a reload, shares its count.
-    expect(createPiCodemodeVm({ workspace: 'one' }).start(input('return 1'))).toMatchObject({ busy: expect.any(String) })
 
     controllers[0]!.abort()
     await runs[0]!.result

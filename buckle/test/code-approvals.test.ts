@@ -11,9 +11,11 @@ import type { ApprovalWait, InvokeResponse, JsonObject, JsonValue, ToolCapabilit
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { NestedApprovalRequired, type NestedCall, type ToolContext } from '../common/domain/tool.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { logger } from '../common/runtime/log.js'
 import { CODE_CALL_LIMIT, createCodePack, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
 import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { runCli } from '../cli/main.js'
 import { createMcpServer } from '../mcp/server.js'
 import { isExplicitCancel } from '../mcp/stdio.js'
@@ -64,8 +66,8 @@ function results(runtime: BuckleRuntime, tool: string) {
   return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.tool === tool)
 }
 
-/** fs_read made slow for one path, its tool ignoring its signal as a slow tool may; every run is counted by path. */
-function slowRead(runtime: BuckleRuntime, slowPath: string, ms: number): string[] {
+/** fs_read made slow for one path, for `wait` ms or until it settles, its tool ignoring its signal as a slow tool may; every run is counted by path. */
+function slowRead(runtime: BuckleRuntime, slowPath: string, wait: number | Promise<void>): string[] {
   const runs: string[] = []
   const fsRead = runtime.registry().get('fs_read')
   const prepare = fsRead.prepare.bind(fsRead)
@@ -73,7 +75,7 @@ function slowRead(runtime: BuckleRuntime, slowPath: string, ms: number): string[
     const prepared = prepare(args)
     return { ...prepared, execute: async (context: ToolContext) => {
       runs.push(String(args.path))
-      if (args.path === slowPath) await new Promise(resolve => setTimeout(resolve, ms))
+      if (args.path === slowPath) await (typeof wait === 'number' ? new Promise(resolve => setTimeout(resolve, wait)) : wait)
       return await prepared.execute(context)
     } }
   })
@@ -274,6 +276,30 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     await runtime.history.close()
   }, 30_000)
 
+  // Re-review of the code-mode slice, finding tests invoker.ts:748: a call the script's end cut while it waited is
+  // audited SCRIPT_ENDED, not logged as a failed tool, and its ask stays pending.
+  it.each([
+    ['over HTTP', undefined],
+    ['over stdio', isExplicitCancel],
+  ])('audits a call the script\'s end cut as SCRIPT_ENDED and leaves its ask pending, %s', async (_route, isCancel) => {
+    const { workspace, runtime } = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    writeFileSync(join(workspace, 'gate.md'), 'gate')
+    let release!: () => void
+    slowRead(runtime, 'gate.md', new Promise<void>((resolve) => { release = resolve }))
+    const failed = vi.spyOn(logger, 'error')
+    const script = 'tools.fs_write({ path: "one/out.md", content: "x" }).catch(() => {}); await tools.fs_read({ path: "gate.md" }); return 1'
+    const running = send(runtime, script, { timeoutMs: 20_000, approvalWait: { mode: 'finite', ms: 10_000 }, ...(isCancel ? { isCancel } : {}) })
+    await vi.waitFor(() => expect(runtime.approvalService.waiting()).toHaveLength(1), { timeout: 10_000 })
+    release()
+
+    expect(await running).toMatchObject({ outcome: 'ok', output: { ok: true, value: 1 } })
+    expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'SCRIPT_ENDED']])
+    expect(runtime.approvalService.pending()).toHaveLength(1)
+    expect(failed.mock.calls.filter(([message]) => message === 'Tool invocation failed')).toEqual([])
+    failed.mockRestore()
+    await runtime.history.close()
+  }, 30_000)
+
   it('lets the script go on once the person answers while its call waits inside it', async () => {
     const { root, workspace, runtime } = await node()
     const running = send(runtime, READ_THEN_WRITE, { timeoutMs: 20_000, approvalWait: { mode: 'finite', ms: 10_000 } })
@@ -328,6 +354,25 @@ describe('buckle approvals show, for an ask a script made', () => {
     const after = await open(config)
     expect(after.approvalService.pending().map(request => request.token)).toEqual([approval!.token])
     await after.history.close()
+  })
+
+  // Re-review of the code-mode slice, finding tests main.ts:349: without the record, show says the script is not
+  // kept yet, and an ask no script made gets neither line.
+  it('says the script is not kept when its record is not there, and says nothing of a script for a direct call', async () => {
+    const { root, config, runtime } = await node()
+    const [scripted] = asked(await run(runtime, READ_THEN_WRITE))
+    for (const file of journals(root)) rmSync(file)
+    const [direct] = asked(await runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId: 'direct-1', tool: 'fs_write', args: { path: 'two/x.md', content: 'x' }, approvalTokens: [] } }))
+    await runtime.history.close()
+
+    const shown = await capture(['approvals', 'show', scripted!.token], config)
+    expect(shown.stdout).toContain('A code_run script made this call')
+    expect(shown.stdout).toContain('it is not kept yet')
+    expect(shown.stdout).not.toContain('The code_run script that made this call:')
+    expect(JSON.parse((await capture(['approvals', 'show', scripted!.token, '--json'], config)).stdout)).not.toHaveProperty('script')
+    const plain = await capture(['approvals', 'show', direct!.token], config)
+    expect(plain.exitCode).toBe(0)
+    expect(plain.stdout).not.toContain('code_run script')
   })
 })
 
@@ -480,6 +525,9 @@ describe('the replay journal', () => {
     expect(() => createJournalStore({ directory: join(directory, 'never-made') })).not.toThrow()
     let now = Date.now()
     expect(await createJournalStore({ directory, now: () => now }).write(record('a'.repeat(64)))).toBe(true)
+    // Its mtime pinned to the injected clock, so the expiry below does not hang on how long the write took (re-review
+    // of the code-mode slice, finding tests 411).
+    utimesSync(join(directory, `${'a'.repeat(64)}.json`), now / 1_000, now / 1_000)
     const leftover = join(directory, `.${'b'.repeat(64)}.${randomUUID()}.tmp`)
     const writing = join(directory, `.${'c'.repeat(64)}.${randomUUID()}.tmp`)
     for (const path of [leftover, writing]) writeFileSync(path, 'part of a tool result')
@@ -561,8 +609,8 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
   const cut = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'error', error: { code: 'SCRIPT_ENDED', message: 'cut', retryable: false } })
   const ask = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'approval_required', approvals: [{ token: `token-${call.id}`, rule: 'write_scope', subject: '/w', reason: 'asks', tool: call.tool, offeredScopes: ['once'], expiresAt: new Date(Date.now() + 60_000).toISOString() }] })
 
-  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>, input: { timeoutMs?: number; signal?: AbortSignal; forgetNested?: (ids: readonly number[]) => void; withdrawNested?: (tokens: readonly string[]) => Promise<void>; journalBytes?: number } = {}) {
-    const pack = createCodePack({ vm: createPiCodemodeVm(), reachableTools: () => [echo, gate, waiter], journalDirectory: directory, unavailableReason: null, ...(input.journalBytes ? { journalBytes: input.journalBytes } : {}) })
+  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>, input: { timeoutMs?: number; signal?: AbortSignal; forgetNested?: (ids: readonly number[]) => void; withdrawNested?: (tokens: readonly string[]) => Promise<void>; journalBytes?: number; vm?: ScriptVm } = {}) {
+    const pack = createCodePack({ vm: input.vm ?? createPiCodemodeVm(), reachableTools: () => [echo, gate, waiter], journalDirectory: directory, unavailableReason: null, ...(input.journalBytes ? { journalBytes: input.journalBytes } : {}) })
     const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: input.timeoutMs ?? 60_000, signal: input.signal ?? new AbortController().signal, nestedKey: 'f'.repeat(64), invokeNested, forgetNested: input.forgetNested ?? (() => {}), ...(input.withdrawNested ? { withdrawNested: input.withdrawNested } : {}) }
     return (script: string) => pack.tools[0]!.prepare({ script }).execute(context)
   }
@@ -579,7 +627,7 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
 
   // Review of the code-mode slice, finding tests 243: the condition that forgets the records is pinned both ways.
   it('forgets the re-send records only of a script that ended by itself, and keeps the journal of one stopped from outside', async () => {
-    const ending = async (script: string, input: { timeoutMs?: number; abortAfterCall?: boolean } = {}) => {
+    const ending = async (script: string, input: { timeoutMs?: number; abortAfterCall?: boolean; vm?: ScriptVm } = {}) => {
       const directory = scratch()
       const caller = new AbortController()
       const forgetNested = vi.fn()
@@ -587,13 +635,26 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
         if (input.abortAfterCall) setTimeout(() => caller.abort(new Error('stopped by the caller')), 50)
         return ok(call, 'echoed')
       }
-      const result = await codeRun(directory, echoed, { ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}), signal: caller.signal, forgetNested })(script) as { error?: { kind: string } }
+      const result = await codeRun(directory, echoed, { ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}), ...(input.vm ? { vm: input.vm } : {}), signal: caller.signal, forgetNested })(script) as { error?: { kind: string } }
       return { kind: result.error?.kind ?? 'ok', forgotten: forgetNested.mock.calls, journal: kept(directory).map(journal => journal.entries.map(entry => entry.tool)) }
     }
 
     expect(await ending('await tools.echo({}); return 1')).toEqual({ kind: 'ok', forgotten: [[[1]]], journal: [] })
     expect(await ending('await tools.echo({}); throw new Error("boom")')).toEqual({ kind: 'script', forgotten: [[[1]]], journal: [] })
-    expect(await ending('await tools.echo({}); while (true) {}', { timeoutMs: 300 })).toEqual({ kind: 'timeout', forgotten: [], journal: [['echo']] })
+    // A 300 ms deadline counted from the VM's readiness: a stub makes the call, and times out 300 ms after its answer.
+    // pi-codemode counts its deadline from before the worker starts, which a loaded host can spend in full (re-review
+    // of the code-mode slice, finding tests 512).
+    const timingOut: ScriptVm = {
+      declare: () => '', identifier: name => name,
+      start(vmInput) {
+        let answered!: () => void
+        const delivered = new Promise<void>((resolve) => { answered = resolve })
+        queueMicrotask(() => vmInput.onCall({ id: 1, target: 'tool', name: 'echo', args: {} }))
+        const result = delivered.then(() => new Promise<ScriptVmResult>(resolve => setTimeout(() => resolve({ ok: false, output: [], outputTruncated: false, calls: [{ id: 1, name: 'echo', status: 'ok', durationMs: 0 }], error: { kind: 'timeout', message: 'The script ran past its 300 ms' } }), 300)))
+        return { deliver: () => answered(), get finished() { return false }, result }
+      },
+    }
+    expect(await ending('await tools.echo({}); while (true) {}', { vm: timingOut })).toEqual({ kind: 'timeout', forgotten: [], journal: [['echo']] })
     expect(await ending('await tools.echo({}); while (true) {}', { abortAfterCall: true })).toEqual({ kind: 'aborted', forgotten: [], journal: [['echo']] })
   })
 

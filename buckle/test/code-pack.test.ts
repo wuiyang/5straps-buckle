@@ -228,6 +228,31 @@ describe('the code pack setting', () => {
   })
 })
 
+describe('the script VMs a workspace holds', () => {
+  // Re-review of the code-mode slice, finding tests 114: the packs index names the VM's workspace by its state key, so
+  // the adapter a reload builds shares the count of the one before it.
+  it('counts a workspace\'s scripts across a reload of its packs', async () => {
+    const { runtime } = await node()
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    let reading = 0
+    const fsRead = runtime.registry().get('fs_read')
+    const prepare = fsRead.prepare.bind(fsRead)
+    vi.spyOn(fsRead, 'prepare').mockImplementation((args) => {
+      const prepared = prepare(args)
+      return { ...prepared, execute: async (context: ToolContext) => { reading++; await held; return await prepared.execute(context) } }
+    })
+    const holding = ['alpha', 'beta'].map(name => run(runtime, `return (await tools.fs_read({ path: 'docs/${name}.md' })).size`))
+    await vi.waitFor(() => expect(reading).toBe(2), { timeout: 10_000 })
+    await runtime.reload()
+
+    expect(await run(runtime, 'return 1')).toMatchObject({ outcome: 'error', error: { code: CODE_VM_BUSY, retryable: true, message: expect.stringContaining('in this workspace') } })
+    release()
+    for (const response of await Promise.all(holding)) expect(ran(response).ok).toBe(true)
+    await runtime.history.close()
+  }, 30_000)
+})
+
 describe('code mode inside one workspace (BUCKLE-D07: a token opens one workspace)', () => {
   async function nodeWithChild(childPolicy = emptyWorkspacePolicy()) {
     const root = mkdtempSync(join(tmpdir(), 'buckle-code-child-'))
