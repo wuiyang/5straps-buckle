@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonObject } from '@5straps/protocol'
@@ -6,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createPathView } from '../common/domain/path-view.js'
 import { createBrowserPack, type BrowserPackOptions } from '../common/services/packs/browser/index.js'
 import { MAX_TRANSFER_BYTES, prepareTransfer } from '../common/services/packs/browser/file-transfer.js'
+import { writeFileEntry } from '../common/services/packs/fs/operations.js'
+import { writeInput } from '../common/services/packs/fs/schemas.js'
 import type { ProcessRequest, ProcessResult } from '../common/types/ports/process-runner.js'
 
 // Review L4 of the second proof-of-possession re-review: browser transfer copies were synchronous and
@@ -92,6 +95,7 @@ describe('a browser file transfer', () => {
   it('leaves no partial file and the earlier target untouched when the signal fires mid-copy', async () => {
     const { workspace, session, paths } = fixture()
     writeFileSync(join(workspace, 'shot.png'), 'earlier')
+    chmodSync(join(workspace, 'shot.png'), 0o640)
     const stop = new AbortController()
     const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png'], context: { signal: stop.signal }, protectedRoots: [], staleAfterMs: 600_000 })
     const staged = transfer.argument('shot.png')!
@@ -108,12 +112,14 @@ describe('a browser file transfer', () => {
     try {
       await expect(transfer.deliver()).rejects.toThrow('the caller went away')
     } finally { clearInterval(watch); transfer.close() }
-    // Private while it is copied, so no one reads half a file.
-    expect(partialMode).toBe(0o600)
+    // While it is copied it has the mode of the file it replaces, as fs_write writes into that file in place.
+    expect(partialMode).toBe(0o640)
     expect(partials()).toEqual([])
     expect(readFileSync(join(workspace, 'shot.png'), 'utf8')).toBe('earlier')
   })
 
+  // Re-check of 2026-10-14: a new file's mode worked out from the umask missed a folder's default ACL; it is now the
+  // mode the kernel gives, compared with what fs_write itself makes in the same folder.
   it('replaces the target only once the copy is whole, keeping the target\'s mode, and gives a new one fs_write\'s', async () => {
     const { workspace, session, paths } = fixture()
     writeFileSync(join(workspace, 'shot.png'), 'earlier')
@@ -124,8 +130,22 @@ describe('a browser file transfer', () => {
     try { await transfer.deliver() } finally { transfer.close() }
     expect(readFileSync(join(workspace, 'shot.png'), 'utf8')).toBe('later')
     expect(statSync(join(workspace, 'shot.png')).mode & 0o777).toBe(0o640)
-    expect(statSync(join(workspace, 'new.png')).mode & 0o777).toBe(0o666 & ~process.umask())
-    expect(readdirSync(workspace).sort()).toEqual(['new.png', 'shot.png'])
+    await writeFileEntry(writeInput.parse({ path: 'reference.txt', content: 'fs_write' }), { paths })
+    expect(statSync(join(workspace, 'new.png')).mode & 0o777).toBe(statSync(join(workspace, 'reference.txt')).mode & 0o777)
+    expect(readdirSync(workspace).sort()).toEqual(['new.png', 'reference.txt', 'shot.png'])
+  })
+
+  // The re-check's case: a folder whose default ACL gives the group write, which a mode worked out from the umask
+  // missed. Set through python3, where the disk takes a POSIX ACL; skipped where it cannot be set.
+  it('gives a new file the mode fs_write gets in a folder with a default ACL', async (context) => {
+    const { workspace, session, paths } = fixture()
+    const acl = 'import os, struct, sys; os.setxattr(sys.argv[1], "system.posix_acl_default", struct.pack("<I", 2) + b"".join(struct.pack("<HHI", tag, perm, 0xFFFFFFFF) for tag, perm in ((1, 6), (4, 6), (32, 4))))'
+    if (spawnSync('python3', ['-I', '-c', acl, workspace]).status !== 0) context.skip()
+    const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png'], context: { signal: new AbortController().signal }, protectedRoots: [], staleAfterMs: 600_000 })
+    writeFileSync(transfer.argument('shot.png')!, 'png bytes')
+    try { await transfer.deliver() } finally { transfer.close() }
+    await writeFileEntry(writeInput.parse({ path: 'reference.txt', content: 'fs_write' }), { paths })
+    expect(statSync(join(workspace, 'shot.png')).mode & 0o777).toBe(statSync(join(workspace, 'reference.txt')).mode & 0o777)
   })
 
   // Review of 2026-10-14: nothing showed delivery refusing a link or a folder swapped in at the target after the check.
