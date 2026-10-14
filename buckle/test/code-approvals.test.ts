@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import fs, { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -9,7 +9,7 @@ import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalWait, InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
-import { NestedApprovalRequired, type NestedCall, type ToolContext } from '../common/domain/tool.js'
+import { NestedApprovalRequired, ToolExecutionError, type NestedCall, type ToolContext } from '../common/domain/tool.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { CODE_CALL_LIMIT, createCodePack, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
@@ -599,6 +599,40 @@ describe('the replay journal', () => {
     expect(await send(after, script, { timeoutMs: 20_000 })).toMatchObject({ outcome: 'ok', output: { ok: false, error: { kind: 'script', message: expect.stringContaining('REQUEST_ALREADY_EXECUTED') } } })
     expect(prepared).not.toHaveBeenCalled()
     expect(runs).toEqual(['notes.md', 'slow.md'])
+    await after.history.close()
+  }, 30_000)
+
+  // Re-check of round 3, finding journal-turn index.ts:330: a call cut after it began to run is journaled as run even
+  // when it then answers a retryable error, as an LSP request that ignores its abort does, so a restart never runs it
+  // again.
+  it('journals as run a call cut after it began, though it then failed retryably, so a restart never runs it again', async () => {
+    const { root, workspace, config } = setup()
+    writeFileSync(join(workspace, 'slow.md'), 'slow')
+    const runs: string[] = []
+    const slowRetryable = (runtime: BuckleRuntime, name: string) => {
+      const fsRead = runtime.registry().get('fs_read')
+      const prepare = fsRead.prepare.bind(fsRead)
+      vi.spyOn(fsRead, 'prepare').mockImplementation((args) => ({ ...prepare(args), execute: async () => {
+        runs.push(`${name}:${String(args.path)}`)
+        await new Promise(resolve => setTimeout(resolve, 2_500))
+        throw new ToolExecutionError('The language server did not answer in time', { code: 'LSP_TIMEOUT', retryable: true })
+      } }))
+    }
+    const script = 'return (await Promise.allSettled([tools.fs_write({ path: "one/out.md", content: "x" }), tools.fs_read({ path: "slow.md" })])).map(item => item.status === "fulfilled" ? "ok" : item.reason.code)'
+    const first = await open(config)
+    slowRetryable(first, 'A')
+    const [approval] = asked(await send(first, script, { timeoutMs: 1_500, approvalWait: { mode: 'none' } }))
+    const [record] = journals(root)
+    expect((JSON.parse(readFileSync(record!, 'utf8')) as Journal).entries.map(entry => [entry.tool, entry.outcome.ok ? 'ok' : (entry.outcome.properties as { code: string }).code])).toEqual([['fs_read', 'REQUEST_ALREADY_EXECUTED']])
+    await answer(first, approval!.token)
+    await first.history.close()
+
+    const snapshot = join(root, 'state-after-restart')
+    cpSync(join(root, 'state'), snapshot, { recursive: true })
+    const after = await open(loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: snapshot, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' }))
+    slowRetryable(after, 'B')
+    expect(await send(after, script, { timeoutMs: 20_000, approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'ok', output: { ok: true, value: ['ok', 'REQUEST_ALREADY_EXECUTED'] } })
+    expect(runs).toEqual(['A:slow.md'])
     await after.history.close()
   }, 30_000)
 
