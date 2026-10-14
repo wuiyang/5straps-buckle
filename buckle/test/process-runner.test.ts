@@ -22,19 +22,23 @@ function scratch(): string {
   return folder
 }
 
-/**
- * A child that starts a detached grandchild holding its stdio, running `daemon`, names it, writes its own output, and
- * exits; `exited` is a file it writes as it exits, so a test can act once it has.
- */
-function parentOfDaemon(input: { daemon?: string; exited?: string } = {}): string {
+/** A child that starts a detached grandchild holding its stdio, running `daemon`, names it, writes its own output, and exits. */
+function parentOfDaemon(input: { daemon?: string } = {}): string {
   return [
     'const { spawn } = require("node:child_process")',
     `const daemon = spawn(process.execPath, ["-e", ${JSON.stringify(input.daemon ?? 'setTimeout(() => {}, 30000)')}], { detached: true, stdio: "inherit" })`,
     'daemon.unref()',
     'process.stdout.write(`daemon ${daemon.pid}\\nchild output\\n`)',
     'process.stderr.write("child warning\\n")',
-    ...input.exited ? [`process.on("exit", () => require("node:fs").writeFileSync(${JSON.stringify(input.exited)}, "exited"))`] : [],
   ].join('\n')
+}
+
+/**
+ * A daemon that writes `marker` once its parent is gone for good: a process can be signalled until whoever started it
+ * reaps it, and the runner's own exit handler runs as it reaps, so the marker means the runner has seen the exit.
+ */
+function daemonMarkingExit(marker: string): string {
+  return `const parent = process.ppid; const watch = setInterval(() => { try { process.kill(parent, 0) } catch { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "exited"); clearInterval(watch) } }, 10); setTimeout(() => {}, 30000)`
 }
 
 /** The daemon's pid, read from what the child wrote, kept to be killed after the test. */
@@ -87,7 +91,7 @@ describe('the process runner', () => {
     const folder = scratch()
     const exited = join(folder, 'exited')
     const stop = new AbortController()
-    const pending = runProcess({ command: process.execPath, args: ['-e', parentOfDaemon({ exited })], cwd: '/tmp', environment: {}, timeoutMs: 20_000, signal: stop.signal })
+    const pending = runProcess({ command: process.execPath, args: ['-e', parentOfDaemon({ daemon: daemonMarkingExit(exited) })], cwd: '/tmp', environment: {}, timeoutMs: 20_000, signal: stop.signal })
     await until(() => existsSync(exited), 10_000)
     stop.abort()
     const result = await pending
