@@ -323,6 +323,11 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       made.add(call.id)
       const start = () => running.set(call.id, invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal, onExecute: () => executing.add(call.id), ...(stage === undefined ? {} : { stageId: stage }) }).then((response) => {
         if (response.outcome === 'approval_required') asks.push(...response.approvals)
+        // A retryable refusal that came once the script stopped at an ask, such as APPROVAL_LIMIT when the turn asked
+        // more than a session may, never reached the script: it is not journaled, so the retry, after the person has
+        // answered, makes the call again rather than replaying the refusal (re-check of round 2, finding journal-turn
+        // index.ts:326).
+        else if (asks.length > 0 && response.outcome === 'error' && response.error.retryable) return
         else if (!cancel.signal.aborted && !context.signal.aborted) answer(call, target, outcomeOf(response), fingerprint)
         // A call cut by the script's end, a cancel, or a shutdown before its tool ran, such as one waiting for a
         // person, is not journaled: the re-sent script makes it again (review of the code-mode slice, finding

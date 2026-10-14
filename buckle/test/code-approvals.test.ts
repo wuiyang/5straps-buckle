@@ -82,6 +82,21 @@ function slowRead(runtime: BuckleRuntime, slowPath: string, wait: number | Promi
   return runs
 }
 
+/** Every run of a tool's own code, by its path argument: what actually ran, whatever the audit log says was answered. */
+function countRuns(runtime: BuckleRuntime, tool: string): Map<string, number> {
+  const runs = new Map<string, number>()
+  const registered = runtime.registry().get(tool)
+  const prepare = registered.prepare.bind(registered)
+  vi.spyOn(registered, 'prepare').mockImplementation((args) => {
+    const prepared = prepare(args)
+    return { ...prepared, execute: async (context: ToolContext) => {
+      runs.set(String(args.path), (runs.get(String(args.path)) ?? 0) + 1)
+      return await prepared.execute(context)
+    } }
+  })
+  return runs
+}
+
 async function answer(runtime: BuckleRuntime, token: string, approved = true) {
   expect((await runtime.approvalService.answer({ decision: { token, approved, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
 }
@@ -184,6 +199,33 @@ describe('a call inside a script that needs a person', () => {
     expect([readFileSync(join(workspace, 'one', 'a.md'), 'utf8'), readFileSync(join(workspace, 'two', 'b.md'), 'utf8')]).toEqual(['a', 'b'])
     await runtime.history.close()
   })
+
+  // Re-check of round 2, finding journal-turn index.ts:326: a turn that asks more than the session's 50 pending asks
+  // allows gets APPROVAL_LIMIT for the rest, which is retryable and never journaled, so once the person has answered,
+  // the retries make those calls, and no write runs twice.
+  it('makes again on the retry a call the session\'s ask cap refused in the turn that asked, and writes nothing twice', async () => {
+    const { root, workspace, runtime } = await node()
+    for (let index = 0; index < 60; index++) mkdirSync(join(workspace, `d${index}`))
+    const writes = countRuns(runtime, 'fs_write')
+    const script = 'await Promise.all(Array.from({ length: 60 }, (_, i) => tools.fs_write({ path: "d" + i + "/a.md", content: "x" }))); return "all"'
+
+    const first = asked(await run(runtime, script))
+    expect(first).toHaveLength(50)
+    const [record] = journals(root)
+    expect((JSON.parse(readFileSync(record!, 'utf8')) as Journal).entries).toEqual([])
+    for (const approval of first) await answer(runtime, approval.token)
+
+    const second = asked(await run(runtime, script))
+    expect(second).toHaveLength(10)
+    expect(writes.size).toBe(50)
+    for (const approval of second) await answer(runtime, approval.token)
+
+    expect(await run(runtime, script)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 'all' } })
+    expect(writes.size).toBe(60)
+    expect([...writes.values()].every(count => count === 1)).toBe(true)
+    expect(journals(root)).toEqual([])
+    await runtime.history.close()
+  }, 60_000)
 
   it('hands a denial after the ask to the script as an error it can catch', async () => {
     const { workspace, runtime } = await node()
