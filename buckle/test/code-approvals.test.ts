@@ -1245,7 +1245,9 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
   it('stops keeping results in memory past the journal bound, before the store is reached', async () => {
     const directory = scratch()
     const earlier = join(directory, `${'f'.repeat(64)}.json`)
-    writeFileSync(earlier, JSON.stringify({ version: 1, key: 'f'.repeat(64), startedAt: 1, seed: 1, tools: [echo, gate, waiter].map(tool => ({ name: tool.name, jsName: tool.name, description: tool.description })), entries: [], expiresAt: Date.now() + 60_000 }))
+    // A record the store reads, its tools with their schemas, so only keepStubs' own removal takes it away (recheck 4
+    // of the final review of 0.1.4, finding code-approvals.test.ts:1248).
+    writeFileSync(earlier, JSON.stringify({ version: 1, key: 'f'.repeat(64), startedAt: 1, seed: 1, tools: [echo, gate, waiter].map(tool => ({ name: tool.name, jsName: tool.name, description: tool.description, inputSchema: tool.inputSchema })), entries: [], expiresAt: Date.now() + 60_000 }))
     const withdrawNested = vi.fn(async () => {})
     const script = 'for (let i = 0; i < 10; i++) await tools.echo({ i }); await tools.gate({})'
     const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'x'.repeat(500)), { journalBytes: 2_048, withdrawNested })
