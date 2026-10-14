@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { JsonObjectSchema, JsonValueSchema } from '@5straps/protocol'
 import { replaceFile } from '../../../adapters/json-file-store.js'
 import { setMode } from '../../../adapters/file-modes.js'
+import { workspaceStateKey } from '../../../domain/workspace-key.js'
 import { logger } from '../../../runtime/log.js'
 import { EXECUTION_TTL_MS } from '../../invocation/executions.js'
 
@@ -49,6 +50,12 @@ const JournalSchema = z.object({
   seed: z.number().int().nonnegative(),
   /** The VM the run started on (ScriptVmRunInput.onStarted); a replay on another is refused. */
   vm: z.string().optional(),
+  /**
+   * The script itself, which the audit log keeps only the size of, and the tokens of the asks it stopped at: what
+   * `buckle approvals show <token>` prints for an approver (review of the code-mode slice, coordinator decision 4).
+   */
+  script: z.string().optional(),
+  asks: z.array(z.string()).optional(),
   tools: z.array(z.object({ name: z.string(), jsName: z.string(), description: z.string() })),
   entries: z.array(EntrySchema),
   expiresAt: z.number(),
@@ -56,6 +63,34 @@ const JournalSchema = z.object({
 
 export type Journal = z.infer<typeof JournalSchema>
 export type JournalEntry = z.infer<typeof EntrySchema>
+
+/** Where a workspace's journals are kept: `<state>/code-journal/<workspace key>`, under the state every sandbox hides. */
+export function journalDirectory(input: { stateDirectory: string; cwd: string }): string {
+  return join(input.stateDirectory, 'code-journal', workspaceStateKey(input.cwd))
+}
+
+/**
+ * The text of the script that stopped at the ask `token`, from the journal written at that ask while it is kept, or
+ * null. Read for an approver, the owner, never for an agent; a journal that cannot be read is passed over.
+ */
+export function scriptOfAsk(directory: string, token: string, now = Date.now()): string | null {
+  let names: string[]
+  try {
+    names = readdirSync(directory).filter(name => JOURNAL_FILE.test(name))
+  } catch {
+    return null
+  }
+  for (const name of names) {
+    let parsed: ReturnType<typeof JournalSchema.safeParse>
+    try {
+      parsed = JournalSchema.safeParse(JSON.parse(readFileSync(join(directory, name), 'utf8')))
+    } catch {
+      continue
+    }
+    if (parsed.success && parsed.data.expiresAt > now && parsed.data.script !== undefined && parsed.data.asks?.includes(token)) return parsed.data.script
+  }
+  return null
+}
 
 export interface JournalStore {
   /** The script's journal, or null when it has none or it expired (an expired one is removed). */

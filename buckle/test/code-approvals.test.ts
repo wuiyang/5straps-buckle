@@ -12,6 +12,7 @@ import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { CODE_CALL_LIMIT, createCodePack, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
 import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { runCli } from '../cli/main.js'
 import { createMcpServer } from '../mcp/server.js'
 import { isExplicitCancel } from '../mcp/stdio.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -89,7 +90,7 @@ describe('a call inside a script that needs a person', () => {
     const [waiting] = runtime.approvalService.waiting()
     expect(waiting?.call).toMatchObject({
       complete: true, cwd: workspace, arguments: { path: 'one/out.md', content: 'HELLO' },
-      description: `Called by a "code_run" script, stage "stage-a" in the audit log: Write 5 bytes to "one/out.md" in "${workspace}"`,
+      description: `Called by a "code_run" script, stage "stage-a"; buckle approvals show <token> prints the script: Write 5 bytes to "one/out.md" in "${workspace}"`,
       effects: [`write ${join(workspace, 'one', 'out.md')}`],
     })
     expect(existsSync(join(workspace, 'one', 'out.md'))).toBe(false)
@@ -237,6 +238,35 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
     await runtime.history.close()
   }, 30_000)
+})
+
+describe('buckle approvals show, for an ask a script made', () => {
+  async function capture(argv: string[], config: BuckleConfig): Promise<{ exitCode: number; stdout: string }> {
+    let stdout = ''
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { stdout += String(chunk); return true })
+    try {
+      return { exitCode: (await runCli({ confirm: async () => false, argv, config })).exitCode, stdout }
+    } finally { write.mockRestore() }
+  }
+
+  // Review of the code-mode slice, coordinator decision 4: the audit log keeps the script's size alone.
+  it('prints the ask whole and the script that made it, kept with its record, and decides nothing', async () => {
+    const { config, runtime } = await node()
+    const [approval] = asked(await run(runtime, READ_THEN_WRITE))
+    await runtime.history.close()
+
+    const shown = await capture(['approvals', 'show', approval!.token], config)
+    expect(shown.exitCode).toBe(0)
+    expect(shown.stdout).toContain('buckle approvals show <token> prints the script')
+    expect(shown.stdout).toContain('"content": "HELLO"')
+    expect(shown.stdout).toContain(`The code_run script that made this call:\n${READ_THEN_WRITE}\n`)
+    expect(JSON.parse((await capture(['approvals', 'show', approval!.token, '--json'], config)).stdout)).toMatchObject({ token: approval!.token, tool: 'fs_write', script: READ_THEN_WRITE, call: { arguments: { content: 'HELLO' } } })
+    expect((await capture(['approvals', 'show', 'not-a-token'], config)).exitCode).toBe(1)
+    expect((await capture(['approvals', 'show'], config)).exitCode).toBe(1)
+    const after = await open(config)
+    expect(after.approvalService.pending().map(request => request.token)).toEqual([approval!.token])
+    await after.history.close()
+  })
 })
 
 describe('the replay journal', () => {

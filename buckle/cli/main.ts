@@ -9,6 +9,7 @@ import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, printable, RECORDED_BEFORE_NOTE, sameCallNote } from '../common/domain/approval-instruction.js'
 import { shownCall, type PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { CheckpointSummary } from '../common/services/history/journal.js'
@@ -169,6 +170,8 @@ function printUsage(): CliResult {
 
   buckle approvals [--json] [--workspace <id>]   Requests waiting for a decision
   buckle approvals --watch [--workspace <id>]    Ask about each request as it arrives
+  buckle approvals show <token> [--json] [--workspace <id>]
+                                   One request whole, and the code_run script that made it
   buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <id>]
                                    Shows the whole action, then approves only once you confirm at a terminal
   buckle check-url <url|host> [--session <id>] [--workspace <id>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
@@ -282,9 +285,12 @@ async function runtimeForWorkspace(input: { runtime: BuckleRuntime; workspaces: 
  * readable through the admin API alone.
  */
 async function approvals(input: CommandInput): Promise<CliResult> {
-  const { values } = parseArgs({ args: input.argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, workspace: { type: 'string' } }, allowPositionals: false })
+  const { values, positionals } = parseArgs({ args: input.argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, workspace: { type: 'string' } }, allowPositionals: true })
+  const [action, token, ...extra] = positionals
+  if (action !== undefined && (action !== 'show' || token === undefined || extra.length > 0 || values.watch)) return fail('Usage: buckle approvals [--json] [--watch] [--workspace <id>], or buckle approvals show <token> [--json] [--workspace <id>]')
   if (values.watch && values.json) return fail('--watch asks in the terminal, so it takes no --json')
   const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
+  if (token !== undefined) return showAsk({ runtime, token, json: values.json === true, node: input.config.serverId })
   if (values.watch) return watch(runtime, input.runtime)
   // The whole call each ask came from (owner decision D17), redacted and never cut, once per request group: each ask
   // names it by callRef and the group's first carries it (review M1 of the slice 5 re-review). An ask recorded before
@@ -324,6 +330,23 @@ async function approvals(input: CommandInput): Promise<CliResult> {
     if (shown && callRef !== undefined && earlier === undefined) shownWith.set(callRef, request.token)
     process.stdout.write(`${action.map(line => `  ${line}`).join('\n')}\n`)
   }
+  return { exitCode: 0 }
+}
+
+/**
+ * One ask whole, as `buckle approve` shows it, deciding nothing; for a call a code_run script made, the script's text
+ * too, which the audit log keeps only the size of, from the record kept at the ask. The call shown whole is what is
+ * approved (owner decision D17); the script is its context (review of the code-mode slice, coordinator decision 4).
+ */
+function showAsk(input: { runtime: BuckleRuntime; token: string; json: boolean; node: string }): CliResult {
+  const { runtime, token } = input
+  const ask = runtime.approvalService.waitingAsk(token)
+  if (!ask) return fail(`Nothing named ${printable(token)} is waiting for a decision in workspace ${runtime.workspaceId}`)
+  const script = runtime.scriptOfAsk(token)
+  if (input.json) return print({ ...ask.request, workspaceId: runtime.workspaceId, ...(ask.call ? { call: ask.call } : {}), ...(script === null ? {} : { script }) })
+  process.stdout.write(`${token}\n${describeWaitingAsk({ ask, node: input.node, workspaceId: runtime.workspaceId }).join('\n')}\n`)
+  if (script !== null) process.stdout.write(`\nThe code_run script that made this call:\n${script.split('\n').map(printable).join('\n')}\n`)
+  else if (ask.call?.description?.startsWith(SCRIPT_CALL_NOTE)) process.stdout.write('\nA code_run script made this call. Its text is kept for ten minutes once the script stops at this ask; while the call still waits inside the script, it is not kept yet.\n')
   return { exitCode: 0 }
 }
 

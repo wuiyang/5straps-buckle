@@ -321,7 +321,8 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   }
   // The record of what ran, for the re-sent script; false when it passes its bound, and then none is left behind.
   const keep = async (): Promise<boolean> => {
-    if (!overflowed && await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), tools, entries: [...replay, ...fresh] })) return true
+    const named = { script: input.script, ...(asks.length > 0 ? { asks: asks.map(ask => ask.token) } : {}) }
+    if (!overflowed && await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), ...named, tools, entries: [...replay, ...fresh] })) return true
     journals.remove(key)
     return false
   }

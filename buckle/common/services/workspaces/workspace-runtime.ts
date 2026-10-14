@@ -44,6 +44,7 @@ import { intersectUrlMatchers, type UrlMatcher } from '../../domain/url-pattern.
 import type { PermissionRule } from '../../domain/permission/decision.js'
 import { workspaceStateKey } from '../../domain/workspace-key.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
+import { journalDirectory, scriptOfAsk } from '../packs/code/journal.js'
 import { loadRootSkill } from '../packs/pack-skill.js'
 import type { ActionLog, AuditHealth } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
@@ -117,6 +118,8 @@ export interface BuckleRuntime {
   readonly executionBudget: ExecutionBudget
   plugins: PluginRegistry
   reporter: Reporter
+  /** The code mode script that stopped at the ask `token`, kept with its journal for the approver; null when none is (owner decision D82). */
+  scriptOfAsk(token: string): string | null
   invoke(input: InvokeInput): Promise<InvokeResponse>
   /**
    * Shutdown's in-flight tool calls step (B19): cancels every call still running here, a shell among
@@ -325,6 +328,8 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
         logger.warn(on ? 'Dangerously allow is on: every ask in this workspace is allowed without a person, and each use is audited' : 'Dangerously allow is off', { workspaceId })
       },
     },
+
+    scriptOfAsk: token => scriptOfAsk(journalDirectory({ stateDirectory: config.stateDirectory, cwd: config.cwd }), token),
 
     async invoke(call) {
       activeInvocations++

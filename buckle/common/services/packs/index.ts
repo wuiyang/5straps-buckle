@@ -1,10 +1,10 @@
-import { join } from 'pathe'
 import type { SandboxMount } from '../../domain/sandbox-mounts.js'
 import type { ToolCapability, WorkspacePolicy } from '@5straps/protocol'
 import { createPiCodemodeVm } from '../../adapters/script-vm/pi-codemode.js'
 import { workspaceStateKey } from '../../domain/workspace-key.js'
 import type { ScriptVm } from '../../types/ports/script-vm.js'
 import { createCodePack } from './code/index.js'
+import { journalDirectory } from './code/journal.js'
 import type { IsolatedShellOptions } from '../shell/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
 import { hostEnvironment } from '../../domain/environment.js'
@@ -182,7 +182,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     vm: options.scriptVm ?? createPiCodemodeVm({ workspace: workspaceStateKey(options.cwd) }),
     reachableTools: options.reachableTools ?? (() => []),
     ...(options.maxRequestBytes === undefined ? {} : { maxRequestBytes: options.maxRequestBytes }),
-    journalDirectory: join(options.stateDirectory, 'code-journal', workspaceStateKey(options.cwd)),
+    journalDirectory: journalDirectory({ stateDirectory: options.stateDirectory, cwd: options.cwd }),
     unavailableReason: options.allowCode === false ? CODE_OFF : null,
   }))
 
