@@ -16,6 +16,7 @@ is the exception: `fs_search_content` is left out without `rg`, and no reason is
 | `forge` | `git_commit`, `git_push`, `pr_open`, `pr_read` | the same, and `BUCKLE_FORGE_GITHUB_TOKEN` |
 | `dev` | `lsp_discover`, `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_rename`, `lsp_diagnostics` | `BUCKLE_ALLOW_HOST_LSP=true` and a language server |
 | `browser` | `browser_command` | `agent-browser`, a browser for agents, or the command `BUCKLE_AGENT_BROWSER_COMMAND` names |
+| `code` | `code_run`, `code_api`: a script that calls the other tools, each call judged as a direct one ([Code mode](code-mode.md)) | nothing, not even a sandbox; on unless `BUCKLE_ALLOW_CODE=false` |
 | `environment` | `env_validate` | `BUCKLE_ENV_VALIDATOR_COMMAND` |
 
 `BUCKLE_PACKS=fs,web,shell` loads only the named packs, and naming any turns plugins off.

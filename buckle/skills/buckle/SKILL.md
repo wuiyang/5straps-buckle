@@ -88,6 +88,7 @@ and that is the path to use. Relative paths work the same either way.
 | `web` | fetch and search, with SSRF filtering | `buckle-web` |
 | `lsp` | definitions, references, hover, diagnostics, rename | `buckle-dev` |
 | `browser` | drive a real browser via agent-browser | `buckle-browser` |
+| `code` | run one script that calls the other tools, each call approved as usual | `buckle-code` |
 
 A pack that cannot run here is withheld rather than failing at call time, so `buckle tools` is
 always an honest list. `buckle manifest` names each absent pack and the reason. Shell tools are

@@ -1,7 +1,7 @@
 # Architecture: state and packs
 
 The second part of the map of Buckle, the approval and sandbox runtime that lets an AI agent work
-on one machine: where approvals live on disk, and how packs bring tools.
+on one machine: where approvals live on disk, how packs bring tools, and how code mode runs scripts.
 [Architecture](architecture.md) covers the packages, the layers, the path of a tool call, and the
 pieces that decide it. Paths are inside `buckle/` unless they start with `packages/`.
 
@@ -34,5 +34,37 @@ directory with a `SKILL.md` beside it; `scripts/build.mjs` copies those into `di
 an `unavailableReason` contributes no tools, so the registry, the manifest, and MCP list only what
 runs. Plugins load through `common/adapters/plugin-registry.ts` from modules that export
 `createPack(options)`, recorded in `plugins.json`.
+
+## Code mode
+
+Code mode (owner decision D82, proposed as BUCKLE-D22; user guide [Code mode](../code-mode.md))
+runs an agent's script that calls the other tools. Four pieces:
+
+- **The port**, `common/types/ports/script-vm.ts`: what Buckle needs from a script VM. A run takes
+  the script, the tools it may call, limits (deadline, memory, output), a clock start, a seed, and
+  `onCall`; the host answers each call with `deliver(seq, now, id, outcome)`, and the run yields
+  output items, the return value, the calls made, and an error kind (`script`, `timeout`,
+  `aborted`, `sandbox`). The port also renders the declarations a script reads.
+- **The adapter**, `common/adapters/script-vm/pi-codemode.ts`, the only module that imports
+  `@earendil-works/pi-codemode`. It runs QuickJS, compiled to WebAssembly by `quickjs-wasi`, in a
+  worker thread per script through `CodemodeSandbox.start()`, the deterministic run. It finds the
+  worker file and the wasm where the package is installed, so a bundled server finds them too,
+  gives each VM 256 MiB, and holds at most four live VMs per process.
+- **The pack**, `common/services/packs/code/`: `code_run` and `code_api`. The pack never reaches
+  the registry: `ToolDefinition.reachesTools` makes the invoker hand it `invokeNested`, and the
+  invoker builds each nested request itself, with the outer call's session, actor, approval tokens,
+  wait, and signal, a stage of the outer call's stage, run, or requestId, and a requestId of
+  `code:<key>:<call number>`. A nested call goes through the workspace runtime's own `invoke`, so
+  it is judged, audited, counted, and cancelled at shutdown like any other. A call that asks makes
+  the pack throw `NestedApprovalRequired`, which the invoker answers as `approval_required`.
+- **The journal**, `common/services/packs/code/journal.ts`: one file per script that stopped at an
+  ask, `<state>/code-journal/<workspace key>/<key>.json`, holding the clock start, the seed, the
+  tools, and every result delivered, in order. The key hashes the session, the actor, and the
+  outer call's tool and canonical arguments. A re-sent script is answered from it call for call,
+  and a call whose tool or arguments differ refuses the run.
+
+The adapter is temporary. The owner plans a VM written for Buckle, which implements the port; the
+pack, the invoker, and the journal stay as they are, and a journal from the old VM is refused by
+its recorded VM fingerprint rather than replayed on the new one.
 
 See also: [Building and testing](building-and-testing.md) and [Releasing](releasing.md).

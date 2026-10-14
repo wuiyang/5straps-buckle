@@ -1,8 +1,9 @@
-# Known limits: programs Buckle runs
+# Known limits, part two
 
-What Buckle, the approval and sandbox runtime on this machine, does not yet handle in the programs
-it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents. It follows
-[Known limits](known-limits.md), which covers reading commands, credential hiding, and paths.
+More of what Buckle, the approval and sandbox runtime on this machine, does not yet handle: the
+programs it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents; code
+mode; and the command line. [Known limits](known-limits.md) covers reading commands, credential
+hiding, and paths.
 
 ## Where programs come from
 
@@ -56,3 +57,24 @@ it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents
 - A screenshot, PDF, or download is copied beside its target and renamed onto it, taking the old
   file's mode or, for a new file, the mode `fs_write` gives one. A delivered file replaces the
   target, so a per-file ACL on the old one is not kept.
+
+## Code mode
+
+[Code mode](code-mode.md) runs an agent's script that calls Buckle's tools.
+
+- A script that stopped at an ask resumes only within ten minutes, as long as Buckle keeps its
+  record of the calls that ran. Sent again later, the script runs from its start, and the calls
+  before the ask run again.
+- A script whose calls returned more than 32 MiB before the ask cannot be resumed at all:
+  `code_run` answers `CODE_REPLAY_TOO_LARGE`. A workspace keeps 128 MiB of such records and drops
+  the oldest first, so a script whose record was dropped also runs from its start.
+- A nested call's error text reaches the script, which can read it, branch on it, and return it:
+  a refusal's message, with the path, host, or command a rule names, reaches the agent through the
+  script as it would from a direct call, and the script can try another call in response, each of
+  which is judged on its own.
+- The audit log keeps the script's size, not its text, as it keeps every argument.
+
+## The command line
+
+- `buckle serve --help` and `buckle mcp --help` start the service rather than print help.
+  `buckle --help` lists the commands without reading any configuration.

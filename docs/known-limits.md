@@ -2,7 +2,8 @@
 
 What Buckle, the approval and sandbox runtime on this machine, does not yet read, hide, or
 handle, each with an example. [What stays unread](policy-03.md) covers reading commands in more
-depth, and [Programs Buckle runs](known-limits-02.md) the programs it starts itself.
+depth, and [part two](known-limits-02.md) the programs it starts itself, code mode, and the command
+line.
 
 ## Reading commands
 
@@ -72,8 +73,3 @@ decision binds the whole call, whatever the display hides.
 - On Windows, a whole drive such as `D:\`, or a link to one, cannot be the workspace root, a
   scratch root, the state directory, or the client directory. Buckle started in `D:\` without
   `BUCKLE_WORKSPACE_ROOT` refuses to start.
-
-## The command line
-
-- `buckle serve --help` and `buckle mcp --help` start the service rather than print help.
-  `buckle --help` lists the commands without reading any configuration.
