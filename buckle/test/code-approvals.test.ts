@@ -833,7 +833,8 @@ describe('the replay journal', () => {
     expect(read).not.toHaveBeenCalled()
     // Re-review of the code-mode slice, finding docs-rules code-mode.md:76: no call would spend the first run's ask.
     expect(runtime.approvalService.pending()).toEqual([])
-    expect(journals(root)).toEqual([])
+    // Recheck 3 of the final review of 0.1.4, finding code index.ts:487: the record is kept until it expires.
+    expect(journals(root)).toEqual([file])
     await runtime.history.close()
   })
 
@@ -999,7 +1000,8 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     writeFileSync(join(directory, file!), JSON.stringify({ ...JSON.parse(readFileSync(join(directory, file!), 'utf8')), vm: 'another-vm' }))
     await expect(codeRun(directory, invoked, { withdrawNested })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
     expect(withdrawNested).toHaveBeenCalledWith(['token-2'])
-    expect(kept(directory)).toEqual([])
+    // Recheck 3 of the final review of 0.1.4, finding code index.ts:487: a diverged record is kept until it expires.
+    expect(kept(directory)).toHaveLength(1)
   }, 60_000)
 
   // Final review of 0.1.4, finding code index.ts:365: a withdrawal the approvals lock refuses is logged, and the agent
@@ -1016,7 +1018,8 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
       writeFileSync(join(directory, file!), JSON.stringify({ ...JSON.parse(readFileSync(join(directory, file!), 'utf8')), vm: 'another-vm' }))
       await expect(codeRun(directory, invoked, { withdrawNested: busy })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
       expect(busy).toHaveBeenCalledWith(['token-2'])
-      expect(kept(directory)).toEqual([])
+      // Recheck 3 of the final review of 0.1.4, finding code index.ts:487: a diverged record is kept until it expires.
+      expect(kept(directory)).toHaveLength(1)
     } else {
       const script = 'for (let i = 0; i < 10; i++) await tools.echo({ i }); await tools.gate({})'
       const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'x'.repeat(500)), { journalBytes: 2_048, withdrawNested: busy })
@@ -1069,6 +1072,23 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect([record?.entries[0]?.outcome.ok, record?.globals?.length]).toEqual([true, 10_000])
     expect(await codeRun(directory, async call => ok(call, 'opened'))(script)).toMatchObject({ ok: true, value: big.length })
   }, 120_000)
+
+  // Recheck 3 of the final review of 0.1.4, finding code index.ts:487: a stub record whose replay diverges before any
+  // stub is handed, here on another VM, is kept too, so after a restart the third send still runs nothing.
+  it('keeps a stub record whose replay diverges before handing out a stub, so the third send runs nothing', async () => {
+    const directory = scratch()
+    const script = 'for (let i = 0; i < 4; i++) await tools.echo({ i }); while (true) {}'
+    expect(await codeRun(directory, async call => ok(call, 'x'.repeat(5_000)), { journalBytes: 8_192, timeoutMs: 1_000 })(script)).toMatchObject({ ok: false, error: { kind: 'timeout' } })
+    const [file] = readdirSync(directory).filter(name => name.endsWith('.json'))
+    writeFileSync(join(directory, file!), JSON.stringify({ ...JSON.parse(readFileSync(join(directory, file!), 'utf8')), vm: 'another-vm' }))
+
+    const invoked = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
+    for (let send = 2; send <= 3; send++) {
+      await expect(codeRun(directory, invoked, { journalBytes: 8_192 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      expect(kept(directory).map(journal => journal.entries.length)).toEqual([4])
+    }
+    expect(invoked).not.toHaveBeenCalled()
+  }, 60_000)
 
   // Recheck 2 of the final review of 0.1.4, finding code index.ts:477: a script that handles a stub's error and passes it
   // on diverges on it, and the record is kept, so a restart and a third unchanged send still run nothing.

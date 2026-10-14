@@ -488,12 +488,12 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   }
 
   if (diverged) {
-    // A record that diverged diverges on every re-send: it goes, and so do the asks of its run, which no call would
-    // ever spend (re-review of the code-mode slice, finding docs-rules code-mode.md:76). One whose replay handed out a
-    // call that ran before diverges on the script's handling of that stub, and is kept until it expires, so no
-    // unchanged send runs its calls again (recheck 2 of the final review of 0.1.4, finding code index.ts:477).
+    // A record that diverged diverges on every re-send, so the asks of its run go, which no call would ever spend
+    // (re-review of the code-mode slice, finding docs-rules code-mode.md:76). The record itself is kept until it
+    // expires, however the replay diverged: it exists so that no call runs twice, and dropping it let the next send
+    // after a restart run them all again (rechecks 2 and 3 of the final review of 0.1.4, findings code index.ts:477
+    // and :487). Changing the script gives it a new record.
     await withdraw([...new Set([...journal?.asks ?? [], ...asks.map(ask => ask.token)])], 'that diverged')
-    if (!handedStub) journals.remove(key)
     throw new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
   }
   // The caller's own cancel withdraws the asks the script already collected, as it withdraws a waiting call's: the
