@@ -193,7 +193,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
             const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
             const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait } : undefined
-            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute, timeoutMs: prepared.timeoutMs, nesting })
+            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute, timeoutMs: prepared.timeoutMs, nesting, via })
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path); return nativePath(realpathSync(path)) })]
@@ -632,6 +632,8 @@ async function executeWithTimeout(input: {
   timeoutMs?: number
   /** For a tool that reaches tools: how its calls run, and what of this call they inherit. */
   nesting?: Nesting
+  /** For a call a script made: the call that sent the script, which its history stage falls back to. */
+  via?: NestedOrigin
 }): Promise<JsonValue> {
   const judged = (kind: 'read_path' | 'write_path') => new Set(input.effects.flatMap(effect => effect.kind === kind ? [effect.path] : []))
   const judgedReads = judged('read_path')
@@ -649,6 +651,9 @@ async function executeWithTimeout(input: {
       requestId: input.request.requestId,
       sessionId: input.sessionId,
       stageId: input.request.context?.stageId ?? input.request.context?.runId,
+      // A tool that checkpoints its own changes, the isolated shell, files them where the invoker files a write, so a
+      // script's shell and file changes share one stage (recheck of the final review of 0.1.4, finding shell index.ts:151).
+      historyStage: historyStage(input.request, input.via),
       timeoutMs,
       signal,
       ...(input.nesting ? nestedContext({ ...input, nesting: input.nesting, signal, timeoutMs }) : {}),

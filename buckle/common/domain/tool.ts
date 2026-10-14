@@ -7,6 +7,12 @@ export interface ToolContext {
   requestId: string
   sessionId: string
   stageId?: string
+  /**
+   * The stage the change history files this call's changes under: the caller's stage or run, else, for a call a
+   * script made, the code_run call that sent the script, else this call's own requestId (invoker.ts historyStage).
+   * Set by the invoker, so a tool that checkpoints its own changes files them where every other write goes.
+   */
+  historyStage?: string
   timeoutMs: number
   signal: AbortSignal
   /**

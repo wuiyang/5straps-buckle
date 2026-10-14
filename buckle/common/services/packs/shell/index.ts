@@ -148,7 +148,9 @@ export function createShellPack(options: ShellPackOptions): Pack {
       excluded: [...hidden.directories, ...hidden.files, ...sensitiveFiles],
       readOnlyOverlayPaths: [...sensitiveFiles, ...hidden.directories.filter(directory => isInsideAny([options.paths.root], directory) && sensitiveFiles.some(path => isInsideAny([directory], path)))],
       readOnlyPaths: restrictions.readOnlyWorkspacePaths,
-      details: { sessionId: input.context.sessionId, stageId: input.context.stageId ?? input.context.requestId, tool: input.tool },
+      // The invoker's history stage, which a script's call files under its parent request, as its other writes are
+      // (recheck of the final review of 0.1.4, finding shell index.ts:151).
+      details: { sessionId: input.context.sessionId, stageId: input.context.historyStage ?? input.context.stageId ?? input.context.requestId, tool: input.tool },
       execute: run,
     })
     return toJson(result, options.sandbox.mode)
