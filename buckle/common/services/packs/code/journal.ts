@@ -21,6 +21,10 @@ export const JOURNAL_BYTES = 32 * 1_024 * 1_024
 /** The most a workspace's journals hold together; the oldest go first. */
 export const WORKSPACE_JOURNAL_BYTES = 128 * 1_024 * 1_024
 export const CODE_REPLAY_TOO_LARGE = 'CODE_REPLAY_TOO_LARGE'
+/** How long a temporary file is left to the write that made it before a sweep counts it as left over from a crash. */
+export const TEMPORARY_GRACE_MS = 60_000
+const JOURNAL_FILE = /^[0-9a-f]{64}\.json$/
+const TEMPORARY_FILE = /^\.[0-9a-f]{64}\.[0-9a-f-]{36}\.tmp$/
 
 const OutcomeSchema = z.union([
   z.object({ ok: z.literal(true), value: JsonValueSchema.optional() }),
@@ -71,20 +75,36 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
     rmSync(pathOf(key), { force: true })
   }
 
-  /** Expired journals go, then the oldest until the workspace's journals fit their bound. */
+  /**
+   * Expired journals go, and temporary files a crashed write left, then the oldest until the workspace's journals fit
+   * their bound. Run when the store opens and at every write, so a journal nobody resumes, which holds tool results,
+   * is not kept past its ten minutes for want of a later ask (review of the code-mode slice, findings sandbox-boundary
+   * journal.ts:134 and :121).
+   */
   function prune(): void {
-    const files = readdirSync(input.directory).filter(name => /^[0-9a-f]{64}\.json$/.test(name)).map((name) => {
+    let names: string[]
+    try {
+      names = readdirSync(input.directory)
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return
+      throw error
+    }
+    const files = names.flatMap((name) => {
+      const temporary = TEMPORARY_FILE.test(name)
+      if (!temporary && !JOURNAL_FILE.test(name)) return []
       const path = join(input.directory, name)
       const stat = statSync(path, { throwIfNoEntry: false })
-      return stat ? { path, bytes: stat.size, at: stat.mtimeMs } : null
-    }).filter(file => file !== null).sort((left, right) => left.at - right.at)
+      return stat ? [{ path, bytes: stat.size, at: stat.mtimeMs, lifetime: temporary ? TEMPORARY_GRACE_MS : JOURNAL_TTL_MS }] : []
+    }).sort((left, right) => left.at - right.at)
     let total = files.reduce((sum, file) => sum + file.bytes, 0)
     for (const file of files) {
-      if (file.at + JOURNAL_TTL_MS > now() && total <= workspaceBytes) continue
+      if (file.at + file.lifetime > now() && total <= workspaceBytes) continue
       rmSync(file.path, { force: true })
       total -= file.bytes
     }
   }
+
+  prune()
 
   return {
     read(key) {
@@ -118,20 +138,20 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
       mkdirSync(input.directory, { recursive: true, mode: 0o700 })
       setMode(input.directory, 0o700)
       const temporary = join(input.directory, `.${journal.key}.${randomUUID()}.tmp`)
-      const descriptor = openSync(temporary, 'wx', 0o600)
+      // A write that fails anywhere, the disk full or the rename refused, leaves no part of its tool results behind.
       try {
-        writeSync(descriptor, text)
-        fsyncSync(descriptor)
-      } finally {
-        closeSync(descriptor)
-      }
-      try {
+        const descriptor = openSync(temporary, 'wx', 0o600)
+        try {
+          writeSync(descriptor, text)
+          fsyncSync(descriptor)
+        } finally {
+          closeSync(descriptor)
+        }
         await replaceFile(temporary, pathOf(journal.key))
-      } catch (error) {
+      } finally {
         rmSync(temporary, { force: true })
-        throw error
+        prune()
       }
-      prune()
       return true
     },
 

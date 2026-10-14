@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalWait, InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
@@ -8,7 +10,7 @@ import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { NestedApprovalRequired, type NestedCall, type ToolContext } from '../common/domain/tool.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { CODE_CALL_LIMIT, createCodePack, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
-import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, type Journal } from '../common/services/packs/code/journal.js'
+import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpServer } from '../mcp/server.js'
 import { isExplicitCancel } from '../mcp/stdio.js'
@@ -324,6 +326,44 @@ describe('the replay journal', () => {
     expect(read).not.toHaveBeenCalled()
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
     await runtime.history.close()
+  })
+
+  // Review of the code-mode slice, findings sandbox-boundary journal.ts:134 and :121.
+  const record = (key: string) => ({ key, startedAt: 1, seed: 2, tools: [], entries: [{ seq: 1, now: 1, id: 1, tool: 'echo', args: 'x', outcome: { ok: true as const, value: 'tool result' } }] })
+
+  it('removes expired journals and a crashed write\'s leftovers when a store opens, with no further write', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-prune-'))
+    roots.push(directory)
+    expect(() => createJournalStore({ directory: join(directory, 'never-made') })).not.toThrow()
+    let now = Date.now()
+    expect(await createJournalStore({ directory, now: () => now }).write(record('a'.repeat(64)))).toBe(true)
+    const leftover = join(directory, `.${'b'.repeat(64)}.${randomUUID()}.tmp`)
+    const writing = join(directory, `.${'c'.repeat(64)}.${randomUUID()}.tmp`)
+    for (const path of [leftover, writing]) writeFileSync(path, 'part of a tool result')
+    const crashed = (Date.now() - TEMPORARY_GRACE_MS - 1_000) / 1_000
+    utimesSync(leftover, crashed, crashed)
+
+    createJournalStore({ directory, now: () => now })
+    expect(readdirSync(directory).sort()).toEqual([basename(writing), `${'a'.repeat(64)}.json`].sort())
+    now += JOURNAL_TTL_MS + 1
+    createJournalStore({ directory, now: () => now })
+    expect(readdirSync(directory)).toEqual([])
+  })
+
+  it('leaves no temporary file behind when a write fails', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-full-'))
+    roots.push(directory)
+    const store = createJournalStore({ directory })
+    const real = fs.writeSync
+    fs.writeSync = () => { throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }) }
+    syncBuiltinESMExports()
+    try {
+      await expect(store.write(record('d'.repeat(64)))).rejects.toThrow('no space left')
+    } finally {
+      fs.writeSync = real
+      syncBuiltinESMExports()
+    }
+    expect(readdirSync(directory)).toEqual([])
   })
 
   it('refuses a script that, replayed, makes other calls than its first run did', async () => {
