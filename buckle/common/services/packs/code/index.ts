@@ -165,25 +165,27 @@ function createRunRecord(replay: readonly JournalEntry[], bound: number) {
   let count = 0
   let bytes = Buffer.byteLength(JSON.stringify(replay))
   const sizeOf = (entry: JournalEntry) => Buffer.byteLength(JSON.stringify(entry)) + 1
-  const stub = (entry: JournalEntry) => {
+  const stub = (kept: JournalEntry[], entry: JournalEntry): void => {
+    if (lost) return
     const stubbed = stubOf(entry)
     bytes += sizeOf(stubbed)
-    if (bytes <= bound) return stubs!.push(stubbed)
-    lost = true
-    stubs!.length = 0
+    if (bytes <= bound) kept.push(stubbed)
+    else {
+      lost = true
+      kept.length = 0
+    }
   }
   return {
     add(entry: JournalEntry): void {
       count++
-      if (lost) return
       if (stubs === null) {
         bytes += sizeOf(entry)
         if (bytes <= bound) return void whole.push(entry)
         stubs = []
         bytes = 2
-        for (const earlier of whole.splice(0)) if (!lost) stub(earlier)
+        for (const earlier of whole.splice(0)) stub(stubs, earlier)
       }
-      if (!lost) stub(entry)
+      stub(stubs, entry)
     },
     /** Calls answered in this run, kept or not. */
     get count() { return count },
@@ -466,9 +468,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       // No call will spend these asks, nor those of the runs before it: the script cannot resume, so they leave the
       // queue as a denied sibling's do, and the record keeps its calls as stubs alone, naming none (final review of
       // 0.1.4, findings code index.ts:371 and docs code-mode-02.md:19).
-      await keepStubs([])
+      const stubbed = await keepStubs([])
       await withdraw(pendingAsks(), 'that cannot resume')
-      throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran, and sent again unchanged they are not run again. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
+      throw new ToolExecutionError(`A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran${stubbed ? ', and sent again unchanged they are not run again' : ''}. Make the call that asked on its own, or send a script that keeps less`, { code: CODE_REPLAY_TOO_LARGE })
     }
     // A script that returned, threw, or exited is done: its record goes, and sending it again is a new run whose calls
     // run again. One stopped by its deadline, a cancel, a shutdown, or its sandbox keeps the record of what ran, so the

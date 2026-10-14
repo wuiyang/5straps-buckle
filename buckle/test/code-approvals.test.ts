@@ -1023,7 +1023,7 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     const withdrawNested = vi.fn(async () => {})
     const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, large as JsonObject[keyof JsonObject]), { withdrawNested })
 
-    await expect(execute(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE, retryable: false })
+    await expect(execute(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE, retryable: false, message: expect.stringContaining('sent again unchanged they are not run again') })
     // Final review of 0.1.4, finding docs code-mode-02.md:19: the record keeps the calls that ran as stubs, their
     // results dropped, and names no ask, so the script sent again runs neither again.
     expect(kept(directory).map(journal => [journal.asks, journal.entries.map(entry => [entry.tool, entry.outcome.ok ? 'ok' : entry.outcome.properties?.code])])).toEqual([[undefined, [['echo', 'REQUEST_ALREADY_EXECUTED'], ['echo', 'REQUEST_ALREADY_EXECUTED']]]])
@@ -1044,7 +1044,8 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     const script = 'for (let i = 0; i < 10; i++) await tools.echo({ i }); await tools.gate({})'
     const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'x'.repeat(500)), { journalBytes: 2_048, withdrawNested })
 
-    await expect(execute(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE })
+    // Even as stubs its calls pass this bound, so nothing is kept, and the answer promises nothing of a re-send.
+    await expect(execute(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE, message: expect.not.stringContaining('not run again') })
     expect(existsSync(earlier)).toBe(false)
     expect(readdirSync(directory)).toEqual([])
     expect(withdrawNested).toHaveBeenCalledWith(['token-11'])
