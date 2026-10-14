@@ -298,15 +298,12 @@ function shimRefusal(shown: string, shim: { file: string; place: string | null; 
 /** The most of a shim Buckle reads: npm's is under 1 KiB, so a longer file is not one Buckle reads as a shim. */
 export const MAX_SHIM_BYTES = 64 * 1024
 
-/** Why a shim's program is not known: Buckle reads no other form, as it never asks cmd.exe what one runs. */
-const UNREAD_SHIM = 'a shim Buckle cannot read'
 /**
- * Why a shim Buckle can read is still not run in its place: it does more than start its program, and Buckle would run
- * the program without that. The owner's ruling of 2026-10-14: a refusal is honest, a silent drop is not.
+ * Why a shim's program is not known: Buckle reads only the shapes real generators write (SHIM_TEMPLATES), as it never
+ * asks cmd.exe what one runs. A shim that sets a variable, passes arguments of its own, or does anything else is refused
+ * this way rather than run without it (the owner's ruling of 2026-10-14: a refusal is honest, a silent drop is not).
  */
-const SETS_VARIABLES = 'a shim that sets environment variables Buckle would not set'
-const PASSES_ARGUMENTS = 'a shim that passes arguments of its own, which Buckle would not pass'
-const OTHER_INTERPRETER = 'a shim that starts its script with a program other than Node.js'
+const UNREAD_SHIM = 'a shim Buckle cannot read'
 const SCRIPT_EXTENSIONS = ['.js', '.mjs', '.cjs']
 
 /**
@@ -341,110 +338,71 @@ function nodeRunning(script: string, platform: NodeJS.Platform): Program | null 
   } catch { return null }
 }
 
-/** A path that starts at a shim's own folder: `%~dp0`, or npm's `%dp0%\`. */
-const SHIM_FOLDER = /^(?:%~dp0|%dp0%\\)/i
-/** Node.js, named bare or by a path, as a shim names the interpreter of its script. */
-const NODE = /(?:^|[\\/])node(?:\.exe)?$/i
-/** npm's `dp0`, set to the shim's own folder, the only value `%dp0%` is read as. */
-const SETS_DP0 = /^set "?dp0=%~dp0"?$/i
+/** A program a shim names beside itself, quoted: no variable, escape, or quote inside the path. */
+const BESIDE = String.raw`([^"%^\r\n]+)`
 
 /**
- * The lines a shim may hold besides its program lines, each read whole once a leading `@` is dropped: those npm, pnpm,
- * and agent-browser's own install write, which find the program and change nothing it sees. `dp0` may be set only to
- * the shim's own folder, PATHEXT only as npm narrows it, and `_prog` to anything, whose use runsNode judges; a probe
- * names a path beside the shim. A comment is read as one, as no caret can reach past it (shimTarget).
+ * The shapes of shim Buckle reads, each matched whole, line by line and in order (review of 2026-10-14: a general
+ * grammar of known lines let a chained command, a label in a block, or a line out of order through). npm's cmd-shim for
+ * a script it runs with Node.js: its head, which sets `dp0` to the shim's folder, the probe for a `node.exe` beside it,
+ * and the line that runs `"%_prog%"` on the script. And the two-line form, `@ECHO off` and the program beside the shim,
+ * which agent-browser's own install writes for its `.exe`. `block` marks the lines inside a parenthesized block, where
+ * no comment may stand.
  */
-const SHIM_LINES = [
-  /^echo off$/i, /^setlocal$/i, /^endlocal$/i, /^goto \w+$/i, /^:\w+$/, /^exit \/b$/i, /^call :\w+$/i, /^rem(?:\s.*)?$/i, /^::.*$/,
-  SETS_DP0, /^set "_prog=[^"%&|<>]*(?:%~?dp0%?[^"&|<>]*)?"$/i, /^set _prog=\S+$/i, /^set "?pathext=%pathext:;\.js;=;%"?$/i,
-  /^if exist "(?:%~dp0|%dp0%)[^"&|<>]*" \($/i, /^\) else \($/i, /^\)$/,
+const SHIM_TEMPLATES: ReadonlyArray<{ lines: readonly RegExp[]; block?: readonly [number, number]; scriptOnly: boolean }> = [
+  {
+    lines: [
+      /^@echo off$/i, /^goto start$/i, /^:find_dp0$/i, /^set dp0=%~dp0$/i, /^exit \/b$/i, /^:start$/i, /^setlocal$/i, /^call :find_dp0$/i,
+      /^if exist "%dp0%\\node\.exe" \($/i, /^set "_prog=%dp0%\\node\.exe"$/i, /^\) else \($/i, /^set "_prog=node"$/i,
+      /^set pathext=%pathext:;\.js;=;%$/i, /^\)$/,
+      new RegExp(String.raw`^endlocal & goto #_undefined_# 2>nul \|\| title %comspec% & "%_prog%"\s+"%dp0%\\${BESIDE}" %\*$`, 'i'),
+    ],
+    block: [8, 13],
+    scriptOnly: true,
+  },
+  { lines: [/^@echo off$/i, new RegExp(String.raw`^"%~dp0${BESIDE}" %\*$`, 'i')], scriptOnly: false },
 ]
-/** A SET or PATH command anywhere a command word can stand, however cmd delimits it: `set/p`, `set,X=`, `IF 1==1 PATH x`. */
-const SETTER = /(?:^|[\s&(|@])(?:set|path)(?=[\s,;=/"]|$)/i
-/** What npm's program line runs before its program, which changes nothing the program sees. */
-const PROGRAM_PREFIXES = [/^endlocal$/i, /^goto #_undefined_# 2>nul \|\| title %comspec%$/i]
+/** A comment: allowed outside a block, and only with no character that could start another command or a block. */
+const SHIM_COMMENT = /^(?:rem(?:\s.*)?|::.*)$/i
+const COMMAND_CHARACTERS = /[&|<>()]/
 
 /**
- * What a shim starts, read from its text, accepted only when Buckle understands every line whole (owner's ruling of
- * 2026-10-14). A caret makes it unread at once: cmd reads one as an escape (`^&`) or a line continuation, which a line
- * by line reading cannot follow. Each other line is a known one (SHIM_LINES), a program line, or the shim is refused:
- * as setting variables Buckle would not set when it holds a SET or PATH command of another form (pnpm's `NODE_PATH`,
- * `set/p`, `dp0` set again), and as unread otherwise (`call`, `cd`). Each program line hands the shim's arguments on
- * (`%*`), after npm's own prefix at most, and its last word starting at the shim's own folder, quoted, is its program:
- * `%~dp0`, or `%dp0%\` once the shim sets `dp0` to it. The last, as the arguments follow it: npm's line runs
- * `"%_prog%"` before the script, pnpm's runs `"%~dp0\node.exe"` before it, and agent-browser's own install writes the
- * native `.exe` alone. Every program line must name the same program, an `.exe`, a `.com`, or a script, with no variable
- * inside the path; otherwise the shim is unread, such as one that runs `/bin/sh`. One that passes arguments of its own
- * (Node.js flags among them), or starts its script with another interpreter than Node.js, is refused as such.
+ * What a shim starts, read from its text: a caret makes it unread at once, as cmd reads one as an escape or a line
+ * continuation; otherwise the text must match one of SHIM_TEMPLATES whole, blank lines aside, with a comment allowed
+ * only outside a block. The program is the path its last line names beside the shim: an `.exe`, a `.com`, or a script,
+ * and only a script in npm's form, which runs it with Node.js.
  */
 function shimTarget(text: string): { relative: string; script: boolean } | { why: string } {
   const unread = { why: UNREAD_SHIM }
   if (text.includes('^')) return unread
   const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-  const kinds = lines.filter(line => !line.includes('%*')).map(lineKind)
-  if (kinds.includes('sets')) return { why: SETS_VARIABLES }
-  if (kinds.includes('unknown')) return unread
-  const commands = lines.filter(line => line.includes('%*')).map(programWords)
-  if (commands.length === 0 || commands.includes(null)) return unread
-  const programs = commands as string[][]
-  const at = programs.map(words => words.findLastIndex(word => word.startsWith('"') && SHIM_FOLDER.test(unquoted(word))))
-  if (at.includes(-1)) return unread
-  const named = programs.map((words, index) => unquoted(words[at[index]!]!))
-  const first = named[0]!
-  if (named.some(path => path !== first) || (/^%dp0%/i.test(first) && !lines.some(line => SETS_DP0.test(withoutAt(line))))) return unread
-  const relative = first.replace(SHIM_FOLDER, '').replace(/^[\\/]+/, '')
-  const script = hasExtension(relative, SCRIPT_EXTENSIONS)
-  if (relative === '' || relative.includes('%') || (!script && !hasExtension(relative, WINDOWS_EXECUTABLE_EXTENSIONS))) return unread
-  for (const [index, words] of programs.entries()) {
-    const target = at[index]!
-    if (target > 1 || words.length !== target + 2 || words[target + 1] !== '%*') return { why: PASSES_ARGUMENTS }
-    if (target === 1 && !script) return unread
-    if (target === 1 && !runsNode(words[0]!, lines)) return { why: OTHER_INTERPRETER }
+  for (const template of SHIM_TEMPLATES) {
+    const named = matchTemplate(lines, template)
+    if (named === null) continue
+    const relative = named.replace(/^[\\/]+/, '')
+    const script = hasExtension(relative, SCRIPT_EXTENSIONS)
+    if (relative === '' || (template.scriptOnly && !script) || (!script && !hasExtension(relative, WINDOWS_EXECUTABLE_EXTENSIONS))) return unread
+    return { relative, script }
   }
-  return { relative, script }
+  return unread
 }
 
-function withoutAt(line: string): string {
-  return line.replace(/^@/, '').trim()
-}
-
-/** A shim line that is not a program line: one Buckle knows whole, a SET or PATH command of another form, or unknown. */
-function lineKind(line: string): 'known' | 'sets' | 'unknown' {
-  if (SHIM_LINES.some(pattern => pattern.test(withoutAt(line)))) return 'known'
-  return SETTER.test(line) ? 'sets' : 'unknown'
-}
-
-/**
- * The words of a program line's command, quotes kept and a leading `@` dropped, or null where the line is not one Buckle
- * reads whole: a command before it other than npm's prefix (PROGRAM_PREFIXES), or a pipe or redirection in it.
- */
-function programWords(line: string): string[] | null {
-  const commands: string[][] = [[]]
-  let word = ''
-  let quoted = false
-  const end = (): void => { if (word) commands.at(-1)!.push(word); word = '' }
-  for (const character of line) {
-    if (character === '"') quoted = !quoted
-    if (!quoted && character === '&') { end(); commands.push([]); continue }
-    if (!quoted && /\s/.test(character)) { end(); continue }
-    word += character
+/** The path a shim's lines name beside it where they are `template` whole and in order, comments aside; null otherwise. */
+function matchTemplate(lines: readonly string[], template: (typeof SHIM_TEMPLATES)[number]): string | null {
+  let at = 0
+  let named: string | null = null
+  for (const line of lines) {
+    const inBlock = template.block !== undefined && at > template.block[0] && at <= template.block[1]
+    if (SHIM_COMMENT.test(line)) {
+      if (inBlock || COMMAND_CHARACTERS.test(line)) return null
+      continue
+    }
+    const match = template.lines[at]?.exec(line)
+    if (!match) return null
+    if (at === template.lines.length - 1) named = match[1] ?? null
+    at++
   }
-  end()
-  const words = commands.pop()!.map((value, index) => index === 0 ? value.replace(/^@/, '') : value).filter(Boolean)
-  if (commands.some(prefix => !PROGRAM_PREFIXES.some(pattern => pattern.test(prefix.join(' '))))) return null
-  return words.some(value => !value.startsWith('"') && /[|<>]/.test(value)) ? null : words
-}
-
-function unquoted(word: string): string {
-  return word.replace(/^"(.*)"$/, '$1')
-}
-
-/** Whether the interpreter a shim names before its script is Node.js: by name or path, or npm's `%_prog%` set only to it. */
-function runsNode(word: string, lines: readonly string[]): boolean {
-  const program = unquoted(word)
-  if (program.toLowerCase() !== '%_prog%') return NODE.test(program)
-  const values = lines.map(line => /^set "?_prog=([^"]*)"?$/i.exec(withoutAt(line))?.[1]).filter(value => value !== undefined)
-  return values.length > 0 && values.every(value => NODE.test(value.trim()))
+  return at === template.lines.length ? named : null
 }
 
 /** A file's text, or null where it cannot be read or holds more than `limit` bytes. */

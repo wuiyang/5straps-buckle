@@ -212,9 +212,28 @@ describe('a Windows shim, imitated', () => {
     expect(resolve(shim)).toEqual({ path: process.execPath, argv0: process.execPath, args: [join(at, 'node_modules/agent-browser/bin/agent-browser.js')] })
   })
 
-  it('reads pnpm\'s shim, whose two lines name the same script', () => {
-    const { at, shim } = prefix({ shim: PNPM_SHIM('global\\5\\node_modules\\agent-browser\\bin\\agent-browser.js', false), files: ['global/5/node_modules/agent-browser/bin/agent-browser.js'] })
-    expect(resolve(shim)).toEqual({ path: process.execPath, argv0: process.execPath, args: [join(at, 'global/5/node_modules/agent-browser/bin/agent-browser.js')] })
+  // Review of 2026-10-14: Buckle reads npm's shim and the two-line form alone; pnpm's sets NODE_PATH by default.
+  it('refuses pnpm\'s shim, with NODE_PATH or without, as no shape Buckle reads', () => {
+    for (const nodePath of [false, true]) {
+      const { shim } = prefix({ shim: PNPM_SHIM('global\\5\\node_modules\\agent-browser\\bin\\agent-browser.js', nodePath), files: ['global/5/node_modules/agent-browser/bin/agent-browser.js'] })
+      expect(resolve(shim)).toEqual(refusal('agent-browser.cmd', UNREAD))
+    }
+  })
+
+  it('reads npm\'s shim with comments outside its block, and refuses one with a comment inside it or a command in one', () => {
+    const file = 'node_modules/agent-browser/bin/agent-browser.js'
+    const npm = NPM_SHIM('node', 'node_modules\\agent-browser\\bin\\agent-browser.js')
+    const commented = npm.replace('GOTO start\r\n', 'GOTO start\r\nREM written by npm\r\n:: a label comment\r\n')
+    const read = prefix({ shim: commented, files: [file] })
+    expect(resolve(read.shim)).toEqual({ path: process.execPath, argv0: process.execPath, args: [join(read.at, file)] })
+    for (const text of [
+      npm.replace('  SET "_prog=node"\r\n', '  SET "_prog=node"\r\n  REM inside the block\r\n'),
+      npm.replace('GOTO start\r\n', 'GOTO start\r\nREM a & b\r\n'),
+      npm.replace('GOTO start\r\n', 'GOTO start\r\n:: (x)\r\n'),
+    ]) {
+      const { shim } = prefix({ shim: text, files: [file] })
+      expect(resolve(shim), text).toEqual(refusal('agent-browser.cmd', UNREAD))
+    }
   })
 
   // The owner's ruling of 2026-10-14: a shim that does more than start its program is refused, never run without the rest.
@@ -222,13 +241,13 @@ describe('a Windows shim, imitated', () => {
     const script = 'node_modules\\agent-browser\\bin\\agent-browser.js'
     const files = ['node_modules/agent-browser/bin/agent-browser.js', 'node_modules/agent-browser/bin/agent-browser-win32-x64.exe']
     const refusals: Array<[string, string]> = [
-      [PNPM_SHIM(script, true), 'a shim that sets environment variables Buckle would not set'],
-      [`@ECHO off\r\nSET NODE_OPTIONS=--inspect\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n`, 'a shim that sets environment variables Buckle would not set'],
-      [`@ECHO off\r\nPATH %~dp0tools;%PATH%\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n`, 'a shim that sets environment variables Buckle would not set'],
-      [NPM_SHIM('node', script).replace('"%_prog%"  ', '"%_prog%" --max-old-space-size=4096 '), 'a shim that passes arguments of its own, which Buckle would not pass'],
-      [`@ECHO off\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" --headed %*\r\n`, 'a shim that passes arguments of its own, which Buckle would not pass'],
-      [NPM_SHIM('bun', script), 'a shim that starts its script with a program other than Node.js'],
-      [`@ECHO off\r\n"%~dp0node.exe" "%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n`, 'a shim Buckle cannot read'],
+      [PNPM_SHIM(script, true), UNREAD],
+      [`@ECHO off\r\nSET NODE_OPTIONS=--inspect\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n`, UNREAD],
+      [`@ECHO off\r\nPATH %~dp0tools;%PATH%\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n`, UNREAD],
+      [NPM_SHIM('node', script).replace('"%_prog%"  ', '"%_prog%" --max-old-space-size=4096 '), UNREAD],
+      [`@ECHO off\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" --headed %*\r\n`, UNREAD],
+      [NPM_SHIM('bun', script), UNREAD],
+      [`@ECHO off\r\n"%~dp0node.exe" "%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n`, UNREAD],
     ]
     for (const [text, why] of refusals) {
       const { shim } = prefix({ shim: text, files })
@@ -289,7 +308,7 @@ describe('a Windows shim, imitated', () => {
     const other = '"%~dp0node_modules\\agent-browser\\bin\\other.exe"'
     const files = ['node_modules/agent-browser/bin/agent-browser-win32-x64.exe', 'node_modules/agent-browser/bin/other.exe']
     const shim = (...lines: string[]) => ['@ECHO off', ...lines, ''].join('\r\n')
-    const sets = 'a shim that sets environment variables Buckle would not set'
+    const sets = UNREAD
     const cases: Array<[string, string]> = [
       [shim('set/p NODE_OPTIONS=<"%~dp0o"', `${exe} %*`), sets],
       [shim('SET/A NODE_OPTIONS=1', `${exe} %*`), sets],
@@ -308,6 +327,16 @@ describe('a Windows shim, imitated', () => {
       [shim('call "%~dp0setup.cmd"', `${exe} %*`), UNREAD],
       [shim('cd /d "%~dp0"', `${exe} %*`), UNREAD],
       [shim(`echo hi & ${exe} %*`), UNREAD],
+      // Re-check of 2026-10-14: an unquoted _prog line chaining commands, a label inside a block, and lines cmd never
+      // reaches or reaches out of order.
+      [shim('SET dp0=%~dp0', '@SET _prog=x&set,dp0=%~dp0..\\other\\', '"%dp0%\\node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*'), UNREAD],
+      [shim('@SET _prog=a&set,NODE_OPTIONS=--inspect', `${exe} %*`), UNREAD],
+      [shim(`@SET _prog=a&${other}`, `${exe} %*`), UNREAD],
+      [shim(`IF EXIST ${other} (`, '::a', `::b & ${other}`, `${exe} %*`, ')'), UNREAD],
+      [shim('EXIT /b', `${exe} %*`), UNREAD],
+      [shim('GOTO end', `${exe} %*`, ':end'), UNREAD],
+      [shim('"%dp0%\\node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*', 'SET dp0=%~dp0'), UNREAD],
+      [`${exe} %*\r\n`, UNREAD],
     ]
     for (const [text, why] of cases) {
       const { shim: path } = prefix({ shim: text, files })
