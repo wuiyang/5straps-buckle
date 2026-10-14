@@ -57,6 +57,13 @@ const GlobalEntrySchema = z.object({
   args: z.string(),
 })
 
+const UnansweredEntrySchema = z.object({
+  id: z.number().int().positive(),
+  tool: z.string(),
+  /** Its arguments, hashed as an entry's are. */
+  args: z.string(),
+})
+
 const JournalSchema = z.object({
   version: z.literal(1),
   key: z.string().regex(/^[0-9a-f]{64}$/),
@@ -84,12 +91,19 @@ const JournalSchema = z.object({
    * final review of 0.1.4, finding code index.ts:363).
    */
   globals: z.array(GlobalEntrySchema).optional(),
+  /**
+   * Each tool call a run made that no entry answers, one that asked, was cut before it ran, or never started: its
+   * number, tool, and arguments' fingerprint, no result, kept apart from the entries and their bound. A replay makes
+   * it live again only with the same fingerprint (recheck 4 of the final review of 0.1.4, finding code index.ts:444).
+   */
+  unanswered: z.array(UnansweredEntrySchema).optional(),
   expiresAt: z.number(),
 })
 
 export type Journal = z.infer<typeof JournalSchema>
 export type JournalEntry = z.infer<typeof EntrySchema>
 export type GlobalEntry = z.infer<typeof GlobalEntrySchema>
+export type UnansweredEntry = z.infer<typeof UnansweredEntrySchema>
 export type RunTool = z.infer<typeof RunToolSchema>
 
 /** Where a workspace's journals are kept: `<state>/code-journal/<workspace key>`, under the state every sandbox hides. */

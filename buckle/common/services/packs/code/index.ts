@@ -9,7 +9,7 @@ import { logger } from '../../../runtime/log.js'
 import { REQUEST_ALREADY_EXECUTED, requestFingerprint } from '../../invocation/executions.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { codeRunDescription, declare } from './declarations.js'
-import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, type GlobalEntry, type Journal, type JournalEntry, type JournalStore, type RunTool } from './journal.js'
+import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, type GlobalEntry, type Journal, type JournalEntry, type JournalStore, type RunTool, type UnansweredEntry } from './journal.js'
 
 // Code mode (owner decision D82, proposed as BUCKLE-D22): an agent's script runs in a VM that can do nothing but call
 // this workspace's other tools, each call judged, approved, and audited as a direct call, and only what the script
@@ -268,6 +268,13 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   // a replay answers a global only on the number and with the arguments its first run had, and a call that lands on
   // another's number is refused before anything runs (recheck 2, finding code index.ts:363). A global's answer keeps
   // the script's clock where the result before it left it, so the replay reads the same time.
+  // Every tool call a run made that got no result, one that asked, was cut before it ran, or never started: recorded by
+  // number, tool, and fingerprint, so a replay makes it live again only as the same call, and a call that a changed
+  // answer moves onto its number is refused before it runs (recheck 4 of the final review of 0.1.4, findings code
+  // index.ts:444, :377, and :497).
+  const replayUnanswered = journal?.unanswered ?? []
+  const unansweredById = new Map(replayUnanswered.map(entry => [entry.id, entry]))
+  const toolCallsMade = new Map<number, UnansweredEntry>()
   const replayGlobals = journal?.globals ?? []
   const globalById = new Map(replayGlobals.map(entry => [entry.id, entry]))
   const globals: GlobalEntry[] = [...replayGlobals]
@@ -420,6 +427,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       // A tool call on a number the first run gave a global, or a global with other arguments than it had there.
       const recordedGlobal = globalById.get(call.id)
       if (recordedGlobal && (recordedGlobal.name !== call.name || recordedGlobal.args !== fingerprint || call.target !== 'global')) return diverge()
+      // A number the first run gave a call that got no result: only that call, made again, goes on.
+      const unanswered = unansweredById.get(call.id)
+      if (unanswered && (unanswered.tool !== call.name || unanswered.args !== fingerprint || call.target !== 'tool')) return diverge()
       const tooLarge = () => failure(REQUEST_TOO_LARGE, `This call's arguments are ${bytes} bytes as JSON, past the ${input.argumentBytes} a request to this node may carry; pass less, or split the call`)
       if (call.target === 'global') {
         if (globalCalls > MAX_GLOBAL_CALLS) {
@@ -428,6 +438,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
         }
         return answerGlobal(call, recordedGlobal, fingerprint, bytes !== null ? tooLarge() : global(call.name, call.args))
       }
+      toolCallsMade.set(call.id, { id: call.id, tool: call.name, args: fingerprint })
       if (halted()) {
         skipped.add(call.id)
         return
@@ -493,9 +504,16 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   // cannot resume but none of its calls runs again (final review of 0.1.4, finding docs code-mode-02.md:19). False
   // where even the stubs pass it, and then none is left behind. `kept` writes over a record that stays as it was
   // made, its VM and its expiry, adding only the calls this send ran.
+  // The calls of the first run and this send that no entry answers, each once, this send's own spelling first.
+  const unansweredBeside = (entries: readonly JournalEntry[]): UnansweredEntry[] => {
+    const answered = new Set(entries.map(entry => entry.id))
+    const byId = new Map([...replayUnanswered, ...toolCallsMade.values()].map(entry => [entry.id, entry]))
+    return [...byId.values()].filter(entry => !answered.has(entry.id)).sort((left, right) => left.id - right.id)
+  }
   const write = (named: readonly string[], entries: JournalEntry[], kept?: Journal) => journals.write({
     key, startedAt, seed, ...(kept ? (kept.vm === undefined ? {} : { vm: kept.vm }) : vmName === undefined ? {} : { vm: vmName }), script: input.script,
     ...(named.length > 0 ? { asks: [...named] } : {}), ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries, globals,
+    unanswered: unansweredBeside(entries),
   }, kept ? { expiresAt: kept.expiresAt } : {})
   const keepWhole = async (named: readonly string[]): Promise<boolean> => !record.overflowed && await write(named, record.whole())
   const keepStubs = async (named: readonly string[]): Promise<boolean> => {

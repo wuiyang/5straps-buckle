@@ -1073,6 +1073,49 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(await codeRun(directory, async call => ok(call, 'opened'))(script)).toMatchObject({ ok: true, value: big.length })
   }, 120_000)
 
+  // Recheck 4 of the final review of 0.1.4, findings code index.ts:444, :377, and :497: every number the first run gave
+  // out is recorded, a call that asked or was cut by its tool and fingerprint alone, so a call that a changed answer
+  // moves onto it is refused before it runs, and the call itself, made again, still runs once.
+  describe('a number the first run gave a call that got no result', () => {
+    const pushes = (calls: NestedCall[]) => calls.filter(call => (call.args as { push?: boolean }).push === true).length
+
+    it('refuses a write a handled stub moves onto an asked call\'s number, before it runs', async () => {
+      const directory = scratch()
+      const script = 'const r = await tools.echo({ big: true }).catch(() => null); await Promise.all([r ? tools.gate({}) : null, tools.echo({ push: true })]); return "end"'
+      const first = vi.fn(async (call: NestedCall) => call.tool === 'gate' ? ask(call) : ok(call, 'x'.repeat(5_000)))
+      await expect(codeRun(directory, first, { journalBytes: 4_096 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE })
+      expect(kept(directory).map(journal => journal.unanswered?.map(entry => [entry.id, entry.tool]))).toEqual([[[2, 'gate']]])
+
+      const second = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
+      await expect(codeRun(directory, second, { journalBytes: 4_096 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      expect([pushes(first.mock.calls.map(([call]) => call)), second.mock.calls.length]).toEqual([1, 0])
+    })
+
+    it('refuses a write a declaration rendered otherwise after an upgrade moves onto an asked call\'s number', async () => {
+      const directory = scratch()
+      const script = 'const d = await describeTool("echo"); await Promise.all([d.includes("MARKER") ? null : tools.gate({}), tools.echo({ push: true })]); return "end"'
+      const first = vi.fn(async (call: NestedCall) => call.tool === 'gate' ? ask(call) : ok(call, 'pushed'))
+      await expect(codeRun(directory, first)(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+
+      // The same VM, its name unchanged, with a renderer that now declares the tool otherwise.
+      const real = createPiCodemodeVm()
+      const upgraded: ScriptVm = { ...real, declare: tools => `${real.declare(tools)}\n// MARKER` }
+      const second = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
+      await expect(codeRun(directory, second, { vm: upgraded })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      expect([pushes(first.mock.calls.map(([call]) => call)), second.mock.calls.length]).toEqual([1, 0])
+    })
+
+    it('runs the asked call once when the same call is made again on its number', async () => {
+      const directory = scratch()
+      const script = 'await tools.echo({}); await tools.gate({}); return "end"'
+      await expect(codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'echoed'))(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+      expect(kept(directory).map(journal => journal.unanswered?.map(entry => [entry.id, entry.tool]))).toEqual([[[2, 'gate']]])
+      const resumed = vi.fn(async (call: NestedCall) => ok(call, 'opened'))
+      expect(await codeRun(directory, resumed)(script)).toMatchObject({ ok: true, value: 'end' })
+      expect(resumed.mock.calls.map(([call]) => [call.id, call.tool])).toEqual([[2, 'gate']])
+    })
+  })
+
   // Recheck 3 of the final review of 0.1.4, finding code index.ts:483: a call the first run cut before it ran is made
   // live by the next send, which then diverges on a stub the script handled. The record it keeps gains that call and
   // keeps its expiry, so the send after a restart replays it rather than running it a second time.
