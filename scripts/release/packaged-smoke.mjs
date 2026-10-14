@@ -22,6 +22,8 @@ const environment = { PATH: process.env.PATH, HOME: root, TMPDIR: root, SystemRo
   npm_config_userconfig: join(root, 'npmrc'), npm_config_audit: 'false', npm_config_fund: 'false' }
 // Strings only Buckle's common code or @5straps/runtime holds: in .output they would mean a bundled second copy.
 const BUNDLED_ELSEWHERE = ['This process already has its requester bound', 'Approval was declined', 'A cli:call listener is already registered', 'No operation scope is active']
+/** A script that reads a file through fs_read, so code mode's worker and QuickJS binary load from the installed tarball (owner decision D82). */
+const CODE_SCRIPT = 'const read = await tools.fs_read({ path: "demo.txt" }); text("read " + read.size); return read.content'
 
 let service
 let serviceOutput = ''
@@ -210,9 +212,6 @@ async function checkApprovalAndAudit() {
   assert(audit.entries.some(entry => entry.tool === 'fs_write' && entry.outcome === 'ok'))
   assert.match(cli(['log', '--json']), /fs_write/)
 }
-
-/** A script that reads a file through fs_read, so code mode's worker and QuickJS binary load from the installed tarball (owner decision D82). */
-const CODE_SCRIPT = 'const read = await tools.fs_read({ path: "demo.txt" }); text("read " + read.size); return read.content'
 
 /** One code_run's output as the node returned it: the script ran, called fs_read once, and returned the file. */
 function assertCodeRun(output, expected) {
