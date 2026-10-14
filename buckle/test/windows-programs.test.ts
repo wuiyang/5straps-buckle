@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -19,7 +19,8 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function scratch(): string {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-windows-programs-'))
+  // A real path: a program resolves to its real path, and on macOS the temp folder is reached through a link.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-windows-programs-')))
   roots.push(root)
   return root
 }

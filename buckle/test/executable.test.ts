@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { executableCandidates, findExecutable, findProgram, isPathReference, MAX_SHIM_BYTES, npmGlobalBin, ownerPlaces, resolveProgram, rootsOf, trustedSearchPath, type UntrustedRoots } from '../common/domain/executable.js'
 
-const root = mkdtempSync(join(tmpdir(), 'buckle-exec-'))
+// A real path: a program resolves to its real path, and on macOS the temp folder is reached through a link.
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-exec-')))
 
 function writeExecutable(name: string): string {
   const path = join(root, name)
