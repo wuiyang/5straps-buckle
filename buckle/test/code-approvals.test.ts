@@ -691,7 +691,12 @@ describe('the replay journal', () => {
 
     const after = await open(config)
     const prepared = [vi.spyOn(after.registry().get('fs_read'), 'prepare'), vi.spyOn(after.registry().get('fs_find_names'), 'prepare')]
-    expect(await send(after, script, { timeoutMs: 20_000 })).toMatchObject({ outcome: 'ok', output: { ok: false, error: { kind: 'script', message: expect.stringContaining('REQUEST_ALREADY_EXECUTED') } } })
+    // Recheck of the final review of 0.1.4, finding code index.ts:480: the record outlives the send that ended on its
+    // stub, so every unchanged send in its ten minutes runs nothing, the third as the second.
+    for (let again = 0; again < 2; again++) {
+      expect(await send(after, script, { timeoutMs: 20_000 })).toMatchObject({ outcome: 'ok', output: { ok: false, error: { kind: 'script', message: expect.stringContaining('REQUEST_ALREADY_EXECUTED') } } })
+      expect(journals(root)).toEqual([file])
+    }
     for (const spy of prepared) expect(spy).not.toHaveBeenCalled()
     await after.history.close()
   }, 120_000)

@@ -153,6 +153,11 @@ const RAN_WHEN_CUT = failure(REQUEST_ALREADY_EXECUTED, 'This call of the script 
  */
 const RESULT_DROPPED = failure(REQUEST_ALREADY_EXECUTED, 'This call of the script ran, but the results of the script\'s calls passed the 32 MiB Buckle keeps to resume a script, so its result was not kept, and Buckle did not run it again. Change the script, even by a comment, to run it from its start')
 
+/** Whether a recorded outcome says the call ran before and was not run again: RESULT_DROPPED, RAN_WHEN_CUT, or the like. */
+function ranBefore(outcome: ScriptVmOutcome): boolean {
+  return !outcome.ok && outcome.properties?.code === REQUEST_ALREADY_EXECUTED
+}
+
 /** A call as a stub: a result is dropped for RESULT_DROPPED; a failure holds no result, and stays as it was. */
 function stubOf(entry: JournalEntry): JournalEntry {
   return entry.outcome.ok ? { ...entry, outcome: RESULT_DROPPED } : entry
@@ -287,6 +292,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   let spun: string | undefined
   let broken: { error: unknown } | undefined
   let diverged = false
+  // Whether the replay handed the script a call that ran before as REQUEST_ALREADY_EXECUTED, its result dropped or its
+  // effects unknown: the script is then not done with its calls, however it ends.
+  let handedStub = false
   let vmName: string | undefined
   const stop = new AbortController()
   const cancel = new AbortController()
@@ -342,7 +350,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const flush = () => {
     for (let entry = replay[replayed]; entry !== undefined && issued.has(entry.id); entry = replay[replayed]) {
       replayed++
-      if (!stopping()) hand(entry.seq, entry.now, entry.id, entry.outcome)
+      if (stopping()) continue
+      hand(entry.seq, entry.now, entry.id, entry.outcome)
+      if (ranBefore(entry.outcome)) handedStub = true
     }
   }
   const diverge = () => {
@@ -516,7 +526,13 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     // same script sent again within ten minutes, after a restart too, goes on where it stopped and no call runs twice
     // (review of the code-mode slice, finding approvals-replay 240); past its bound it cannot go on, and its calls are
     // answered by their stubs (final review of 0.1.4, finding docs code-mode-02.md:19).
-    if (result.ok || result.error?.kind === 'script') {
+    // A script handed a stub, which nearly always throws on it, keeps its record until it expires, and Buckle keeps
+    // its own memory of the calls, so every unchanged send in those ten minutes, not only the next, runs none of the
+    // calls again; one that went on to make new calls has them recorded too (recheck of the final review of 0.1.4,
+    // finding code index.ts:480). Changing the script runs it from its start.
+    if ((result.ok || result.error?.kind === 'script') && handedStub) {
+      if (record.count > 0) await keep(pendingAsks()).catch((error: unknown) => { logger.warn('Could not keep the replay record of a script handed a call that ran; sent again, it may run its new calls again', { error: error instanceof Error ? error.message : 'Unknown error' }) })
+    } else if (result.ok || result.error?.kind === 'script') {
       journals.remove(key)
       context.forgetNested?.([...replay.map(entry => entry.id), ...made])
     } else if (replay.length + record.count > 0) {
