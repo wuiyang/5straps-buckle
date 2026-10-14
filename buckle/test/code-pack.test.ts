@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +7,7 @@ import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import type { NestedCall, ToolContext } from '../common/domain/tool.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
-import { CODE_CALL_LIMIT, createCodePack, ERROR_CHARS, MAX_IN_FLIGHT, MAX_NESTED_CALLS, OUTPUT_CHARS, REQUEST_TOO_LARGE, SANDBOX_FAILED } from '../common/services/packs/code/index.js'
+import { CODE_CALL_LIMIT, CODE_VM_BUSY, createCodePack, ERROR_CHARS, MAX_IN_FLIGHT, MAX_NESTED_CALLS, OUTPUT_CHARS, REQUEST_TOO_LARGE, SANDBOX_FAILED } from '../common/services/packs/code/index.js'
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -325,6 +325,21 @@ describe('the limits on a script\'s calls', () => {
     expect(JSON.stringify(result)).not.toContain('/opt')
     expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ message: expect.stringContaining('/opt/buckle') }))
     warn.mockRestore()
+  })
+
+  // Review of the code-mode slice, finding tests 195: a full VM pool is a retryable refusal, and touches no journal.
+  it(`answers ${CODE_VM_BUSY}, retryable, when the VM takes no more scripts, and leaves the script's journal alone`, async () => {
+    const vm: ScriptVm = { declare: () => '', identifier: name => name, start: () => ({ busy: 'every slot is taken' }) }
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-busy-'))
+    roots.push(directory)
+    const key = 'c'.repeat(64)
+    const journal = join(directory, `${key}.json`)
+    writeFileSync(journal, JSON.stringify({ version: 1, key, startedAt: 1, seed: 1, tools: [], entries: [], expiresAt: Date.now() + 60_000 }))
+    const pack = createCodePack({ vm, reachableTools: () => [echo], journalDirectory: directory, unavailableReason: null })
+    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: 60_000, signal: new AbortController().signal, nestedKey: key, invokeNested: vi.fn(), forgetNested: () => {} }
+
+    await expect(pack.tools[0]!.prepare({ script: 'return 1' }).execute(context)).rejects.toMatchObject({ code: CODE_VM_BUSY, retryable: true, message: 'every slot is taken' })
+    expect(existsSync(journal)).toBe(true)
   })
 
   it('refuses arguments that are not one object inside the script, without a call', async () => {

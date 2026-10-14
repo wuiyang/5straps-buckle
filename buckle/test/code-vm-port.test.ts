@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createPiCodemodeVm, MAX_LIVE_VMS } from '../common/adapters/script-vm/pi-codemode.js'
+import { createPiCodemodeVm, MAX_LIVE_VMS, MAX_LIVE_VMS_PER_WORKSPACE } from '../common/adapters/script-vm/pi-codemode.js'
 import { keepEndsOfLines, keepEndsOfText } from '../common/domain/script-output.js'
 import type { ScriptVmCall, ScriptVmRun, ScriptVmRunInput } from '../common/types/ports/script-vm.js'
 
@@ -96,15 +96,26 @@ describe('the pi-codemode script VM', () => {
     expect(result.output).toEqual([{ kind: 'text', text: 'before' }])
   })
 
-  it(`holds at most ${MAX_LIVE_VMS} live VMs: another is refused at once, and a slot frees once a VM has stopped`, async () => {
-    const controllers = Array.from({ length: MAX_LIVE_VMS }, () => new AbortController())
-    const runs = controllers.map(controller => started(vm.start(input('await tools.wait({})', { tools: [{ name: 'wait', jsName: 'wait', description: 'Waits' }], signal: controller.signal }))))
+  // Review of the code-mode slice, finding sandbox-boundary pi-codemode.ts:46: a workspace's share within the process's.
+  it(`holds at most ${MAX_LIVE_VMS} live VMs, ${MAX_LIVE_VMS_PER_WORKSPACE} of them one workspace's: another is refused at once, and a slot frees once a VM has stopped`, async () => {
+    const workspaces = ['one', 'two', 'three'].map(workspace => createPiCodemodeVm({ workspace }))
+    const controllers: AbortController[] = []
+    const hold = (on: ReturnType<typeof createPiCodemodeVm>) => {
+      const controller = new AbortController()
+      controllers.push(controller)
+      return on.start(input('await tools.wait({})', { tools: [{ name: 'wait', jsName: 'wait', description: 'Waits' }], signal: controller.signal }))
+    }
+    const runs = [hold(workspaces[0]!), hold(workspaces[0]!)].map(started)
 
-    const refused = vm.start(input('return 1'))
-    expect(refused).toEqual({ busy: expect.stringContaining(`${MAX_LIVE_VMS} scripts already run`) })
+    expect(hold(workspaces[0]!)).toEqual({ busy: expect.stringContaining(`${MAX_LIVE_VMS_PER_WORKSPACE} scripts already run in this workspace`) })
+    runs.push(...[hold(workspaces[1]!), hold(workspaces[1]!)].map(started))
+    expect(workspaces[2]!.start(input('return 1'))).toEqual({ busy: expect.stringContaining(`${MAX_LIVE_VMS} scripts already run in this Buckle process`) })
+    // The same workspace's next adapter, as after a reload, shares its count.
+    expect(createPiCodemodeVm({ workspace: 'one' }).start(input('return 1'))).toMatchObject({ busy: expect.any(String) })
+
     controllers[0]!.abort()
     await runs[0]!.result
-    const next = started(vm.start(input('return 1')))
+    const next = started(workspaces[0]!.start(input('return 1')))
     expect((await next.result).value).toBe(1)
     for (const controller of controllers) controller.abort()
     await Promise.all(runs.map(run => run.result))

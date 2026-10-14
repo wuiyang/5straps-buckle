@@ -13,11 +13,18 @@ import type { ScriptVm, ScriptVmCallRecord, ScriptVmOutputItem, ScriptVmResult, 
 const PACKAGE = '@earendil-works/pi-codemode'
 /** VMs alive in this process at once, each a worker thread with its own QuickJS heap (D82 brief, point 2). */
 export const MAX_LIVE_VMS = 4
+/**
+ * VMs one workspace holds at once, within MAX_LIVE_VMS, so one workspace's agent cannot take every slot and lock code
+ * mode out of the node's other workspaces (review of the code-mode slice, finding sandbox-boundary pi-codemode.ts:46).
+ */
+export const MAX_LIVE_VMS_PER_WORKSPACE = 2
 
 /** Where the installed package's worker file and the QuickJS binary are, found once per process. */
 interface Installed { workerUrl: URL; wasmPath: string }
 let installed: Installed | undefined
 let live = 0
+/** Live VMs by the workspace they run for, beside the process's count; kept across a workspace's reloads. */
+const liveBy = new Map<string | symbol, number>()
 
 /**
  * The package's own files, resolved against where it is installed rather than beside the module that starts a VM,
@@ -38,14 +45,25 @@ function locate(): Installed {
   return installed
 }
 
-export function createPiCodemodeVm(): ScriptVm {
+/** One workspace's VM: its runs count against the workspace's share as well as the process's; its own share when unnamed. */
+export function createPiCodemodeVm(options: { workspace?: string } = {}): ScriptVm {
+  const share = options.workspace ?? Symbol('script vm')
   return {
     declare: tools => renderDeclarations({ tools: tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema, execute: unused })) }),
     identifier: toCodemodeIdentifier,
     start(input) {
       if (live >= MAX_LIVE_VMS) return { busy: `${MAX_LIVE_VMS} scripts already run in this Buckle process; retry once one has finished` }
+      const mine = liveBy.get(share) ?? 0
+      if (mine >= MAX_LIVE_VMS_PER_WORKSPACE) return { busy: `${MAX_LIVE_VMS_PER_WORKSPACE} scripts already run in this workspace; retry once one has finished` }
       live++
-      let release = () => { live--; release = () => {} }
+      liveBy.set(share, mine + 1)
+      let release = () => {
+        live--
+        const left = (liveBy.get(share) ?? 1) - 1
+        if (left > 0) liveBy.set(share, left)
+        else liveBy.delete(share)
+        release = () => {}
+      }
       try {
         const files = locate()
         const sandbox = new CodemodeSandbox({ wasm: loadQuickJSWasm(files.wasmPath), workerUrl: files.workerUrl, memoryLimitBytes: input.limits.memoryBytes })

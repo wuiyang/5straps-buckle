@@ -179,7 +179,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   // Built whether or not it may run, so `buckle manifest` explains a withheld one. Never withheld for want of an
   // operating-system sandbox: its VM has no files, network, processes, timers, or modules (owner decision D82).
   packs.push(createCodePack({
-    vm: options.scriptVm ?? createPiCodemodeVm(),
+    vm: options.scriptVm ?? createPiCodemodeVm({ workspace: workspaceStateKey(options.cwd) }),
     reachableTools: options.reachableTools ?? (() => []),
     ...(options.maxRequestBytes === undefined ? {} : { maxRequestBytes: options.maxRequestBytes }),
     journalDirectory: join(options.stateDirectory, 'code-journal', workspaceStateKey(options.cwd)),
