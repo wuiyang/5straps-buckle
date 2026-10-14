@@ -8,6 +8,7 @@ import { findExecutable, ownerPlaces, placesOnTheWay, resolveProgram, rootsOf, r
 import type { Pack } from '../common/domain/pack.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { BROWSER_UNTRUSTED } from '../common/services/packs/browser/index.js'
+import { chooseBrowser } from '../common/services/packs/browser/mode.js'
 import { createBuiltinPacks } from '../common/services/packs/index.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
@@ -165,7 +166,7 @@ describe('a program or PATH entry on a subst drive, imitated', () => {
   it('drops each PATH entry the drive leads into the workspace or onto a share, its root too, and keeps one outside every root', () => drives(() => {
     expect(trustedSearchPath('P:\\node_modules\\.bin;P:\\;S:\\;Q:\\', { untrustedRoots: workspace }, 'win32', subst)).toBe('Q:\\')
     // A browser profile folder is judged by the same places.
-    expect(placesOnTheWay('P:/profile', 'win32', subst)).toContain('C:/Users/me/projects/app/profile')
+    expect(placesOnTheWay('P:/profile', 'win32', subst).places).toContain('C:/Users/me/projects/app/profile')
   }))
 })
 
@@ -189,8 +190,26 @@ it('judges a link the walk passes through a subst drive by its real path, the sa
     for (const spelling of ['C:\\Users\\me\\projects\\app', 'P:\\app']) {
       expect(resolveProgram('rg', { untrustedRoots: workspace, lookup: lookupFrom({ rg: `${spelling}\\node_modules\\.bin\\rg.exe` }), platform: 'win32', storedPath: subst })).toEqual(refused)
       expect(trustedSearchPath(`${spelling}\\node_modules\\.bin`, { untrustedRoots: workspace }, 'win32', subst)).toBe('')
-      expect(placesOnTheWay(`${spelling.replaceAll('\\', '/')}/profile`, 'win32', subst)).toContain('C:/Users/me/projects/app/profile')
+      expect(placesOnTheWay(`${spelling.replaceAll('\\', '/')}/profile`, 'win32', subst).places).toContain('C:/Users/me/projects/app/profile')
     }
+  } finally { process.chdir(cwd) }
+})
+
+// Recheck 3 of the final review of 0.1.4, finding executable 485: a profile that is a link to a drive that is not
+// there has no real landing place. The folder handed on is that place or nothing, never the link's own place, which
+// Chrome would walk again; the profile is refused as a missing one is.
+it('hands on no folder for a profile whose link leads to a drive that is not there, and refuses it as missing', () => {
+  const root = scratch()
+  mkdirSync(join(root, 'C:/Users/me/AppData'), { recursive: true })
+  symlinkSync('Q:/profile', join(root, 'C:/Users/me/AppData/prof'))
+  const cwd = process.cwd()
+  process.chdir(root)
+  try {
+    const walked = placesOnTheWay('C:/Users/me/AppData/prof', 'win32', path => path)
+    expect(walked.landing).toBeNull()
+    expect(walked.places).toContain('Q:/profile')
+    expect(chooseBrowser({ profile: 'C:\\Users\\me\\AppData\\prof', untrusted: { untrustedRoots: [], rootsUnknown: null }, protectedRoots: [], platform: 'win32', storedPath: path => path }))
+      .toEqual({ refusal: 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first' })
   } finally { process.chdir(cwd) }
 })
 

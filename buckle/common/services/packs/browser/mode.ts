@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { posix, win32 } from 'node:path'
 import { ARGS_UNTRUSTED, browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
-import { placesOnTheWay, type UntrustedRoots } from '../../../domain/executable.js'
+import { placesOnTheWay, type StoredPath, type UntrustedRoots } from '../../../domain/executable.js'
 import { ignoresCase, isInsideComparable, typedPath } from '../../../domain/paths.js'
 
 /**
@@ -134,17 +134,21 @@ export function chooseBrowser(input: {
   untrusted: UntrustedRoots
   protectedRoots: readonly string[]
   platform?: NodeJS.Platform
+  /** How a Windows path resolves; the host's unless a test imitates Windows. */
+  storedPath?: StoredPath
 }): BrowserChoice {
   if (input.cdp) return { mode: { kind: 'attached', endpoint: input.cdp } }
   const platform = input.platform ?? process.platform
   const roots = [...input.untrusted.untrustedRoots.map(root => root.path), ...input.protectedRoots]
   const named = argumentPaths(input.args ?? '', platform)
   if (named.length > 0 && input.untrusted.rootsUnknown) return { refusal: `BUCKLE_BROWSER_ARGS is not passed while ${input.untrusted.rootsUnknown}` }
-  if (named.some(path => judgedFolder(path, roots, platform) === null)) return { refusal: ARGS_UNTRUSTED }
+  // A folder the arguments name is handed on as written, so only an untrusted one is refused here.
+  if (named.some(path => judgedFolder(path, roots, platform, input.storedPath) === UNTRUSTED_FOLDER)) return { refusal: ARGS_UNTRUSTED }
   if (!input.profile) return { mode: FRESH_BROWSER }
   if (input.untrusted.rootsUnknown) return { refusal: `BUCKLE_BROWSER_PROFILE is not loaded while ${input.untrusted.rootsUnknown}` }
-  const directory = judgedFolder(input.profile, roots, platform)
-  if (directory === null) return { refusal: PROFILE_UNTRUSTED }
+  const directory = judgedFolder(input.profile, roots, platform, input.storedPath)
+  if (directory === UNTRUSTED_FOLDER) return { refusal: PROFILE_UNTRUSTED }
+  if (directory === NO_FOLDER) return { refusal: PROFILE_MISSING }
   try { if (!statSync(directory).isDirectory()) return { refusal: PROFILE_MISSING } } catch { return { refusal: PROFILE_MISSING } }
   return { mode: { kind: 'profile', directory } }
 }
@@ -163,21 +167,29 @@ function argumentPaths(args: string, platform: NodeJS.Platform): string[] {
   })
 }
 
+/** Why judgedFolder hands on no folder: one where Buckle does not load from, or one whose real place has no path. */
+const UNTRUSTED_FOLDER = Symbol('untrusted folder')
+const NO_FOLDER = Symbol('no folder')
+
 /**
- * Where a folder really is, or null where it lies where Buckle does not load from: every place on its way lies outside
- * every root, and the folder, as named and where it lands, holds none. A path Buckle cannot read or follow is null too.
+ * Where a folder really lands, which is what is handed on, or why none is: UNTRUSTED_FOLDER where it lies where Buckle
+ * does not load from, a place on its way inside a root, or the folder, as named and where it lands, holding one, or
+ * where Buckle cannot read or follow it; NO_FOLDER on Windows where its landing place has no real path, as on a drive
+ * that is not there, never a link's own place in its stead (recheck 3 of the final review of 0.1.4, finding
+ * executable 485).
  */
-function judgedFolder(path: string, roots: readonly string[], platform: NodeJS.Platform): string | null {
+function judgedFolder(path: string, roots: readonly string[], platform: NodeJS.Platform, stored?: StoredPath): string | typeof UNTRUSTED_FOLDER | typeof NO_FOLDER {
   // On Windows a path rooted at a slash alone names whichever drive is current, so no one place (isFullPath).
-  if (platform === 'win32' && /^[/\\](?![/\\])/.test(path)) return null
+  if (platform === 'win32' && /^[/\\](?![/\\])/.test(path)) return UNTRUSTED_FOLDER
   let named: string
-  let places: string[]
+  let walked: { places: string[]; landing: string | null }
   try {
     named = typedPath(path, platform)
-    places = placesOnTheWay(named, platform)
-  } catch { return null }
-  const directory = places.at(-1)!
+    walked = placesOnTheWay(named, platform, stored)
+  } catch { return UNTRUSTED_FOLDER }
   const caseless = ignoresCase(platform)
   const inside = (outer: string, inner: string) => isInsideComparable(outer, inner, caseless, platform)
-  return roots.some(root => places.some(place => inside(root, place)) || [named, directory].some(folder => inside(folder, root))) ? null : directory
+  const folders = walked.landing === null ? [named] : [named, walked.landing]
+  if (roots.some(root => walked.places.some(place => inside(root, place)) || folders.some(folder => inside(folder, root)))) return UNTRUSTED_FOLDER
+  return walked.landing ?? NO_FOLDER
 }

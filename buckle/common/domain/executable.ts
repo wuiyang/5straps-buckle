@@ -469,20 +469,23 @@ export function trustedSearchPath(searchPath: string | undefined, roots: Untrust
 
 /**
  * Every place an absolute path in pathe's form passes on its way, as resolveProgram judges a program by them: the path
- * as named, each link met and where each leads, and where it lands, last (walkLinks). A folder the owner names for
- * Buckle to load from, a browser profile, is refused where any of these lies where an agent can write. Throws where the
- * chain cannot be followed.
+ * as named, each link met and where each leads, and where it lands (walkLinks). A folder the owner names for Buckle to
+ * load from, a browser profile, is refused where any of these lies where an agent can write. `landing` is the folder a
+ * caller hands on: where the walk really lands, on Windows the real path the system gives it, and null there when it
+ * has none, which a caller refuses, never a link's own place (recheck 3 of the final review of 0.1.4, finding
+ * executable 485). Throws where the chain cannot be followed.
  */
-export function placesOnTheWay(path: string, platform: NodeJS.Platform = process.platform, stored: StoredPath = storedPath): string[] {
-  return placesOf(path, walkLinks(path, platform, stored))
+export function placesOnTheWay(path: string, platform: NodeJS.Platform = process.platform, stored: StoredPath = storedPath): { places: string[]; landing: string | null } {
+  const walked = walkLinks(path, platform, stored)
+  return { places: placesOf(path, walked), landing: platform === 'win32' ? walked.landing : walked.real }
 }
 
 /**
  * Every place a walk passes, as each caller judges it: the path as named, each link and its target, where it lands,
- * and on Windows the real path the system gives each of those, where it lands last, the folder a caller hands on.
+ * and on Windows the real path the system gives each of those that has one.
  */
 function placesOf(path: string, walked: LinkWalk): string[] {
-  return [path, ...walked.passed, walked.real, ...walked.system]
+  return [path, ...walked.passed, walked.real, ...walked.system, ...(walked.landing === null ? [] : [walked.landing])]
 }
 
 /** Folders that name a place of whichever process reads them: its working directory, root, and open files. */
@@ -505,8 +508,10 @@ interface LinkWalk {
   real: string
   /** Each link met, where it really lies, and the place it leads, in the order met. */
   passed: string[]
-  /** On Windows, where the system resolves each place passed and, last, `real` (systemPath); none where nothing on a way exists. */
+  /** On Windows, where the system resolves each place passed (systemPath); none where nothing on a way exists. */
   system: string[]
+  /** On Windows, where the system resolves `real`, or null where nothing on its way exists; elsewhere `real` itself. */
+  landing: string | null
 }
 
 /**
@@ -538,13 +543,14 @@ function walkLinks(path: string, platform: NodeJS.Platform, stored: StoredPath =
   }
   const root = pathRoot(path, platform)
   const real = follow(root, path.slice(root.length).split('/'))
-  if (platform !== 'win32') return { real, passed, system: [] }
+  if (platform !== 'win32') return { real, passed, system: [], landing: real }
   // Every place passed, a link reached through a subst drive too, and not only where the walk lands (recheck 2 of the
   // final review of 0.1.4, finding executable 539).
-  return { real, passed, system: [...passed, real].flatMap((place) => {
+  const system = passed.flatMap((place) => {
     const resolved = systemPath(place, stored)
     return resolved === null ? [] : [resolved]
-  }) }
+  })
+  return { real, passed, system, landing: systemPath(real, stored) }
 }
 
 /**
