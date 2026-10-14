@@ -46,7 +46,7 @@ function toolCommands(): Set<string> {
   // them all the same, so the catalog names every tool each pack can define, not only the ones this host enables.
   const complete = [
     ...packs,
-    createFsPack({ paths, runProcess, ripgrep: 'rg', protectedRoots: [] }),
+    createFsPack({ paths, runProcess, ripgrep: { path: 'rg', argv0: 'rg', args: [] }, protectedRoots: [] }),
     createWebPack({ braveSearchApiKey: 'fixture', allowedHosts: [], approved: null }),
   ]
   const commands = new Set<string>()

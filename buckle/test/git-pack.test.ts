@@ -13,7 +13,7 @@ import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 
 function gitPack(root: string, runProcess: ProcessRunner = vi.fn(), mount: string | null = null, git = 'git') {
   const stateDirectory = mkdtempSync(join(tmpdir(), 'git-pack-state-'))
-  const pack = createGitPack({ paths: createPathView({ root, mount, scratchRoots: [] }), runProcess, stateDirectory, git: { path: git, argv0: 'git' } })
+  const pack = createGitPack({ paths: createPathView({ root, mount, scratchRoots: [] }), runProcess, stateDirectory, git: { path: git, argv0: 'git', args: [] } })
   const call = (name: string, args: Record<string, JsonValue>, judged: Pick<ToolContext, 'authorizeReadTarget'> = {}) => {
     const tool = pack.tools.find(candidate => candidate.capability.name === name)
     if (!tool) throw new Error(`No such tool: ${name}`)
@@ -89,7 +89,7 @@ describe('a git tool runs in the repository its permission check judged', () => 
 
   it('judges git_blame\'s repository and the file under it, not the file under the workspace root', () => {
     const root = repositories()
-    const pack = createGitPack({ paths: createPathView({ root, mount: null, scratchRoots: [] }), runProcess: vi.fn(), stateDirectory: mkdtempSync(join(tmpdir(), 'git-pack-state-')), git: { path: 'git', argv0: 'git' } })
+    const pack = createGitPack({ paths: createPathView({ root, mount: null, scratchRoots: [] }), runProcess: vi.fn(), stateDirectory: mkdtempSync(join(tmpdir(), 'git-pack-state-')), git: { path: 'git', argv0: 'git', args: [] } })
     const blame = pack.tools.find(candidate => candidate.capability.name === 'git_blame')!
     expect(blame.prepare({ repo: 'repo', path: 'src/a.txt' }).effects).toEqual([{ kind: 'read_path', path: 'repo' }, { kind: 'read_path', path: 'repo/src/a.txt' }])
   })

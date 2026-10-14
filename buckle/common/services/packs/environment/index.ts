@@ -24,7 +24,7 @@ export function createEnvironmentPack(input: { command: string; validator: Resol
         const { validator } = input
         if (validator.path === null) throw new ToolInputError(validator.reason, validator.untrusted ? { code: 'PERMISSION_DENIED' } : undefined)
         const result = await input.runProcess({
-          command: validator.path, argv0: validator.argv0, args: ['load', '--agent'], cwd: input.cwd, timeoutMs: context.timeoutMs,
+          command: validator.path, argv0: validator.argv0, args: [...validator.args, 'load', '--agent'], cwd: input.cwd, timeoutMs: context.timeoutMs,
           signal: context.signal, environment: input.environment(),
         })
         return { valid: result.exitCode === 0 && !result.timedOut, timedOut: result.timedOut }

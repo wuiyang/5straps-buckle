@@ -273,7 +273,7 @@ describe('the agent\'s paths on a Windows workspace, imitated', () => {
     const match = JSON.stringify({ type: 'match', data: { lines: { text: 'needle\n' }, line_number: 1, submatches: [{ start: 0, end: 6 }] } })
     const answer = (stdout: string) => ({ exitCode: 0, signal: null, stdout, stderr: '', truncated: false, timedOut: false })
     const found = await searchContent({
-      args: searchInput.parse({ pattern: 'needle' }), paths: context.paths, ripgrep: '/usr/bin/rg', protectedRoots: [], platform: 'win32',
+      args: searchInput.parse({ pattern: 'needle' }), paths: context.paths, ripgrep: { path: '/usr/bin/rg', argv0: '/usr/bin/rg', args: [] }, protectedRoots: [], platform: 'win32',
       runProcess: async request => answer(request.args[0] === '--files' ? '.\\app.\0.\\notes \0.\\kept.txt\0' : `${match}\n`),
       timeoutMs: 5_000, signal: AbortSignal.timeout(5_000), authorizeRead: async () => true,
     })
@@ -321,7 +321,7 @@ describe('the backslash case on Linux: inside\\..\\..\\x', () => {
     const answer = (stdout: string) => ({ exitCode: 0, signal: null, stdout, stderr: '', truncated: false, timedOut: false })
     const match = JSON.stringify({ type: 'match', data: { lines: { text: 'needle\n' }, line_number: 1, submatches: [{ start: 0, end: 6 }] } })
     const found = await searchContent({
-      args: searchInput.parse({ pattern: 'needle' }), paths: createPathView({ root: workspace, mount: null }), ripgrep: '/usr/bin/rg', protectedRoots: [], platform: 'linux',
+      args: searchInput.parse({ pattern: 'needle' }), paths: createPathView({ root: workspace, mount: null }), ripgrep: { path: '/usr/bin/rg', argv0: '/usr/bin/rg', args: [] }, protectedRoots: [], platform: 'linux',
       runProcess: async request => answer(request.args[0] === '--files' ? './inside\\..\\..\\x\0./plain.txt\0' : `${match}\n`),
       timeoutMs: 5_000, signal: AbortSignal.timeout(5_000), authorizeRead: async path => { judged.push(path); return true },
     })
@@ -590,7 +590,7 @@ describe('a drive\'s root on Windows, imitated', () => {
 
   it('refuses a program found anywhere on a drive that is an untrusted root', () => {
     expect(resolveProgram('rg', { untrustedRoots: rootsOf('workspace', ['D:/']), lookup: () => 'D:\\tools\\rg.exe', platform: 'win32' })).toMatchObject({ path: null, untrusted: true })
-    expect(resolveProgram('rg', { untrustedRoots: rootsOf('workspace', ['D:/']), lookup: () => 'C:\\tools\\rg.exe', platform: 'win32' })).toEqual({ path: 'C:/tools/rg.exe', argv0: 'C:/tools/rg.exe' })
+    expect(resolveProgram('rg', { untrustedRoots: rootsOf('workspace', ['D:/']), lookup: () => 'C:\\tools\\rg.exe', platform: 'win32' })).toEqual({ path: 'C:/tools/rg.exe', argv0: 'C:/tools/rg.exe', args: [] })
   })
 
   // pathe takes `//./ws` for a relative path, so `C://./ws/secret/k.txt` was resolved from the working directory: from
@@ -757,7 +757,7 @@ describe('a drive-shaped name reached by a climb or a link, on Linux', () => {
     process.chdir(elsewhere)
     try {
       const found = await searchContent({
-        args: searchInput.parse({ pattern: 'misread', path: '/' }), paths: createPathView({ root: '/', mount: null }), ripgrep: '/usr/bin/rg', protectedRoots: [], platform: 'linux',
+        args: searchInput.parse({ pattern: 'misread', path: '/' }), paths: createPathView({ root: '/', mount: null }), ripgrep: { path: '/usr/bin/rg', argv0: '/usr/bin/rg', args: [] }, protectedRoots: [], platform: 'linux',
         runProcess: async request => answer(request.args[0] === '--files' ? './C:/x\0' : `${match}\n`),
         timeoutMs: 5_000, signal: AbortSignal.timeout(5_000), authorizeRead: async path => { judged.push(path); return true },
       })

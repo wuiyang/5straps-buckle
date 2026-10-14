@@ -213,7 +213,7 @@ describe('the sandbox program reached through a link in a workspace', () => {
     const bin = join(scratch(), 'bin')
     mkdirSync(bin)
     symlinkSync(trusted, join(bin, 'bwrap'))
-    expect(resolveProgram('bwrap', { untrustedRoots: rootsOf('workspace', [workspace]), environment: { PATH: bin }, platform: 'linux' })).toEqual({ path: trusted, argv0: join(bin, 'bwrap') })
+    expect(resolveProgram('bwrap', { untrustedRoots: rootsOf('workspace', [workspace]), environment: { PATH: bin }, platform: 'linux' })).toEqual({ path: trusted, argv0: join(bin, 'bwrap'), args: [] })
     const resolved = resolveSandbox({ requested: 'bubblewrap', acknowledgedUnsandboxed: false, untrustedRoots: rootsOf('workspace', [workspace]), environment: { PATH: bin }, platform: 'linux' })
     expect(resolved.sandbox.wrap({ command: 'true', args: [], cwd: workspace, workspaceRoot: workspace, writableRoots: [workspace], hiddenPaths: [], readOnlyPaths: [], mount: null, allowNetwork: false }).command).toBe(trusted)
   })

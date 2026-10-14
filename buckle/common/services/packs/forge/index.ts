@@ -100,7 +100,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
     return await options.runProcess({
       command: options.git.path,
       argv0: options.git.argv0,
-      args: input.args,
+      args: [...options.git.args, ...input.args],
       cwd: input.repository,
       timeoutMs: input.context.timeoutMs,
       environment: environment({ ...ISOLATION_ENVIRONMENT, ...gitConfigEnvironment(config), ...input.extra }),

@@ -111,7 +111,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
       const mapped = (path: string) => copyRoot ? resolve(copyRoot, relative(options.paths.root, path)) : path
       const wrapped = options.sandbox.wrap({
         command,
-        args: input.args,
+        args: [...program?.args ?? [], ...input.args],
         cwd: mapped(cwd),
         writableRoots: writableRoots.map(mapped),
         workspaceRoot: copyRoot ?? options.paths.root,

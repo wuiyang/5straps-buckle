@@ -138,7 +138,7 @@ export function createLspConnection(streams: { input: Readable; output: Writable
 
 /** `environment`: the host program environment (hostEnvironment), whose PATH no agent wrote into. */
 export function spawnLspServer(input: { program: Program; args: string[]; cwd: string; environment: NodeJS.ProcessEnv }): LspConnection {
-  const child: ChildProcessByStdio<Writable, Readable, Readable> = spawn(input.program.path, input.args, {
+  const child: ChildProcessByStdio<Writable, Readable, Readable> = spawn(input.program.path, [...input.program.args, ...input.args], {
     argv0: input.program.argv0,
     cwd: input.cwd,
     env: input.environment,

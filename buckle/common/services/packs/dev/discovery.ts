@@ -29,7 +29,7 @@ export async function discoverServers(input: {
   const result = await input.runProcess({
     command: input.ps.path,
     argv0: input.ps.argv0,
-    args: ['-eo', 'pid=,args='],
+    args: [...input.ps.args, '-eo', 'pid=,args='],
     cwd: process.cwd(),
     timeoutMs: input.timeoutMs,
     environment: input.environment,

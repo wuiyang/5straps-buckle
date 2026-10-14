@@ -64,7 +64,7 @@ export function createGitPack(options: GitPackOptions): Pack {
     return options.runProcess({
       command: options.git.path,
       argv0: options.git.argv0,
-      args: input.args,
+      args: [...options.git.args, ...input.args],
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
       environment: environment({ ...ISOLATION_ENVIRONMENT, ...ceilingEnvironment(input.boundary), ...gitConfigEnvironment(input.config) }),

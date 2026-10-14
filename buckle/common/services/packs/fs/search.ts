@@ -9,7 +9,7 @@ import { childPath, isPlainName, nativePath } from '../../../domain/paths.js'
 import { ToolExecutionError } from '../../../domain/tool.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
-import { ownRoots } from '../../../domain/executable.js'
+import { ownRoots, type Program } from '../../../domain/executable.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import type * as schemas from './schemas.js'
 
@@ -25,8 +25,8 @@ const matchSchema = z.object({
 
 export async function searchContent(input: {
   args: z.output<typeof schemas.searchInput>; paths: PathView; runProcess: ProcessRunner
-  /** The absolute path ripgrep is spawned by (resolveProgram), never its bare name. */
-  ripgrep: string
+  /** The ripgrep spawned, by its absolute path (resolveProgram), never its bare name, with its leading arguments. */
+  ripgrep: Program
   timeoutMs: number; signal: AbortSignal; authorizeRead: (path: string) => Promise<boolean>
   /** A hard-linked file on the device of one of these is excluded, as fs_read refuses it. */
   protectedRoots: readonly string[]
@@ -38,7 +38,7 @@ export async function searchContent(input: {
   const root = input.paths.resolve(input.args.path)
   const environment = (input.environment ?? hostEnvironment(() => ownRoots(input.paths), input.platform))()
   const glob = input.args.glob ? ['--glob', input.args.glob] : []
-  const listed = await input.runProcess({ command: input.ripgrep, args: ['--files', '--null', ...glob, '--', '.'], cwd: root, environment, timeoutMs: input.timeoutMs, signal: input.signal })
+  const listed = await input.runProcess({ command: input.ripgrep.path, args: [...input.ripgrep.args, '--files', '--null', ...glob, '--', '.'], cwd: root, environment, timeoutMs: input.timeoutMs, signal: input.signal })
   if (listed.exitCode !== 0 && listed.exitCode !== 1) throw searchError(listed)
   const names = listed.stdout.split('\0')
   names.pop() // An unterminated final name may have been cut by the process output cap.
@@ -63,7 +63,7 @@ export async function searchContent(input: {
       const args = ['--json', '--line-number', '--max-count', String(input.args.limit - matches.length)]
       if (!input.args.caseSensitive) args.push('--ignore-case')
       args.push('--regexp', input.args.pattern, '--', '-')
-      const result = await input.runProcess({ command: input.ripgrep, args, stdin: file.fd, cwd: root, environment, timeoutMs: input.timeoutMs, signal: input.signal })
+      const result = await input.runProcess({ command: input.ripgrep.path, args: [...input.ripgrep.args, ...args], stdin: file.fd, cwd: root, environment, timeoutMs: input.timeoutMs, signal: input.signal })
       if (result.exitCode !== 0 && result.exitCode !== 1) throw searchError(result)
       for (const line of result.stdout.split('\n')) {
         if (!line || matches.length >= input.args.limit) break

@@ -86,7 +86,7 @@ async function hostileRepository(): Promise<{ root: string; marker: string; stat
 function readToolCall(input: { root: string; stateDirectory: string }) {
   const pack = createGitPack({
     paths: createPathView({ root: input.root, mount: null, scratchRoots: [] }),
-    runProcess, stateDirectory: input.stateDirectory, git: { path: 'git', argv0: 'git' },
+    runProcess, stateDirectory: input.stateDirectory, git: { path: 'git', argv0: 'git', args: [] },
   })
   return (name: string, args: Record<string, JsonValue>): Promise<JsonValue> => {
     const tool = pack.tools.find(candidate => candidate.capability.name === name)

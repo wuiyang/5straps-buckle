@@ -33,7 +33,7 @@ async function run(input: JsonObject, options: Partial<BrowserPackOptions> = {},
     agentBrowserCommand: 'agent-browser',
     sessionDirectory: PROFILE,
     headed: false,
-    agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' },
+    agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] },
     approvedLists: [],
     runProcess: async request => {
       calls.push(request)
@@ -151,7 +151,7 @@ describe('the browser the owner\'s settings choose', () => {
   })
 
   it('tells the agent in the tool description what close keeps in each mode', () => {
-    const description = (mode: BrowserMode) => createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { mode }, runProcess: async () => stubResult() }).tools[0]!.capability.description
+    const description = (mode: BrowserMode) => createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], browser: { mode }, runProcess: async () => stubResult() }).tools[0]!.capability.description
     expect(description({ kind: 'fresh' })).toBe('Run one agent-browser command against an isolated browser session; close discards browser state.')
     expect(description(PROFILE_MODE)).toContain('logins and cookies outlive close')
     expect(description(ATTACHED)).toContain('every session shares that browser and its logins, and close only disconnects')
@@ -183,7 +183,7 @@ describe('the browser the owner\'s settings choose', () => {
   })
 
   it('withholds the pack, naming the setting, when the profile folder was refused', () => {
-    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { refusal: 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first' }, runProcess: async () => stubResult() })
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], browser: { refusal: 'BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first' }, runProcess: async () => stubResult() })
     expect(pack.unavailableReason).toBe('BUCKLE_BROWSER_PROFILE does not name an existing folder; create it first')
   })
 })
@@ -192,7 +192,7 @@ describe('the browser the owner\'s settings choose', () => {
 // with fixed in it; agent-browser reuses a running daemon by its session name.
 describe('a session left by a run under other browser settings', () => {
   async function call(sessionDirectory: string, options: Partial<BrowserPackOptions>, calls: ProcessRequest[]) {
-    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], runProcess: async (request) => { calls.push(request); return stubResult() }, ...options })
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], runProcess: async (request) => { calls.push(request); return stubResult() }, ...options })
     await pack.tools[0]!.prepare({ command: 'snapshot', args: [] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
     return pack
   }
@@ -308,7 +308,7 @@ describe('a session left by a run under other browser settings', () => {
     await call(directory, PROFILE_A, calls)
     const first = sessionOf(calls[0]!)
     writtenBy(directory, process.ppid)
-    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], runProcess: async (request) => { calls.push(request); return stubResult() }, ...PROFILE_B })
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], runProcess: async (request) => { calls.push(request); return stubResult() }, ...PROFILE_B })
     await pack.tools[0]!.prepare({ command: 'close', args: [] }).execute({ requestId: 'r2', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
     expect(sessionOf(calls[1]!)).not.toBe(first)
     const stored = JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')) as { sessions: Record<string, string>; writers: Record<string, number> }
@@ -365,7 +365,7 @@ describe('shutdown in an attached browser', () => {
   it('sends close to each session it opened, which agent-browser answers by disconnecting, and forgets it', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-shutdown-'))
     const calls: ProcessRequest[] = []
-    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { mode: { kind: 'attached', endpoint: '9222' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], browser: { mode: { kind: 'attached', endpoint: '9222' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
     await pack.tools[0]!.prepare({ command: 'open', args: ['example.com'] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
     const session = calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]!
     expect(calls[0]!.args).toContain('--cdp')
@@ -381,7 +381,7 @@ describe('shutdown with a profile folder', () => {
   it('sends nothing for the shared browser, which the close command and its idle timeout end', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-shutdown-'))
     const calls: ProcessRequest[] = []
-    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], browser: { mode: { kind: 'profile', directory: '/owner/profile' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
+    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], browser: { mode: { kind: 'profile', directory: '/owner/profile' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
     await pack.tools[0]!.prepare({ command: 'open', args: ['example.com'] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
     await pack.close?.()
     expect(calls).toHaveLength(1)
@@ -399,7 +399,7 @@ describe('the warning a browser without in-browser containment logs at pack star
     const log = await import('../common/runtime/log.js')
     const warn = vi.spyOn(log.logger, 'warn').mockImplementation(() => {})
     const { createBrowserPack: create } = await import('../common/services/packs/browser/index.js')
-    const options = { cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [], runProcess: async () => stubResult(), ...(browser ? { browser } : {}) }
+    const options = { cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], runProcess: async () => stubResult(), ...(browser ? { browser } : {}) }
     create(options)
     create(options)
     const calls = warn.mock.calls
@@ -599,7 +599,7 @@ describe('the environment the browser is spawned with', () => {
         agentBrowserCommand: 'agent-browser',
         sessionDirectory: PROFILE,
         headed: false,
-        agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' },
+        agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] },
         approvedLists: [],
         runProcess: async request => {
           calls.push(request)
@@ -756,7 +756,7 @@ describe('file arguments reach agent-browser only through a private transfer', (
     const calls: ProcessRequest[] = []
     const pack = createBrowserPack({
       cwd: input.workspace, paths: createPathView({ root: input.workspace, mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: input.sessions,
-      headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser' }, approvedLists: [],
+      headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [],
       runProcess: async (request) => { calls.push(request); return input.process?.(request) ?? stubResult() },
     })
     const execute = pack.tools[0]!.prepare({ command: input.command, args: input.args }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal, ...input.context })

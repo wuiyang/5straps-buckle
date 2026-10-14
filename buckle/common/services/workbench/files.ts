@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileS
 import { dirname, join, relative, resolve } from 'pathe'
 import type { JsonObject, JsonValue, WorkbenchChange } from '@5straps/protocol'
 import type { HostEnvironment } from '../../domain/environment.js'
+import type { Program } from '../../domain/executable.js'
 import { createPathView } from '../../domain/path-view.js'
 import { entryBelowRoot, isInside, isPlainName } from '../../domain/paths.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
@@ -24,7 +25,7 @@ export interface WorkbenchFileOptions {
    * The ripgrep the staged editor's search runs, by its absolute path (resolveProgram), resolved at each call, so a
    * workspace registered since counts at once; null leaves search out.
    */
-  ripgrep: () => string | null
+  ripgrep: () => Program | null
   /** The environment ripgrep runs with (hostEnvironment); the staged copy's own roots alone when absent. */
   environment?: HostEnvironment
 }

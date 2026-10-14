@@ -35,7 +35,7 @@ describe('a program resolved on Windows, imitated', () => {
 
   it('is spawned by the absolute path PATH gives, in pathe\'s form', () => {
     const lookup = lookupFrom({ rg: 'C:\\Tools\\rg.exe' })
-    expect(resolveProgram('rg', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: 'C:/Tools/rg.exe', argv0: 'C:/Tools/rg.exe' })
+    expect(resolveProgram('rg', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: 'C:/Tools/rg.exe', argv0: 'C:/Tools/rg.exe', args: [] })
     expect(lookup.platforms).toEqual(['win32'])
   })
 
@@ -70,8 +70,8 @@ describe('a program resolved on Windows, imitated', () => {
 
   it('leaves a command word the agent wrote as a path as written, and resolves a bare one', () => {
     const lookup = lookupFrom({ git: 'C:\\Program Files\\Git\\cmd\\git.exe', node: 'C:\\ws\\node.exe' })
-    expect(runnableCommand('git', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: 'C:/Program Files/Git/cmd/git.exe', argv0: 'C:/Program Files/Git/cmd/git.exe' })
-    expect(runnableCommand('.\\tools\\git.exe', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: '.\\tools\\git.exe', argv0: '.\\tools\\git.exe' })
+    expect(runnableCommand('git', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: 'C:/Program Files/Git/cmd/git.exe', argv0: 'C:/Program Files/Git/cmd/git.exe', args: [] })
+    expect(runnableCommand('.\\tools\\git.exe', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: '.\\tools\\git.exe', argv0: '.\\tools\\git.exe', args: [] })
     expect(() => runnableCommand('node', { untrustedRoots, lookup, platform: 'win32' })).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
   })
 })

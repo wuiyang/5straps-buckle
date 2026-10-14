@@ -42,11 +42,13 @@ export interface ProgramSearch {
 
 /**
  * A program Buckle runs: the real path it spawns, with the path PATH gave it as its `argv0`, as a program that answers
- * to the name it was started by (busybox, ccache, a rustup proxy) reads it.
+ * to the name it was started by (busybox, ccache, a rustup proxy) reads it. `args` go before the arguments of every
+ * call: empty for a native program, and the script for a program an interpreter runs.
  */
 export interface Program {
   path: string
   argv0: string
+  args: string[]
 }
 
 /** A program Buckle runs, or why it is not run. `untrusted` is a program found where an agent can write. */
@@ -115,7 +117,12 @@ export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoo
   try { walked = walkLinks(path, platform) } catch { return { path: null, reason: `${shown} cannot be followed to where it really is, so Buckle does not run it`, untrusted: true } }
   const root = rootHolding(input.untrustedRoots, [path, ...walked.passed, walked.real], platform)
   if (root) return { path: null, reason: `${shown} is found in or through ${ROOT_NAMES[root.kind]} of this node, where an agent can write, so Buckle does not run it`, untrusted: true }
-  return { path: walked.real, argv0: path }
+  return { path: walked.real, argv0: path, args: [] }
+}
+
+/** The program a pack spawns, or null where it is refused, for a pack that withholds a tool without one (ripgrep). */
+export function programOrNull(resolved: ResolvedProgram): Program | null {
+  return resolved.path === null ? null : resolved
 }
 
 /**
@@ -124,7 +131,7 @@ export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoo
  * directory never stands in for the one on PATH that a rule naming it meant.
  */
 export function runnableCommand(command: string, input: ProgramSearch & UntrustedRoots): Program {
-  if (isPathReference(command, input.platform ?? process.platform)) return { path: command, argv0: command }
+  if (isPathReference(command, input.platform ?? process.platform)) return { path: command, argv0: command, args: [] }
   const program = resolveProgram(command, input)
   if (program.path === null) throw new ToolInputError(program.reason, program.untrusted ? { code: 'PERMISSION_DENIED' } : undefined)
   return program

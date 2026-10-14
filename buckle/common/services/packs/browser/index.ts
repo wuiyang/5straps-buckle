@@ -195,7 +195,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const ran = await options.runProcess({
               command: program.path,
               argv0: program.argv0,
-              args,
+              args: [...program.args, ...args],
               cwd: options.sessionDirectory,
               timeoutMs: context.timeoutMs,
               environment: browserEnvironment(options),
@@ -311,7 +311,7 @@ async function closeSession(options: BrowserPackOptions, session: string, signal
   const result = await options.runProcess({
     command: program.path,
     argv0: program.argv0,
-    args: ['close', '--session', session, '--json'],
+    args: [...program.args, 'close', '--session', session, '--json'],
     cwd: options.sessionDirectory,
     timeoutMs: CLOSE_TIMEOUT_MS,
     environment: browserEnvironment(options),

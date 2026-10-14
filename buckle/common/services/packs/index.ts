@@ -3,7 +3,7 @@ import type { WorkspacePolicy } from '@5straps/protocol'
 import type { IsolatedShellOptions } from '../shell/isolated-shell.js'
 import { createEnvironmentPack } from './environment/index.js'
 import { hostEnvironment } from '../../domain/environment.js'
-import { ownRoots, resolveProgram, type ProgramSearch, type ResolvedProgram, type UntrustedRoots } from '../../domain/executable.js'
+import { ownRoots, resolveProgram, programOrNull, type ProgramSearch, type ResolvedProgram, type UntrustedRoots } from '../../domain/executable.js'
 import type { Pack } from '../../domain/pack.js'
 import type { PathView } from '../../domain/path-view.js'
 import { forgeGitHost } from '../../domain/forge.js'
@@ -106,7 +106,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const environment = hostEnvironment(untrusted, options.programSearch?.platform)
   const git = program('git')
   const packs: Pack[] = [
-    createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: program('rg').path, protectedRoots: options.hiddenPaths, environment }),
+    createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: programOrNull(program('rg')), protectedRoots: options.hiddenPaths, environment }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, allowedHosts: options.allowedHosts, approved: options.approvedUrls }),
     createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
     createForgePack({
