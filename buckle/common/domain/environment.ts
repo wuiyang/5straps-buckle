@@ -51,20 +51,32 @@ export function buildChildEnvironment(input: {
   return withExtra(environment, input.extra, platform)
 }
 
-/** The key `environment` holds `name` under: on Windows any spelling of it, elsewhere the name itself. */
-function environmentKey(environment: NodeJS.ProcessEnv, name: string, platform: NodeJS.Platform): string | undefined {
-  if (platform !== 'win32') return name in environment ? name : undefined
-  return Object.keys(environment).find(key => key.toUpperCase() === name.toUpperCase())
+/** Whether two variable names are one: on Windows without regard to case, as Windows reads them; elsewhere exactly. */
+function sameName(left: string, right: string, platform: NodeJS.Platform): boolean {
+  return platform === 'win32' ? left.toUpperCase() === right.toUpperCase() : left === right
 }
 
-/** `environment` with `extra` set over it, each extra name replacing every spelling of itself on Windows. */
+/**
+ * The key `environment` holds `name` under, among its own keys alone: on Windows any spelling of it, elsewhere the name
+ * itself. A name every object inherits, such as `constructor`, is never taken for one it holds.
+ */
+function environmentKey(environment: NodeJS.ProcessEnv, name: string, platform: NodeJS.Platform): string | undefined {
+  return Object.keys(environment).find(key => sameName(key, name, platform))
+}
+
+/**
+ * `environment` with `extra` set over it, each extra name replacing every spelling of itself on Windows. The merge is
+ * made on an object with no prototype and read by its own keys, so any name a caller sends, the agent's shell `env`
+ * among them, is a variable like any other: `constructor` matched an inherited property and looped forever, and
+ * `__proto__` would have been swallowed by the prototype setter (review of 2026-10-14). Nothing is refused by name.
+ */
 function withExtra(environment: NodeJS.ProcessEnv, extra: Record<string, string>, platform: NodeJS.Platform): NodeJS.ProcessEnv {
-  const merged = { ...environment }
+  const merged: NodeJS.ProcessEnv = Object.assign(Object.create(null) as NodeJS.ProcessEnv, environment)
   for (const [name, value] of Object.entries(extra)) {
-    for (let key = environmentKey(merged, name, platform); key !== undefined; key = environmentKey(merged, name, platform)) delete merged[key]
+    for (const key of Object.keys(merged)) if (sameName(key, name, platform)) delete merged[key]
     merged[name] = value
   }
-  return merged
+  return Object.fromEntries(Object.entries(merged))
 }
 
 /** The environment of a program Buckle runs on the host, with `extra` set over it (hostEnvironment). */

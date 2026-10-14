@@ -1,6 +1,13 @@
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
 import { buildChildEnvironment, hostEnvironment } from '../common/domain/environment.js'
 import { rootsOf } from '../common/domain/executable.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { createShellPack } from '../common/services/packs/shell/index.js'
+import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
 // On the owner's Windows node agent-browser's screenshot hung under Buckle and worked by hand with the same flags:
 // every program Buckle started ran without SystemRoot, TEMP, USERPROFILE, and the rest, as the inherited list named
@@ -46,5 +53,37 @@ describe('the environment a child inherits', () => {
     const child = hostEnvironment(() => ({ untrustedRoots: rootsOf('workspace', ['C:/ws']) }), 'win32')({ GIT_TERMINAL_PROMPT: '0' })
     expect(child).toMatchObject({ Path: 'C:\\Tools', systemroot: 'C:\\Windows', GIT_TERMINAL_PROMPT: '0' })
     expect(Object.keys(child).filter(name => name.toUpperCase() === 'PATH')).toEqual(['Path'])
+  })
+})
+
+// Review of 2026-10-14: a name every object inherits, sent by the agent as a shell `env` key, matched through the
+// prototype on Linux and macOS, and the merge looped forever, freezing the whole node.
+describe('a variable named like an inherited property', () => {
+  const NAMES = ['constructor', 'toString', '__proto__', 'hasOwnProperty']
+  // JSON.parse makes each an own key, as the shell tool's input schema does.
+  const extra = (): Record<string, string> => JSON.parse('{"constructor":"a","toString":"b","__proto__":"c","hasOwnProperty":"d"}') as Record<string, string>
+
+  it.each(['linux', 'darwin', 'win32'] as const)('on %s reaches the child under its own name, and nothing loops or throws', (platform) => {
+    const child = buildChildEnvironment({ parent: { PATH: '/usr/bin', Path: 'C:\\Tools' }, extra: extra(), platform })
+    for (const [index, name] of NAMES.entries()) {
+      expect(Object.hasOwn(child, name), name).toBe(true)
+      expect(Object.getOwnPropertyDescriptor(child, name)?.value).toBe('abcd'[index])
+    }
+    expect(Object.getPrototypeOf(child)).toBe(Object.prototype)
+  })
+
+  it('in the agent\'s shell call reaches the command it runs', async () => {
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-env-names-')))
+    try {
+      const spawned: ProcessRequest[] = []
+      const pack = createShellPack({
+        paths: createPathView({ root: workspace, mount: null }), sandbox: createNoneSandbox(), writableRoots: [workspace], hiddenPaths: [], readOnlyPaths: [], unavailableReason: null,
+        runProcess: async (request) => { spawned.push(request); return { exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false } },
+      })
+      await pack.tools[0]!.prepare({ command: 'true', env: extra() }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1_000, signal: AbortSignal.timeout(1_000) })
+      expect(spawned).toHaveLength(1)
+      // The tool's input schema (zod's record) already drops a `__proto__` key; every other name reaches the command.
+      for (const name of NAMES.filter(name => name !== '__proto__')) expect(Object.hasOwn(spawned[0]!.environment, name), name).toBe(true)
+    } finally { rmSync(workspace, { recursive: true, force: true }) }
   })
 })
