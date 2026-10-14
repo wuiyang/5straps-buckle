@@ -27,8 +27,9 @@ for the agent: `buckle skills` lists them and `buckle skills buckle-shell` print
 
 `BUCKLE_SANDBOX=auto`, the default, picks the sandbox for shell tools:
 
-- Linux: bubblewrap, when `bwrap` is on `PATH`. A command gets new user, process, host name, and
-  IPC namespaces, and no network; it sees `/usr`, `/bin`, `/lib`, and a few `/etc` files read-only,
+- Linux: bubblewrap, when Buckle finds `bwrap` where it looks for programs
+  ([Install](install.md#requirements)). A command gets new user, process, host name, and IPC
+  namespaces, and no network; it sees `/usr`, `/bin`, `/lib`, and a few `/etc` files read-only,
   a fresh `/tmp`, `HOME=/tmp/home`, and the workspace, writable only below its working
   directory and `BUCKLE_SCRATCH_ROOTS`.
 - macOS: Seatbelt, through `/usr/bin/sandbox-exec`, with a profile that denies by default,
@@ -108,8 +109,8 @@ owner can choose a profile folder that keeps logins, or their own Chrome, as
 launches the browser, which can take long enough for a client to time out; send the same call
 again, and it reuses the browser already launched.
 
-The owner installs `agent-browser` outside any workspace, as Buckle refuses one an agent could
-have written: `npm i -g agent-browser`, then `agent-browser install`, which downloads the browser.
+The owner installs `agent-browser` outside any workspace (Buckle refuses one inside):
+`npm i -g agent-browser`, then `agent-browser install`, which downloads the browser.
 Buckle looks for it on `PATH`, then beside its own `buckle` command, where `npm i -g` puts both,
 beside its Node.js, and on Windows in `%APPDATA%\npm`. On Windows it reads, never runs, npm's
 `.cmd` shim, and runs the `.exe` or script it names. Without it, the pack's reason says where

@@ -19,7 +19,7 @@ lists the differences.
 Buckle looks for these programs on `PATH`, then beside its `buckle` command and its Node.js, and
 on Windows in `%APPDATA%\npm`. Without one, the matching pack or tool is withheld, except a
 language server: a missing one withholds nothing, and a call needing it fails. `buckle init`
-lists what it found; `buckle manifest` says why a pack is withheld, and without `rg` leaves out
+checks the first four; `buckle manifest` says why a pack is withheld, and without `rg` leaves out
 `fs_search_content` with no reason.
 
 | Program | Unlocks |

@@ -32,12 +32,12 @@ In a terminal it asks, each question with a default that Enter keeps:
 | Approved hosts and URLs | none | `BUCKLE_NETWORK_ALLOW` |
 | Private-address hosts `web_fetch` may reach | none | `BUCKLE_ALLOWED_HOSTS` |
 
-`--yes`, or running without a terminal, takes every default and says so. The file also sets
+`--yes`, or running without a terminal, takes every default and says so. Its summary checks
+`bwrap` on Linux, `rg`, `git`, and `agent-browser`: where each was found, or why not and what it
+unlocks. The file also sets
 `BUCKLE_HOST=127.0.0.1`, `BUCKLE_PORT=4320`, and `BUCKLE_SANDBOX=auto`, and lists the other
 settings as comments. Change any of the questions' answers later with
-`buckle settings set <key> <value>`, and see them with `buckle settings show`. Its summary then
-lists the [programs Buckle runs](install.md#requirements): where each was found, or where Buckle
-looked and what a missing one unlocks.
+`buckle settings set <key> <value>`, and see them with `buckle settings show`.
 
 ### The two credentials
 

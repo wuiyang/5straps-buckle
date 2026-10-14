@@ -35,10 +35,16 @@ it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents
   through `cmd.exe`, which Buckle never runs: the agent's arguments would pass through its quoting.
   Buckle reads the shim instead, at most 64 KiB, and runs the `.exe` it names, or the script it
   names under Buckle's own Node.js. A `.exe` or `.com` of the same name in any place wins.
-- Buckle reads the forms npm, pnpm, and agent-browser's own install write, and runs what the shim
-  starts, nothing else. A shim that also sets an environment variable, such as pnpm's `NODE_PATH`,
-  passes arguments or Node.js flags of its own, or starts its script with a program other than
-  Node.js is refused rather than run without them, and so is any other shim, such as one that runs
-  `/bin/sh`. The reason names the shim's file, never its folder: point the setting, such as
-  `BUCKLE_AGENT_BROWSER_COMMAND`, at the `.exe` or the script inside the package, which Buckle's
-  own Node.js then runs.
+- Buckle reads a shim only when it understands every line, as in the shims npm and agent-browser's
+  own install write, and runs what it starts, nothing else. A shim that also sets an environment
+  variable, passes arguments or Node.js flags of its own, starts its script with a program other
+  than Node.js, or holds a caret, which escapes a character or joins two lines, is refused rather
+  than run without them, and so is any other shim, such as one that runs `/bin/sh`. The reason
+  names the shim's file, never its folder.
+- pnpm writes `NODE_PATH` into every shim with its default settings, so Buckle refuses every
+  command pnpm installs. For agent-browser and the environment validator, point
+  `BUCKLE_AGENT_BROWSER_COMMAND` or `BUCKLE_ENV_VALIDATOR_COMMAND` at the `.exe` or the script
+  inside the package, which Buckle's own Node.js then runs. A program with no setting, such as a
+  language server like `typescript-language-server` or `pyright-langserver`, needs npm's shim or a
+  native `.exe` where Buckle looks: on Windows, install it with `npm i -g`. `buckle init` does not
+  check language servers, so a refused one shows only when a call needs it.
