@@ -156,7 +156,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     forgeGithubToken: environment.BUCKLE_FORGE_GITHUB_TOKEN || undefined,
     forgeApiUrl: parseForgeApiUrl(environment.BUCKLE_FORGE_GITHUB_API_URL),
     forgeGitAuthor: parseGitAuthor(environment.BUCKLE_FORGE_GIT_AUTHOR),
-    agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND ?? 'agent-browser',
+    // Empty reads as unset, as the validator's setting does, so `buckle init` and the node look up the same program.
+    agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND || 'agent-browser',
     browserHeaded: environment.BUCKLE_BROWSER_HEADED === 'true',
     ...parseBrowserSettings(environment, platform),
     approvalTimeoutMs: parseApprovalTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_TIMEOUT_MS),

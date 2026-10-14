@@ -2,14 +2,16 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { dirname, resolve } from 'pathe'
-import { parseArgs } from 'node:util'
+import { parseArgs, parseEnv } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
-import { stateDirectoryOf, workspaceHolds } from '../common/runtime/config.js'
+import { loadConfig, stateDirectoryOf, workspaceHolds, type BuckleConfig } from '../common/runtime/config.js'
 import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/environment.js'
-import { AS_NAMED, findProgram, ON_PATH, rootsOf, type ProgramSearch, type UntrustedRoots } from '../common/domain/executable.js'
+import { AS_NAMED, findProgram, ON_PATH, type ProgramSearch, type UntrustedRoots } from '../common/domain/executable.js'
 import { isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
 import { BROWSER_INSTALL } from '../common/services/packs/browser/index.js'
 import { BUILTIN_PACKS } from '../common/services/packs/index.js'
+import { nodeRootsOf } from '../common/services/workspaces/workspace-manager.js'
+import { workspaceUntrusted } from '../common/services/workspaces/node-roots.js'
 import { writeEnvironmentFile } from './environment-file.js'
 import { findNodeSetting, normaliseSetting } from './node-settings.js'
 import { redeemPairingCode } from './pairing.js'
@@ -149,7 +151,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   Seen as     ${mount ?? root}
   Name        ${name}
 ${describeChoices(choices)}${interactive ? '' : 'These are the defaults, kept because nothing was asked. Change one with: buckle settings set <key> <value>\n'}
-${describePrograms({ root, platform, search: options.programSearch ?? {} })}
+${describePrograms({ contents, platform, search: options.programSearch ?? {} })}
 
 Next:
 ${hintStep('  1. Start the node:', serveCommand(out, process.env, platform))}
@@ -300,20 +302,30 @@ interface CheckedProgram {
 }
 
 /**
- * The programs Buckle runs, checked as a pack resolves each (findProgram) against the workspace just chosen: a line
- * each, saying where it was found and how it runs, or why not and what it unlocks (program detection brief,
- * 2026-10-14). Unlike a pack's reason, which an agent may read, this prints the paths: it is the owner's terminal.
+ * The programs Buckle runs, each resolved as the node that reads the file just written resolves it (findProgram): its
+ * configuration, read as serve reads it, and the roots it refuses programs in, the workspace's real root, its scratch
+ * roots, and every root the node knows (workspaceUntrusted). A line each says where the program was found and how it
+ * runs, or why the node will not run it, or what it unlocks (program detection brief and review, 2026-10-14). Unlike a
+ * pack's reason, which an agent may read, this prints the paths: it is the owner's terminal.
  */
-function describePrograms(input: { root: string; platform: NodeJS.Platform; search: ProgramSearch }): string {
+function describePrograms(input: { contents: string; platform: NodeJS.Platform; search: ProgramSearch }): string {
+  let config: BuckleConfig
+  try { config = loadConfig(nodeEnvironment(input.contents), input.platform) } catch (error) { return `Programs\n  not checked: ${error instanceof Error ? error.message : String(error)}` }
   const programs: CheckedProgram[] = [
     ...(input.platform === 'linux' ? [{ label: 'bwrap', name: 'bwrap', unlocks: 'the sandboxed shell pack' }] : []),
     { label: 'rg', name: 'rg', unlocks: 'the fs_search_content tool' },
     { label: 'git', name: 'git', unlocks: 'the git and forge packs, once host Git is turned on' },
-    { label: 'agent-browser', name: process.env.BUCKLE_AGENT_BROWSER_COMMAND || 'agent-browser', unlocks: 'the browser pack', install: BROWSER_INSTALL, setting: 'BUCKLE_AGENT_BROWSER_COMMAND' },
+    { label: 'agent-browser', name: config.agentBrowserCommand, unlocks: 'the browser pack', install: BROWSER_INSTALL, setting: 'BUCKLE_AGENT_BROWSER_COMMAND' },
   ]
-  const search = { ...input.search, platform: input.platform, untrustedRoots: rootsOf('workspace', [input.root]) }
+  const search = { ...input.search, platform: input.platform, ...workspaceUntrusted({ root: config.cwd, scratchRoots: config.scratchRoots }, nodeRootsOf(config, input.platform)) }
   const lines = programs.map(program => `  ${program.label.padEnd(15)} ${programLine(program, search)}`)
   return `Programs\n${lines.join('\n')}`
+}
+
+/** The environment serve reads the file into: its BUCKLE_ settings, each under a variable the shell sets (loadEnvironmentFile). */
+function nodeEnvironment(contents: string): NodeJS.ProcessEnv {
+  const file = Object.entries(parseEnv(contents)).filter(([name]) => name.startsWith('BUCKLE_'))
+  return { ...Object.fromEntries(file), ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)) }
 }
 
 /** One program's line: the path it runs, or the path of what was found and why it is not run, or where it was looked for. */

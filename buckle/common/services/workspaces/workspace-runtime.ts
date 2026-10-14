@@ -4,7 +4,7 @@ import { createWorkbenchManager } from '../workbench/manager.js'
 import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
 import { spawnPtyProcess } from '../../adapters/pty-process.js'
 import { buildChildEnvironment, hostEnvironment } from '../../domain/environment.js'
-import { ownRoots, resolveProgram, programOrNull, type UntrustedRoots } from '../../domain/executable.js'
+import { resolveProgram, programOrNull, type UntrustedRoots } from '../../domain/executable.js'
 import { isInside, nativePath, parentDirectory } from '../../domain/paths.js'
 import { collectShellHiddenPaths } from '../shell/shell-filesystem.js'
 import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
@@ -59,7 +59,7 @@ import { createAuditHealth } from '../audit/audit-health.js'
 import { logger } from '../../runtime/log.js'
 import { auditOperation } from '../audit/audit-operation.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
-import type { NodeRoots } from './node-roots.js'
+import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
 
 /**
  * The owner's policy as the runtime holds it. `base` came from the environment, or for a registered
@@ -170,10 +170,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   mkdirSync(browserStateDirectory, { recursive: true })
 
   // Where no program run here may come from: this workspace's roots and every root the node knows, read at each resolution.
-  const untrusted = (): UntrustedRoots => {
-    const node = input.nodeRoots?.current()
-    return { untrustedRoots: [...ownRoots({ root: config.cwd, scratchRoots: config.scratchRoots }).untrustedRoots, ...node?.untrustedRoots ?? []], rootsUnknown: node?.rootsUnknown ?? null }
-  }
+  const untrusted = (): UntrustedRoots => workspaceUntrusted({ root: config.cwd, scratchRoots: config.scratchRoots }, input.nodeRoots)
   // The sandbox program is refused where an agent writes, as every other program Buckle runs is.
   const sandbox = resolveSandbox({
     requested: config.sandboxMode,

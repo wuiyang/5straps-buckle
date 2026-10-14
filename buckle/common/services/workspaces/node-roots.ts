@@ -1,4 +1,4 @@
-import { realPathOr, rootsOf, type UntrustedRoot, type UntrustedRoots } from '../../domain/executable.js'
+import { ownRoots, realPathOr, rootsOf, type UntrustedRoot, type UntrustedRoots } from '../../domain/executable.js'
 
 /** Why every program is refused while the registry cannot be read (resolveProgram's `rootsUnknown`). */
 export const REGISTRY_UNREADABLE = 'the workspace registry cannot be read: it could lie in a registered workspace, where an agent can write'
@@ -16,6 +16,16 @@ export interface NodeRoots {
   current(): Required<UntrustedRoots>
   /** The registered workspaces' roots, as the registry holds them now. */
   take(registered: readonly string[]): void
+}
+
+/**
+ * Where no program a workspace runs may come from: its own root and scratch roots, and every root the node knows, read
+ * at each resolution. The workspace runtime and `buckle init` both resolve by it, so init reports a program the node
+ * refuses as refused (review of 2026-10-14).
+ */
+export function workspaceUntrusted(view: { root: string; scratchRoots: readonly string[] }, nodeRoots?: NodeRoots): UntrustedRoots {
+  const node = nodeRoots?.current()
+  return { untrustedRoots: [...ownRoots(view).untrustedRoots, ...node?.untrustedRoots ?? []], rootsUnknown: node?.rootsUnknown ?? null }
 }
 
 /**
