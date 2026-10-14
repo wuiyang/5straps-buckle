@@ -873,8 +873,8 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
   const cut = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'error', error: { code: 'SCRIPT_ENDED', message: 'cut', retryable: false } })
   const ask = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'approval_required', approvals: [{ token: `token-${call.id}`, rule: 'write_scope', subject: '/w', reason: 'asks', tool: call.tool, offeredScopes: ['once'], expiresAt: new Date(Date.now() + 60_000).toISOString() }] })
 
-  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>, input: { timeoutMs?: number; signal?: AbortSignal; forgetNested?: (ids: readonly number[]) => void; withdrawNested?: (tokens: readonly string[]) => Promise<void>; callerCancelled?: () => boolean; journalBytes?: number; vm?: ScriptVm } = {}) {
-    const pack = createCodePack({ vm: input.vm ?? createPiCodemodeVm(), reachableTools: () => [echo, gate, waiter], journalDirectory: directory, unavailableReason: null, ...(input.journalBytes ? { journalBytes: input.journalBytes } : {}) })
+  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>, input: { timeoutMs?: number; signal?: AbortSignal; forgetNested?: (ids: readonly number[]) => void; withdrawNested?: (tokens: readonly string[]) => Promise<void>; callerCancelled?: () => boolean; journalBytes?: number; workspaceBytes?: number; vm?: ScriptVm } = {}) {
+    const pack = createCodePack({ vm: input.vm ?? createPiCodemodeVm(), reachableTools: () => [echo, gate, waiter], journalDirectory: directory, unavailableReason: null, ...(input.journalBytes ? { journalBytes: input.journalBytes } : {}), ...(input.workspaceBytes ? { workspaceBytes: input.workspaceBytes } : {}) })
     const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: input.timeoutMs ?? 60_000, signal: input.signal ?? new AbortController().signal, nestedKey: 'f'.repeat(64), invokeNested, forgetNested: input.forgetNested ?? (() => {}), ...(input.withdrawNested ? { withdrawNested: input.withdrawNested } : {}), ...(input.callerCancelled ? { callerCancelled: input.callerCancelled } : {}) }
     return (script: string) => pack.tools[0]!.prepare({ script }).execute(context)
   }
@@ -1178,6 +1178,51 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     for (let send = 2; send <= 3; send++) {
       await expect(codeRun(directory, approved, { journalBytes: 8_192 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
       expect(kept(directory).map(journal => [journal.entries.map(entry => entry.id), journal.expiresAt])).toEqual([[[2, 3, 4, 5, 1], first!.expiresAt]])
+    }
+    expect(waited).toEqual([1])
+  }, 60_000)
+
+  // Recheck 4 of the final review of 0.1.4, finding journal.ts:224, at the store: a record rewritten with its old expiry,
+  // so its old age, is spared by the sweep its own write sets off, and the newer one goes instead.
+  it('never sweeps away the record a write just made, even one rewritten with its first write\'s age', async () => {
+    const store = createJournalStore({ directory: scratch(), workspaceBytes: 3_000 })
+    const record = (key: string, size: number) => ({ key, startedAt: 1, seed: 1, script: 's', tools: [], entries: [{ seq: 1, now: 1, id: 1, tool: 'echo', args: 'h', outcome: { ok: true as const, value: 'v'.repeat(size) } }] })
+    const [older, newer] = ['a'.repeat(64), 'b'.repeat(64)]
+    expect(await store.write(record(older, 1_000))).toBe(true)
+    const expiresAt = store.read(older)!.expiresAt
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await store.write(record(newer, 1_000))).toBe(true)
+
+    expect(await store.write(record(older, 2_000), { expiresAt })).toBe(true)
+    expect(store.read(older)).toMatchObject({ expiresAt })
+    expect(store.read(newer)).toBeNull()
+  })
+
+  // Recheck 4 of the final review of 0.1.4, finding journal.ts:224: the divergence rewrite keeps its first write's age, so
+  // the oldest-first sweep after it took that very record once its added call pushed the workspace past its budget.
+  // The sweep spares the record just written and removes the older ones instead.
+  it('spares the record a divergence rewrote from the sweep its own growth sets off, so its calls never run again', async () => {
+    const directory = scratch()
+    const script = 'const w = tools.waiter({}).then(() => "waited", error => error.code); const failed = []; for (let i = 0; i < 3; i++) { try { await tools.echo({ i }) } catch (error) { failed.push(i) } } await tools.echo({ report: failed }); while (true) {}'
+    const waitsForAPerson = async (call: NestedCall) => call.tool === 'waiter' ? await new Promise<InvokeResponse>(resolve => call.signal?.addEventListener('abort', () => resolve(cut(call)))) : ok(call, 'x'.repeat(5_000))
+    await codeRun(directory, waitsForAPerson, { journalBytes: 8_192, timeoutMs: 1_000 })(script)
+    const [own] = readdirSync(directory).filter(name => name.endsWith('.json'))
+    // A newer record of another script, so the rewritten one is the oldest.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const newer = 'e'.repeat(64)
+    expect(await createJournalStore({ directory }).write({ key: newer, startedAt: 1, seed: 1, script: 's', tools: [], entries: [{ seq: 1, now: 1, id: 1, tool: 'echo', args: 'h', outcome: { ok: true, value: 'z'.repeat(2_000) } }] })).toBe(true)
+    const budget = readdirSync(directory).filter(name => name.endsWith('.json')).reduce((sum, name) => sum + statSync(join(directory, name)).size, 0) + 200
+
+    const waited: number[] = []
+    const approved = async (call: NestedCall) => {
+      if (call.tool !== 'waiter') return ok(call, 'ran again')
+      call.onExecute?.()
+      waited.push(call.id)
+      return ok(call, 'W'.repeat(1_500))
+    }
+    for (let send = 2; send <= 3; send++) {
+      await expect(codeRun(directory, approved, { journalBytes: 8_192, workspaceBytes: budget })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      expect(readdirSync(directory).filter(name => name.endsWith('.json'))).toEqual([own])
     }
     expect(waited).toEqual([1])
   }, 60_000)

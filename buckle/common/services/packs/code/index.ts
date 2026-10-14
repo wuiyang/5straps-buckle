@@ -73,6 +73,8 @@ export interface CodePackOptions {
   maxRequestBytes?: number
   /** The most results one script keeps for its journal, in memory as on disk; JOURNAL_BYTES when absent. */
   journalBytes?: number
+  /** The most a workspace's records hold together; WORKSPACE_JOURNAL_BYTES when absent. */
+  workspaceBytes?: number
 }
 
 const runInput = z.object({
@@ -86,7 +88,7 @@ const apiInput = z.object({
 
 export function createCodePack(options: CodePackOptions): Pack {
   const reachable = () => options.reachableTools().filter(tool => !CODE_TOOLS.includes(tool.name))
-  const journals = createJournalStore({ directory: options.journalDirectory })
+  const journals = createJournalStore({ directory: options.journalDirectory, ...(options.workspaceBytes ? { workspaceBytes: options.workspaceBytes } : {}) })
   // Recomputed whenever the reachable tools change, which is when the MCP server registers them again.
   let shown: { key: string; text: string } | undefined
   const description = () => {
@@ -554,11 +556,16 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     // The calls this send ran live, such as one its first run cut before it ran, are added to the record, which keeps
     // its expiry, so the next send after a restart runs none of them again (recheck 3 of the final review of 0.1.4,
     // finding code index.ts:483).
-    const entries = record.overflowed ? record.stubs() : record.whole()
-    if (journal && record.count > 0 && entries !== null) {
-      await write([], entries, journal).catch((error: unknown) => {
+    // Whole, or as stubs where the whole passes a bound; refused both ways, the record stays as it was.
+    if (journal && record.count > 0) {
+      try {
+        if (!(!record.overflowed && await write([], record.whole(), journal))) {
+          const stubs = record.stubs()
+          if (stubs !== null) await write([], stubs, journal)
+        }
+      } catch (error) {
         logger.warn('Could not add the calls a diverged script ran to its replay record; sent again after a restart, they may run again', { error: error instanceof Error ? error.message : 'Unknown error' })
-      })
+      }
     }
     throw replayDiverged()
   }

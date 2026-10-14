@@ -153,8 +153,8 @@ export interface JournalStore {
   /** The script's journal, or null when it has none or it expired (removed); throws UnreadableJournalError for one it cannot read (removed). */
   read(key: string): Journal | null
   /**
-   * Writes it whole, expiring JOURNAL_TTL_MS from now, or at `expiresAt` for a record rewritten as kept; false when its
-   * entries pass JOURNAL_BYTES and it was not kept.
+   * Writes it whole, expiring JOURNAL_TTL_MS from now, or at `expiresAt` for a record rewritten as kept; false, and the
+   * record on disk left as it was, when its entries pass JOURNAL_BYTES or it alone passes the workspace's budget.
    */
   write(journal: Omit<Journal, 'expiresAt' | 'version'>, options?: { expiresAt?: number }): Promise<boolean>
   remove(key: string): void
@@ -174,9 +174,11 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
    * Expired journals go, and temporary files a crashed write left, then the oldest until the workspace's journals fit
    * their bound. Run when the store opens and at every write, so a journal nobody resumes, which holds tool results,
    * is not kept past its ten minutes for want of a later ask (review of the code-mode slice, findings sandbox-boundary
-   * journal.ts:134 and :121).
+   * journal.ts:134 and :121). `written`, the record a write just made, is never removed by the sweep that follows it:
+   * older ones go first, so a rewrite that keeps its first write's age does not evict itself (recheck 4 of the final
+   * review of 0.1.4, finding journal.ts:224).
    */
-  function prune(): void {
+  function prune(written?: string): void {
     let names: string[]
     try {
       names = readdirSync(input.directory)
@@ -194,6 +196,7 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
     let total = files.reduce((sum, file) => sum + file.bytes, 0)
     for (const file of files) {
       if (file.at + file.lifetime > now() && total <= workspaceBytes) continue
+      if (written !== undefined && file.path === pathOf(written)) continue
       rmSync(file.path, { force: true })
       total -= file.bytes
     }
@@ -235,10 +238,9 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
       // The bound measures the entries' text alone, as the run's own does: the script, the tools, and the globals,
       // which MAX_GLOBAL_CALLS bounds, add their own size on top (recheck 3 of the final review of 0.1.4, finding
       // journal.ts:197).
-      if (Buffer.byteLength(JSON.stringify(journal.entries)) > journalBytes) {
-        remove(journal.key)
-        return false
-      }
+      // A record that alone passes the workspace's budget is refused too, so the caller keeps its stubs instead. A refused
+      // record leaves the one on disk to the caller, which keeps or removes it.
+      if (Buffer.byteLength(JSON.stringify(journal.entries)) > journalBytes || Buffer.byteLength(text) > workspaceBytes) return false
       mkdirSync(input.directory, { recursive: true, mode: 0o700 })
       setMode(input.directory, 0o700)
       const temporary = join(input.directory, `.${journal.key}.${randomUUID()}.tmp`)
@@ -259,7 +261,7 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
         }
       } finally {
         rmSync(temporary, { force: true })
-        prune()
+        prune(journal.key)
       }
       return true
     },
