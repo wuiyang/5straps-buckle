@@ -425,6 +425,33 @@ describe('the replay journal', () => {
     expect(readdirSync(directory)).toEqual([])
   })
 
+  // Review of the code-mode slice, finding tests 195: a journal from another VM is refused, whatever its entries.
+  it('refuses to replay a journal another VM wrote, and runs nothing of it again', async () => {
+    const { root, runtime } = await node()
+    asked(await run(runtime, READ_THEN_WRITE))
+    const [file] = journals(root)
+    writeFileSync(file!, JSON.stringify({ ...JSON.parse(readFileSync(file!, 'utf8')) as Journal, vm: 'another-engine' }))
+    const read = vi.spyOn(runtime.registry().get('fs_read'), 'prepare')
+
+    expect(await run(runtime, READ_THEN_WRITE)).toMatchObject({ outcome: 'error', error: { code: 'CODE_REPLAY_DIVERGED', retryable: false } })
+    expect(read).not.toHaveBeenCalled()
+    await runtime.history.close()
+  })
+
+  // Review of the code-mode slice, finding tests executions.ts:195: an HTTP client re-sends under its own requestId.
+  it('runs the script when code_run is re-sent under the same requestId after the answer', async () => {
+    const { workspace, runtime } = await node()
+    const send = () => runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId: 'r1', tool: 'code_run', args: { script: READ_THEN_WRITE }, approvalTokens: [], context: { stageId: 'stage-a' } } })
+    const [approval] = asked(await send())
+    await answer(runtime, approval!.token)
+
+    expect(await send()).toMatchObject({ outcome: 'ok', output: { ok: true, output: 'written' } })
+    expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
+    expect(attempts(runtime, 'fs_read')).toHaveLength(1)
+    expect(results(runtime, 'code_run').map(entry => entry.detail)).toEqual([undefined, undefined])
+    await runtime.history.close()
+  })
+
   it('refuses a script that, replayed, makes other calls than its first run did', async () => {
     const { root, runtime } = await node()
     asked(await run(runtime, READ_THEN_WRITE))

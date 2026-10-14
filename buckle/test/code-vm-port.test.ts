@@ -121,6 +121,14 @@ describe('the pi-codemode script VM', () => {
     await Promise.all(runs.map(run => run.result))
   })
 
+  // Review of the code-mode slice, findings docs-rules code-mode.md:94 and packaging-platform 94: pi-codemode's own
+  // limit, which the docs name, fails the script rather than cutting its output; an upgrade that moves it shows here.
+  it('fails a script past 100,000 lines of output, and keeps one just under it', async () => {
+    const lines = (count: number) => started(vm.start(input(`for (let i = 0; i < ${count}; i++) text("a"); return "done"`, { limits: { deadlineMs: 60_000, memoryBytes: 64 * 1_024 * 1_024, outputChars: 1_048_576 } }))).result
+    expect(await lines(99_999)).toMatchObject({ ok: true, value: 'done' })
+    expect(await lines(100_001)).toMatchObject({ ok: false, error: { kind: 'script', name: 'RangeError', message: expect.stringContaining('100000') } })
+  }, 60_000)
+
   it('cuts long output in the middle, keeping its start and its end', async () => {
     const run = started(vm.start(input('for (let i = 0; i < 1000; i++) text("line " + i)', { limits: { deadlineMs: 20_000, memoryBytes: 64 * 1_024 * 1_024, outputChars: 200 } })))
     const result = await run.result

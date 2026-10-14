@@ -215,9 +215,15 @@ describe('the code pack setting', () => {
     for (const { runtime } of [off, on, left]) await runtime.history.close()
   })
 
+  // Review of the code-mode slice, finding tests 180: a sandbox this host cannot give, so the shell pack is withheld
+  // for it, rather than BUCKLE_SANDBOX=none, which is a sandbox decision.
   it('is never withheld for want of an operating-system sandbox', async () => {
-    const { runtime } = await node({ BUCKLE_SANDBOX: 'none' })
-    expect(runtime.manifest().packs.find(pack => pack.id === 'code')?.unavailableReason).toBeNull()
+    const unavailable = process.platform === 'darwin' ? 'bubblewrap' : 'seatbelt'
+    const { runtime } = await node({ BUCKLE_SANDBOX: unavailable, BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell,code' })
+    const packs = runtime.manifest().packs
+    expect(packs.find(pack => pack.id === 'shell')?.unavailableReason).toContain(`BUCKLE_SANDBOX=${unavailable}`)
+    expect(packs.find(pack => pack.id === 'code')?.unavailableReason).toBeNull()
+    expect(runtime.manifest().tools.map(tool => tool.name).filter(name => name.startsWith('code_'))).toEqual(['code_api', 'code_run'])
     await runtime.history.close()
   })
 })
