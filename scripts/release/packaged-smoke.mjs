@@ -151,7 +151,7 @@ async function startService(options = {}) {
     if (service.exitCode !== null) throw new Error(`Buckle exited during startup: ${serviceOutput}`)
     try {
       // Liveness answers during startup; readiness waits for the common runtime.
-      const response = await fetch(`http://127.0.0.1:${port}/health/ready`, { signal: AbortSignal.timeout(500) })
+      const response = await nodeFetch('/health/ready', { timeout: 500 })
       if (response.ok) return assertOneCliListener()
     } catch (error) {
       if (error instanceof assert.AssertionError) throw error
@@ -177,11 +177,21 @@ async function stopService() {
   try { await exited } finally { clearTimeout(timer) }
 }
 
+/**
+ * Every request to the node goes out on a connection of its own (Connection: close). The release
+ * smoke flaked with `fetch failed` / `other side closed` on the request after the signed approval:
+ * the CLI steps there run synchronously for seconds, blocking this process's event loop, so fetch
+ * sent the request on a pooled keep-alive socket the node had already closed at its idle timeout.
+ */
+function nodeFetch(path, { headers = {}, timeout = 10_000, ...init } = {}) {
+  return fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers: { ...headers, connection: 'close' }, signal: AbortSignal.timeout(timeout) })
+}
+
 async function request(path, { token = adminToken, body, status = 200 } = {}) {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+  const response = await nodeFetch(path, {
     method: body === undefined ? 'GET' : 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10_000),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
   assert.equal(response.status, status, `Unexpected status for ${path}`)
   return response.json()
@@ -320,11 +330,11 @@ async function checkCleanStop() {
 async function checkSetupWithoutAdminToken() {
   await startService({ admin: false, adminHttp: true })
   for (const token of [adminToken, agentToken, undefined]) {
-    const response = await fetch(`http://127.0.0.1:${port}/setup/status`, { headers: token ? { authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(10_000) })
+    const response = await nodeFetch('/setup/status', { headers: token ? { authorization: `Bearer ${token}` } : {} })
     await response.body?.cancel()
     assert.equal(response.status, 404, 'A node without an admin token must serve no /setup')
   }
-  assert.equal((await fetch(`http://127.0.0.1:${port}/v1/manifest`, { headers: { authorization: `Bearer ${agentToken}` }, signal: AbortSignal.timeout(10_000) })).status, 200)
+  assert.equal((await nodeFetch('/v1/manifest', { headers: { authorization: `Bearer ${agentToken}` } })).status, 200)
   await checkCleanStop()
 }
 
@@ -335,14 +345,14 @@ async function checkSetupWithoutAdminToken() {
  */
 async function checkSetupWithFlagOff() {
   await startService({ admin: true, adminHttp: false })
-  const unmatched = await fetch(`http://127.0.0.1:${port}/not-a-route`, { signal: AbortSignal.timeout(10_000) })
+  const unmatched = await nodeFetch('/not-a-route')
   const expected = await unmatched.text()
   for (const [path, token] of [['/setup/status', adminToken], ['/setup/policy', adminToken], ['/workspaces/default/setup/status', adminToken], ['/setup/status', agentToken], ['/setup/status', undefined]]) {
-    const response = await fetch(`http://127.0.0.1:${port}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(10_000) })
+    const response = await nodeFetch(path, { headers: token ? { authorization: `Bearer ${token}` } : {} })
     assert.equal(response.status, 404, `${path} must answer 404 while the experimental admin flag is off`)
     assert.equal(await response.text(), expected, `${path} must answer as an unmatched path does`)
   }
-  assert.equal((await fetch(`http://127.0.0.1:${port}/v1/manifest`, { headers: { authorization: `Bearer ${agentToken}` }, signal: AbortSignal.timeout(10_000) })).status, 200)
+  assert.equal((await nodeFetch('/v1/manifest', { headers: { authorization: `Bearer ${agentToken}` } })).status, 200)
   await checkCleanStop()
 }
 
