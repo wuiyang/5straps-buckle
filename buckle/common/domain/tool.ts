@@ -39,6 +39,11 @@ export interface ToolContext {
    * that made them has finished, so running the same script again runs its calls again.
    */
   forgetNested?: (ids: readonly number[]) => void
+  /**
+   * Beside `invokeNested`: withdraws asks the script's calls left pending, through the approval service as a denied
+   * sibling's are, when no call will ever spend them (review of the code-mode slice, coordinator decision 5).
+   */
+  withdrawNested?: (tokens: readonly string[]) => Promise<void>
 }
 
 /** One call a script makes: its number in the script, the tool, its arguments, and what cancels it. */

@@ -379,6 +379,17 @@ describe('the replay journal', () => {
   // Review of the code-mode slice, findings sandbox-boundary journal.ts:134 and :121.
   const record = (key: string) => ({ key, startedAt: 1, seed: 2, tools: [], entries: [{ seq: 1, now: 1, id: 1, tool: 'echo', args: 'x', outcome: { ok: true as const, value: 'tool result' } }] })
 
+  // Review of the code-mode slice, coordinator decision 5.
+  it(`withdraws the asks of a script that cannot resume, answering ${CODE_REPLAY_TOO_LARGE}`, async () => {
+    const { workspace, runtime } = await node()
+    writeFileSync(join(workspace, 'large.txt'), 'x'.repeat(9 * 1_048_576))
+    const script = 'let size = 0; for (let i = 0; i < 4; i++) size += (await tools.fs_read({ path: "large.txt" })).size; await tools.fs_write({ path: "one/out.md", content: String(size) })'
+    expect(await run(runtime, script)).toMatchObject({ outcome: 'error', error: { code: CODE_REPLAY_TOO_LARGE } })
+    expect(runtime.approvalService.pending()).toEqual([])
+    expect(results(runtime, 'fs_write').map(entry => entry.outcome)).toEqual(['approval_required'])
+    await runtime.history.close()
+  }, 60_000)
+
   it('removes expired journals and a crashed write\'s leftovers when a store opens, with no further write', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-code-prune-'))
     roots.push(directory)
@@ -435,9 +446,9 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
   const cut = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'error', error: { code: 'SCRIPT_ENDED', message: 'cut', retryable: false } })
   const ask = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'approval_required', approvals: [{ token: `token-${call.id}`, rule: 'write_scope', subject: '/w', reason: 'asks', tool: call.tool, offeredScopes: ['once'], expiresAt: new Date(Date.now() + 60_000).toISOString() }] })
 
-  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>, input: { timeoutMs?: number; signal?: AbortSignal; forgetNested?: (ids: readonly number[]) => void } = {}) {
-    const pack = createCodePack({ vm: createPiCodemodeVm(), reachableTools: () => [echo, gate, waiter], journalDirectory: directory, unavailableReason: null })
-    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: input.timeoutMs ?? 60_000, signal: input.signal ?? new AbortController().signal, nestedKey: 'f'.repeat(64), invokeNested, forgetNested: input.forgetNested ?? (() => {}) }
+  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>, input: { timeoutMs?: number; signal?: AbortSignal; forgetNested?: (ids: readonly number[]) => void; withdrawNested?: (tokens: readonly string[]) => Promise<void>; journalBytes?: number } = {}) {
+    const pack = createCodePack({ vm: createPiCodemodeVm(), reachableTools: () => [echo, gate, waiter], journalDirectory: directory, unavailableReason: null, ...(input.journalBytes ? { journalBytes: input.journalBytes } : {}) })
+    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: input.timeoutMs ?? 60_000, signal: input.signal ?? new AbortController().signal, nestedKey: 'f'.repeat(64), invokeNested, forgetNested: input.forgetNested ?? (() => {}), ...(input.withdrawNested ? { withdrawNested: input.withdrawNested } : {}) }
     return (script: string) => pack.tools[0]!.prepare({ script }).execute(context)
   }
 
@@ -524,9 +535,28 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     roots.push(directory)
     const large = 'x'.repeat(17 * 1_024 * 1_024)
     const script = 'const a = await tools.echo({}); const b = await tools.echo({}); await tools.gate({}); return a.length + b.length'
-    const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, large as JsonObject[keyof JsonObject]))
+    const withdrawNested = vi.fn(async () => {})
+    const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, large as JsonObject[keyof JsonObject]), { withdrawNested })
 
     await expect(execute(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE, retryable: false })
     expect(readdirSync(directory).filter(name => name.endsWith('.json'))).toEqual([])
+    // Review of the code-mode slice, coordinator decision 5: no call will spend the ask, so it is withdrawn.
+    expect(withdrawNested).toHaveBeenCalledWith(['token-3'])
   }, 60_000)
+
+  // Review of the code-mode slice, finding tests 163: the bound on results kept in memory holds on its own, before
+  // the store's, and an earlier journal of the script goes with it.
+  it('stops keeping results in memory past the journal bound, before the store is reached', async () => {
+    const directory = scratch()
+    const earlier = join(directory, `${'f'.repeat(64)}.json`)
+    writeFileSync(earlier, JSON.stringify({ version: 1, key: 'f'.repeat(64), startedAt: 1, seed: 1, tools: [echo, gate, waiter].map(tool => ({ name: tool.name, jsName: tool.name, description: tool.description })), entries: [], expiresAt: Date.now() + 60_000 }))
+    const withdrawNested = vi.fn(async () => {})
+    const script = 'for (let i = 0; i < 10; i++) await tools.echo({ i }); await tools.gate({})'
+    const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'x'.repeat(500)), { journalBytes: 2_048, withdrawNested })
+
+    await expect(execute(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE })
+    expect(existsSync(earlier)).toBe(false)
+    expect(readdirSync(directory)).toEqual([])
+    expect(withdrawNested).toHaveBeenCalledWith(['token-11'])
+  })
 })

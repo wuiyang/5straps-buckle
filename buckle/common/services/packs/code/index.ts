@@ -63,6 +63,8 @@ export interface CodePackOptions {
   unavailableReason: string | null
   /** BUCKLE_MAX_REQUEST_BYTES: a call's arguments past it are refused inside the script, as a direct call's are; DEFAULT_ARGUMENT_BYTES when absent. */
   maxRequestBytes?: number
+  /** The most results one script keeps for its journal, in memory as on disk; JOURNAL_BYTES when absent. */
+  journalBytes?: number
 }
 
 const runInput = z.object({
@@ -104,7 +106,7 @@ export function createCodePack(options: CodePackOptions): Pack {
         replayKey: input => ({ script: input.script }),
         // None of its own: each call it makes carries its own, and is judged when it is made.
         effects: () => [],
-        run: (input, context) => runScript({ script: input.script, context, vm: options.vm, journals, reachable, argumentBytes: options.maxRequestBytes ?? DEFAULT_ARGUMENT_BYTES }),
+        run: (input, context) => runScript({ script: input.script, context, vm: options.vm, journals, reachable, argumentBytes: options.maxRequestBytes ?? DEFAULT_ARGUMENT_BYTES, journalBytes: options.journalBytes ?? JOURNAL_BYTES }),
       }),
       defineTool(PACK_ID, {
         name: 'code_api',
@@ -160,7 +162,7 @@ function oversized(args: JsonValue | undefined, limit: number): number | null {
  * again; past the journal its calls run live and are appended. When a call needs a person, no new call starts, the
  * calls already running settle into the journal, the VM stops, and every ask goes back to the invoker together.
  */
-async function runScript(input: { script: string; context: ToolContext; vm: ScriptVm; journals: JournalStore; reachable: () => ToolCapability[]; argumentBytes: number }): Promise<JsonValue> {
+async function runScript(input: { script: string; context: ToolContext; vm: ScriptVm; journals: JournalStore; reachable: () => ToolCapability[]; argumentBytes: number; journalBytes: number }): Promise<JsonValue> {
   const { context, vm, journals } = input
   const { invokeNested, nestedKey: key } = context
   if (!invokeNested || !key) throw new ToolExecutionError('code_run runs only through the invoker, which makes its calls', { code: 'TOOL_EXECUTION_FAILED' })
@@ -221,7 +223,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     const entry: JournalEntry = { seq: nextSeq++, now: Date.now(), id: call.id, tool: target, args, outcome }
     if (!overflowed) {
       journalBytes += Buffer.byteLength(JSON.stringify(entry))
-      overflowed = journalBytes > JOURNAL_BYTES
+      overflowed = journalBytes > input.journalBytes
       if (overflowed) fresh.length = 0
       else fresh.push(entry)
     }
@@ -331,7 +333,11 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     throw broken.error
   }
   if (asks.length > 0) {
-    if (!await keep()) throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
+    if (!await keep()) {
+      // No call will spend these asks: the script cannot resume, so they leave the queue as a denied sibling's do.
+      await context.withdrawNested?.(asks.map(ask => ask.token))
+      throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
+    }
     throw new NestedApprovalRequired(asks)
   }
   // A script that returned, threw, or exited is done: its record goes, and sending it again is a new run whose calls
