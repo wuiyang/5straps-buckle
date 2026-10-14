@@ -56,8 +56,11 @@ const JournalSchema = z.object({
    */
   script: z.string().optional(),
   asks: z.array(z.string()).optional(),
-  /** The stage the first run filed its calls under, which a resumed run keeps (finding docs-rules code-mode.md:111). */
-  stage: z.string().optional(),
+  /**
+   * The requestId of the first run's code_run call, which its calls name as their parent and a resumed run keeps
+   * (finding docs-rules code-mode.md:111; final review of 0.1.4, finding invoker 701).
+   */
+  parentRequestId: z.string().optional(),
   tools: z.array(z.object({ name: z.string(), jsName: z.string(), description: z.string() })),
   entries: z.array(EntrySchema),
   expiresAt: z.number(),

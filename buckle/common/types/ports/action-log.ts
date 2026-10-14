@@ -30,6 +30,11 @@ export interface ActionLogEntry {
   claimedActorId?: string
   claimedActorTrust?: 'claimed'
   agentId?: string
+  /**
+   * On a call a code_run script made, the requestId of that code_run call, the script that made it; its stage is the
+   * caller's own, as on a direct call (final review of 0.1.4, finding invoker 701).
+   */
+  parentRequestId?: string
   at: string
   requestId: string
   sessionId: string

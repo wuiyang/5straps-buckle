@@ -34,8 +34,11 @@ export interface ToolContext {
    * session, the actor, and this call's tool and arguments, so a re-sent script names its calls as before.
    */
   nestedKey?: string
-  /** Beside `invokeNested`: the stage this call's nested calls are filed under unless a call names its own. */
-  nestedStage?: string
+  /**
+   * Beside `invokeNested`: this call's requestId, which its nested calls carry as their `parentRequestId` unless a call
+   * names its own. Their stage stays this call's (final review of 0.1.4, finding invoker 701).
+   */
+  nestedParent?: string
   /**
    * Beside `invokeNested`: forgets the outcomes Buckle keeps for re-sends of these nested calls, once the script
    * that made them has finished, so running the same script again runs its calls again.
@@ -61,10 +64,11 @@ export interface NestedCall {
   args: JsonObject
   signal?: AbortSignal
   /**
-   * The stage to file it under, when not this run's: a resumed script's first run's, so its calls before and after an
-   * ask share one stage (review of the code-mode slice, finding docs-rules code-mode.md:111).
+   * The code_run call to name as its parent, when not this run's: a resumed script's first run's, so its calls before
+   * and after an ask name one (review of the code-mode slice, finding docs-rules code-mode.md:111; final review of
+   * 0.1.4, finding invoker 701).
    */
-  stageId?: string
+  parentRequestId?: string
   /**
    * Told when the tool itself begins to run, past every check and approval: from then the call has run, its effects
    * unknown if it is cut (re-review of the code-mode slice, finding new-surface index.ts:302).

@@ -125,7 +125,7 @@ describe('a call inside a script that needs a person', () => {
     const [waiting] = runtime.approvalService.waiting()
     expect(waiting?.call).toMatchObject({
       complete: true, cwd: workspace, arguments: { path: 'one/out.md', content: 'HELLO' },
-      description: `Called by a "code_run" script, stage "stage-a"; buckle approvals show <token> prints the script: Write 5 bytes to "one/out.md" in "${workspace}"`,
+      description: `Called by a "code_run" script, request "outer-${sequence}"; buckle approvals show <token> prints the script: Write 5 bytes to "one/out.md" in "${workspace}"`,
       effects: [`write ${join(workspace, 'one', 'out.md')}`],
     })
     expect(existsSync(join(workspace, 'one', 'out.md'))).toBe(false)
@@ -141,6 +141,7 @@ describe('a call inside a script that needs a person', () => {
   it('replays the calls that ran when the same script is sent again after the answer, and runs the one that asked', async () => {
     const { root, workspace, runtime } = await node()
     const [approval] = asked(await run(runtime, READ_THEN_WRITE))
+    const first = `outer-${sequence}`
     await answer(runtime, approval!.token)
     const read = vi.spyOn(runtime.registry().get('fs_read'), 'prepare')
 
@@ -149,8 +150,9 @@ describe('a call inside a script that needs a person', () => {
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
     expect(read).not.toHaveBeenCalled()
     expect(attempts(runtime, 'fs_read')).toHaveLength(1)
-    // One stage for the script, before and after its ask, though the retry carried another (finding docs-rules code-mode.md:111).
-    expect(attempts(runtime, 'fs_write').map(entry => entry.stageId)).toEqual(['stage-a', 'stage-a'])
+    // One parent for the script, its first run's code_run call, before and after its ask (finding docs-rules
+    // code-mode.md:111), and each send's own stage, as its direct calls have (final review of 0.1.4, finding invoker 701).
+    expect(attempts(runtime, 'fs_write').map(entry => [entry.stageId, entry.parentRequestId])).toEqual([['stage-a', first], ['stage-b', first]])
     expect(journals(root)).toEqual([])
 
     // Done by itself, the script is a new run when sent again: its calls run again, and the spent once asks again.
@@ -174,7 +176,7 @@ describe('a call inside a script that needs a person', () => {
     expect(forms).toHaveLength(1)
     const [token, form] = forms[0]!
     expect(form.params.message).toContain('fs_write needs approval')
-    expect(form.params.message).toContain('does:     Called by a "code_run" script, stage')
+    expect(form.params.message).toContain('does:     Called by a "code_run" script, request')
     expect(form.params.message).toContain('"content": "HELLO"')
 
     const second = await call({ [token]: { action: 'accept', content: { approve: true, scope: 'once' } } }) as { isError?: boolean; content: Array<{ text: string }> }
@@ -182,9 +184,14 @@ describe('a call inside a script that needs a person', () => {
     expect(JSON.parse(second.content[0]!.text)).toMatchObject({ ok: true, output: 'written' })
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
     expect(attempts(runtime, 'fs_read')).toHaveLength(1)
-    // MCP gives each tools/call its own requestId, the stage a script falls back to; the retry keeps the first one.
-    const stages = [...attempts(runtime, 'fs_read'), ...attempts(runtime, 'fs_write')].map(entry => entry.stageId)
-    expect(new Set(stages).size).toBe(1)
+    // MCP gives each tools/call its own requestId, which a script's calls name as their parent; the retry keeps the
+    // first one. They carry no stage, as the direct calls of the same host carry none.
+    const nested = [...attempts(runtime, 'fs_read'), ...attempts(runtime, 'fs_write')]
+    const parents = [...new Set(nested.map(entry => entry.parentRequestId))]
+    expect(parents).toHaveLength(1)
+    expect(nested.map(entry => entry.stageId)).toEqual([undefined, undefined, undefined])
+    // With no stage or run named, the change history files the script's write under its parent, the first code_run call.
+    expect((await runtime.history.list()).map(checkpoint => [checkpoint.tool, checkpoint.stageId])).toEqual([['fs_write', parents[0]]])
     await runtime.history.close()
   })
 

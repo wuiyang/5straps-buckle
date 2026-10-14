@@ -176,8 +176,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const began = performance.now()
   const journal = journals.read(key)
   const tools: ScriptVmTool[] = journal?.tools ?? input.reachable().map(tool => ({ name: tool.name, jsName: vm.identifier(tool.name), description: tool.description }))
-  // One stage for the script's calls, before and after an ask, whatever stage the re-send carries.
-  const stage = journal?.stage ?? context.nestedStage
+  // One parent for the script's calls, before and after an ask: its first run's code_run call. Their stage is each
+  // send's own, so they share the browser and other state the agent's direct calls of that send reach (final review
+  // of 0.1.4, finding invoker 701).
+  const parent = journal?.parentRequestId ?? context.nestedParent
   const startedAt = journal?.startedAt ?? Date.now()
   const seed = journal?.seed ?? randomInt(0, 2 ** 32)
   const replay = journal?.entries ?? []
@@ -321,7 +323,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       const args = call.args ?? {}
       if (!isObject(args)) return answer(call, target, failure('INVALID_TOOL_INPUT', 'A tool takes one object of arguments'), fingerprint)
       made.add(call.id)
-      const start = () => running.set(call.id, invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal, onExecute: () => executing.add(call.id), ...(stage === undefined ? {} : { stageId: stage }) }).then((response) => {
+      const start = () => running.set(call.id, invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal, onExecute: () => executing.add(call.id), ...(parent === undefined ? {} : { parentRequestId: parent }) }).then((response) => {
         const cut = cancel.signal.aborted || context.signal.aborted
         if (response.outcome === 'approval_required') asks.push(...response.approvals)
         // A call cut by the script's end, a cancel, or a shutdown after its tool began to run is journaled as run,
@@ -368,7 +370,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   }
   // The record of what ran, for the re-sent script; false when it passes its bound, and then none is left behind.
   const keep = async (): Promise<boolean> => {
-    const named = { script: input.script, ...(asks.length > 0 ? { asks: asks.map(ask => ask.token) } : {}), ...(stage === undefined ? {} : { stage }) }
+    const named = { script: input.script, ...(asks.length > 0 ? { asks: asks.map(ask => ask.token) } : {}), ...(parent === undefined ? {} : { parentRequestId: parent }) }
     if (!overflowed && await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), ...named, tools, entries: [...replay, ...fresh] })) return true
     journals.remove(key)
     return false

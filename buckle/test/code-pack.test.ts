@@ -84,14 +84,17 @@ describe('a code_run script on a workspace', () => {
     await runtime.history.close()
   })
 
-  it('audits each call the script made with the outer call\'s stage, or its requestId when it names none', async () => {
+  // Final review of 0.1.4, finding invoker 701: the stage stays the caller's own, unset where it named none, and the
+  // script is named beside it by its code_run call's requestId.
+  it('audits each call the script made with the outer call\'s own stage and its requestId as the parent', async () => {
     const { runtime } = await node()
     ran(await run(runtime, 'await tools.fs_list({ path: "docs" })', { stageId: 'stage-7' }))
     const outer = ran(await run(runtime, 'await tools.fs_list({ path: "docs" })'))
     expect(outer.ok).toBe(true)
 
     const nested = results(runtime).filter(entry => entry.tool === 'fs_list')
-    expect(nested.map(entry => entry.stageId)).toEqual(['stage-7', `outer-${sequence}`])
+    expect(nested.map(entry => [entry.stageId, entry.parentRequestId])).toEqual([['stage-7', `outer-${sequence - 1}`], [undefined, `outer-${sequence}`]])
+    expect(results(runtime).filter(entry => entry.tool === 'code_run').map(entry => entry.parentRequestId)).toEqual([undefined, undefined])
     expect(nested.every(entry => /^code:[0-9a-f]{64}:1$/.test(entry.requestId) && entry.sessionId === 'chat-1' && entry.outcome === 'ok')).toBe(true)
     await runtime.history.close()
   })

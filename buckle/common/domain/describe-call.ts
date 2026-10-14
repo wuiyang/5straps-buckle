@@ -34,14 +34,15 @@ export const SUMMARY_CUT = '[summary cut; the arguments below are complete]'
 /** How a call a script made opens its description. */
 export const SCRIPT_CALL_NOTE = 'Called by a'
 
-export function describeCall(input: { tool: string; args: JsonObject; cwd: string; via?: { tool: string; stageId: string } }): string {
+export function describeCall(input: { tool: string; args: JsonObject; cwd: string; via?: { tool: string; parentRequestId: string } }): string {
   const cut = { truncated: false }
   const facts = factsOf(cut)
   // A call a script made opens with that, ahead of anything a cut could drop (owner decision D82, point 6): the
-  // outer tool, the stage the audit log files the script's calls under, and the command that prints the script,
-  // which the audit log keeps only the size of (review of the code-mode slice, coordinator decision 4). The script
-  // is context; the call shown whole is what is approved (owner decision D17).
-  const via = input.via ? `${SCRIPT_CALL_NOTE} ${facts.fact(input.via.tool)} script, stage ${facts.fact(input.via.stageId)}; buckle approvals show <token> prints the script: ` : ''
+  // outer tool, the requestId of the call that sent the script, which the audit log names the script's calls by
+  // (final review of 0.1.4, finding invoker 701), and the command that prints the script, which the audit log keeps
+  // only the size of (review of the code-mode slice, coordinator decision 4). The script is context; the call shown
+  // whole is what is approved (owner decision D17).
+  const via = input.via ? `${SCRIPT_CALL_NOTE} ${facts.fact(input.via.tool)} script, request ${facts.fact(input.via.parentRequestId)}; buckle approvals show <token> prints the script: ` : ''
   return `${via}${capped(`${describeAction(input.tool, input.args, facts)} in ${facts.fact(input.cwd, PATH_LENGTH)}`, cut, MAX_DESCRIPTION_LENGTH - via.length)}`
 }
 

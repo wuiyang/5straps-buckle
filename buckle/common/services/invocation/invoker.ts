@@ -80,7 +80,7 @@ export interface InvokeInput {
   /** The entry point's wait for an approval; with the caller's own hint, the shorter one holds. */
   approvalWait?: ApprovalWait
   /**
-   * Set only by the invoker on a call a script made (owner decision D82): the outer call's tool and stage, which
+   * Set only by the invoker on a call a script made (owner decision D82): the outer call's tool and requestId, which
    * the ask names so the approver can find the script in the audit log, and which refuses a code tool.
    */
   via?: NestedOrigin
@@ -94,10 +94,14 @@ export interface InvokeInput {
   onExecute?: () => void
 }
 
-/** The call a script's call came from: its tool and the stage its calls are grouped under. */
+/**
+ * The call a script's call came from: its tool, and the requestId of the `code_run` call whose script made it, which
+ * the call's audit entries carry as `parentRequestId` and its change history is grouped under where the caller named
+ * no stage or run. The stage itself stays the caller's own (final review of 0.1.4, finding invoker 701).
+ */
 export interface NestedOrigin {
   tool: string
-  stageId: string
+  parentRequestId: string
 }
 
 export interface Invoker {
@@ -129,7 +133,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         auditId, event: 'attempt', workspaceId: options.workspaceId ?? 'default',
         at: new Date().toISOString(), requestId: request.requestId.slice(0, MAX_LOGGED_ID), sessionId: sessionId.slice(0, MAX_LOGGED_ID),
         tool: request.tool.slice(0, MAX_LOGGED_ID), outcome: 'started', durationMs: 0, effects: [], args: redactAuditArguments(request.args),
-        ...auditContext(request),
+        ...auditContext(request, via),
 
       })
       let effects: ResolvedEffect[] = []
@@ -197,7 +201,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
           // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).
           const output = options.history && tracksChanges && !prepared.managesHistory
-            ? await options.history.run({ sessionId, stageId: request.context?.stageId ?? request.context?.runId ?? request.requestId, tool: request.tool, roots: [...new Set(roots)] }, execute, stop)
+            ? await options.history.run({ sessionId, stageId: historyStage(request, via), tool: request.tool, roots: [...new Set(roots)] }, execute, stop)
             : options.history && prepared.exclusive ? await options.history.exclusive(execute, stop) : await execute()
           // A tool that returns what its killed process left (a shell) ran into the shutdown all the same:
           // it answers as a tool that throws does, effects unknown (review L12 of B18-B19).
@@ -248,7 +252,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         durationMs: Math.round(performance.now() - startedAt),
         replayed,
       })
-      const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId ?? 'default', ...auditContext(request) }
+      const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId ?? 'default', ...auditContext(request, via) }
       // A call that ran answers with what it did even when its result cannot be written: refusing it
       // would tell the caller it did not run, and a retry would run it twice (review L5 of B18-B19). The
       // attempt is already in the log, and recovery marks it interrupted.
@@ -689,16 +693,19 @@ interface Nesting {
 
 /**
  * A script's calls, each built here from the outer call and never by the tool (owner decision D82, point 4): the
- * same session and actor scope, the outer call's approval tokens, its context with the stage set to the outer
- * call's stage (or run, or requestId), so the audit log and the change history group a script's calls, its wait
- * for a person, and its signal. The requestId is `code:<key>:<call number>`, the key a hash of the session, the
- * actor and the outer call, so a re-sent script names its calls as before: Buckle's own re-send dedupe never runs
- * one twice, and a call that asked joins its ask.
+ * same session and actor scope, the outer call's approval tokens, its context as it came, its wait for a person, and
+ * its signal. The context's stage is the caller's own, unset where it named none, so a script's calls reach the same
+ * browser sessions and every other state kept by session and stage as the agent's direct calls: a page the agent
+ * opened is the page a script reads. The script is named beside it instead, by the outer call's requestId as
+ * `parentRequestId`, which the audit log and the change history group a script's calls by (final review of 0.1.4,
+ * finding invoker 701). The requestId is `code:<key>:<call number>`, the key a hash of the session, the actor and
+ * the outer call, so a re-sent script names its calls as before: Buckle's own re-send dedupe never runs one twice,
+ * and a call that asked joins its ask.
  */
-function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal; timeoutMs: number }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'nestedStage' | 'forgetNested' | 'withdrawNested' | 'callerCancelled'> {
+function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal; timeoutMs: number }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'nestedParent' | 'forgetNested' | 'withdrawNested' | 'callerCancelled'> {
   const { request, nesting } = input
   const nestedKey = nestedCallKey(nesting.key)
-  const nestedStage = (request.context?.stageId ?? request.context?.runId ?? request.requestId).slice(0, MAX_LOGGED_ID)
+  const nestedParent = request.requestId.slice(0, MAX_LOGGED_ID)
   const requestIdOf = (id: number) => `code:${nestedKey}:${id}`
   // Only the outer caller's own cancel withdraws a script's asks. The script's deadline, its end, and a shutdown are
   // Buckle's own aborts: an ask they cut stays pending for the re-sent script to join (review of the code-mode
@@ -708,12 +715,12 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
   // Each wait ends before the script's deadline, so an unanswered ask comes back as approval_required, never as a
   // timeout that leaves it pending unannounced (same finding, and invoker-audit 228).
   const waitEnds = performance.now() + input.timeoutMs - NESTED_WAIT_MARGIN_MS
-  const stageOf = (call: NestedCall) => (call.stageId ?? nestedStage).slice(0, MAX_LOGGED_ID)
+  const parentOf = (call: NestedCall) => (call.parentRequestId ?? nestedParent).slice(0, MAX_LOGGED_ID)
   return {
     nestedKey,
-    nestedStage,
+    nestedParent,
     invokeNested: (call: NestedCall) => nesting.run({
-      request: { requestId: requestIdOf(call.id), tool: call.tool, args: call.args, approvalTokens: request.approvalTokens, context: { ...request.context, stageId: stageOf(call) } },
+      request: { requestId: requestIdOf(call.id), tool: call.tool, args: call.args, approvalTokens: request.approvalTokens, ...(request.context ? { context: request.context } : {}) },
       sessionId: input.sessionId,
       // The pack's own cancel first: a signal read late reports the first of its sources that aborted, in this order,
       // so a call its script's end cut is audited SCRIPT_ENDED even after the invoker's backstop timer has fired too
@@ -723,7 +730,7 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
       ...(nesting.approvalWait ? { approvalWait: nesting.approvalWait } : {}),
       holdUntil: waitEnds,
       ...(call.onExecute ? { onExecute: call.onExecute } : {}),
-      via: { tool: request.tool, stageId: stageOf(call) },
+      via: { tool: request.tool, parentRequestId: parentOf(call) },
     }),
     forgetNested: (ids) => {
       for (const id of ids) input.options.executions.forget({ ...nesting.key, requestId: requestIdKey(requestIdOf(id)) })
@@ -787,7 +794,7 @@ function inferTruncated(output: unknown): boolean {
  * beside it and never in its place (GPT review of c71dee5, requester attribution). The run, stage, chat,
  * project and agent are the caller's correlation fields, as it sent them.
  */
-function auditContext(request: InvokeRequest): Pick<ActionLogEntry, 'runId' | 'stageId' | 'chatId' | 'projectId' | 'actorId' | 'actorTrust' | 'claimedActorId' | 'claimedActorTrust' | 'agentId'> {
+function auditContext(request: InvokeRequest, via?: NestedOrigin): Pick<ActionLogEntry, 'runId' | 'stageId' | 'chatId' | 'projectId' | 'actorId' | 'actorTrust' | 'claimedActorId' | 'claimedActorTrust' | 'agentId' | 'parentRequestId'> {
   const context = request.context
   const actor = useScopeSafe()?.context.actor
   const claimed = context?.actorId?.slice(0, MAX_LOGGED_ID)
@@ -797,5 +804,16 @@ function auditContext(request: InvokeRequest): Pick<ActionLogEntry, 'runId' | 's
     agentId: context?.agentId?.slice(0, MAX_LOGGED_ID),
     ...(actor ? { actorId: actor.slice(0, MAX_LOGGED_ID), actorTrust: 'authenticated' as const } : {}),
     ...(claimed ? { claimedActorId: claimed, claimedActorTrust: 'claimed' as const } : {}),
+    // A script's call names the code_run call whose script made it (final review of 0.1.4, finding invoker 701).
+    ...(via ? { parentRequestId: via.parentRequestId } : {}),
   }
+}
+
+/**
+ * The stage a call's writes are checkpointed under: the caller's stage, or its run, or else, for a script's call, the
+ * code_run call whose script made it, so a script's writes are restored together; a direct call's own requestId last
+ * (final review of 0.1.4, finding invoker 701).
+ */
+function historyStage(request: InvokeRequest, via: NestedOrigin | undefined): string {
+  return request.context?.stageId ?? request.context?.runId ?? via?.parentRequestId ?? request.requestId
 }

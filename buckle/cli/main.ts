@@ -226,6 +226,8 @@ function printLog(runtime: BuckleRuntime, argv: string[]): CliResult {
     for (const effect of entry.effects) process.stdout.write(`    ${printable(effect)}\n`)
     for (const ask of entry.asked ?? []) process.stdout.write(`    asked: ${printable(ask)}\n`)
     for (const grant of entry.approvedBy ?? []) process.stdout.write(`    allowed by: ${printable(grant)}\n`)
+    // A script's call names the code_run call whose script made it (final review of 0.1.4, finding invoker 701).
+    if (entry.parentRequestId) process.stdout.write(`    parent request: ${printable(entry.parentRequestId)}\n`)
     if (entry.detail) process.stdout.write(`    ${printable(entry.detail)}\n`)
   }
   return { exitCode: 0 }
