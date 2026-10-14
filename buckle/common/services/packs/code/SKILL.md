@@ -79,9 +79,9 @@ call that asked on its own, or send a script that keeps less. A replay is kept f
 ## Limits
 
 - A script is at most 262144 characters.
-- At most 256 calls per script, and 8 running at once; past either, the call fails inside the
-  script with `CODE_CALL_LIMIT` or `CODE_IN_FLIGHT_LIMIT`. Await in batches of 8, or use a batch
-  tool such as `fs_read_batch`.
+- At most 256 calls per script; past it, the call fails inside the script with `CODE_CALL_LIMIT`.
+  Eight run at once, and the rest wait their turn, so `Promise.all` over many files works; a batch
+  tool such as `fs_read_batch` makes fewer calls.
 - The sandbox has 256 MiB of memory. Running out throws inside the script.
 - The whole script, calls included, runs for the call's timeout unless `timeoutMs` asks for more,
   up to the node's maximum. A wait for an approval counts toward it.

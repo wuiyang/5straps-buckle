@@ -88,7 +88,7 @@ its finished calls answered for ten minutes, so none of them runs twice.
 |---|---|
 | script size | 262144 characters |
 | calls per script | 256, then each call fails with `CODE_CALL_LIMIT` |
-| calls running at once | 8, then a call fails with `CODE_IN_FLIGHT_LIMIT` |
+| calls running at once | 8, and a call past them waits for a free slot |
 | memory | 256 MiB per script |
 | time | the call's timeout, or `timeoutMs`, up to `BUCKLE_MAX_TIMEOUT_MS`; a wait for a person counts |
 | output, and the returned value | 1 MiB each, keeping the start and the end |

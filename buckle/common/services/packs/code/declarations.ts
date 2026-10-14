@@ -81,7 +81,7 @@ const GUIDE = [
   '- Every call is judged, approved, and audited as a direct call. If one needs a person, this tool answers `approval_required`: relay it, then send the same script again once it is answered; Buckle replays the calls that already ran. Never change the script to get around an ask.',
   '- `text(value)` and `console.log(...)` print one line each; `return value` gives the result; `exit()` ends the script.',
   '- `ALL_TOOLS` lists `{ name, description }`; `await describeTool(name)` resolves to a tool\'s declaration; `code_api` returns them all.',
-  '- At most 256 calls per script and 8 at once; output and the return value are cut to 1 MiB each, keeping the start and the end.',
+  '- At most 256 calls per script; 8 run at once and the rest wait their turn. Output and the return value are cut to 1 MiB each, keeping the start and the end.',
 ].join('\n')
 
 /** code_run's description: the guide, the declarations within the budget, and the names of the rest. */

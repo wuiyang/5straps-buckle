@@ -6,7 +6,7 @@ import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type 
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import type { NestedCall, ToolContext } from '../common/domain/tool.js'
 import { loadConfig } from '../common/runtime/config.js'
-import { CODE_CALL_LIMIT, CODE_IN_FLIGHT_LIMIT, createCodePack, MAX_IN_FLIGHT, MAX_NESTED_CALLS, OUTPUT_CHARS } from '../common/services/packs/code/index.js'
+import { CODE_CALL_LIMIT, createCodePack, MAX_IN_FLIGHT, MAX_NESTED_CALLS, OUTPUT_CHARS } from '../common/services/packs/code/index.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -244,18 +244,20 @@ describe('the limits on a script\'s calls', () => {
     expect(invoked).toHaveBeenCalledTimes(MAX_NESTED_CALLS)
   })
 
-  it(`fails a call past ${MAX_IN_FLIGHT} running at once inside the script, and runs the rest`, async () => {
-    const held: Array<() => void> = []
-    const invoked = vi.fn((call: NestedCall) => new Promise<InvokeResponse>((resolve) => {
-      held.push(() => resolve(ok(call)))
-      if (held.length === MAX_IN_FLIGHT) setTimeout(() => { for (const release of held) release() }, 100)
-    }))
-    const result = await codeRun(invoked)(`
-      const settled = await Promise.allSettled(Array.from({ length: ${MAX_IN_FLIGHT + 2} }, (_, i) => tools.echo({ i })))
-      return settled.map(item => item.status === 'fulfilled' ? 'ok' : item.reason.code)
-    `)
-    expect(result.value).toEqual([...Array.from({ length: MAX_IN_FLIGHT }, () => 'ok'), CODE_IN_FLIGHT_LIMIT, CODE_IN_FLIGHT_LIMIT])
-    expect(invoked).toHaveBeenCalledTimes(MAX_IN_FLIGHT)
+  // Review of the code-mode slice, coordinator decision 2: a call past the slots waits for one, in order.
+  it(`runs at most ${MAX_IN_FLIGHT} calls at once, and starts the rest in order as slots free`, async () => {
+    let running = 0
+    let most = 0
+    const invoked = vi.fn(async (call: NestedCall) => {
+      most = Math.max(most, ++running)
+      await new Promise(resolve => setTimeout(resolve, 20))
+      running--
+      return ok(call)
+    })
+    const result = await codeRun(invoked)('return (await Promise.all(Array.from({ length: 20 }, (_, i) => tools.echo({ i })))).map(item => item.i)')
+    expect(result.value).toEqual(Array.from({ length: 20 }, (_, i) => i))
+    expect(invoked.mock.calls.map(([call]) => (call.args as { i: number }).i)).toEqual(Array.from({ length: 20 }, (_, i) => i))
+    expect(most).toBe(MAX_IN_FLIGHT)
   })
 
   it('refuses arguments that are not one object inside the script, without a call', async () => {

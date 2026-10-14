@@ -19,8 +19,12 @@ const PACK_ID = 'code'
 /** The code tools, which no script calls (D82, point 3) and no declaration lists. */
 export const CODE_TOOLS: readonly string[] = ['code_run', 'code_api']
 export const MAX_SCRIPT_CHARS = 262_144
-/** Calls one script may make, and have running at once; past either the call fails inside the script. */
+/** Calls one script may make; past it the call fails inside the script. */
 export const MAX_NESTED_CALLS = 256
+/**
+ * Calls one script has running at once; a call past it waits for a free slot, so `Promise.all` over many items works
+ * (review of the code-mode slice, coordinator decision 2).
+ */
 export const MAX_IN_FLIGHT = 8
 /** Each VM's heap (D82 brief, point 2). */
 export const VM_MEMORY_BYTES = 256 * 1_024 * 1_024
@@ -28,7 +32,6 @@ export const VM_MEMORY_BYTES = 256 * 1_024 * 1_024
 export const OUTPUT_CHARS = 1_048_576
 export const CODE_REPLAY_DIVERGED = 'CODE_REPLAY_DIVERGED'
 export const CODE_CALL_LIMIT = 'CODE_CALL_LIMIT'
-export const CODE_IN_FLIGHT_LIMIT = 'CODE_IN_FLIGHT_LIMIT'
 export const CODE_VM_BUSY = 'CODE_VM_BUSY'
 const DESCRIBE_TOOL = 'describeTool'
 
@@ -148,6 +151,8 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const issued = new Set<number>()
   const made = new Set<number>()
   const running = new Map<number, Promise<void>>()
+  // Calls past MAX_IN_FLIGHT, started in the order the script made them as slots free.
+  const queued: Array<() => void> = []
   const asks: ApprovalRequest[] = []
   let broken: { error: unknown } | undefined
   let diverged = false
@@ -159,6 +164,8 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const stopping = () => asks.length > 0 || broken !== undefined || diverged
   // The VM stops once nothing it started still runs, so every call that ran is in the journal.
   const settleIfStopping = () => { if (stopping() && running.size === 0) stop.abort(new Error('A call the script made needs approval')) }
+  // No queued call starts once the script stops at an ask or has ended: the re-sent script makes it again.
+  const startQueued = () => { while (running.size < MAX_IN_FLIGHT && queued.length > 0 && !stopping() && !cancel.signal.aborted) queued.shift()!() }
   const answer = (call: ScriptVmCall, target: string, outcome: ScriptVmOutcome) => {
     const entry: JournalEntry = { seq: nextSeq++, now: Date.now(), id: call.id, tool: target, args: fingerprintOf(target, call.args), outcome }
     if (!overflowed) {
@@ -211,9 +218,8 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       const args = call.args ?? {}
       if (!isObject(args)) return answer(call, target, failure('INVALID_TOOL_INPUT', 'A tool takes one object of arguments'))
       if (made.size >= MAX_NESTED_CALLS) return answer(call, target, failure(CODE_CALL_LIMIT, `A script makes at most ${MAX_NESTED_CALLS} calls`))
-      if (running.size >= MAX_IN_FLIGHT) return answer(call, target, failure(CODE_IN_FLIGHT_LIMIT, `A script has at most ${MAX_IN_FLIGHT} calls running at once; await some before starting more`, true))
       made.add(call.id)
-      const pending = invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal }).then((response) => {
+      const start = () => running.set(call.id, invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal }).then((response) => {
         if (response.outcome === 'approval_required') asks.push(...response.approvals)
         // A call cut by the script's end, a cancel, or a shutdown is never journaled: the re-sent script makes it
         // again, and Buckle's re-send records answer it if it ran (review of the code-mode slice, finding
@@ -221,9 +227,11 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
         else if (!cancel.signal.aborted && !context.signal.aborted) answer(call, target, outcomeOf(response))
       }).catch((error: unknown) => { broken ??= { error } }).finally(() => {
         running.delete(call.id)
+        startQueued()
         settleIfStopping()
-      })
-      running.set(call.id, pending)
+      }))
+      if (running.size < MAX_IN_FLIGHT) start()
+      else queued.push(start)
     },
   })
   if ('busy' in started) throw new ToolExecutionError(started.busy, { code: CODE_VM_BUSY, retryable: true })
