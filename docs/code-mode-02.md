@@ -17,7 +17,9 @@ its first run's, and its calls stay filed under its first run's stage.
 A script stopped by its deadline, a cancel, a shutdown, or a failure of its sandbox keeps the same
 record of the calls that finished. Sent again within ten minutes, after a restart too, it goes on
 where it stopped, and none of those calls runs twice. That is by design. To run such a script from
-its start, change one character of it, even in a comment.
+its start, change one character of it, even in a comment. Buckle writes the record when the script
+stops, so a crash or kill of the Buckle process mid-script loses the calls since its last stop, and
+the next unchanged send runs them again.
 
 A call still running when the script stopped is in the record only if its tool had begun to run.
 The script sent again, after a restart too, then gets `REQUEST_ALREADY_EXECUTED` for it, its
@@ -39,7 +41,8 @@ call again.
   the oldest first.
 - Without its record, only the Buckle process remembers, in memory and for ten minutes, which of
   a script's calls ran: the script sent again gets `REQUEST_ALREADY_EXECUTED` for those, or
-  `CODE_REPLAY_DIVERGED` for a call whose arguments read the clock. A restart forgets them, and
+  `CODE_REPLAY_DIVERGED` for a call whose arguments read the clock or a random number, since the
+  send starts a fresh clock and seed. A restart forgets them, and
   once a send has ended on that error, the next unchanged send runs every call again.
 - A script that, replayed, makes other calls than its earlier run did is refused with
   `CODE_REPLAY_DIVERGED`, its record dropped and its asks withdrawn. Change the script to run it

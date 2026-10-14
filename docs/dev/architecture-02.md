@@ -58,7 +58,8 @@ runs an agent's script that calls the other tools. Four pieces:
   wait, and signal, a stage of the outer call's stage, run, or requestId, and a requestId of
   `code:<key>:<call number>`. A nested call goes through the workspace runtime's own `invoke`, so
   it is judged, audited, counted, and cancelled at shutdown like any other. Its approval wait ends
-  a second before the script's deadline, and only the outer caller's own cancel withdraws its asks.
+  a second before the script's deadline. Buckle's own aborts leave its asks pending; the outer
+  caller's own cancel withdraws them, and so do `CODE_REPLAY_TOO_LARGE` and `CODE_REPLAY_DIVERGED`.
   A call that asks makes the pack throw `NestedApprovalRequired`, which the invoker answers as
   `approval_required`. The invoker tells the pack when a nested call's tool begins to run, and
   only the outer caller's own cancel reports as one. The re-send dedupe keeps a nested call that
@@ -67,7 +68,8 @@ runs an agent's script that calls the other tools. Four pieces:
   before its own end (an ask, its deadline, a cancel, a shutdown, or its sandbox),
   `<state>/code-journal/<workspace key>/<key>.json`, holding the clock start, the seed, the tools,
   the first run's stage, the script, the tokens of its asks, and every result delivered, in order;
-  a call a stop cut after its tool began to run is recorded as run, its effects unknown.
+  a call a stop cut after its tool began to run is recorded as run, its effects unknown. It is
+  written when the script stops, so a crash mid-script loses what ran since the last stop.
   The key hashes the session, the actor, and the script's text, so `timeoutMs` may change. A
   re-sent script is answered from it call for call, and a call whose tool or arguments differ
   refuses the run. The store prunes expired journals and crashed writes when it opens and at each

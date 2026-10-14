@@ -71,6 +71,11 @@ hiding, and paths.
 - Without its record, only the Buckle process remembers, in memory and for ten minutes, which of a
   script's calls ran, and answers them `REQUEST_ALREADY_EXECUTED`. A restart forgets that, and
   once a send has ended on that error, the next unchanged send runs every call again.
+- Buckle writes a script's record to disk when the script stops, not as each call runs. A crash or
+  kill of the Buckle process mid-script loses every call since the script's last stop: the next
+  unchanged send runs them again. A script resumed after an approval falls back to its first
+  run's record, so it asks again for the approved call, which already ran, and runs the calls
+  after it again.
 - A nested call's error text reaches the script, which can read it, branch on it, and return it:
   a refusal's message, with the path, host, or command a rule names, reaches the agent through the
   script as it would from a direct call, and the script can try another call in response, each of
