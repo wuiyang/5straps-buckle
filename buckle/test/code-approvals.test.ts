@@ -8,6 +8,7 @@ import { basename, join } from 'node:path'
 import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ApprovalWait, InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
+import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { NestedApprovalRequired, ToolExecutionError, type NestedCall, type ToolContext } from '../common/domain/tool.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
@@ -913,6 +914,31 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(withdrawNested).toHaveBeenCalledWith(['token-2'])
     expect(kept(directory)).toEqual([])
   }, 60_000)
+
+  // Final review of 0.1.4, finding code index.ts:365: a withdrawal the approvals lock refuses is logged, and the agent
+  // still gets the script's own code, never STATE_BUSY.
+  it.each([CODE_REPLAY_DIVERGED, CODE_REPLAY_TOO_LARGE])('answers %s when the withdrawal of its asks fails, and logs it', async (code) => {
+    const directory = scratch()
+    const busy = vi.fn(async () => { throw new StateBusyError('Buckle state is busy in another process; retry shortly') })
+    const warned = vi.spyOn(logger, 'warn')
+    if (code === CODE_REPLAY_DIVERGED) {
+      const script = 'await tools.echo({}); await tools.gate({})'
+      const invoked = async (call: NestedCall) => call.tool === 'gate' ? ask(call) : ok(call, 'echoed')
+      await expect(codeRun(directory, invoked)(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+      const [file] = readdirSync(directory).filter(name => name.endsWith('.json'))
+      writeFileSync(join(directory, file!), JSON.stringify({ ...JSON.parse(readFileSync(join(directory, file!), 'utf8')), vm: 'another-vm' }))
+      await expect(codeRun(directory, invoked, { withdrawNested: busy })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      expect(busy).toHaveBeenCalledWith(['token-2'])
+      expect(kept(directory)).toEqual([])
+    } else {
+      const script = 'for (let i = 0; i < 10; i++) await tools.echo({ i }); await tools.gate({})'
+      const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'x'.repeat(500)), { journalBytes: 2_048, withdrawNested: busy })
+      await expect(execute(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE })
+      expect(busy).toHaveBeenCalledWith(['token-11'])
+    }
+    expect(warned.mock.calls.map(([message]) => message)).toContain(`Could not withdraw the asks of a script ${code === CODE_REPLAY_DIVERGED ? 'that diverged' : 'that cannot resume'}; they stay pending until they expire`)
+    warned.mockRestore()
+  })
 
   // Review of the code-mode slice, findings approvals-replay 210, invoker-audit 210, and tests 210.
   it(`holds a script to ${MAX_NESTED_CALLS} calls across its resume after an ask`, async () => {

@@ -361,10 +361,19 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   cancel.abort(new ScriptEndedError())
   await Promise.allSettled([...running.values()])
 
+  // A withdrawal that fails, behind an approvals lock busy past its wait or a disk that refuses it, is logged, and its
+  // asks stay pending until they expire: the agent still gets the script's own answer, never a STATE_BUSY that says a
+  // call ran unrecorded (final review of 0.1.4, finding code index.ts:365).
+  const withdraw = async (tokens: readonly string[], whose: string): Promise<void> => {
+    await context.withdrawNested?.(tokens).catch((error: unknown) => {
+      logger.warn(`Could not withdraw the asks of a script ${whose}; they stay pending until they expire`, { error: error instanceof Error ? error.message : 'Unknown error' })
+    })
+  }
+
   if (diverged) {
     // A record that diverged diverges on every re-send: it goes, and so do the asks of its run, which no call would
     // ever spend (re-review of the code-mode slice, finding docs-rules code-mode.md:76).
-    await context.withdrawNested?.([...journal?.asks ?? [], ...asks.map(ask => ask.token)])
+    await withdraw([...new Set([...journal?.asks ?? [], ...asks.map(ask => ask.token)])], 'that diverged')
     journals.remove(key)
     throw new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
   }
@@ -400,7 +409,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
         // No call will spend these asks, nor those of the runs before it, which no record names any more: the script
         // cannot resume, so they leave the queue as a denied sibling's do (final review of 0.1.4, finding code
         // index.ts:371).
-        await context.withdrawNested?.(pendingAsks())
+        await withdraw(pendingAsks(), 'that cannot resume')
         throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
       }
       throw new NestedApprovalRequired(asks)
@@ -417,11 +426,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     }
     return shapeResult(result, began, skipped)
   } finally {
-    if (leftBehind.length > 0) {
-      await context.withdrawNested?.(leftBehind.map(ask => ask.token)).catch((error: unknown) => {
-        logger.warn('Could not withdraw the asks of a script whose caller cancelled; they stay pending until they expire', { error: error instanceof Error ? error.message : 'Unknown error' })
-      })
-    }
+    if (leftBehind.length > 0) await withdraw(leftBehind.map(ask => ask.token), 'whose caller cancelled')
   }
 }
 
