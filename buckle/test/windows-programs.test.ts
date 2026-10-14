@@ -68,6 +68,24 @@ describe('a program resolved on Windows, imitated', () => {
     } finally { process.chdir(cwd) }
   })
 
+  // npm puts only a shim on PATH, so one is read where no PATH entry holds an `.exe` or `.com` of the name; a native
+  // program anywhere on PATH is still found as it was before shims were read.
+  it('finds a shim only where no PATH entry holds the program itself', () => {
+    const root = scratch()
+    for (const directory of ['npm', 'tools']) mkdirSync(join(root, 'C:', directory), { recursive: true })
+    writeFileSync(join(root, 'C:', 'npm', 'tool.cmd'), '@ECHO off\r\n"%~dp0tool.exe" %*\r\n')
+    const cwd = process.cwd()
+    process.chdir(root)
+    try {
+      expect(findExecutable('tool', { PATH: 'C:\\npm;C:\\tools' }, 'win32')).toBe('C:/npm/tool.cmd')
+      writeFileSync(join(root, 'C:', 'tools', 'tool.exe'), '')
+      chmodSync(join(root, 'C:', 'tools', 'tool.exe'), 0o755)
+      expect(findExecutable('tool', { PATH: 'C:\\npm;C:\\tools' }, 'win32')).toBe('C:/tools/tool.exe')
+      expect(findExecutable('tool.cmd', { PATH: 'C:\\npm;C:\\tools' }, 'win32')).toBe('C:/npm/tool.cmd')
+      expect(findExecutable('tool', { PATH: 'C:\\npm' }, 'linux')).toBeNull()
+    } finally { process.chdir(cwd) }
+  })
+
   it('leaves a command word the agent wrote as a path as written, and resolves a bare one', () => {
     const lookup = lookupFrom({ git: 'C:\\Program Files\\Git\\cmd\\git.exe', node: 'C:\\ws\\node.exe' })
     expect(runnableCommand('git', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: 'C:/Program Files/Git/cmd/git.exe', argv0: 'C:/Program Files/Git/cmd/git.exe', args: [] })
@@ -142,5 +160,34 @@ describe('the packs on Windows, imitated, with programs planted in the workspace
     await expect(call('dev', 'lsp_discover', {})).rejects.toThrow('ps is found in or through a workspace')
     await expect(call('shell', 'shell_exec', { command: 'node', args: ['-e', '1'] })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
     expect(spawned).toEqual([])
+  })
+})
+
+/** An npm prefix outside the workspace whose `<name>.cmd` is npm's shim for a node script, which exists. */
+function npmPrefix(name: string): { shim: string; script: string } {
+  const prefix = scratch()
+  const script = join(prefix, 'node_modules', name, 'bin', `${name}.js`)
+  mkdirSync(join(script, '..'), { recursive: true })
+  writeFileSync(script, '')
+  const shim = join(prefix, `${name}.cmd`)
+  writeFileSync(shim, `@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\${name}\\bin\\${name}.js" %*\r\n`)
+  return { shim, script }
+}
+
+describe('the packs on Windows, imitated, with programs npm installed as shims', () => {
+  it('run the browser through Buckle\'s own Node, the script first and the command after it', async () => {
+    const browser = npmPrefix('agent-browser')
+    const { call, spawned, pack } = builtins({ table: () => ({ ...TRUSTED, 'agent-browser': browser.shim }) })
+    expect(pack('browser').unavailableReason).toBeNull()
+    await call('browser', 'browser_command', { command: 'open', args: ['https://example.com'] })
+    expect(spawned.at(-1)).toMatchObject({ command: process.execPath, argv0: process.execPath })
+    expect(spawned.at(-1)!.args.slice(0, 3)).toEqual([browser.script, 'open', 'https://example.com/'])
+  })
+
+  it('run the unsandboxed shell\'s command word the same way', async () => {
+    const tsc = npmPrefix('tsc')
+    const { call, spawned } = builtins({ table: () => ({ tsc: tsc.shim }) })
+    await call('shell', 'shell_exec', { command: 'tsc', args: ['--version'] })
+    expect(spawned.at(-1)).toMatchObject({ command: process.execPath, args: [tsc.script, '--version'] })
   })
 })

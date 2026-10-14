@@ -1,31 +1,59 @@
-import { accessSync, constants, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs'
-import { join } from 'pathe'
+import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs'
+import { basename, join } from 'pathe'
 import { childPath, ignoresCase, isInsideComparable, nativePath, parentDirectory, pathRoot, withForwardSlashes } from './paths.js'
 import { ToolInputError } from './tool.js'
 
-/**
- * Extensions Windows hands straight to CreateProcess. `.cmd` and `.bat` are deliberately absent:
- * Node refuses to spawn them without a shell, so resolving one would advertise a tool that fails
- * on every call. Point the relevant config at the underlying `.exe` instead.
- */
+/** Extensions Windows hands straight to CreateProcess. */
 const WINDOWS_EXECUTABLE_EXTENSIONS = ['.exe', '.com']
 
 /**
- * Resolves a binary by scanning PATH for an executable file. A shell function or alias is deliberately not found,
- * because a shell-less spawn cannot run one. Only absolute PATH entries are searched: a relative one (`.`, `bin`)
- * names a directory under whichever working directory a lookup runs in, and on Windows one with a root but no drive
- * (`\bin`) a directory on whichever drive is current (isFullPath).
+ * The batch files npm, pnpm, and agent-browser's own install write for a command on Windows (`agent-browser.cmd`).
+ * Buckle never runs one: Node refuses to spawn a batch file without a shell, and through cmd.exe the agent's arguments
+ * would pass through its quoting, which no escaping makes safe. A shim is read as text instead, and the program it
+ * starts is run in its place (shimProgram), only where no `.exe` or `.com` of that name is found in any place.
+ */
+const WINDOWS_SHIM_EXTENSIONS = ['.cmd', '.bat']
+
+/**
+ * Resolves a binary by scanning PATH for an executable file, and on Windows for a shim only where no entry holds an
+ * `.exe` or `.com` (locateExecutable). A shell function or alias is deliberately not found, because a shell-less spawn
+ * cannot run one. Only absolute PATH entries are searched: a relative one (`.`, `bin`) names a directory under
+ * whichever working directory a lookup runs in, and on Windows one with a root but no drive (`\bin`) a directory on
+ * whichever drive is current (isFullPath).
  */
 export function findExecutable(
   binary: string,
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string | null {
-  if (isPathReference(binary, platform)) return firstExecutable(binary, platform)
+  return locateExecutable(binary, environment, platform)?.path ?? null
+}
 
-  for (const directory of searchDirectories(environment, platform)) {
-    const found = firstExecutable(join(directory, binary), platform)
-    if (found) return found
+/** Where a program was found: its path, and how a reason names the place that held it. */
+export interface Located {
+  path: string
+  place: string
+}
+
+/** How a reason names PATH, and a path the owner configured, which is looked at alone. */
+const ON_PATH = 'on PATH'
+const AS_NAMED = 'as named'
+
+/**
+ * Where a binary is: a path is looked at alone; a bare name in each PATH entry for an executable file, and on Windows
+ * only then for a shim in the same order, so a program found today is found as before.
+ */
+export function locateExecutable(binary: string, environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): Located | null {
+  if (isPathReference(binary, platform)) {
+    const found = firstExecutable(binary, platform) ?? firstShim(binary, platform)
+    return found === null ? null : { path: found, place: AS_NAMED }
+  }
+  const directories = searchDirectories(environment, platform)
+  for (const pass of [firstExecutable, firstShim]) {
+    for (const directory of directories) {
+      const found = pass(join(directory, binary), platform)
+      if (found) return { path: found, place: ON_PATH }
+    }
   }
   return null
 }
@@ -43,7 +71,7 @@ export interface ProgramSearch {
 /**
  * A program Buckle runs: the real path it spawns, with the path PATH gave it as its `argv0`, as a program that answers
  * to the name it was started by (busybox, ccache, a rustup proxy) reads it. `args` go before the arguments of every
- * call: empty for a native program, and the script for a program an interpreter runs.
+ * call: empty for a native program, and the script for one Buckle's own Node runs from a Windows shim (shimProgram).
  */
 export interface Program {
   path: string
@@ -51,8 +79,26 @@ export interface Program {
   args: string[]
 }
 
-/** A program Buckle runs, or why it is not run. `untrusted` is a program found where an agent can write. */
-export type ResolvedProgram = Program | { path: null; reason: string; untrusted: boolean }
+/** Why a program is not run. `untrusted` is a program found where an agent can write. */
+export interface ProgramRefusal {
+  path: null
+  reason: string
+  untrusted: boolean
+  /** For a Windows shim Buckle does not run: its file name, the label of its place (null for a configured path), and why. */
+  shim?: { file: string; place: string | null; why: string }
+}
+
+/** A program Buckle runs, or why it is not run. */
+export type ResolvedProgram = Program | ProgramRefusal
+
+/**
+ * A resolved program with what only the owner's terminal shows (`buckle init`): the path it was found at and the
+ * label of that place, and the shim it was read from. Never part of a reason, which an agent may read.
+ */
+export interface ProgramFinding {
+  resolved: ResolvedProgram
+  found: { path: string; place: string; shim: string | null } | null
+}
 
 /** One workspace's resolveProgram, bound to its roots and search. */
 export type ProgramResolver = (name: string) => ResolvedProgram
@@ -99,30 +145,129 @@ const ROOT_NAMES: Record<RootKind, string> = { 'workspace': 'a workspace', 'scra
  * root (`untrustedRoots`): the path found, each link it passes through and where each leads, and where it lands
  * (walkLinks), compared as the disk compares paths (comparablePath). Judged by the path found and its real path alone,
  * a PATH entry linked to a folder in a workspace let the agent point the program there at a trusted one for the check
- * and at its own after it, and the PATH spelling then ran the agent's. `shownAs` names the program in a refusal, where
- * its configured path, which may lie outside the workspace, is no business of the agent's.
+ * and at its own after it, and the PATH spelling then ran the agent's. On Windows a shim is read, never run, and the
+ * program it starts is judged the same way (shimProgram). `shownAs` names the program in a refusal, where its
+ * configured path, which may lie outside the workspace, is no business of the agent's.
  */
 export function resolveProgram(name: string, input: ProgramSearch & UntrustedRoots & { shownAs?: string }): ResolvedProgram {
+  return findProgram(name, input).resolved
+}
+
+/** resolveProgram, with where the program was found and the shim it was read from, for the owner's terminal alone. */
+export function findProgram(name: string, input: ProgramSearch & UntrustedRoots & { shownAs?: string }): ProgramFinding {
   const platform = input.platform ?? process.platform
+  const environment = input.environment ?? process.env
   const shown = input.shownAs ?? name
-  const found = (input.lookup ?? findExecutable)(name, input.environment ?? process.env, platform)
-  if (found === null) return { path: null, reason: `${shown} is not installed on this node`, untrusted: false }
-  if (input.rootsUnknown) return { path: null, reason: `${shown} is not run while ${input.rootsUnknown}`, untrusted: true }
+  const located = input.lookup ? lookedUp(input.lookup(name, environment, platform), isPathReference(name, platform)) : locateExecutable(name, environment, platform)
+  if (located === null) return { resolved: { path: null, reason: `${shown} is not installed on this node`, untrusted: false }, found: null }
+  const finding = (resolved: ResolvedProgram, shim: string | null = null): ProgramFinding => ({ resolved, found: { path: located.path, place: located.place, shim } })
+  if (input.rootsUnknown) return finding({ path: null, reason: `${shown} is not run while ${input.rootsUnknown}`, untrusted: true })
   let path: string
   // A refusal names the program by `shown` alone: the path found, or a link's target, may lie outside the workspace.
-  try { path = nativePath(found, platform) } catch { return { path: null, reason: `${shown} is a path Buckle cannot read as the system does, so Buckle does not run it`, untrusted: false } }
-  if (pathRoot(path) === '') return { path: null, reason: `${shown} is a relative path, which Buckle does not run from a working directory`, untrusted: false }
-  let walked: LinkWalk
-  // A chain Buckle cannot follow may be one an agent built, so it is refused as one found where an agent writes.
-  try { walked = walkLinks(path, platform) } catch { return { path: null, reason: `${shown} cannot be followed to where it really is, so Buckle does not run it`, untrusted: true } }
-  const root = rootHolding(input.untrustedRoots, [path, ...walked.passed, walked.real], platform)
-  if (root) return { path: null, reason: `${shown} is found in or through ${ROOT_NAMES[root.kind]} of this node, where an agent can write, so Buckle does not run it`, untrusted: true }
-  return { path: walked.real, argv0: path, args: [] }
+  try { path = nativePath(located.path, platform) } catch { return finding({ path: null, reason: `${shown} is a path Buckle cannot read as the system does, so Buckle does not run it`, untrusted: false }) }
+  if (pathRoot(path) === '') return finding({ path: null, reason: `${shown} is a relative path, which Buckle does not run from a working directory`, untrusted: false })
+  const judged = judgedPlace(path, shown, input.untrustedRoots, platform)
+  if (typeof judged !== 'string') return finding(judged)
+  if (platform !== 'win32' || !hasExtension(path, WINDOWS_SHIM_EXTENSIONS)) return finding({ path: judged, argv0: path, args: [] })
+  const shim = { file: basename(path), place: located.place === AS_NAMED ? null : located.place }
+  const program = shimProgram({ shim: path, real: judged, shown, roots: input.untrustedRoots, platform })
+  return finding('why' in program ? shimRefusal(shown, { ...shim, why: program.why }) : program, path)
 }
 
 /** The program a pack spawns, or null where it is refused, for a pack that withholds a tool without one (ripgrep). */
 export function programOrNull(resolved: ResolvedProgram): Program | null {
   return resolved.path === null ? null : resolved
+}
+
+/** What a test's lookup answered, found as named for a path and on PATH for a bare name. */
+function lookedUp(path: string | null, named: boolean): Located | null {
+  return path === null ? null : { path, place: named ? AS_NAMED : ON_PATH }
+}
+
+/**
+ * Where an absolute path in pathe's form really leads (walkLinks), or why it is refused: any place on its way inside an
+ * untrusted root, or a chain Buckle cannot follow, which may be one an agent built.
+ */
+function judgedPlace(path: string, shown: string, roots: readonly UntrustedRoot[], platform: NodeJS.Platform): string | ProgramRefusal {
+  let walked: LinkWalk
+  try { walked = walkLinks(path, platform) } catch { return { path: null, reason: `${shown} cannot be followed to where it really is, so Buckle does not run it`, untrusted: true } }
+  const root = rootHolding(roots, [path, ...walked.passed, walked.real], platform)
+  if (root) return { path: null, reason: `${shown} is found in or through ${ROOT_NAMES[root.kind]} of this node, where an agent can write, so Buckle does not run it`, untrusted: true }
+  return walked.real
+}
+
+/** A shim refused for `why`, named by its file and the label of its place, never by its path. */
+function shimRefusal(shown: string, shim: { file: string; place: string | null; why: string }): ProgramRefusal {
+  const found = shim.place === null ? `${shown} is ${shim.why}` : `${shown} was found ${shim.place} as ${shim.file}, ${shim.why}`
+  return { path: null, reason: `${found}, so Buckle does not run it`, untrusted: false, shim }
+}
+
+/** The most of a shim Buckle reads: npm's is under 1 KiB, so a longer file is not one Buckle reads as a shim. */
+export const MAX_SHIM_BYTES = 64 * 1024
+
+/** Why a shim's program is not known: Buckle reads no other form, as it never asks cmd.exe what one runs. */
+const UNREAD_SHIM = 'a shim Buckle cannot read'
+const SCRIPT_EXTENSIONS = ['.js', '.mjs', '.cjs']
+
+/**
+ * The program a Windows shim starts, read from its text and never by running it (WINDOWS_SHIM_EXTENSIONS): on each line
+ * that hands the shim's arguments on (`%*`), the last quoted path that starts at the shim's own folder, `%~dp0`, or
+ * npm's `%dp0%\` once the shim sets `dp0` to it. The last, as the arguments follow it: npm's line runs `"%_prog%"`
+ * before the script, pnpm's runs `"%~dp0\node.exe"` before it, and agent-browser's own install writes the native
+ * `.exe` alone. Every such line must name the same path; one that names none, a variable inside the path, a file over
+ * MAX_SHIM_BYTES, or a path that ends in neither an `.exe`, a `.com`, nor a script (one that runs `/bin/sh`) is not
+ * read. The path is resolved against the shim's folder, a `..` folded as Windows folds it, and judged as every program
+ * is (judgedPlace). A script is run by Buckle's own Node, `process.execPath`, with the script's real path first.
+ */
+function shimProgram(input: { shim: string; real: string; shown: string; roots: readonly UntrustedRoot[]; platform: NodeJS.Platform }): Program | ProgramRefusal | { why: string } {
+  const text = readCapped(input.real, MAX_SHIM_BYTES)
+  const named = text === null ? null : shimTarget(text)
+  if (named === null) return { why: UNREAD_SHIM }
+  let target: string
+  try { target = nativePath(`${parentDirectory(input.shim)}/${named}`, input.platform) } catch { return { why: UNREAD_SHIM } }
+  const script = hasExtension(target, SCRIPT_EXTENSIONS)
+  if (!script && !hasExtension(target, WINDOWS_EXECUTABLE_EXTENSIONS)) return { why: UNREAD_SHIM }
+  const judged = judgedPlace(target, input.shown, input.roots, input.platform)
+  if (typeof judged !== 'string') return judged
+  if (!isFile(judged)) return { why: 'a shim whose program is not there' }
+  // Buckle's own Node, which runs Buckle itself: a script never picks its interpreter from a PATH an agent may reach.
+  if (script) return { path: nativePath(process.execPath, input.platform), argv0: process.execPath, args: [judged] }
+  return { path: judged, argv0: target, args: [] }
+}
+
+/** A path that starts at a shim's own folder: `%~dp0`, or npm's `%dp0%\`. */
+const SHIM_FOLDER = /^(?:%~dp0|%dp0%\\)/i
+/** npm's shim sets `dp0` to its folder in a subroutine; `%dp0%` is read as that folder only where the shim does so. */
+const SETS_DP0 = /^\s*@?set\s+"?dp0=%~dp0"?\s*$/im
+
+/** The path a shim's text starts its program by, relative to the shim's folder, or null where it names none or several. */
+function shimTarget(text: string): string | null {
+  const named = text.split(/\r?\n/).filter(line => line.includes('%*')).map(line => line.split('"').filter((_, index) => index % 2 === 1).filter(quoted => SHIM_FOLDER.test(quoted)).at(-1) ?? null)
+  const [first] = named
+  if (first === undefined || first === null || named.some(path => path !== first)) return null
+  if (/^%dp0%/i.test(first) && !SETS_DP0.test(text)) return null
+  const relative = first.replace(SHIM_FOLDER, '').replace(/^[\\/]+/, '')
+  return relative === '' || relative.includes('%') ? null : relative
+}
+
+/** A file's text, or null where it cannot be read or holds more than `limit` bytes. */
+function readCapped(path: string, limit: number): string | null {
+  let descriptor: number
+  try { descriptor = openSync(path, 'r') } catch { return null }
+  try {
+    if (!fstatSync(descriptor).isFile()) return null
+    const buffer = Buffer.alloc(limit + 1)
+    let length = 0
+    for (let read = -1; read !== 0 && length <= limit;) {
+      read = readSync(descriptor, buffer, length, buffer.length - length, null)
+      length += read
+    }
+    return length > limit ? null : buffer.subarray(0, length).toString('utf8')
+  } catch {
+    return null
+  } finally {
+    closeSync(descriptor)
+  }
 }
 
 /**
@@ -246,11 +391,11 @@ export function hasExecutable(
 
 /**
  * Names to try on disk for one candidate path. Windows stores `git` as `git.exe`, so a bare name
- * has to be suffixed before it will ever be found.
+ * has to be suffixed before it will ever be found. A shim is never among them (firstShim).
  */
 export function executableCandidates(path: string, platform: NodeJS.Platform): string[] {
   if (platform !== 'win32') return [path]
-  if (hasWindowsExecutableExtension(path)) return [path]
+  if (hasExtension(path, WINDOWS_EXECUTABLE_EXTENSIONS)) return [path]
   return WINDOWS_EXECUTABLE_EXTENSIONS.map(extension => `${path}${extension}`)
 }
 
@@ -263,9 +408,19 @@ function firstExecutable(path: string, platform: NodeJS.Platform): string | null
   return executableCandidates(path, platform).find(isExecutableFile) ?? null
 }
 
-function hasWindowsExecutableExtension(path: string): boolean {
+/**
+ * A Windows shim for one candidate path: the path itself where it names one, or the path with each shim extension where
+ * it names neither a shim nor an `.exe` or `.com`. Windows has no execute bit, so a file is enough.
+ */
+function firstShim(path: string, platform: NodeJS.Platform): string | null {
+  if (platform !== 'win32' || hasExtension(path, WINDOWS_EXECUTABLE_EXTENSIONS)) return null
+  const candidates = hasExtension(path, WINDOWS_SHIM_EXTENSIONS) ? [path] : WINDOWS_SHIM_EXTENSIONS.map(extension => `${path}${extension}`)
+  return candidates.find(isFile) ?? null
+}
+
+function hasExtension(path: string, extensions: readonly string[]): boolean {
   const lower = path.toLowerCase()
-  return WINDOWS_EXECUTABLE_EXTENSIONS.some(extension => lower.endsWith(extension))
+  return extensions.some(extension => lower.endsWith(extension))
 }
 
 function searchPathDelimiter(platform: NodeJS.Platform): string {
@@ -299,4 +454,8 @@ function isExecutableFile(path: string): boolean {
   } catch {
     return false
   }
+}
+
+function isFile(path: string): boolean {
+  try { return statSync(path).isFile() } catch { return false }
 }
