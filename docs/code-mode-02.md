@@ -19,9 +19,13 @@ record of the calls that finished. Sent again within ten minutes, after a restar
 where it stopped, and none of those calls runs twice. That is by design. To run such a script from
 its start, change one character of it, even in a comment.
 
-A call still running when the script stopped is not in the record, and the script sent again makes
-it again. If it had started, Buckle answers it `REQUEST_ALREADY_EXECUTED`, its effects unknown,
-rather than running it twice.
+A call still running when the script stopped is in the record only if its tool had begun to run.
+The script sent again, after a restart too, then gets `REQUEST_ALREADY_EXECUTED` for it, its
+effects unknown, and Buckle does not run it again. A call cut before its tool ran, such as one
+waiting for a person, is made again.
+
+Each call in the answer has a status: `ok`, `error`, `cancelled` when the script's end or a stop cut
+it, or `skipped` when it never started.
 
 A script that returns, throws, or calls `exit()` leaves no record, and sending it again runs every
 call again.
@@ -32,10 +36,14 @@ call again.
   that ran before run again.
 - A script whose results pass 32 MiB cannot be resumed after an ask: `code_run` answers
   `CODE_REPLAY_TOO_LARGE` and withdraws the asks. A workspace keeps 128 MiB of records, dropping
-  the oldest first. Without its record, a script sent again within ten minutes gets
-  `REQUEST_ALREADY_EXECUTED` for each call that ran, never a second run, and should change.
+  the oldest first.
+- Without its record, only the Buckle process remembers, in memory and for ten minutes, which of
+  a script's calls ran: the script sent again gets `REQUEST_ALREADY_EXECUTED` for those, or
+  `CODE_REPLAY_DIVERGED` for a call whose arguments read the clock. A restart forgets them, and
+  once a send has ended on that error, the next unchanged send runs every call again.
 - A script that, replayed, makes other calls than its earlier run did is refused with
-  `CODE_REPLAY_DIVERGED`. Change the script to run it from its start.
+  `CODE_REPLAY_DIVERGED`, its record dropped and its asks withdrawn. Change the script to run it
+  from its start.
 - A changed script is a new script: nothing is replayed for it.
 
 Records live in `code-journal/` in the workspace's state directory, owner-only, which every

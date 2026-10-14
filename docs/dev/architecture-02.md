@@ -60,12 +60,14 @@ runs an agent's script that calls the other tools. Four pieces:
   it is judged, audited, counted, and cancelled at shutdown like any other. Its approval wait ends
   a second before the script's deadline, and only the outer caller's own cancel withdraws its asks.
   A call that asks makes the pack throw `NestedApprovalRequired`, which the invoker answers as
-  `approval_required`. The re-send dedupe keeps a nested call that ran as a stub without its body,
-  in a bound of its own, since the journal replays its result.
+  `approval_required`. The invoker tells the pack when a nested call's tool begins to run, and
+  only the outer caller's own cancel reports as one. The re-send dedupe keeps a nested call that
+  ran as a stub without its body, in a bound of its own, since the journal replays its result.
 - **The journal**, `common/services/packs/code/journal.ts`: one file per script that stopped
   before its own end (an ask, its deadline, a cancel, a shutdown, or its sandbox),
   `<state>/code-journal/<workspace key>/<key>.json`, holding the clock start, the seed, the tools,
-  the first run's stage, the script, the tokens of its asks, and every result delivered, in order.
+  the first run's stage, the script, the tokens of its asks, and every result delivered, in order;
+  a call a stop cut after its tool began to run is recorded as run, its effects unknown.
   The key hashes the session, the actor, and the script's text, so `timeoutMs` may change. A
   re-sent script is answered from it call for call, and a call whose tool or arguments differ
   refuses the run. The store prunes expired journals and crashed writes when it opens and at each

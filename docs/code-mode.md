@@ -56,9 +56,10 @@ A script's call meets the same rules as a direct call: a read inside the workspa
 first write into a directory asks, and a refusal is a refusal. A refused call rejects inside the
 script, where the script may catch it; the refusal is in the audit log either way.
 
-When a call needs a person, the script stops there. Buckle lets the calls already running finish,
-waits until the script has handed over every call it made in that turn, stops the script, and
-answers `code_run` with `approval_required`, carrying the asks of every call that asked.
+When a call needs a person, the script stops there. The script gets no further results, but every
+call it made in the same turn still runs, or asks, and every call already running finishes. Then
+Buckle stops the script and answers `code_run` with `approval_required`, carrying the asks of every
+call that asked.
 
 Each ask is that call's own. The approver sees the call whole, in the terminal, in
 `buckle approvals`, in `--watch`, or in an MCP host's form, and that call is what they approve.
@@ -69,12 +70,13 @@ replay record, owner-only, for ten minutes after the ask.
 
 Where the caller waits for answers, as the CLI does, a call that asks waits inside the script,
 and the script goes on once the person answers. The wait ends a second before the script's
-deadline, so an ask nobody answered in time comes back as `approval_required`, never as a timeout.
-While the call still waits inside the script, the script's text is not kept yet.
+deadline, however slow the approval webhook is, so an ask nobody answered in time comes back as
+`approval_required`, never as a timeout. While the call still waits inside the script, the
+script's text is not kept yet.
 
-Only the caller's own cancel withdraws a script's asks. The script's deadline, its end, and a
-shutdown leave them pending, and the same script sent again joins them. A script that cannot be
-resumed withdraws its asks, since no call would spend them.
+The script's deadline, its end, and a shutdown leave its asks pending, and the same script sent
+again joins them. Buckle withdraws them when the caller itself cancels, and when the script cannot
+be resumed, with `CODE_REPLAY_TOO_LARGE` or `CODE_REPLAY_DIVERGED`, since no call would spend them.
 
 Once the person answers, the agent sends the same script again, and Buckle replays what already
 ran: [Code mode, part two](code-mode-02.md) has how.

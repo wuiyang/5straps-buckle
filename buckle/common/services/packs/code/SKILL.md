@@ -87,8 +87,8 @@ call that asked on its own, or send a script that keeps less. A replay is kept f
 A script stopped by its deadline, a cancel, or a shutdown keeps the same record. The same script
 sent again within ten minutes goes on where it stopped: the calls that finished are replayed, not
 run again. To run it from its start, change one character of it, even in a comment. A call that
-answers `REQUEST_ALREADY_EXECUTED` ran before and is not run twice: change the script to run it
-again.
+answers `REQUEST_ALREADY_EXECUTED` ran before, perhaps cut short, and Buckle did not run it again:
+check what it did, then change the script to run it again.
 
 ## Limits
 

@@ -67,9 +67,10 @@ hiding, and paths.
   runs from its start, and the calls before the stop run again.
 - A script whose calls returned more than 32 MiB before the ask cannot be resumed at all:
   `code_run` answers `CODE_REPLAY_TOO_LARGE` and withdraws the asks. A workspace keeps 128 MiB of
-  such records and drops the oldest first. Without its record, a script sent again within ten
-  minutes is told `REQUEST_ALREADY_EXECUTED` for each call that ran, and has to change to run
-  them again.
+  such records and drops the oldest first.
+- Without its record, only the Buckle process remembers, in memory and for ten minutes, which of a
+  script's calls ran, and answers them `REQUEST_ALREADY_EXECUTED`. A restart forgets that, and
+  once a send has ended on that error, the next unchanged send runs every call again.
 - A nested call's error text reaches the script, which can read it, branch on it, and return it:
   a refusal's message, with the path, host, or command a rule names, reaches the agent through the
   script as it would from a direct call, and the script can try another call in response, each of
