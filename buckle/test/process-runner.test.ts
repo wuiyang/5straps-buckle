@@ -22,23 +22,29 @@ function scratch(): string {
   return folder
 }
 
-/** A child that starts a detached grandchild holding its stdio, running `daemon`, names it, writes its own output, and exits. */
+/**
+ * A child that starts a detached grandchild holding its stdout and stderr, running `daemon`, names it, writes its own
+ * output, and exits. The grandchild's stdin is a pipe the child holds, which ends only once the child is gone.
+ */
 function parentOfDaemon(input: { daemon?: string } = {}): string {
   return [
     'const { spawn } = require("node:child_process")',
-    `const daemon = spawn(process.execPath, ["-e", ${JSON.stringify(input.daemon ?? 'setTimeout(() => {}, 30000)')}], { detached: true, stdio: "inherit" })`,
+    `const daemon = spawn(process.execPath, ["-e", ${JSON.stringify(input.daemon ?? 'setTimeout(() => {}, 30000)')}], { detached: true, stdio: ["pipe", "inherit", "inherit"] })`,
     'daemon.unref()',
+    'daemon.stdin.unref()',
     'process.stdout.write(`daemon ${daemon.pid}\\nchild output\\n`)',
     'process.stderr.write("child warning\\n")',
   ].join('\n')
 }
 
 /**
- * A daemon that writes `marker` once its parent is gone for good: a process can be signalled until whoever started it
- * reaps it, and the runner's own exit handler runs as it reaps, so the marker means the runner has seen the exit.
+ * A daemon that writes `marker` once its parent is gone: its stdin, a pipe the parent holds, ends only when the kernel
+ * closes the parent's files as it exits, after which no signal changes how it exited. Polling `process.ppid` read the
+ * reaper the daemon had already been handed to, which a subreaper the test user can signal never let go (re-check of
+ * 2026-10-14).
  */
 function daemonMarkingExit(marker: string): string {
-  return `const parent = process.ppid; const watch = setInterval(() => { try { process.kill(parent, 0) } catch { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "exited"); clearInterval(watch) } }, 10); setTimeout(() => {}, 30000)`
+  return `const mark = () => { try { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "exited", { flag: "wx" }) } catch {} }; process.stdin.on("end", mark); process.stdin.on("close", mark); process.stdin.resume(); setTimeout(() => {}, 30000)`
 }
 
 /** The daemon's pid, read from what the child wrote, kept to be killed after the test. */
