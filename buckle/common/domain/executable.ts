@@ -254,7 +254,9 @@ export function findProgram(name: string, input: ProgramSearch & UntrustedRoots 
   if (pathRoot(path) === '') return finding({ path: null, reason: `${shown} is a relative path, which Buckle does not run from a working directory`, untrusted: false })
   const judged = judgedPlace(path, shown, input.untrustedRoots, platform)
   if (typeof judged !== 'string') return finding(judged)
-  if (platform === 'win32' && located.place === AS_NAMED && hasExtension(path, SCRIPT_EXTENSIONS)) return finding(nodeRunning(judged, platform))
+  if (platform === 'win32' && located.place === AS_NAMED && hasExtension(path, SCRIPT_EXTENSIONS)) {
+    return finding(nodeRunning(judged, platform) ?? { path: null, reason: `${shown} is a script, while ${NODE_UNREADABLE}, so Buckle does not run it`, untrusted: false })
+  }
   if (platform !== 'win32' || !hasExtension(path, WINDOWS_SHIM_EXTENSIONS)) return finding({ path: judged, argv0: path, args: [] })
   const shim = { file: basename(path), place: located.place === AS_NAMED ? null : located.place }
   const program = shimProgram({ shim: path, real: judged, shown, roots: input.untrustedRoots, platform })
@@ -321,12 +323,22 @@ function shimProgram(input: { shim: string; real: string; shown: string; roots: 
   const judged = judgedPlace(target, input.shown, input.roots, input.platform)
   if (typeof judged !== 'string') return judged
   if (!isFile(judged)) return { why: 'a shim whose program is not there' }
-  return named.script ? nodeRunning(judged, input.platform) : { path: judged, argv0: target, args: [] }
+  if (!named.script) return { path: judged, argv0: target, args: [] }
+  return nodeRunning(judged, input.platform) ?? { why: `a shim that starts a script, while ${NODE_UNREADABLE}` }
 }
 
-/** Buckle's own Node, which runs Buckle itself, running a script: it never picks its interpreter from a PATH an agent may reach. */
-function nodeRunning(script: string, platform: NodeJS.Platform): Program {
-  return { path: nativePath(process.execPath, platform), argv0: process.execPath, args: [script] }
+/** Why no script runs where Buckle's own Node is at a path it does not hand on, named without that path. */
+const NODE_UNREADABLE = 'the Node.js running Buckle is at a path Buckle cannot read as the system does'
+
+/**
+ * Buckle's own Node, which runs Buckle itself, running a script: it never picks its interpreter from a PATH an agent may
+ * reach. Null where that Node's path is one Buckle cannot read as the system does (a share, a device path, a name
+ * ending in a dot), which a caller turns into a refusal naming no path, never a throw carrying it (review of 2026-10-14).
+ */
+function nodeRunning(script: string, platform: NodeJS.Platform): Program | null {
+  try {
+    return { path: nativePath(process.execPath, platform), argv0: process.execPath, args: [script] }
+  } catch { return null }
 }
 
 /** A path that starts at a shim's own folder: `%~dp0`, or npm's `%dp0%\`. */

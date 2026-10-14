@@ -235,6 +235,24 @@ describe('a Windows shim, imitated', () => {
     }
   })
 
+  // Review of 2026-10-14: with Buckle's own Node at a path Buckle does not hand on, the script's resolution threw,
+  // carrying that path to the agent and stopping the packs from being built.
+  it('refuses a script, through a shim or named, while Buckle\'s own Node is at a path it cannot read, naming no path', () => {
+    const { at, shim } = prefix({ shim: NPM_SHIM('node', 'node_modules\\agent-browser\\bin\\agent-browser.js'), files: ['node_modules/agent-browser/bin/agent-browser.js'] })
+    const script = join(at, 'node_modules/agent-browser/bin/agent-browser.js')
+    const real = process.execPath
+    for (const execPath of ['\\\\fileserver\\tools\\node\\node.exe', 'C:\\tools\\node.\\node.exe']) {
+      Object.defineProperty(process, 'execPath', { value: execPath, configurable: true, writable: true })
+      try {
+        const shimmed = resolve(shim)
+        expect(shimmed, execPath).toEqual(refusal('agent-browser.cmd', 'a shim that starts a script, while the Node.js running Buckle is at a path Buckle cannot read as the system does'))
+        const named = resolveProgram(script, { untrustedRoots: [], platform: 'win32', places: [], shownAs: 'BUCKLE_AGENT_BROWSER_COMMAND' })
+        expect(named, execPath).toEqual({ path: null, reason: 'BUCKLE_AGENT_BROWSER_COMMAND is a script, while the Node.js running Buckle is at a path Buckle cannot read as the system does, so Buckle does not run it', untrusted: false })
+        expect(JSON.stringify([shimmed, named])).not.toMatch(/fileserver|tools/)
+      } finally { Object.defineProperty(process, 'execPath', { value: real, configurable: true, writable: true }) }
+    }
+  })
+
   it('runs a script the owner names by its path with Buckle\'s own Node on Windows, as a program elsewhere', () => {
     const { at } = prefix({ shim: '', files: ['node_modules/agent-browser/bin/agent-browser.js'] })
     const script = join(at, 'node_modules/agent-browser/bin/agent-browser.js')
