@@ -4,7 +4,7 @@ import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { JsonObject } from '@5straps/protocol'
 import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
-import { findExecutable, ownerPlaces, resolveProgram, rootsOf, runnableCommand, type ExecutableLookup } from '../common/domain/executable.js'
+import { findExecutable, ownerPlaces, resolveProgram, rootsOf, runnableCommand, trustedSearchPath, type ExecutableLookup } from '../common/domain/executable.js'
 import type { Pack } from '../common/domain/pack.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { BROWSER_UNTRUSTED } from '../common/services/packs/browser/index.js'
@@ -93,6 +93,47 @@ describe('a program resolved on Windows, imitated', () => {
     expect(runnableCommand('.\\tools\\git.exe', { untrustedRoots, lookup, platform: 'win32' })).toEqual({ path: '.\\tools\\git.exe', argv0: '.\\tools\\git.exe', args: [] })
     expect(() => runnableCommand('node', { untrustedRoots, lookup, platform: 'win32' })).toThrow(expect.objectContaining({ code: 'PERMISSION_DENIED' }))
   })
+})
+
+// Final review of 0.1.4, finding executable 506: Windows names a folder by its 8.3 short name too, `PROJEC~1` for
+// `projects-main`, which compared as text is not inside the workspace registered by its long name. Each existing name
+// is read back as the disk stores it. Here the folders are real, `C:` standing in for the drive under the working
+// directory, and an injected StoredPath answers as Windows would for the short ones.
+describe('a program or PATH entry spelled with a Windows short name, imitated', () => {
+  const workspace = rootsOf('workspace', ['C:/Users/me/projects-main'])
+  /** The real path Windows gives each short name here; any other name it cannot read back, so it stays as written. */
+  const disk = (path: string): string => {
+    const long = ({ 'C:/Users/me/PROJEC~1': 'C:\\Users\\me\\projects-main', 'C:/PROGRA~1': 'C:\\Program Files' } as Record<string, string>)[path]
+    if (long === undefined) throw new Error(`ENOENT: ${path}`)
+    return long
+  }
+  function short(run: () => void) {
+    const root = scratch()
+    for (const directory of ['Users/me/PROJEC~1/node_modules/.bin', 'PROGRA~1/Tools']) mkdirSync(join(root, 'C:', directory), { recursive: true })
+    for (const file of ['Users/me/PROJEC~1/node_modules/.bin/rg.exe', 'PROGRA~1/Tools/rg.exe']) writeFileSync(join(root, 'C:', file), '')
+    const cwd = process.cwd()
+    process.chdir(root)
+    try { run() } finally { process.chdir(cwd) }
+  }
+
+  it('refuses a program in the workspace named through its short name, and spawns one outside it by its long name', () => short(() => {
+    const planted = lookupFrom({ rg: 'C:\\Users\\me\\PROJEC~1\\node_modules\\.bin\\rg.exe' })
+    expect(resolveProgram('rg', { untrustedRoots: workspace, lookup: planted, platform: 'win32', storedPath: disk })).toEqual({ path: null, reason: 'rg is found in or through a workspace of this node, where an agent can write, so Buckle does not run it', untrusted: true })
+    const installed = lookupFrom({ rg: 'C:\\PROGRA~1\\Tools\\rg.exe' })
+    expect(resolveProgram('rg', { untrustedRoots: workspace, lookup: installed, platform: 'win32', storedPath: disk })).toEqual({ path: 'C:/Program Files/Tools/rg.exe', argv0: 'C:/PROGRA~1/Tools/rg.exe', args: [] })
+  }))
+
+  it('refuses a short name it cannot read back, or one that names nothing yet, rather than compare its text', () => short(() => {
+    const unreadable = () => { throw new Error('EPERM') }
+    const planted = lookupFrom({ rg: 'C:\\Users\\me\\PROJEC~1\\node_modules\\.bin\\rg.exe', fd: 'C:\\Users\\me\\LATER~1\\fd.exe' })
+    expect(resolveProgram('rg', { untrustedRoots: workspace, lookup: planted, platform: 'win32', storedPath: unreadable })).toEqual({ path: null, reason: 'rg cannot be followed to where it really is, so Buckle does not run it', untrusted: true })
+    expect(resolveProgram('fd', { untrustedRoots: workspace, lookup: planted, platform: 'win32', storedPath: disk })).toEqual({ path: null, reason: 'fd cannot be followed to where it really is, so Buckle does not run it', untrusted: true })
+  }))
+
+  it('drops a PATH entry in the workspace named through its short name, and hands on the others by their long names', () => short(() => {
+    const searchPath = 'C:\\Users\\me\\PROJEC~1\\node_modules\\.bin;C:\\PROGRA~1\\Tools;C:\\Users\\me\\LATER~1'
+    expect(trustedSearchPath(searchPath, { untrustedRoots: workspace }, 'win32', disk)).toBe('C:\\Program Files\\Tools')
+  }))
 })
 
 /** The built-in packs over a real workspace, with programs looked up in `table` as Windows would, and every spawn recorded. */

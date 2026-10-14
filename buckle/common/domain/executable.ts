@@ -1,6 +1,6 @@
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, statSync } from 'node:fs'
 import { basename, join } from 'pathe'
-import { childPath, ignoresCase, isInsideComparable, nativePath, parentDirectory, pathRoot, withForwardSlashes } from './paths.js'
+import { childPath, comparablePath, ignoresCase, isInsideComparable, isPlainName, nativePath, parentDirectory, pathRoot, withForwardSlashes } from './paths.js'
 import { ToolInputError } from './tool.js'
 
 /** Extensions Windows hands straight to CreateProcess. */
@@ -144,6 +144,8 @@ export interface ProgramSearch {
   platform?: NodeJS.Platform
   /** The places searched after PATH; the host's (ownerPlaces) unless a test names its own. */
   places?: readonly SearchPlace[]
+  /** How a name on Windows is read as the disk stores it; the host's (storedPath) unless a test imitates Windows. */
+  storedPath?: StoredPath
 }
 
 /**
@@ -252,14 +254,15 @@ export function findProgram(name: string, input: ProgramSearch & UntrustedRoots 
   // A refusal names the program by `shown` alone: the path found, or a link's target, may lie outside the workspace.
   try { path = nativePath(located.path, platform) } catch { return finding({ path: null, reason: `${shown} is a path Buckle cannot read as the system does, so Buckle does not run it`, untrusted: false }) }
   if (pathRoot(path) === '') return finding({ path: null, reason: `${shown} is a relative path, which Buckle does not run from a working directory`, untrusted: false })
-  const judged = judgedPlace(path, shown, input.untrustedRoots, platform)
+  const stored = input.storedPath ?? storedPath
+  const judged = judgedPlace(path, shown, input.untrustedRoots, platform, stored)
   if (typeof judged !== 'string') return finding(judged)
   if (platform === 'win32' && located.place === AS_NAMED && hasExtension(path, SCRIPT_EXTENSIONS)) {
     return finding(nodeRunning(judged, platform) ?? { path: null, reason: `${shown} is a script, while ${NODE_UNREADABLE}, so Buckle does not run it`, untrusted: false })
   }
   if (platform !== 'win32' || !hasExtension(path, WINDOWS_SHIM_EXTENSIONS)) return finding({ path: judged, argv0: path, args: [] })
   const shim = { file: basename(path), place: located.place === AS_NAMED ? null : located.place }
-  const program = shimProgram({ shim: path, real: judged, shown, roots: input.untrustedRoots, platform })
+  const program = shimProgram({ shim: path, real: judged, shown, roots: input.untrustedRoots, platform, stored })
   return finding('why' in program ? shimRefusal(shown, { ...shim, why: program.why }) : program, path)
 }
 
@@ -281,9 +284,9 @@ function refused(resolved: ProgramRefusal): ProgramFinding {
  * Where an absolute path in pathe's form really leads (walkLinks), or why it is refused: any place on its way inside an
  * untrusted root, or a chain Buckle cannot follow, which may be one an agent built.
  */
-function judgedPlace(path: string, shown: string, roots: readonly UntrustedRoot[], platform: NodeJS.Platform): string | ProgramRefusal {
+function judgedPlace(path: string, shown: string, roots: readonly UntrustedRoot[], platform: NodeJS.Platform, stored: StoredPath): string | ProgramRefusal {
   let walked: LinkWalk
-  try { walked = walkLinks(path, platform) } catch { return { path: null, reason: `${shown} cannot be followed to where it really is, so Buckle does not run it`, untrusted: true } }
+  try { walked = walkLinks(path, platform, stored) } catch { return { path: null, reason: `${shown} cannot be followed to where it really is, so Buckle does not run it`, untrusted: true } }
   const root = rootHolding(roots, [path, ...walked.passed, walked.real], platform)
   if (root) return { path: null, reason: `${shown} is found in or through ${ROOT_NAMES[root.kind]} of this node, where an agent can write, so Buckle does not run it`, untrusted: true }
   return walked.real
@@ -311,13 +314,13 @@ const SCRIPT_EXTENSIONS = ['.js', '.mjs', '.cjs']
  * resolved against the shim's folder, a `..` folded as Windows folds it, and judged as every program is (judgedPlace).
  * A script is run by Buckle's own Node, `process.execPath`, with the script's real path first.
  */
-function shimProgram(input: { shim: string; real: string; shown: string; roots: readonly UntrustedRoot[]; platform: NodeJS.Platform }): Program | ProgramRefusal | { why: string } {
+function shimProgram(input: { shim: string; real: string; shown: string; roots: readonly UntrustedRoot[]; platform: NodeJS.Platform; stored: StoredPath }): Program | ProgramRefusal | { why: string } {
   const text = readCapped(input.real, MAX_SHIM_BYTES)
   const named = text === null ? { why: UNREAD_SHIM } : shimTarget(text)
   if ('why' in named) return named
   let target: string
   try { target = nativePath(`${parentDirectory(input.shim)}/${named.relative}`, input.platform) } catch { return { why: UNREAD_SHIM } }
-  const judged = judgedPlace(target, input.shown, input.roots, input.platform)
+  const judged = judgedPlace(target, input.shown, input.roots, input.platform, input.stored)
   if (typeof judged !== 'string') return judged
   if (!isFile(judged)) return { why: 'a shim whose program is not there' }
   if (!named.script) return { path: judged, argv0: target, args: [] }
@@ -448,7 +451,7 @@ export function runnableCommand(command: string, input: ProgramSearch & Untruste
  * it (OWN_PROCESS_PLACES), so it is dropped. On Windows each entry is handed over in the native backslash spelling.
  * Empty while the roots are unknown, as an entry could lie in a root not listed.
  */
-export function trustedSearchPath(searchPath: string | undefined, roots: UntrustedRoots, platform: NodeJS.Platform = process.platform): string {
+export function trustedSearchPath(searchPath: string | undefined, roots: UntrustedRoots, platform: NodeJS.Platform = process.platform, stored: StoredPath = storedPath): string {
   if (roots.rootsUnknown) return ''
   const delimiter = searchPathDelimiter(platform)
   return (searchPath ?? '').split(delimiter).flatMap(entry => {
@@ -456,7 +459,7 @@ export function trustedSearchPath(searchPath: string | undefined, roots: Untrust
     try {
       const directory = nativePath(entry, platform)
       if (!isFullPath(directory, platform)) return []
-      const walked = walkLinks(directory, platform)
+      const walked = walkLinks(directory, platform, stored)
       const places = [directory, ...walked.passed, walked.real]
       if (places.some(place => namesOwnProcess(place, platform)) || rootHolding(roots.untrustedRoots, places, platform)) return []
       return [platform === 'win32' ? walked.real.replaceAll('/', '\\') : walked.real]
@@ -470,8 +473,8 @@ export function trustedSearchPath(searchPath: string | undefined, roots: Untrust
  * Buckle to load from, a browser profile, is refused where any of these lies where an agent can write. Throws where the
  * chain cannot be followed.
  */
-export function placesOnTheWay(path: string, platform: NodeJS.Platform = process.platform): string[] {
-  const walked = walkLinks(path, platform)
+export function placesOnTheWay(path: string, platform: NodeJS.Platform = process.platform, stored: StoredPath = storedPath): string[] {
+  const walked = walkLinks(path, platform, stored)
   return [path, ...walked.passed, walked.real]
 }
 
@@ -500,10 +503,11 @@ interface LinkWalk {
 /**
  * Where an absolute path in pathe's form really leads, walked one name at a time from its root as the kernel walks it,
  * with every place on the way an agent could change to send it elsewhere: each link met, named where it really lies,
- * and where it leads, followed even where it leads nowhere yet. Each name is appended as text (childPath), and a `..`
- * climbs from where the walk really is. `platform`: the host's unless a test imitates another.
+ * and where it leads, followed even where it leads nowhere yet. Each name is appended as text (childPath), on Windows
+ * as the disk stores it (longName), and a `..` climbs from where the walk really is. `platform`: the host's unless a
+ * test imitates another, with `stored` standing in for the disk.
  */
-function walkLinks(path: string, platform: NodeJS.Platform): LinkWalk {
+function walkLinks(path: string, platform: NodeJS.Platform, stored: StoredPath = storedPath): LinkWalk {
   const passed: string[] = []
   let links = 0
   const follow = (start: string, names: readonly string[]): string => {
@@ -512,7 +516,8 @@ function walkLinks(path: string, platform: NodeJS.Platform): LinkWalk {
       if (name === '' || name === '.') continue
       if (name === '..') { current = parentDirectory(current); continue }
       const next = childPath(current, name)
-      if (!isLink(next)) { current = next; continue }
+      const entry = lstatOrNull(next)
+      if (!entry?.isSymbolicLink()) { current = platform === 'win32' ? longName({ current, name, next, exists: entry !== null, stored }) : next; continue }
       if (++links > MAX_LINKS) throw new Error(`it passes through more than ${MAX_LINKS} links`)
       const target = withForwardSlashes(readlinkSync(next), platform)
       const root = pathRoot(target, platform)
@@ -526,8 +531,44 @@ function walkLinks(path: string, platform: NodeJS.Platform): LinkWalk {
   return { real: follow(root, path.slice(root.length).split('/')), passed }
 }
 
-function isLink(path: string): boolean {
-  try { return lstatSync(path).isSymbolicLink() } catch { return false }
+function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
+  try { return lstatSync(path) } catch { return null }
+}
+
+/**
+ * How the system names an existing path: its real path, on Windows each name long and in the case the disk stores it.
+ * Throws where it cannot be read. A test imitating Windows passes its own.
+ */
+export type StoredPath = (path: string) => string
+
+/** The host's StoredPath: the system's own resolution of the path (realpathSync.native). */
+export function storedPath(path: string): string {
+  return realpathSync.native(path)
+}
+
+/** A name Windows may have made short for a long one: `PROJEC~1`, `ADMINI~1`, `PR1A2B~1`. A generated one always holds this. */
+const SHORT_NAME = /~\d/
+
+/**
+ * A name on Windows as the disk stores it. An 8.3 short name, `C:\Users\me\PROJEC~1` for a workspace registered as
+ * `C:\Users\me\projects-main`, names the same folder, but compared as text it is not inside that root, so an npx or
+ * pnpm exec started from a working directory typed short put the workspace's `node_modules\.bin` on PATH unjudged
+ * (final review of 0.1.4, finding executable 506). An existing name that is not a link is read back from the system:
+ * where its real path lies in the folder the walk has reached, every name before it already walked to where it really
+ * is, its last name is the disk's own, a short name expanded and the case fixed, and every root, shim target, owner
+ * place, and PATH entry is judged in long names. A name that cannot be read back so, or a missing one, stays as written
+ * unless it reads as a short name, which is refused rather than compared as text: a missing one could name a folder
+ * made later.
+ */
+function longName(input: { current: string; name: string; next: string; exists: boolean; stored: StoredPath }): string {
+  if (input.exists) {
+    let real: string | null
+    try { real = nativePath(input.stored(input.next), 'win32') } catch { real = null }
+    const beside = real !== null && comparablePath(parentDirectory(real), true) === comparablePath(input.current, true)
+    if (beside && isPlainName(basename(real!), 'win32')) return childPath(input.current, basename(real!))
+  }
+  if (SHORT_NAME.test(input.name)) throw new Error('a name that reads as a short one cannot be read as the disk stores it')
+  return input.next
 }
 
 /** Where a path really is, in pathe's form, or the path itself where it cannot be resolved. */
