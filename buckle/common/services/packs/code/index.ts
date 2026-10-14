@@ -30,9 +30,10 @@ export const MAX_NESTED_CALLS = 256
  */
 export const MAX_IN_FLIGHT = 8
 /**
- * Calls of `describeTool` and `searchTools` one script may make; past it the script is ended. They are answered live
- * and never recorded, so only this bounds the host's work for a script that spins on them (recheck of the final review
- * of 0.1.4, finding code index.ts:174).
+ * Calls of `describeTool` and `searchTools` one script may make; past it the script is ended. They are answered from
+ * the run's own tool list and recorded by number and arguments alone, so only this bounds the host's work, and the
+ * record's, for a script that spins on them (rechecks of the final review of 0.1.4, findings code index.ts:174 and
+ * :363).
  */
 export const MAX_GLOBAL_CALLS = 10_000
 /** Each VM's heap (D82 brief, point 2). */
@@ -271,6 +272,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const globals: GlobalEntry[] = [...replayGlobals]
   const prefix = [...replay, ...replayGlobals].reduce((last, entry) => Math.max(last, entry.seq), 0)
   const nowBySeq = new Map(replay.map(entry => [entry.seq, entry.now]))
+  // The numbers whose call this send made, recorded or new: a recorded number below the prefix that the send never
+  // asked for when the VM goes idle means it took another path (recheck 3 of the final review of 0.1.4, finding code
+  // index.ts:368).
+  const requested = new Set<number>()
   let nextSeq = prefix + 1
   const issued = new Set<number>()
   const made = new Set<number>()
@@ -338,6 +343,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const answer = (call: ScriptVmCall, target: string, outcome: ScriptVmOutcome, args = fingerprintOf(target, call.args)) => {
     const entry: JournalEntry = { seq: nextSeq++, now: Date.now(), id: call.id, tool: target, args, outcome }
     nowBySeq.set(entry.seq, entry.now)
+    requested.add(entry.seq)
     record.add(entry)
     if (!stopping()) hand(entry.seq, entry.now, entry.id, entry.outcome)
   }
@@ -346,6 +352,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     if (!recorded) globals.push({ seq, id: call.id, name: call.name, args })
     const now = nowBySeq.get(seq - 1) ?? startedAt
     nowBySeq.set(seq, now)
+    requested.add(seq)
     if (!stopping()) hand(seq, now, call.id, outcome)
   }
   // Journal entries go back in their order, each once the VM has made its call again.
@@ -361,12 +368,12 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     diverged = true
     settleIfStopping()
   }
-  // A tool of the run's own list is declared from it; one it does not hold, as one a policy change has allowed since, is
-  // looked up in the manifest as it is now, and a replay its answer turns aside is refused by the fingerprints.
+  // From the run's own list alone: a tool it does not hold was out of the script's reach when the run began, and is
+  // answered so on every replay whatever the tool policy says since, as searchTools and the tools are (recheck 3 of the
+  // final review of 0.1.4, finding code index.ts:368).
   const describe = (args: JsonValue | undefined): ScriptVmOutcome => {
     const own = tools.find(candidate => candidate.name === args || candidate.jsName === args)
-    const tool = own?.inputSchema ? { ...own, inputSchema: own.inputSchema } : input.reachable().find(candidate => candidate.name === args || vm.identifier(candidate.name) === args)
-    return { ok: true, value: tool ? declare(vm, [tool]) : undefined }
+    return { ok: true, value: own ? declare(vm, [own]) : undefined }
   }
   const global = (name: string, args: JsonValue | undefined): ScriptVmOutcome => {
     if (name === DESCRIBE_TOOL) return describe(args)
@@ -388,9 +395,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     },
     onIdle(seq) {
       applied = seq
-      // Idle below the record's last entry with the next number one no call took: this run did not make a global its
-      // first run made there, and the VM would wait for ever.
-      if (seq < prefix && !nowBySeq.has(seq + 1)) diverge()
+      // Idle below the record's last entry with the next number one this send never asked for: it did not make a call
+      // its first run made there, and the VM would wait for ever. Refused, never left to its deadline (recheck 3 of the
+      // final review of 0.1.4, finding code index.ts:368). A send stopping at an ask hands nothing more, and stops.
+      if (!stopping() && seq < prefix && !requested.has(seq + 1)) diverge()
       settleIfStopping()
     },
     onCall(call) {
@@ -403,8 +411,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       const fingerprint = bytes === null ? fingerprintOf(target, call.args) : fingerprintOf(target, { oversized: bytes })
       const recorded = replayById.get(call.id)
       if (recorded) {
-        if (recorded.tool !== target || recorded.args !== fingerprint) diverge()
-        else flush()
+        if (recorded.tool !== target || recorded.args !== fingerprint) return diverge()
+        requested.add(recorded.seq)
+        flush()
         return
       }
       // A tool call on a number the first run gave a global, or a global with other arguments than it had there.

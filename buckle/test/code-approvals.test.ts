@@ -701,16 +701,15 @@ describe('the replay journal', () => {
     await after.history.close()
   }, 120_000)
 
-  // Recheck 2 of the final review of 0.1.4, finding code index.ts:363: a tool policy change between a stop and the
-  // re-send. describeTool answers a tool of the run's own list from it, so a tool denied since replays as before; a
-  // tool allowed since is looked up afresh, and the call its answer moves onto a global's number is refused before
-  // it runs: the write that ran is never run again.
+  // Rechecks 2 and 3 of the final review of 0.1.4, findings code index.ts:363 and :368: a tool policy change between
+  // a stop and the re-send. describeTool answers from the run's own tool list alone, so a tool allowed or denied since
+  // is answered as the first run was, the replay runs as it did, and the write that ran never runs again.
   describe('across a tool policy change between the stop and the re-send', () => {
     const SCRIPT = 'const d = await describeTool("fs_find_names"); if (!d) await describeTool("fs_list"); await tools.fs_write({ path: "logs/deploy.md", content: "deployed" }); await tools.fs_write({ path: "one/out.md", content: "x" }); return "end"'
     const policy = (deny: string[]) => WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), tools: { deny }, filesystem: { rules: [{ path: 'logs', write: 'allow' }] } })
     const writes = (runtime: BuckleRuntime) => attempts(runtime, 'fs_write').map(entry => entry.args)
 
-    it('refuses the re-send before anything runs when describeTool now finds a tool allowed since', async () => {
+    it('replays normally when a tool describeTool asked about is allowed since, and the write runs once', async () => {
       const { workspace, runtime } = await node()
       mkdirSync(join(workspace, 'logs'))
       await runtime.policy.apply(policy(['fs_find_names']))
@@ -718,10 +717,29 @@ describe('the replay journal', () => {
       await answer(runtime, approval!.token)
       await runtime.policy.apply(policy([]))
 
-      expect(await run(runtime, SCRIPT)).toMatchObject({ outcome: 'error', error: { code: CODE_REPLAY_DIVERGED } })
-      expect(writes(runtime)).toHaveLength(2)
+      expect(await run(runtime, SCRIPT)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 'end' } })
+      expect(writes(runtime).filter(args => (args as { path: string }).path === `[${'logs/deploy.md'.length} characters]`)).toHaveLength(1)
+      expect(writes(runtime)).toHaveLength(3)
       await runtime.history.close()
     })
+
+    // The skeptic's parallel shift: the asked call's number is recorded nowhere, so a changed describeTool answer once
+    // moved the recorded write onto it, ran it again, and left the send to stall until its deadline.
+    it('runs the recorded write once when the calls made at once would shift onto the asked call\'s number', async () => {
+      const { workspace, runtime } = await node()
+      mkdirSync(join(workspace, 'logs'))
+      const parallel = 'const d = await describeTool("fs_find_names"); await Promise.all([d ? null : tools.fs_write({ path: "one/out.md", content: "x" }), tools.fs_write({ path: "logs/deploy.md", content: "deployed" })]); return "end"'
+      await runtime.policy.apply(policy(['fs_find_names']))
+      const [approval] = asked(await run(runtime, parallel))
+      await answer(runtime, approval!.token)
+      await runtime.policy.apply(policy([]))
+
+      const began = performance.now()
+      expect(await run(runtime, parallel)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 'end' } })
+      expect(performance.now() - began).toBeLessThan(10_000)
+      expect(writes(runtime).filter(args => (args as { path: string }).path === `[${'logs/deploy.md'.length} characters]`)).toHaveLength(1)
+      await runtime.history.close()
+    }, 30_000)
 
     it('replays describeTool from the run\'s own tools when a tool it declared is denied since', async () => {
       const { workspace, runtime } = await node()
@@ -1069,6 +1087,20 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     await expect(codeRun(directory, invoked)(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
     expect(invoked).not.toHaveBeenCalled()
   })
+
+  // Recheck 3 of the final review of 0.1.4, finding code index.ts:368: a recorded entry the replay never asks for, its
+  // number held by the record, leaves the VM waiting: the send is refused once the VM goes idle, not at its deadline.
+  it('refuses a replay that never asks for a recorded entry once the VM goes idle', async () => {
+    const directory = scratch()
+    const script = 'await tools.echo({}); await tools.gate({})'
+    await expect(codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'echoed'))(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    const [file] = readdirSync(directory).filter(name => name.endsWith('.json'))
+    const record = JSON.parse(readFileSync(join(directory, file!), 'utf8')) as Journal
+    writeFileSync(join(directory, file!), JSON.stringify({ ...record, entries: record.entries.map(entry => ({ ...entry, id: entry.id + 8 })) }))
+    const began = performance.now()
+    await expect(codeRun(directory, async call => ok(call, 'opened'), { timeoutMs: 30_000 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+    expect(performance.now() - began).toBeLessThan(10_000)
+  }, 40_000)
 
   // A replay that does not make a global its first run made leaves that global's number unfilled: it is refused at
   // once rather than left to wait for the deadline.

@@ -46,7 +46,7 @@ const EntrySchema = z.object({
   outcome: OutcomeSchema,
 })
 
-const RunToolSchema = z.object({ name: z.string(), jsName: z.string(), description: z.string(), inputSchema: JsonObjectSchema.optional() })
+const RunToolSchema = z.object({ name: z.string(), jsName: z.string(), description: z.string(), inputSchema: JsonObjectSchema })
 
 const GlobalEntrySchema = z.object({
   seq: z.number().int().positive(),
