@@ -473,11 +473,12 @@ export function trustedSearchPath(searchPath: string | undefined, roots: Untrust
  * load from, a browser profile, is refused where any of these lies where an agent can write. `landing` is the folder a
  * caller hands on: where the walk really lands, on Windows the real path the system gives it, and null there when it
  * has none, which a caller refuses, never a link's own place (recheck 3 of the final review of 0.1.4, finding
- * executable 485). Throws where the chain cannot be followed.
+ * executable 485). `real` is where the walk lands by spelling, which a caller judges for holding a root where there is
+ * no landing to judge (recheck 4, finding mode.ts:192). Throws where the chain cannot be followed.
  */
-export function placesOnTheWay(path: string, platform: NodeJS.Platform = process.platform, stored: StoredPath = storedPath): { places: string[]; landing: string | null } {
+export function placesOnTheWay(path: string, platform: NodeJS.Platform = process.platform, stored: StoredPath = storedPath): { places: string[]; landing: string | null; real: string } {
   const walked = walkLinks(path, platform, stored)
-  return { places: placesOf(path, walked), landing: platform === 'win32' ? walked.landing : walked.real }
+  return { places: placesOf(path, walked), landing: platform === 'win32' ? walked.landing : walked.real, real: walked.real }
 }
 
 /**

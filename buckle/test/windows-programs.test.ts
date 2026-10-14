@@ -9,6 +9,7 @@ import type { Pack } from '../common/domain/pack.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { BROWSER_UNTRUSTED } from '../common/services/packs/browser/index.js'
 import { chooseBrowser } from '../common/services/packs/browser/mode.js'
+import { ARGS_UNTRUSTED } from '../common/domain/browser-arguments.js'
 import { createBuiltinPacks } from '../common/services/packs/index.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
@@ -208,6 +209,22 @@ it('climbs a relative link target from the real path of its folder, as Windows d
   try {
     expect(placesOnTheWay('P:/links/ext', 'win32', subst).places).toContain('C:/Users/me/app/ext')
     expect(trustedSearchPath('P:\\links\\ext', { untrustedRoots: rootsOf('workspace', ['C:/Users/me/app']) }, 'win32', subst)).toBe('')
+  } finally { process.chdir(cwd) }
+})
+
+// Recheck 4 of the final review of 0.1.4, finding mode.ts:192: a BUCKLE_BROWSER_ARGS folder that is a link to a drive
+// not there now has no real landing place, but where it lands by spelling, Q:\, holds a workspace registered on that
+// drive, so it is refused, as the profile is.
+it('refuses a browser folder whose link leads to an absent drive that holds a workspace', () => {
+  const root = scratch()
+  mkdirSync(join(root, 'C:/Users/me/AppData'), { recursive: true })
+  symlinkSync('Q:/', join(root, 'C:/Users/me/AppData/ext'))
+  const untrusted = { untrustedRoots: rootsOf('workspace', ['Q:/ws']), rootsUnknown: null }
+  const cwd = process.cwd()
+  process.chdir(root)
+  try {
+    expect(chooseBrowser({ args: '--load-extension=C:\\Users\\me\\AppData\\ext', untrusted, protectedRoots: [], platform: 'win32', storedPath: path => path })).toEqual({ refusal: ARGS_UNTRUSTED })
+    expect(chooseBrowser({ profile: 'C:\\Users\\me\\AppData\\ext', untrusted, protectedRoots: [], platform: 'win32', storedPath: path => path })).toMatchObject({ refusal: expect.stringContaining('BUCKLE_BROWSER_PROFILE names a folder inside or around a workspace') })
   } finally { process.chdir(cwd) }
 })
 

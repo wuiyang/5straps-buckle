@@ -176,20 +176,21 @@ const NO_FOLDER = Symbol('no folder')
  * does not load from, a place on its way inside a root, or the folder, as named and where it lands, holding one, or
  * where Buckle cannot read or follow it; NO_FOLDER on Windows where its landing place has no real path, as on a drive
  * that is not there, never a link's own place in its stead (recheck 3 of the final review of 0.1.4, finding
- * executable 485).
+ * executable 485). Where it lands is its real landing place, or where the walk lands by spelling when it has none, so
+ * a link to an absent drive that holds a root is still refused (recheck 4, finding mode.ts:192).
  */
 function judgedFolder(path: string, roots: readonly string[], platform: NodeJS.Platform, stored?: StoredPath): string | typeof UNTRUSTED_FOLDER | typeof NO_FOLDER {
   // On Windows a path rooted at a slash alone names whichever drive is current, so no one place (isFullPath).
   if (platform === 'win32' && /^[/\\](?![/\\])/.test(path)) return UNTRUSTED_FOLDER
   let named: string
-  let walked: { places: string[]; landing: string | null }
+  let walked: { places: string[]; landing: string | null; real: string }
   try {
     named = typedPath(path, platform)
     walked = placesOnTheWay(named, platform, stored)
   } catch { return UNTRUSTED_FOLDER }
   const caseless = ignoresCase(platform)
   const inside = (outer: string, inner: string) => isInsideComparable(outer, inner, caseless, platform)
-  const folders = walked.landing === null ? [named] : [named, walked.landing]
+  const folders = [named, walked.landing ?? walked.real]
   if (roots.some(root => walked.places.some(place => inside(root, place)) || folders.some(folder => inside(folder, root)))) return UNTRUSTED_FOLDER
   return walked.landing ?? NO_FOLDER
 }
