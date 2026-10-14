@@ -192,16 +192,16 @@ describe('a Windows shim, imitated', () => {
   const base = mkdtempSync(join(root, 'shims-'))
   let count = 0
   /** A fresh npm prefix: `<prefix>/<name>.cmd` holding `text`, and each of `files` beneath the prefix. */
-  function prefix(input: { shim: string; files?: string[]; name?: string }) {
+  function prefix(input: { shim: string; files?: string[]; name?: string; extension?: string }) {
     const at = join(base, `prefix-${++count}`)
-    const name = input.name ?? 'agent-browser'
+    const name = `${input.name ?? 'agent-browser'}${input.extension ?? '.cmd'}`
     mkdirSync(at, { recursive: true })
     for (const file of input.files ?? []) {
       mkdirSync(join(at, file, '..'), { recursive: true })
       writeFileSync(join(at, file), '')
     }
-    writeFileSync(join(at, `${name}.cmd`), input.shim)
-    return { at, shim: join(at, `${name}.cmd`) }
+    writeFileSync(join(at, name), input.shim)
+    return { at, shim: join(at, name) }
   }
   const resolve = (shim: string, untrustedRoots: UntrustedRoots['untrustedRoots'] = []) => resolveProgram('agent-browser', { untrustedRoots, lookup: () => shim, platform: 'win32' })
   const refusal = (file: string, why: string) => ({ path: null, reason: `agent-browser was found on PATH as ${file}, ${why}, so Buckle does not run it`, untrusted: false, shim: { file, place: 'on PATH', why } })
@@ -253,12 +253,65 @@ describe('a Windows shim, imitated', () => {
     }
   })
 
-  it('runs a script the owner names by its path with Buckle\'s own Node on Windows, as a program elsewhere', () => {
-    const { at } = prefix({ shim: '', files: ['node_modules/agent-browser/bin/agent-browser.js'] })
-    const script = join(at, 'node_modules/agent-browser/bin/agent-browser.js')
+  it.each(['.js', '.mjs', '.cjs'])('runs a %s script the owner names by its path with Buckle\'s own Node on Windows, as a program elsewhere', (extension) => {
+    const { at } = prefix({ shim: '', files: [`node_modules/agent-browser/bin/agent-browser${extension}`] })
+    const script = join(at, `node_modules/agent-browser/bin/agent-browser${extension}`)
     expect(resolveProgram(script, { untrustedRoots: [], platform: 'win32', places: [] })).toEqual({ path: process.execPath, argv0: process.execPath, args: [script] })
     expect(resolveProgram(script, { untrustedRoots: rootsOf('workspace', [at]), platform: 'win32', places: [] })).toMatchObject({ path: null, untrusted: true })
     expect(resolveProgram(script, { untrustedRoots: [], platform: 'linux', places: [] })).toMatchObject({ path: null, reason: `${script} is not installed on this node` })
+  })
+
+  it.each(['.js', '.mjs', '.cjs'])('reads npm\'s shim for a %s script as Buckle\'s Node running it', (extension) => {
+    const file = `node_modules/pkg/bin/cli${extension}`
+    const { at, shim } = prefix({ shim: NPM_SHIM('node', `node_modules\\pkg\\bin\\cli${extension}`), files: [file] })
+    expect(resolve(shim)).toEqual({ path: process.execPath, argv0: process.execPath, args: [join(at, file)] })
+  })
+
+  it('reads a shim whose program is a .com', () => {
+    const { at, shim } = prefix({ shim: '@ECHO off\r\n"%~dp0node_modules\\pkg\\bin\\tool.com" %*\r\n', files: ['node_modules/pkg/bin/tool.com'] })
+    expect(resolve(shim)).toEqual({ path: join(at, 'node_modules/pkg/bin/tool.com'), argv0: join(at, 'node_modules/pkg/bin/tool.com'), args: [] })
+  })
+
+  it('finds a .bat shim by the bare name as it finds a .cmd one, and names it in a refusal', () => {
+    const exe = 'node_modules/agent-browser/bin/agent-browser-win32-x64.exe'
+    const read = prefix({ shim: AGENT_BROWSER_SHIM, files: [exe], extension: '.bat' })
+    const search = (directory: string) => ({ untrustedRoots: [], environment: { PATH: '' }, platform: 'win32' as const, places: [{ directory, label: 'beside buckle' }] })
+    expect(resolveProgram('agent-browser', search(read.at))).toEqual({ path: join(read.at, exe), argv0: join(read.at, exe), args: [] })
+    const unread = prefix({ shim: '@ECHO off\r\ncall "%~dp0setup.cmd"\r\n"%~dp0x.exe" %*\r\n', extension: '.bat' })
+    expect(resolveProgram('agent-browser', search(unread.at))).toMatchObject({ path: null, shim: { file: 'agent-browser.bat', place: 'beside buckle', why: 'a shim Buckle cannot read' } })
+  })
+
+  // Review of 2026-10-14: forms cmd reads that the first reading let through, running the program without what the shim
+  // sets, or a program the shim never starts. A shim is accepted only when every line is one Buckle understands whole.
+  it('refuses every other way a shim sets a variable, escapes a character, joins a line, or runs something more', () => {
+    const exe = '"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe"'
+    const other = '"%~dp0node_modules\\agent-browser\\bin\\other.exe"'
+    const files = ['node_modules/agent-browser/bin/agent-browser-win32-x64.exe', 'node_modules/agent-browser/bin/other.exe']
+    const shim = (...lines: string[]) => ['@ECHO off', ...lines, ''].join('\r\n')
+    const sets = 'a shim that sets environment variables Buckle would not set'
+    const cases: Array<[string, string]> = [
+      [shim('set/p NODE_OPTIONS=<"%~dp0o"', `${exe} %*`), sets],
+      [shim('SET/A NODE_OPTIONS=1', `${exe} %*`), sets],
+      [shim('SET /A X=1', `${exe} %*`), sets],
+      [shim('SET /P X=', `${exe} %*`), sets],
+      [shim('set,X=1', `${exe} %*`), sets],
+      [shim('IF 1==1 PATH C:\\tools;%PATH%', `${exe} %*`), sets],
+      [shim('PATH;C:\\x', `${exe} %*`), sets],
+      [shim('SET dp0=%~dp0', '@SET dp0=%~dp0..\\other\\', '"%dp0%\\node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*'), sets],
+      [shim('SET ^', 'NODE_OPTIONS=1', `${exe} %*`), UNREAD],
+      [shim('se^t NODE_OPTIONS=1', `${exe} %*`), UNREAD],
+      [shim(`${other} ^& ${exe} %*`), UNREAD],
+      [shim(`${exe} --flag ^& ${exe} %*`), UNREAD],
+      [shim(`${exe} ^| more %*`), UNREAD],
+      [shim(`${exe} %* | more`), UNREAD],
+      [shim('call "%~dp0setup.cmd"', `${exe} %*`), UNREAD],
+      [shim('cd /d "%~dp0"', `${exe} %*`), UNREAD],
+      [shim(`echo hi & ${exe} %*`), UNREAD],
+    ]
+    for (const [text, why] of cases) {
+      const { shim: path } = prefix({ shim: text, files })
+      expect(resolve(path), text).toEqual(refusal('agent-browser.cmd', why))
+    }
   })
 
   it('reads the shim agent-browser\'s install writes as the native .exe it starts', () => {
@@ -350,6 +403,8 @@ function PNPM_SHIM(target: string, nodePath: boolean): string {
     '@IF EXIST "%~dp0\\node.exe" (', `  "%~dp0\\node.exe"  "%~dp0\\${target}" %*`, ') ELSE (', '  @SET PATHEXT=%PATHEXT:;.JS;=;%', `  node  "%~dp0\\${target}" %*`, ')', '',
   ].join('\r\n')
 }
+
+const UNREAD = 'a shim Buckle cannot read'
 
 /** The shim agent-browser's postinstall writes over npm's (scripts/postinstall.js, fixWindowsShims). */
 const AGENT_BROWSER_SHIM = '@ECHO off\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n'
