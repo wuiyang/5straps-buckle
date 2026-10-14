@@ -36,12 +36,13 @@ try {
   port = await freePort()
   await startService()
   await checkApprovalAndAudit()
+  await checkCodeRunOverHttp()
   await checkBackupAndRestore()
   await checkCleanStop()
   await checkSetupWithoutAdminToken()
   await checkSetupWithFlagOff()
   await checkMcpStdio()
-  process.stdout.write('Packaged Buckle passed: install, built server, CLI, HTTP authorization, unsigned approval refusal, pinned independent signed approval/retry, audit, backup/restart, conflict-checked restore, SIGTERM clean close, no /setup without an admin token, no /setup with the experimental admin flag off, and MCP over stdio.\n')
+  process.stdout.write('Packaged Buckle passed: install, built server, CLI, HTTP authorization, unsigned approval refusal, pinned independent signed approval/retry, audit, a code_run script over HTTP and MCP, backup/restart, conflict-checked restore, SIGTERM clean close, no /setup without an admin token, no /setup with the experimental admin flag off, and MCP over stdio.\n')
 } catch (error) {
   process.stderr.write(`Packaged Buckle smoke failed: ${error instanceof Error ? error.message : String(error)}\n`)
   process.exitCode = 1
@@ -97,7 +98,7 @@ function assertBuiltServer(output) {
   // What the bundle took from node_modules ships with it, for scripts/release/audit-bundled.mjs and anyone auditing the package.
   const bundled = JSON.parse(readFileSync(join(output, 'bundled-packages.json'), 'utf8'))
   assert(bundled.some(item => item.startsWith('nitro@')), 'bundled-packages.json does not list nitro')
-  assert.deepEqual(bundled.filter(item => /^(?:@5straps\/|@modelcontextprotocol\/|zod@|h3@)/.test(item)), [], 'An external package was bundled')
+  assert.deepEqual(bundled.filter(item => /^(?:@5straps\/|@modelcontextprotocol\/|zod@|h3@|@earendil-works\/pi-codemode@|quickjs-wasi@)/.test(item)), [], 'An external package was bundled')
 }
 
 function walk(directory) {
@@ -118,7 +119,7 @@ function assertExecutableBin(path) {
 function nodeEnvironment({ admin = true, adminHttp = admin } = {}) {
   return { ...environment, BUCKLE_ENV_FILE: join(root, 'no-environment-file'), BUCKLE_HOST: '127.0.0.1',
     BUCKLE_PORT: String(port ?? 4320), BUCKLE_SERVER_ID: 'package-smoke', BUCKLE_WORKSPACE_ROOT: workspace,
-    BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false',
+    BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'fs,code', BUCKLE_ALLOW_SHELL: 'false',
     BUCKLE_AUTH_TOKEN: agentToken, ...(admin ? { BUCKLE_ADMIN_TOKEN: adminToken } : {}), ...(adminHttp ? { BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true' } : {}), BUCKLE_APPROVAL_TIMEOUT_MS: '1' }
 }
 
@@ -208,6 +209,28 @@ async function checkApprovalAndAudit() {
   const audit = await request('/setup/audit')
   assert(audit.entries.some(entry => entry.tool === 'fs_write' && entry.outcome === 'ok'))
   assert.match(cli(['log', '--json']), /fs_write/)
+}
+
+/** A script that reads a file through fs_read, so code mode's worker and QuickJS binary load from the installed tarball (owner decision D82). */
+const CODE_SCRIPT = 'const read = await tools.fs_read({ path: "demo.txt" }); text("read " + read.size); return read.content'
+
+/** One code_run's output as the node returned it: the script ran, called fs_read once, and returned the file. */
+function assertCodeRun(output, expected) {
+  assert.equal(output.ok, true, `code_run failed: ${JSON.stringify(output.error)}`)
+  assert.equal(output.value, expected)
+  assert.equal(output.output, `read ${Buffer.byteLength(expected)}`)
+  assert.deepEqual(output.calls.map(call => [call.tool, call.status]), [['fs_read', 'ok']])
+}
+
+/** `buckle serve`: a code_run over /v1/invoke, whose nested call is audited with the outer call's stage. */
+async function checkCodeRunOverHttp() {
+  const requestId = `smoke-${++sequence}`
+  const ran = await request('/v1/invoke', { token: agentToken, body: { requestId, tool: 'code_run', args: { script: CODE_SCRIPT },
+    context: { sessionId: 'smoke-session', stageId: 'code-stage' }, approvalTokens: [] } })
+  assert.equal(ran.outcome, 'ok', `code_run over HTTP answered ${JSON.stringify(ran)}`)
+  assertCodeRun(ran.output, readFileSync(join(workspace, 'demo.txt'), 'utf8'))
+  const audit = await request('/setup/audit')
+  assert(audit.entries.some(entry => entry.tool === 'fs_read' && entry.stageId === 'code-stage' && entry.requestId.startsWith('code:')), 'The script\'s fs_read is not in the audit log under its stage')
 }
 
 async function prepareApprovalClient() {
@@ -351,6 +374,15 @@ async function checkMcpStdio() {
     const [initialized, listed] = [1, 2].map(id => lines().find(message => message.id === id))
     assert(initialized.result?.serverInfo?.name, `initialize answered without server info: ${JSON.stringify(initialized)}`)
     assert(listed.result?.tools?.some(tool => tool.name === 'fs_write'), 'tools/list does not list fs_write')
+    // `buckle mcp`: the same script through MCP's tools/call.
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'code_run', arguments: { script: CODE_SCRIPT }, _meta: meta } })}\n`)
+    while (!lines().some(message => message.id === 3)) {
+      if (Date.now() > deadline || child.exitCode !== null) throw new Error(`buckle mcp did not answer code_run: ${stderr}`)
+      await delay(50)
+    }
+    const called = lines().find(message => message.id === 3)
+    assert.notEqual(called.result?.isError, true, `code_run over MCP failed: ${JSON.stringify(called)}`)
+    assertCodeRun(JSON.parse(called.result.content[0].text), readFileSync(join(workspace, 'demo.txt'), 'utf8'))
     assert(lines().every(message => message.jsonrpc === '2.0'), 'stdout carried something other than MCP messages')
     child.stdin.end()
     const result = await Promise.race([closed, delay(30_000).then(() => null)])

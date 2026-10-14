@@ -14,6 +14,17 @@ is installed from npm with its own license file and is not copied into this pack
 The nitro package carries the notices of the code it bundles itself in
 `dist/THIRD-PARTY-LICENSES.md` inside its npm package.
 
+Code mode runs an agent's script in the packages below. They are not bundled: npm installs them
+beside `@5straps/buckle`, which loads them from there. Their notices are kept here because the
+pi-codemode npm package ships no license file, and the quickjs-wasi package ships its own notice
+but not the engine's. Each is published under the MIT License, whose text follows.
+
+| Package | Version | License | Copyright |
+|---|---|---|---|
+| @earendil-works/pi-codemode | 1.2.0 | MIT | Copyright (c) 2025 Mario Zechner |
+| quickjs-wasi | 3.6.2 | MIT | Copyright (c) 2026 Vercel, Inc. |
+| QuickJS-NG, the JavaScript engine compiled into quickjs-wasi's `quickjs.wasm` | as built into quickjs-wasi 3.6.2 | MIT | Copyright (c) 2017-2024 Fabrice Bellard and Charlie Gordon, and the QuickJS-NG authors |
+
 ## MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

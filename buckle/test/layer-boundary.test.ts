@@ -121,7 +121,8 @@ describe('the layer boundary', () => {
       serverDir: false,
       errorHandler: './server/error.ts',
       extends: ['./layers/common', './layers/mcp', './layers/admin'],
-      rolldownConfig: { external: [/^@5straps\//, /^@modelcontextprotocol\//, /^zod(\/|$)/, /^h3(\/|$)/] },
+      // Code mode's VM, installed with the package and read from there (owner decision D82).
+      rolldownConfig: { external: [/^@5straps\//, /^@modelcontextprotocol\//, /^zod(\/|$)/, /^h3(\/|$)/, /^@earendil-works\/pi-codemode(\/|$)/, /^quickjs-wasi(\/|$)/] },
     })
     expect(Reflect.ownKeys(root.rolldownConfig as object)).toEqual(['external'])
     for (const layer of readdirSync(join(PACKAGE_ROOT, 'layers'))) {
