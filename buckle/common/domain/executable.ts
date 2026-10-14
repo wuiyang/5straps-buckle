@@ -50,12 +50,13 @@ export const ON_PATH = 'on PATH'
 export const AS_NAMED = 'as named'
 
 /**
- * Where a binary is: a path is looked at alone; a bare name in each PATH entry, then in each owner place, for an
- * executable file, and on Windows only then for a shim in the same order, so a program found today is found as before.
+ * Where a binary is: a path is looked at alone, and on Windows may name a shim or a script (configuredScript); a bare
+ * name in each PATH entry, then in each owner place, for an executable file, and on Windows only then for a shim in the
+ * same order, so a program found today is found as before.
  */
 export function locateExecutable(binary: string, environment: NodeJS.ProcessEnv, platform: NodeJS.Platform, places: readonly SearchPlace[]): Located | null {
   if (isPathReference(binary, platform)) {
-    const found = firstExecutable(binary, platform) ?? firstShim(binary, platform)
+    const found = firstExecutable(binary, platform) ?? firstShim(binary, platform) ?? configuredScript(binary, platform)
     return found === null ? null : { path: found, place: AS_NAMED }
   }
   const searched = [...searchDirectories(environment, platform).map(directory => ({ directory, label: ON_PATH })), ...places]
@@ -253,6 +254,7 @@ export function findProgram(name: string, input: ProgramSearch & UntrustedRoots 
   if (pathRoot(path) === '') return finding({ path: null, reason: `${shown} is a relative path, which Buckle does not run from a working directory`, untrusted: false })
   const judged = judgedPlace(path, shown, input.untrustedRoots, platform)
   if (typeof judged !== 'string') return finding(judged)
+  if (platform === 'win32' && located.place === AS_NAMED && hasExtension(path, SCRIPT_EXTENSIONS)) return finding(nodeRunning(judged, platform))
   if (platform !== 'win32' || !hasExtension(path, WINDOWS_SHIM_EXTENSIONS)) return finding({ path: judged, argv0: path, args: [] })
   const shim = { file: basename(path), place: located.place === AS_NAMED ? null : located.place }
   const program = shimProgram({ shim: path, real: judged, shown, roots: input.untrustedRoots, platform })
@@ -319,9 +321,12 @@ function shimProgram(input: { shim: string; real: string; shown: string; roots: 
   const judged = judgedPlace(target, input.shown, input.roots, input.platform)
   if (typeof judged !== 'string') return judged
   if (!isFile(judged)) return { why: 'a shim whose program is not there' }
-  // Buckle's own Node, which runs Buckle itself: a script never picks its interpreter from a PATH an agent may reach.
-  if (script) return { path: nativePath(process.execPath, input.platform), argv0: process.execPath, args: [judged] }
-  return { path: judged, argv0: target, args: [] }
+  return script ? nodeRunning(judged, input.platform) : { path: judged, argv0: target, args: [] }
+}
+
+/** Buckle's own Node, which runs Buckle itself, running a script: it never picks its interpreter from a PATH an agent may reach. */
+function nodeRunning(script: string, platform: NodeJS.Platform): Program {
+  return { path: nativePath(process.execPath, platform), argv0: process.execPath, args: [script] }
 }
 
 /** A path that starts at a shim's own folder: `%~dp0`, or npm's `%dp0%\`. */
@@ -505,6 +510,14 @@ function firstShim(path: string, platform: NodeJS.Platform): string | null {
   if (platform !== 'win32' || hasExtension(path, WINDOWS_EXECUTABLE_EXTENSIONS)) return null
   const candidates = hasExtension(path, WINDOWS_SHIM_EXTENSIONS) ? [path] : WINDOWS_SHIM_EXTENSIONS.map(extension => `${path}${extension}`)
   return candidates.find(isFile) ?? null
+}
+
+/**
+ * A script the owner names by its path on Windows, which has no shebang: Buckle's own Node runs it (nodeRunning), as a
+ * shim's script is run, so the owner can name the script a shim Buckle refuses starts.
+ */
+function configuredScript(path: string, platform: NodeJS.Platform): string | null {
+  return platform === 'win32' && hasExtension(path, SCRIPT_EXTENSIONS) && isFile(path) ? path : null
 }
 
 function hasExtension(path: string, extensions: readonly string[]): boolean {

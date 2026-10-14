@@ -216,6 +216,14 @@ describe('a Windows shim, imitated', () => {
     expect(resolve(shim)).toEqual({ path: process.execPath, argv0: process.execPath, args: [join(at, 'global/5/node_modules/agent-browser/bin/agent-browser.js')] })
   })
 
+  it('runs a script the owner names by its path with Buckle\'s own Node on Windows, as a program elsewhere', () => {
+    const { at } = prefix({ shim: '', files: ['node_modules/agent-browser/bin/agent-browser.js'] })
+    const script = join(at, 'node_modules/agent-browser/bin/agent-browser.js')
+    expect(resolveProgram(script, { untrustedRoots: [], platform: 'win32', places: [] })).toEqual({ path: process.execPath, argv0: process.execPath, args: [script] })
+    expect(resolveProgram(script, { untrustedRoots: rootsOf('workspace', [at]), platform: 'win32', places: [] })).toMatchObject({ path: null, untrusted: true })
+    expect(resolveProgram(script, { untrustedRoots: [], platform: 'linux', places: [] })).toMatchObject({ path: null, reason: `${script} is not installed on this node` })
+  })
+
   it('reads the shim agent-browser\'s install writes as the native .exe it starts', () => {
     const exe = 'node_modules/agent-browser/bin/agent-browser-win32-x64.exe'
     const { at, shim } = prefix({ shim: AGENT_BROWSER_SHIM, files: [exe] })
