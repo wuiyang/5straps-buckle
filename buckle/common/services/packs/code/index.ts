@@ -556,13 +556,13 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     // The calls this send ran live, such as one its first run cut before it ran, are added to the record, which keeps
     // its expiry, so the next send after a restart runs none of them again (recheck 3 of the final review of 0.1.4,
     // finding code index.ts:483).
-    // Whole, or as stubs where the whole passes a bound; refused both ways, the record stays as it was.
+    // Whole, or as stubs where the whole passes a bound; refused both ways, the record stays as it was, and the owner's
+    // log says the calls this send ran are not in it (recheck 4 of the final review of 0.1.4, finding code index.ts:520).
     if (journal && record.count > 0) {
       try {
-        if (!(!record.overflowed && await write([], record.whole(), journal))) {
-          const stubs = record.stubs()
-          if (stubs !== null) await write([], stubs, journal)
-        }
+        const stubs = record.stubs()
+        const written = (!record.overflowed && await write([], record.whole(), journal)) || (stubs !== null && await write([], stubs, journal))
+        if (!written) logger.warn('The replay record of a diverged script was kept without the calls this send ran, which pass its bound even as stubs; sent again after a restart, they may run again', { key, calls: record.count })
       } catch (error) {
         logger.warn('Could not add the calls a diverged script ran to its replay record; sent again after a restart, they may run again', { error: error instanceof Error ? error.message : 'Unknown error' })
       }

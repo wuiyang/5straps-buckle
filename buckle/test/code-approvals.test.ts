@@ -1227,6 +1227,27 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(waited).toEqual([1])
   }, 60_000)
 
+  // Recheck 4 of the final review of 0.1.4, finding code index.ts:520: when even the stubs of a diverged send pass the
+  // bound, the record stays as it was and the owner's log says the calls this send ran are not in it.
+  it('logs a divergence whose own calls pass the bound even as stubs, and keeps the record as it was', async () => {
+    const directory = scratch()
+    const script = 'const w = Promise.all([tools.waiter({ n: 1 }), tools.waiter({ n: 2 })]).then(() => "w", e => "w:" + e.code); let first = "ok"; try { await tools.echo({ i: 0 }) } catch (e) { first = e.code } if (first !== "ok") await tools.echo({ other: true }); for (let i = 1; i < 6; i++) { try { await tools.echo({ i }) } catch (e) {} } while (true) {}'
+    const waitsForAPerson = async (call: NestedCall) => call.tool === 'waiter' ? await new Promise<InvokeResponse>(resolve => call.signal?.addEventListener('abort', () => resolve(cut(call)))) : ok(call, 'x'.repeat(5_000))
+    await codeRun(directory, waitsForAPerson, { journalBytes: 8_192, timeoutMs: 1_000 })(script)
+    expect(kept(directory).map(journal => journal.entries.map(entry => entry.id))).toEqual([[3, 4, 5, 6, 7, 8]])
+
+    const warned = vi.spyOn(logger, 'warn')
+    const failsAtLength = async (call: NestedCall): Promise<InvokeResponse> => {
+      if (call.tool !== 'waiter') return ok(call, 'ran again')
+      call.onExecute?.()
+      return { requestId: `code:${call.id}`, outcome: 'error', error: { code: 'TOOL_EXECUTION_FAILED', message: 'y'.repeat(3_000), retryable: false } }
+    }
+    await expect(codeRun(directory, failsAtLength, { journalBytes: 8_192 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+    expect(warned.mock.calls.find(([message]) => message.startsWith('The replay record of a diverged script was kept without the calls this send ran'))?.[1]).toEqual({ key: 'f'.repeat(64), calls: 2 })
+    expect(kept(directory).map(journal => journal.entries.map(entry => entry.id))).toEqual([[3, 4, 5, 6, 7, 8]])
+    warned.mockRestore()
+  }, 60_000)
+
   // Recheck 3 of the final review of 0.1.4, finding code index.ts:487: a stub record whose replay diverges before any
   // stub is handed, here on another VM, is kept too, so after a restart the third send still runs nothing.
   it('keeps a stub record whose replay diverges before handing out a stub, so the third send runs nothing', async () => {
