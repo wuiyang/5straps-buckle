@@ -1,6 +1,51 @@
 # Changelog
 
 
+## v0.1.4
+
+[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.3...v0.1.4)
+
+### 🚀 Enhancements
+
+- **buckle:** Read BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, and BUCKLE_BROWSER_ARGS ([1f8869a](https://github.com/wuiyang/5straps-buckle/commit/1f8869a))
+- **buckle:** The browser pack runs on a profile folder or attaches the owner's Chrome ([c6054b3](https://github.com/wuiyang/5straps-buckle/commit/c6054b3))
+
+### 🩹 Fixes
+
+- **buckle:** Agent-browser's failure text shows the setting's name, never the endpoint or profile folder ([dc74e32](https://github.com/wuiyang/5straps-buckle/commit/dc74e32))
+- **buckle:** BUCKLE_BROWSER_CDP takes its scheme in any letter case and passes it lowered ([b3a8af8](https://github.com/wuiyang/5straps-buckle/commit/b3a8af8))
+- **buckle:** A browser session started under other settings is closed and replaced, never reused ([09a0da3](https://github.com/wuiyang/5straps-buckle/commit/09a0da3))
+- **buckle:** BUCKLE_BROWSER_ARGS refuses at start what agent-browser refuses beside an approved list ([57497d5](https://github.com/wuiyang/5straps-buckle/commit/57497d5))
+- **buckle:** A path in BUCKLE_BROWSER_ARGS is judged by the profile folder's rule ([7f8ac3b](https://github.com/wuiyang/5straps-buckle/commit/7f8ac3b))
+- **buckle:** Every caller shares one browser session on a profile folder ([613c251](https://github.com/wuiyang/5straps-buckle/commit/613c251))
+- **buckle:** /setup/status says when the browser pack is withheld instead of reporting a running mode ([55df280](https://github.com/wuiyang/5straps-buckle/commit/55df280))
+- **buckle:** A browser command or session flag Buckle does not run is refused before anything is judged ([b7a93d2](https://github.com/wuiyang/5straps-buckle/commit/b7a93d2))
+- **buckle:** A Buckle process that stops never closes the shared browser on a profile folder ([a1bb687](https://github.com/wuiyang/5straps-buckle/commit/a1bb687))
+- **buckle:** BUCKLE_BROWSER_ARGS refuses a relative path value, and reads / as a switch on Windows alone ([71d00e9](https://github.com/wuiyang/5straps-buckle/commit/71d00e9))
+- **buckle:** The scrub leaves a bare port's digits in page output, and replaces a Windows profile path ([b3af45b](https://github.com/wuiyang/5straps-buckle/commit/b3af45b))
+- **buckle:** A live sibling process's browser session is reused with one warning, not closed ([aa66c22](https://github.com/wuiyang/5straps-buckle/commit/aa66c22))
+- **buckle:** Sibling reuse is limited to the shared profile folder, and every session key names its mode ([1346f6c](https://github.com/wuiyang/5straps-buckle/commit/1346f6c))
+- **buckle:** BUCKLE_BROWSER_ARGS refuses only paths Buckle cannot place, with a refusal of their own ([84f571a](https://github.com/wuiyang/5straps-buckle/commit/84f571a))
+- **buckle:** An argument path the system reads as absolute is judged, and a file: URL value is refused ([1a497e8](https://github.com/wuiyang/5straps-buckle/commit/1a497e8))
+- **buckle:** Closing a browser on another profile folder leaves a live sibling's shared entry in place ([478a078](https://github.com/wuiyang/5straps-buckle/commit/478a078))
+
+### 📖 Documentation
+
+- **buckle:** Using your own browser, and mode-aware browser texts ([e82d890](https://github.com/wuiyang/5straps-buckle/commit/e82d890))
+- **buckle:** Attaching your Chrome per platform, what BUCKLE_BROWSER_ARGS refuses, and the owner's current tab ([bd88d5d](https://github.com/wuiyang/5straps-buckle/commit/bd88d5d))
+- **repo:** .env.example is under 1100 words, and its network line holds in every browser mode ([77b091a](https://github.com/wuiyang/5straps-buckle/commit/77b091a))
+- **buckle:** What is still judged in every mode, the eight refused session flags, and where settings come from ([f339ce0](https://github.com/wuiyang/5straps-buckle/commit/f339ce0))
+- **buckle:** After a browser setting changes, restart every Buckle process on the node ([15a3c1d](https://github.com/wuiyang/5straps-buckle/commit/15a3c1d))
+- **buckle:** Name file: URL values among refused arguments, and the process id limit ([c389f9c](https://github.com/wuiyang/5straps-buckle/commit/c389f9c))
+
+### ✅ Tests
+
+- **buckle:** Browser modes pass their own flags, refuse conflicts, and judge the profile folder ([89e02a6](https://github.com/wuiyang/5straps-buckle/commit/89e02a6))
+- **buckle:** Bind the fresh argv, page judging per mode, the containment wording, and every profile root ([1ac4d80](https://github.com/wuiyang/5straps-buckle/commit/1ac4d80))
+- **buckle:** Every page stays at or under 1100 words and holds no en or em dash ([26a1b75](https://github.com/wuiyang/5straps-buckle/commit/26a1b75))
+- **buckle:** The page rule test spells its dash pattern as escapes, and a mode test typechecks ([994741b](https://github.com/wuiyang/5straps-buckle/commit/994741b))
+- **buckle:** The argument tests read a path as on Linux whatever host runs them ([ba165cc](https://github.com/wuiyang/5straps-buckle/commit/ba165cc))
+
 ## v0.1.3
 
 [compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.2...v0.1.3)
