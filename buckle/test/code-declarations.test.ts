@@ -32,7 +32,7 @@ function builtinTools(): ToolCapability[] {
       forge: { token: 'fixture-token', apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } },
       stateDirectory: '/state', agentBrowserCommand: 'agent-browser', browserStateDirectory: '/state/browser', browserHeaded: false, environmentValidator: 'validate', sandboxUnavailableReason: null,
     }),
-    createFsPack({ paths, runProcess, ripgrep: 'rg', protectedRoots: [] }),
+    createFsPack({ paths, runProcess, ripgrep: { path: 'rg', argv0: 'rg', args: [] }, protectedRoots: [] }),
     createWebPack({ braveSearchApiKey: 'fixture', allowedHosts: [], approved: null }),
   ]
   const byName = new Map(packs.flatMap(pack => pack.tools.map(tool => [tool.capability.name, tool.capability] as const)))
