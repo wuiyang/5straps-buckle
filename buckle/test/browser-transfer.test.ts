@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonObject } from '@5straps/protocol'
@@ -98,17 +98,23 @@ describe('a browser file transfer', () => {
     writeFileSync(staged, '')
     truncateSync(staged, 96 * 1_048_576)
     const partials = () => readdirSync(workspace).filter(name => name.startsWith('.buckle-delivery-'))
-    let sawPartial = false
-    const watch = setInterval(() => { if (partials().length > 0) { sawPartial = true; stop.abort(new Error('the caller went away')) } }, 0)
+    let partialMode: number | null = null
+    const watch = setInterval(() => {
+      const [partial] = partials()
+      if (partial === undefined || partialMode !== null) return
+      partialMode = statSync(join(workspace, partial)).mode & 0o777
+      stop.abort(new Error('the caller went away'))
+    }, 0)
     try {
       await expect(transfer.deliver()).rejects.toThrow('the caller went away')
     } finally { clearInterval(watch); transfer.close() }
-    expect(sawPartial).toBe(true)
+    // Private while it is copied, so no one reads half a file.
+    expect(partialMode).toBe(0o600)
     expect(partials()).toEqual([])
     expect(readFileSync(join(workspace, 'shot.png'), 'utf8')).toBe('earlier')
   })
 
-  it('replaces the target only once the copy is whole, keeping the target\'s mode', async () => {
+  it('replaces the target only once the copy is whole, keeping the target\'s mode, and gives a new one fs_write\'s', async () => {
     const { workspace, session, paths } = fixture()
     writeFileSync(join(workspace, 'shot.png'), 'earlier')
     chmodSync(join(workspace, 'shot.png'), 0o640)
@@ -118,8 +124,48 @@ describe('a browser file transfer', () => {
     try { await transfer.deliver() } finally { transfer.close() }
     expect(readFileSync(join(workspace, 'shot.png'), 'utf8')).toBe('later')
     expect(statSync(join(workspace, 'shot.png')).mode & 0o777).toBe(0o640)
-    expect(statSync(join(workspace, 'new.png')).mode & 0o777).toBe(0o600)
+    expect(statSync(join(workspace, 'new.png')).mode & 0o777).toBe(0o666 & ~process.umask())
     expect(readdirSync(workspace).sort()).toEqual(['new.png', 'shot.png'])
+  })
+
+  // Review of 2026-10-14: nothing showed delivery refusing a link or a folder swapped in at the target after the check.
+  it('refuses a link or a folder put at the target after the check, makes nothing, and follows nothing', async () => {
+    const { root, workspace, session, paths } = fixture()
+    const outside = join(root, 'outside.txt')
+    writeFileSync(outside, 'owner data')
+    for (const swap of ['link', 'folder'] as const) {
+      rmSync(join(workspace, 'shot.png'), { recursive: true, force: true })
+      const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png'], context: { signal: new AbortController().signal }, protectedRoots: [], staleAfterMs: 600_000 })
+      writeFileSync(transfer.argument('shot.png')!, 'png bytes')
+      if (swap === 'link') symlinkSync(outside, join(workspace, 'shot.png'))
+      else mkdirSync(join(workspace, 'shot.png'))
+      try {
+        await expect(transfer.deliver()).rejects.toThrow(swap === 'link' ? expect.objectContaining({ code: 'PERMISSION_DENIED' }) : 'Not a regular file: shot.png')
+      } finally { transfer.close() }
+      expect(lstatSync(join(workspace, 'shot.png'))[swap === 'link' ? 'isSymbolicLink' : 'isDirectory']()).toBe(true)
+      expect(readFileSync(outside, 'utf8')).toBe('owner data')
+      expect(readdirSync(workspace).filter(name => name.startsWith('.buckle-delivery-'))).toEqual([])
+    }
+  })
+
+  it('sweeps only regular files: a stale folder or link named like a partial delivery stays', async () => {
+    const { root, workspace, session, paths } = fixture()
+    const outside = join(root, 'outside.txt')
+    writeFileSync(outside, 'owner data')
+    const stale = (Date.now() - 10 * 60_000) / 1_000
+    writeFileSync(join(workspace, '.buckle-delivery-file'), 'half')
+    utimesSync(join(workspace, '.buckle-delivery-file'), stale, stale)
+    mkdirSync(join(workspace, '.buckle-delivery-folder'))
+    writeFileSync(join(workspace, '.buckle-delivery-folder', 'keep'), 'kept')
+    utimesSync(join(workspace, '.buckle-delivery-folder'), stale, stale)
+    symlinkSync(outside, join(workspace, '.buckle-delivery-link'))
+    lutimesSync(join(workspace, '.buckle-delivery-link'), stale, stale)
+    const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png'], context: { signal: new AbortController().signal }, protectedRoots: [], staleAfterMs: 60_000 })
+    writeFileSync(transfer.argument('shot.png')!, 'png bytes')
+    try { await transfer.deliver() } finally { transfer.close() }
+    expect(readdirSync(workspace).sort()).toEqual(['.buckle-delivery-folder', '.buckle-delivery-link', 'shot.png'])
+    expect(readFileSync(join(workspace, '.buckle-delivery-folder', 'keep'), 'utf8')).toBe('kept')
+    expect(readFileSync(outside, 'utf8')).toBe('owner data')
   })
 
   it('removes a partial delivery a stopped node left beside the target, once older than twice the longest call', async () => {

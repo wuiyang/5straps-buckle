@@ -130,6 +130,9 @@ async function deliver(file: Transferred, signal: AbortSignal, staleAfterMs: num
   } finally { closeSync(source) }
 }
 
+/** The mode a file opened with O_CREAT and no mode is made with, as `fs_write` makes one, before the umask. */
+const NEW_FILE_MODE = 0o666
+
 /** The name a delivery is copied into before it replaces its target: hidden, and new for each copy. */
 const PARTIAL_PREFIX = '.buckle-delivery-'
 
@@ -137,7 +140,9 @@ const PARTIAL_PREFIX = '.buckle-delivery-'
  * Copies `source` into a new file beside `name` in a directory reached without following a link, created owner-only
  * and exclusively, and renames it onto `name` once the whole copy succeeded and the signal has not fired. On any
  * failure or abort the new file is removed and `name` is left as it was. A target that is a link, as one swapped in
- * after the check, or not a regular file, is refused before anything is made; an existing target's mode is kept.
+ * after the check, or not a regular file, is refused before anything is made. The copy is private until it is whole,
+ * and then takes the existing target's mode, or the mode `fs_write` gives a new file (review of 2026-10-14: a new
+ * screenshot stayed 0600 where every other file a tool writes takes the umask's default).
  */
 async function replaceBeneath(input: { directory: PinnedDirectory; name: string; named: string; source: number; signal: AbortSignal }): Promise<void> {
   const mode = existingMode(input.directory.child(input.name), input.named)
@@ -147,7 +152,7 @@ async function replaceBeneath(input: { directory: PinnedDirectory; name: string;
   try {
     try {
       await copy({ source: input.source, target: descriptor, named: input.named, signal: input.signal })
-      if (mode !== null) fchmodSync(descriptor, mode)
+      fchmodSync(descriptor, mode ?? NEW_FILE_MODE & ~process.umask())
     } finally { closeSync(descriptor) }
     input.signal.throwIfAborted()
     renameSync(input.directory.child(partial), input.directory.child(input.name))
