@@ -80,7 +80,7 @@ const GUIDE = [
   '- `await tools.<name>(args)` calls a tool and resolves to its JSON output. A failed or refused call rejects with an Error whose message is `<code>: <message>` and which carries `code` and `retryable`.',
   '- Every call is judged, approved, and audited as a direct call. If one needs a person, this tool answers `approval_required`: relay it, then send the same script again once it is answered; Buckle replays the calls that already ran. Never change the script to get around an ask.',
   '- `text(value)` and `console.log(...)` print one line each; `return value` gives the result; `exit()` ends the script.',
-  '- `ALL_TOOLS` lists `{ name, description }`; `await describeTool(name)` resolves to a tool\'s declaration; `code_api` returns them all.',
+  '- `ALL_TOOLS` lists `{ name, description }`; `await searchTools(query, { limit })` resolves to the ones whose name or description holds every word, 8 by default; `await describeTool(name)` resolves to a tool\'s declaration; `code_api` returns them all.',
   '- At most 256 calls per script; 8 run at once and the rest wait their turn. Output and the return value are cut to 1 MiB each, keeping the start and the end.',
 ].join('\n')
 

@@ -115,6 +115,28 @@ describe('a code_run script on a workspace', () => {
     await runtime.history.close()
   })
 
+  // Review of the code-mode slice, coordinator decision 3: pi-codemode's error for an unknown tool names searchTools.
+  it('finds tools with searchTools by the words of a query, names first, at most its limit', async () => {
+    const { runtime } = await node()
+    const result = ran(await run(runtime, `
+      let unknown
+      try { tools.fs_reed } catch (error) { unknown = error.message.includes('searchTools') }
+      const found = await searchTools('READ file')
+      const one = await searchTools('fs', { limit: 1 })
+      const codes = []
+      for (const args of [[''], ['fs', { limit: 0 }], [3]]) { try { await searchTools(...args) } catch (error) { codes.push(error.code) } }
+      return [unknown, found.map(tool => tool.name), Object.keys(found[0]).sort(), one.length, (await searchTools('nothing matches this')).length, codes]
+    `))
+    const [unknown, names, keys, limited, none, codes] = result.value as [boolean, string[], string[], number, number, string[]]
+    expect(unknown).toBe(true)
+    expect(names[0]).toBe('fs_read')
+    expect(names.length).toBeLessThanOrEqual(8)
+    expect(names.every(name => name.startsWith('fs_'))).toBe(true)
+    expect([keys, limited, none, codes]).toEqual([['description', 'name'], 1, 0, ['INVALID_TOOL_INPUT', 'INVALID_TOOL_INPUT', 'INVALID_TOOL_INPUT']])
+    expect(results(runtime)).toEqual([expect.objectContaining({ tool: 'code_run' })])
+    await runtime.history.close()
+  })
+
   it('cuts output past 1 MiB, and a return value past it as JSON text, keeping the start and the end', async () => {
     const { runtime } = await node()
     const printed = ran(await run(runtime, 'for (let i = 0; i < 40000; i++) text("line " + String(i).padStart(5, "0") + " " + "x".repeat(30))'))

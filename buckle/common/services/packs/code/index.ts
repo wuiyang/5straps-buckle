@@ -44,6 +44,14 @@ export const REQUEST_TOO_LARGE = 'REQUEST_TOO_LARGE'
 /** What the agent reads when the VM itself fails: its own text may name paths on the host, so it goes to the owner's log. */
 export const SANDBOX_FAILED = 'The script sandbox stopped unexpectedly; retry, or ask the owner to check the Buckle install and its log'
 const DESCRIBE_TOOL = 'describeTool'
+/**
+ * `searchTools(query, { limit? })`: the tools whose name or description holds every word of the query, ignoring case,
+ * as `{ name, description }` like ALL_TOOLS. pi-codemode's own error for an unknown tool tells a script to call it
+ * (review of the code-mode slice, coordinator decision 3, finding docs-rules SKILL.md:44).
+ */
+const SEARCH_TOOLS = 'searchTools'
+export const SEARCH_LIMIT = 8
+const MAX_SEARCH_LIMIT = 100
 
 export interface CodePackOptions {
   vm: ScriptVm
@@ -234,11 +242,16 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     const tool = input.reachable().find(candidate => candidate.name === args || vm.identifier(candidate.name) === args)
     return { ok: true, value: tool ? declare(vm, [tool]) : undefined }
   }
+  const global = (name: string, args: JsonValue | undefined): ScriptVmOutcome => {
+    if (name === DESCRIBE_TOOL) return describe(args)
+    if (name === SEARCH_TOOLS) return search(tools, args)
+    return failure('TOOL_NOT_FOUND', `No global ${name}`)
+  }
 
   const started = vm.start({
     script: input.script,
     tools,
-    globals: [DESCRIBE_TOOL],
+    globals: [{ name: DESCRIBE_TOOL }, { name: SEARCH_TOOLS, spread: true }],
     limits: { deadlineMs: context.timeoutMs, memoryBytes: VM_MEMORY_BYTES, outputChars: OUTPUT_CHARS },
     startedAt,
     seed,
@@ -265,7 +278,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
         return
       }
       const tooLarge = () => failure(REQUEST_TOO_LARGE, `This call's arguments are ${bytes} bytes as JSON, past the ${input.argumentBytes} a request to this node may carry; pass less, or split the call`)
-      if (call.target === 'global') return answer(call, target, bytes !== null ? tooLarge() : call.name === DESCRIBE_TOOL ? describe(call.args) : failure('TOOL_NOT_FOUND', `No global ${call.name}`), fingerprint)
+      if (call.target === 'global') return answer(call, target, bytes !== null ? tooLarge() : global(call.name, call.args), fingerprint)
       if (stopping()) return
       if (toolCalls > 2 * MAX_NESTED_CALLS) {
         spun = true
@@ -331,6 +344,20 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     await keep().catch((error: unknown) => { logger.warn('Could not keep the replay record of a stopped script; sent again, it runs from its start', { error: error instanceof Error ? error.message : 'Unknown error' }) })
   }
   return shapeResult(result, began)
+}
+
+/** searchTools(query, { limit? }) over the run's tools: every word of the query in a name or description, names first. */
+function search(tools: readonly ScriptVmTool[], args: JsonValue | undefined): ScriptVmOutcome {
+  const [query, options] = Array.isArray(args) ? args : []
+  const limit = options === undefined || options === null ? SEARCH_LIMIT : isObject(options) ? options.limit ?? SEARCH_LIMIT : undefined
+  if (typeof query !== 'string' || query.trim() === '' || typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > MAX_SEARCH_LIMIT) {
+    return failure('INVALID_TOOL_INPUT', `searchTools(query, { limit }) takes words to look for and, optionally, a whole limit from 1 to ${MAX_SEARCH_LIMIT}`)
+  }
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const found = tools.filter(tool => words.every(word => `${tool.name} ${tool.jsName} ${tool.description}`.toLowerCase().includes(word)))
+  const named = (tool: ScriptVmTool) => words.some(word => tool.name.toLowerCase().includes(word))
+  const ranked = [...found.filter(named), ...found.filter(tool => !named(tool))]
+  return { ok: true, value: ranked.slice(0, limit).map(tool => ({ name: tool.jsName, description: tool.description })) }
 }
 
 /** What code_run returns (D82, point 8). */

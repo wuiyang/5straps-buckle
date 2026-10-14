@@ -72,7 +72,7 @@ export function createPiCodemodeVm(options: { workspace?: string } = {}): Script
           startedAt: input.startedAt,
           seed: input.seed,
           tools: input.tools.map(tool => ({ name: tool.name, jsName: tool.jsName, description: tool.description })),
-          globals: input.globals.map(name => ({ name })),
+          globals: input.globals.map(global => ({ name: global.name, ...(global.spread ? { spread: true } : {}) })),
           timeoutMs: input.limits.deadlineMs,
           ...(input.signal ? { signal: input.signal } : {}),
           ...(input.onStarted ? { onStarted: input.onStarted } : {}),

@@ -48,7 +48,7 @@ export interface ScriptVmRunInput {
   script: string
   tools: ScriptVmTool[]
   /** Top-level functions beside `tools`, answered by the host like a tool call and never counted as one. */
-  globals: string[]
+  globals: ScriptVmGlobal[]
   limits: ScriptVmLimits
   /** The VM clock's start, in milliseconds since the epoch. */
   startedAt: number
@@ -66,6 +66,12 @@ export interface ScriptVmRunInput {
    * call the script made in that turn.
    */
   onIdle?(seq: number): void
+}
+
+/** A top-level function: `name(arg)`, its argument as the call's args, or with `spread`, `name(...args)`, the array of them. */
+export interface ScriptVmGlobal {
+  name: string
+  spread?: boolean
 }
 
 export interface ScriptVmCall {

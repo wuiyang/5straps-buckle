@@ -35,6 +35,8 @@ The globals:
 - `tools.<name>(args)`: calls a tool with one object of arguments and resolves to the JSON a direct
   call returns. The `code_run` description declares each tool and what it resolves to.
 - `ALL_TOOLS`: every tool you can call, as `{ name, description }`.
+- `await searchTools(query, { limit })`: the tools whose name or description holds every word of
+  `query`, ignoring case, as `{ name, description }`; 8 unless `limit` asks for more.
 - `await describeTool(name)`: one tool's TypeScript declaration. `code_api` returns them all, or the
   ones you name.
 - `text(value)` and `console.log(...)`: one line of output each.
