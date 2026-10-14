@@ -6,8 +6,8 @@ call instead of many, and only what the script prints and returns goes back to t
 script that reads fifty files and keeps three lines costs the agent three lines, not fifty files.
 
 Every call a script makes is judged, approved, and audited exactly as the same call made
-directly. [Code mode, part two](code-mode-02.md) covers replay, limits, the setting, and the
-audit log.
+directly. [Code mode, part two](code-mode-02.md) covers replay, and
+[part three](code-mode-03.md) limits, the setting, and the audit log.
 
 ## The two tools
 
