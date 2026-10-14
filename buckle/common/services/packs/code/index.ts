@@ -6,7 +6,7 @@ import { keepEndsOfText } from '../../../domain/script-output.js'
 import { CODE_REPLAY_DIVERGED, defineTool, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
 import type { ScriptVm, ScriptVmCall, ScriptVmError, ScriptVmOutcome, ScriptVmResult, ScriptVmRun, ScriptVmTool } from '../../../types/ports/script-vm.js'
 import { logger } from '../../../runtime/log.js'
-import { requestFingerprint } from '../../invocation/executions.js'
+import { REQUEST_ALREADY_EXECUTED, requestFingerprint } from '../../invocation/executions.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { codeRunDescription, declare } from './declarations.js'
 import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, type JournalEntry, type JournalStore } from './journal.js'
@@ -134,6 +134,12 @@ function failure(code: string, message: string, retryable = false): ScriptVmOutc
   return { ok: false, message: `${code}: ${message}`, properties: { code, retryable } }
 }
 
+/**
+ * What the record answers for a call whose tool had begun to run when a stop cut it: it ran, its effects unknown, and
+ * Buckle never runs it again, after a restart too (re-review of the code-mode slice, finding new-surface index.ts:302).
+ */
+const RAN_WHEN_CUT = failure(REQUEST_ALREADY_EXECUTED, 'This call of the script had begun to run when the script stopped, so its effects are unknown, and Buckle did not run it again. Change the script, even by a comment, to run it from its start')
+
 function outcomeOf(response: Exclude<InvokeResponse, { outcome: 'approval_required' }>): ScriptVmOutcome {
   return response.outcome === 'ok' ? { ok: true, value: response.output } : failure(response.error.code, response.error.message, response.error.retryable)
 }
@@ -185,6 +191,8 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   let nextSeq = replay.length + 1
   const issued = new Set<number>()
   const made = new Set<number>()
+  // Calls whose tool began to run: cut by a stop, each is journaled as run, effects unknown.
+  const executing = new Set<number>()
   const running = new Map<number, Promise<void>>()
   // Calls past MAX_IN_FLIGHT, started in the order the script made them as slots free.
   const queued: Array<() => void> = []
@@ -294,12 +302,14 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       const args = call.args ?? {}
       if (!isObject(args)) return answer(call, target, failure('INVALID_TOOL_INPUT', 'A tool takes one object of arguments'), fingerprint)
       made.add(call.id)
-      const start = () => running.set(call.id, invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal, ...(stage === undefined ? {} : { stageId: stage }) }).then((response) => {
+      const start = () => running.set(call.id, invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal, onExecute: () => executing.add(call.id), ...(stage === undefined ? {} : { stageId: stage }) }).then((response) => {
         if (response.outcome === 'approval_required') asks.push(...response.approvals)
-        // A call cut by the script's end, a cancel, or a shutdown is never journaled: the re-sent script makes it
-        // again, and Buckle's re-send records answer it if it ran (review of the code-mode slice, finding
-        // approvals-replay 228).
         else if (!cancel.signal.aborted && !context.signal.aborted) answer(call, target, outcomeOf(response), fingerprint)
+        // A call cut by the script's end, a cancel, or a shutdown before its tool ran, such as one waiting for a
+        // person, is not journaled: the re-sent script makes it again (review of the code-mode slice, finding
+        // approvals-replay 228). One cut after its tool began to run is journaled as run, effects unknown, so the
+        // record on disk refuses it after a restart too (re-review, findings new-surface and fixes-hold index.ts:302).
+        else if (executing.has(call.id)) answer(call, target, RAN_WHEN_CUT, fingerprint)
       }).catch((error: unknown) => { broken ??= { error } }).finally(() => {
         running.delete(call.id)
         startQueued()

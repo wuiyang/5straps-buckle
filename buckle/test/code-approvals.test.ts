@@ -390,6 +390,38 @@ describe('the replay journal', () => {
     await runtime.history.close()
   }, 30_000)
 
+  // Re-review of the code-mode slice, findings new-surface and fixes-hold index.ts:302, docs-rules code-mode-02.md:22.
+  it('journals a call a shutdown cut after it began to run, so the script re-sent after the restart never runs it again', async () => {
+    const { root, workspace, config } = setup()
+    writeFileSync(join(workspace, 'slow.md'), 'slow')
+    const script = 'const a = await tools.fs_read({ path: "notes.md" }); const b = await tools.fs_read({ path: "slow.md" }); return [a.content, b.content]'
+    const first = await open(config)
+    const runs: string[] = []
+    const fsRead = first.registry().get('fs_read')
+    const prepare = fsRead.prepare.bind(fsRead)
+    vi.spyOn(fsRead, 'prepare').mockImplementation((args) => {
+      const prepared = prepare(args)
+      return { ...prepared, execute: async (context: ToolContext) => {
+        runs.push(String(args.path))
+        if (args.path === 'slow.md') await new Promise(resolve => setTimeout(resolve, 1_500))
+        return await prepared.execute(context)
+      } }
+    })
+    const running = send(first, script, { timeoutMs: 20_000 })
+    await vi.waitFor(() => expect(runs).toEqual(['notes.md', 'slow.md']), { timeout: 10_000 })
+    await first.cancelInvocations()
+    expect(await running).toMatchObject({ outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN' } })
+    expect(journals(root)).toHaveLength(1)
+    await first.history.close()
+
+    const after = await open(config)
+    const prepared = vi.spyOn(after.registry().get('fs_read'), 'prepare')
+    expect(await send(after, script, { timeoutMs: 20_000 })).toMatchObject({ outcome: 'ok', output: { ok: false, error: { kind: 'script', message: expect.stringContaining('REQUEST_ALREADY_EXECUTED') } } })
+    expect(prepared).not.toHaveBeenCalled()
+    expect(runs).toEqual(['notes.md', 'slow.md'])
+    await after.history.close()
+  }, 30_000)
+
   it('resumes the same script sent again with another timeoutMs: the script alone names it', async () => {
     const { workspace, runtime } = await node()
     const [approval] = asked(await send(runtime, READ_THEN_WRITE, { timeoutMs: 20_000, approvalWait: { mode: 'none' } }))

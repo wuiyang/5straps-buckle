@@ -249,7 +249,7 @@ const ALREADY_EXECUTED_MESSAGE = {
   interrupted: 'This requestId already started running and its caller left before it finished, so its effects are unknown; send a new requestId to run it again',
   too_large: 'This requestId already ran; its result was too large to keep for a re-send; send a new requestId to run it again',
   // A script cannot choose its calls' requestIds, so it is told how to run them again (owner decision D82).
-  script: 'This call of the script already ran lately, and Buckle no longer keeps its result to replay; if it was cut short, its effects are unknown. Buckle does not run it twice: change the script, even by a comment, to run it from its start',
+  script: 'This call of the script already ran lately, and Buckle no longer keeps its result to replay; if it was cut short, its effects are unknown. Buckle did not run it again: change the script, even by a comment, to run it from its start',
 } as const
 
 /** A re-send's answer when the original response cannot be given: never retryable under the same requestId. */

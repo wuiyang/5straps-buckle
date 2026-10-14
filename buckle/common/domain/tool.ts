@@ -59,6 +59,11 @@ export interface NestedCall {
    * ask share one stage (review of the code-mode slice, finding docs-rules code-mode.md:111).
    */
   stageId?: string
+  /**
+   * Told when the tool itself begins to run, past every check and approval: from then the call has run, its effects
+   * unknown if it is cut (re-review of the code-mode slice, finding new-surface index.ts:302).
+   */
+  onExecute?: () => void
 }
 
 /**

@@ -90,6 +90,8 @@ export interface InvokeInput {
    * (review of the code-mode slice, finding approvals-replay 685; re-review, finding fixes-hold invoker.ts:712).
    */
   holdUntil?: number
+  /** Set only by the invoker on a call a script made: told when the tool begins to run (NestedCall.onExecute). */
+  onExecute?: () => void
 }
 
 /** The call a script's call came from: its tool and the stage its calls are grouped under. */
@@ -119,7 +121,7 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
-    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil }) {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
@@ -180,6 +182,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const execute = () => {
             owned.started()
             ran = true
+            onExecute?.()
             // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
             const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
             const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait } : undefined
@@ -710,6 +713,7 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
       ...(cancels ? { isCancel: cancels } : {}),
       ...(nesting.approvalWait ? { approvalWait: nesting.approvalWait } : {}),
       holdUntil: waitEnds,
+      ...(call.onExecute ? { onExecute: call.onExecute } : {}),
       via: { tool: request.tool, stageId: stageOf(call) },
     }),
     forgetNested: (ids) => {
