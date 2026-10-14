@@ -669,6 +669,33 @@ describe('the replay journal', () => {
     await after.history.close()
   }, 30_000)
 
+  // Final review of 0.1.4, finding docs code-mode-02.md:19: a script stopped once its results passed 32 MiB cannot
+  // resume, but its record keeps its calls as stubs that say they ran, so the same script sent again after a restart,
+  // when the process remembers nothing, runs none of them again.
+  it('keeps the calls of a script stopped past the record bound as stubs, so a re-send after a restart runs none again', async () => {
+    const { root, workspace, config } = setup()
+    writeFileSync(join(workspace, 'large.txt'), 'x'.repeat(9 * 1_048_576))
+    const script = 'for (let i = 0; i < 4; i++) await tools.fs_read({ path: "large.txt" }); await tools.fs_find_names({ path: ".", pattern: "notes" }); while (true) {}'
+    const first = await open(config)
+    const running = send(first, script, { timeoutMs: 60_000 })
+    await vi.waitFor(() => expect(results(first, 'fs_find_names')).toHaveLength(1), { timeout: 50_000 })
+    await first.cancelInvocations()
+    expect(await running).toMatchObject({ outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN' } })
+    const [file] = journals(root)
+    const record = JSON.parse(readFileSync(file!, 'utf8')) as Journal
+    expect(record.entries.map(entry => [entry.tool, entry.outcome.ok ? 'ok' : entry.outcome.properties?.code])).toEqual([
+      ...Array.from({ length: 4 }, () => ['fs_read', 'REQUEST_ALREADY_EXECUTED']), ['fs_find_names', 'REQUEST_ALREADY_EXECUTED'],
+    ])
+    expect(statSync(file!).size).toBeLessThan(64 * 1_024)
+    await first.history.close()
+
+    const after = await open(config)
+    const prepared = [vi.spyOn(after.registry().get('fs_read'), 'prepare'), vi.spyOn(after.registry().get('fs_find_names'), 'prepare')]
+    expect(await send(after, script, { timeoutMs: 20_000 })).toMatchObject({ outcome: 'ok', output: { ok: false, error: { kind: 'script', message: expect.stringContaining('REQUEST_ALREADY_EXECUTED') } } })
+    for (const spy of prepared) expect(spy).not.toHaveBeenCalled()
+    await after.history.close()
+  }, 120_000)
+
   it('resumes the same script sent again with another timeoutMs: the script alone names it', async () => {
     const { workspace, runtime } = await node()
     const [approval] = asked(await send(runtime, READ_THEN_WRITE, { timeoutMs: 20_000, approvalWait: { mode: 'none' } }))
@@ -997,9 +1024,14 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, large as JsonObject[keyof JsonObject]), { withdrawNested })
 
     await expect(execute(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE, retryable: false })
-    expect(readdirSync(directory).filter(name => name.endsWith('.json'))).toEqual([])
+    // Final review of 0.1.4, finding docs code-mode-02.md:19: the record keeps the calls that ran as stubs, their
+    // results dropped, and names no ask, so the script sent again runs neither again.
+    expect(kept(directory).map(journal => [journal.asks, journal.entries.map(entry => [entry.tool, entry.outcome.ok ? 'ok' : entry.outcome.properties?.code])])).toEqual([[undefined, [['echo', 'REQUEST_ALREADY_EXECUTED'], ['echo', 'REQUEST_ALREADY_EXECUTED']]]])
     // Review of the code-mode slice, coordinator decision 5: no call will spend the ask, so it is withdrawn.
     expect(withdrawNested).toHaveBeenCalledWith(['token-3'])
+    const again = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
+    expect(await codeRun(directory, again)(script)).toMatchObject({ ok: false, error: { kind: 'script', message: expect.stringContaining('REQUEST_ALREADY_EXECUTED') } })
+    expect(again).not.toHaveBeenCalled()
   }, 60_000)
 
   // Review of the code-mode slice, finding tests 163: the bound on results kept in memory holds on its own, before

@@ -17,7 +17,10 @@ import { EXECUTION_TTL_MS } from '../../invocation/executions.js'
  * contents. One file per script, `<key>.json`, the key naming the session, the actor, and the script.
  */
 export const JOURNAL_TTL_MS = EXECUTION_TTL_MS
-/** The most one journal holds; a script whose results pass it cannot be resumed after an ask. */
+/**
+ * The most one journal holds; a script whose results pass it cannot be resumed, and its journal keeps its calls as
+ * stubs, their results dropped, so none runs again (final review of 0.1.4, finding docs code-mode-02.md:19).
+ */
 export const JOURNAL_BYTES = 32 * 1_024 * 1_024
 /** The most a workspace's journals hold together; the oldest go first. */
 export const WORKSPACE_JOURNAL_BYTES = 128 * 1_024 * 1_024

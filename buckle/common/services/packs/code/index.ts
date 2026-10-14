@@ -140,6 +140,62 @@ function failure(code: string, message: string, retryable = false): ScriptVmOutc
  */
 const RAN_WHEN_CUT = failure(REQUEST_ALREADY_EXECUTED, 'This call of the script had begun to run when the script stopped, so its effects are unknown, and Buckle did not run it again. Change the script, even by a comment, to run it from its start')
 
+/**
+ * What a record past its bound answers for a call whose result it dropped: the call ran, and Buckle never runs it again,
+ * after a restart too (final review of 0.1.4, finding docs code-mode-02.md:19).
+ */
+const RESULT_DROPPED = failure(REQUEST_ALREADY_EXECUTED, 'This call of the script ran, but the results of the script\'s calls passed the 32 MiB Buckle keeps to resume a script, so its result was not kept, and Buckle did not run it again. Change the script, even by a comment, to run it from its start')
+
+/** A call as a stub: a result is dropped for RESULT_DROPPED; a failure holds no result, and stays as it was. */
+function stubOf(entry: JournalEntry): JournalEntry {
+  return entry.outcome.ok ? { ...entry, outcome: RESULT_DROPPED } : entry
+}
+
+/**
+ * What a run keeps of its calls for its record, bounded in memory as on disk: each entry whole while they fit `bound`,
+ * and from the call that passes it, every entry, the earlier runs' too, as a stub (stubOf). A script past the bound
+ * then cannot resume, but its record still says which calls ran, so a re-send, after a restart too, never runs one
+ * again (final review of 0.1.4, finding docs code-mode-02.md:19). Stubs that pass the bound too, which only a script
+ * of some hundred thousand calls reaches, keep nothing.
+ */
+function createRunRecord(replay: readonly JournalEntry[], bound: number) {
+  const whole: JournalEntry[] = [...replay]
+  let stubs: JournalEntry[] | null = null
+  let lost = false
+  let count = 0
+  let bytes = Buffer.byteLength(JSON.stringify(replay))
+  const sizeOf = (entry: JournalEntry) => Buffer.byteLength(JSON.stringify(entry)) + 1
+  const stub = (entry: JournalEntry) => {
+    const stubbed = stubOf(entry)
+    bytes += sizeOf(stubbed)
+    if (bytes <= bound) return stubs!.push(stubbed)
+    lost = true
+    stubs!.length = 0
+  }
+  return {
+    add(entry: JournalEntry): void {
+      count++
+      if (lost) return
+      if (stubs === null) {
+        bytes += sizeOf(entry)
+        if (bytes <= bound) return void whole.push(entry)
+        stubs = []
+        bytes = 2
+        for (const earlier of whole.splice(0)) if (!lost) stub(earlier)
+      }
+      if (!lost) stub(entry)
+    },
+    /** Calls answered in this run, kept or not. */
+    get count() { return count },
+    /** Whether the results passed the bound: the record then keeps stubs alone. */
+    get overflowed() { return stubs !== null },
+    /** Every entry whole, while the results fit the bound. */
+    whole: (): JournalEntry[] => whole,
+    /** Every entry as a stub, or null where even those pass the bound. */
+    stubs: (): JournalEntry[] | null => lost ? null : stubs ?? whole.map(stubOf),
+  }
+}
+
 function outcomeOf(response: Exclude<InvokeResponse, { outcome: 'approval_required' }>): ScriptVmOutcome {
   return response.outcome === 'ok' ? { ok: true, value: response.output } : failure(response.error.code, response.error.message, response.error.retryable)
 }
@@ -185,11 +241,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const replay = journal?.entries ?? []
   const replayById = new Map(replay.map(entry => [entry.id, entry]))
   let replayed = 0
-  const fresh: JournalEntry[] = []
-  // Results are kept for a journal only up to its bound, so a script's memory here stays bounded too; past it, an
-  // ask cannot be resumed.
-  let journalBytes = Buffer.byteLength(JSON.stringify(replay))
-  let overflowed = false
+  // Results are kept for a journal only up to its bound, so a script's memory here stays bounded too; past it, the
+  // script cannot resume, and its calls are kept as stubs that say they ran.
+  const record = createRunRecord(replay, input.journalBytes)
   let nextSeq = replay.length + 1
   const issued = new Set<number>()
   const made = new Set<number>()
@@ -250,12 +304,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   }
   const answer = (call: ScriptVmCall, target: string, outcome: ScriptVmOutcome, args = fingerprintOf(target, call.args)) => {
     const entry: JournalEntry = { seq: nextSeq++, now: Date.now(), id: call.id, tool: target, args, outcome }
-    if (!overflowed) {
-      journalBytes += Buffer.byteLength(JSON.stringify(entry))
-      overflowed = journalBytes > input.journalBytes
-      if (overflowed) fresh.length = 0
-      else fresh.push(entry)
-    }
+    record.add(entry)
     if (!stopping()) hand(entry.seq, entry.now, entry.id, entry.outcome)
   }
   // Journal entries go back in their order, each once the VM has made its call again.
@@ -391,38 +440,50 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     const withdrawn = new Set(leftBehind.map(ask => ask.token))
     return [...new Set([...journal?.asks ?? [], ...asks.map(ask => ask.token)])].filter(token => !withdrawn.has(token))
   }
-  // The record of what ran, for the re-sent script; false when it passes its bound, and then none is left behind.
-  const keep = async (): Promise<boolean> => {
-    const named = pendingAsks()
-    const fields = { script: input.script, ...(named.length > 0 ? { asks: named } : {}), ...(parent === undefined ? {} : { parentRequestId: parent }) }
-    if (!overflowed && await journals.write({ key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), ...fields, tools, entries: [...replay, ...fresh] })) return true
+  const write = (named: readonly string[], entries: JournalEntry[]) => journals.write({
+    key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), script: input.script, ...(named.length > 0 ? { asks: [...named] } : {}),
+    ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries,
+  })
+  // The record of what ran, for the re-sent script, naming the asks `named`: whole, so the script resumes where it
+  // stopped, or else, past its bound as this run counts it or as the store does with the script and the tools, its
+  // calls as stubs, so the script cannot resume but none of its calls runs again (final review of 0.1.4, finding docs
+  // code-mode-02.md:19). False where even the stubs pass it, and then none is left behind.
+  const keepWhole = async (named: readonly string[]): Promise<boolean> => !record.overflowed && await write(named, record.whole())
+  const keepStubs = async (named: readonly string[]): Promise<boolean> => {
+    const stubs = record.stubs()
+    if (stubs !== null && await write(named, stubs)) return true
     journals.remove(key)
     return false
   }
+  const keep = async (named: readonly string[]): Promise<boolean> => await keepWhole(named) || await keepStubs(named)
   try {
     if (broken) {
-      await keep()
+      await keep(pendingAsks())
       throw broken.error
     }
     if (asks.length > 0) {
-      if (!await keep()) {
-        // No call will spend these asks, nor those of the runs before it, which no record names any more: the script
-        // cannot resume, so they leave the queue as a denied sibling's do (final review of 0.1.4, finding code
-        // index.ts:371).
-        await withdraw(pendingAsks(), 'that cannot resume')
-        throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
-      }
-      throw new NestedApprovalRequired(asks)
+      if (await keepWhole(pendingAsks())) throw new NestedApprovalRequired(asks)
+      // No call will spend these asks, nor those of the runs before it: the script cannot resume, so they leave the
+      // queue as a denied sibling's do, and the record keeps its calls as stubs alone, naming none (final review of
+      // 0.1.4, findings code index.ts:371 and docs code-mode-02.md:19).
+      await keepStubs([])
+      await withdraw(pendingAsks(), 'that cannot resume')
+      throw new ToolExecutionError('A call this script made needs approval, but the results its calls returned pass the 32 MiB Buckle keeps to resume a script, so it cannot be resumed; the calls before the ask ran, and sent again unchanged they are not run again. Make the call that asked on its own, or send a script that keeps less', { code: CODE_REPLAY_TOO_LARGE })
     }
     // A script that returned, threw, or exited is done: its record goes, and sending it again is a new run whose calls
     // run again. One stopped by its deadline, a cancel, a shutdown, or its sandbox keeps the record of what ran, so the
     // same script sent again within ten minutes, after a restart too, goes on where it stopped and no call runs twice
-    // (review of the code-mode slice, finding approvals-replay 240).
+    // (review of the code-mode slice, finding approvals-replay 240); past its bound it cannot go on, and its calls are
+    // answered by their stubs (final review of 0.1.4, finding docs code-mode-02.md:19).
     if (result.ok || result.error?.kind === 'script') {
       journals.remove(key)
       context.forgetNested?.([...replay.map(entry => entry.id), ...made])
-    } else if (replay.length + fresh.length > 0) {
-      await keep().catch((error: unknown) => { logger.warn('Could not keep the replay record of a stopped script; sent again, it runs from its start', { error: error instanceof Error ? error.message : 'Unknown error' }) })
+    } else if (replay.length + record.count > 0) {
+      const kept = await keep(pendingAsks()).catch((error: unknown) => {
+        logger.warn('Could not keep the replay record of a stopped script; sent again, it runs from its start', { error: error instanceof Error ? error.message : 'Unknown error' })
+        return true
+      })
+      if (!kept) logger.warn('The replay record of a stopped script passes its bound even with its results dropped; sent again, it runs from its start', { calls: replay.length + record.count })
     }
     return shapeResult(result, began, skipped)
   } finally {
