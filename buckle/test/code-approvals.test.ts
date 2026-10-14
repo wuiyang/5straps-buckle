@@ -114,7 +114,8 @@ describe('a call inside a script that needs a person', () => {
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
     expect(read).not.toHaveBeenCalled()
     expect(attempts(runtime, 'fs_read')).toHaveLength(1)
-    expect(attempts(runtime, 'fs_write').map(entry => entry.stageId)).toEqual(['stage-a', 'stage-b'])
+    // One stage for the script, before and after its ask, though the retry carried another (finding docs-rules code-mode.md:111).
+    expect(attempts(runtime, 'fs_write').map(entry => entry.stageId)).toEqual(['stage-a', 'stage-a'])
     expect(journals(root)).toEqual([])
 
     // Done by itself, the script is a new run when sent again: its calls run again, and the spent once asks again.
@@ -146,6 +147,9 @@ describe('a call inside a script that needs a person', () => {
     expect(JSON.parse(second.content[0]!.text)).toMatchObject({ ok: true, output: 'written' })
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
     expect(attempts(runtime, 'fs_read')).toHaveLength(1)
+    // MCP gives each tools/call its own requestId, the stage a script falls back to; the retry keeps the first one.
+    const stages = [...attempts(runtime, 'fs_read'), ...attempts(runtime, 'fs_write')].map(entry => entry.stageId)
+    expect(new Set(stages).size).toBe(1)
     await runtime.history.close()
   })
 

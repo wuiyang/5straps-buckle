@@ -686,11 +686,10 @@ interface Nesting {
  * actor and the outer call, so a re-sent script names its calls as before: Buckle's own re-send dedupe never runs
  * one twice, and a call that asked joins its ask.
  */
-function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal; timeoutMs: number }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'forgetNested' | 'withdrawNested'> {
+function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal; timeoutMs: number }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'nestedStage' | 'forgetNested' | 'withdrawNested'> {
   const { request, nesting } = input
   const nestedKey = nestedCallKey(nesting.key)
-  const stageId = (request.context?.stageId ?? request.context?.runId ?? request.requestId).slice(0, MAX_LOGGED_ID)
-  const via: NestedOrigin = { tool: request.tool, stageId }
+  const nestedStage = (request.context?.stageId ?? request.context?.runId ?? request.requestId).slice(0, MAX_LOGGED_ID)
   const requestIdOf = (id: number) => `code:${nestedKey}:${id}`
   // Only the outer caller's own cancel withdraws a script's asks. The script's deadline, its end, and a shutdown are
   // Buckle's own aborts: an ask they cut stays pending for the re-sent script to join (review of the code-mode
@@ -700,16 +699,18 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
   // Each wait ends before the script's deadline, so an unanswered ask comes back as approval_required, never as a
   // timeout that leaves it pending unannounced (same finding, and invoker-audit 228).
   const waitEnds = performance.now() + input.timeoutMs - NESTED_WAIT_MARGIN_MS
+  const stageOf = (call: NestedCall) => (call.stageId ?? nestedStage).slice(0, MAX_LOGGED_ID)
   return {
     nestedKey,
+    nestedStage,
     invokeNested: (call: NestedCall) => nesting.run({
-      request: { requestId: requestIdOf(call.id), tool: call.tool, args: call.args, approvalTokens: request.approvalTokens, context: { ...request.context, stageId } },
+      request: { requestId: requestIdOf(call.id), tool: call.tool, args: call.args, approvalTokens: request.approvalTokens, context: { ...request.context, stageId: stageOf(call) } },
       sessionId: input.sessionId,
       signal: call.signal ? AbortSignal.any([input.signal, call.signal]) : input.signal,
       ...(cancels ? { isCancel: cancels } : {}),
       ...(nesting.approvalWait ? { approvalWait: nesting.approvalWait } : {}),
       holdAtMostMs: Math.max(1, Math.round(waitEnds - performance.now())),
-      via,
+      via: { tool: request.tool, stageId: stageOf(call) },
     }),
     forgetNested: (ids) => {
       for (const id of ids) input.options.executions.forget({ ...nesting.key, requestId: requestIdKey(requestIdOf(id)) })

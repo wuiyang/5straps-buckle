@@ -56,6 +56,8 @@ const JournalSchema = z.object({
    */
   script: z.string().optional(),
   asks: z.array(z.string()).optional(),
+  /** The stage the first run filed its calls under, which a resumed run keeps (finding docs-rules code-mode.md:111). */
+  stage: z.string().optional(),
   tools: z.array(z.object({ name: z.string(), jsName: z.string(), description: z.string() })),
   entries: z.array(EntrySchema),
   expiresAt: z.number(),
