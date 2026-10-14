@@ -9,7 +9,7 @@ import { logger } from '../../../runtime/log.js'
 import { REQUEST_ALREADY_EXECUTED, requestFingerprint } from '../../invocation/executions.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { codeRunDescription, declare } from './declarations.js'
-import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, type GlobalEntry, type Journal, type JournalEntry, type JournalStore, type RunTool, type UnansweredEntry } from './journal.js'
+import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, UnreadableJournalError, type GlobalEntry, type Journal, type JournalEntry, type JournalStore, type RunTool, type UnansweredEntry } from './journal.js'
 
 // Code mode (owner decision D82, proposed as BUCKLE-D22): an agent's script runs in a VM that can do nothing but call
 // this workspace's other tools, each call judged, approved, and audited as a direct call, and only what the script
@@ -211,6 +211,11 @@ function createRunRecord(replay: readonly JournalEntry[], bound: number) {
   }
 }
 
+/** What a script that cannot be replayed is refused with: it diverged, or its record could not be read. */
+function replayDiverged(): ToolExecutionError {
+  return new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
+}
+
 function outcomeOf(response: Exclude<InvokeResponse, { outcome: 'approval_required' }>): ScriptVmOutcome {
   return response.outcome === 'ok' ? { ok: true, value: response.output } : failure(response.error.code, response.error.message, response.error.retryable)
 }
@@ -245,7 +250,25 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const { invokeNested, nestedKey: key } = context
   if (!invokeNested || !key) throw new ToolExecutionError('code_run runs only through the invoker, which makes its calls', { code: 'TOOL_EXECUTION_FAILED' })
   const began = performance.now()
-  const journal = journals.read(key)
+  // A withdrawal that fails, behind an approvals lock busy past its wait or a disk that refuses it, is logged, and its
+  // asks stay pending until they expire: the agent still gets the script's own answer, never a STATE_BUSY that says a
+  // call ran unrecorded (final review of 0.1.4, finding code index.ts:365).
+  const withdraw = async (tokens: readonly string[], whose: string): Promise<void> => {
+    await context.withdrawNested?.(tokens).catch((error: unknown) => {
+      logger.warn(`Could not withdraw the asks of a script ${whose}; they stay pending until they expire`, { error: error instanceof Error ? error.message : 'Unknown error' })
+    })
+  }
+  // A record Buckle cannot read fails closed: the send is refused as a divergence, the record goes, and the asks it
+  // names are withdrawn where they can be read, so no call it held runs again unannounced (recheck 4 of the final
+  // review of 0.1.4, finding journal.ts:188).
+  let journal: Journal | null
+  try {
+    journal = journals.read(key)
+  } catch (error) {
+    if (!(error instanceof UnreadableJournalError)) throw error
+    await withdraw(error.asks, 'whose record could not be read')
+    throw replayDiverged()
+  }
   // The run's own tools, each with its input schema, so describeTool answers a replay as it answered the first run,
   // whatever the tool policy says since (recheck 2 of the final review of 0.1.4, finding code index.ts:363).
   const tools: RunTool[] = journal?.tools ?? input.reachable().map(tool => ({ name: tool.name, jsName: vm.identifier(tool.name), description: tool.description, inputSchema: tool.inputSchema }))
@@ -490,15 +513,6 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   cancel.abort(new ScriptEndedError())
   await Promise.allSettled([...running.values()])
 
-  // A withdrawal that fails, behind an approvals lock busy past its wait or a disk that refuses it, is logged, and its
-  // asks stay pending until they expire: the agent still gets the script's own answer, never a STATE_BUSY that says a
-  // call ran unrecorded (final review of 0.1.4, finding code index.ts:365).
-  const withdraw = async (tokens: readonly string[], whose: string): Promise<void> => {
-    await context.withdrawNested?.(tokens).catch((error: unknown) => {
-      logger.warn(`Could not withdraw the asks of a script ${whose}; they stay pending until they expire`, { error: error instanceof Error ? error.message : 'Unknown error' })
-    })
-  }
-
   // The record of what ran, for the re-sent script, naming the asks `named`: whole, so the script resumes where it
   // stopped, or else, past its bound as this run counts it or as the store does, its calls as stubs, so the script
   // cannot resume but none of its calls runs again (final review of 0.1.4, finding docs code-mode-02.md:19). False
@@ -546,7 +560,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
         logger.warn('Could not add the calls a diverged script ran to its replay record; sent again after a restart, they may run again', { error: error instanceof Error ? error.message : 'Unknown error' })
       })
     }
-    throw new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
+    throw replayDiverged()
   }
   // The caller's own cancel withdraws the asks the script already collected, as it withdraws a waiting call's: the
   // caller has gone, and nobody is told of them (re-review of the code-mode slice, finding new-surface index.ts:338).

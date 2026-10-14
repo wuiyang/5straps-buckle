@@ -134,8 +134,23 @@ export function scriptOfAsk(directory: string, token: string, now = Date.now()):
   return null
 }
 
+/**
+ * A record that is there but cannot be read: the send is refused, never run from its start, as every call it held
+ * would run again (recheck 4 of the final review of 0.1.4, finding journal.ts:188). `asks` are the tokens it named,
+ * where they could be read.
+ */
+export class UnreadableJournalError extends Error {
+  constructor(readonly asks: string[]) {
+    super('A code mode replay journal could not be read')
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 export interface JournalStore {
-  /** The script's journal, or null when it has none or it expired (an expired one is removed). */
+  /** The script's journal, or null when it has none or it expired (removed); throws UnreadableJournalError for one it cannot read (removed). */
   read(key: string): Journal | null
   /**
    * Writes it whole, expiring JOURNAL_TTL_MS from now, or at `expiresAt` for a record rewritten as kept; false when its
@@ -195,12 +210,17 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
         if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null
         throw error
       }
-      const parsed = JournalSchema.safeParse((() => { try { return JSON.parse(text) } catch { return null } })())
+      const raw: unknown = (() => { try { return JSON.parse(text) } catch { return null } })()
+      const parsed = JournalSchema.safeParse(raw)
       if (!parsed.success || parsed.data.key !== key) {
-        // Named by the field paths alone: a journal holds tool results, which may hold file contents.
-        logger.warn('A code mode replay journal could not be read; the script runs from its start', { fields: parsed.success ? 'key' : [...new Set(parsed.error.issues.map(issue => issue.path.join('.') || '(root)'))].join(', ') })
         remove(key)
-        return null
+        // One past its expiry is gone either way; any other fails closed, its asks handed back where they can be read.
+        const fields = isRecord(raw) ? raw : {}
+        if (typeof fields.expiresAt === 'number' && fields.expiresAt <= now()) return null
+        // Named by the field paths alone: a journal holds tool results, which may hold file contents.
+        logger.warn('A code mode replay journal could not be read; the script is refused, and changed it runs from its start', { fields: parsed.success ? 'key' : [...new Set(parsed.error.issues.map(issue => issue.path.join('.') || '(root)'))].join(', ') })
+        const asks = Array.isArray(fields.asks) ? fields.asks.filter((token): token is string => typeof token === 'string') : []
+        throw new UnreadableJournalError(asks)
       }
       if (parsed.data.expiresAt <= now()) {
         remove(key)

@@ -1116,6 +1116,27 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     })
   })
 
+  // Recheck 4 of the final review of 0.1.4, finding journal.ts:188: a record the store cannot read fails closed: the
+  // send is refused as a divergence before anything runs, the record goes, and the asks it names are withdrawn.
+  it('refuses a send whose record cannot be read, runs nothing, and withdraws the asks it names', async () => {
+    const directory = scratch()
+    const script = 'await tools.echo({ push: true }); await tools.gate({}); return "end"'
+    await expect(codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'pushed'))(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    const [file] = readdirSync(directory).filter(name => name.endsWith('.json'))
+    const record = JSON.parse(readFileSync(join(directory, file!), 'utf8')) as Journal
+    writeFileSync(join(directory, file!), JSON.stringify({ ...record, tools: record.tools.map(({ inputSchema: _schema, ...tool }) => tool) }))
+
+    const warned = vi.spyOn(logger, 'warn')
+    const withdrawNested = vi.fn(async () => {})
+    const invoked = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
+    await expect(codeRun(directory, invoked, { withdrawNested })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED, message: expect.stringContaining('Change the script') })
+    expect(invoked).not.toHaveBeenCalled()
+    expect(withdrawNested).toHaveBeenCalledWith(['token-2'])
+    expect(kept(directory)).toEqual([])
+    expect(warned.mock.calls.find(([message]) => message.startsWith('A code mode replay journal could not be read'))?.[1]).toMatchObject({ fields: expect.stringContaining('tools.0.inputSchema') })
+    warned.mockRestore()
+  })
+
   // Recheck 4 of the final review of 0.1.4, finding code index.ts:497: a resumed send whose sandbox fails before the VM
   // names itself keeps the record's VM name, so a later send on another VM is still refused.
   it('keeps the record\'s VM name through a send whose sandbox failed before it started', async () => {
