@@ -36,15 +36,16 @@ The globals:
   call returns. The `code_run` description declares each tool and what it resolves to.
 - `ALL_TOOLS`: every tool you can call, as `{ name, description }`.
 - `await searchTools(query, { limit })`: the tools whose name or description holds every word of
-  `query`, ignoring case, as `{ name, description }`; 8 unless `limit` asks for more.
+  `query`, ignoring case, as `{ name, description }`; 8 unless `limit` asks for up to 100.
 - `await describeTool(name)`: one tool's TypeScript declaration. `code_api` returns them all, or the
   ones you name.
 - `text(value)` and `console.log(...)`: one line of output each.
 - `return value`: the script's result, as JSON. `exit()` ends the script at once.
 
 `store()`, `load()`, and `image()` are not supported: nothing carries over to the next script,
-and an image is dropped. Scripts cannot start scripts: `code_run` and `code_api` are refused
-inside one.
+and an image is dropped. Scripts cannot start scripts: a script has no `code_run` or `code_api`.
+Naming either, or any tool not in `ALL_TOOLS`, throws a `TypeError` at once, with no `code`, and
+nothing is audited. Look the name up with `ALL_TOOLS` or `searchTools`.
 
 ## Errors
 
@@ -57,7 +58,9 @@ try { await tools.fs_read({ path: 'notes/missing.md' }) } catch (error) { text(`
 
 A refusal (`PERMISSION_DENIED`) is in the audit log whether or not you catch it. When the script
 throws, `code_run` still returns what it printed before, with `ok: false` and an `error` naming its
-kind: `script`, `timeout`, `aborted`, or `sandbox`. Calls made before a failure are not undone.
+kind: `script`, `timeout`, `aborted`, or `sandbox`. Its name, message, and stack are each cut to
+16384 characters. A `sandbox` error is one fixed sentence: retry, or tell the owner. Calls made
+before a failure are not undone.
 
 ## When a call needs approval
 
@@ -66,10 +69,11 @@ that needs a person stops the script there: `code_run` answers `approval_require
 of every call that asked. Relay them as you would any ask. The person sees that one call whole,
 with a note that a `code_run` script made it.
 
-Once they answer, send the same script again, unchanged. Buckle replays the calls that already ran
-from its record of the first run, without running them again, and then runs the call that asked.
-On a node that waits for answers (the CLI, or a caller that sends a wait), the call simply waits
-inside the script, as a direct call would.
+Once they answer, send the same script again, its text unchanged; `timeoutMs` may differ. Buckle
+replays the calls that already ran from its record of the first run, without running them again,
+and then runs the call that asked. On a node that waits for answers (the CLI, or a caller that
+sends a wait), the call simply waits inside the script, as a direct call would, until a second
+before the script's deadline.
 
 Do not change the script to get around an ask. A changed script is a new script: Buckle replays
 nothing for it, its calls run again, and the same call asks again. Changing the script is right
@@ -78,15 +82,29 @@ only when Buckle tells you to, with `CODE_REPLAY_DIVERGED`.
 `CODE_REPLAY_TOO_LARGE` means the script's results were too large to keep for a replay: make the
 call that asked on its own, or send a script that keeps less. A replay is kept for ten minutes.
 
+## After a timeout or a cancel
+
+A script stopped by its deadline, a cancel, or a shutdown keeps the same record. The same script
+sent again within ten minutes goes on where it stopped: the calls that finished are replayed, not
+run again. To run it from its start, change one character of it, even in a comment. A call that
+answers `REQUEST_ALREADY_EXECUTED` ran before and is not run twice: change the script to run it
+again.
+
 ## Limits
 
 - A script is at most 262144 characters.
-- At most 256 calls per script; past it, the call fails inside the script with `CODE_CALL_LIMIT`.
-  Eight run at once, and the rest wait their turn, so `Promise.all` over many files works; a batch
-  tool such as `fs_read_batch` makes fewer calls.
+- At most 256 calls per script, refused ones and those before an ask counted; past it, the call
+  fails inside the script with `CODE_CALL_LIMIT`, and a script that keeps calling is ended. Eight
+  run at once, and the rest wait their turn, so `Promise.all` over many files works; a batch tool
+  such as `fs_read_batch` makes fewer calls.
+- One call's arguments, as JSON, are held to the node's request size, 1 MiB by default; past it the
+  call fails with `REQUEST_TOO_LARGE`.
 - The sandbox has 256 MiB of memory. Running out throws inside the script.
 - The whole script, calls included, runs for the call's timeout unless `timeoutMs` asks for more,
   up to the node's maximum. A wait for an approval counts toward it.
-- Output and the return value are each cut to 1 MiB, keeping the start and the end.
-- A node runs four scripts at once; a fifth gets `CODE_VM_BUSY` and can retry.
+- Output and the return value are each cut to 1048576 characters, keeping the start and the end.
+  Past 100000 lines of output, or 16777216 characters, the script fails with a `RangeError`: print
+  a summary instead.
+- A Buckle process runs four scripts at once, two per workspace; another gets `CODE_VM_BUSY` and
+  can retry.
 - A script waiting on something no call will settle fails at once: there are no timers.

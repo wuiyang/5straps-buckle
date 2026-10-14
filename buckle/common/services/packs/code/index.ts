@@ -110,7 +110,8 @@ export function createCodePack(options: CodePackOptions): Pack {
       }),
       defineTool(PACK_ID, {
         name: 'code_api',
-        description: 'The TypeScript declarations of the tools a code_run script can call, or of the named ones, for a host that cannot read MCP resources.',
+        // Review of the code-mode slice, finding docs-rules code-mode.md:19: no MCP resource carries the declarations.
+        description: 'The TypeScript declarations of the tools a code_run script can call, or of the named ones, including those the code_run description only names.',
         risk: 'read',
         tags: ['code'],
         outsideScripts: true,

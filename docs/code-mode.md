@@ -6,7 +6,8 @@ call instead of many, and only what the script prints and returns goes back to t
 script that reads fifty files and keeps three lines costs the agent three lines, not fifty files.
 
 Every call a script makes is judged, approved, and audited exactly as the same call made
-directly.
+directly. [Code mode, part two](code-mode-02.md) covers replay, limits, the setting, and the
+audit log.
 
 ## The two tools
 
@@ -16,7 +17,8 @@ directly.
 | `code_api` | returns the TypeScript declarations of the tools a script can call, or of the ones named in `{ tools }` |
 
 The `code_run` description declares the tools a script can call, as far as fits in about 4000
-tokens, and names the rest; `code_api` serves agents whose host cannot read MCP resources.
+tokens, and names the rest. `code_api` returns the declaration of any of them, including those
+the description only names.
 `buckle skills buckle-code` prints the guide the agent reads.
 
 ```bash
@@ -35,9 +37,13 @@ A script can use:
 
 - `tools.<name>(args)`, which resolves to the JSON a direct call returns, or rejects with an
   `Error` whose message is `<code>: <message>` and which carries `code` and `retryable`;
-- `ALL_TOOLS`, the callable tools as `{ name, description }`, and `describeTool(name)`, one tool's
-  declaration;
+- `ALL_TOOLS`, the callable tools as `{ name, description }`;
+- `searchTools(query, { limit })`, the tools whose name or description holds every word of the
+  query, ignoring case, 8 unless `limit` asks for up to 100;
+- `describeTool(name)`, one tool's declaration;
 - `text(value)` and `console.log(...)`, one output line each, `return`, and `exit()`.
+
+Naming a tool that is not in `ALL_TOOLS` throws a `TypeError` at once, and nothing is audited.
 
 The tools a script can call are the workspace's tools as `buckle manifest` lists them at that
 moment, after the node's and the workspace's tool policy, without `code_run` and `code_api`:
@@ -51,65 +57,24 @@ first write into a directory asks, and a refusal is a refusal. A refused call re
 script, where the script may catch it; the refusal is in the audit log either way.
 
 When a call needs a person, the script stops there. Buckle lets the calls already running finish,
-stops the script, and answers `code_run` with `approval_required`, carrying the asks of every call
-that asked. Each ask is that call's own: the approver sees the call whole, in the terminal, in
-`buckle approvals`, in `--watch`, or in an MCP host's form, and its summary line says a `code_run`
-script made it, naming the stage it is filed under. The script's text is not repeated there.
+waits until the script has handed over every call it made in that turn, stops the script, and
+answers `code_run` with `approval_required`, carrying the asks of every call that asked.
+
+Each ask is that call's own. The approver sees the call whole, in the terminal, in
+`buckle approvals`, in `--watch`, or in an MCP host's form, and that call is what they approve.
+Its summary line says a `code_run` script made it, names the stage the script's calls are filed
+under, and says that `buckle approvals show <token>` prints the script. That command prints the
+ask whole, decides nothing, and adds the script's text, which Buckle keeps with the script's
+replay record, owner-only, for ten minutes after the ask.
 
 Where the caller waits for answers, as the CLI does, a call that asks waits inside the script,
-and the script goes on once the person answers.
+and the script goes on once the person answers. The wait ends a second before the script's
+deadline, so an ask nobody answered in time comes back as `approval_required`, never as a timeout.
+While the call still waits inside the script, the script's text is not kept yet.
 
-## Replay after an approval
+Only the caller's own cancel withdraws a script's asks. The script's deadline, its end, and a
+shutdown leave them pending, and the same script sent again joins them. A script that cannot be
+resumed withdraws its asks, since no call would spend them.
 
-Once the person answers, the agent sends the same script again. Buckle recognises it by the
-session, the caller, and the script with its arguments, and replays it: each call the first run
-made gets the result it got then, read from a record Buckle kept, without running again. The
-script then reaches the call that asked, which now runs with the person's answer, and carries on.
-A script is deterministic for this: its clock and random numbers repeat its first run's.
-
-Limits of the replay:
-
-- The record is kept for ten minutes after the ask. Sent later, the script runs from its start, and
-  the calls before the ask run again.
-- A script whose results pass 32 MiB cannot be resumed: `code_run` answers
-  `CODE_REPLAY_TOO_LARGE`. A workspace keeps 128 MiB of records, dropping the oldest first.
-- A script that, replayed, makes other calls than its first run did is refused with
-  `CODE_REPLAY_DIVERGED`. Change the script to run it from its start.
-- A changed script is a new script: nothing is replayed for it.
-
-Records live in `code-journal/` in the workspace's state directory, owner-only, which every
-sandbox hides. A script that ends without an ask leaves none. Once a script ends by itself,
-sending it again runs every call again; one stopped by its deadline, a cancel, or a shutdown leaves
-its finished calls answered for ten minutes, so none of them runs twice.
-
-## Limits
-
-| Limit | Value |
-|---|---|
-| script size | 262144 characters |
-| calls per script | 256, then each call fails with `CODE_CALL_LIMIT` |
-| calls running at once | 8, and a call past them waits for a free slot |
-| memory | 256 MiB per script |
-| time | the call's timeout, or `timeoutMs`, up to `BUCKLE_MAX_TIMEOUT_MS`; a wait for a person counts |
-| output, and the returned value | 1 MiB each, keeping the start and the end |
-| scripts at once | 4 per Buckle process, then `CODE_VM_BUSY` |
-
-A script that waits on something no call can settle fails at once, since there are no timers.
-
-## The setting
-
-`BUCKLE_ALLOW_CODE=true` is the default. `false` withholds the code pack, and `buckle manifest`
-gives the reason; `buckle settings set code off` writes it. Restart every Buckle process after a
-change. The setting covers the node; to turn code mode off for one workspace alone, deny `code_run`
-in that workspace's tool policy, with `buckle policy deny-tool code_run` on the node's own
-workspace.
-
-## Reading a script in the audit log
-
-The `code_run` call is one entry, with the script's size among its arguments, since the log keeps
-the shape of arguments, not their text ([The audit log](audit-log.md)). Each call the script made
-is an entry of its own, with a `requestId` of `code:<key>:<number>` and a `stageId` that names
-the script: the stage the caller gave the `code_run` call, or else its run, or else its own
-`requestId`. So `buckle log --json` lists a script's calls together under that stage, and the
-change history groups their writes the same way. A replayed call adds no entry: it did not run
-again.
+Once the person answers, the agent sends the same script again, and Buckle replays what already
+ran: [Code mode, part two](code-mode-02.md) has how.

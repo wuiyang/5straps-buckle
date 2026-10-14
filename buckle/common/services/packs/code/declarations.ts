@@ -77,11 +77,12 @@ export function withinBudget(vm: ScriptVm, tools: readonly ToolCapability[], bud
 const GUIDE = [
   'Run a JavaScript script that calls this node\'s other tools, and get back only what it prints and returns. Use it to batch calls, chain them, or filter large results before you read them.',
   'The script is the body of an async function in a QuickJS sandbox: top-level `await` and `return` work. It has no files, network, processes, timers, or modules of its own; it reaches the machine only through `tools`.',
-  '- `await tools.<name>(args)` calls a tool and resolves to its JSON output. A failed or refused call rejects with an Error whose message is `<code>: <message>` and which carries `code` and `retryable`.',
-  '- Every call is judged, approved, and audited as a direct call. If one needs a person, this tool answers `approval_required`: relay it, then send the same script again once it is answered; Buckle replays the calls that already ran. Never change the script to get around an ask.',
+  '- `await tools.<name>(args)` calls a tool and resolves to its JSON output. A failed or refused call rejects with an Error whose message is `<code>: <message>` and which carries `code` and `retryable`. A name not in `ALL_TOOLS` throws a TypeError.',
+  '- Every call is judged, approved, and audited as a direct call. If one needs a person, this tool answers `approval_required`: relay it, then send the same script again once it is answered (`timeoutMs` may change); Buckle replays the calls that already ran. Never change the script to get around an ask.',
+  '- After a timeout or a cancel, the same script sent again within ten minutes goes on where it stopped; change one character of it to run it from its start.',
   '- `text(value)` and `console.log(...)` print one line each; `return value` gives the result; `exit()` ends the script.',
   '- `ALL_TOOLS` lists `{ name, description }`; `await searchTools(query, { limit })` resolves to the ones whose name or description holds every word, 8 by default; `await describeTool(name)` resolves to a tool\'s declaration; `code_api` returns them all.',
-  '- At most 256 calls per script; 8 run at once and the rest wait their turn. Output and the return value are cut to 1 MiB each, keeping the start and the end.',
+  '- At most 256 calls per script, refused ones counted; 8 run at once and the rest wait their turn; one call\'s arguments are held to the node\'s request size. Output and the return value are cut to 1048576 characters each, keeping the start and the end; past 100000 output lines or 16777216 characters the script fails.',
 ].join('\n')
 
 /** code_run's description: the guide, the declarations within the budget, and the names of the rest. */

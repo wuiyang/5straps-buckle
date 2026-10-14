@@ -44,24 +44,32 @@ runs an agent's script that calls the other tools. Four pieces:
   the script, the tools it may call, limits (deadline, memory, output), a clock start, a seed, and
   `onCall`; the host answers each call with `deliver(seq, now, id, outcome)`, and the run yields
   output items, the return value, the calls made, and an error kind (`script`, `timeout`,
-  `aborted`, `sandbox`). The port also renders the declarations a script reads.
+  `aborted`, `sandbox`). The run reports `onIdle` once it has applied every result it was handed,
+  after the calls that turn made, so a host stops it at an ask without losing a call. The port also
+  renders the declarations a script reads.
 - **The adapter**, `common/adapters/script-vm/pi-codemode.ts`, the only module that imports
   `@earendil-works/pi-codemode`. It runs QuickJS, compiled to WebAssembly by `quickjs-wasi`, in a
   worker thread per script through `CodemodeSandbox.start()`, the deterministic run. It finds the
   worker file and the wasm where the package is installed, so a bundled server finds them too,
-  gives each VM 256 MiB, and holds at most four live VMs per process.
+  gives each VM 256 MiB, and holds at most four live VMs per process, two of them per workspace.
 - **The pack**, `common/services/packs/code/`: `code_run` and `code_api`. The pack never reaches
   the registry: `ToolDefinition.reachesTools` makes the invoker hand it `invokeNested`, and the
   invoker builds each nested request itself, with the outer call's session, actor, approval tokens,
   wait, and signal, a stage of the outer call's stage, run, or requestId, and a requestId of
   `code:<key>:<call number>`. A nested call goes through the workspace runtime's own `invoke`, so
-  it is judged, audited, counted, and cancelled at shutdown like any other. A call that asks makes
-  the pack throw `NestedApprovalRequired`, which the invoker answers as `approval_required`.
-- **The journal**, `common/services/packs/code/journal.ts`: one file per script that stopped at an
-  ask, `<state>/code-journal/<workspace key>/<key>.json`, holding the clock start, the seed, the
-  tools, and every result delivered, in order. The key hashes the session, the actor, and the
-  outer call's tool and canonical arguments. A re-sent script is answered from it call for call,
-  and a call whose tool or arguments differ refuses the run.
+  it is judged, audited, counted, and cancelled at shutdown like any other. Its approval wait ends
+  a second before the script's deadline, and only the outer caller's own cancel withdraws its asks.
+  A call that asks makes the pack throw `NestedApprovalRequired`, which the invoker answers as
+  `approval_required`. The re-send dedupe keeps a nested call that ran as a stub without its body,
+  in a bound of its own, since the journal replays its result.
+- **The journal**, `common/services/packs/code/journal.ts`: one file per script that stopped
+  before its own end (an ask, its deadline, a cancel, a shutdown, or its sandbox),
+  `<state>/code-journal/<workspace key>/<key>.json`, holding the clock start, the seed, the tools,
+  the first run's stage, the script, the tokens of its asks, and every result delivered, in order.
+  The key hashes the session, the actor, and the script's text, so `timeoutMs` may change. A
+  re-sent script is answered from it call for call, and a call whose tool or arguments differ
+  refuses the run. The store prunes expired journals and crashed writes when it opens and at each
+  write; `buckle approvals show` reads a script back by its ask's token.
 
 The adapter is temporary. The owner plans a VM written for Buckle, which implements the port; the
 pack, the invoker, and the journal stay as they are, and a journal from the old VM is refused by

@@ -62,17 +62,23 @@ hiding, and paths.
 
 [Code mode](code-mode.md) runs an agent's script that calls Buckle's tools.
 
-- A script that stopped at an ask resumes only within ten minutes, as long as Buckle keeps its
-  record of the calls that ran. Sent again later, the script runs from its start, and the calls
-  before the ask run again.
+- A script that stopped at an ask, its deadline, a cancel, or a shutdown resumes only within ten
+  minutes, as long as Buckle keeps its record of the calls that ran. Sent again later, the script
+  runs from its start, and the calls before the stop run again.
 - A script whose calls returned more than 32 MiB before the ask cannot be resumed at all:
-  `code_run` answers `CODE_REPLAY_TOO_LARGE`. A workspace keeps 128 MiB of such records and drops
-  the oldest first, so a script whose record was dropped also runs from its start.
+  `code_run` answers `CODE_REPLAY_TOO_LARGE` and withdraws the asks. A workspace keeps 128 MiB of
+  such records and drops the oldest first. Without its record, a script sent again within ten
+  minutes is told `REQUEST_ALREADY_EXECUTED` for each call that ran, and has to change to run
+  them again.
 - A nested call's error text reaches the script, which can read it, branch on it, and return it:
   a refusal's message, with the path, host, or command a rule names, reaches the agent through the
   script as it would from a direct call, and the script can try another call in response, each of
   which is judged on its own.
 - The audit log keeps the script's size, not its text, as it keeps every argument.
+  `buckle approvals show <token>` prints the text of a script that stopped at an ask for ten
+  minutes, but not while the call still waits inside the script, and nothing keeps it after.
+- A script that keeps calling once refused 256 times more past its cap is ended as a script error,
+  and its answer lists its first 256 calls.
 
 ## The command line
 
