@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ApprovalWait, InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
+import { emptyWorkspacePolicy, WorkspacePolicySchema, type ApprovalWait, type InvokeResponse, type JsonObject, type JsonValue, type ToolCapability } from '@5straps/protocol'
 import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { NestedApprovalRequired, ToolExecutionError, type NestedCall, type ToolContext } from '../common/domain/tool.js'
@@ -701,6 +701,43 @@ describe('the replay journal', () => {
     await after.history.close()
   }, 120_000)
 
+  // Recheck 2 of the final review of 0.1.4, finding code index.ts:363: a tool policy change between a stop and the
+  // re-send. describeTool answers a tool of the run's own list from it, so a tool denied since replays as before; a
+  // tool allowed since is looked up afresh, and the call its answer moves onto a global's number is refused before
+  // it runs: the write that ran is never run again.
+  describe('across a tool policy change between the stop and the re-send', () => {
+    const SCRIPT = 'const d = await describeTool("fs_find_names"); if (!d) await describeTool("fs_list"); await tools.fs_write({ path: "logs/deploy.md", content: "deployed" }); await tools.fs_write({ path: "one/out.md", content: "x" }); return "end"'
+    const policy = (deny: string[]) => WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), tools: { deny }, filesystem: { rules: [{ path: 'logs', write: 'allow' }] } })
+    const writes = (runtime: BuckleRuntime) => attempts(runtime, 'fs_write').map(entry => entry.args)
+
+    it('refuses the re-send before anything runs when describeTool now finds a tool allowed since', async () => {
+      const { workspace, runtime } = await node()
+      mkdirSync(join(workspace, 'logs'))
+      await runtime.policy.apply(policy(['fs_find_names']))
+      const [approval] = asked(await run(runtime, SCRIPT))
+      await answer(runtime, approval!.token)
+      await runtime.policy.apply(policy([]))
+
+      expect(await run(runtime, SCRIPT)).toMatchObject({ outcome: 'error', error: { code: CODE_REPLAY_DIVERGED } })
+      expect(writes(runtime)).toHaveLength(2)
+      await runtime.history.close()
+    })
+
+    it('replays describeTool from the run\'s own tools when a tool it declared is denied since', async () => {
+      const { workspace, runtime } = await node()
+      mkdirSync(join(workspace, 'logs'))
+      await runtime.policy.apply(policy([]))
+      const [approval] = asked(await run(runtime, SCRIPT))
+      await answer(runtime, approval!.token)
+      await runtime.policy.apply(policy(['fs_find_names']))
+
+      expect(await run(runtime, SCRIPT)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 'end' } })
+      expect(writes(runtime)).toHaveLength(3)
+      expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('x')
+      await runtime.history.close()
+    })
+  })
+
   it('resumes the same script sent again with another timeoutMs: the script alone names it', async () => {
     const { workspace, runtime } = await node()
     const [approval] = asked(await send(runtime, READ_THEN_WRITE, { timeoutMs: 20_000, approvalWait: { mode: 'none' } }))
@@ -972,15 +1009,18 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     warned.mockRestore()
   })
 
-  // Recheck of the final review of 0.1.4, finding code index.ts:174: describeTool and searchTools are pure, so they are
-  // answered live on every run and never recorded, and their answers leave the script's clock where it was, so a call
-  // after one that reads the clock replays as made.
-  it('answers globals live on every run and records only tool calls, and the replay still matches', async () => {
+  // Recheck of the final review of 0.1.4, finding code index.ts:174: describeTool and searchTools are answered live on
+  // every run, their answers never recorded, and leave the script's clock where it was, so a call after one that reads
+  // the clock replays as made. Recheck 2, finding code index.ts:363: each is recorded by its number and fingerprint.
+  it('answers globals live on every run, records them by number and fingerprint alone, and the replay still matches', async () => {
     const directory = scratch()
     const script = 'const d = await describeTool("echo"); const a = await tools.echo({ t: Date.now() }); const s = await searchTools("echo"); await tools.gate({}); return [d.includes("echo"), a, s.length]'
     const first = vi.fn(async (call: NestedCall) => call.tool === 'gate' ? ask(call) : ok(call, 'echoed'))
     await expect(codeRun(directory, first)(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
     expect(kept(directory).map(journal => journal.entries.map(entry => [entry.seq, entry.tool]))).toEqual([[[2, 'echo']]])
+    expect(kept(directory).map(journal => journal.globals?.map(entry => [entry.seq, entry.id, entry.name, Object.keys(entry).sort()]))).toEqual([[
+      [1, 1, 'describeTool', ['args', 'id', 'name', 'seq']], [3, 3, 'searchTools', ['args', 'id', 'name', 'seq']],
+    ]])
 
     const resumed = vi.fn(async (call: NestedCall) => ok(call, 'opened'))
     expect(await codeRun(directory, resumed)(script)).toMatchObject({ ok: true, value: [true, 'echoed', 1] })
@@ -999,6 +1039,20 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     const result = await codeRun(scratch(), async call => ok(call, null))('for (;;) await describeTool("echo")') as { ok: boolean; error?: { kind: string; message: string } }
     expect(result).toMatchObject({ ok: false, error: { kind: 'script', message: expect.stringContaining(`${CODE_GLOBAL_LIMIT}: this script called describeTool and searchTools more than ${MAX_GLOBAL_CALLS} times`) } })
   }, 60_000)
+
+  // Recheck 2 of the final review of 0.1.4, finding code index.ts:363: a global made again with other arguments than its
+  // first run's is refused before any call runs.
+  it('refuses a replay whose global differs from its first run\'s, before any call runs', async () => {
+    const directory = scratch()
+    const script = 'await describeTool("echo"); await tools.echo({}); await tools.gate({})'
+    await expect(codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'echoed'))(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    const [file] = readdirSync(directory).filter(name => name.endsWith('.json'))
+    const record = JSON.parse(readFileSync(join(directory, file!), 'utf8')) as Journal
+    writeFileSync(join(directory, file!), JSON.stringify({ ...record, globals: record.globals!.map(entry => ({ ...entry, args: '0'.repeat(64) })) }))
+    const invoked = vi.fn(async (call: NestedCall) => ok(call, 'opened'))
+    await expect(codeRun(directory, invoked)(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+    expect(invoked).not.toHaveBeenCalled()
+  })
 
   // A replay that does not make a global its first run made leaves that global's number unfilled: it is refused at
   // once rather than left to wait for the deadline.

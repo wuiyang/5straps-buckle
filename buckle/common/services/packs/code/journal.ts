@@ -46,6 +46,17 @@ const EntrySchema = z.object({
   outcome: OutcomeSchema,
 })
 
+const RunToolSchema = z.object({ name: z.string(), jsName: z.string(), description: z.string(), inputSchema: JsonObjectSchema.optional() })
+
+const GlobalEntrySchema = z.object({
+  seq: z.number().int().positive(),
+  id: z.number().int().positive(),
+  /** The global, `describeTool` or `searchTools`. */
+  name: z.string(),
+  /** Its arguments, hashed as a tool call's are. */
+  args: z.string(),
+})
+
 const JournalSchema = z.object({
   version: z.literal(1),
   key: z.string().regex(/^[0-9a-f]{64}$/),
@@ -64,13 +75,22 @@ const JournalSchema = z.object({
    * (finding docs-rules code-mode.md:111; final review of 0.1.4, finding invoker 701).
    */
   parentRequestId: z.string().optional(),
-  tools: z.array(z.object({ name: z.string(), jsName: z.string(), description: z.string() })),
+  /** The run's tools; each input schema, so describeTool answers a replay from the run's own list (recheck 2, code index.ts:363). */
+  tools: z.array(RunToolSchema),
   entries: z.array(EntrySchema),
+  /**
+   * Each describeTool and searchTools call, its number and its arguments' fingerprint alone, never its answer, kept
+   * apart from the entries and their bound: a replay answers a global again only where these match (recheck 2 of the
+   * final review of 0.1.4, finding code index.ts:363).
+   */
+  globals: z.array(GlobalEntrySchema).optional(),
   expiresAt: z.number(),
 })
 
 export type Journal = z.infer<typeof JournalSchema>
 export type JournalEntry = z.infer<typeof EntrySchema>
+export type GlobalEntry = z.infer<typeof GlobalEntrySchema>
+export type RunTool = z.infer<typeof RunToolSchema>
 
 /** Where a workspace's journals are kept: `<state>/code-journal/<workspace key>`, under the state every sandbox hides. */
 export function journalDirectory(input: { stateDirectory: string; cwd: string }): string {

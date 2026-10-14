@@ -43,13 +43,13 @@ export const DECLARATION_BUDGET_TOKENS = 4_000
 const CHARS_PER_TOKEN = 4
 
 /** One tool's comment: its own description, then what its call resolves to. */
-function described(tool: ToolCapability): string {
+function described(tool: Pick<ToolCapability, 'name' | 'description'>): string {
   const returns = RETURNS[tool.name]
   return `${tool.description.trim()}\nResolves to ${returns ?? 'the JSON its direct call returns'}.`
 }
 
 /** The declarations of the named tools, in the order given. */
-export function declare(vm: ScriptVm, tools: readonly ToolCapability[]): string {
+export function declare(vm: ScriptVm, tools: ReadonlyArray<Pick<ToolCapability, 'name' | 'description' | 'inputSchema'>>): string {
   return tools.length === 0 ? '' : vm.declare(tools.map(tool => ({ name: tool.name, description: described(tool), inputSchema: tool.inputSchema })))
 }
 

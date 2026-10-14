@@ -9,7 +9,7 @@ import { logger } from '../../../runtime/log.js'
 import { REQUEST_ALREADY_EXECUTED, requestFingerprint } from '../../invocation/executions.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { codeRunDescription, declare } from './declarations.js'
-import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, type JournalEntry, type JournalStore } from './journal.js'
+import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, type GlobalEntry, type JournalEntry, type JournalStore, type RunTool } from './journal.js'
 
 // Code mode (owner decision D82, proposed as BUCKLE-D22): an agent's script runs in a VM that can do nothing but call
 // this workspace's other tools, each call judged, approved, and audited as a direct call, and only what the script
@@ -245,7 +245,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   if (!invokeNested || !key) throw new ToolExecutionError('code_run runs only through the invoker, which makes its calls', { code: 'TOOL_EXECUTION_FAILED' })
   const began = performance.now()
   const journal = journals.read(key)
-  const tools: ScriptVmTool[] = journal?.tools ?? input.reachable().map(tool => ({ name: tool.name, jsName: vm.identifier(tool.name), description: tool.description }))
+  // The run's own tools, each with its input schema, so describeTool answers a replay as it answered the first run,
+  // whatever the tool policy says since (recheck 2 of the final review of 0.1.4, finding code index.ts:363).
+  const tools: RunTool[] = journal?.tools ?? input.reachable().map(tool => ({ name: tool.name, jsName: vm.identifier(tool.name), description: tool.description, inputSchema: tool.inputSchema }))
   // One parent for the script's calls, before and after an ask: its first run's code_run call. Their stage is each
   // send's own, so they share the browser and other state the agent's direct calls of that send reach (final review
   // of 0.1.4, finding invoker 701).
@@ -258,18 +260,17 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   // Results are kept for a journal only up to its bound, so a script's memory here stays bounded too; past it, the
   // script cannot resume, and its calls are kept as stubs that say they ran.
   const record = createRunRecord(replay, input.journalBytes)
-  // Results reach the VM numbered without a gap, tools' and globals' alike. A record keeps tool calls alone: a global is
-  // pure, so it is answered live on every run, never recorded, and never counted toward the bound (recheck of the
-  // final review of 0.1.4, finding code index.ts:174). The numbers the first run's globals had are the gaps below
-  // the record's last entry, which the replay's globals, made again in the same order, take back in that order. A
-  // global's answer keeps the script's clock where the result before it left it, so the replay reads the same time.
-  const prefix = replay.reduce((last, entry) => Math.max(last, entry.seq), 0)
+  // Results reach the VM numbered without a gap, tools' and globals' alike. A global, describeTool or searchTools, is
+  // answered live on every run and its answer never recorded or counted toward the bound (recheck of the final review
+  // of 0.1.4, finding code index.ts:174), but each is recorded as a compact entry, its number and fingerprint alone:
+  // a replay answers a global only on the number and with the arguments its first run had, and a call that lands on
+  // another's number is refused before anything runs (recheck 2, finding code index.ts:363). A global's answer keeps
+  // the script's clock where the result before it left it, so the replay reads the same time.
+  const replayGlobals = journal?.globals ?? []
+  const globalById = new Map(replayGlobals.map(entry => [entry.id, entry]))
+  const globals: GlobalEntry[] = [...replayGlobals]
+  const prefix = [...replay, ...replayGlobals].reduce((last, entry) => Math.max(last, entry.seq), 0)
   const nowBySeq = new Map(replay.map(entry => [entry.seq, entry.now]))
-  let gap = 1
-  const nextGap = (): number | undefined => {
-    while (gap <= prefix && nowBySeq.has(gap)) gap++
-    return gap <= prefix ? gap++ : undefined
-  }
   let nextSeq = prefix + 1
   const issued = new Set<number>()
   const made = new Set<number>()
@@ -340,8 +341,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     record.add(entry)
     if (!stopping()) hand(entry.seq, entry.now, entry.id, entry.outcome)
   }
-  const answerGlobal = (call: ScriptVmCall, outcome: ScriptVmOutcome) => {
-    const seq = nextGap() ?? nextSeq++
+  const answerGlobal = (call: ScriptVmCall, recorded: GlobalEntry | undefined, args: string, outcome: ScriptVmOutcome) => {
+    const seq = recorded?.seq ?? nextSeq++
+    if (!recorded) globals.push({ seq, id: call.id, name: call.name, args })
     const now = nowBySeq.get(seq - 1) ?? startedAt
     nowBySeq.set(seq, now)
     if (!stopping()) hand(seq, now, call.id, outcome)
@@ -359,8 +361,11 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     diverged = true
     settleIfStopping()
   }
+  // A tool of the run's own list is declared from it; one it does not hold, as one a policy change has allowed since, is
+  // looked up in the manifest as it is now, and a replay its answer turns aside is refused by the fingerprints.
   const describe = (args: JsonValue | undefined): ScriptVmOutcome => {
-    const tool = input.reachable().find(candidate => candidate.name === args || vm.identifier(candidate.name) === args)
+    const own = tools.find(candidate => candidate.name === args || candidate.jsName === args)
+    const tool = own?.inputSchema ? { ...own, inputSchema: own.inputSchema } : input.reachable().find(candidate => candidate.name === args || vm.identifier(candidate.name) === args)
     return { ok: true, value: tool ? declare(vm, [tool]) : undefined }
   }
   const global = (name: string, args: JsonValue | undefined): ScriptVmOutcome => {
@@ -371,7 +376,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
 
   const started = vm.start({
     script: input.script,
-    tools,
+    tools: tools.map(tool => ({ name: tool.name, jsName: tool.jsName, description: tool.description })),
     globals: [{ name: DESCRIBE_TOOL }, { name: SEARCH_TOOLS, spread: true }],
     limits: { deadlineMs: context.timeoutMs, memoryBytes: VM_MEMORY_BYTES, outputChars: OUTPUT_CHARS },
     startedAt,
@@ -383,8 +388,8 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     },
     onIdle(seq) {
       applied = seq
-      // Idle below the record's last entry with the next number a gap no global took: this run did not make a global
-      // its first run made there, as when describeTool now declares other tools, and the VM would wait for ever.
+      // Idle below the record's last entry with the next number one no call took: this run did not make a global its
+      // first run made there, and the VM would wait for ever.
       if (seq < prefix && !nowBySeq.has(seq + 1)) diverge()
       settleIfStopping()
     },
@@ -402,13 +407,16 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
         else flush()
         return
       }
+      // A tool call on a number the first run gave a global, or a global with other arguments than it had there.
+      const recordedGlobal = globalById.get(call.id)
+      if (recordedGlobal && (recordedGlobal.name !== call.name || recordedGlobal.args !== fingerprint || call.target !== 'global')) return diverge()
       const tooLarge = () => failure(REQUEST_TOO_LARGE, `This call's arguments are ${bytes} bytes as JSON, past the ${input.argumentBytes} a request to this node may carry; pass less, or split the call`)
       if (call.target === 'global') {
         if (globalCalls > MAX_GLOBAL_CALLS) {
           spun ??= `${CODE_GLOBAL_LIMIT}: this script called describeTool and searchTools more than ${MAX_GLOBAL_CALLS} times, so Buckle ended it`
           return settleIfStopping()
         }
-        return answerGlobal(call, bytes !== null ? tooLarge() : global(call.name, call.args))
+        return answerGlobal(call, recordedGlobal, fingerprint, bytes !== null ? tooLarge() : global(call.name, call.args))
       }
       if (halted()) {
         skipped.add(call.id)
@@ -493,7 +501,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   }
   const write = (named: readonly string[], entries: JournalEntry[]) => journals.write({
     key, startedAt, seed, ...(vmName === undefined ? {} : { vm: vmName }), script: input.script, ...(named.length > 0 ? { asks: [...named] } : {}),
-    ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries,
+    ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries, globals,
   })
   // The record of what ran, for the re-sent script, naming the asks `named`: whole, so the script resumes where it
   // stopped, or else, past its bound as this run counts it or as the store does with the script and the tools, its
