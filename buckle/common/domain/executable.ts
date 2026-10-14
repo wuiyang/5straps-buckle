@@ -477,9 +477,12 @@ export function placesOnTheWay(path: string, platform: NodeJS.Platform = process
   return placesOf(path, walkLinks(path, platform, stored))
 }
 
-/** Every place a walk passes, as each caller judges it: the path as named, each link and its target, where it lands, and on Windows the real path the system gives that. */
+/**
+ * Every place a walk passes, as each caller judges it: the path as named, each link and its target, where it lands,
+ * and on Windows the real path the system gives each of those, where it lands last, the folder a caller hands on.
+ */
 function placesOf(path: string, walked: LinkWalk): string[] {
-  return [path, ...walked.passed, walked.real, ...(walked.system === undefined ? [] : [walked.system])]
+  return [path, ...walked.passed, walked.real, ...walked.system]
 }
 
 /** Folders that name a place of whichever process reads them: its working directory, root, and open files. */
@@ -502,8 +505,8 @@ interface LinkWalk {
   real: string
   /** Each link met, where it really lies, and the place it leads, in the order met. */
   passed: string[]
-  /** On Windows, where the system resolves `real` (systemPath); absent where nothing on its way exists. */
-  system?: string
+  /** On Windows, where the system resolves each place passed and, last, `real` (systemPath); none where nothing on a way exists. */
+  system: string[]
 }
 
 /**
@@ -535,26 +538,32 @@ function walkLinks(path: string, platform: NodeJS.Platform, stored: StoredPath =
   }
   const root = pathRoot(path, platform)
   const real = follow(root, path.slice(root.length).split('/'))
-  if (platform !== 'win32') return { real, passed }
-  const system = systemPath(real, stored)
-  return { real, passed, ...(system === null ? {} : { system }) }
+  if (platform !== 'win32') return { real, passed, system: [] }
+  // Every place passed, a link reached through a subst drive too, and not only where the walk lands (recheck 2 of the
+  // final review of 0.1.4, finding executable 539).
+  return { real, passed, system: [...passed, real].flatMap((place) => {
+    const resolved = systemPath(place, stored)
+    return resolved === null ? [] : [resolved]
+  }) }
 }
 
 /**
- * Where Windows itself resolves a walked path (StoredPath, realpathSync.native on the host), judged beside it. A `subst`
- * drive or a drive mapped to a folder reaches it under another drive letter, and no link on the way says so: `P:\app`
- * for a workspace at `C:\Users\me\projects\app` was judged as written and let the agent's `node_modules\.bin\rg.exe`
- * run (recheck of the final review of 0.1.4, finding executable 567). The deepest place on the way that exists is
- * resolved and the rest appended; a place whose real path cannot be read, or lies on a network share, which Buckle does
- * not use on Windows (nativePath), throws, and the place is refused. Null where nothing on the way exists, not even its
- * drive, so no folder can stand behind it.
+ * Where Windows itself resolves a walked place (StoredPath, realpathSync.native on the host), judged beside it. A
+ * `subst` drive or a drive mapped to a folder reaches it under another drive letter, and no link on the way says so:
+ * `P:\app` for a workspace at `C:\Users\me\projects\app` was judged as written and let the agent's
+ * `node_modules\.bin\rg.exe` run (recheck of the final review of 0.1.4, finding executable 567). The deepest place on
+ * the way that exists and is not a link is resolved and the rest appended, so a link is placed where it lies, never
+ * where it leads, which the walk judges apart. A place whose real path cannot be read, or lies on a network share,
+ * which Buckle does not use on Windows (nativePath), throws, and the place is refused. Null where nothing on the way
+ * exists, not even its drive, so no folder can stand behind it.
  */
 function systemPath(real: string, stored: StoredPath): string | null {
   const root = pathRoot(real, 'win32')
   const names = real.slice(root.length).split('/').filter(name => name !== '')
   for (let kept = names.length; kept >= 0; kept--) {
     const place = names.slice(0, kept).reduce((parent, name) => childPath(parent, name), root)
-    if (lstatOrNull(place) === null) continue
+    const entry = lstatOrNull(place)
+    if (!entry || entry.isSymbolicLink()) continue
     return names.slice(kept).reduce((parent, name) => childPath(parent, name), nativePath(stored(place), 'win32'))
   }
   return null

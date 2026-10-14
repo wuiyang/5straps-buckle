@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -167,6 +167,31 @@ describe('a program or PATH entry on a subst drive, imitated', () => {
     // A browser profile folder is judged by the same places.
     expect(placesOnTheWay('P:/profile', 'win32', subst)).toContain('C:/Users/me/projects/app/profile')
   }))
+})
+
+// Recheck 2 of the final review of 0.1.4, finding executable 539: a link inside the workspace reached through a subst
+// drive is judged by where it lies, as the same link spelled on C: is, not only by where the walk lands. P: stands for
+// C:\Users\me\projects, and the agent has made `node_modules\.bin` and `profile` links to folders outside every root.
+it('judges a link the walk passes through a subst drive by its real path, the same under both spellings', () => {
+  const root = scratch()
+  for (const directory of ['C:/Users/me/projects/app/node_modules', 'P:/app/node_modules', 'D:/tools', 'C:/Users/me/AppData/Chrome']) mkdirSync(join(root, directory), { recursive: true })
+  writeFileSync(join(root, 'D:/tools/rg.exe'), '')
+  for (const spelling of ['C:/Users/me/projects/app', 'P:/app']) {
+    symlinkSync('D:/tools', join(root, spelling, 'node_modules/.bin'))
+    symlinkSync('C:/Users/me/AppData/Chrome', join(root, spelling, 'profile'))
+  }
+  const subst = (path: string): string => path.startsWith('P:/') ? `C:\\Users\\me\\projects\\${path.slice(3).replaceAll('/', '\\')}` : path
+  const workspace = rootsOf('workspace', ['C:/Users/me/projects/app'])
+  const refused = { path: null, reason: 'rg is found in or through a workspace of this node, where an agent can write, so Buckle does not run it', untrusted: true }
+  const cwd = process.cwd()
+  process.chdir(root)
+  try {
+    for (const spelling of ['C:\\Users\\me\\projects\\app', 'P:\\app']) {
+      expect(resolveProgram('rg', { untrustedRoots: workspace, lookup: lookupFrom({ rg: `${spelling}\\node_modules\\.bin\\rg.exe` }), platform: 'win32', storedPath: subst })).toEqual(refused)
+      expect(trustedSearchPath(`${spelling}\\node_modules\\.bin`, { untrustedRoots: workspace }, 'win32', subst)).toBe('')
+      expect(placesOnTheWay(`${spelling.replaceAll('\\', '/')}/profile`, 'win32', subst)).toContain('C:/Users/me/projects/app/profile')
+    }
+  } finally { process.chdir(cwd) }
 })
 
 /** The built-in packs over a real workspace, with programs looked up in `table` as Windows would, and every spawn recorded. */
