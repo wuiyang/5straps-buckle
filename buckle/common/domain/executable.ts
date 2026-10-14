@@ -15,21 +15,31 @@ const WINDOWS_EXECUTABLE_EXTENSIONS = ['.exe', '.com']
 const WINDOWS_SHIM_EXTENSIONS = ['.cmd', '.bat']
 
 /**
- * Resolves a binary by scanning PATH for an executable file, and on Windows for a shim only where no entry holds an
- * `.exe` or `.com` (locateExecutable). A shell function or alias is deliberately not found, because a shell-less spawn
- * cannot run one. Only absolute PATH entries are searched: a relative one (`.`, `bin`) names a directory under
- * whichever working directory a lookup runs in, and on Windows one with a root but no drive (`\bin`) a directory on
- * whichever drive is current (isFullPath).
+ * Resolves a binary by scanning for an executable file: PATH, then the owner places after it (ownerPlaces), and on
+ * Windows a shim in any of them only where none holds an `.exe` or `.com` (locateExecutable). A shell function or
+ * alias is deliberately not found, because a shell-less spawn cannot run one. Only absolute entries are searched: a
+ * relative one (`.`, `bin`) names a directory under whichever working directory a lookup runs in, and on Windows one
+ * with a root but no drive (`\bin`) a directory on whichever drive is current (isFullPath).
  */
 export function findExecutable(
   binary: string,
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  places: readonly SearchPlace[] = ownerPlaces(environment, platform),
 ): string | null {
-  return locateExecutable(binary, environment, platform)?.path ?? null
+  return locateExecutable(binary, environment, platform, places)?.path ?? null
 }
 
-/** Where a program was found: its path, and how a reason names the place that held it. */
+/**
+ * A place a bare name is looked for after PATH. `label` names it in a reason an agent may read, never `directory`,
+ * which is the owner's.
+ */
+export interface SearchPlace {
+  directory: string
+  label: string
+}
+
+/** Where a program was found: its path, and the label of the place that held it. */
 export interface Located {
   path: string
   place: string
@@ -40,22 +50,78 @@ const ON_PATH = 'on PATH'
 const AS_NAMED = 'as named'
 
 /**
- * Where a binary is: a path is looked at alone; a bare name in each PATH entry for an executable file, and on Windows
- * only then for a shim in the same order, so a program found today is found as before.
+ * Where a binary is: a path is looked at alone; a bare name in each PATH entry, then in each owner place, for an
+ * executable file, and on Windows only then for a shim in the same order, so a program found today is found as before.
  */
-export function locateExecutable(binary: string, environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): Located | null {
+export function locateExecutable(binary: string, environment: NodeJS.ProcessEnv, platform: NodeJS.Platform, places: readonly SearchPlace[]): Located | null {
   if (isPathReference(binary, platform)) {
     const found = firstExecutable(binary, platform) ?? firstShim(binary, platform)
     return found === null ? null : { path: found, place: AS_NAMED }
   }
-  const directories = searchDirectories(environment, platform)
+  const searched = [...searchDirectories(environment, platform).map(directory => ({ directory, label: ON_PATH })), ...places]
   for (const pass of [firstExecutable, firstShim]) {
-    for (const directory of directories) {
-      const found = pass(join(directory, binary), platform)
-      if (found) return { path: found, place: ON_PATH }
+    for (const place of searched) {
+      const found = pass(join(place.directory, binary), platform)
+      if (found) return { path: found, place: place.label }
     }
   }
   return null
+}
+
+/** Where Buckle itself runs from: its entry point and its Node, which two owner places are found by. */
+export interface ProgramOrigin {
+  entry: string | undefined
+  execPath: string
+}
+
+/**
+ * The places a bare name is looked for after PATH, in order (the owner's request of 2026-10-14, after Buckle did not
+ * find a Windows node's agent-browser): the npm global bin that holds Buckle's own command (buckleBin), where
+ * `npm i -g` puts the programs Buckle runs; the folder of the Node running Buckle, an nvm or volta bin; and on Windows
+ * `%APPDATA%\npm`, npm's own global bin. Each is an owner place, judged like a PATH entry: a program in or through a
+ * root an agent writes is still refused. No `where` or `which` is run: the scan is the same lookup with these places
+ * added.
+ */
+export function ownerPlaces(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  origin: ProgramOrigin = { entry: process.argv[1], execPath: process.execPath },
+): SearchPlace[] {
+  const places: SearchPlace[] = []
+  // A place Buckle cannot read as the system does is not searched, as a PATH entry is not.
+  const add = (label: string, directory: () => string | null): void => {
+    try {
+      const named = directory()
+      if (named !== null && isFullPath(named, platform)) places.push({ directory: named, label })
+    } catch { /* not searched */ }
+  }
+  add('beside buckle', () => buckleBin(origin.entry, platform))
+  add('beside node', () => parentDirectory(nativePath(origin.execPath, platform)))
+  if (platform === 'win32' && environment.APPDATA) add('in %APPDATA%\\npm', () => nativePath(`${environment.APPDATA}\\npm`, platform))
+  return places
+}
+
+/** The npm global bin that holds Buckle's own command (npmGlobalBin), found from the real path of its entry point. */
+function buckleBin(entry: string | undefined, platform: NodeJS.Platform): string | null {
+  if (!entry) return null
+  let real: string
+  try { real = nativePath(realpathSync.native(entry), platform) } catch { return null }
+  return npmGlobalBin(real, platform)
+}
+
+/**
+ * The npm global bin beside a package's file, a real path in pathe's form, as npm lays a global install out:
+ * `<prefix>/lib/node_modules/<package>` with the commands in `<prefix>/bin` on Linux and macOS, and
+ * `<prefix>\node_modules\<package>` with the commands in `<prefix>` on Windows. Outside that layout, such as a clone,
+ * the folder that holds the file.
+ */
+export function npmGlobalBin(real: string, platform: NodeJS.Platform): string {
+  const names = real.split('/')
+  const at = names.lastIndexOf('node_modules')
+  if (at <= 0) return parentDirectory(real)
+  const prefix = parentDirectory(names.slice(0, at + 1).join('/'))
+  if (platform === 'win32') return prefix
+  return basename(prefix) === 'lib' ? childPath(parentDirectory(prefix), 'bin') : parentDirectory(real)
 }
 
 /** How a program is looked up: findExecutable's signature, so a test can put another in its place. */
@@ -63,9 +129,12 @@ export type ExecutableLookup = (binary: string, environment: NodeJS.ProcessEnv, 
 
 /** Where programs are looked up, and for which platform: the host's unless a test imitates another. */
 export interface ProgramSearch {
+  /** Answers in the scan's place, for PATH alone: no owner place is then searched. */
   lookup?: ExecutableLookup
   environment?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
+  /** The places searched after PATH; the host's (ownerPlaces) unless a test names its own. */
+  places?: readonly SearchPlace[]
 }
 
 /**
@@ -84,7 +153,7 @@ export interface ProgramRefusal {
   path: null
   reason: string
   untrusted: boolean
-  /** For a Windows shim Buckle does not run: its file name, the label of its place (null for a configured path), and why. */
+  /** For a Windows shim Buckle does not run: its file name, its place's label (null for a configured path), and why. */
   shim?: { file: string; place: string | null; why: string }
 }
 
@@ -138,9 +207,9 @@ export interface UntrustedRoots {
 const ROOT_NAMES: Record<RootKind, string> = { 'workspace': 'a workspace', 'scratch root': 'a scratch root', 'writable mount': 'the source of a writable mount' }
 
 /**
- * A program Buckle runs by name, looked up on PATH once (findExecutable, never in a working directory) and spawned by
- * the real path it leads to. Spawned by its bare name, it would be looked up again by the system: on Windows libuv
- * tries `name.com` and `name.exe` in the child's working directory before PATH, so a program an agent wrote into the
+ * A program Buckle runs by name, looked up once (findExecutable, never in a working directory) and spawned by the
+ * real path it leads to. Spawned by its bare name, it would be looked up again by the system: on Windows libuv tries
+ * `name.com` and `name.exe` in the child's working directory before PATH, so a program an agent wrote into the
  * workspace would run with Buckle's rights. A program is refused where any place on its way lies inside an untrusted
  * root (`untrustedRoots`): the path found, each link it passes through and where each leads, and where it lands
  * (walkLinks), compared as the disk compares paths (comparablePath). Judged by the path found and its real path alone,
@@ -158,7 +227,9 @@ export function findProgram(name: string, input: ProgramSearch & UntrustedRoots 
   const platform = input.platform ?? process.platform
   const environment = input.environment ?? process.env
   const shown = input.shownAs ?? name
-  const located = input.lookup ? lookedUp(input.lookup(name, environment, platform), isPathReference(name, platform)) : locateExecutable(name, environment, platform)
+  // A lookup a test puts in the scan's place answers for PATH alone: no owner place is then searched.
+  const places = input.lookup ? [] : input.places ?? ownerPlaces(environment, platform)
+  const located = input.lookup ? lookedUp(input.lookup(name, environment, platform), isPathReference(name, platform)) : locateExecutable(name, environment, platform, places)
   if (located === null) return { resolved: { path: null, reason: `${shown} is not installed on this node`, untrusted: false }, found: null }
   const finding = (resolved: ResolvedProgram, shim: string | null = null): ProgramFinding => ({ resolved, found: { path: located.path, place: located.place, shim } })
   if (input.rootsUnknown) return finding({ path: null, reason: `${shown} is not run while ${input.rootsUnknown}`, untrusted: true })
@@ -240,7 +311,7 @@ const SHIM_FOLDER = /^(?:%~dp0|%dp0%\\)/i
 /** npm's shim sets `dp0` to its folder in a subroutine; `%dp0%` is read as that folder only where the shim does so. */
 const SETS_DP0 = /^\s*@?set\s+"?dp0=%~dp0"?\s*$/im
 
-/** The path a shim's text starts its program by, relative to the shim's folder, or null where it names none or several. */
+/** The path a shim's text starts its program by, relative to its folder, or null where it names none or several. */
 function shimTarget(text: string): string | null {
   const named = text.split(/\r?\n/).filter(line => line.includes('%*')).map(line => line.split('"').filter((_, index) => index % 2 === 1).filter(quoted => SHIM_FOLDER.test(quoted)).at(-1) ?? null)
   const [first] = named

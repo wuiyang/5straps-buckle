@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { executableCandidates, findExecutable, isPathReference, MAX_SHIM_BYTES, resolveProgram, rootsOf, trustedSearchPath, type UntrustedRoots } from '../common/domain/executable.js'
+import { executableCandidates, findExecutable, findProgram, isPathReference, MAX_SHIM_BYTES, npmGlobalBin, ownerPlaces, resolveProgram, rootsOf, trustedSearchPath, type UntrustedRoots } from '../common/domain/executable.js'
 
 const root = mkdtempSync(join(tmpdir(), 'buckle-exec-'))
 
@@ -308,3 +308,76 @@ function PNPM_SHIM(target: string): string {
 
 /** The shim agent-browser's postinstall writes over npm's (scripts/postinstall.js, fixWindowsShims). */
 const AGENT_BROWSER_SHIM = '@ECHO off\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n'
+
+// The owner asked that Buckle find a program the way `where` would, past PATH: `npm i -g` puts it beside Buckle's
+// own command, an nvm or volta Node's folder holds its global bin, and on Windows npm's is %APPDATA%\npm. No `where`
+// or `which` is run; the same scan reaches these places after PATH, and judges what it finds as before.
+describe('the places after PATH', () => {
+  const at = mkdtempSync(join(root, 'places-'))
+  const folder = (name: string) => { const path = join(at, name); mkdirSync(path, { recursive: true }); return path }
+  const tool = (directory: string) => { const path = join(directory, 'buckle-placed-tool'); writeFileSync(path, '#!/bin/sh\nexit 0\n'); chmodSync(path, 0o755); return path }
+
+  it('are the npm global bin holding Buckle\'s command, the folder of Buckle\'s Node, and on Windows %APPDATA%\\npm, in that order', () => {
+    const prefix = folder('prefix')
+    const entry = join(prefix, 'lib', 'node_modules', '@5straps', 'buckle', 'dist', 'main.js')
+    mkdirSync(join(entry, '..'), { recursive: true })
+    writeFileSync(entry, '')
+    mkdirSync(join(prefix, 'bin'))
+    symlinkSync(entry, join(prefix, 'bin', 'buckle'))
+    const real = realpathSync(prefix)
+    expect(ownerPlaces({ APPDATA: '/ignored' }, 'linux', { entry: join(prefix, 'bin', 'buckle'), execPath: '/opt/node/bin/node' })).toEqual([
+      { directory: join(real, 'bin'), label: 'beside buckle' },
+      { directory: '/opt/node/bin', label: 'beside node' },
+    ])
+    expect(ownerPlaces({ APPDATA: 'C:\\Users\\me\\AppData\\Roaming' }, 'win32', { entry: undefined, execPath: 'C:\\Program Files\\nodejs\\node.exe' })).toEqual([
+      { directory: 'C:/Program Files/nodejs', label: 'beside node' },
+      { directory: 'C:/Users/me/AppData/Roaming/npm', label: 'in %APPDATA%\\npm' },
+    ])
+  })
+
+  it('finds the npm global bin from where npm lays a global install out, or the folder of a clone\'s entry point', () => {
+    expect(npmGlobalBin('/usr/local/lib/node_modules/@5straps/buckle/dist/main.js', 'linux')).toBe('/usr/local/bin')
+    expect(npmGlobalBin('C:/Users/me/AppData/Roaming/npm/node_modules/@5straps/buckle/dist/main.js', 'win32')).toBe('C:/Users/me/AppData/Roaming/npm')
+    expect(npmGlobalBin('/home/me/code/buckle/dist/main.js', 'linux')).toBe('/home/me/code/buckle/dist')
+  })
+
+  it('leave out a place Buckle cannot read as the system does, such as a folder without a drive on Windows', () => {
+    expect(ownerPlaces({ APPDATA: 'Roaming' }, 'win32', { entry: undefined, execPath: '/usr/bin/node' })).toEqual([])
+  })
+
+  it('are searched after PATH, in order, and a program found there says where', () => {
+    const [path, beside, node] = [folder('on-path'), folder('beside-buckle'), folder('beside-node')]
+    const places = [{ directory: beside, label: 'beside buckle' }, { directory: node, label: 'beside node' }]
+    tool(node)
+    const search = { untrustedRoots: [], environment: { PATH: path }, platform: 'linux' as const, places }
+    expect(findProgram('buckle-placed-tool', search).found).toMatchObject({ place: 'beside node' })
+    tool(beside)
+    expect(findProgram('buckle-placed-tool', search)).toMatchObject({ resolved: { path: join(beside, 'buckle-placed-tool'), args: [] }, found: { place: 'beside buckle' } })
+    tool(path)
+    expect(findProgram('buckle-placed-tool', search)).toMatchObject({ resolved: { path: join(path, 'buckle-placed-tool') }, found: { place: 'on PATH' } })
+    expect(findExecutable('buckle-placed-tool', { PATH: '' }, 'linux', places)).toBe(join(beside, 'buckle-placed-tool'))
+  })
+
+  it('are judged as PATH is: a program there inside a workspace is refused', () => {
+    const workspace = folder('placed-ws')
+    tool(workspace)
+    const search = { untrustedRoots: rootsOf('workspace', [workspace]), environment: { PATH: '' }, platform: 'linux' as const, places: [{ directory: workspace, label: 'beside buckle' }] }
+    expect(resolveProgram('buckle-placed-tool', search)).toEqual({ path: null, reason: 'buckle-placed-tool is found in or through a workspace of this node, where an agent can write, so Buckle does not run it', untrusted: true })
+  })
+
+  // On Windows a shim is read only where no place holds the program itself: an .exe beside Node beats npm's shim on PATH.
+  it('on Windows hold a native program that wins over a shim found earlier', () => {
+    const base = folder('windows')
+    for (const directory of ['npm', 'nodejs']) mkdirSync(join(base, 'C:', directory), { recursive: true })
+    writeFileSync(join(base, 'C:', 'npm', 'tool.cmd'), '@ECHO off\r\n"%~dp0tool.exe" %*\r\n')
+    const places = [{ directory: 'C:/nodejs', label: 'beside node' }]
+    const cwd = process.cwd()
+    process.chdir(base)
+    try {
+      expect(findExecutable('tool', { PATH: 'C:\\npm' }, 'win32', places)).toBe('C:/npm/tool.cmd')
+      writeFileSync(join(base, 'C:', 'nodejs', 'tool.exe'), '')
+      chmodSync(join(base, 'C:', 'nodejs', 'tool.exe'), 0o755)
+      expect(findExecutable('tool', { PATH: 'C:\\npm' }, 'win32', places)).toBe('C:/nodejs/tool.exe')
+    } finally { process.chdir(cwd) }
+  })
+})
