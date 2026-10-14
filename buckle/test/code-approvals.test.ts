@@ -13,7 +13,7 @@ import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { NestedApprovalRequired, ToolExecutionError, type NestedCall, type ToolContext } from '../common/domain/tool.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
-import { CODE_CALL_LIMIT, CODE_REPLAY_DIVERGED, createCodePack, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
+import { CODE_CALL_LIMIT, CODE_GLOBAL_LIMIT, CODE_REPLAY_DIVERGED, createCodePack, MAX_GLOBAL_CALLS, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
 import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, scriptOfAsk, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
@@ -966,6 +966,48 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(warned.mock.calls.map(([message]) => message)).toContain(`Could not withdraw the asks of a script ${code === CODE_REPLAY_DIVERGED ? 'that diverged' : 'that cannot resume'}; they stay pending until they expire`)
     warned.mockRestore()
   })
+
+  // Recheck of the final review of 0.1.4, finding code index.ts:174: describeTool and searchTools are pure, so they are
+  // answered live on every run and never recorded, and their answers leave the script's clock where it was, so a call
+  // after one that reads the clock replays as made.
+  it('answers globals live on every run and records only tool calls, and the replay still matches', async () => {
+    const directory = scratch()
+    const script = 'const d = await describeTool("echo"); const a = await tools.echo({ t: Date.now() }); const s = await searchTools("echo"); await tools.gate({}); return [d.includes("echo"), a, s.length]'
+    const first = vi.fn(async (call: NestedCall) => call.tool === 'gate' ? ask(call) : ok(call, 'echoed'))
+    await expect(codeRun(directory, first)(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    expect(kept(directory).map(journal => journal.entries.map(entry => [entry.seq, entry.tool]))).toEqual([[[2, 'echo']]])
+
+    const resumed = vi.fn(async (call: NestedCall) => ok(call, 'opened'))
+    expect(await codeRun(directory, resumed)(script)).toMatchObject({ ok: true, value: [true, 'echoed', 1] })
+    expect(resumed.mock.calls.map(([call]) => call.tool)).toEqual(['gate'])
+  })
+
+  it('keeps globals out of the record\'s bound, so a script that describes many tools still resumes', async () => {
+    const directory = scratch()
+    const script = 'for (let i = 0; i < 100; i++) await describeTool("echo"); await tools.echo({}); await tools.gate({}); return "done"'
+    await expect(codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'echoed'), { journalBytes: 2_048 })(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    expect(kept(directory).map(journal => journal.entries.map(entry => entry.tool))).toEqual([['echo']])
+    expect(await codeRun(directory, async call => ok(call, 'opened'), { journalBytes: 2_048 })(script)).toMatchObject({ ok: true, value: 'done' })
+  })
+
+  it(`ends a script past ${MAX_GLOBAL_CALLS} global calls with ${CODE_GLOBAL_LIMIT}`, async () => {
+    const result = await codeRun(scratch(), async call => ok(call, null))('for (;;) await describeTool("echo")') as { ok: boolean; error?: { kind: string; message: string } }
+    expect(result).toMatchObject({ ok: false, error: { kind: 'script', message: expect.stringContaining(`${CODE_GLOBAL_LIMIT}: this script called describeTool and searchTools more than ${MAX_GLOBAL_CALLS} times`) } })
+  }, 60_000)
+
+  // A replay that does not make a global its first run made leaves that global's number unfilled: it is refused at
+  // once rather than left to wait for the deadline.
+  it('refuses a replay that leaves a global of its first run unmade', async () => {
+    const directory = scratch()
+    const script = 'await tools.echo({}); await tools.gate({})'
+    await expect(codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'echoed'))(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    const [file] = readdirSync(directory).filter(name => name.endsWith('.json'))
+    const record = JSON.parse(readFileSync(join(directory, file!), 'utf8')) as Journal
+    writeFileSync(join(directory, file!), JSON.stringify({ ...record, entries: record.entries.map(entry => ({ ...entry, seq: entry.seq + 1 })) }))
+    const began = performance.now()
+    await expect(codeRun(directory, async call => ok(call, 'opened'), { timeoutMs: 30_000 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+    expect(performance.now() - began).toBeLessThan(10_000)
+  }, 40_000)
 
   // Review of the code-mode slice, findings approvals-replay 210, invoker-audit 210, and tests 210.
   it(`holds a script to ${MAX_NESTED_CALLS} calls across its resume after an ask`, async () => {

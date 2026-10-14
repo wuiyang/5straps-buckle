@@ -29,6 +29,12 @@ export const MAX_NESTED_CALLS = 256
  * (review of the code-mode slice, coordinator decision 2).
  */
 export const MAX_IN_FLIGHT = 8
+/**
+ * Calls of `describeTool` and `searchTools` one script may make; past it the script is ended. They are answered live
+ * and never recorded, so only this bounds the host's work for a script that spins on them (recheck of the final review
+ * of 0.1.4, finding code index.ts:174).
+ */
+export const MAX_GLOBAL_CALLS = 10_000
 /** Each VM's heap (D82 brief, point 2). */
 export const VM_MEMORY_BYTES = 256 * 1_024 * 1_024
 /** The most output text, and the most return value as JSON text, a script hands back. */
@@ -39,6 +45,7 @@ export const ERROR_CHARS = 16_384
 export const DEFAULT_ARGUMENT_BYTES = 1_048_576
 export { CODE_REPLAY_DIVERGED }
 export const CODE_CALL_LIMIT = 'CODE_CALL_LIMIT'
+export const CODE_GLOBAL_LIMIT = 'CODE_GLOBAL_LIMIT'
 export const CODE_VM_BUSY = 'CODE_VM_BUSY'
 export const REQUEST_TOO_LARGE = 'REQUEST_TOO_LARGE'
 /** What the agent reads when the VM itself fails: its own text may name paths on the host, so it goes to the owner's log. */
@@ -246,7 +253,19 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   // Results are kept for a journal only up to its bound, so a script's memory here stays bounded too; past it, the
   // script cannot resume, and its calls are kept as stubs that say they ran.
   const record = createRunRecord(replay, input.journalBytes)
-  let nextSeq = replay.length + 1
+  // Results reach the VM numbered without a gap, tools' and globals' alike. A record keeps tool calls alone: a global is
+  // pure, so it is answered live on every run, never recorded, and never counted toward the bound (recheck of the
+  // final review of 0.1.4, finding code index.ts:174). The numbers the first run's globals had are the gaps below
+  // the record's last entry, which the replay's globals, made again in the same order, take back in that order. A
+  // global's answer keeps the script's clock where the result before it left it, so the replay reads the same time.
+  const prefix = replay.reduce((last, entry) => Math.max(last, entry.seq), 0)
+  const nowBySeq = new Map(replay.map(entry => [entry.seq, entry.now]))
+  let gap = 1
+  const nextGap = (): number | undefined => {
+    while (gap <= prefix && nowBySeq.has(gap)) gap++
+    return gap <= prefix ? gap++ : undefined
+  }
+  let nextSeq = prefix + 1
   const issued = new Set<number>()
   const made = new Set<number>()
   // Calls whose tool began to run: cut by a stop, each is journaled as run, effects unknown.
@@ -261,8 +280,11 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   // since a resumed run makes again every call its journal answers (review of the code-mode slice, findings
   // approvals-replay 210, invoker-audit 210, and tests 210).
   let toolCalls = 0
-  // Refused as many calls again past its cap, the script only spins, and is ended (finding sandbox-boundary 254).
-  let spun = false
+  // Every global call the script makes, describeTool and searchTools, held to MAX_GLOBAL_CALLS.
+  let globalCalls = 0
+  // Refused as many calls again past its cap, the script only spins, and is ended (finding sandbox-boundary 254), as
+  // is one past its global calls: the error it is ended with.
+  let spun: string | undefined
   let broken: { error: unknown } | undefined
   let diverged = false
   let vmName: string | undefined
@@ -283,8 +305,8 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   // Stopping: no result goes to the VM any more. Halted: no call of the script starts any more either. An ask stops
   // the script without halting it, so the calls of the turn it came in, which reach onCall until the VM goes idle,
   // still run or ask (re-review of the code-mode slice, findings new-surface and tests index.ts:287).
-  const stopping = () => asks.length > 0 || broken !== undefined || diverged || spun
-  const halted = () => broken !== undefined || diverged || spun
+  const stopping = () => asks.length > 0 || broken !== undefined || diverged || spun !== undefined
+  const halted = () => broken !== undefined || diverged || spun !== undefined
   // Ended: the VM is done, so a queued call never starts (re-review, finding new-surface index.ts:224).
   const ended = () => halted() || cancel.signal.aborted || run?.finished === true
   const dropQueue = () => {
@@ -306,8 +328,15 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   }
   const answer = (call: ScriptVmCall, target: string, outcome: ScriptVmOutcome, args = fingerprintOf(target, call.args)) => {
     const entry: JournalEntry = { seq: nextSeq++, now: Date.now(), id: call.id, tool: target, args, outcome }
+    nowBySeq.set(entry.seq, entry.now)
     record.add(entry)
     if (!stopping()) hand(entry.seq, entry.now, entry.id, entry.outcome)
+  }
+  const answerGlobal = (call: ScriptVmCall, outcome: ScriptVmOutcome) => {
+    const seq = nextGap() ?? nextSeq++
+    const now = nowBySeq.get(seq - 1) ?? startedAt
+    nowBySeq.set(seq, now)
+    if (!stopping()) hand(seq, now, call.id, outcome)
   }
   // Journal entries go back in their order, each once the VM has made its call again.
   const flush = () => {
@@ -344,11 +373,15 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     },
     onIdle(seq) {
       applied = seq
+      // Idle below the record's last entry with the next number a gap no global took: this run did not make a global
+      // its first run made there, as when describeTool now declares other tools, and the VM would wait for ever.
+      if (seq < prefix && !nowBySeq.has(seq + 1)) diverge()
       settleIfStopping()
     },
     onCall(call) {
       issued.add(call.id)
       if (call.target === 'tool') toolCalls++
+      else globalCalls++
       const target = call.target === 'global' ? `global:${call.name}` : call.name
       // An oversized call is named by its size alone, so its arguments are never hashed either.
       const bytes = oversized(call.args, input.argumentBytes)
@@ -360,13 +393,19 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
         return
       }
       const tooLarge = () => failure(REQUEST_TOO_LARGE, `This call's arguments are ${bytes} bytes as JSON, past the ${input.argumentBytes} a request to this node may carry; pass less, or split the call`)
-      if (call.target === 'global') return answer(call, target, bytes !== null ? tooLarge() : global(call.name, call.args), fingerprint)
+      if (call.target === 'global') {
+        if (globalCalls > MAX_GLOBAL_CALLS) {
+          spun ??= `${CODE_GLOBAL_LIMIT}: this script called describeTool and searchTools more than ${MAX_GLOBAL_CALLS} times, so Buckle ended it`
+          return settleIfStopping()
+        }
+        return answerGlobal(call, bytes !== null ? tooLarge() : global(call.name, call.args))
+      }
       if (halted()) {
         skipped.add(call.id)
         return
       }
       if (toolCalls > 2 * MAX_NESTED_CALLS) {
-        spun = true
+        spun ??= `${CODE_CALL_LIMIT}: this script made ${MAX_NESTED_CALLS} calls and went on calling, so Buckle ended it`
         return settleIfStopping()
       }
       if (toolCalls > MAX_NESTED_CALLS) return answer(call, target, failure(CODE_CALL_LIMIT, `A script makes at most ${MAX_NESTED_CALLS} calls, refused ones and those before an ask counted`), fingerprint)
@@ -405,7 +444,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
 
   const ran = await run.result
   // Ended for spinning past its cap, the script ended by its own doing, as one that throws does.
-  const result: ScriptVmResult = spun ? { ...ran, ok: false, error: { kind: 'script', name: 'RangeError', message: `${CODE_CALL_LIMIT}: this script made ${MAX_NESTED_CALLS} calls and went on calling, so Buckle ended it` } } : ran
+  const result: ScriptVmResult = spun !== undefined ? { ...ran, ok: false, error: { kind: 'script', name: 'RangeError', message: spun } } : ran
   // A call the script left running when it ended is cancelled, as the VM's own record says, and waited for. Its own
   // reason, so the call is audited as SCRIPT_ENDED and an ask it waits on stays pending (review of the code-mode
   // slice, finding approvals-replay 685).
