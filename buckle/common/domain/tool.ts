@@ -152,6 +152,9 @@ export class NestedApprovalRequired extends Error {
   }
 }
 
+/** A script run again that makes other calls than its earlier run did, which Buckle refuses to mix (owner decision D82). */
+export const CODE_REPLAY_DIVERGED = 'CODE_REPLAY_DIVERGED'
+
 /**
  * Why a script's call still running is cancelled once its script has ended (owner decision D82): Buckle's own abort,
  * audited as SCRIPT_ENDED rather than as a failure of the tool, and never the caller's cancel, so an ask the call

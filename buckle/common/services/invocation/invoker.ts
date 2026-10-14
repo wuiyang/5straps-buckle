@@ -14,7 +14,7 @@ import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
-import { NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
+import { CODE_REPLAY_DIVERGED, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
 import type { ActionLog, ActionLogEntry, GrantUse } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
@@ -144,7 +144,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const grantUses = grantUseRecorder({ grants: options.grants, sessionId })
       const auditUses = useAuditor({ options, request, sessionId, grantUses })
       const answerEarlier = async (earlier: Earlier): Promise<InvokeResponse> => {
-        if (earlier.kind === 'reused') return failed(request, REUSED)
+        // A script cannot send a new requestId: it is told to change the script (review of the code-mode slice, finding invoker-audit 134).
+        if (earlier.kind === 'reused') return failed(request, via ? SCRIPT_CALL_REUSED : REUSED)
         replayed = true
         // The key hashes the whole requestId, so the earlier call's is the same; the caller's own is echoed all the same.
         return { ...await untilAborted(earlier.response, stop), requestId: request.requestId }
@@ -227,7 +228,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         // that stopped (review L1 of B20-B22). An audit failure before the tool ran answers as a
         // retryable 503 would; once it ran, never retryable, so the same requestId never runs it again
         // (review L4 of B23-B25; nitro/coordination.md: reconnection must not execute a request twice).
-        if (held.claim?.kind === 'owner') held.claim.execution.settle({ response: answered ?? (ran ? failed(request, ranUnrecorded(AUDIT_UNAVAILABLE)) : auditFailed(request)), auditId, callerLeft: signal?.aborted === true })
+        if (held.claim?.kind === 'owner') held.claim.execution.settle({ response: answered ?? (ran ? failed(request, ranUnrecorded(AUDIT_UNAVAILABLE)) : auditFailed(request)), auditId, callerLeft: signal?.aborted === true, ...(via ? { script: true } : {}) })
       }
       const response = answered
 
@@ -577,6 +578,7 @@ function ranUnrecorded(code: string): { code: string; message: string; retryable
 const SUPERSEDED = { code: 'REQUEST_SUPERSEDED', message: 'A newer call with the same requestId joined this approval wait and carries it on; this call did not run', retryable: false }
 const UNANSWERED = { code: 'APPROVAL_UNANSWERED', message: 'The approval this call waited for expired, was withdrawn or was spent by another call; send the call again to ask again', retryable: true }
 const REUSED = { code: REQUEST_ID_REUSED, message: 'This requestId already names a different call from this session; send a new requestId', retryable: false }
+const SCRIPT_CALL_REUSED = { code: CODE_REPLAY_DIVERGED, message: 'This script ran lately and made another call at this point then; Buckle does not mix the two runs. Change the script, even by a comment, to run it from its start', retryable: false }
 
 function failed(request: InvokeRequest, error: { code: string; message: string; retryable: boolean }): InvokeResponse {
   return { requestId: request.requestId, outcome: 'error', error }

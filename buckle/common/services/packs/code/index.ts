@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { ApprovalRequest, InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
 import type { Pack } from '../../../domain/pack.js'
 import { keepEndsOfText } from '../../../domain/script-output.js'
-import { defineTool, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
+import { CODE_REPLAY_DIVERGED, defineTool, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
 import type { ScriptVm, ScriptVmCall, ScriptVmError, ScriptVmOutcome, ScriptVmResult, ScriptVmRun, ScriptVmTool } from '../../../types/ports/script-vm.js'
 import { logger } from '../../../runtime/log.js'
 import { requestFingerprint } from '../../invocation/executions.js'
@@ -37,7 +37,7 @@ export const OUTPUT_CHARS = 1_048_576
 export const ERROR_CHARS = 16_384
 /** A script's call's arguments, as JSON, are held to the node's request budget; 1 MiB, its default, when none is given. */
 export const DEFAULT_ARGUMENT_BYTES = 1_048_576
-export const CODE_REPLAY_DIVERGED = 'CODE_REPLAY_DIVERGED'
+export { CODE_REPLAY_DIVERGED }
 export const CODE_CALL_LIMIT = 'CODE_CALL_LIMIT'
 export const CODE_VM_BUSY = 'CODE_VM_BUSY'
 export const REQUEST_TOO_LARGE = 'REQUEST_TOO_LARGE'

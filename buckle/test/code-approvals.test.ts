@@ -259,14 +259,18 @@ describe('the replay journal', () => {
     asked(await run(runtime, READ_THEN_WRITE))
     const [file] = journals(root)
     writeFileSync(file!, JSON.stringify({ ...JSON.parse(readFileSync(file!, 'utf8')), expiresAt: Date.now() - 1 }))
-    // The re-send dedupe expires with it (EXECUTION_TTL_MS): the clock stands in for the ten minutes passing.
+    // The re-send dedupe expires with it (EXECUTION_TTL_MS): the clock stands in for the ten minutes passing, and
+    // reaches the dedupe, so the read really runs again rather than being answered by its earlier record (review of
+    // the code-mode slice, finding tests 181).
+    const read = vi.spyOn(runtime.registry().get('fs_read'), 'prepare')
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + JOURNAL_TTL_MS + 1_000)
     try {
       asked(await run(runtime, READ_THEN_WRITE))
     } finally {
       vi.restoreAllMocks()
     }
-    expect(attempts(runtime, 'fs_read')).toHaveLength(2)
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(results(runtime, 'fs_read').map(entry => entry.detail)).toEqual([undefined, undefined])
     await runtime.history.close()
   })
 
@@ -314,6 +318,20 @@ describe('the replay journal', () => {
     expect(await send(after, spin, { timeoutMs: 1_500 })).toMatchObject({ outcome: 'ok', output: { ok: false, output: 'hello', error: { kind: 'timeout' } } })
     for (const spy of prepared) expect(spy).not.toHaveBeenCalled()
     await after.history.close()
+  }, 30_000)
+
+  // Review of the code-mode slice, findings invoker-audit executions.ts:7 and 134: with its record gone, a re-sent
+  // script's calls that ran are answered by stubs that say to change the script, and none runs again.
+  it('never runs a script\'s call twice when its record is gone, and tells the script to change', async () => {
+    const { root, runtime } = await node()
+    const spin = 'const codes = []; for (const call of [() => tools.fs_read({ path: "notes.md" }), () => tools.fs_find_names({ path: ".", pattern: "x" + Date.now() })]) { try { await call() } catch (error) { codes.push(error.code) } } text(codes.join()); while (true) {}'
+    expect(await send(runtime, spin, { timeoutMs: 1_500 })).toMatchObject({ outcome: 'ok', output: { output: '', error: { kind: 'timeout' } } })
+    for (const file of journals(root)) rmSync(file)
+    const prepared = [vi.spyOn(runtime.registry().get('fs_read'), 'prepare'), vi.spyOn(runtime.registry().get('fs_find_names'), 'prepare')]
+
+    expect(await send(runtime, spin, { timeoutMs: 1_500 })).toMatchObject({ outcome: 'ok', output: { output: 'REQUEST_ALREADY_EXECUTED,CODE_REPLAY_DIVERGED', error: { kind: 'timeout' } } })
+    for (const spy of prepared) expect(spy).not.toHaveBeenCalled()
+    await runtime.history.close()
   }, 30_000)
 
   it('resumes the same script sent again with another timeoutMs: the script alone names it', async () => {

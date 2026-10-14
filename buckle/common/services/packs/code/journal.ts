@@ -66,7 +66,7 @@ export interface JournalStore {
 }
 
 export function createJournalStore(input: { directory: string; now?: () => number; journalBytes?: number; workspaceBytes?: number }): JournalStore {
-  const now = input.now ?? Date.now
+  const now = input.now ?? (() => Date.now())
   const journalBytes = input.journalBytes ?? JOURNAL_BYTES
   const workspaceBytes = input.workspaceBytes ?? WORKSPACE_JOURNAL_BYTES
   const pathOf = (key: string) => join(input.directory, `${key}.json`)

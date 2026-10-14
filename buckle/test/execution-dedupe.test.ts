@@ -5,7 +5,7 @@ import { createOperationScope, runInScope } from '@5straps/runtime'
 import { emptyWorkspacePolicy, type InvokeRequest, type InvokeResponse } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
-import { createExecutionBudget, createExecutions, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint, requestIdKey } from '../common/services/invocation/executions.js'
+import { createExecutionBudget, createExecutions, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint, requestIdKey, SCRIPT_STUB_LIMIT } from '../common/services/invocation/executions.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { ToolExecutionError } from '../common/domain/tool.js'
 import { AuditUnavailableError } from '../common/adapters/action-log/file-action-log.js'
@@ -254,11 +254,11 @@ describe('the execution store', () => {
   const response = (requestId: string, output: unknown = 'done'): InvokeResponse => ({ requestId, outcome: 'ok', output: output as never, meta: { durationMs: 1, truncated: false } })
   const key = (requestId: string, fingerprint = 'same call') => ({ sessionId: 's', requestId, fingerprint })
 
-  function ran(executions: ReturnType<typeof createExecutions>, requestId: string, answer = response(requestId)): void {
+  function ran(executions: ReturnType<typeof createExecutions>, requestId: string, answer = response(requestId), script = false): void {
     const claim = executions.claim(key(requestId))
     if (claim.kind !== 'owner') throw new Error('expected to own the execution')
     claim.execution.started()
-    claim.execution.settle({ response: answer, auditId: `audit-${requestId}`, callerLeft: false })
+    claim.execution.settle({ response: answer, auditId: `audit-${requestId}`, callerLeft: false, ...(script ? { script } : {}) })
   }
 
   async function replayed(executions: ReturnType<typeof createExecutions>, requestId: string): Promise<InvokeResponse | undefined> {
@@ -302,6 +302,34 @@ describe('the execution store', () => {
     // A forgotten entry gives its bytes back: another fits without evicting.
     ran(nodeStore, 'n2', response('n2'))
     expect(await replayed(child, 'c1')).toEqual(answer('c1'))
+  })
+
+  // Review of the code-mode slice, finding invoker-audit executions.ts:7.
+  it('keeps a script call\'s answer as a stub in a bound of its own, so one script evicts none of the other answers', async () => {
+    let now = 0
+    const executions = createExecutions({ now: () => now })
+    ran(executions, 'direct')
+    for (let index = 0; index < EXECUTION_LIMIT + 10; index += 1) ran(executions, `code:${index}`, response(`code:${index}`, 'x'.repeat(1_000)), true)
+
+    expect(await replayed(executions, 'direct')).toEqual(response('direct'))
+    expect(await replayed(executions, 'code:0')).toMatchObject({ outcome: 'error', error: { code: REQUEST_ALREADY_EXECUTED, retryable: false, message: expect.stringContaining('change the script'), details: { auditId: 'audit-code:0', reason: 'script' } } })
+    for (let index = 0; index < SCRIPT_STUB_LIMIT; index += 1) ran(executions, `more:${index}`, response(`more:${index}`), true)
+    expect(executions.earlier(key('code:0'))).toBeUndefined()
+    expect(executions.earlier(key('direct'))).toBeDefined()
+    executions.forget(key(`more:${SCRIPT_STUB_LIMIT - 1}`))
+    expect(executions.earlier(key(`more:${SCRIPT_STUB_LIMIT - 1}`))).toBeUndefined()
+    now += EXECUTION_TTL_MS
+    expect(executions.earlier(key(`more:${SCRIPT_STUB_LIMIT - 2}`))).toBeUndefined()
+  })
+
+  // Review of the code-mode slice, finding tests executions.ts:195: a code_run that stopped at an ask ran, but asks again.
+  it('keeps nothing for a started call answered approval_required', () => {
+    const executions = createExecutions()
+    const claim = executions.claim(key('script'))
+    if (claim.kind !== 'owner') throw new Error('expected to own the execution')
+    claim.execution.started()
+    claim.execution.settle({ response: { requestId: 'script', outcome: 'approval_required', approvals: [] }, auditId: 'a', callerLeft: false })
+    expect(executions.earlier(key('script'))).toBeUndefined()
   })
 
   it('keeps a large response as a stub naming its audit entry', async () => {

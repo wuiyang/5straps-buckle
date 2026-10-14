@@ -12,6 +12,11 @@ export const WORKSPACE_EXECUTION_BYTES = 16 * 1_024 * 1_024
 export const NODE_EXECUTION_BYTES = 64 * 1_024 * 1_024
 /** What a re-send of a call that already ran is told when its own response cannot be given. */
 export const REQUEST_ALREADY_EXECUTED = 'REQUEST_ALREADY_EXECUTED'
+/**
+ * The script calls' kept answers a workspace holds, each a stub without its body, in a bound of their own beside the
+ * other calls' (review of the code-mode slice, finding invoker-audit executions.ts:7).
+ */
+export const SCRIPT_STUB_LIMIT = 4_096
 /** What a call is told when its requestId already names a different call (another tool or other arguments). */
 export const REQUEST_ID_REUSED = 'REQUEST_ID_REUSED'
 
@@ -53,8 +58,11 @@ export function nestedCallKey(key: Pick<ExecutionKey, 'sessionId' | 'actor' | 'f
 export interface Execution {
   /** The tool began to run; from here on the call counts as executed and its outcome is kept. */
   started(): void
-  /** How the call ended. `callerLeft`: its caller's signal fired; once the tool ran, its effects are unknown. */
-  settle(input: { response: InvokeResponse; auditId: string; callerLeft: boolean }): void
+  /**
+   * How the call ended. `callerLeft`: its caller's signal fired; once the tool ran, its effects are unknown. `script`:
+   * a call a script made, kept as a stub, since the script's journal replays its result (owner decision D82).
+   */
+  settle(input: { response: InvokeResponse; auditId: string; callerLeft: boolean; script?: boolean }): void
 }
 
 /** A call of the same key that runs now or ran lately: its outcome, or a refusal when it asked for something else. */
@@ -132,14 +140,20 @@ export function createExecutionBudget(limitBytes = NODE_EXECUTION_BYTES): Execut
  * Kept in memory, so a restart forgets them; the action log keeps every run.
  */
 export function createExecutions(options: { now?: () => number; budget?: ExecutionBudget; workspaceBytes?: number } = {}): Executions {
-  const now = options.now ?? Date.now
+  // Read at each call, so a clock stood in for in a test reaches the store (review of the code-mode slice, finding tests 181).
+  const now = options.now ?? (() => Date.now())
   const budget = options.budget ?? createExecutionBudget()
   const workspaceBytes = options.workspaceBytes ?? WORKSPACE_EXECUTION_BYTES
   const running = new Map<string, Kept<Promise<InvokeResponse>>>()
   const finished = new Map<string, Finished>()
+  // A script's calls that ran: stubs that only say so, oldest first, so one script's 256 calls can neither evict the
+  // workspace's other re-send answers nor be evicted by them (review of the code-mode slice, finding invoker-audit
+  // executions.ts:7).
+  const stubs = new Map<string, Kept<InvokeResponse> & { expiresAt: number }>()
   let bytes = 0
 
   function forget(id: string): void {
+    stubs.delete(id)
     const entry = finished.get(id)
     if (!entry) return
     finished.delete(id)
@@ -147,10 +161,19 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
     budget.remove(entry.slot)
   }
 
-  function finishedFor(id: string): Finished | undefined {
-    const entry = finished.get(id)
+  function finishedFor(id: string): Kept<InvokeResponse> | undefined {
+    const entry = finished.get(id) ?? stubs.get(id)
     if (entry && entry.expiresAt <= now()) forget(id)
-    return finished.get(id)
+    return finished.get(id) ?? stubs.get(id)
+  }
+
+  function keepStub(id: string, entry: Kept<InvokeResponse>): void {
+    forget(id)
+    stubs.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS })
+    for (const oldest of stubs.keys()) {
+      if (stubs.size <= SCRIPT_STUB_LIMIT) break
+      stubs.delete(oldest)
+    }
   }
 
   function keep(id: string, entry: Kept<InvokeResponse>, size: number): void {
@@ -187,12 +210,13 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
         kind: 'owner',
         execution: {
           started: () => { started = true },
-          settle({ response, auditId, callerLeft }) {
+          settle({ response, auditId, callerLeft, script }) {
             running.delete(id)
             const answer = started && callerLeft ? alreadyExecuted({ requestId: response.requestId, auditId, reason: 'interrupted' }) : response
             settled.resolve(answer)
             // A script that stopped at an ask ran, but asks again when re-sent (owner decision D82, point 6).
             if (!started || isRetryable(answer) || answer.outcome === 'approval_required') return
+            if (script) return keepStub(id, { fingerprint: key.fingerprint, outcome: alreadyExecuted({ requestId: response.requestId, auditId, reason: 'script' }) })
             const size = responseBytes(answer)
             const kept = size <= EXECUTION_RESPONSE_BYTES ? answer : alreadyExecuted({ requestId: response.requestId, auditId, reason: 'too_large' })
             keep(id, { fingerprint: key.fingerprint, outcome: kept }, kept === answer ? size : responseBytes(kept))
@@ -224,6 +248,8 @@ function isRetryable(response: InvokeResponse): boolean {
 const ALREADY_EXECUTED_MESSAGE = {
   interrupted: 'This requestId already started running and its caller left before it finished, so its effects are unknown; send a new requestId to run it again',
   too_large: 'This requestId already ran; its result was too large to keep for a re-send; send a new requestId to run it again',
+  // A script cannot choose its calls' requestIds, so it is told how to run them again (owner decision D82).
+  script: 'This call of the script already ran lately, and Buckle no longer keeps its result to replay; if it was cut short, its effects are unknown. Buckle does not run it twice: change the script, even by a comment, to run it from its start',
 } as const
 
 /** A re-send's answer when the original response cannot be given: never retryable under the same requestId. */
