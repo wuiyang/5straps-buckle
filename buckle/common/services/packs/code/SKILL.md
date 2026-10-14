@@ -71,7 +71,9 @@ with a note that a `code_run` script made it.
 
 Once they answer, send the same script again, its text unchanged; `timeoutMs` may differ. Buckle
 replays the calls that already ran from its record of the first run, without running them again,
-and then runs the call that asked. On a node that waits for answers (the CLI, or a caller that
+and then runs the call that asked. A call refused or failed with a retryable error after the
+script stopped is made again, and past 50 pending asks in one session, the rest ask on the next
+send. On a node that waits for answers (the CLI, or a caller that
 sends a wait), the call simply waits inside the script, as a direct call would, until a second
 before the script's deadline.
 

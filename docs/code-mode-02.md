@@ -10,7 +10,9 @@ session, the caller, and the script's text; `timeoutMs` may change. It replays t
 call the first run made gets the result it got then, read from a record Buckle kept, without
 running again. The script then reaches the call that asked, which now runs with the person's
 answer, and carries on. A script is deterministic for this: its clock and random numbers repeat
-its first run's, and its calls stay filed under its first run's stage.
+its first run's, and its calls stay filed under its first run's stage. A call refused or failed
+with a retryable error once the script stopped at an ask is made again on the re-send, and a turn
+asking more than a session's 50 pending asks asks again for the rest.
 
 ## Replay after a stop
 
