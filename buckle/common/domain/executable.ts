@@ -536,7 +536,7 @@ function walkLinks(path: string, platform: NodeJS.Platform, stored: StoredPath =
       const target = withForwardSlashes(readlinkSync(next), platform)
       const root = pathRoot(target, platform)
       passed.push(next)
-      current = follow(root === '' ? current : root, target.slice(root.length).split('/'))
+      current = follow(root !== '' ? root : relativeBase(current, platform, stored), target.slice(root.length).split('/'))
       passed.push(current)
     }
     return current
@@ -573,6 +573,15 @@ function systemPath(real: string, stored: StoredPath): string | null {
     return names.slice(kept).reduce((parent, name) => childPath(parent, name), nativePath(stored(place), 'win32'))
   }
   return null
+}
+
+/**
+ * Where a relative link target starts from: the folder holding the link, and on Windows its real path (systemPath), as
+ * Windows climbs a `..` on the device path, not on a subst drive's spelling, which stops at its root (recheck 3 of the
+ * final review of 0.1.4, finding executable 526). Unchanged elsewhere.
+ */
+function relativeBase(folder: string, platform: NodeJS.Platform, stored: StoredPath): string {
+  return platform === 'win32' ? systemPath(folder, stored) ?? folder : folder
 }
 
 function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {

@@ -195,6 +195,22 @@ it('judges a link the walk passes through a subst drive by its real path, the sa
   } finally { process.chdir(cwd) }
 })
 
+// Recheck 3 of the final review of 0.1.4, finding executable 526: P: is a subst of C:\Users\me\projects, and the owner's
+// link P:\links\ext leads to ..\..\app\ext. Windows climbs that on the device path to C:\Users\me\app\ext, inside the
+// workspace, so the walk climbs from the real path of the link's folder too, and the place is refused.
+it('climbs a relative link target from the real path of its folder, as Windows does, not from a subst drive\'s root', () => {
+  const root = scratch()
+  for (const directory of ['C:/Users/me/app/ext', 'C:/Users/me/projects/links', 'P:/links']) mkdirSync(join(root, directory), { recursive: true })
+  symlinkSync('../../app/ext', join(root, 'P:/links/ext'))
+  const subst = (path: string): string => path.startsWith('P:/') ? `C:\\Users\\me\\projects\\${path.slice(3).replaceAll('/', '\\')}` : path
+  const cwd = process.cwd()
+  process.chdir(root)
+  try {
+    expect(placesOnTheWay('P:/links/ext', 'win32', subst).places).toContain('C:/Users/me/app/ext')
+    expect(trustedSearchPath('P:\\links\\ext', { untrustedRoots: rootsOf('workspace', ['C:/Users/me/app']) }, 'win32', subst)).toBe('')
+  } finally { process.chdir(cwd) }
+})
+
 // Recheck 3 of the final review of 0.1.4, finding executable 485: a profile that is a link to a drive that is not
 // there has no real landing place. The folder handed on is that place or nothing, never the link's own place, which
 // Chrome would walk again; the profile is refused as a missing one is.
