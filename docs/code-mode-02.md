@@ -53,9 +53,8 @@ then stays until it expires, so no unchanged send in those ten minutes repeats a
   send starts a fresh clock and seed. A restart forgets them, and
   once a send has ended on that error, the next unchanged send runs every call again.
 - A script that, replayed, makes other calls than its earlier run did is refused with
-  `CODE_REPLAY_DIVERGED`, its record dropped and its asks withdrawn. Change the script to run it
-  from its start. A script that handles a `REQUEST_ALREADY_EXECUTED` its record answered, and so
-  makes other calls, is refused the same way, but its record is kept until it expires.
+  `CODE_REPLAY_DIVERGED`, its asks withdrawn and its record kept until it expires, so no unchanged
+  send runs a call twice. Change the script to run it from its start.
 - A changed script is a new script: nothing is replayed for it.
 
 Records live in `code-journal/` in the workspace's state directory, owner-only, which every
