@@ -29,6 +29,8 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_MOUNT_READ_ONLY', alias: 'read-only-paths', kind: 'directory-list', fallback: '(none)' },
   { key: 'BUCKLE_PACKS', alias: 'packs', kind: 'packs', fallback: '(every built-in pack, and plugins)' },
   { key: 'BUCKLE_ALLOW_SHELL', alias: 'shell', kind: 'boolean', fallback: 'true' },
+  // Code mode (owner decision D82): false withholds code_run and code_api.
+  { key: 'BUCKLE_ALLOW_CODE', alias: 'code', kind: 'boolean', fallback: 'true' },
   { key: 'BUCKLE_ALLOW_HOST_GIT', alias: 'host-git', kind: 'boolean', fallback: 'false' },
   { key: 'BUCKLE_NETWORK_ALLOW', alias: 'network-allow', kind: 'url-list', fallback: '(none: the default egress rules)' },
   { key: 'BUCKLE_ALLOWED_HOSTS', alias: 'allowed-hosts', kind: 'host-list', fallback: '(none)' },

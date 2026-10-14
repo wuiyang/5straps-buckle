@@ -39,6 +39,12 @@ export interface SetupViews {
   tokenInput(body: unknown): ReturnType<typeof WorkspaceTokenInputSchema.parse>
 }
 
+/** `on`, or `withheld (<reason>)`: BUCKLE_ALLOW_CODE=false, or BUCKLE_PACKS leaving the pack out. */
+function codeStatus(pack: { unavailableReason: string | null } | undefined): string {
+  if (!pack) return 'withheld (BUCKLE_PACKS leaves the code pack out)'
+  return pack.unavailableReason === null ? 'on' : `withheld (${pack.unavailableReason})`
+}
+
 export function createSetupViews(): SetupViews {
   return {
     async status({ config, runtime }) {
@@ -56,6 +62,8 @@ export function createSetupViews(): SetupViews {
         // Which browser browser_command drives, as a word and the setting that chose it, never the setting's value,
         // and why the pack is withheld when it is.
         browser: browserModeStatus(config, manifest.packs.find(pack => pack.id === 'browser')),
+        // Code mode (owner decision D82): on, or withheld with the reason the manifest gives.
+        code: codeStatus(manifest.packs.find(pack => pack.id === 'code')),
         policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },
         reporting: runtime.reporter.configured,
         // Unavailable while this workspace's audit log refuses writes: its tool calls are refused until it is repaired (B19).
