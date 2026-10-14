@@ -14,7 +14,7 @@ import { NestedApprovalRequired, ToolExecutionError, type NestedCall, type ToolC
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { CODE_CALL_LIMIT, CODE_GLOBAL_LIMIT, CODE_REPLAY_DIVERGED, createCodePack, MAX_GLOBAL_CALLS, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
-import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, scriptOfAsk, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
+import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, JOURNAL_TTL_MS, scriptOfAsk, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { runCli } from '../cli/main.js'
@@ -1057,6 +1057,18 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     const result = await codeRun(scratch(), async call => ok(call, null))('for (;;) await describeTool("echo")') as { ok: boolean; error?: { kind: string; message: string } }
     expect(result).toMatchObject({ ok: false, error: { kind: 'script', message: expect.stringContaining(`${CODE_GLOBAL_LIMIT}: this script called describeTool and searchTools more than ${MAX_GLOBAL_CALLS} times`) } })
   }, 60_000)
+
+  // Recheck 3 of the final review of 0.1.4, finding journal.ts:197: the record's file bound measures its entries alone,
+  // so 10000 globals on top of results just under 32 MiB still leave a script that resumes after its ask.
+  it('keeps a record whose results fit the bound whole, whatever its globals add, so the script resumes', async () => {
+    const directory = scratch()
+    const big = 'x'.repeat(JOURNAL_BYTES - 700 * 1_024)
+    const script = 'const a = await tools.echo({}); for (let i = 0; i < 10000; i++) await describeTool("nope"); await tools.gate({}); return a.length'
+    await expect(codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, big))(script)).rejects.toBeInstanceOf(NestedApprovalRequired)
+    const [record] = kept(directory)
+    expect([record?.entries[0]?.outcome.ok, record?.globals?.length]).toEqual([true, 10_000])
+    expect(await codeRun(directory, async call => ok(call, 'opened'))(script)).toMatchObject({ ok: true, value: big.length })
+  }, 120_000)
 
   // Recheck 2 of the final review of 0.1.4, finding code index.ts:477: a script that handles a stub's error and passes it
   // on diverges on it, and the record is kept, so a restart and a third unchanged send still run nothing.

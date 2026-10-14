@@ -515,7 +515,7 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries, globals,
   })
   // The record of what ran, for the re-sent script, naming the asks `named`: whole, so the script resumes where it
-  // stopped, or else, past its bound as this run counts it or as the store does with the script and the tools, its
+  // stopped, or else, past its bound as this run counts it or as the store does, its
   // calls as stubs, so the script cannot resume but none of its calls runs again (final review of 0.1.4, finding docs
   // code-mode-02.md:19). False where even the stubs pass it, and then none is left behind.
   const keepWhole = async (named: readonly string[]): Promise<boolean> => !record.overflowed && await write(named, record.whole())

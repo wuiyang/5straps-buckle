@@ -123,7 +123,7 @@ export function scriptOfAsk(directory: string, token: string, now = Date.now()):
 export interface JournalStore {
   /** The script's journal, or null when it has none or it expired (an expired one is removed). */
   read(key: string): Journal | null
-  /** Writes it whole, expiring JOURNAL_TTL_MS from now; false when it passes JOURNAL_BYTES and was not kept. */
+  /** Writes it whole, expiring JOURNAL_TTL_MS from now; false when its entries pass JOURNAL_BYTES and it was not kept. */
   write(journal: Omit<Journal, 'expiresAt' | 'version'>): Promise<boolean>
   remove(key: string): void
 }
@@ -194,7 +194,10 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
 
     async write(journal) {
       const text = JSON.stringify({ version: 1, ...journal, expiresAt: now() + JOURNAL_TTL_MS } satisfies Journal)
-      if (Buffer.byteLength(text) > journalBytes) {
+      // The bound measures the entries' text alone, as the run's own does: the script, the tools, and the globals,
+      // which MAX_GLOBAL_CALLS bounds, add their own size on top (recheck 3 of the final review of 0.1.4, finding
+      // journal.ts:197).
+      if (Buffer.byteLength(JSON.stringify(journal.entries)) > journalBytes) {
         remove(journal.key)
         return false
       }
