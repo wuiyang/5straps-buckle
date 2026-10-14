@@ -278,6 +278,39 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     }
   }, 30_000)
 
+  // Re-check of round 2, finding deadline-announce code-approvals.test.ts:221: the announce a script's call left to
+  // finish in the background is still delivered before close resolves, so a process that exits after code_run
+  // answers does not drop the approver's notice.
+  it('waits at close for the announce a script call left running in the background', async () => {
+    // Only the announce is slow; lifecycle notices, which close also waits for, are answered at once.
+    const answered: number[] = []
+    const webhook = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => { body += String(chunk) })
+      request.on('end', () => {
+        if (!body.includes('"approvals"')) return response.end('{}')
+        response.on('finish', () => answered.push(performance.now()))
+        setTimeout(() => response.end('{}'), 3_000)
+      })
+    })
+    await new Promise<void>(resolve => webhook.listen(0, '127.0.0.1', resolve))
+    try {
+      const { port } = webhook.address() as AddressInfo
+      const { runtime } = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000', BUCKLE_APPROVAL_WEBHOOK: `http://127.0.0.1:${port}/approvals` })
+      asked(await send(runtime, READ_THEN_WRITE, { timeoutMs: 2_500 }))
+      expect(answered).toEqual([])
+
+      await runtime.approvalService.close()
+      const closed = performance.now()
+      expect(answered.length).toBeGreaterThan(0)
+      expect(answered[0]).toBeLessThanOrEqual(closed)
+      await runtime.history.close()
+    } finally {
+      webhook.closeAllConnections()
+      await new Promise(resolve => webhook.close(resolve))
+    }
+  }, 30_000)
+
   // Re-check of round 2, finding deadline-announce invoker.ts:175: an ask the registry records only after the script's
   // deadline, behind a slow approvals lock, is still handed back as approval_required, never a timeout.
   it.each([2_600, 3_000])('answers approval_required when the approvals lock holds the ask %i ms, past a 2.5 s script', async (lockMs) => {
