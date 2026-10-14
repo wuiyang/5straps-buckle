@@ -14,7 +14,7 @@ import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
-import { ToolExecutionError, ToolInputError, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
+import { NestedApprovalRequired, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
 import type { ActionLog, ActionLogEntry, GrantUse } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
@@ -23,7 +23,7 @@ import { resolveEffects, resolveHostRead } from './resolve-effects.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
-import { requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
+import { nestedCallKey, requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
 import { nativePath, parentDirectory } from '../../domain/paths.js'
 
 /** Why a call's signal fired when its runtime shut down (B19): not the caller leaving. */
@@ -63,6 +63,11 @@ export interface InvokerOptions {
    * never the caller leaving, so an approval wait it ends leaves the asks pending (review L6 of B18-B19).
    */
   shutdown?: AbortSignal
+  /**
+   * How a script's call runs (owner decision D82): through the workspace runtime's own invoke, so it is counted,
+   * cancelled at shutdown, and judged against this workspace alone. This invoker's own when absent.
+   */
+  nested?: (input: InvokeInput) => Promise<InvokeResponse>
 }
 
 export interface InvokeInput {
@@ -74,6 +79,17 @@ export interface InvokeInput {
   isCancel?: (reason: unknown) => boolean
   /** The entry point's wait for an approval; with the caller's own hint, the shorter one holds. */
   approvalWait?: ApprovalWait
+  /**
+   * Set only by the invoker on a call a script made (owner decision D82): the outer call's tool and stage, which
+   * the ask names so the approver can find the script in the audit log, and which refuses a code tool.
+   */
+  via?: NestedOrigin
+}
+
+/** The call a script's call came from: its tool and the stage its calls are grouped under. */
+export interface NestedOrigin {
+  tool: string
+  stageId: string
 }
 
 export interface Invoker {
@@ -96,8 +112,8 @@ interface GateOutcome {
 }
 
 export function createInvoker(options: InvokerOptions): Invoker {
-  return {
-    async invoke({ request, sessionId, signal, isCancel, approvalWait }) {
+  const invoker: Invoker = {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait, via }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
@@ -136,15 +152,17 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const earlier = options.executions.earlier(key)
           if (earlier) return await answerEarlier(earlier)
           const reason = options.toolDenial?.(request.tool)
-          if (reason) {
-            const response = denied(request, reason)
-            gate = { response, asked: [], approvedBy: [], denial: { rule: 'tool_policy', subject: request.tool, reason } }
+          // Scripts cannot start scripts (owner decision D82, point 3), whatever name a script reaches them by.
+          const refusal = reason ?? (via && options.registry.has(request.tool) && options.registry.get(request.tool).outsideScripts ? SCRIPT_REFUSAL : null)
+          if (refusal) {
+            const response = denied(request, refusal)
+            gate = { response, asked: [], approvedBy: [], denial: { rule: 'tool_policy', subject: request.tool, reason: refusal } }
             return response
           }
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
-          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, key, held })
+          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, key, held, via })
           stop?.throwIfAborted()
           if (gate.earlier) return await answerEarlier(gate.earlier)
           if (gate.response) return gate.response
@@ -155,7 +173,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const execute = () => {
             owned.started()
             ran = true
-            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute })
+            const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key, isCancel, approvalWait } : undefined
+            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute, timeoutMs: prepared.timeoutMs, nesting })
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path); return nativePath(realpathSync(path)) })]
@@ -175,6 +194,12 @@ export function createInvoker(options: InvokerOptions): Invoker {
             meta: { durationMs: Math.round(performance.now() - startedAt), truncated: inferTruncated(output) },
           }
         } catch (error) {
+          // A script whose call needs a person answers as that call would (owner decision D82, point 6): the asks are the
+          // nested call's own, recorded whole by it, and the outer call is audited as approval_required.
+          if (error instanceof NestedApprovalRequired && !options.shutdown?.aborted) {
+            gate = { ...gate, asked: error.approvals.map(approval => `${approval.rule}:${approval.subject}`) }
+            return { requestId: request.requestId, outcome: 'approval_required', approvals: error.approvals }
+          }
           // A required audit entry that cannot be written stops the call, as the attempt's does. Once its
           // tool ran, the caller is told it ran with effects unknown and not to retry, as a re-send is: a
           // plain refusal would read as "nothing ran", and a retry under a new requestId would run it
@@ -219,7 +244,11 @@ export function createInvoker(options: InvokerOptions): Invoker {
       return response
     },
   }
+  return invoker
 }
+
+/** Said to a script that names a code tool (owner decision D82, point 3). */
+const SCRIPT_REFUSAL = 'Scripts cannot start scripts: code_run and code_api are not called from a script'
 
 /** Every attempt is recorded, so a refusal leaves as much evidence as a success. */
 function buildEntry(input: {
@@ -443,6 +472,7 @@ async function clearPermissions(input: {
   approvalWait?: ApprovalWait
   key: ExecutionKey
   held: { claim?: ExecutionClaim }
+  via?: NestedOrigin
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects, held } = input
   const approvedBy: string[] = []
@@ -488,7 +518,8 @@ async function clearPermissions(input: {
   const cwd = options.paths.displayRoot
   // The whole call as a person decides on it (owner decision D17): every argument, the directory, the node's
   // summary and the effects the rules judged, redacted and never cut. One too large is refused whole.
-  const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd }), effects: effects.map(summarizeEffect), complete: true as const }
+  // A script's call says so, and names the stage the audit log groups the script's calls under (owner decision D82).
+  const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}) }), effects: effects.map(summarizeEffect), complete: true as const }
   const waited = await options.approvalService.request({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
     fingerprint: input.key.fingerprint, call,
@@ -576,20 +607,27 @@ async function executeWithTimeout(input: {
   auditUses: UseAuditor
   signal?: AbortSignal
   execute: (context: ToolContext) => Promise<JsonValue>
+  /** The call's own limit from its input (PreparedCall.timeoutMs), within the node's maximum. */
+  timeoutMs?: number
+  /** For a tool that reaches tools: how its calls run, and what of this call they inherit. */
+  nesting?: Nesting
 }): Promise<JsonValue> {
   const judged = (kind: 'read_path' | 'write_path') => new Set(input.effects.flatMap(effect => effect.kind === kind ? [effect.path] : []))
   const judgedReads = judged('read_path')
   const judgedWrites = judged('write_path')
-  const timeoutMs = Math.min(input.request.timeoutMs ?? input.options.defaultTimeoutMs, input.options.maxTimeoutMs)
+  const timeoutMs = Math.min(input.timeoutMs ?? input.request.timeoutMs ?? input.options.defaultTimeoutMs, input.options.maxTimeoutMs)
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  // A script's own deadline ends it first and reads as a timeout; this one only backs it (owner decision D82).
+  const timer = setTimeout(() => controller.abort(), input.nesting ? timeoutMs + NESTED_DEADLINE_GRACE_MS : timeoutMs)
+  const signal = input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal
   try {
     return await input.execute({
       requestId: input.request.requestId,
       sessionId: input.sessionId,
       stageId: input.request.context?.stageId ?? input.request.context?.runId,
       timeoutMs,
-      signal: input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal,
+      signal,
+      ...(input.nesting ? nestedContext({ ...input, nesting: input.nesting, signal }) : {}),
       authorizeRead: async path => {
         if (!isAbsolute(path)) return false
         // A path its resolution refuses, such as a link onto a root folder named like a drive, is unreachable: it is
@@ -610,6 +648,48 @@ async function executeWithTimeout(input: {
     })
   } finally {
     clearTimeout(timer)
+  }
+}
+
+/** How long the invoker's timer waits past a script's own deadline before it cancels the call itself. */
+const NESTED_DEADLINE_GRACE_MS = 1_000
+
+/** What a tool that reaches tools is handed to make its calls with, and what of the outer call they keep. */
+interface Nesting {
+  run: (input: InvokeInput) => Promise<InvokeResponse>
+  key: ExecutionKey
+  /** The outer caller's cancel test and its wait for a person, which every nested call keeps. */
+  isCancel?: (reason: unknown) => boolean
+  approvalWait?: ApprovalWait
+}
+
+/**
+ * A script's calls, each built here from the outer call and never by the tool (owner decision D82, point 4): the
+ * same session and actor scope, the outer call's approval tokens, its context with the stage set to the outer
+ * call's stage (or run, or requestId), so the audit log and the change history group a script's calls, its wait
+ * for a person, and its signal. The requestId is `code:<key>:<call number>`, the key a hash of the session, the
+ * actor and the outer call, so a re-sent script names its calls as before: Buckle's own re-send dedupe never runs
+ * one twice, and a call that asked joins its ask.
+ */
+function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'forgetNested'> {
+  const { request, nesting } = input
+  const nestedKey = nestedCallKey(nesting.key)
+  const stageId = (request.context?.stageId ?? request.context?.runId ?? request.requestId).slice(0, MAX_LOGGED_ID)
+  const via: NestedOrigin = { tool: request.tool, stageId }
+  const requestIdOf = (id: number) => `code:${nestedKey}:${id}`
+  return {
+    nestedKey,
+    invokeNested: (call: NestedCall) => nesting.run({
+      request: { requestId: requestIdOf(call.id), tool: call.tool, args: call.args, approvalTokens: request.approvalTokens, context: { ...request.context, stageId } },
+      sessionId: input.sessionId,
+      signal: call.signal ? AbortSignal.any([input.signal, call.signal]) : input.signal,
+      ...(nesting.isCancel ? { isCancel: nesting.isCancel } : {}),
+      ...(nesting.approvalWait ? { approvalWait: nesting.approvalWait } : {}),
+      via,
+    }),
+    forgetNested: (ids) => {
+      for (const id of ids) input.options.executions.forget({ ...nesting.key, requestId: requestIdKey(requestIdOf(id)) })
+    },
   }
 }
 

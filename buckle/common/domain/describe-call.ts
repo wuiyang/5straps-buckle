@@ -31,10 +31,13 @@ export const SUMMARY_CUT = '[summary cut; the arguments below are complete]'
  * outside any quote, and that the arguments shown with it are complete. It rides inside the node-signed
  * challenge, where a relay that rewrites it breaks the signature.
  */
-export function describeCall(input: { tool: string; args: JsonObject; cwd: string }): string {
+export function describeCall(input: { tool: string; args: JsonObject; cwd: string; via?: { tool: string; stageId: string } }): string {
   const cut = { truncated: false }
   const facts = factsOf(cut)
-  return capped(`${describeAction(input.tool, input.args, facts)} in ${facts.fact(input.cwd, PATH_LENGTH)}`, cut)
+  // A call a script made opens with that, ahead of anything a cut could drop (owner decision D82, point 6): the
+  // outer tool, and the stage the audit log files the script's calls under. The script itself is not repeated.
+  const via = input.via ? `Called by a ${facts.fact(input.via.tool)} script, stage ${facts.fact(input.via.stageId)} in the audit log: ` : ''
+  return `${via}${capped(`${describeAction(input.tool, input.args, facts)} in ${facts.fact(input.cwd, PATH_LENGTH)}`, cut, MAX_DESCRIPTION_LENGTH - via.length)}`
 }
 
 interface Facts {
@@ -123,11 +126,12 @@ function quote(value: string): string {
  * cut fell inside one, and a suffix that counts what was kept; one with a cut fact ends with SUMMARY_CUT.
  * Either says in its own words that the arguments shown beside it are the whole call (owner decision D17).
  */
-function capped(text: string, cut: { truncated: boolean }): string {
+function capped(text: string, cut: { truncated: boolean }, limit = MAX_DESCRIPTION_LENGTH): string {
   const summary = cut.truncated ? `${text} ${SUMMARY_CUT}` : text
-  if (summary.length <= MAX_DESCRIPTION_LENGTH) return summary
-  const kept = closeQuote(wholeCharacters(text, KEPT_DESCRIPTION_LENGTH))
-  return `${kept} [summary cut: ${KEPT_DESCRIPTION_LENGTH} of ${text.length} characters shown; the arguments below are complete]`
+  if (summary.length <= limit) return summary
+  const keep = KEPT_DESCRIPTION_LENGTH - (MAX_DESCRIPTION_LENGTH - limit)
+  const kept = closeQuote(wholeCharacters(text, keep))
+  return `${kept} [summary cut: ${keep} of ${text.length} characters shown; the arguments below are complete]`
 }
 
 /** Text cut inside a quoted fact, closed: a dangling escape dropped, then the quote closed, so the suffix reads as Buckle's. */

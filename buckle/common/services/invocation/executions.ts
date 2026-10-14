@@ -41,6 +41,14 @@ export function requestFingerprint(request: Pick<InvokeRequest, 'tool' | 'args'>
   return createHash('sha256').update(JSON.stringify([request.tool, canonical(request.args)])).digest('hex')
 }
 
+/**
+ * The key a script's calls are named under, `code:<key>:<call number>` (owner decision D82, point 4), and its replay
+ * journal is filed under: the session, the actor, and the outer call's tool and canonical arguments, hashed.
+ */
+export function nestedCallKey(key: Pick<ExecutionKey, 'sessionId' | 'actor' | 'fingerprint'>): string {
+  return createHash('sha256').update(JSON.stringify([key.sessionId, key.actor ?? null, key.fingerprint])).digest('hex')
+}
+
 /** The one execution of a key: started once the tool itself runs, settled with what the caller was answered. */
 export interface Execution {
   /** The tool began to run; from here on the call counts as executed and its outcome is kept. */
@@ -64,6 +72,11 @@ export interface Executions {
    * of the key took that first, it waits for that one and answers with its outcome.
    */
   claim(key: ExecutionKey): ExecutionClaim
+  /**
+   * Drops a finished call's kept outcome, so a re-send runs it again: a script's calls once the script finished
+   * (owner decision D82), whose next run of the same script is a new run.
+   */
+  forget(key: Pick<ExecutionKey, 'sessionId' | 'actor' | 'requestId'>): void
 }
 
 interface Kept<T> {
@@ -162,6 +175,7 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
 
   return {
     earlier,
+    forget: key => forget(executionId(key)),
     claim(key) {
       const found = earlier(key)
       if (found) return found
@@ -177,7 +191,8 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
             running.delete(id)
             const answer = started && callerLeft ? alreadyExecuted({ requestId: response.requestId, auditId, reason: 'interrupted' }) : response
             settled.resolve(answer)
-            if (!started || isRetryable(answer)) return
+            // A script that stopped at an ask ran, but asks again when re-sent (owner decision D82, point 6).
+            if (!started || isRetryable(answer) || answer.outcome === 'approval_required') return
             const size = responseBytes(answer)
             const kept = size <= EXECUTION_RESPONSE_BYTES ? answer : alreadyExecuted({ requestId: response.requestId, auditId, reason: 'too_large' })
             keep(id, { fingerprint: key.fingerprint, outcome: kept }, kept === answer ? size : responseBytes(kept))
@@ -188,7 +203,7 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
   }
 }
 
-function executionId(key: ExecutionKey): string {
+function executionId(key: Pick<ExecutionKey, 'sessionId' | 'actor' | 'requestId'>): string {
   return JSON.stringify([key.sessionId, key.actor ?? null, key.requestId])
 }
 

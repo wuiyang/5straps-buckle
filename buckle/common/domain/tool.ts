@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { CapabilityRisk, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
+import type { ApprovalRequest, CapabilityRisk, InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
 import { TOOL_NAME_PATTERN } from '@5straps/protocol'
 import type { ToolEffect } from './effect.js'
 
@@ -24,6 +24,29 @@ export interface ToolContext {
    * the allow logic.
    */
   judgeNetwork?: (url: URL) => Promise<NetworkVerdict>
+  /**
+   * Handed only to a tool that declares `reachesTools` (code mode, owner decision D82): one call of another tool,
+   * judged, approved, and audited as a direct call is, built by the invoker from this call and never by the tool.
+   */
+  invokeNested?: (call: NestedCall) => Promise<InvokeResponse>
+  /**
+   * Beside `invokeNested`: the key this call's nested calls are named under (`code:<key>:<id>`), a hash of the
+   * session, the actor, and this call's tool and arguments, so a re-sent script names its calls as before.
+   */
+  nestedKey?: string
+  /**
+   * Beside `invokeNested`: forgets the outcomes Buckle keeps for re-sends of these nested calls, once the script
+   * that made them has finished, so running the same script again runs its calls again.
+   */
+  forgetNested?: (ids: readonly number[]) => void
+}
+
+/** One call a script makes: its number in the script, the tool, its arguments, and what cancels it. */
+export interface NestedCall {
+  id: number
+  tool: string
+  args: JsonObject
+  signal?: AbortSignal
 }
 
 /**
@@ -40,8 +63,18 @@ export interface ToolDefinition<TInput, TJudged = undefined> {
    * while it runs: git_push, whose launch checks read the repository config git then reads (review H3).
    */
   exclusive?: boolean
+  /**
+   * Calls other tools through `ToolContext.invokeNested` (owner decision D82). Its own deadline, from `timeoutMs`,
+   * ends it, and its nested calls each take the history lock they need, so it takes none itself.
+   */
+  reachesTools?: boolean
+  /** Never called from a script: the code tools themselves (D82, point 3: no nesting of scripts). */
+  outsideScripts?: boolean
+  /** The call's own time limit from its input, within the node's maximum; the request's when it names none. */
+  timeoutMs?: (input: TInput) => number | undefined
   name: string
-  description: string
+  /** Read whenever the tool is listed, so a description built from other tools follows them (code_run's). */
+  description: string | (() => string)
   risk: CapabilityRisk
   tags?: string[]
   input: z.ZodType<TInput, JsonObject>
@@ -62,6 +95,8 @@ export interface ToolDefinition<TInput, TJudged = undefined> {
  */
 export interface RegisteredTool {
   capability: ToolCapability
+  reachesTools?: boolean
+  outsideScripts?: boolean
   /** The authoring schema, handed to MCP so it registers the same contract the CLI parses. */
   inputSchema: z.ZodType<unknown, JsonObject>
   prepare(args: JsonObject): PreparedCall
@@ -70,6 +105,8 @@ export interface RegisteredTool {
 export interface PreparedCall {
   managesHistory?: boolean
   exclusive?: boolean
+  reachesTools?: boolean
+  timeoutMs?: number
   effects: ToolEffect[]
   execute(context: ToolContext): Promise<JsonValue>
 }
@@ -95,21 +132,40 @@ export class ToolExecutionError extends Error {
   }
 }
 
+/**
+ * Thrown by a tool that reaches tools when a call it made needs a person (owner decision D82, point 6): the invoker
+ * answers the outer call `approval_required` with these asks, each recorded whole by the nested call that made it.
+ */
+export class NestedApprovalRequired extends Error {
+  readonly approvals: ApprovalRequest[]
+
+  constructor(approvals: ApprovalRequest[]) {
+    super('A call the script made needs approval')
+    this.approvals = approvals
+  }
+}
+
 export function defineTool<TInput, TJudged = undefined>(pack: string, definition: ToolDefinition<TInput, TJudged>): RegisteredTool {
   if (!TOOL_NAME_PATTERN.test(definition.name)) {
     throw new Error(`Tool name is not MCP-safe: ${definition.name}`)
   }
 
+  const { description } = definition
+  const capability: ToolCapability = {
+    name: definition.name,
+    description: typeof description === 'string' ? description : '',
+    // toJSONSchema returns a plain JSON object; JsonObject is the wire type for the same shape.
+    inputSchema: z.toJSONSchema(definition.input, { io: 'input' }) as JsonObject,
+    risk: definition.risk,
+    tags: definition.tags ?? [],
+    pack,
+  }
+  // Enumerable, so the manifest's JSON and every spread read it as it stands at that moment.
+  if (typeof description === 'function') Object.defineProperty(capability, 'description', { get: description, enumerable: true })
   return {
-    capability: {
-      name: definition.name,
-      description: definition.description,
-      // toJSONSchema returns a plain JSON object; JsonObject is the wire type for the same shape.
-      inputSchema: z.toJSONSchema(definition.input, { io: 'input' }) as JsonObject,
-      risk: definition.risk,
-      tags: definition.tags ?? [],
-      pack,
-    },
+    capability,
+    ...(definition.reachesTools ? { reachesTools: true } : {}),
+    ...(definition.outsideScripts ? { outsideScripts: true } : {}),
     inputSchema: definition.input as z.ZodType<unknown, JsonObject>,
     prepare(args) {
       const parsed = definition.input.safeParse(args)
@@ -119,6 +175,8 @@ export function defineTool<TInput, TJudged = undefined>(pack: string, definition
       return {
         managesHistory: definition.managesHistory,
         exclusive: definition.exclusive,
+        ...(definition.reachesTools ? { reachesTools: true } : {}),
+        ...(definition.timeoutMs ? { timeoutMs: definition.timeoutMs(input) } : {}),
         effects: definition.effects(input, judged),
         execute: context => definition.run(input, context, judged),
       }
