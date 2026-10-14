@@ -135,17 +135,20 @@ describe('a browser file transfer', () => {
     expect(readdirSync(workspace).sort()).toEqual(['new.png', 'reference.txt', 'shot.png'])
   })
 
-  // The re-check's case: a folder whose default ACL gives the group write, which a mode worked out from the umask
-  // missed. Set through python3, where the disk takes a POSIX ACL; skipped where it cannot be set.
+  // The re-check's case: a folder whose default ACL decides a new file's mode, which a mode worked out from the umask
+  // missed. The ACL gives the group rwx and others nothing, so a new file is 0660, which no common umask gives (022
+  // gives 0644, 002 gives 0664): the kernel applied the ACL. Set through python3, where the disk takes a POSIX ACL;
+  // skipped where it cannot be set.
   it('gives a new file the mode fs_write gets in a folder with a default ACL', async (context) => {
     const { workspace, session, paths } = fixture()
-    const acl = 'import os, struct, sys; os.setxattr(sys.argv[1], "system.posix_acl_default", struct.pack("<I", 2) + b"".join(struct.pack("<HHI", tag, perm, 0xFFFFFFFF) for tag, perm in ((1, 6), (4, 6), (32, 4))))'
+    const acl = 'import os, struct, sys; os.setxattr(sys.argv[1], "system.posix_acl_default", struct.pack("<I", 2) + b"".join(struct.pack("<HHI", tag, perm, 0xFFFFFFFF) for tag, perm in ((1, 6), (4, 7), (32, 0))))'
     if (spawnSync('python3', ['-I', '-c', acl, workspace]).status !== 0) context.skip()
     const transfer = await prepareTransfer({ directory: session, paths, reads: [], writes: ['shot.png'], context: { signal: new AbortController().signal }, protectedRoots: [], staleAfterMs: 600_000 })
     writeFileSync(transfer.argument('shot.png')!, 'png bytes')
     try { await transfer.deliver() } finally { transfer.close() }
     await writeFileEntry(writeInput.parse({ path: 'reference.txt', content: 'fs_write' }), { paths })
-    expect(statSync(join(workspace, 'shot.png')).mode & 0o777).toBe(statSync(join(workspace, 'reference.txt')).mode & 0o777)
+    expect(statSync(join(workspace, 'reference.txt')).mode & 0o777).toBe(0o660)
+    expect(statSync(join(workspace, 'shot.png')).mode & 0o777).toBe(0o660)
   })
 
   // Review of 2026-10-14: nothing showed delivery refusing a link or a folder swapped in at the target after the check.

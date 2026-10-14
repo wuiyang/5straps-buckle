@@ -139,13 +139,14 @@ const PARTIAL_PREFIX = '.buckle-delivery-'
  * new file is removed and `name` is left as it was. A target that is a link, as one swapped in after the check, or not
  * a regular file, is refused before anything is made. The file is made as `fs_write` makes one: a new one with the
  * mode the kernel gives (the umask, and any default ACL of the folder), and in place of an existing one with that
- * one's mode from the start, as `fs_write` writes into it (re-check of 2026-10-14: a mode worked out from the umask
- * missed a folder's default ACL).
+ * one's mode, given as the mode it is created with, which the kernel only narrows, and then set exactly, so it is never
+ * more open than the file it replaces (re-checks of 2026-10-14: a mode worked out from the umask missed a folder's
+ * default ACL, and a private target's copy was briefly open to others). An access ACL on the old file is not kept.
  */
 async function replaceBeneath(input: { directory: PinnedDirectory; name: string; named: string; source: number; signal: AbortSignal }): Promise<void> {
   const mode = existingMode(input.directory.child(input.name), input.named)
   const partial = `${PARTIAL_PREFIX}${randomUUID()}`
-  const descriptor = openBeneath(input.directory, partial, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, { shown: input.named })
+  const descriptor = openBeneath(input.directory, partial, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, { shown: input.named }, mode ?? undefined)
   let replaced = false
   try {
     try {

@@ -50,3 +50,9 @@ it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents
   language server like `typescript-language-server` or `pyright-langserver`, needs npm's shim or a
   native `.exe` where Buckle looks: on Windows, install it with `npm i -g`. `buckle init` does not
   check language servers, so a refused one shows only when a call needs it.
+
+## Files a browser command writes
+
+- A screenshot, PDF, or download is copied beside its target and renamed onto it, taking the old
+  file's mode or, for a new file, the mode `fs_write` gives one. A delivered file replaces the
+  target, so a per-file ACL on the old one is not kept.
