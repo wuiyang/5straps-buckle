@@ -164,7 +164,7 @@ For users:
 - [Rings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/rings.md): the optional pairing and its settings.
 - [Troubleshooting](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting.md) ([refused commands](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting-02.md)): the first
   failures, with their messages.
-- [Known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md): what Buckle does not yet read or hide.
+- [Known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md) ([programs](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits-02.md)): what Buckle does not yet read or hide.
 
 For developers:
 
