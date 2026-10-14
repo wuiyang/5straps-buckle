@@ -3,8 +3,18 @@ import type { ProcessRequest, ProcessResult, ProcessRunner } from '../types/port
 
 const MAX_OUTPUT_BYTES = 1_048_576
 const KILL_GRACE_MS = 1_000
+/**
+ * How long a process that exited is given for its pipes to close. A program that leaves a process behind holding them,
+ * as agent-browser's first call starts its daemon, never closes them, and the call waited on `close` for the daemon's
+ * whole life, which timed the owner's first launches out (2026-10-14).
+ */
+export const CLOSE_GRACE_MS = 2_000
 
-/** Returns whatever the process produced, including on timeout. A killed build still has output. */
+/**
+ * Returns whatever the process produced, including on timeout. A killed build still has output. It settles once the
+ * process exits and its pipes close, or CLOSE_GRACE_MS after the exit if they stay open, with the output read by then;
+ * the pipes are then let go.
+ */
 export const runProcess: ProcessRunner = (request: ProcessRequest): Promise<ProcessResult> => {
   return new Promise((resolvePromise, rejectPromise) => {
     if (request.signal?.aborted) { rejectPromise(new Error('Process request was already cancelled')); return }
@@ -37,18 +47,18 @@ export const runProcess: ProcessRunner = (request: ProcessRequest): Promise<Proc
     request.signal?.addEventListener('abort', terminate, { once: true })
     if (request.signal?.aborted) terminate()
 
+    let graceTimer: ReturnType<typeof setTimeout> | undefined
     const cleanup = (): void => {
       clearTimeout(killTimer)
       clearTimeout(forceKillTimer)
+      clearTimeout(graceTimer)
       request.signal?.removeEventListener('abort', terminate)
     }
 
-    child.once('error', error => {
-      cleanup()
-      rejectPromise(error)
-    })
-
-    child.once('close', (exitCode, signal) => {
+    let settled = false
+    const settle = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
+      if (settled) return
+      settled = true
       cleanup()
       resolvePromise({
         exitCode,
@@ -58,7 +68,25 @@ export const runProcess: ProcessRunner = (request: ProcessRequest): Promise<Proc
         truncated: stdout.truncated || stderr.truncated,
         timedOut,
       })
+    }
+
+    child.once('error', error => {
+      cleanup()
+      rejectPromise(error)
     })
+
+    child.once('exit', (exitCode, signal) => {
+      // The process is gone, so nothing is left to time out or kill; what another process still holds is given a grace.
+      clearTimeout(killTimer)
+      clearTimeout(forceKillTimer)
+      graceTimer = setTimeout(() => {
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        settle(exitCode, signal)
+      }, CLOSE_GRACE_MS)
+    })
+
+    child.once('close', (exitCode, signal) => settle(exitCode, signal))
   })
 }
 
