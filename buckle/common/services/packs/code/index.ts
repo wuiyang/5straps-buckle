@@ -352,6 +352,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   await Promise.allSettled([...running.values()])
 
   if (diverged) {
+    // A record that diverged diverges on every re-send: it goes, and so do the asks of its run, which no call would
+    // ever spend (re-review of the code-mode slice, finding docs-rules code-mode.md:76).
+    await context.withdrawNested?.([...journal?.asks ?? [], ...asks.map(ask => ask.token)])
+    journals.remove(key)
     throw new ToolExecutionError('This script stopped earlier, and run again it made other calls than that run did, so Buckle cannot replay it; the calls of that run already ran. Change the script, even by a comment, to run it from its start', { code: CODE_REPLAY_DIVERGED })
   }
   // The caller's own cancel withdraws the asks the script already collected, as it withdraws a waiting call's: the

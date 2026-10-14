@@ -516,9 +516,13 @@ describe('the replay journal', () => {
     const [file] = journals(root)
     writeFileSync(file!, JSON.stringify({ ...JSON.parse(readFileSync(file!, 'utf8')) as Journal, vm: 'another-engine' }))
     const read = vi.spyOn(runtime.registry().get('fs_read'), 'prepare')
+    expect(runtime.approvalService.pending()).toHaveLength(1)
 
     expect(await run(runtime, READ_THEN_WRITE)).toMatchObject({ outcome: 'error', error: { code: 'CODE_REPLAY_DIVERGED', retryable: false } })
     expect(read).not.toHaveBeenCalled()
+    // Re-review of the code-mode slice, finding docs-rules code-mode.md:76: no call would spend the first run's ask.
+    expect(runtime.approvalService.pending()).toEqual([])
+    expect(journals(root)).toEqual([])
     await runtime.history.close()
   })
 
