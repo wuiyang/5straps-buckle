@@ -63,8 +63,13 @@ export function createPiCodemodeVm(): ScriptVm {
             input.onCall({ id: call.id, target: call.target, name: call.name, args: call.args as JsonValue | undefined })
           },
         })
-        // The result settles once the worker has been terminated, so the slot is held until the VM is gone.
-        const result = run.result.then(settled => toResult(settled, toolIds, input.limits.outputChars)).finally(() => release())
+        // The result settles once the worker has been terminated, so the slot is held until the VM is gone. A failure of
+        // the VM itself forgets where the package was found, so a node whose install changed finds it again (review of
+        // the code-mode slice, finding sandbox-boundary 91).
+        const result = run.result.then((settled) => {
+          if (!settled.ok && settled.error.kind === 'sandbox') installed = undefined
+          return toResult(settled, toolIds, input.limits.outputChars)
+        }).finally(() => release())
         return {
           deliver: (seq, now, id, outcome) => run.deliver(seq, now, id, outcome.ok ? { ok: true, value: outcome.value } : outcome),
           get finished() { return run.finished },

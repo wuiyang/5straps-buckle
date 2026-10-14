@@ -452,6 +452,7 @@ async function buildPacks(input: {
     enableShell: input.config.enableShell,
     allowCode: input.config.allowCode,
     reachableTools: input.reachableTools,
+    maxRequestBytes: input.config.maxRequestBytes,
     allowHostGit: input.config.allowHostGit,
     allowHostLsp: input.config.allowHostLsp,
     shellNetwork: input.config.shellNetwork,

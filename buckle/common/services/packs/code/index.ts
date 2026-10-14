@@ -4,7 +4,7 @@ import type { ApprovalRequest, InvokeResponse, JsonObject, JsonValue, ToolCapabi
 import type { Pack } from '../../../domain/pack.js'
 import { keepEndsOfText } from '../../../domain/script-output.js'
 import { defineTool, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
-import type { ScriptVm, ScriptVmCall, ScriptVmOutcome, ScriptVmResult, ScriptVmRun, ScriptVmTool } from '../../../types/ports/script-vm.js'
+import type { ScriptVm, ScriptVmCall, ScriptVmError, ScriptVmOutcome, ScriptVmResult, ScriptVmRun, ScriptVmTool } from '../../../types/ports/script-vm.js'
 import { logger } from '../../../runtime/log.js'
 import { requestFingerprint } from '../../invocation/executions.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -33,9 +33,16 @@ export const MAX_IN_FLIGHT = 8
 export const VM_MEMORY_BYTES = 256 * 1_024 * 1_024
 /** The most output text, and the most return value as JSON text, a script hands back. */
 export const OUTPUT_CHARS = 1_048_576
+/** The most of a script error's name, message, and stack, each, that reaches the agent (review of the code-mode slice, finding sandbox-boundary 257). */
+export const ERROR_CHARS = 16_384
+/** A script's call's arguments, as JSON, are held to the node's request budget; 1 MiB, its default, when none is given. */
+export const DEFAULT_ARGUMENT_BYTES = 1_048_576
 export const CODE_REPLAY_DIVERGED = 'CODE_REPLAY_DIVERGED'
 export const CODE_CALL_LIMIT = 'CODE_CALL_LIMIT'
 export const CODE_VM_BUSY = 'CODE_VM_BUSY'
+export const REQUEST_TOO_LARGE = 'REQUEST_TOO_LARGE'
+/** What the agent reads when the VM itself fails: its own text may name paths on the host, so it goes to the owner's log. */
+export const SANDBOX_FAILED = 'The script sandbox stopped unexpectedly; retry, or ask the owner to check the Buckle install and its log'
 const DESCRIBE_TOOL = 'describeTool'
 
 export interface CodePackOptions {
@@ -46,6 +53,8 @@ export interface CodePackOptions {
   journalDirectory: string
   /** Set by BUCKLE_ALLOW_CODE=false. Never for want of an operating-system sandbox: the VM reaches nothing but tools. */
   unavailableReason: string | null
+  /** BUCKLE_MAX_REQUEST_BYTES: a call's arguments past it are refused inside the script, as a direct call's are; DEFAULT_ARGUMENT_BYTES when absent. */
+  maxRequestBytes?: number
 }
 
 const runInput = z.object({
@@ -87,7 +96,7 @@ export function createCodePack(options: CodePackOptions): Pack {
         replayKey: input => ({ script: input.script }),
         // None of its own: each call it makes carries its own, and is judged when it is made.
         effects: () => [],
-        run: (input, context) => runScript({ script: input.script, context, vm: options.vm, journals, reachable }),
+        run: (input, context) => runScript({ script: input.script, context, vm: options.vm, journals, reachable, argumentBytes: options.maxRequestBytes ?? DEFAULT_ARGUMENT_BYTES }),
       }),
       defineTool(PACK_ID, {
         name: 'code_api',
@@ -128,12 +137,22 @@ function fingerprintOf(target: string, args: JsonValue | undefined): string {
 }
 
 /**
+ * A call's arguments past the node's request budget, as JSON bytes, or null within it. A direct call that large is
+ * refused at the transport; a script's is refused inside the script, before it is fingerprinted, audited, or prepared
+ * on the thread every workspace shares (review of the code-mode slice, finding sandbox-boundary 213).
+ */
+function oversized(args: JsonValue | undefined, limit: number): number | null {
+  const bytes = Buffer.byteLength(JSON.stringify(args ?? null))
+  return bytes > limit ? bytes : null
+}
+
+/**
  * One script, start to end (D82, points 4 to 8). A script that has a journal from a run that stopped before its end
  * is answered from it first, call for call, with the same clock start, seed, and tools, so it makes the same calls
  * again; past the journal its calls run live and are appended. When a call needs a person, no new call starts, the
  * calls already running settle into the journal, the VM stops, and every ask goes back to the invoker together.
  */
-async function runScript(input: { script: string; context: ToolContext; vm: ScriptVm; journals: JournalStore; reachable: () => ToolCapability[] }): Promise<JsonValue> {
+async function runScript(input: { script: string; context: ToolContext; vm: ScriptVm; journals: JournalStore; reachable: () => ToolCapability[]; argumentBytes: number }): Promise<JsonValue> {
   const { context, vm, journals } = input
   const { invokeNested, nestedKey: key } = context
   if (!invokeNested || !key) throw new ToolExecutionError('code_run runs only through the invoker, which makes its calls', { code: 'TOOL_EXECUTION_FAILED' })
@@ -175,8 +194,8 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   const settleIfStopping = () => { if (stopping() && running.size === 0) stop.abort(new Error('A call the script made needs approval')) }
   // No queued call starts once the script stops at an ask or has ended: the re-sent script makes it again.
   const startQueued = () => { while (running.size < MAX_IN_FLIGHT && queued.length > 0 && !stopping() && !cancel.signal.aborted) queued.shift()!() }
-  const answer = (call: ScriptVmCall, target: string, outcome: ScriptVmOutcome) => {
-    const entry: JournalEntry = { seq: nextSeq++, now: Date.now(), id: call.id, tool: target, args: fingerprintOf(target, call.args), outcome }
+  const answer = (call: ScriptVmCall, target: string, outcome: ScriptVmOutcome, args = fingerprintOf(target, call.args)) => {
+    const entry: JournalEntry = { seq: nextSeq++, now: Date.now(), id: call.id, tool: target, args, outcome }
     if (!overflowed) {
       journalBytes += Buffer.byteLength(JSON.stringify(entry))
       overflowed = journalBytes > JOURNAL_BYTES
@@ -217,28 +236,33 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       issued.add(call.id)
       if (call.target === 'tool') toolCalls++
       const target = call.target === 'global' ? `global:${call.name}` : call.name
+      // An oversized call is named by its size alone, so its arguments are never hashed either.
+      const bytes = oversized(call.args, input.argumentBytes)
+      const fingerprint = bytes === null ? fingerprintOf(target, call.args) : fingerprintOf(target, { oversized: bytes })
       const recorded = replayById.get(call.id)
       if (recorded) {
-        if (recorded.tool !== target || recorded.args !== fingerprintOf(target, call.args)) diverge()
+        if (recorded.tool !== target || recorded.args !== fingerprint) diverge()
         else flush()
         return
       }
-      if (call.target === 'global') return answer(call, target, call.name === DESCRIBE_TOOL ? describe(call.args) : failure('TOOL_NOT_FOUND', `No global ${call.name}`))
+      const tooLarge = () => failure(REQUEST_TOO_LARGE, `This call's arguments are ${bytes} bytes as JSON, past the ${input.argumentBytes} a request to this node may carry; pass less, or split the call`)
+      if (call.target === 'global') return answer(call, target, bytes !== null ? tooLarge() : call.name === DESCRIBE_TOOL ? describe(call.args) : failure('TOOL_NOT_FOUND', `No global ${call.name}`), fingerprint)
       if (stopping()) return
       if (toolCalls > 2 * MAX_NESTED_CALLS) {
         spun = true
         return settleIfStopping()
       }
-      if (toolCalls > MAX_NESTED_CALLS) return answer(call, target, failure(CODE_CALL_LIMIT, `A script makes at most ${MAX_NESTED_CALLS} calls, refused ones and those before an ask counted`))
+      if (toolCalls > MAX_NESTED_CALLS) return answer(call, target, failure(CODE_CALL_LIMIT, `A script makes at most ${MAX_NESTED_CALLS} calls, refused ones and those before an ask counted`), fingerprint)
+      if (bytes !== null) return answer(call, target, tooLarge(), fingerprint)
       const args = call.args ?? {}
-      if (!isObject(args)) return answer(call, target, failure('INVALID_TOOL_INPUT', 'A tool takes one object of arguments'))
+      if (!isObject(args)) return answer(call, target, failure('INVALID_TOOL_INPUT', 'A tool takes one object of arguments'), fingerprint)
       made.add(call.id)
       const start = () => running.set(call.id, invokeNested({ id: call.id, tool: call.name, args, signal: cancel.signal }).then((response) => {
         if (response.outcome === 'approval_required') asks.push(...response.approvals)
         // A call cut by the script's end, a cancel, or a shutdown is never journaled: the re-sent script makes it
         // again, and Buckle's re-send records answer it if it ran (review of the code-mode slice, finding
         // approvals-replay 228).
-        else if (!cancel.signal.aborted && !context.signal.aborted) answer(call, target, outcomeOf(response))
+        else if (!cancel.signal.aborted && !context.signal.aborted) answer(call, target, outcomeOf(response), fingerprint)
       }).catch((error: unknown) => { broken ??= { error } }).finally(() => {
         running.delete(call.id)
         startQueued()
@@ -297,15 +321,36 @@ function shapeResult(result: ScriptVmResult, began: number): JsonValue {
   // code-mode slice, finding sandbox-boundary 254).
   const calls = result.calls.slice(0, MAX_NESTED_CALLS)
   const callsOmitted = result.calls.length - calls.length
+  const error = result.error ? shapeError(result.error) : undefined
   return {
     ok: result.ok,
     ...(value === undefined ? {} : { value: value.value }),
     output: result.output.map(item => item.text).join('\n'),
     calls: calls.map(call => ({ id: call.id, tool: call.name, status: call.status, durationMs: call.durationMs })),
     ...(callsOmitted > 0 ? { callsOmitted } : {}),
-    truncated: result.outputTruncated || value?.truncated === true || callsOmitted > 0,
+    truncated: result.outputTruncated || value?.truncated === true || callsOmitted > 0 || error?.truncated === true,
     durationMs: Math.round(performance.now() - began),
-    ...(result.error ? { error: { kind: result.error.kind, ...(result.error.name === undefined ? {} : { name: result.error.name }), message: result.error.message, ...(result.error.stack === undefined ? {} : { stack: result.error.stack }) } } : {}),
+    ...(error ? { error: error.error } : {}),
+  }
+}
+
+/**
+ * How a script's error reaches the agent. The script writes its name, message, and stack, so each is cut to
+ * ERROR_CHARS like the output (review of the code-mode slice, finding sandbox-boundary 257). A failure of the VM
+ * itself reaches it as a fixed sentence: its own text may name the host's install paths, so that goes to the owner's
+ * log (finding sandbox-boundary 91).
+ */
+function shapeError(error: ScriptVmError): { error: JsonObject; truncated: boolean } {
+  if (error.kind === 'sandbox') {
+    logger.warn('A code mode script sandbox failed', { name: error.name ?? 'Error', message: keepEndsOfText(error.message, ERROR_CHARS).text })
+    return { error: { kind: error.kind, message: SANDBOX_FAILED }, truncated: false }
+  }
+  const name = error.name === undefined ? undefined : keepEndsOfText(error.name, ERROR_CHARS)
+  const message = keepEndsOfText(error.message, ERROR_CHARS)
+  const stack = error.stack === undefined ? undefined : keepEndsOfText(error.stack, ERROR_CHARS)
+  return {
+    error: { kind: error.kind, ...(name ? { name: name.text } : {}), message: message.text, ...(stack ? { stack: stack.text } : {}) },
+    truncated: [name, message, stack].some(field => field?.truncated === true),
   }
 }
 

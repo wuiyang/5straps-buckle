@@ -67,6 +67,8 @@ export interface BuiltinPackOptions {
   allowCode?: boolean
   /** What a script reaches: the workspace manifest's tools as they stand at each call, after tool policy. None when absent. */
   reachableTools?: () => ToolCapability[]
+  /** BUCKLE_MAX_REQUEST_BYTES, which a script's calls are held to as direct ones are. */
+  maxRequestBytes?: number
   /** The VM code mode runs scripts in; pi-codemode's when absent. */
   scriptVm?: ScriptVm
   shellNetwork?: boolean
@@ -179,6 +181,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   packs.push(createCodePack({
     vm: options.scriptVm ?? createPiCodemodeVm(),
     reachableTools: options.reachableTools ?? (() => []),
+    ...(options.maxRequestBytes === undefined ? {} : { maxRequestBytes: options.maxRequestBytes }),
     journalDirectory: join(options.stateDirectory, 'code-journal', workspaceStateKey(options.cwd)),
     unavailableReason: options.allowCode === false ? CODE_OFF : null,
   }))

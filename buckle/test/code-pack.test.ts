@@ -6,7 +6,9 @@ import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type 
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import type { NestedCall, ToolContext } from '../common/domain/tool.js'
 import { loadConfig } from '../common/runtime/config.js'
-import { CODE_CALL_LIMIT, createCodePack, MAX_IN_FLIGHT, MAX_NESTED_CALLS, OUTPUT_CHARS } from '../common/services/packs/code/index.js'
+import { logger } from '../common/runtime/log.js'
+import { CODE_CALL_LIMIT, createCodePack, ERROR_CHARS, MAX_IN_FLIGHT, MAX_NESTED_CALLS, OUTPUT_CHARS, REQUEST_TOO_LARGE, SANDBOX_FAILED } from '../common/services/packs/code/index.js'
+import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -152,6 +154,21 @@ describe('a code_run script on a workspace', () => {
     await runtime.history.close()
   })
 
+  // Review of the code-mode slice, finding sandbox-boundary 213: a script's call is held to the request budget.
+  it('refuses inside the script a call whose arguments pass the node\'s request budget, before it is audited', async () => {
+    const { runtime } = await node({ BUCKLE_MAX_REQUEST_BYTES: '4096' })
+    const result = ran(await run(runtime, `
+      const codes = []
+      for (const call of [() => tools.fs_read({ path: 'docs/alpha.md', pad: 'x'.repeat(5000) }), () => describeTool('x'.repeat(5000))]) {
+        try { await call() } catch (error) { codes.push([error.code, error.message.includes('4096')]) }
+      }
+      return [codes, (await tools.fs_read({ path: 'docs/alpha.md', pad: 'x'.repeat(100) })).size > 0]
+    `))
+    expect(result.value).toEqual([[[REQUEST_TOO_LARGE, true], [REQUEST_TOO_LARGE, true]], true])
+    expect(runtime.actions.read(200).filter(entry => entry.tool === 'fs_read').map(entry => entry.event)).toEqual(['attempt', 'result'])
+    await runtime.history.close()
+  })
+
   it('keeps the output a script made before it threw, with the error', async () => {
     const { runtime } = await node()
     const result = ran(await run(runtime, 'text("one"); console.log("two", 2); await tools.fs_list({ path: "docs" }); throw new TypeError("boom")'))
@@ -280,6 +297,34 @@ describe('the limits on a script\'s calls', () => {
     expect(result.value).toEqual(Array.from({ length: 20 }, (_, i) => i))
     expect(invoked.mock.calls.map(([call]) => (call.args as { i: number }).i)).toEqual(Array.from({ length: 20 }, (_, i) => i))
     expect(most).toBe(MAX_IN_FLIGHT)
+  })
+
+  // Review of the code-mode slice, finding sandbox-boundary 257.
+  it(`cuts a script error's name, message, and stack to ${ERROR_CHARS} characters each`, async () => {
+    const huge = 2 * 1_024 * 1_024
+    for (const script of [`throw new Error('x'.repeat(${huge}))`, `const error = new Error('m'); error.name = 'n'.repeat(${huge}); throw error`]) {
+      const result = await codeRun(vi.fn())(script)
+      expect(result).toMatchObject({ ok: false, truncated: true, error: { kind: 'script' } })
+      for (const field of [result.error!.name, result.error!.message, result.error!.stack]) expect(field?.length ?? 0).toBeLessThanOrEqual(ERROR_CHARS + 100)
+      expect(JSON.stringify(result).length).toBeLessThan(4 * ERROR_CHARS)
+    }
+  })
+
+  // Review of the code-mode slice, finding sandbox-boundary 91.
+  it('tells the agent a fixed sentence when the VM itself fails, and the owner\'s log the detail', async () => {
+    const failed: ScriptVmResult = { ok: false, output: [], outputTruncated: false, calls: [], error: { kind: 'sandbox', name: 'Error', message: 'Cannot find module \'/opt/buckle/node_modules/pi/worker.js\'' } }
+    const vm: ScriptVm = { declare: () => '', identifier: name => name, start: () => ({ deliver() {}, finished: true, result: Promise.resolve(failed) }) }
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-sandbox-'))
+    roots.push(directory)
+    const warn = vi.spyOn(logger, 'warn')
+    const pack = createCodePack({ vm, reachableTools: () => [echo], journalDirectory: directory, unavailableReason: null })
+    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: 60_000, signal: new AbortController().signal, nestedKey: 'b'.repeat(64), invokeNested: vi.fn(), forgetNested: () => {} }
+    const result = await pack.tools[0]!.prepare({ script: 'return 1' }).execute(context) as unknown as Ran
+
+    expect(result.error).toEqual({ kind: 'sandbox', message: SANDBOX_FAILED })
+    expect(JSON.stringify(result)).not.toContain('/opt')
+    expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ message: expect.stringContaining('/opt/buckle') }))
+    warn.mockRestore()
   })
 
   it('refuses arguments that are not one object inside the script, without a call', async () => {
