@@ -1,0 +1,262 @@
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
+import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
+import { NestedApprovalRequired, type NestedCall, type ToolContext } from '../common/domain/tool.js'
+import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { createCodePack } from '../common/services/packs/code/index.js'
+import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, type Journal } from '../common/services/packs/code/journal.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createMcpServer } from '../mcp/server.js'
+import { fixedInteraction } from './support/interaction.js'
+
+// An ask inside a script (owner decision D82, points 6 and 7): the script stops, the outer call answers with the
+// nested call's own ask, shown whole (owner decision D17), and the same script sent again replays what already ran.
+
+const roots: string[] = []
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+
+const READ_THEN_WRITE = 'const read = await tools.fs_read({ path: "notes.md" }); await tools.fs_write({ path: "one/out.md", content: read.content.toUpperCase() }); text("written"); return Math.random()'
+
+function setup() {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-code-asks-'))
+  roots.push(root)
+  const workspace = join(root, 'workspace')
+  for (const directory of ['workspace', 'workspace/one', 'workspace/two']) mkdirSync(join(root, directory))
+  mkdirSync(join(root, 'state'), { mode: 0o700 })
+  writeFileSync(join(workspace, 'notes.md'), 'hello')
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' })
+  return { root, workspace, config }
+}
+
+async function node() {
+  const fixture = setup()
+  return { ...fixture, runtime: await open(fixture.config) }
+}
+
+function open(config: BuckleConfig): Promise<BuckleRuntime> {
+  return createRuntime({ config, interaction: fixedInteraction() })
+}
+
+let sequence = 0
+function run(runtime: BuckleRuntime, script: string, stageId = 'stage-a'): Promise<InvokeResponse> {
+  return runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId: `outer-${++sequence}`, tool: 'code_run', args: { script }, approvalTokens: [], context: { stageId } } })
+}
+
+async function answer(runtime: BuckleRuntime, token: string, approved = true) {
+  expect((await runtime.approvalService.answer({ decision: { token, approved, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+}
+
+function journals(root: string): string[] {
+  const directory = join(root, 'state', 'code-journal')
+  return existsSync(directory) ? readdirSync(directory, { recursive: true, encoding: 'utf8' }).filter(name => name.endsWith('.json')).map(name => join(directory, name)) : []
+}
+
+function attempts(runtime: BuckleRuntime, tool: string) {
+  return runtime.actions.read(200).filter(entry => entry.event === 'attempt' && entry.tool === tool)
+}
+
+function asked(response: InvokeResponse) {
+  if (response.outcome !== 'approval_required') throw new Error(`expected approval_required, got ${JSON.stringify(response)}`)
+  return response.approvals
+}
+
+describe('a call inside a script that needs a person', () => {
+  it('stops the script: the outer call answers approval_required with the nested call\'s ask, recorded whole, and keeps a journal', async () => {
+    const { root, workspace, runtime } = await node()
+    const [approval, ...others] = asked(await run(runtime, READ_THEN_WRITE))
+
+    expect(others).toEqual([])
+    expect(approval).toMatchObject({ tool: 'fs_write', rule: 'write_scope', subject: join(workspace, 'one') })
+    const [waiting] = runtime.approvalService.waiting()
+    expect(waiting?.call).toMatchObject({
+      complete: true, cwd: workspace, arguments: { path: 'one/out.md', content: 'HELLO' },
+      description: `Called by a "code_run" script, stage "stage-a" in the audit log: Write 5 bytes to "one/out.md" in "${workspace}"`,
+      effects: [`write ${join(workspace, 'one', 'out.md')}`],
+    })
+    expect(existsSync(join(workspace, 'one', 'out.md'))).toBe(false)
+    const outer = runtime.actions.read(50).filter(entry => entry.event === 'result' && entry.tool === 'code_run')
+    expect(outer).toEqual([expect.objectContaining({ outcome: 'approval_required', asked: ['write_scope'] })])
+    const [file] = journals(root)
+    expect(statSync(file!).mode & 0o777).toBe(0o600)
+    expect(statSync(join(file!, '..')).mode & 0o777).toBe(0o700)
+    expect((JSON.parse(readFileSync(file!, 'utf8')) as Journal).entries.map(entry => [entry.seq, entry.id, entry.tool])).toEqual([[1, 1, 'fs_read']])
+    await runtime.history.close()
+  })
+
+  it('replays the calls that ran when the same script is sent again after the answer, and runs the one that asked', async () => {
+    const { root, workspace, runtime } = await node()
+    const [approval] = asked(await run(runtime, READ_THEN_WRITE))
+    await answer(runtime, approval!.token)
+    const read = vi.spyOn(runtime.registry().get('fs_read'), 'prepare')
+
+    const retried = await run(runtime, READ_THEN_WRITE, 'stage-b')
+    expect(retried).toMatchObject({ outcome: 'ok', output: { ok: true, output: 'written' } })
+    expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
+    expect(read).not.toHaveBeenCalled()
+    expect(attempts(runtime, 'fs_read')).toHaveLength(1)
+    expect(attempts(runtime, 'fs_write').map(entry => entry.stageId)).toEqual(['stage-a', 'stage-b'])
+    expect(journals(root)).toEqual([])
+
+    // Done by itself, the script is a new run when sent again: its calls run again, and the spent once asks again.
+    expect(asked(await run(runtime, READ_THEN_WRITE))).toHaveLength(1)
+    expect(attempts(runtime, 'fs_read')).toHaveLength(2)
+    await runtime.history.close()
+  })
+
+  it('shows the nested ask whole in an MCP host\'s form, and runs once the host retries with the answer', async () => {
+    const { workspace, runtime } = await node()
+    const server = createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', trustedApprovalResponses: true, followToolChanges: false })
+    const call = (responses?: Record<string, unknown>) => {
+      const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<unknown> }> })._registeredTools
+      const envelope = { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }
+      return tools['code_run']!.handler({ script: READ_THEN_WRITE }, { sessionId: 'mcp-1', mcpReq: { id: 1, method: 'tools/call', requestState: () => undefined, envelope, ...(responses ? { inputResponses: responses } : {}) } } as unknown as ServerContext)
+    }
+
+    const first = await call() as { resultType: string; inputRequests: Record<string, { params: { message: string } }> }
+    expect(first.resultType).toBe('input_required')
+    const forms = Object.entries(first.inputRequests)
+    expect(forms).toHaveLength(1)
+    const [token, form] = forms[0]!
+    expect(form.params.message).toContain('fs_write needs approval')
+    expect(form.params.message).toContain('does:     Called by a "code_run" script, stage')
+    expect(form.params.message).toContain('"content": "HELLO"')
+
+    const second = await call({ [token]: { action: 'accept', content: { approve: true, scope: 'once' } } }) as { isError?: boolean; content: Array<{ text: string }> }
+    expect(second.isError).not.toBe(true)
+    expect(JSON.parse(second.content[0]!.text)).toMatchObject({ ok: true, output: 'written' })
+    expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
+    expect(attempts(runtime, 'fs_read')).toHaveLength(1)
+    await runtime.history.close()
+  })
+
+  it('hands back the asks of calls made at once together, and runs both once both are answered', async () => {
+    const { workspace, runtime } = await node()
+    const script = 'await Promise.all([tools.fs_write({ path: "one/a.md", content: "a" }), tools.fs_write({ path: "two/b.md", content: "b" })]); return "both"'
+    const approvals = asked(await run(runtime, script))
+
+    expect(approvals.map(approval => approval.subject).sort()).toEqual([join(workspace, 'one'), join(workspace, 'two')])
+    for (const approval of approvals) await answer(runtime, approval.token)
+    expect(await run(runtime, script)).toMatchObject({ outcome: 'ok', output: { value: 'both' } })
+    expect([readFileSync(join(workspace, 'one', 'a.md'), 'utf8'), readFileSync(join(workspace, 'two', 'b.md'), 'utf8')]).toEqual(['a', 'b'])
+    await runtime.history.close()
+  })
+
+  it('hands a denial after the ask to the script as an error it can catch', async () => {
+    const { workspace, runtime } = await node()
+    const script = 'try { await tools.fs_write({ path: "one/out.md", content: "x" }); return "written" } catch (error) { return error.code }'
+    const [approval] = asked(await run(runtime, script))
+    await answer(runtime, approval!.token, false)
+
+    expect(await run(runtime, script)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 'PERMISSION_DENIED' } })
+    expect(existsSync(join(workspace, 'one', 'out.md'))).toBe(false)
+    await runtime.history.close()
+  })
+})
+
+describe('the replay journal', () => {
+  it('survives a restart of the runtime: the calls that ran are not run again', async () => {
+    const { config, workspace } = setup()
+    const before = await open(config)
+    const [approval] = asked(await run(before, READ_THEN_WRITE))
+    await before.history.close()
+
+    const after = await open(config)
+    await answer(after, approval!.token)
+    expect(await run(after, READ_THEN_WRITE)).toMatchObject({ outcome: 'ok', output: { ok: true } })
+    expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
+    expect(attempts(after, 'fs_read')).toHaveLength(1)
+    await after.history.close()
+  })
+
+  it('is not replayed once expired: the script runs from its start', async () => {
+    const { root, runtime } = await node()
+    asked(await run(runtime, READ_THEN_WRITE))
+    const [file] = journals(root)
+    writeFileSync(file!, JSON.stringify({ ...JSON.parse(readFileSync(file!, 'utf8')), expiresAt: Date.now() - 1 }))
+    // The re-send dedupe expires with it (EXECUTION_TTL_MS): the clock stands in for the ten minutes passing.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + JOURNAL_TTL_MS + 1_000)
+    try {
+      asked(await run(runtime, READ_THEN_WRITE))
+    } finally {
+      vi.restoreAllMocks()
+    }
+    expect(attempts(runtime, 'fs_read')).toHaveLength(2)
+    await runtime.history.close()
+  })
+
+  it('expires after ten minutes, and keeps a workspace\'s journals within their bound, oldest first', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-journal-'))
+    roots.push(directory)
+    let now = 1_000_000
+    const store = createJournalStore({ directory, now: () => now, workspaceBytes: 2_500 })
+    const journal = (key: string) => ({ key, startedAt: 1, seed: 2, tools: [], entries: [{ seq: 1, now: 1, id: 1, tool: 'echo', args: 'x', outcome: { ok: true as const, value: 'v'.repeat(900) } }] })
+
+    expect(await store.write(journal('a'.repeat(64)))).toBe(true)
+    now += JOURNAL_TTL_MS - 1
+    expect(store.read('a'.repeat(64))).not.toBeNull()
+    now += 1
+    expect(store.read('a'.repeat(64))).toBeNull()
+    expect(readdirSync(directory)).toEqual([])
+
+    for (const key of ['b', 'c', 'd']) {
+      expect(await store.write(journal(key.repeat(64)))).toBe(true)
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    expect(readdirSync(directory).sort()).toEqual([`${'c'.repeat(64)}.json`, `${'d'.repeat(64)}.json`])
+    expect(await createJournalStore({ directory, now: () => now, journalBytes: 500 }).write(journal('e'.repeat(64)))).toBe(false)
+  })
+
+  it('refuses a script that, replayed, makes other calls than its first run did', async () => {
+    const { root, runtime } = await node()
+    asked(await run(runtime, READ_THEN_WRITE))
+    const [file] = journals(root)
+    const journal = JSON.parse(readFileSync(file!, 'utf8')) as Journal
+    writeFileSync(file!, JSON.stringify({ ...journal, entries: journal.entries.map(entry => ({ ...entry, args: '0'.repeat(64) })) }))
+
+    expect(await run(runtime, READ_THEN_WRITE)).toMatchObject({ outcome: 'error', error: { code: 'CODE_REPLAY_DIVERGED', retryable: false, message: expect.stringContaining('Change the script') } })
+    await runtime.history.close()
+  })
+})
+
+describe('the journal of a script stopped at an ask, made by the pack', () => {
+  const echo: ToolCapability = { name: 'echo', description: 'Echo.', inputSchema: { type: 'object' }, risk: 'read', tags: [], pack: 'test' }
+  const gate: ToolCapability = { ...echo, name: 'gate', description: 'Asks.' }
+  const ok = (call: NestedCall, output: JsonValue): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'ok', output, meta: { durationMs: 0, truncated: false } })
+  const ask = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'approval_required', approvals: [{ token: `token-${call.id}`, rule: 'write_scope', subject: '/w', reason: 'asks', tool: call.tool, offeredScopes: ['once'], expiresAt: new Date(Date.now() + 60_000).toISOString() }] })
+
+  function codeRun(directory: string, invokeNested: (call: NestedCall) => Promise<InvokeResponse>) {
+    const pack = createCodePack({ vm: createPiCodemodeVm(), reachableTools: () => [echo, gate], journalDirectory: directory, unavailableReason: null })
+    const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: 60_000, signal: new AbortController().signal, nestedKey: 'f'.repeat(64), invokeNested, forgetNested: () => {} }
+    return (script: string) => pack.tools[0]!.prepare({ script }).execute(context)
+  }
+
+  it('lets a call already running settle into the journal before the script stops, and replays it after', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-inflight-'))
+    roots.push(directory)
+    const script = 'const slow = tools.echo({ n: 1 }); await tools.gate({}); return await slow'
+    let release: (() => void) | undefined
+    const first = codeRun(directory, call => call.tool === 'gate' ? Promise.resolve(ask(call)) : new Promise(resolve => { release = () => resolve(ok(call, 'slow result')) }))(script)
+    await vi.waitFor(() => expect(release).toBeDefined())
+    setTimeout(() => release!(), 50)
+
+    await expect(first).rejects.toBeInstanceOf(NestedApprovalRequired)
+    const replayed = vi.fn(async (call: NestedCall) => ok(call, 'opened'))
+    expect(await codeRun(directory, replayed)(script)).toMatchObject({ ok: true, value: 'slow result' })
+    expect(replayed.mock.calls.map(([call]) => call.tool)).toEqual(['gate'])
+  })
+
+  it(`fails with ${CODE_REPLAY_TOO_LARGE} when the results before the ask pass the journal's bound`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-large-'))
+    roots.push(directory)
+    const large = 'x'.repeat(17 * 1_024 * 1_024)
+    const script = 'const a = await tools.echo({}); const b = await tools.echo({}); await tools.gate({}); return a.length + b.length'
+    const execute = codeRun(directory, async call => call.tool === 'gate' ? ask(call) : ok(call, large as JsonObject[keyof JsonObject]))
+
+    await expect(execute(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE, retryable: false })
+    expect(readdirSync(directory).filter(name => name.endsWith('.json'))).toEqual([])
+  }, 60_000)
+})

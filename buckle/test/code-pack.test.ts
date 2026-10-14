@@ -1,0 +1,267 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type JsonObject, type JsonValue, type ToolCapability } from '@5straps/protocol'
+import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
+import type { NestedCall, ToolContext } from '../common/domain/tool.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { CODE_CALL_LIMIT, CODE_IN_FLIGHT_LIMIT, createCodePack, MAX_IN_FLIGHT, MAX_NESTED_CALLS, OUTPUT_CHARS } from '../common/services/packs/code/index.js'
+import { createSetupViews } from '../common/services/setup/setup-views.js'
+import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { fixedInteraction } from './support/interaction.js'
+
+// Code mode (owner decision D82): a script's calls are the workspace's own calls, judged, refused, and audited as
+// direct ones, and the script is held to its limits on calls, output, and time.
+
+const roots: string[] = []
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+
+async function node(environment: Record<string, string> = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-code-'))
+  roots.push(root)
+  const workspace = join(root, 'workspace')
+  for (const directory of ['workspace', 'workspace/docs', 'workspace/secret']) mkdirSync(join(root, directory))
+  mkdirSync(join(root, 'state'), { mode: 0o700 })
+  for (const name of ['alpha', 'beta', 'gamma']) writeFileSync(join(workspace, 'docs', `${name}.md`), `# ${name} title\n${'filler line\n'.repeat(2_000)}`)
+  writeFileSync(join(workspace, 'secret', 'key.txt'), 'never shown')
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code', ...environment })
+  return { root, workspace, config, runtime: await createRuntime({ config, interaction: fixedInteraction() }) }
+}
+
+type Ran = { ok: boolean; value?: JsonValue; output: string; calls: Array<{ id: number; tool: string; status: string }>; truncated: boolean; error?: { kind: string; name?: string; message: string } }
+
+let sequence = 0
+async function run(runtime: BuckleRuntime, script: string, input: { timeoutMs?: number; stageId?: string } = {}): Promise<InvokeResponse> {
+  return runtime.invoke({
+    sessionId: 'chat-1', approvalWait: { mode: 'none' },
+    request: { requestId: `outer-${++sequence}`, tool: 'code_run', args: { script, ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}) }, approvalTokens: [], ...(input.stageId ? { context: { stageId: input.stageId } } : {}) },
+  })
+}
+
+function ran(response: InvokeResponse): Ran {
+  if (response.outcome !== 'ok') throw new Error(`code_run answered ${JSON.stringify(response)}`)
+  return response.output as unknown as Ran
+}
+
+function results(runtime: BuckleRuntime) {
+  return runtime.actions.read(200).filter(entry => entry.event === 'result')
+}
+
+describe('a code_run script on a workspace', () => {
+  it('calls fs_list and fs_read and hands back only what it kept', async () => {
+    const { runtime } = await node()
+    const response = await run(runtime, `
+      const listed = await tools.fs_list({ path: 'docs' })
+      const files = listed.entries.filter(entry => entry.type === 'file').map(entry => 'docs/' + entry.path)
+      const read = await Promise.all(files.map(path => tools.fs_read({ path })))
+      for (const file of read) text(file.content.split('\\n')[0])
+      return read.reduce((sum, file) => sum + file.size, 0)
+    `)
+    const result = ran(response)
+
+    expect(result.ok).toBe(true)
+    expect(result.output).toBe('# alpha title\n# beta title\n# gamma title')
+    expect(result.value).toBeGreaterThan(60_000)
+    expect(JSON.stringify(response).length).toBeLessThan(2_000)
+    expect(result.calls.map(call => [call.tool, call.status])).toEqual([['fs_list', 'ok'], ['fs_read', 'ok'], ['fs_read', 'ok'], ['fs_read', 'ok']])
+    await runtime.history.close()
+  })
+
+  it('catches a refused call as an error carrying its code, and the audit log holds the refusal', async () => {
+    const { runtime } = await node()
+    await runtime.policy.apply(WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: 'secret', read: 'deny' }] } }))
+    const result = ran(await run(runtime, `
+      try { return await tools.fs_read({ path: 'secret/key.txt' }) } catch (error) { return [error.message.split(':')[0], error.code, error.retryable] }
+    `))
+
+    expect(result.value).toEqual(['PERMISSION_DENIED', 'PERMISSION_DENIED', false])
+    expect(JSON.stringify(result)).not.toContain('never shown')
+    expect(results(runtime).filter(entry => entry.tool === 'fs_read').map(entry => entry.outcome)).toEqual(['denied'])
+    await runtime.history.close()
+  })
+
+  it('audits each call the script made with the outer call\'s stage, or its requestId when it names none', async () => {
+    const { runtime } = await node()
+    ran(await run(runtime, 'await tools.fs_list({ path: "docs" })', { stageId: 'stage-7' }))
+    const outer = ran(await run(runtime, 'await tools.fs_list({ path: "docs" })'))
+    expect(outer.ok).toBe(true)
+
+    const nested = results(runtime).filter(entry => entry.tool === 'fs_list')
+    expect(nested.map(entry => entry.stageId)).toEqual(['stage-7', `outer-${sequence}`])
+    expect(nested.every(entry => /^code:[0-9a-f]{64}:1$/.test(entry.requestId) && entry.sessionId === 'chat-1' && entry.outcome === 'ok')).toBe(true)
+    await runtime.history.close()
+  })
+
+  it('never offers code_run or code_api to a script, and the invoker refuses a script\'s call to either', async () => {
+    const { runtime } = await node()
+    const result = ran(await run(runtime, `
+      const reached = []
+      for (const name of ['code_run', 'code_api']) { try { tools[name]; reached.push(name) } catch (error) { reached.push(error.name) } }
+      return [reached, ALL_TOOLS.map(tool => tool.name).filter(name => name.startsWith('code_'))]
+    `))
+    expect(result.value).toEqual([['TypeError', 'TypeError'], []])
+
+    // A tool that reaches tools and names code_api itself, standing in for any route a script might find.
+    vi.spyOn(runtime.registry().get('code_run'), 'prepare').mockImplementation(() => ({
+      effects: [], reachesTools: true, execute: async (context: ToolContext) => context.invokeNested!({ id: 1, tool: 'code_api', args: {} }) as unknown as JsonValue,
+    }))
+    const refused = await run(runtime, 'ignored', { stageId: 'nesting' })
+    expect(refused).toMatchObject({ outcome: 'ok', output: { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Scripts cannot start scripts') } } })
+    expect(results(runtime).find(entry => entry.tool === 'code_api')).toMatchObject({ outcome: 'denied', stageId: 'nesting' })
+    await runtime.history.close()
+  })
+
+  it('cuts output past 1 MiB, and a return value past it as JSON text, keeping the start and the end', async () => {
+    const { runtime } = await node()
+    const printed = ran(await run(runtime, 'for (let i = 0; i < 40000; i++) text("line " + String(i).padStart(5, "0") + " " + "x".repeat(30))'))
+    expect(printed.truncated).toBe(true)
+    expect(printed.output.length).toBeLessThanOrEqual(OUTPUT_CHARS + 100)
+    expect(printed.output.startsWith('line 00000 ')).toBe(true)
+    expect(printed.output.endsWith(`line 39999 ${'x'.repeat(30)}`)).toBe(true)
+    expect(printed.output).toMatch(/\[\.\.\. \d+ characters omitted \.\.\.\]/)
+
+    const returned = ran(await run(runtime, 'return "a" + "b".repeat(2 * 1024 * 1024) + "z"'))
+    expect(returned.truncated).toBe(true)
+    expect(typeof returned.value).toBe('string')
+    expect((returned.value as string).length).toBeLessThanOrEqual(OUTPUT_CHARS + 100)
+    expect((returned.value as string).startsWith('"ab')).toBe(true)
+    expect((returned.value as string).endsWith('bz"')).toBe(true)
+    await runtime.history.close()
+  })
+
+  it('fails at once a script waiting on a promise nothing can settle', async () => {
+    const { runtime } = await node()
+    const began = performance.now()
+    const result = ran(await run(runtime, 'text("waiting"); await new Promise(() => {})'))
+    expect(result).toMatchObject({ ok: false, output: 'waiting', error: { kind: 'script', message: expect.stringContaining('can never settle') } })
+    expect(performance.now() - began).toBeLessThan(10_000)
+    await runtime.history.close()
+  })
+
+  it('ends a script at its timeout, never past the node\'s maximum, as a timeout', async () => {
+    const { runtime } = await node({ BUCKLE_MAX_TIMEOUT_MS: '1500' })
+    const short = ran(await run(runtime, 'text("spinning"); while (true) {}', { timeoutMs: 300 }))
+    expect(short).toMatchObject({ ok: false, output: 'spinning', error: { kind: 'timeout' } })
+
+    const began = performance.now()
+    const capped = ran(await run(runtime, 'while (true) {}', { timeoutMs: 60_000 }))
+    expect(capped.error).toMatchObject({ kind: 'timeout', message: expect.stringContaining('1500 ms') })
+    expect(performance.now() - began).toBeLessThan(15_000)
+    await runtime.history.close()
+  })
+
+  it('keeps the output a script made before it threw, with the error', async () => {
+    const { runtime } = await node()
+    const result = ran(await run(runtime, 'text("one"); console.log("two", 2); await tools.fs_list({ path: "docs" }); throw new TypeError("boom")'))
+    expect(result).toMatchObject({ ok: false, output: 'one\ntwo 2', error: { kind: 'script', name: 'TypeError', message: 'boom' } })
+    expect(result.calls).toEqual([expect.objectContaining({ tool: 'fs_list', status: 'ok' })])
+    await runtime.history.close()
+  })
+})
+
+describe('the code pack setting', () => {
+  it('withholds the pack with its reason under BUCKLE_ALLOW_CODE=false, and the status view says so', async () => {
+    const off = await node({ BUCKLE_ALLOW_CODE: 'false' })
+    expect(off.runtime.manifest().packs.find(pack => pack.id === 'code')).toEqual({ id: 'code', version: '1.0.0', toolNames: ['code_run', 'code_api'], unavailableReason: 'Code mode is turned off by BUCKLE_ALLOW_CODE=false' })
+    expect(off.runtime.manifest().tools.map(tool => tool.name).filter(name => name.startsWith('code_'))).toEqual([])
+    expect((await createSetupViews().status({ config: off.config, runtime: off.runtime })).code).toBe('withheld (Code mode is turned off by BUCKLE_ALLOW_CODE=false)')
+
+    const on = await node()
+    expect(on.runtime.manifest().tools.map(tool => tool.name).filter(name => name.startsWith('code_'))).toEqual(['code_api', 'code_run'])
+    expect((await createSetupViews().status({ config: on.config, runtime: on.runtime })).code).toBe('on')
+    const left = await node({ BUCKLE_PACKS: 'fs' })
+    expect((await createSetupViews().status({ config: left.config, runtime: left.runtime })).code).toBe('withheld (BUCKLE_PACKS leaves the code pack out)')
+    for (const { runtime } of [off, on, left]) await runtime.history.close()
+  })
+
+  it('is never withheld for want of an operating-system sandbox', async () => {
+    const { runtime } = await node({ BUCKLE_SANDBOX: 'none' })
+    expect(runtime.manifest().packs.find(pack => pack.id === 'code')?.unavailableReason).toBeNull()
+    await runtime.history.close()
+  })
+})
+
+describe('code mode inside one workspace (BUCKLE-D07: a token opens one workspace)', () => {
+  async function nodeWithChild(childPolicy = emptyWorkspacePolicy()) {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-code-child-'))
+    roots.push(root)
+    for (const directory of ['default', 'child']) mkdirSync(join(root, directory))
+    writeFileSync(join(root, 'default', 'private.txt'), 'the default workspace only')
+    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' })
+    const runtime = await createRuntime({ config, interaction: fixedInteraction() })
+    const manager = createWorkspaceManager({ config, runtime, interaction: fixedInteraction() })
+    await manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture', adminToken: 'child-admin-token-fixture', policy: childPolicy })
+    return { root, runtime, child: (await manager.resolve('child')).runtime }
+  }
+
+  it('reaches only the registered workspace: the default root is refused there, and nothing lands in the default workspace\'s log', async () => {
+    const { root, runtime, child } = await nodeWithChild()
+    const result = ran(await run(child, `
+      const settled = await Promise.allSettled([tools.fs_read({ path: ${JSON.stringify(join(root, 'default', 'private.txt'))} }), tools.fs_list({ path: '../default' })])
+      return settled.map(item => item.status === 'fulfilled' ? item.value : item.reason.code)
+    `))
+
+    expect(result.value).toEqual(['PERMISSION_DENIED', 'PERMISSION_DENIED'])
+    expect(JSON.stringify(result)).not.toContain('the default workspace only')
+    expect(results(child).filter(entry => entry.requestId.startsWith('code:')).map(entry => [entry.tool, entry.outcome])).toEqual([['fs_read', 'denied'], ['fs_list', 'denied']])
+    expect(results(runtime).filter(entry => entry.requestId.startsWith('code:') || entry.tool === 'code_run')).toEqual([])
+    expect([...runtime.approvals.pending(), ...child.approvals.pending()]).toEqual([])
+    await runtime.history.close()
+  }, 30_000)
+
+  it('lets one workspace\'s tool policy deny code_run while the node leaves the pack on', async () => {
+    const { runtime, child } = await nodeWithChild({ ...emptyWorkspacePolicy(), tools: { deny: ['code_run'] } })
+    expect(runtime.manifest().tools.some(tool => tool.name === 'code_run')).toBe(true)
+    expect(child.manifest().tools.some(tool => tool.name === 'code_run')).toBe(false)
+    expect(await run(child, 'return 1')).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Disabled by workspace tool policy' } })
+    await runtime.history.close()
+  }, 30_000)
+})
+
+describe('the limits on a script\'s calls', () => {
+  const echo: ToolCapability = { name: 'echo', description: 'Echo its arguments.', inputSchema: { type: 'object' }, risk: 'read', tags: [], pack: 'test' }
+
+  /** code_run on its own, its calls answered by `invokeNested` as the test chooses. */
+  function codeRun(invokeNested: (call: NestedCall) => Promise<InvokeResponse>) {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-code-limits-'))
+    roots.push(directory)
+    const pack = createCodePack({ vm: createPiCodemodeVm(), reachableTools: () => [echo], journalDirectory: directory, unavailableReason: null })
+    return async (script: string) => {
+      const context: ToolContext = { requestId: 'outer', sessionId: 'chat-1', timeoutMs: 60_000, signal: new AbortController().signal, nestedKey: 'a'.repeat(64), invokeNested, forgetNested: () => {} }
+      return await pack.tools[0]!.prepare({ script }).execute(context) as unknown as Ran
+    }
+  }
+  const ok = (call: NestedCall): InvokeResponse => ({ requestId: `code:${call.id}`, outcome: 'ok', output: call.args as JsonObject, meta: { durationMs: 0, truncated: false } })
+
+  it(`fails every call past ${MAX_NESTED_CALLS} inside the script`, async () => {
+    const invoked = vi.fn(async (call: NestedCall) => ok(call))
+    const result = await codeRun(invoked)(`
+      for (let i = 0; ; i++) { try { await tools.echo({ i }) } catch (error) { return [i, error.code] } }
+    `)
+    expect(result.value).toEqual([MAX_NESTED_CALLS, CODE_CALL_LIMIT])
+    expect(invoked).toHaveBeenCalledTimes(MAX_NESTED_CALLS)
+  })
+
+  it(`fails a call past ${MAX_IN_FLIGHT} running at once inside the script, and runs the rest`, async () => {
+    const held: Array<() => void> = []
+    const invoked = vi.fn((call: NestedCall) => new Promise<InvokeResponse>((resolve) => {
+      held.push(() => resolve(ok(call)))
+      if (held.length === MAX_IN_FLIGHT) setTimeout(() => { for (const release of held) release() }, 100)
+    }))
+    const result = await codeRun(invoked)(`
+      const settled = await Promise.allSettled(Array.from({ length: ${MAX_IN_FLIGHT + 2} }, (_, i) => tools.echo({ i })))
+      return settled.map(item => item.status === 'fulfilled' ? 'ok' : item.reason.code)
+    `)
+    expect(result.value).toEqual([...Array.from({ length: MAX_IN_FLIGHT }, () => 'ok'), CODE_IN_FLIGHT_LIMIT, CODE_IN_FLIGHT_LIMIT])
+    expect(invoked).toHaveBeenCalledTimes(MAX_IN_FLIGHT)
+  })
+
+  it('refuses arguments that are not one object inside the script, without a call', async () => {
+    const invoked = vi.fn(async (call: NestedCall) => ok(call))
+    const result = await codeRun(invoked)('try { await tools.echo([1, 2]) } catch (error) { return error.code }')
+    expect(result.value).toBe('INVALID_TOOL_INPUT')
+    expect(invoked).not.toHaveBeenCalled()
+  })
+})

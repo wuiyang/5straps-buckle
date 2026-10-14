@@ -123,6 +123,15 @@ describe('buckle settings set', () => {
     expect(statSync(file).mode & 0o7777).toBe(0o600)
   })
 
+  it('turns code mode off with its key, as the shell\'s, and shows it on by default (owner decision D82)', async () => {
+    expect((await settings(['show'])).out).toMatch(/code\s+BUCKLE_ALLOW_CODE\s+true\s+default\n/)
+    const result = await settings(['set', 'code', 'off'])
+
+    expect(result.exitCode).toBe(0)
+    expect(readFileSync(file, 'utf8')).toBe(`${original}BUCKLE_ALLOW_CODE=false\n`)
+    expect((await settings(['show'])).out).toMatch(/code\s+BUCKLE_ALLOW_CODE\s+false\s+/)
+  })
+
   it('leaves no temporary file behind', async () => {
     await settings(['set', 'packs', 'fs, web,shell'])
 
@@ -346,6 +355,12 @@ describe('the pack catalogue init and settings name', () => {
 
   it.each([['with', 'varlock'], ['without', undefined]])('builds exactly the catalogue packs whose prerequisites are met, %s a validator', (_, environmentValidator) => {
     expect(built(environmentValidator)).toEqual(BUILTIN_PACKS.filter(pack => unmetPackPrerequisite(pack.id, { environmentValidator }) === null).map(pack => pack.id))
+  })
+
+  it('builds the code pack whatever the settings: BUCKLE_ALLOW_CODE=false withholds it with a reason instead', () => {
+    expect(BUILTIN_PACKS.map(pack => pack.id)).toContain('code')
+    expect(unmetPackPrerequisite('code', {})).toBeNull()
+    expect(built(undefined)).toContain('code')
   })
 
   it('refuses the environment pack while BUCKLE_ENV_VALIDATOR_COMMAND is unset, since the node would then not start', async () => {
