@@ -48,6 +48,12 @@ export interface ApprovalAskInput {
    */
   isCancel?: (reason: unknown) => boolean
   wait?: ApprovalWait
+  /**
+   * The longest the call is held, whatever sets its hold: a script's call (owner decision D82) waits no longer than
+   * its script has left, so its wait ends as elapsed and it answers approval_required rather than being cut by the
+   * script's deadline (review of the code-mode slice, finding approvals-replay 685).
+   */
+  holdAtMostMs?: number
   /** The call's tool and whole arguments, hashed (requestFingerprint): a re-send joins only with the same one. */
   fingerprint?: string
   /** The whole call as the node's signed challenge shows it (owner decisions D9 and D17): redacted arguments, their directory, the node's description and the judged effects. */
@@ -259,7 +265,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       // Checked before any question is drawn: a caller that cancelled during the announce is asked about no more (review L5).
       await cancelIfCancelled({ key, tokens, signal: input.signal, isCancel: input.isCancel })
       if (closing.signal.aborted) return skip({ approvals, answered, reason: 'shutdown' })
-      const holdMs = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
+      const holdMs = atMost(holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait }), input.holdAtMostMs)
       // The hint sets how long the caller is held and never who is asked: a `grace` entry point asks
       // its terminal whatever the hint says, and keeps asking after the caller returns (owner ruling).
       const keepAsking = interaction.hold === 'grace'
@@ -615,6 +621,12 @@ export function shorterWait(left: ApprovalWait | undefined, right: ApprovalWait 
 export function holdFor(input: { hold: ApprovalHold; graceMs: number | null; hint?: ApprovalWait }): number | null {
   if (input.hint) return input.hint.mode === 'none' ? 0 : input.hint.ms
   return input.hold === 'grace' ? input.graceMs : null
+}
+
+/** A hold no longer than `limit`, when there is one: an endless hold becomes the limit. */
+function atMost(holdMs: number | null, limit: number | undefined): number | null {
+  if (limit === undefined) return holdMs
+  return holdMs === null ? limit : Math.min(holdMs, limit)
 }
 
 /** How long an issued ask stays answerable beyond its ten minutes: at least as long as the node's own hold, and the caller's when it holds longer. */

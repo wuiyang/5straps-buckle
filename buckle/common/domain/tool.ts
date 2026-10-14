@@ -145,6 +145,19 @@ export class NestedApprovalRequired extends Error {
   }
 }
 
+/**
+ * Why a script's call still running is cancelled once its script has ended (owner decision D82): Buckle's own abort,
+ * audited as SCRIPT_ENDED rather than as a failure of the tool, and never the caller's cancel, so an ask the call
+ * waits on stays pending (review of the code-mode slice, finding approvals-replay 685).
+ */
+export class ScriptEndedError extends Error {
+  readonly code = 'SCRIPT_ENDED'
+
+  constructor() {
+    super('The script that made this call ended before the call did; if it had started, its effects are unknown')
+  }
+}
+
 export function defineTool<TInput, TJudged = undefined>(pack: string, definition: ToolDefinition<TInput, TJudged>): RegisteredTool {
   if (!TOOL_NAME_PATTERN.test(definition.name)) {
     throw new Error(`Tool name is not MCP-safe: ${definition.name}`)

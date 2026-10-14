@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { ApprovalRequest, InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
 import type { Pack } from '../../../domain/pack.js'
 import { keepEndsOfText } from '../../../domain/script-output.js'
-import { defineTool, NestedApprovalRequired, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
+import { defineTool, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, type ToolContext } from '../../../domain/tool.js'
 import type { ScriptVm, ScriptVmCall, ScriptVmOutcome, ScriptVmResult, ScriptVmRun, ScriptVmTool } from '../../../types/ports/script-vm.js'
 import { requestFingerprint } from '../../invocation/executions.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -224,8 +224,10 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   run = started
 
   const result = await run.result
-  // A call the script left running when it ended is cancelled, as the VM's own record says, and waited for.
-  cancel.abort(new Error('The script ended'))
+  // A call the script left running when it ended is cancelled, as the VM's own record says, and waited for. Its own
+  // reason, so the call is audited as SCRIPT_ENDED and an ask it waits on stays pending (review of the code-mode
+  // slice, finding approvals-replay 685).
+  cancel.abort(new ScriptEndedError())
   await Promise.allSettled([...running.values()])
 
   if (broken) throw broken.error

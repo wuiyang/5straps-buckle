@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
+import type { ApprovalWait, InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { NestedApprovalRequired, type NestedCall, type ToolContext } from '../common/domain/tool.js'
 import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
@@ -11,6 +11,7 @@ import { createCodePack } from '../common/services/packs/code/index.js'
 import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_TTL_MS, type Journal } from '../common/services/packs/code/journal.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpServer } from '../mcp/server.js'
+import { isExplicitCancel } from '../mcp/stdio.js'
 import { fixedInteraction } from './support/interaction.js'
 
 // An ask inside a script (owner decision D82, points 6 and 7): the script stops, the outer call answers with the
@@ -21,19 +22,19 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const READ_THEN_WRITE = 'const read = await tools.fs_read({ path: "notes.md" }); await tools.fs_write({ path: "one/out.md", content: read.content.toUpperCase() }); text("written"); return Math.random()'
 
-function setup() {
+function setup(environment: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-code-asks-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
   for (const directory of ['workspace', 'workspace/one', 'workspace/two']) mkdirSync(join(root, directory))
   mkdirSync(join(root, 'state'), { mode: 0o700 })
   writeFileSync(join(workspace, 'notes.md'), 'hello')
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' })
+  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code', ...environment })
   return { root, workspace, config }
 }
 
-async function node() {
-  const fixture = setup()
+async function node(environment: Record<string, string> = {}) {
+  const fixture = setup(environment)
   return { ...fixture, runtime: await open(fixture.config) }
 }
 
@@ -44,6 +45,18 @@ function open(config: BuckleConfig): Promise<BuckleRuntime> {
 let sequence = 0
 function run(runtime: BuckleRuntime, script: string, stageId = 'stage-a'): Promise<InvokeResponse> {
   return runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId: `outer-${++sequence}`, tool: 'code_run', args: { script }, approvalTokens: [], context: { stageId } } })
+}
+
+/** code_run as HTTP sends it, with no wait hint and no cancel test, or as stdio does, with its cancel test. */
+function send(runtime: BuckleRuntime, script: string, input: { timeoutMs?: number; approvalWait?: ApprovalWait; isCancel?: (reason: unknown) => boolean; signal?: AbortSignal } = {}): Promise<InvokeResponse> {
+  return runtime.invoke({
+    sessionId: 'chat-1', ...(input.approvalWait ? { approvalWait: input.approvalWait } : {}), ...(input.isCancel ? { isCancel: input.isCancel } : {}), ...(input.signal ? { signal: input.signal } : {}),
+    request: { requestId: `outer-${++sequence}`, tool: 'code_run', args: { script, ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}) }, approvalTokens: [], context: { stageId: 'stage-a' } },
+  })
+}
+
+function results(runtime: BuckleRuntime, tool: string) {
+  return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.tool === tool)
 }
 
 async function answer(runtime: BuckleRuntime, token: string, approved = true) {
@@ -155,6 +168,73 @@ describe('a call inside a script that needs a person', () => {
     expect(existsSync(join(workspace, 'one', 'out.md'))).toBe(false)
     await runtime.history.close()
   })
+})
+
+describe('a call inside a script that waits for a person, as the CLI and HTTP do', () => {
+  // Review of the code-mode slice, findings approvals-replay 685, invoker-audit 228, and tests 46: the script's
+  // deadline never cuts a wait, and Buckle's own aborts never read as the caller's cancel.
+  it.each([
+    ['over HTTP, which passes no cancel test', undefined],
+    ['over stdio, whose cancel test reads every abort but a closed connection as a cancel', isExplicitCancel],
+  ])('ends the wait before the script\'s deadline and answers approval_required, the ask still pending, %s', async (_route, isCancel) => {
+    const { root, runtime } = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const [approval, ...others] = asked(await send(runtime, READ_THEN_WRITE, { timeoutMs: 2_500, ...(isCancel ? { isCancel } : {}) }))
+
+    expect(others).toEqual([])
+    expect(approval).toMatchObject({ tool: 'fs_write', rule: 'write_scope' })
+    expect(runtime.approvalService.pending().map(request => request.token)).toEqual([approval!.token])
+    expect(journals(root)).toHaveLength(1)
+    // The cut wait is the ask the outer call reports, not a failed tool.
+    expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
+    await runtime.history.close()
+  }, 30_000)
+
+  it('leaves the ask pending over stdio when Buckle shuts down during the wait, and withdraws it on the client\'s own cancel', async () => {
+    const waiting = { timeoutMs: 20_000, approvalWait: { mode: 'finite' as const, ms: 10_000 }, isCancel: isExplicitCancel }
+    const stopped = await node()
+    const cut = send(stopped.runtime, READ_THEN_WRITE, waiting)
+    await vi.waitFor(() => expect(stopped.runtime.approvalService.waiting()).toHaveLength(1), { timeout: 10_000 })
+    await stopped.runtime.cancelInvocations()
+    await cut
+    expect(stopped.runtime.approvalService.pending()).toHaveLength(1)
+    await stopped.runtime.history.close()
+
+    const cancelled = await node()
+    const caller = new AbortController()
+    const left = send(cancelled.runtime, READ_THEN_WRITE, { ...waiting, signal: caller.signal })
+    await vi.waitFor(() => expect(cancelled.runtime.approvalService.waiting()).toHaveLength(1), { timeout: 10_000 })
+    caller.abort(new Error('notifications/cancelled'))
+    await left.catch(() => undefined)
+    await vi.waitFor(() => expect(cancelled.runtime.approvalService.pending()).toEqual([]))
+    await cancelled.runtime.history.close()
+  }, 30_000)
+
+  it('lets the script go on once the person answers while its call waits inside it', async () => {
+    const { root, workspace, runtime } = await node()
+    const running = send(runtime, READ_THEN_WRITE, { timeoutMs: 20_000, approvalWait: { mode: 'finite', ms: 10_000 } })
+    await vi.waitFor(() => expect(runtime.approvalService.waiting()).toHaveLength(1), { timeout: 10_000 })
+    await answer(runtime, runtime.approvalService.waiting()[0]!.request.token)
+
+    expect(await running).toMatchObject({ outcome: 'ok', output: { ok: true, output: 'written' } })
+    expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
+    expect(attempts(runtime, 'fs_read')).toHaveLength(1)
+    expect(journals(root)).toEqual([])
+    await runtime.history.close()
+  }, 30_000)
+
+  it('hands back the ask when a short wait ends inside a longer script, and the re-sent script replays what ran', async () => {
+    const { root, workspace, runtime } = await node()
+    const wait = { timeoutMs: 20_000, approvalWait: { mode: 'finite' as const, ms: 200 } }
+    const [approval] = asked(await send(runtime, READ_THEN_WRITE, wait))
+    expect(journals(root)).toHaveLength(1)
+    await answer(runtime, approval!.token)
+    const read = vi.spyOn(runtime.registry().get('fs_read'), 'prepare')
+
+    expect(await send(runtime, READ_THEN_WRITE, wait)).toMatchObject({ outcome: 'ok', output: { ok: true } })
+    expect(read).not.toHaveBeenCalled()
+    expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
+    await runtime.history.close()
+  }, 30_000)
 })
 
 describe('the replay journal', () => {

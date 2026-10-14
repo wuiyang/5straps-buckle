@@ -14,7 +14,7 @@ import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
-import { NestedApprovalRequired, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
+import { NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
 import type { ActionLog, ActionLogEntry, GrantUse } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
@@ -84,6 +84,12 @@ export interface InvokeInput {
    * the ask names so the approver can find the script in the audit log, and which refuses a code tool.
    */
   via?: NestedOrigin
+  /**
+   * Set only by the invoker on a call a script made: the longest its approval wait may hold, the time its script
+   * has left less a margin, so the wait ends before the script's deadline (review of the code-mode slice, finding
+   * approvals-replay 685).
+   */
+  holdAtMostMs?: number
 }
 
 /** The call a script's call came from: its tool and the stage its calls are grouped under. */
@@ -113,7 +119,7 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
-    async invoke({ request, sessionId, signal, isCancel, approvalWait, via }) {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdAtMostMs }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
@@ -162,7 +168,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
-          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, key, held, via })
+          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, holdAtMostMs, key, held, via })
           stop?.throwIfAborted()
           if (gate.earlier) return await answerEarlier(gate.earlier)
           if (gate.response) return gate.response
@@ -173,7 +179,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const execute = () => {
             owned.started()
             ran = true
-            const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key, isCancel, approvalWait } : undefined
+            const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key, callerSignal: signal, isCancel, approvalWait } : undefined
             return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute, timeoutMs: prepared.timeoutMs, nesting })
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
@@ -470,6 +476,7 @@ async function clearPermissions(input: {
   signal?: AbortSignal
   isCancel?: (reason: unknown) => boolean
   approvalWait?: ApprovalWait
+  holdAtMostMs?: number
   key: ExecutionKey
   held: { claim?: ExecutionClaim }
   via?: NestedOrigin
@@ -522,7 +529,7 @@ async function clearPermissions(input: {
   const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}) }), effects: effects.map(summarizeEffect), complete: true as const }
   const waited = await options.approvalService.request({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
-    fingerprint: input.key.fingerprint, call,
+    ...(input.holdAtMostMs === undefined ? {} : { holdAtMostMs: input.holdAtMostMs }), fingerprint: input.key.fingerprint, call,
   })
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
   const approvals = waited.approvals
@@ -627,7 +634,7 @@ async function executeWithTimeout(input: {
       stageId: input.request.context?.stageId ?? input.request.context?.runId,
       timeoutMs,
       signal,
-      ...(input.nesting ? nestedContext({ ...input, nesting: input.nesting, signal }) : {}),
+      ...(input.nesting ? nestedContext({ ...input, nesting: input.nesting, signal, timeoutMs }) : {}),
       authorizeRead: async path => {
         if (!isAbsolute(path)) return false
         // A path its resolution refuses, such as a link onto a root folder named like a drive, is unreachable: it is
@@ -653,11 +660,15 @@ async function executeWithTimeout(input: {
 
 /** How long the invoker's timer waits past a script's own deadline before it cancels the call itself. */
 const NESTED_DEADLINE_GRACE_MS = 1_000
+/** How long before a script's deadline the approval wait of a call it made ends, so the call answers approval_required. */
+const NESTED_WAIT_MARGIN_MS = 1_000
 
 /** What a tool that reaches tools is handed to make its calls with, and what of the outer call they keep. */
 interface Nesting {
   run: (input: InvokeInput) => Promise<InvokeResponse>
   key: ExecutionKey
+  /** The outer caller's own signal, without the shutdown or the timer: only its cancel withdraws a nested ask. */
+  callerSignal?: AbortSignal
   /** The outer caller's cancel test and its wait for a person, which every nested call keeps. */
   isCancel?: (reason: unknown) => boolean
   approvalWait?: ApprovalWait
@@ -671,20 +682,29 @@ interface Nesting {
  * actor and the outer call, so a re-sent script names its calls as before: Buckle's own re-send dedupe never runs
  * one twice, and a call that asked joins its ask.
  */
-function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'forgetNested'> {
+function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal; timeoutMs: number }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'forgetNested'> {
   const { request, nesting } = input
   const nestedKey = nestedCallKey(nesting.key)
   const stageId = (request.context?.stageId ?? request.context?.runId ?? request.requestId).slice(0, MAX_LOGGED_ID)
   const via: NestedOrigin = { tool: request.tool, stageId }
   const requestIdOf = (id: number) => `code:${nestedKey}:${id}`
+  // Only the outer caller's own cancel withdraws a script's asks. The script's deadline, its end, and a shutdown are
+  // Buckle's own aborts: an ask they cut stays pending for the re-sent script to join (review of the code-mode
+  // slice, finding approvals-replay 685).
+  const { callerSignal, isCancel } = nesting
+  const cancels = isCancel ? () => callerSignal?.aborted === true && isCancel(callerSignal.reason) : undefined
+  // Each wait ends before the script's deadline, so an unanswered ask comes back as approval_required, never as a
+  // timeout that leaves it pending unannounced (same finding, and invoker-audit 228).
+  const waitEnds = performance.now() + input.timeoutMs - NESTED_WAIT_MARGIN_MS
   return {
     nestedKey,
     invokeNested: (call: NestedCall) => nesting.run({
       request: { requestId: requestIdOf(call.id), tool: call.tool, args: call.args, approvalTokens: request.approvalTokens, context: { ...request.context, stageId } },
       sessionId: input.sessionId,
       signal: call.signal ? AbortSignal.any([input.signal, call.signal]) : input.signal,
-      ...(nesting.isCancel ? { isCancel: nesting.isCancel } : {}),
+      ...(cancels ? { isCancel: cancels } : {}),
       ...(nesting.approvalWait ? { approvalWait: nesting.approvalWait } : {}),
+      holdAtMostMs: Math.max(1, Math.round(waitEnds - performance.now())),
       via,
     }),
     forgetNested: (ids) => {
@@ -719,6 +739,7 @@ function sessionIdTooLong(request: InvokeRequest): InvokeResponse {
 
 function shapeError(error: unknown, tool: string): { code: string; message: string; retryable: boolean } {
   if (error instanceof InvocationsClosedError) return { code: 'BUCKLE_SHUTTING_DOWN', message: 'Buckle shut down during this call and cancelled it; if it had started, its effects are unknown', retryable: false }
+  if (error instanceof ScriptEndedError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof ToolInputError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof ToolExecutionError) return { code: error.code, message: error.message, retryable: error.retryable }
   if (error instanceof ApprovalConflictError) return { code: 'APPROVAL_CONFLICT', message: error.message, retryable: false }
