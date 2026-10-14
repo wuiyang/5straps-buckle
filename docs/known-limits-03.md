@@ -21,8 +21,9 @@ paths, and [part two](known-limits-02.md) the programs Buckle starts itself.
 - Buckle writes a script's record to disk when the script stops, not as each call runs. A crash or
   kill of the Buckle process mid-script loses every call since the script's last stop: the next
   unchanged send runs them again. A script resumed after an approval falls back to its first
-  run's record, so it asks again for the approved call, which already ran, and runs the calls
-  after it again.
+  run's record. Approved once, it asks again for the approved call, which already ran; approved
+  for the session or always, that grant lets the call run again with no ask. Either way, the
+  calls after it run again too.
 - A nested call's error text reaches the script, which can read it, branch on it, and return it:
   a refusal's message, with the path, host, or command a rule names, reaches the agent through the
   script as it would from a direct call, and the script can try another call in response, each of
