@@ -27,7 +27,7 @@ hiding, and paths, and [part three](known-limits-03.md) code mode and the comman
 - A program outside every root that hard-links a file inside one runs, as Buckle cannot see a
   file's other names: keep such links off `PATH`.
 - On Windows, Buckle judges each program, `PATH` entry, and browser profile folder by the real
-  path Windows gives it too, so a `subst` drive or a drive mapped to a folder cannot hide a
+  path Windows gives every place on its way too, links included, so a `subst` drive or a drive mapped to a folder cannot hide a
   workspace, and in long names, so an 8.3 short name such as `PROJEC~1` cannot either. A real path
   Buckle cannot read or that lies on a network share is refused, and so is a short name it cannot
   read back. Only an imitated Windows has tested this so far, not a Windows machine.
