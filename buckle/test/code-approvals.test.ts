@@ -1040,6 +1040,22 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(result).toMatchObject({ ok: false, error: { kind: 'script', message: expect.stringContaining(`${CODE_GLOBAL_LIMIT}: this script called describeTool and searchTools more than ${MAX_GLOBAL_CALLS} times`) } })
   }, 60_000)
 
+  // Recheck 2 of the final review of 0.1.4, finding code index.ts:477: a script that handles a stub's error and passes it
+  // on diverges on it, and the record is kept, so a restart and a third unchanged send still run nothing.
+  it('keeps the record of a replay that diverges on a stub the script handled, so the third send runs nothing', async () => {
+    const directory = scratch()
+    const script = 'const failed = []; for (let i = 0; i < 6; i++) { try { await tools.echo({ i }) } catch (error) { failed.push(i) } } const pushed = await tools.echo({ push: true }).then(() => "pushed", error => "push: " + error.code); await tools.echo({ report: { failed, pushed } }); while (true) {}'
+    expect(await codeRun(directory, async call => ok(call, 'x'.repeat(5_000)), { journalBytes: 8_192, timeoutMs: 1_000 })(script)).toMatchObject({ ok: false, error: { kind: 'timeout' } })
+    expect(kept(directory).map(journal => journal.entries.length)).toEqual([8])
+
+    const invoked = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
+    for (let send = 2; send <= 3; send++) {
+      await expect(codeRun(directory, invoked, { journalBytes: 8_192 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      expect(kept(directory).map(journal => journal.entries.length)).toEqual([8])
+    }
+    expect(invoked).not.toHaveBeenCalled()
+  }, 60_000)
+
   // Recheck 2 of the final review of 0.1.4, finding code index.ts:363: a global made again with other arguments than its
   // first run's is refused before any call runs.
   it('refuses a replay whose global differs from its first run\'s, before any call runs', async () => {
