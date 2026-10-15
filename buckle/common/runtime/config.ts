@@ -49,8 +49,12 @@ export interface NodeConfig {
    * answers the router's 404, admin credential or not. The local CLI never needs it.
    */
   experimentalAdminHttp: boolean
-  /** BUCKLE_WORKSPACE_ROOT as typed, from a node set up before the workspace model: `buckle mcp`'s legacy pick. */
-  workspaceRootSetting?: string
+  /**
+   * BUCKLE_WORKSPACE_ROOT as typed, where the environment the process was started with sets it, as an MCP config
+   * written before the workspace model does: `buckle mcp`'s legacy pick. Never buckle.env's line, which migration alone
+   * reads (fix brief 1, B; finding 1 of the Phase 1 review).
+   */
+  callerWorkspaceRoot?: string
   /** What a node set up before the workspace model kept for its folder, which migration reads once (MigrationInput). */
   migration: MigrationInput
   /** Directories writable without asking. Empty by default, so the first write anywhere asks. */
@@ -181,7 +185,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     usage: environment.BUCKLE_USAGE ?? '',
     authToken,
     adminToken,
-    ...(environment.BUCKLE_WORKSPACE_ROOT ? { workspaceRootSetting: typedPath(environment.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
+    ...(layers.caller.BUCKLE_WORKSPACE_ROOT ? { callerWorkspaceRoot: typedPath(layers.caller.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
     migration: migrationInput(environment, layers, platform),
     // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
     scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)),
@@ -237,14 +241,14 @@ const BROWSER_KEYS = ['BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BR
  */
 const MIGRATION_KEYS: readonly string[] = Object.freeze([...WORKSPACE_ENVIRONMENT_KEYS, 'BUCKLE_AUTH_TOKEN', 'BUCKLE_WORKSPACE_ROOT'])
 
-function migrationInput(environment: NodeJS.ProcessEnv, layers: EnvironmentLayers, platform: NodeJS.Platform): MigrationInput {
-  const source: NodeJS.ProcessEnv = layers.file?.values ?? environment
+function migrationInput(merged: NodeJS.ProcessEnv, layers: EnvironmentLayers, platform: NodeJS.Platform): MigrationInput {
+  const environment: NodeJS.ProcessEnv = layers.file?.values ?? merged
   const file = layers.file
   return {
     file: file?.path ?? null,
-    settings: Object.freeze(Object.fromEntries([...WORKSPACE_ENVIRONMENT_KEYS, ...BROWSER_KEYS].flatMap(key => source[key] === undefined ? [] : [[key, source[key]]]))),
-    authToken: source.BUCKLE_AUTH_TOKEN ?? '',
-    ...(source.BUCKLE_WORKSPACE_ROOT ? { workspaceRoot: typedPath(source.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
+    settings: Object.freeze(Object.fromEntries([...WORKSPACE_ENVIRONMENT_KEYS, ...BROWSER_KEYS].flatMap(key => environment[key] === undefined ? [] : [[key, environment[key]]]))),
+    authToken: environment.BUCKLE_AUTH_TOKEN ?? '',
+    ...(environment.BUCKLE_WORKSPACE_ROOT ? { workspaceRoot: typedPath(environment.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
     conflicts: file === null ? [] : MIGRATION_KEYS.filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file.values[key]),
   }
 }

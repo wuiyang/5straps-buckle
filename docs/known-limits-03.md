@@ -36,5 +36,8 @@ paths, and [part two](known-limits-02.md) the programs Buckle starts itself.
 
 ## The command line
 
-- `buckle serve --help` and `buckle mcp --help` start the service rather than print help.
-  `buckle --help` lists the commands without reading any configuration.
+- `buckle --help`, `buckle serve --help`, and `buckle mcp --help` print the usage without reading
+  any configuration. `buckle mcp` takes `--workspace <id>` and `--dir <path>` alone: any other
+  argument stops it with "Buckle failed to start", where 0.1 ignored one, so an MCP config left
+  with an old argument starts nothing until the argument goes. `buckle serve` ignores an argument
+  it does not know.

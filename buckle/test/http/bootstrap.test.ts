@@ -441,20 +441,71 @@ describe('a project outside every workspace\'s folder', () => {
     expect(await named.exited).toEqual({ code: 0, signal: null })
   }, 60_000)
 
-  it('serves buckle mcp the workspace BUCKLE_WORKSPACE_ROOT names, and refuses it elsewhere once nothing names one', async () => {
+  // Finding 1 of the Phase 1 review: the line 0.1's buckle init wrote stays in buckle.env, and must not steer buckle mcp.
+  it('serves buckle mcp the folder its own environment names in BUCKLE_WORKSPACE_ROOT, never buckle.env\'s line, which it names at start', async () => {
     const { node, env, elsewhere } = await nodeFromFile()
-    const legacy = spawnBuckle({ entry, args: ['mcp'], env, cwd: elsewhere, stdin: 'pipe' })
-    running.push(legacy)
-    await legacy.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')
-    legacy.child.stdin!.end()
-    expect(await legacy.exited).toEqual({ code: 0, signal: null })
-
-    writeFileSync(join(node.state, 'buckle.env'), 'BUCKLE_AUTH_TOKEN=outside-root-agent-token\n', { mode: 0o600 })
+    writeFileSync(join(node.state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${node.workspace}\n`, { mode: 0o600 })
     const refused = spawnBuckle({ entry, args: ['mcp'], env, cwd: elsewhere, stdin: 'pipe' })
     running.push(refused)
     expect(await refused.exited).toEqual({ code: 1, signal: null })
     expect(refused.stderr()).toContain('No workspace holds the current directory')
+    expect(refused.lines().some(line => line.level === 'warn' && line.message.includes('Add --workspace <id> to your MCP configs, then run buckle settings unset root'))).toBe(true)
+
+    const legacy = spawnBuckle({ entry, args: ['mcp'], env: { ...env, BUCKLE_WORKSPACE_ROOT: node.workspace }, cwd: elsewhere, stdin: 'pipe' })
+    running.push(legacy)
+    expect((await legacy.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')).fields?.workspaceId).toBe('default')
+    legacy.child.stdin!.end()
+    expect(await legacy.exited).toEqual({ code: 0, signal: null })
   }, 60_000)
+})
+
+// The workspace-model brief, item 3, and finding 23 of the Phase 1 review: buckle mcp serves --workspace, else --dir,
+// else the BUCKLE_WORKSPACE_ROOT its own environment sets, else the workspace holding the directory it starts in.
+describe('the workspace buckle mcp serves (built dist)', () => {
+  async function twoWorkspaces(): Promise<{ env: NodeJS.ProcessEnv; projA: string; projB: string }> {
+    const node = await prepareNode({ BUCKLE_ADMIN_TOKEN: 'mcp-pick-admin-fixture' })
+    const { BUCKLE_WORKSPACE_ROOT: _root, BUCKLE_AUTH_TOKEN: _token, ...env } = node.env
+    const projA = join(node.root, 'proj-a')
+    const projB = join(node.root, 'proj-b')
+    for (const [dir, id] of [[projA, 'proja'], [projB, 'projb']] as const) {
+      mkdirSync(dir)
+      const made = spawnBuckle({ entry, args: ['workspace', 'init', '--id', id], env, cwd: dir })
+      running.push(made)
+      expect(await made.exited).toEqual({ code: 0, signal: null })
+    }
+    return { env, projA, projB }
+  }
+
+  async function served(input: { env: NodeJS.ProcessEnv; cwd: string; args?: string[] }): Promise<unknown> {
+    const run = spawnBuckle({ entry, args: ['mcp', ...input.args ?? []], env: input.env, cwd: input.cwd, stdin: 'pipe' })
+    running.push(run)
+    const ready = await run.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')
+    run.child.stdin!.end()
+    expect(await run.exited).toEqual({ code: 0, signal: null })
+    return ready.fields?.workspaceId
+  }
+
+  it('serves the workspace holding the directory it starts in, where nothing names one', async () => {
+    const { env, projB } = await twoWorkspaces()
+    expect(await served({ env, cwd: projB })).toBe('projb')
+  }, 60_000)
+
+  it('serves the workspace --dir or --workspace names over the BUCKLE_WORKSPACE_ROOT its environment sets, and that one without them', async () => {
+    const { env, projA, projB } = await twoWorkspaces()
+    const legacy = { ...env, BUCKLE_WORKSPACE_ROOT: projA }
+    expect(await served({ env: legacy, cwd: projA, args: ['--dir', projB] })).toBe('projb')
+    expect(await served({ env: legacy, cwd: projA, args: ['--workspace', 'projb'] })).toBe('projb')
+    expect(await served({ env: legacy, cwd: projB })).toBe('proja')
+  }, 60_000)
+
+  // Finding 24: help starts nothing, needs no configuration, and prints the usage.
+  it.each([['mcp', '--help'], ['mcp', '-h'], ['serve', '--help'], ['serve', '-h']])('prints the usage for buckle %s %s and starts nothing', async (command, flag) => {
+    const state = join(tmpdir(), 'buckle-help-state-never-made')
+    // Bounded, so a service that starts instead fails the test rather than holding it open.
+    const printed = execFileSync(entry, [command, flag], { encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: { PATH: process.env.PATH, BUCKLE_STATE_DIR: state, BUCKLE_PORT: String(await freePort()) } })
+    expect(printed).toContain(`Usage: buckle ${command}`)
+    expect(existsSync(state)).toBe(false)
+  }, 30_000)
 })
 
 describe('buckle mcp bootstrap (built dist)', () => {

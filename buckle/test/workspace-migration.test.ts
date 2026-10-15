@@ -438,6 +438,20 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(JSON.parse(readFileSync(join(input.state, 'policy.v1.json'), 'utf8')).workspaces[input.folder].commands.deny).toEqual(['wget *'])
     })
 
+    // Findings 1 and 13: the BUCKLE_WORKSPACE_ROOT line 0.1's buckle init wrote is migration input only.
+    it('says, at the move and at each later start, that buckle.env\'s BUCKLE_WORKSPACE_ROOT never steers buckle mcp, naming the two steps', async () => {
+      const input = scene()
+      const { path, config } = withFile(input)
+      const notices = vi.spyOn(logger, 'warn')
+      await openWorkspaceManager({ config })
+      await openWorkspaceManager({ config })
+      const said = notices.mock.calls.map(([message]) => String(message)).filter(message => message.startsWith(`${path} sets BUCKLE_WORKSPACE_ROOT`))
+      expect(said).toHaveLength(2)
+      expect(said[0]).toContain('Add --workspace <id> to your MCP configs, then run buckle settings unset root.')
+      expect(config.callerWorkspaceRoot).toBeUndefined()
+      expect(loadConfig({}, process.platform, { file: { path, values: { BUCKLE_WORKSPACE_ROOT: input.folder } }, caller: { BUCKLE_WORKSPACE_ROOT: input.site } }).callerWorkspaceRoot).toBe(input.site)
+    })
+
     it('warns at each later start where BUCKLE_AUTH_TOKEN is set again, naming the rotation, as the node does not read it', async () => {
       const input = scene()
       await open(input)

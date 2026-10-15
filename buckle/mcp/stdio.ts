@@ -19,14 +19,16 @@ export function mcpTarget(options: readonly string[]): McpTarget {
 
 /**
  * stdout carries the MCP protocol here, so every log line must go to stderr. The workspace served is the one asked
- * for, else the one whose folder holds BUCKLE_WORKSPACE_ROOT, which an MCP config written before the workspace model
- * sets, else the one whose folder holds the directory the client started this in (the workspace-model brief, item 3).
+ * for, else the one whose folder holds BUCKLE_WORKSPACE_ROOT where this process's own environment sets it, as an MCP
+ * config written before the workspace model does, else the one whose folder holds the directory the client started
+ * this in (the workspace-model brief, item 3). buckle.env's line never steers it: a node moved from 0.1 keeps that
+ * line, which would send every plain `buckle mcp` to workspace default (finding 1 of the Phase 1 review).
  */
 export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleCommon; logger: Logger; target: McpTarget }): Promise<void> {
   const { common } = input
   await common.start()
   const workspaces = await common.services.getWorkspaces()
-  const legacy = input.target.workspace === undefined && input.target.dir === undefined && input.config.workspaceRootSetting !== undefined ? { dir: input.config.workspaceRootSetting } : {}
+  const legacy = input.target.workspace === undefined && input.target.dir === undefined && input.config.callerWorkspaceRoot !== undefined ? { dir: input.config.callerWorkspaceRoot } : {}
   const { config, runtime } = await workspaces.resolve(workspaces.target({ ...input.target, ...legacy, cwd: process.cwd() }))
   const version = runtime.manifest().version
   const transport = createAuditedStdioTransport({

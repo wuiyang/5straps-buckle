@@ -56,6 +56,8 @@ export async function main(argv: readonly string[]): Promise<number | undefined>
   configureOwnerOnlyCheck({ skip: global.skipOwnerOnlyCheck })
   const mode = selectMode(global.argv)
   if (!('argv' in mode)) {
+    // Help needs no configuration, and starts nothing (finding 24 of the workspace-model Phase 1 review).
+    if (mode.options.some(option => option === '--help' || option === '-h')) return printServiceUsage(mode.kind)
     await runService({ kind: mode.kind, options: mode.options, ...configureProcess() })
     return undefined
   }
@@ -89,6 +91,26 @@ function configureProcess(): { config: NodeConfig; logging: LoggerRoot } {
   const ignored = environmentWorkspaceKeys(process.env)
   if (ignored.length > 0) logging.logger.warn(`Ignored: ${ignored.join(', ')} ${ignored.length === 1 ? 'is a workspace setting' : 'are workspace settings'}, read only when a node moves to the workspace model. Change a workspace with buckle workspace set or buckle policy, and remove these with buckle settings unset or from the shell or MCP config's env.`)
   return { config: loadConfig(process.env, process.platform, { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller }), logging }
+}
+
+const SERVICE_USAGE: Record<ServiceKind, string> = {
+  serve: `Usage: buckle serve
+
+Serves every online workspace over HTTP, native RPC and MCP, at BUCKLE_HOST and BUCKLE_PORT (127.0.0.1:4320 by
+default). An agent's token chooses its workspace. In a terminal it lists the workspaces it serves and asks each
+approval there. Ctrl-C stops it.
+`,
+  mcp: `Usage: buckle mcp [--workspace <id> | --dir <path>]
+
+Serves one workspace's MCP over stdio, for an MCP client to start: the workspace --workspace names, else the one
+holding --dir, else the one holding BUCKLE_WORKSPACE_ROOT where this command's own environment sets it, else the one
+holding the directory it starts in. Logs go to stderr, as stdout carries the protocol.
+`,
+}
+
+function printServiceUsage(kind: ServiceKind): number {
+  process.stdout.write(SERVICE_USAGE[kind])
+  return 0
 }
 
 // A one-shot command answers a person at a terminal: the reason on one line, the detail at debug level.

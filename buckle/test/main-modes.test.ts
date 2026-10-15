@@ -152,6 +152,15 @@ describe('main', () => {
     } finally { vi.unstubAllEnvs() }
   })
 
+  // Finding 24 of the workspace-model Phase 1 review: help starts nothing and reads no configuration.
+  it.each([['serve', '--help'], ['serve', '-h'], ['mcp', '--help'], ['mcp', '-h'], ['mcp', '--workspace', 'site', '--help']])('prints the usage for %j and starts nothing', async (...argv) => {
+    const printed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    expect(await main(argv)).toBe(0)
+    expect(String(printed.mock.calls[0]![0])).toContain(`Usage: buckle ${argv[0]}`)
+    expect(entry.loadEnvironmentFile).not.toHaveBeenCalled()
+    expect(entry.initializeCommon).not.toHaveBeenCalled()
+  })
+
   it('hands every other argument list to the CLI with the loaded config', async () => {
     expect(await main(['fs', 'read', 'notes.txt'])).toBe(5)
     expect(entry.runCli).toHaveBeenCalledWith({ argv: ['fs', 'read', 'notes.txt'], config })

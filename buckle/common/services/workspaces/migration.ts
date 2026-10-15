@@ -425,16 +425,29 @@ function notices(input: { node: NodeConfig; plans: Planned[]; hadRegistry: boole
     ...(input.plans.length > 1 ? ['Each registered workspace\'s admin credential is retired: the node\'s admin token opens every workspace.'] : []),
     ...(input.hadRegistry ? [`${REGISTRY_BACKUP} holds the registered workspaces' agent tokens and admin credentials in clear text: once the node works as it should, delete every *.v1.json file in the state directory and in its workspaces folders.`] : []),
     ...(keys.length > 0 ? [`${keys.join(', ')} ${keys.length === 1 ? 'is a workspace setting now: its value was' : 'are workspace settings now: their values were'} copied into each workspace's workspace.json, and Buckle ignores ${keys.length === 1 ? 'it' : 'them'} from here on. Remove ${keys.length === 1 ? 'it' : 'them'} with buckle settings unset.`] : []),
+    ...rootLineNotice(input.node),
   ]
 }
 
 /**
- * What a node already on the workspace model is told at each start about what it no longer reads (fix brief 1, A5): a
- * BUCKLE_AUTH_TOKEN changed in buckle.env, the 0.1 way to rotate it, would otherwise leave the old token working
- * unseen (finding 22).
+ * The BUCKLE_WORKSPACE_ROOT line 0.1's buckle init always wrote: read once, as workspace default's folder, and never by
+ * `buckle mcp`, which takes it only from an MCP config's own env (fix brief 1, B; findings 1 and 13).
+ */
+function rootLineNotice(node: NodeConfig): string[] {
+  const file = node.migration.file
+  if (file === null || node.migration.workspaceRoot === undefined) return []
+  return [`${file} sets BUCKLE_WORKSPACE_ROOT, which the node reads only when it moves onto workspaces, as workspace default's folder. A plain buckle mcp never serves that folder for it: it serves the workspace holding the directory it starts in, or the folder an MCP config's own env names in BUCKLE_WORKSPACE_ROOT. Add --workspace <id> to your MCP configs, then run buckle settings unset root.`]
+}
+
+/**
+ * What a node already on the workspace model is told at each start about what it no longer reads (fix brief 1, A5 and
+ * B): a BUCKLE_AUTH_TOKEN changed in buckle.env, the 0.1 way to rotate it, would otherwise leave the old token working
+ * unseen (finding 22), and the BUCKLE_WORKSPACE_ROOT line no longer steers `buckle mcp`.
  */
 function movedNodeNotices(node: NodeConfig): string[] {
-  if (node.authToken === '') return []
   const where = node.migration.file !== null && node.migration.authToken !== '' ? `in ${node.migration.file}` : 'in the environment'
-  return [`BUCKLE_AUTH_TOKEN is set ${where}, but a node on the workspace model does not read it: the token it held when the node moved is workspace default's token node, and changing the variable changes nothing. Rotate the token with buckle workspace token create --workspace default, then buckle workspace token revoke node --workspace default, and remove the variable.`]
+  return [
+    ...(node.authToken === '' ? [] : [`BUCKLE_AUTH_TOKEN is set ${where}, but a node on the workspace model does not read it: the token it held when the node moved is workspace default's token node, and changing the variable changes nothing. Rotate the token with buckle workspace token create --workspace default, then buckle workspace token revoke node --workspace default, and remove the variable.`]),
+    ...rootLineNotice(node),
+  ]
 }
