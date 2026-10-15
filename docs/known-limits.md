@@ -3,7 +3,7 @@
 What Buckle, the approval and sandbox runtime on this machine, does not yet read, hide, or
 handle, each with an example. [What stays unread](policy-03.md) covers reading commands in more
 depth, [part two](known-limits-02.md) the programs it starts itself, and
-[part three](known-limits-03.md) code mode and the command line.
+[part three](known-limits-03.md) code mode, the command line, and workspaces.
 
 ## Reading commands
 
