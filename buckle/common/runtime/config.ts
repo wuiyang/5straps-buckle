@@ -149,16 +149,15 @@ export interface EnvironmentLayers {
 }
 
 /**
- * What migration reads, once (Q14, Q15): the environment file's own values, never what a shell or an MCP config's env
- * set over them, so the first command after an upgrade cannot write its caller's settings into every workspace for
- * good (finding 34 of the Phase 1 review). A node with no file was configured by the environment it starts with, and
- * that is what migration reads there.
+ * What migration reads, once (Q15): the environment file's own token and folder, never what a shell or an MCP config's
+ * env set over them, so the first command after an upgrade cannot make its caller's token or folder the node's for good
+ * (finding 34 of the Phase 1 review). A node with no file was configured by the environment it starts with, and that is
+ * what migration reads there. The node's workspace settings stay in buckle.env as its defaults (D85, Q3), so migration
+ * copies none of them.
  */
 export interface MigrationInput {
   /** The environment file read, which migration takes BUCKLE_AUTH_TOKEN out of once it is hashed; null where none was. */
   file: string | null
-  /** The workspace settings it names (WORKSPACE_ENVIRONMENT_KEYS and the browser's). */
-  settings: Readonly<Record<string, string>>
   /** BUCKLE_AUTH_TOKEN, which becomes workspace default's token `node`. */
   authToken: string
   /** BUCKLE_WORKSPACE_ROOT as typed: workspace default's folder. */
@@ -228,39 +227,21 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
 }
 
 /**
- * The workspace settings a node set up before the workspace model kept in its environment (Q14 of the workspace-model
- * brief): migration input only, and ignored by a node once its workspaces carry their own (environmentWorkspaceKeys).
+ * The keys whose caller value, where it differs from the file's, refuses the move: the token and the folder it makes
+ * the node's own. The node's workspace settings are not among them, as the move copies none (D85, Q3): a caller's value
+ * is an ordinary override of a node setting, read at each start.
  */
-export const WORKSPACE_ENVIRONMENT_KEYS: readonly string[] = Object.freeze([
-  'BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW',
-  'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
-  'BUCKLE_APPROVAL_TIMEOUT_MS',
-])
-
-const BROWSER_KEYS = ['BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED']
-
-/**
- * The keys whose caller value, where it differs from the file's, refuses the move. The browser's are left out: they
- * still drive the browser from the node's environment, where a caller's value is an ordinary override, and migration
- * copies the file's into each workspace.json, which nothing reads yet.
- */
-const MIGRATION_KEYS: readonly string[] = Object.freeze([...WORKSPACE_ENVIRONMENT_KEYS, 'BUCKLE_AUTH_TOKEN', 'BUCKLE_WORKSPACE_ROOT'])
+const MIGRATION_KEYS: readonly string[] = Object.freeze(['BUCKLE_AUTH_TOKEN', 'BUCKLE_WORKSPACE_ROOT'])
 
 function migrationInput(merged: NodeJS.ProcessEnv, layers: EnvironmentLayers, platform: NodeJS.Platform): MigrationInput {
   const environment: NodeJS.ProcessEnv = layers.file?.values ?? merged
   const file = layers.file
   return {
     file: file?.path ?? null,
-    settings: Object.freeze(Object.fromEntries([...WORKSPACE_ENVIRONMENT_KEYS, ...BROWSER_KEYS].flatMap(key => environment[key] === undefined ? [] : [[key, environment[key]]]))),
     authToken: environment.BUCKLE_AUTH_TOKEN ?? '',
     ...(environment.BUCKLE_WORKSPACE_ROOT ? { workspaceRoot: typedPath(environment.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
     conflicts: file === null ? [] : MIGRATION_KEYS.filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file.values[key]),
   }
-}
-
-/** The workspace settings the environment still names, which a node on the workspace model ignores. */
-export function environmentWorkspaceKeys(environment: NodeJS.ProcessEnv = process.env): string[] {
-  return WORKSPACE_ENVIRONMENT_KEYS.filter(key => environment[key] !== undefined)
 }
 
 /**
@@ -518,7 +499,7 @@ function parseRingsApprovalKey(value: string | undefined): ApprovalKey | undefin
 }
 
 /**
- * The policy a node set up before the workspace model kept in its environment, migration input only (Q14). Patterns
+ * The node's policy lists from its environment, its workspace defaults (nodeDefaultsFrom; D85, Q3 and Q14). Patterns
  * are shell-word globs, one per line or separated by `;;`. BUCKLE_ALLOWED_INTERPRETERS names, comma separated, the
  * interpreters read as ordinary commands.
  */

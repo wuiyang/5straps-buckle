@@ -15,11 +15,11 @@ import { workspaceIdFor } from '../common/services/workspaces/workspace-id.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { byName, workspaceIdOf } from './support/workspaces.js'
 
-// The workspace-model brief, item 1, Q14 and Q15, and D85, Q15: a node set up before the workspace model moves onto it at
+// The workspace-model brief, item 1, and D85, Q3, Q14, and Q15: a node set up before the workspace model moves onto it at
 // its first start, once. Its own folder becomes a workspace named after the folder, with an id derived from it, and its
 // records move to the workspace's own directory; every token is kept as its sha256; each workspace's admin credential
-// goes; what the node enforced on each workspace is kept in that workspace's workspace.json, exactly, or the move
-// refuses and changes nothing.
+// goes; each workspace.json holds what was the workspace's own, and the node's settings stay in its environment file as
+// every workspace's defaults, copied into none.
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -106,86 +106,61 @@ describe('moving a 0.1 node onto the workspace model', () => {
     expect((await open(input)).list().find(workspace => workspace.id === siteId(input))).toMatchObject({ online: false })
   })
 
-  it('copies the environment\'s settings into each workspace, the stored policy unioned into default\'s, and says which keys it copied', async () => {
+  // D85, Q3 and Q14: the move copies no node setting into any workspace.json and intersects nothing; a registered
+  // workspace's scalars were never its own, so they stay unset and follow the node's.
+  it('copies none of the environment\'s settings into a workspace, leaving each workspace\'s own alone, and every other setting the node\'s', async () => {
     const input = scene({ BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,web', BUCKLE_APPROVAL_TIMEOUT_MS: '0', BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_WORKSPACE_MOUNT: '/project' })
     writeFileSync(join(input.state, 'policy.json'), JSON.stringify({ version: 1, workspaces: { [input.folder]: policy(value => { value.commands.deny = ['wget *'] }) } }))
     version1(input)
     const notices = vi.spyOn(logger, 'warn')
-    await open(input)
+    const manager = await open(input)
 
-    // Finding 42 of the Phase 1 review: the keys, in the order the node lists them, and what to do with them.
-    expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('BUCKLE_COMMAND_DENY, BUCKLE_WORKSPACE_MOUNT, BUCKLE_PACKS, BUCKLE_ALLOW_SHELL, BUCKLE_APPROVAL_TIMEOUT_MS are workspace settings now: their values were copied into each workspace\'s workspace.json, and Buckle ignores them from here on. Remove them with buckle settings unset.')
+    expect(notices.mock.calls.map(([message]) => String(message)).filter(message => message.includes('copied'))).toEqual([])
     const own = settings(input, ownId(input))
-    expect(own.packs).toMatchObject({ enabled: ['fs', 'web'], shell: false })
-    expect(own.approvalWaitMs).toBe(0)
-    expect(own.policy.commands.deny).toEqual(['curl *', 'wget *'])
-    expect(own.mounts).toEqual([{ kind: 'workspace', target: '/project', access: 'write' }])
+    expect(own.packs).toEqual({})
+    expect(own).not.toHaveProperty('approvalWaitMs')
+    expect(own).not.toHaveProperty('mounts')
+    expect(own.policy.commands).toMatchObject({ allow: [], deny: ['wget *'] })
     const site = settings(input, siteId(input))
-    expect(site.packs).toMatchObject({ enabled: ['fs', 'web'], shell: false })
-    expect(site.policy.commands.deny).toEqual(['curl *'])
+    expect(site.packs).toEqual({})
+    expect(site).not.toHaveProperty('approvalWaitMs')
+    expect(site.policy.commands).toMatchObject({ allow: [], deny: [] })
     expect(site.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
+    // In force, each takes the node's settings, and the node's deny list over its own.
+    expect((await byName(manager, 'project')).config).toMatchObject({ enableShell: false, enabledPacks: ['fs', 'web'], approvalTimeoutMs: null, policy: { mount: '/project', commands: { deny: ['curl *', 'wget *'] } } })
+    expect((await byName(manager, 'site')).config).toMatchObject({ enableShell: false, enabledPacks: ['fs', 'web'], approvalTimeoutMs: null, policy: { mount: '/workspace', commands: { deny: ['curl *'] } } })
   })
 
-  it('names one copied key in the singular, and none where the environment held no workspace setting', async () => {
-    const one = scene({ BUCKLE_ALLOW_CODE: 'false' })
-    const notices = vi.spyOn(logger, 'warn')
-    await open(one)
-    const told = () => notices.mock.calls.map(([message]) => String(message))
-    expect(told()).toContainEqual('BUCKLE_ALLOW_CODE is a workspace setting now: its value was copied into each workspace\'s workspace.json, and Buckle ignores it from here on. Remove it with buckle settings unset.')
-
-    notices.mockClear()
-    await open(scene())
-    expect(told().filter(message => message.includes('copied into each workspace'))).toEqual([])
-  })
-
-  it('keeps a folder with no mount showing its real path, as the node showed it', async () => {
+  it('keeps a folder with no mount of its own showing where the node says, its real path where the node names none', async () => {
     const input = scene()
-    await open(input)
-    expect(settings(input, ownId(input)).mounts).toEqual([])
+    const manager = await open(input)
+    expect(settings(input, ownId(input))).not.toHaveProperty('mounts')
+    expect((await byName(manager, 'project')).config.policy.mount).toBeNull()
   })
 
-  // Q14: the node's lists were a ceiling over each registered workspace; one list per workspace keeps exactly what both admitted.
+  // D85, Q14: a workspace's own lists are kept as they were, and the node's stay the node's; nothing is intersected.
   it.each([
-    ['the node\'s allow list where the workspace has none', { BUCKLE_COMMAND_ALLOW: 'pnpm *' }, policy(), { allow: ['pnpm *'] }],
-    ['the workspace\'s narrower allow list', { BUCKLE_COMMAND_ALLOW: 'pnpm *;;git *' }, policy(value => { value.commands.allow = ['pnpm *'] }), { allow: ['pnpm *'] }],
-    ['the node\'s narrower allow list', { BUCKLE_COMMAND_ALLOW: 'pnpm *' }, policy(value => { value.commands.allow = ['pnpm *', 'git *'] }), { allow: ['pnpm *'] }],
-    ['both deny lists', { BUCKLE_COMMAND_DENY: 'curl *' }, policy(value => { value.commands.deny = ['rm *'] }), { deny: ['curl *', 'rm *'] }],
-    ['the interpreters both allow', { BUCKLE_ALLOWED_INTERPRETERS: 'node' }, policy(value => { value.commands.allowedInterpreters = ['node', 'python3'] }), { allowedInterpreters: ['node'] }],
-    ['no interpreter where the node allowed none', {}, policy(value => { value.commands.allowedInterpreters = ['node'] }), { allowedInterpreters: [] }],
-  ] as const)('keeps %s', async (_case, environment, own, commands) => {
+    ['no allow list of its own, which takes the node\'s', { BUCKLE_COMMAND_ALLOW: 'pnpm *' }, policy(), { allow: [] }, { allow: ['pnpm *'] }],
+    ['its own allow list, which it uses alone', { BUCKLE_COMMAND_ALLOW: 'pnpm *;;git *' }, policy(value => { value.commands.allow = ['make *'] }), { allow: ['make *'] }, { allow: ['make *'] }],
+    ['its own deny list, under the node\'s', { BUCKLE_COMMAND_DENY: 'curl *' }, policy(value => { value.commands.deny = ['rm *'] }), { deny: ['rm *'] }, { deny: ['curl *', 'rm *'] }],
+    ['its own interpreters, which it uses alone', { BUCKLE_ALLOWED_INTERPRETERS: 'python3', BUCKLE_COMMAND_DENY: 'curl *' }, policy(value => { value.commands.allowedInterpreters = ['node'] }), { allowedInterpreters: ['node'] }, { allowedInterpreters: ['node'], deny: ['curl *'] }],
+    ['no interpreter list of its own, which takes the node\'s', { BUCKLE_ALLOWED_INTERPRETERS: 'python3', BUCKLE_COMMAND_DENY: 'curl *' }, policy(), { deny: [] }, { allowedInterpreters: ['python3'], deny: ['curl *'] }],
+  ] as const)('moves a registered workspace with %s, refusing nothing', async (_case, environment, own, stored, inForce) => {
     const input = scene(environment)
     version1(input, { policy: own })
-    await open(input)
-    expect(settings(input, siteId(input)).policy.commands).toMatchObject(commands)
+    const manager = await open(input)
+    expect(settings(input, siteId(input)).policy.commands).toMatchObject(stored)
+    expect((await byName(manager, 'site')).runtime.policy.effective().commands).toMatchObject(inForce)
   })
 
-  // Finding 38: under the node's deny list alone, an interpreter only the node allowed was asked about; one list refuses it.
-  it('refuses where one list would refuse an interpreter that was asked about, naming it, and changes nothing', async () => {
-    const input = scene({ BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_ALLOWED_INTERPRETERS: 'python3,node' })
-    const before = version1(input, { policy: policy(value => { value.commands.allowedInterpreters = ['node'] }) })
-    const failure = await open(input).catch((error: unknown) => error)
-
-    expect(failure).toBeInstanceOf(MigrationError)
-    expect((failure as Error).message).toContain('workspace site: the interpreter lists (python3 asked before, and one list would refuse it)')
-    expect(registry(input)).toBe(before)
-  })
-
-  it('keeps the shared interpreters where the workspace had a deny list of its own, which refused the others already', async () => {
-    const input = scene({ BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_ALLOWED_INTERPRETERS: 'python3,node' })
-    version1(input, { policy: policy(value => { value.commands.deny = ['rm *']; value.commands.allowedInterpreters = ['node'] }) })
-    await open(input)
-    expect(settings(input, siteId(input)).policy.commands).toMatchObject({ deny: ['curl *', 'rm *'], allowedInterpreters: ['node'] })
-  })
-
-  it('refuses where no one list admits exactly what both did, naming the workspace and the lists, and changes nothing', async () => {
+  it('says where a workspace\'s own allow-type lists now stand alone beside the node\'s, which were a ceiling over them', async () => {
     const input = scene({ BUCKLE_NETWORK_ALLOW: 'a.example', BUCKLE_COMMAND_ALLOW: 'pnpm *' })
-    const before = version1(input, { policy: policy(value => { value.network.allow = ['b.example']; value.commands.allow = ['git *'] }) })
-    const failure = await open(input).catch((error: unknown) => error)
+    version1(input, { policy: policy(value => { value.network.allow = ['b.example']; value.commands.allow = ['git *'] }) })
+    const notices = vi.spyOn(logger, 'warn')
+    const manager = await open(input)
 
-    expect(failure).toBeInstanceOf(MigrationError)
-    expect((failure as Error).message).toContain('workspace site: the command allow lists and the approved URL lists')
-    expect(registry(input)).toBe(before)
-    for (const id of [ownId(input), siteId(input)]) expect(existsSync(settingsPath(input.state, id))).toBe(false)
+    expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('Workspace site keeps its own command allow list and approved URL list, which it now uses alone: the node\'s BUCKLE_COMMAND_ALLOW and BUCKLE_NETWORK_ALLOW apply only to a workspace without one of its own (docs/workspaces-02.md). Add to its list with buckle policy where it needs what the node\'s admitted.')
+    expect((await byName(manager, 'site')).runtime.policy.effective()).toMatchObject({ commands: { allow: ['git *'] }, network: { allow: ['b.example'] } })
   })
 
   // A registered workspace's switch took effect only while the node's own was on; with that gate gone (Q14) a switch
@@ -215,12 +190,13 @@ describe('moving a 0.1 node onto the workspace model', () => {
     expect(JSON.parse(readFileSync(join(input.state, 'workspaces', ownId(input), 'grants.json'), 'utf8')).grants.map((item: { workspace: string }) => item.workspace)).toEqual([ownId(input), '/elsewhere'])
   })
 
-  it('reads the environment once: a later start\'s workspace settings change nothing', async () => {
+  // D85, Q3: the node's settings stay in its environment, so a later start's apply where a workspace sets none.
+  it('leaves the node\'s settings in its environment, so a later start\'s apply where a workspace sets none of its own', async () => {
     const input = scene({ BUCKLE_ALLOW_SHELL: 'false' })
     await open(input)
-    await open(input, { BUCKLE_ALLOW_SHELL: 'true', BUCKLE_COMMAND_ALLOW: 'curl *' })
-    expect(settings(input, ownId(input)).packs.shell).toBe(false)
-    expect(settings(input, ownId(input)).policy.commands.allow).toEqual([])
+    const later = await open(input, { BUCKLE_ALLOW_SHELL: 'true', BUCKLE_COMMAND_ALLOW: 'curl *' })
+    expect(settings(input, ownId(input)).packs).toEqual({})
+    expect((await byName(later, 'project')).config).toMatchObject({ enableShell: true, policy: { commands: { allow: ['curl *'] } } })
   })
 
   it('refuses where the node\'s folder would overlap a registered workspace, and changes nothing', async () => {
@@ -252,23 +228,14 @@ describe('moving a 0.1 node onto the workspace model', () => {
       return openWorkspaceManager({ config: loadConfig({ ...values, ...caller }, process.platform, { file: { path, values }, caller }) })
     }
 
-    it('copies the file\'s settings, whatever else the process environment holds', async () => {
+    // D85, Q3: the move writes none of the node's settings into a workspace.json, so a caller's env, an ordinary override
+    // of a node setting for that command, can make none of them a workspace's for good, and refuses nothing.
+    it('writes none of the file\'s settings, nor the caller\'s, into a workspace, and moves a caller that sets a workspace key otherwise', async () => {
       const input = scene()
       version1(input)
-      await fromFile(input, { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_LOG_LEVEL: 'warn' })
-      expect(settings(input, siteId(input))).toMatchObject({ packs: { shell: false }, policy: { commands: { deny: ['curl *'] }, network: { allow: ['api.example.com'] } } })
-    })
-
-    it('refuses a caller whose environment sets a workspace key otherwise, naming the keys and no value, and changes nothing', async () => {
-      const input = scene()
-      const before = version1(input)
-      const failure = await fromFile(input, { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'true', BUCKLE_COMMAND_DENY: '', BUCKLE_NETWORK_ALLOW: '', BUCKLE_PACKS: 'fs' }).catch((error: unknown) => error)
-
-      expect(failure).toBeInstanceOf(MigrationError)
-      expect((failure as Error).message).toContain(`BUCKLE_COMMAND_DENY, BUCKLE_NETWORK_ALLOW, BUCKLE_PACKS, BUCKLE_ALLOW_SHELL are set in this command's environment to another value than ${join(input.root, 'buckle.env')} holds`)
-      expect((failure as Error).message).not.toContain('curl')
-      expect(registry(input)).toBe(before)
-      for (const id of [ownId(input), siteId(input)]) expect(existsSync(settingsPath(input.state, id))).toBe(false)
+      await fromFile(input, { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'true', BUCKLE_COMMAND_DENY: '', BUCKLE_NETWORK_ALLOW: '', BUCKLE_PACKS: 'fs' })
+      expect(settings(input, siteId(input))).toMatchObject({ packs: {}, policy: { commands: { allow: [], deny: [] }, network: { allow: [] } } })
+      expect(JSON.parse(registry(input))).toMatchObject({ version: 2 })
     })
 
     it('refuses a 0.1 node whose token and folder its caller names but its file does not, rather than leave it no workspace', async () => {

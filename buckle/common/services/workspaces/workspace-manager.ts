@@ -24,7 +24,7 @@ import { openRegistry, sameName, touched, WorkspaceError, WorkspaceNameSchema, W
 import { assertNoHostExposure, canonicalDirectory, exposedRoots, overlaps } from './workspace-dirs.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
-import { defaultSettings, openSettingsFile, scopeOf, settingsPath, withPolicy, type WorkspaceSettings } from './workspace-settings.js'
+import { assertNodeDefaults, defaultSettings, openSettingsFile, scopeOf, settingsPath, withPolicy, type WorkspaceSettings } from './workspace-settings.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
 
@@ -97,6 +97,7 @@ export function nodeRootsOf(config: NodeConfig, platform: NodeJS.Platform = proc
 
 /** The node's workspaces (D83): migrates a node set up before the workspace model first (migrateNode), then serves the registry. */
 export async function openWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots; askName?: AskName }): Promise<WorkspaceManager> {
+  assertNodeDefaults(input.config.workspaceDefaults)
   for (const notice of await migrateNode({ node: input.config, ...(input.platform ? { platform: input.platform } : {}), ...(input.askName ? { askName: input.askName } : {}) })) logger.warn(notice)
   const manager = createWorkspaceManager(input)
   await manager.nodeActions.recoverInterrupted()

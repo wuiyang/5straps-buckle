@@ -275,25 +275,27 @@ describe('workspace-first initialization defaults', () => {
 
 // Finding 34 of the workspace-model Phase 1 review: buckle init on a 0.1 node moves it from the file's own values.
 describe('buckle init on a node set up before workspaces', () => {
-  it('moves the node from its file alone, refusing a shell that sets a workspace key otherwise, and writes nothing', async () => {
+  it('moves the node from its file alone, refusing a shell that sets its token otherwise, and writes nothing', async () => {
     const before = `BUCKLE_ADMIN_TOKEN=init-move-admin-fixture\nBUCKLE_AUTH_TOKEN=init-move-agent-fixture\nBUCKLE_WORKSPACE_ROOT=${workspace}\nBUCKLE_COMMAND_DENY=curl *\n`
     writeFileSync(out, before, { mode: 0o600 })
-    vi.stubEnv('BUCKLE_COMMAND_DENY', '')
+    vi.stubEnv('BUCKLE_AUTH_TOKEN', 'init-move-other-agent-fixture')
     let failed = ''
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { failed += String(chunk); return true })
     try {
       expect((await runInit(['--out', out, '--yes'], scripted([], false))).exitCode).toBe(1)
     } finally { stderr.mockRestore() }
-    expect(failed).toContain(`BUCKLE_COMMAND_DENY is set in this command's environment to another value than ${out} holds`)
+    expect(failed).toContain(`BUCKLE_AUTH_TOKEN is set in this command's environment to another value than ${out} holds`)
+    expect(failed).not.toContain('init-move-other-agent-fixture')
     expect(readFileSync(out, 'utf8')).toBe(before)
     expect(existsSync(join(state, 'workspaces.json'))).toBe(false)
   })
 
-  // Findings 11 and 21: --force as the first command used to rewrite the file before migration read it.
-  it('with --force, moves the node from the file it replaces first, so workspace default keeps its folder, token, policy, and grants', async () => {
+  // Findings 11 and 21: --force as the first command used to rewrite the file before migration read it. D85, Q3: the
+  // node's workspace defaults stay the node's, so the file written again keeps them, its deny list every workspace's floor.
+  it('with --force, moves the node from the file it replaces first, so its folder\'s workspace keeps its folder, token, policy, and grants, and the node its defaults', async () => {
     const root = join(workspace, '..')
     vi.stubEnv('HOME', root)
-    writeFileSync(out, `BUCKLE_ADMIN_TOKEN=old-admin-fixture\nBUCKLE_AUTH_TOKEN=init-force-agent-fixture\nBUCKLE_WORKSPACE_ROOT=${workspace}\nBUCKLE_COMMAND_DENY=curl *\nBUCKLE_SANDBOX=none\n`, { mode: 0o600 })
+    writeFileSync(out, `BUCKLE_ADMIN_TOKEN=old-admin-fixture\nBUCKLE_AUTH_TOKEN=init-force-agent-fixture\nBUCKLE_WORKSPACE_ROOT=${workspace}\nBUCKLE_COMMAND_DENY="curl *\nwget *"\nBUCKLE_ALLOW_SHELL=false\nBUCKLE_SANDBOX=none\n`, { mode: 0o600 })
     mkdirSync(state, { mode: 0o700 })
     const grant = { id: 'grant-1', workspace, rule: 'network_egress', subject: 'localhost:3000', scope: 'always', sessionId: null, createdAt: '2026-10-01T00:00:00.000Z', expiresAt: null }
     writeFileSync(join(state, 'grants.json'), JSON.stringify({ version: 1, grants: [grant] }))
@@ -304,7 +306,10 @@ describe('buckle init on a node set up before workspaces', () => {
     expect(result.printed).toContain(`${workspace} is already in workspace ${basename(workspace)}: nothing was added`)
     const registry = JSON.parse(readFileSync(join(state, 'workspaces.json'), 'utf8')) as { workspaces: Array<{ id: string; dir: string; tokens: Array<{ id: string }> }> }
     expect(registry.workspaces).toMatchObject([{ id: workspaceIdOf(workspace), dir: workspace, tokens: [{ id: 'node' }] }])
-    expect(served().settings.policy.commands.deny).toEqual(['curl *', 'rm -rf *'])
+    expect(served().settings.policy.commands.deny).toEqual(['rm -rf *'])
+    expect(parseEnv(result.written)).toMatchObject({ BUCKLE_COMMAND_DENY: 'curl *;;wget *', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_SANDBOX: 'auto' })
+    expect(result.printed).toContain('Kept        BUCKLE_ALLOW_SHELL, BUCKLE_COMMAND_DENY, every workspace\'s defaults, from the file written again')
+    expect(configFromEnvironment({ ...parseEnv(result.written), BUCKLE_STATE_DIR: state, BUCKLE_WORKSPACE_ROOT: workspace }).policy.commands.deny).toEqual(['curl *', 'wget *'])
     // The records moved to the workspace's own directory (D85, Q15), keyed by its id.
     expect(JSON.parse(readFileSync(join(state, 'workspaces', workspaceIdOf(workspace), 'grants.json'), 'utf8')).grants.map((item: { workspace: string }) => item.workspace)).toEqual([workspaceIdOf(workspace)])
     expect(parseEnv(result.written).BUCKLE_ADMIN_TOKEN).not.toBe('old-admin-fixture')

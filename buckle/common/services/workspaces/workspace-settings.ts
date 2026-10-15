@@ -5,7 +5,7 @@ import { allowedInterpreters, CommandPolicySchema, destructivePatterns, emptyWor
 import { createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import { isSecretName } from '../../domain/environment.js'
 import { compilePolicy, PolicyError } from '../../domain/policy.js'
-import { DEFAULT_APPROVAL_WAIT_MS, parseApprovalTimeout, parseBrowserSettings, parseList, policyFromEnvironment, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
+import { DEFAULT_APPROVAL_WAIT_MS, parseBrowserSettings, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { BUILTIN_PACKS } from '../packs/index.js'
 
@@ -139,6 +139,15 @@ export const WorkspaceSettingsSchema = z.object({
   approvalWaitMs: z.number().int().min(0).max(2_147_483_647).optional(),
 }).strict()
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettingsSchema>
+
+/**
+ * The node's packs default, checked as a workspace's own is when the node opens its workspaces, so a pack Buckle does
+ * not have stops the node, naming the variable, rather than leave every workspace that takes it unable to open.
+ */
+export function assertNodeDefaults(node: NodeDefaults): void {
+  const unknown = (node.packs.enabled ?? []).filter(id => !PACK_IDS.includes(id))
+  if (unknown.length > 0) throw new Error(`Invalid BUCKLE_PACKS: Unknown pack ${unknown.join(', ')}; packs: ${PACK_IDS.join(', ')}`)
+}
 
 /** A new workspace's settings: the folder at /workspace (D84 (3)), and every other setting the node's, else Buckle's own. */
 export function defaultSettings(): WorkspaceSettings {
@@ -338,29 +347,4 @@ export function withMount(settings: WorkspaceSettings, mount: string | null | un
   const { mounts: _dropped, ...rest } = settings
   if (mount === undefined) return rest
   return { ...rest, mounts: mount === null ? [] : [{ kind: 'workspace' as const, target: mount, access: 'write' as const }] }
-}
-
-/**
- * The settings a node set up before the workspace model kept in its environment, as one workspace's (Q14): its policy
- * lists, its mount, its packs, its approval wait, and its browser. Migration input, and the test seam: a test describes
- * a workspace the way a 0.1 node's environment did.
- */
-export function settingsFromEnvironment(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): WorkspaceSettings {
-  const policy = policyFromEnvironment(environment)
-  const browser = parseBrowserSettings(environment, platform)
-  const approvalWait = parseApprovalTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_WAIT_MS)
-  return WorkspaceSettingsSchema.parse({
-    version: 1,
-    policy: { ...policy, mount: null },
-    mounts: policy.mount === null ? [] : [{ kind: 'workspace', target: policy.mount, access: 'write' }],
-    packs: {
-      enabled: environment.BUCKLE_PACKS ? parseList(environment.BUCKLE_PACKS) : null,
-      shell: environment.BUCKLE_ALLOW_SHELL !== 'false',
-      code: environment.BUCKLE_ALLOW_CODE !== 'false',
-      hostGit: environment.BUCKLE_ALLOW_HOST_GIT === 'true',
-      hostLsp: environment.BUCKLE_ALLOW_HOST_LSP === 'true',
-    },
-    browser: { ...(browser.browserCdp ? { cdp: browser.browserCdp } : {}), ...(browser.browserProfile ? { profile: browser.browserProfile } : {}), ...(browser.browserArgs ? { args: browser.browserArgs } : {}), headed: environment.BUCKLE_BROWSER_HEADED === 'true' },
-    approvalWaitMs: approvalWait ?? 0,
-  })
 }

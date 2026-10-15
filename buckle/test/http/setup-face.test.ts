@@ -79,7 +79,9 @@ describe('pushing a policy', () => {
   // D83 addendum (7): the workspace's own policy is one document in its workspace.json, and a push replaces it whole;
   // the node's deny list stays a floor over it in the policy in force (D85, Q14).
   it('replaces the workspace\'s own policy, which reads back as stored, under the node\'s deny floor in force', async () => {
-    expect(runtime.policy.stored().commands.deny).toEqual(['wget *'])
+    // D85, Q3: the node's list stays the node's; the move copied it into no workspace.json.
+    expect(runtime.policy.stored().commands.deny).toEqual([])
+    expect(runtime.policy.effective().commands.deny).toEqual(['wget *'])
     const put = await app.request(app.setup('policy'), {
       method: 'PUT',
       headers: bearer(SETUP),
@@ -118,7 +120,7 @@ describe('pushing a policy', () => {
       body: JSON.stringify({ version: 1, commands: { allow: ['^pnpm (build|test)'] } }),
     })
     expect(put.status).toBe(400)
-    expect(runtime.policy.stored()).toMatchObject({ commands: { allow: [], deny: ['wget *'] }, updatedAt: null })
+    expect(runtime.policy.stored()).toMatchObject({ commands: { allow: [], deny: [] }, updatedAt: null })
   })
 
   it('can be cleared, which empties every list of its own and leaves the node\'s deny floor', async () => {

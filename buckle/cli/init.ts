@@ -15,9 +15,9 @@ import { nodeRootsOf, openWorkspaceManager, WorkspaceError, type MintedToken, ty
 import { MigrationError, movedOntoWorkspaces } from '../common/services/workspaces/migration.js'
 import { workspaceUntrusted } from '../common/services/workspaces/node-roots.js'
 import { resolveSettings, withMount, type ResolvedSettings, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
-import { writeEnvironmentFile } from '../common/adapters/environment-file.js'
+import { editEnvironmentVariable, writeEnvironmentFile } from '../common/adapters/environment-file.js'
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
-import { findNodeSetting, normaliseSetting } from './node-settings.js'
+import { findNodeSetting, NODE_SETTINGS, normaliseSetting } from './node-settings.js'
 import { redeemPairingCode } from './pairing.js'
 import { createNamed } from './workspace.js'
 
@@ -117,6 +117,9 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   if (!/^\d+$/.test(port)) return fail(`Invalid port: ${port}`)
 
   const name = answers.name?.trim() || defaultNodeName(folder)
+  // Read before anything changes, so a default it cannot carry refuses init with nothing written.
+  const carried = writesNode && existsSync(out) ? carriedDefaults(out) : { keys: [], into: (text: string) => text }
+  if ('exitCode' in carried) return carried
   if (writesNode && existsSync(out)) {
     const refused = await moveFromOwnFile(out, platform, interactive ? question => prompt.question(question) : undefined)
     if (refused) return refused
@@ -125,7 +128,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   if (adminToken) {
     // The state directory holds the node's credentials, so it is created owner-only (ruling 7).
     if (out === defaultEnvironmentFile()) mkdirSync(dirname(out), { recursive: true, mode: 0o700 })
-    writeEnvironmentFile(out, renderNode({ name, port, adminToken, allowedHosts: answers.allowedHosts }))
+    writeEnvironmentFile(out, carried.into(renderNode({ name, port, adminToken, allowedHosts: answers.allowedHosts })))
   }
   const contents = readFileSync(out, 'utf8')
   const node = nodeConfig(out, contents, platform)
@@ -142,7 +145,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
 ${served.token ? '' : `\n${folder} is already in workspace ${served.name}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${workspaceArgument(served.name)}.\n`}
   Workspace   ${served.name} at ${folder}
   Seen as     ${served.created ? (mount ?? folder) : '(as it was)'}
-${adminToken ? `  Node name   ${name}\n` : ''}${served.created ? describeChoices(resolveSettings(workspaces.settings(served.id), node.workspaceDefaults)) : ''}${served.created && !interactive ? 'These are the defaults, kept because nothing was asked. Change one with: buckle workspace set <key> <value>\n' : ''}
+${adminToken ? `  Node name   ${name}\n` : ''}${carried.keys.length > 0 ? `  Kept        ${carried.keys.join(', ')}, every workspace's defaults, from the file written again\n` : ''}${served.created ? describeChoices(resolveSettings(workspaces.settings(served.id), node.workspaceDefaults)) : ''}${served.created && !interactive ? 'These are the defaults, kept because nothing was asked. Change one with: buckle workspace set <key> <value>\n' : ''}
 ${describePrograms({ node, folder, platform, search: options.programSearch ?? {} })}
 
 Next:
@@ -188,6 +191,26 @@ async function moveFromOwnFile(out: string, platform: NodeJS.Platform, askName?:
     throw error
   }
   return null
+}
+
+/**
+ * The node's workspace defaults the file `--force` writes again held (D85, Q3): init asks for none of them, and its deny
+ * lists are a floor over every workspace (Q14), so the new file keeps each, a command list written with `;;` between
+ * its globs, as the node reads one. One that cannot be carried refuses init before anything changes.
+ */
+function carriedDefaults(out: string): { keys: string[]; into: (text: string) => string } | CliResult {
+  const values = Object.fromEntries(buckleVariables(readFileSync(out, 'utf8')))
+  const kept = NODE_SETTINGS.filter(setting => setting.workspace && values[setting.key]?.trim())
+    .map(setting => ({ key: setting.key, value: setting.kind === 'command-list' ? values[setting.key]!.split(/\r?\n|;;/).map(item => item.trim()).filter(Boolean).join(';;') : values[setting.key]!.trim() }))
+  const into = (text: string): string => kept.reduce((written, { key, value }) => {
+    const edit = editEnvironmentVariable({ text: written, name: key, value })
+    if (!edit.ok) throw new Error(`${edit.reason}`)
+    return edit.text
+  }, `${text}\n# Every workspace's defaults, kept from the file this one replaced (buckle settings show lists them).\n`)
+  try { into('') } catch (error) {
+    return fail(`buckle init --force keeps the node's workspace defaults, and cannot carry one as ${out} writes it: ${error instanceof Error ? error.message : String(error)}. Set it with buckle settings set, then run buckle init --force again.`)
+  }
+  return { keys: kept.map(item => item.key), into: text => (kept.length === 0 ? text : into(text)) }
 }
 
 /**

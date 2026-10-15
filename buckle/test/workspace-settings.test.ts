@@ -68,9 +68,10 @@ describe('a workspace\'s settings', () => {
     expect(own.sources).toMatchObject({ 'policy.tools.allow': 'workspace', 'policy.tools.deny': 'node' })
   })
 
-  it('refuse a node setting the node would not read, naming the variable', () => {
+  it('refuse a node setting the node would not read, naming the variable', async () => {
     expect(() => loadConfig({ BUCKLE_COMMAND_DENY: 'curl ((' })).toThrow(/^Invalid BUCKLE_COMMAND_DENY: /)
     expect(() => loadConfig({ BUCKLE_WORKSPACE_MOUNT: '/usr/project' })).toThrow('Invalid BUCKLE_WORKSPACE_MOUNT: Cannot mount the workspace under /usr')
+    await expect(workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(scratch(), 'state'), BUCKLE_PACKS: 'fs,teleport' }))).rejects.toThrow('Invalid BUCKLE_PACKS: Unknown pack teleport')
   })
 
   it.each([

@@ -353,7 +353,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
 
     expect(await buckle.exited).toEqual({ code: 1, signal: null })
     const failure = buckle.lines().find(line => line.message === 'Buckle failed to start')
-    expect(failure).toMatchObject({ level: 'fatal', error: { message: expect.stringContaining('packs.enabled.0: Unknown pack no-such-pack') } })
+    expect(failure).toMatchObject({ level: 'fatal', error: { message: expect.stringContaining('Invalid BUCKLE_PACKS: Unknown pack no-such-pack') } })
     expect(buckle.lines().some(line => line.message === '5straps Buckle listening')).toBe(false)
     expect(existsSync(join(node.state, 'actions.jsonl'))).toBe(false)
   }, 60_000)
