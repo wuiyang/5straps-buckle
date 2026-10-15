@@ -46,7 +46,8 @@ then stays until it expires, so no unchanged send in those ten minutes repeats a
 - A script whose results pass 32 MiB cannot be resumed, but its calls are not repeated: the
   record keeps them without their results for ten minutes, and every unchanged send in that time
   gets `REQUEST_ALREADY_EXECUTED` for each. At an ask, `code_run` answers `CODE_REPLAY_TOO_LARGE`
-  and withdraws the asks. A workspace keeps 128 MiB of records, dropping the oldest first.
+  and withdraws the asks. A workspace keeps 128 MiB of records: the oldest go first, the record
+  just written last.
 - Without its record, only the Buckle process remembers, in memory and for ten minutes, which of
   a script's calls ran: the script sent again gets `REQUEST_ALREADY_EXECUTED` for those, or
   `CODE_REPLAY_DIVERGED` for a call whose arguments read the clock or a random number, since the
