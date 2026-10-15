@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'pathe'
 import { z } from 'zod'
-import { emptyWorkspacePolicy, MountPathSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
+import { CommandPolicySchema, emptyWorkspacePolicy, MountPathSchema, NetworkPolicySchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import { isSecretName } from '../../domain/environment.js'
 import { compilePolicy, PolicyError } from '../../domain/policy.js'
@@ -97,9 +97,14 @@ const EnvironmentSchema = z.record(z.string(), z.string().max(4096).refine(value
 /**
  * The policy lists alone: where the folder shows lives in `mounts`, so one place says it. Patterns are compiled at each
  * write (openSettingsFile), not at each read, so a stored entry a later grammar refuses still reads and can be removed
- * with `buckle policy remove` (StoredPolicyError).
+ * with `buckle policy remove` (StoredPolicyError). Strict at every level, as the rest of the file is, with local strict
+ * copies of the protocol's schemas: a misspelled list in a hand edit refuses the file, so the settings in force stay,
+ * where dropping it would loosen the policy (finding 25 of the Phase 1 review).
  */
-const SettingsPolicySchema = WorkspacePolicySchema.refine(policy => policy.mount === null, { message: 'policy.mount is not stored here; the workspace mount in mounts says where the folder shows', path: ['mount'] })
+const SettingsPolicySchema = WorkspacePolicySchema.extend({
+  commands: CommandPolicySchema.strict().default({ allow: [], deny: [] }),
+  network: NetworkPolicySchema.strict().default({ allow: [] }),
+}).strict().refine(policy => policy.mount === null, { message: 'policy.mount is not stored here; the workspace mount in mounts says where the folder shows', path: ['mount'] })
 
 /**
  * One workspace's settings (D83, the workspace-model brief item 2): written by the owner's CLI alone, through the

@@ -42,6 +42,10 @@ describe('a workspace\'s settings', () => {
     ['a second mount, before the mount phase', { version: 1, mounts: [{ kind: 'workspace', target: '/workspace', access: 'write' }, { kind: 'workspace', target: '/other', access: 'write' }] }],
     ['a mount under a folder the sandbox needs', { version: 1, mounts: [{ kind: 'workspace', target: '/usr/project', access: 'write' }] }],
     ['a variable that looks like a credential', { version: 1, env: { GITHUB_TOKEN: 'x' } }],
+    // Finding 25 of the Phase 1 review: a misspelled list used to be dropped, loosening the policy.
+    ['a misspelled policy key', { version: 1, policy: { ...emptyWorkspacePolicy(), comands: { deny: ['git push*'] } } }],
+    ['a misspelled command list', { version: 1, policy: { ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], Deny: ['git push*'] } } }],
+    ['a misspelled URL list', { version: 1, policy: { ...emptyWorkspacePolicy(), network: { alow: ['https://only.example/**'] } } }],
   ])('refuse %s', (_case, document) => {
     expect(WorkspaceSettingsSchema.safeParse(document).success).toBe(false)
   })
