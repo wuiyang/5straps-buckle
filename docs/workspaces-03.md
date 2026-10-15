@@ -18,7 +18,9 @@ The node reads these defaults from `buckle.env` alone, never from a shell's or a
 `env`: an MCP config an agent could write cannot change them. Nor can it point `buckle mcp` at
 another file: `buckle mcp` takes `BUCKLE_ENV_FILE` only where it names a file in the state
 directory, and refuses to start otherwise, naming the variable. A command started with one of the
-defaults set to another value says at start that it is not read. A change to `buckle.env` applies when
+defaults set to another value says at start that it is not read. The move from 0.1 refuses
+instead where the command deny or destructive list is set otherwise in its environment, as 0.1
+applied that list: put it in `buckle.env` with `buckle settings set`, or remove it from that environment. A change to `buckle.env` applies when
 the node restarts.
 
 ## The policy lists

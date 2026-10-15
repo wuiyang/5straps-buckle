@@ -432,13 +432,24 @@ function refuseUnreadable(plans: Planned[]): void {
 
 /**
  * The move reads the node's token and folder from its environment file alone; a shell's or an MCP config's env that says
- * otherwise would make its own the node's for good (finding 34), so it refuses, naming the keys, never a value.
+ * otherwise would make its own the node's for good (finding 34), so it refuses, naming the keys, never a value. A deny
+ * list the caller names otherwise refuses it too (fix brief 4, finding 8): 0.1 enforced the caller's, and dropping it
+ * would lift what the node enforced.
  */
 function refuseCallerSettings(input: MigrationInput): void {
+  refuseDroppedFloor(input.floorConflicts)
   if (input.conflicts.length === 0) return
   const keys = input.conflicts.join(', ')
   const one = input.conflicts.length === 1
   throw new MigrationError(`${keys} ${one ? 'is' : 'are'} set in this command's environment to another value than ${input.file} holds. Buckle moves the node onto workspaces from that file alone, so a shell's or an MCP config's env never becomes a workspace's token or folder: remove ${one ? 'it' : 'them'} from the environment this command runs in, or give the file the same value, then start Buckle again. Nothing was changed.`)
+}
+
+/** The refusal for deny-type lists the caller names otherwise than the file: the keys and the repair, never a value or a path. */
+function refuseDroppedFloor(keys: readonly string[]): void {
+  if (keys.length === 0) return
+  const one = keys.length === 1
+  const repairs = keys.map(key => `buckle settings set ${key} '<globs separated by ;;>'`).join(' and ')
+  throw new MigrationError(`${keys.join(', ')} ${one ? 'is' : 'are'} set in this command's environment to other entries than the node's environment file holds. Before the workspace model the environment's list applied; from the move on the node reads ${one ? 'it' : 'them'} from the file alone, so moving now would drop entries the node enforced. Put ${one ? 'the list' : 'each list'} in the file with ${repairs}, or remove ${one ? 'the variable' : 'the variables'} from the environment this command runs in, then start Buckle again. Nothing was changed.`)
 }
 
 /**

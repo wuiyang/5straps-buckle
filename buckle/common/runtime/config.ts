@@ -164,6 +164,11 @@ export interface MigrationInput {
   workspaceRoot?: string
   /** The keys the caller's own environment sets to another value than the file holds, which refuse the move. */
   conflicts: readonly string[]
+  /**
+   * The deny-type lists the caller's own environment sets to other entries than the file holds, which refuse the move
+   * too (fix brief 4, finding 8): 0.1 enforced the caller's list, and the node reads the file's alone after it.
+   */
+  floorConflicts: readonly string[]
 }
 
 /** `platform`: the host's unless a test imitates another. `layers`: the file and the caller apart; one environment stands for both by default. */
@@ -245,10 +250,17 @@ export function unreadWorkspaceDefaults(layers: EnvironmentLayers): string[] {
 
 /**
  * The keys whose caller value, where it differs from the file's, refuses the move: the token and the folder it makes
- * the node's own. The node's workspace settings are not among them, as the move copies none (D85, Q3): a caller's value
- * is an ordinary override of a node setting, read at each start.
+ * the node's own. The node's other workspace settings are not among them, as the move copies none (D85, Q3) and the
+ * node reads them from its file alone after it; its deny-type lists refuse the move apart (FLOOR_MIGRATION_KEYS).
  */
 const MIGRATION_KEYS: readonly string[] = Object.freeze(['BUCKLE_AUTH_TOKEN', 'BUCKLE_WORKSPACE_ROOT'])
+
+/**
+ * The node's deny-type lists, which 0.1 took from the caller's environment over its file (fix brief 4, finding 8). A
+ * caller naming other entries than the file would have the move drop what 0.1 enforced, so it refuses. buckle.env names
+ * no tool list, so the denied tools have no key here.
+ */
+const FLOOR_MIGRATION_KEYS: readonly string[] = Object.freeze(['BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE'])
 
 function migrationInput(merged: NodeJS.ProcessEnv, layers: EnvironmentLayers, platform: NodeJS.Platform): MigrationInput {
   const environment: NodeJS.ProcessEnv = layers.file?.values ?? merged
@@ -258,7 +270,14 @@ function migrationInput(merged: NodeJS.ProcessEnv, layers: EnvironmentLayers, pl
     authToken: environment.BUCKLE_AUTH_TOKEN ?? '',
     ...(environment.BUCKLE_WORKSPACE_ROOT ? { workspaceRoot: typedPath(environment.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
     conflicts: file === null ? [] : MIGRATION_KEYS.filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file.values[key]),
+    // Compared as the entries each names, so the same list spelled otherwise (another separator or order, empty or unset) is no conflict.
+    floorConflicts: file === null ? [] : FLOOR_MIGRATION_KEYS.filter(key => layers.caller[key] !== undefined && !sameEntries(parsePatterns(layers.caller[key]), parsePatterns(file.values[key]))),
   }
+}
+
+function sameEntries(left: readonly string[], right: readonly string[]): boolean {
+  const [one, other] = [new Set(left), new Set(right)]
+  return one.size === other.size && [...one].every(entry => other.has(entry))
 }
 
 /**

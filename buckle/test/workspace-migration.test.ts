@@ -233,7 +233,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
     it('writes none of the file\'s settings, nor the caller\'s, into a workspace, and moves a caller that sets a workspace key otherwise', async () => {
       const input = scene()
       version1(input)
-      await fromFile(input, { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'true', BUCKLE_COMMAND_DENY: '', BUCKLE_NETWORK_ALLOW: '', BUCKLE_PACKS: 'fs' })
+      await fromFile(input, { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'true', BUCKLE_NETWORK_ALLOW: '', BUCKLE_PACKS: 'fs' })
       expect(settings(input, siteId(input))).toMatchObject({ packs: {}, policy: { commands: { allow: [], deny: [] }, network: { allow: [] } } })
       expect(JSON.parse(registry(input))).toMatchObject({ version: 2 })
     })
@@ -246,6 +246,33 @@ describe('moving a 0.1 node onto the workspace model', () => {
       await expect(openWorkspaceManager({ config: loadConfig({ ...values, ...caller }, process.platform, { file: { path, values }, caller }) }))
         .rejects.toThrow('BUCKLE_AUTH_TOKEN, BUCKLE_WORKSPACE_ROOT are set in this command\'s environment to another value than')
       expect(existsSync(join(input.state, 'workspaces.json'))).toBe(false)
+    })
+
+    // Fix brief 4, finding 8: 0.1 enforced a deny list its caller's env set over the file, and the move dropped it with a warning alone.
+    it.each([
+      ['another deny entry', { BUCKLE_COMMAND_DENY: 'wget *' }, ['BUCKLE_COMMAND_DENY']],
+      ['an empty deny list', { BUCKLE_COMMAND_DENY: '' }, ['BUCKLE_COMMAND_DENY']],
+      ['a destructive list the file has not', { BUCKLE_COMMAND_DESTRUCTIVE: 'make deploy*' }, ['BUCKLE_COMMAND_DESTRUCTIVE']],
+      ['both lists otherwise', { BUCKLE_COMMAND_DENY: 'curl *;;wget *', BUCKLE_COMMAND_DESTRUCTIVE: 'make deploy*' }, ['BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE']],
+    ])('refuses a move whose caller sets %s, naming the keys and the repair, never a value, and changes nothing', async (_case, lists, keys) => {
+      const input = scene()
+      const before = version1(input)
+      const refused = await fromFile(input, { BUCKLE_STATE_DIR: input.state, ...lists }).catch((error: unknown) => error)
+
+      expect(refused).toBeInstanceOf(MigrationError)
+      const message = (refused as Error).message
+      expect(message).toContain(`${keys.join(', ')} ${keys.length === 1 ? 'is' : 'are'} set in this command's environment to other entries than the node's environment file holds`)
+      for (const key of keys) expect(message).toContain(`buckle settings set ${key} '<globs separated by ;;>'`)
+      for (const value of ['curl', 'wget', 'make deploy', input.root]) expect(message).not.toContain(value)
+      expect(registry(input)).toBe(before)
+      expect(existsSync(join(input.state, REGISTRY_BACKUP))).toBe(false)
+    })
+
+    it('moves a caller whose deny list holds the file\'s entries, spelled otherwise', async () => {
+      const input = scene()
+      version1(input)
+      await fromFile(input, { BUCKLE_STATE_DIR: input.state, BUCKLE_COMMAND_DENY: ' curl * ;;', BUCKLE_COMMAND_DESTRUCTIVE: '' })
+      expect(JSON.parse(registry(input))).toMatchObject({ version: 2 })
     })
 
     it('leaves a node that served nothing as it is, whatever workspace key its caller sets', async () => {
