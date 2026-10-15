@@ -131,9 +131,9 @@ describe('allowedInterpreters in a policy document', () => {
   })
 })
 
-// Each workspace judges interpreters by its own list (docs/dev/architecture.md, Interpreters); no node list sits over a
-// registered workspace's (Q14 of the workspace-model brief). BUCKLE_ALLOWED_INTERPRETERS is what a node set up before
-// the workspace model allowed, which migration copies into its workspaces.
+// Each workspace judges interpreters by the list in force (docs/dev/architecture.md, Interpreters): its own, else the
+// node's BUCKLE_ALLOWED_INTERPRETERS, whole (D85, Q14). The node's deny list is a floor over every workspace, so an
+// interpreter left unread is refused wherever the node denies anything.
 describe('a workspace\'s own interpreter allowance', () => {
   /** A registered workspace on a node whose environment is `environment`, its own policy denying `deny` and allowing `interpreters`. */
   async function registered(environment: NodeJS.ProcessEnv, child: { deny?: string[]; interpreters?: string[] } = {}): Promise<BuckleRuntime> {
@@ -164,10 +164,12 @@ describe('a workspace\'s own interpreter allowance', () => {
     expect(await nodeScript(await registered({}, { deny: ['terraform destroy *'], interpreters: ['node'] }))).toMatchObject({ outcome: 'ok' })
   })
 
-  it('reads node as unknown when the workspace does not allow it, whatever the node\'s environment names', async () => {
+  it('takes the node\'s interpreters where the workspace names none of its own, and its own alone where it does', async () => {
     const environment = { BUCKLE_COMMAND_DENY: 'terraform destroy *', BUCKLE_ALLOWED_INTERPRETERS: 'node' }
-    expect(await nodeScript(await registered(environment))).toMatchObject({ outcome: 'approval_required' })
-    expect(await nodeScript(await registered(environment, { deny: ['terraform destroy *'] }))).toMatchObject(refused)
+    expect(await nodeScript(await registered(environment))).toMatchObject({ outcome: 'ok' })
+    // Its own list leaves node out, and the node's deny list is a floor over it, so node runs code Buckle cannot read.
+    expect(await nodeScript(await registered(environment, { interpreters: ['python3'] }))).toMatchObject(refused)
+    expect(await nodeScript(await registered({ BUCKLE_ALLOWED_INTERPRETERS: 'node' }, { interpreters: ['python3'] }))).toMatchObject({ outcome: 'approval_required' })
   })
 
   it('allows the interpreters a node\'s environment named in its own folder, workspace default, once migrated', async () => {

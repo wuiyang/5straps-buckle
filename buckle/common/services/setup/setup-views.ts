@@ -86,8 +86,8 @@ export function createSetupViews(): SetupViews {
       stored: runtime.policy.stored(),
     }),
 
-    // The workspace's policy is the one source (Q14): a file's base access is the empty policy's, and only a
-    // protected file is locked, asking whatever the policy says.
+    // The policy in force is the one source: a file's base access is the empty policy's, and only a protected file is
+    // locked, asking whatever the policy says.
     async files({ runtime }, query) {
       const parsed = DirectoryQuerySchema.safeParse({ ...query, path: query.path ?? '.' })
       if (!parsed.success) throw new SetupRequestError('Invalid directory request')

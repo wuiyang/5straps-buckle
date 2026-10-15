@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
-import { PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
+import { isRestrictive, PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
 import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -93,7 +93,8 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
         const before = current()
         const next = remove(before, required(rest[0], action))
         const result = await save(runtime, next)
-        if (result.exitCode === 0 && opensNetwork(before, next)) process.stdout.write(EMPTY_LIST_WARNING)
+        // An emptied list of its own is the node's again; only a workspace that ends with no list at all is open.
+        if (result.exitCode === 0 && opensNetwork(before, next)) process.stdout.write(runtime.policy.effective().network.allow.length > 0 ? NODE_LIST_NOTE : EMPTY_LIST_WARNING)
         return result
       }
       case 'import': {
@@ -106,6 +107,7 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
       case 'clear':
         await runtime.policy.clear()
         process.stdout.write(`Every list of workspace ${runtime.workspaceName()} is empty\n`)
+        if (isRestrictive({ ...runtime.policy.effective(), mount: null })) process.stdout.write('The node\'s lists in buckle.env apply in their place, and its deny lists apply to every workspace: buckle policy show lists them.\n')
         if (runtime.policy.dangerouslyAllow().on) process.stdout.write('The dangerously-allow switch is apart from the policy and stays on: only `buckle policy dangerously-allow off` turns it off.\n')
         return { exitCode: 0 }
       case 'dangerously-allow':
@@ -207,6 +209,7 @@ async function repairStoredPolicyAction(input: { workspaces: WorkspaceManager; i
 }
 
 const EMPTY_LIST_WARNING = 'The approved list is now empty, which is no list: the default network rules reach public hosts. Add an entry with `buckle policy allow-url <host>` to restrict it again.\n'
+const NODE_LIST_NOTE = 'The workspace\'s own approved list is now empty, which is no list of its own: the node\'s approved list in buckle.env applies.\n'
 
 /**
  * A stored approved list and an absent one read the same when empty: no list, so the network rule

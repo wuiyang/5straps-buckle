@@ -76,9 +76,9 @@ describe('who may open the setup face', () => {
 })
 
 describe('pushing a policy', () => {
-  // D83 addendum (7): the workspace's policy is one document in its workspace.json; the environment's lists were
-  // copied into it once, at migration, and a push replaces the whole document.
-  it('replaces the workspace\'s one policy, which reads back as stored and effective alike', async () => {
+  // D83 addendum (7): the workspace's own policy is one document in its workspace.json, and a push replaces it whole;
+  // the node's deny list stays a floor over it in the policy in force (D85, Q14).
+  it('replaces the workspace\'s own policy, which reads back as stored, under the node\'s deny floor in force', async () => {
     expect(runtime.policy.stored().commands.deny).toEqual(['wget *'])
     const put = await app.request(app.setup('policy'), {
       method: 'PUT',
@@ -95,7 +95,7 @@ describe('pushing a policy', () => {
     }
     expect(body.stored.commands.deny).toEqual(['curl *'])
     expect(body.stored.updatedAt).not.toBeNull()
-    expect(body.effective.commands.deny).toEqual(['curl *'])
+    expect(body.effective.commands.deny).toEqual(['wget *', 'curl *'])
     expect(body.effective.network.allow).toEqual(['example.com'])
   })
 
@@ -121,11 +121,12 @@ describe('pushing a policy', () => {
     expect(runtime.policy.stored()).toMatchObject({ commands: { allow: [], deny: ['wget *'] }, updatedAt: null })
   })
 
-  it('can be cleared, which empties every list', async () => {
+  it('can be cleared, which empties every list of its own and leaves the node\'s deny floor', async () => {
     await app.request(app.setup('policy'), { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, commands: { deny: ['curl'] } }) })
     const cleared = await app.request(app.setup('policy'), { method: 'DELETE', headers: bearer(SETUP) })
     expect(cleared.status).toBe(200)
-    expect(runtime.policy.effective().commands.deny).toEqual([])
+    expect(runtime.policy.stored().commands.deny).toEqual([])
+    expect(runtime.policy.effective().commands.deny).toEqual(['wget *'])
   })
 
   // Where the folder shows is the mount table's, which the owner's local CLI alone changes.

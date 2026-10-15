@@ -11,8 +11,9 @@ import type { BuckleRuntime } from '../common/services/workspaces/workspace-runt
 import { createMcpServer } from '../mcp/server.js'
 import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
-// D83 addendum (7) and Q14 of the workspace-model brief: every list is bound to a workspace, and no node list sits over
-// a workspace's. The lists a node's environment named before the workspace model are migration input only.
+// D83 addendum (7), and D85, Q14 ("Fallback plus node deny floor"): every list is bound to a workspace; where a workspace
+// has no allow-type list of its own the node's stands for it, whole, and the node's deny-type lists apply on top of
+// every workspace's, a floor no workspace setting lifts.
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -48,14 +49,50 @@ async function effect(runtime: BuckleRuntime, value: ToolEffect) {
 
 const command = (name: string, args: string[] = ['build']): ToolEffect => ({ kind: 'exec', command: name, args })
 
-describe('a registered workspace\'s policy, its own alone', () => {
-  it('admits what its own command allow list names, whatever lists the node\'s environment names', async () => {
-    const runtime = await workspace(policy({ allow: ['pnpm build', 'curl *'] }), { BUCKLE_COMMAND_ALLOW: 'pnpm *', BUCKLE_COMMAND_DENY: 'curl' })
+describe('a registered workspace\'s policy over the node\'s lists', () => {
+  it('uses the node\'s command allow list where it has none of its own', async () => {
+    const runtime = await workspace(policy(), { BUCKLE_COMMAND_ALLOW: 'pnpm *' })
     expect((await effect(runtime, command('pnpm'))).execute).toHaveBeenCalledOnce()
-    expect((await effect(runtime, command('curl'))).execute).toHaveBeenCalledOnce()
-    expect((await effect(runtime, command('pnpm', ['test']))).execute).not.toHaveBeenCalled()
+    const refused = await effect(runtime, command('make'))
+    expect(refused.execute).not.toHaveBeenCalled()
+    expect(refused.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Not on the workspace command allow list. Allowed: pnpm *') } })
+  })
+
+  it('uses its own command allow list alone where it has one, and the node\'s again once its own is emptied', async () => {
+    const runtime = await workspace(policy({ allow: ['git *'] }), { BUCKLE_COMMAND_ALLOW: 'pnpm *' })
+    expect((await effect(runtime, command('git'))).execute).toHaveBeenCalledOnce()
+    expect((await effect(runtime, command('pnpm'))).execute).not.toHaveBeenCalled()
     await runtime.policy.clear()
-    expect((await effect(runtime, command('pnpm', ['test']))).execute).toHaveBeenCalledOnce()
+    expect((await effect(runtime, command('pnpm'))).execute).toHaveBeenCalledOnce()
+    expect((await effect(runtime, command('git'))).execute).not.toHaveBeenCalled()
+  })
+
+  it('refuses a command the node\'s deny list names though its own allow list names it, and keeps the floor through clear and the dangerously-allow switch', async () => {
+    const runtime = await workspace(policy({ allow: ['curl *', 'pnpm *'] }), { BUCKLE_COMMAND_DENY: 'curl' })
+    const refused = await effect(runtime, command('curl', ['https://example.com']))
+    expect(refused.execute).not.toHaveBeenCalled()
+    expect(refused.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Refused by the workspace command policy: curl' } })
+    expect((await effect(runtime, command('pnpm'))).execute).toHaveBeenCalledOnce()
+    await runtime.policy.clear()
+    await runtime.policy.setDangerouslyAllow(true)
+    expect((await effect(runtime, command('curl'))).execute).not.toHaveBeenCalled()
+    expect(runtime.policy.effective().commands.deny).toEqual(['curl'])
+    expect(runtime.policy.stored().commands.deny).toEqual([])
+  })
+
+  it('asks before a command the node\'s destructive list names, though its own allow list admits it', async () => {
+    const runtime = await workspace(policy({ allow: ['make *'] }), { BUCKLE_COMMAND_DESTRUCTIVE: 'make deploy*' })
+    const asked = await effect(runtime, command('make', ['deploy']))
+    expect(asked.result.outcome).toBe('approval_required')
+    expect(asked.execute).not.toHaveBeenCalled()
+    expect((await effect(runtime, command('make', ['build']))).execute).toHaveBeenCalledOnce()
+  })
+
+  it('uses the node\'s approved URLs and interpreters where it has none of its own, and its own alone where it has them', async () => {
+    const inherits = await workspace(policy(), { BUCKLE_NETWORK_ALLOW: 'https://node.test', BUCKLE_ALLOWED_INTERPRETERS: 'node' })
+    expect(inherits.policy.effective()).toMatchObject({ network: { allow: ['https://node.test'] }, commands: { allowedInterpreters: ['node'] } })
+    const own = await workspace({ ...policy({ network: ['https://own.test'] }), commands: { allow: [], deny: [], allowedInterpreters: ['python3'] } }, { BUCKLE_NETWORK_ALLOW: 'https://node.test', BUCKLE_ALLOWED_INTERPRETERS: 'node' })
+    expect(own.policy.effective()).toMatchObject({ network: { allow: ['https://own.test'] }, commands: { allowedInterpreters: ['python3'] } })
   })
 
   it('keeps its own denials and destructive asks even with an allow-all', async () => {

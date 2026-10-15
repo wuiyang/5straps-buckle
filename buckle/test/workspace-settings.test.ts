@@ -58,6 +58,16 @@ describe('a workspace\'s settings', () => {
     expect(resolveSettings(own, node).env).toEqual({ REGION: 'workspace-region', LANG_HINT: 'en', STAGE: 'dev' })
   })
 
+  // D85, Q14: the tool lists resolve as the others do; the node's environment names none today, so this is the layer alone.
+  it('resolve the tool lists as the others: the node\'s allowed tools where the workspace names none, its denied tools over the workspace\'s', () => {
+    const base = loadConfig({}).workspaceDefaults
+    const node = { ...base, policy: { ...base.policy, tools: { allow: ['fs_read', 'fs_list'], deny: ['shell_exec'] } } }
+    expect(resolveSettings(WorkspaceSettingsSchema.parse({ version: 1 }), node).policy.tools).toEqual({ allow: ['fs_read', 'fs_list'], deny: ['shell_exec'] })
+    const own = resolveSettings(WorkspaceSettingsSchema.parse({ version: 1, policy: { ...emptyWorkspacePolicy(), tools: { allow: [], deny: ['fs_write'] } } }), node)
+    expect(own.policy.tools).toEqual({ allow: [], deny: ['shell_exec', 'fs_write'] })
+    expect(own.sources).toMatchObject({ 'policy.tools.allow': 'workspace', 'policy.tools.deny': 'node' })
+  })
+
   it('refuse a node setting the node would not read, naming the variable', () => {
     expect(() => loadConfig({ BUCKLE_COMMAND_DENY: 'curl ((' })).toThrow(/^Invalid BUCKLE_COMMAND_DENY: /)
     expect(() => loadConfig({ BUCKLE_WORKSPACE_MOUNT: '/usr/project' })).toThrow('Invalid BUCKLE_WORKSPACE_MOUNT: Cannot mount the workspace under /usr')

@@ -43,8 +43,8 @@ const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle(?:[/\\]dist[/\\]main\.js)
  * is a primary, at a script that arrives as data, at shell text an expansion supplies (an eval or a shell -c string),
  * or running code with an interpreter this policy does not allow, is refused whenever a deny glob exists, naming the
  * limit that stopped the reading, since the glob might have met the part left unread (docs/dev/architecture.md,
- * Interpreters). No node policy sits over a workspace's (Q14 of the workspace-model brief), so every refusal here names
- * the workspace's.
+ * Interpreters). The node's deny lists are folded into the workspace's in force, a floor over every workspace (D85, Q14;
+ * resolveSettings), so every refusal here names the workspace's policy in force.
  */
 export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean } = {}): PermissionRule {
   const source = 'workspace'

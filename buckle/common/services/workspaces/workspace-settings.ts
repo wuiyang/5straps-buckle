@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'pathe'
 import { z } from 'zod'
-import { CommandPolicySchema, emptyWorkspacePolicy, MountPathSchema, NetworkPolicySchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
+import { allowedInterpreters, CommandPolicySchema, destructivePatterns, emptyWorkspacePolicy, MountPathSchema, NetworkPolicySchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import { isSecretName } from '../../domain/environment.js'
 import { compilePolicy, PolicyError } from '../../domain/policy.js'
@@ -105,7 +105,8 @@ const EnvironmentSchema = z.record(z.string(), z.string().max(4096).refine(value
 }).refine(variables => Object.keys(variables).length <= 200, 'At most 200 variables')
 
 /**
- * The policy lists alone: where the folder shows lives in `mounts`, so one place says it. Patterns are compiled at each
+ * The policy lists alone: where the folder shows lives in `mounts`, so one place says it. An empty list is no list of the
+ * workspace's own (resolvePolicy). Patterns are compiled at each
  * write (openSettingsFile), not at each read, so a stored entry a later grammar refuses still reads and can be removed
  * with `buckle policy remove` (StoredPolicyError). Strict at every level, as the rest of the file is, with local strict
  * copies of the protocol's schemas: a misspelled list in a hand edit refuses the file, so the settings in force stay,
@@ -169,7 +170,8 @@ export interface ResolvedSettings {
 
 /**
  * One workspace's settings in force (D85, Q3 and Q14): per key, the workspace's own value, else the node's, else
- * Buckle's built-in default. Its variables are the node's with its own set over them, key by key.
+ * Buckle's built-in default. Its variables are the node's with its own set over them, key by key, and its lists are
+ * resolved as resolvePolicy says.
  */
 export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): ResolvedSettings {
   const sources: Record<string, SettingSource> = {}
@@ -192,7 +194,7 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     headed: pick('browser.headed', stored.browser.headed, node.browser.headed, BUILT_IN_SETTINGS.browser.headed),
   }
   return {
-    policy: { ...stored.policy, mount: null },
+    policy: resolvePolicy(stored.policy, node.policy, sources),
     mount: pick('mount', ownMount(stored), node.mount, null),
     packs,
     approvalWaitMs: pick('approvalWaitMs', stored.approvalWaitMs, node.approvalWaitMs, BUILT_IN_SETTINGS.approvalWaitMs),
@@ -200,6 +202,39 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     env: { ...node.env, ...stored.env },
     sources,
   }
+}
+
+/**
+ * The policy in force (D85, Q14, "Fallback plus node deny floor"). Each allow-type list (command allow, interpreters,
+ * approved URLs, allowed tools) is the workspace's own where it has one, else the node's, whole: a workspace with a list
+ * of its own uses it alone. Each deny-type list (command deny, destructive, denied tools) is the node's with the
+ * workspace's own added: a floor over every workspace that no workspace setting lifts. An empty list is no list, so a
+ * list `buckle policy remove` or `clear` empties is the node's again; an allowed-tools list is the one that may be
+ * empty, as it then allows no tool.
+ */
+function resolvePolicy(own: WorkspacePolicy, node: WorkspacePolicy, sources: Record<string, SettingSource>): WorkspacePolicy {
+  const policy: WorkspacePolicy = { ...structuredClone(own), mount: null }
+  const fallback = (key: string, mine: readonly string[], nodes: readonly string[], take: (list: string[]) => void) => {
+    sources[key] = mine.length > 0 ? 'workspace' : nodes.length > 0 ? 'node' : 'built-in'
+    if (mine.length === 0 && nodes.length > 0) take([...nodes])
+  }
+  fallback('policy.commands.allow', own.commands.allow, node.commands.allow, list => { policy.commands.allow = list })
+  fallback('policy.commands.allowedInterpreters', allowedInterpreters(own), allowedInterpreters(node), list => { policy.commands.allowedInterpreters = list })
+  fallback('policy.network.allow', own.network.allow, node.network.allow, list => { policy.network.allow = list })
+  const ownTools = own.tools?.allow
+  const nodeTools = node.tools?.allow
+  sources['policy.tools.allow'] = ownTools !== undefined ? 'workspace' : nodeTools !== undefined ? 'node' : 'built-in'
+  if (ownTools === undefined && nodeTools !== undefined) policy.tools = { allow: [...nodeTools], deny: policy.tools?.deny ?? [] }
+  const floor = (key: string, nodes: readonly string[], mine: readonly string[]): string[] => {
+    sources[key] = nodes.length > 0 ? 'node' : mine.length > 0 ? 'workspace' : 'built-in'
+    return [...new Set([...nodes, ...mine])]
+  }
+  policy.commands.deny = floor('policy.commands.deny', node.commands.deny, own.commands.deny)
+  const destructive = floor('policy.commands.destructive', destructivePatterns(node), destructivePatterns(own))
+  if (destructive.length > 0 || own.commands.destructive !== undefined) policy.commands.destructive = destructive
+  const toolDeny = floor('policy.tools.deny', node.tools?.deny ?? [], own.tools?.deny ?? [])
+  if (toolDeny.length > 0) policy.tools = { ...(policy.tools?.allow === undefined ? {} : { allow: policy.tools.allow }), deny: toolDeny }
+  return policy
 }
 
 function defined<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {

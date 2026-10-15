@@ -78,13 +78,15 @@ interface InForce {
 const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds its tools; the change takes effect once its active work is resolved, so call again then'
 
 /**
- * The workspace's policy as the runtime holds it: one document, in its workspace.json, which `buckle policy` and the
- * setup face write (D83 addendum (7)); no node policy sits over it (Q14). `mount` is where its mount table shows the
- * folder. The dangerously-allow switch is stored apart and never touches it (review H1 of B20-B22).
+ * The workspace's policy as the runtime holds it: its own lists, in its workspace.json, which `buckle policy` and the
+ * setup face write (D83 addendum (7)), and the policy in force, where the node's allow-type lists stand for a list it
+ * has not got and the node's deny-type lists are a floor over its own (D85, Q14; resolveSettings). `mount` is where its
+ * mount table shows the folder. The dangerously-allow switch is stored apart and never touches it (review H1 of B20-B22).
  */
 export interface PolicyHandle {
-  /** The policy as workspace.json holds it, read now. */
+  /** The workspace's own lists, as workspace.json holds them, read now. */
   stored(): WorkspacePolicy
+  /** The policy in force: its own lists, else the node's, with the node's deny-type lists over them. */
   effective(): WorkspacePolicy
   /** A fresh egress rule and approved list, built by the same construction the engine and packs use, for `buckle check-url`. */
   network(): { rule: PermissionRule; approved: UrlMatcher | null }
@@ -94,7 +96,7 @@ export interface PolicyHandle {
    * keeps the mount table's, which `setMount` alone changes, from the owner's CLI. Throws PolicyError.
    */
   apply(policy: WorkspacePolicy, expectedRevision?: string): Promise<WorkspacePolicy>
-  /** Empties every list, keeping where the folder shows. The switch is left as it is. */
+  /** Empties every list of its own, so the node's apply, keeping where the folder shows. The switch is left as it is. */
   clear(expectedRevision?: string): Promise<WorkspacePolicy>
   /** Where the agent sees the folder; null shows the real path. The owner's `buckle policy mount|unmount` alone calls it. */
   setMount(mount: string | null): Promise<WorkspacePolicy>
