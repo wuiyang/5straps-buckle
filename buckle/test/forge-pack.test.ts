@@ -404,7 +404,7 @@ describe('git_push', () => {
   it('refuses a remote that is not the forge host and that the owner never approved', async () => {
     const repository = workRepository({ origin: 'https://gitlab.example.com/5straps/demo.git' })
     await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, runner: scriptedGit([], 'https://gitlab.example.com/5straps/demo.git') }))
-      .rejects.toThrow(/the configured forge host is/)
+      .rejects.toThrow(/the configured forge host is .*approved URL list \(the owner runs `buckle policy allow-url <host>`\)/)
   })
 
   it('allows an approved host, and still withholds the credential from it', async () => {

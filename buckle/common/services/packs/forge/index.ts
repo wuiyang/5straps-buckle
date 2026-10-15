@@ -526,7 +526,7 @@ function assertDestinationAllowed(input: { remote: ForgeRemote; gitHost: string;
   }
   if (remote.host === input.gitHost) return
   if (input.approved?.matches(remote.url)) return
-  throw new ToolInputError(`origin is ${remote.display}, and the configured forge host is ${input.gitHost}. Pushing elsewhere needs that host on BUCKLE_NETWORK_ALLOW, and the forge credential is never sent there.`, { code: 'PERMISSION_DENIED' })
+  throw new ToolInputError(`origin is ${remote.display}, and the configured forge host is ${input.gitHost}. Pushing elsewhere needs that host on this workspace's approved URL list (the owner runs \`buckle policy allow-url <host>\`), and the forge credential is never sent there.`, { code: 'PERMISSION_DENIED' })
 }
 
 function assertBranchName(branch: string): string {
