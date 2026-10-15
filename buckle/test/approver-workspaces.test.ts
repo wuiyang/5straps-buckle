@@ -9,9 +9,9 @@ import { describeOnline, watchOnline } from '../server/roster.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf } from './support/workspaces.js'
 
-// The workspace-model brief, item 6 and Q9, and D85, Q15: every ask names its workspace by name, `buckle approvals`, its
-// watch, and `buckle approve` cover every online workspace unless --workspace or --dir names one, and `buckle serve`
-// lists the online workspaces at start and after each change.
+// The workspace-model brief, item 4, item 6, Q9, and D85, Q15: every ask names its workspace by name; `buckle approvals`,
+// its watch, and `buckle approve` default to the workspace holding the current directory, take --workspace or --dir for
+// another, and --all for every online one; `buckle serve` lists the online workspaces at start and after each change.
 
 let base: string
 let node: NodeConfig
@@ -59,7 +59,7 @@ describe('buckle approvals naming no workspace', () => {
     const first = await ask('Site one', '/outside/one.md')
     const second = await ask('Site two', '/outside/two.md')
 
-    const listed = await buckle(['approvals'])
+    const listed = await buckle(['approvals', '--all'])
     expect(listed.exitCode).toBe(0)
     expect(listed.out).toContain('Workspace Site one:')
     expect(listed.out).toContain('Workspace Site two:')
@@ -68,7 +68,7 @@ describe('buckle approvals naming no workspace', () => {
     expect(listed.out).toContain('  workspace: Site two')
     expect(listed.out.indexOf(second)).toBeGreaterThan(listed.out.indexOf('Workspace Site two:'))
 
-    const json = JSON.parse((await buckle(['approvals', '--json'])).out) as Array<{ token: string; workspaceId: string; workspaceName: string }>
+    const json = JSON.parse((await buckle(['approvals', '--json', '--all'])).out) as Array<{ token: string; workspaceId: string; workspaceName: string }>
     expect(json.map(entry => [entry.token, entry.workspaceId, entry.workspaceName])).toEqual([[first, idOf(manager, 'Site one'), 'Site one'], [second, idOf(manager, 'Site two'), 'Site two']])
     // The list over several workspaces is the node's to audit.
     expect(readFileSync(actionsPath(node), 'utf8')).toContain('"tool":"cli_approvals"')
@@ -85,13 +85,32 @@ describe('buckle approvals naming no workspace', () => {
   })
 
   it('says nothing waits in any of them, naming each', async () => {
-    expect((await buckle(['approvals'])).out).toBe('Nothing is waiting for a decision in any online workspace (Site one, Site two).\n')
+    expect((await buckle(['approvals', '--all'])).out).toBe('Nothing is waiting for a decision in any online workspace (Site one, Site two).\n')
   })
 
   it('leaves out a workspace switched offline', async () => {
     const second = await ask('Site two', '/outside/two.md')
     await manager.update(idOf(manager, 'Site two'), { online: false })
-    expect((await buckle(['approvals'])).out).not.toContain(second)
+    expect((await buckle(['approvals', '--all'])).out).not.toContain(second)
+  })
+
+  it('defaults to the workspace holding the current directory, listing it alone (Q9, item 4)', async () => {
+    const first = await ask('Site one', '/outside/one.md')
+    const second = await ask('Site two', '/outside/two.md')
+    const listed = await buckle(['approvals'], join(base, 'one'))
+    expect(listed.exitCode).toBe(0)
+    expect(listed.out).toContain(first)
+    expect(listed.out).not.toContain(second)
+  })
+
+  it('refuses from a directory no workspace holds, naming --workspace and --all and no folder (Q9, item 4)', async () => {
+    const refused = await buckle(['approvals'])
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('No workspace holds the current directory')
+    expect(refused.err).toContain('--workspace <name>')
+    expect(refused.err).toContain('--all')
+    expect(refused.err).not.toContain(join(base, 'outside'))
+    expect(readFileSync(actionsPath(node), 'utf8')).toContain('"tool":"cli_approvals"')
   })
 })
 
@@ -100,7 +119,7 @@ describe('buckle approve naming no workspace', () => {
     await ask('Site one', '/outside/one.md')
     const second = await ask('Site two', '/outside/two.md')
 
-    const approved = await buckle(['approve', second, '--scope', 'once'])
+    const approved = await buckle(['approve', second, '--scope', 'once', '--all'])
     expect(approved.exitCode).toBe(0)
     expect(approved.out).toContain('fs_write needs approval in workspace Site two')
     expect(approved.out).toContain(`Approved ${second} in workspace Site two`)
@@ -114,13 +133,13 @@ describe('buckle approve naming no workspace', () => {
 
   it('shows one ask whole wherever it waits', async () => {
     const second = await ask('Site two', '/outside/two.md')
-    const shown = await buckle(['approvals', 'show', second])
+    const shown = await buckle(['approvals', 'show', second, '--all'])
     expect(shown.exitCode).toBe(0)
     expect(shown.out).toContain('  workspace: Site two')
   })
 
   it('refuses a token no online workspace holds waiting, naming them and how to repeat a decision', async () => {
-    const refused = await buckle(['approve', 'no-such-token', '--deny'])
+    const refused = await buckle(['approve', 'no-such-token', '--deny', '--all'])
     expect(refused.exitCode).toBe(1)
     expect(refused.err).toContain('Nothing named no-such-token is waiting in any online workspace (Site one, Site two); to repeat a decision already recorded, name its workspace with --workspace <name>')
   })
@@ -145,11 +164,18 @@ describe('an approver\'s command refused before any workspace answers it', () =>
 describe('buckle approvals --watch naming no workspace', () => {
   it('follows every online workspace even where one is online at its start, audited in the node\'s log', async () => {
     await manager.update(idOf(manager, 'Site two'), { online: false })
-    const refused = await buckle(['approvals', '--watch'])
+    const refused = await buckle(['approvals', '--watch', '--all'])
     // Without a terminal it asks nothing; the way it refuses shows the path it took.
     expect(refused.err).toContain('needs a terminal to ask in')
     expect(refused.err).not.toContain('--workspace one')
     expect(readFileSync(actionsPath(node), 'utf8')).toContain('"tool":"cli_approvals"')
+  })
+
+  it('refuses a watch from a directory no workspace holds, naming --workspace and --all (Q9, item 4)', async () => {
+    const refused = await buckle(['approvals', '--watch'])
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('No workspace holds the current directory')
+    expect(refused.err).toContain('--all')
   })
 })
 

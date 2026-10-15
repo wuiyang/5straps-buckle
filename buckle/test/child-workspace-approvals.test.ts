@@ -96,15 +96,16 @@ describe('answering a child workspace request from the terminal', () => {
   }, 30_000)
 
   // Q9 of the workspace-model brief: naming no workspace means every online one, and the token is answered where it waits.
-  it('answers the same token unnamed in the workspace whose queue holds it, and refuses it where --dir names another', async () => {
+  it('answers a token with --all in the workspace whose queue holds it, and refuses it from a workspace that does not (Q9)', async () => {
     const { config, manager } = await nodeWithChild()
     const token = await pendingIn((await byName(manager, 'child')).runtime)
 
-    const elsewhere = await capture({ argv: ['approve', token, '--scope', 'once', '--dir', config.cwd], config, cwd: config.cwd })
+    // Unnamed, it defaults to the workspace holding the current directory (the node folder), which does not hold the child's ask.
+    const elsewhere = await capture({ argv: ['approve', token, '--scope', 'once'], config, cwd: config.cwd })
     expect(elsewhere.exitCode).toBe(1)
     expect(elsewhere.stderr).toContain(`in workspace ${basename(config.cwd)}`)
 
-    const approved = await capture({ argv: ['approve', token, '--scope', 'once'], config, cwd: config.cwd })
+    const approved = await capture({ argv: ['approve', token, '--scope', 'once', '--all'], config, cwd: config.cwd })
     expect(approved.exitCode).toBe(0)
     expect(approved.stdout).toContain('in workspace Child')
     expect((await byName(manager, 'child')).runtime.approvals.pending()).toEqual([])

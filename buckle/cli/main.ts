@@ -105,14 +105,24 @@ async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; 
       if (error instanceof TargetError) return fail(error.message)
       throw error
     }
-    // Q9: an approver's command that names no workspace answers in every online one, as buckle serve asks in all of them.
-    if (APPROVER_COMMANDS.includes(command) && taken.target.workspace === undefined && taken.target.dir === undefined) return runApproverCommand({ ...input, workspaces, rest: taken.argv })
+    // Q9 (Phase 1b item 4): an approver's command defaults to the workspace holding the current directory; --all widens to every online one.
+    if (APPROVER_COMMANDS.includes(command) && taken.target.workspace === undefined && taken.target.dir === undefined) {
+      if (taken.argv.includes('--all')) return runApproverCommand({ ...input, workspaces, rest: taken.argv.filter(word => word !== '--all') })
+      if (!holdsCurrentDirectory(workspaces, input.cwd)) {
+        return nodeAudited({ workspaces, command }, () => fail('No workspace holds the current directory. Name one with --workspace <name>, or pass --all to answer every online workspace.'))
+      }
+    }
     return runWorkspaceCommand({ ...input, workspaces, target: taken.target, rest: taken.argv })
   })
 }
 
-/** The commands that answer asks: with no --workspace or --dir, over every online workspace (Q9). */
+/** The commands that answer asks: default to the workspace holding the current directory, or --all over every online one (Q9, Phase 1b item 4). */
 const APPROVER_COMMANDS: readonly string[] = Object.freeze(['approve', 'approvals'])
+
+/** Whether a workspace holds the current directory, read without throwing, so an approver command can default to it (Q9). */
+function holdsCurrentDirectory(workspaces: WorkspaceManager, cwd: string): boolean {
+  try { workspaces.target({ cwd }); return true } catch { return false }
+}
 /** The commands that act on the node rather than on one workspace: its registry and its trusted keys. */
 const NODE_COMMANDS: readonly string[] = Object.freeze(['workspace', 'keys'])
 /** The owner's commands on one workspace that are audited; reads such as `tools` are not. */
@@ -149,9 +159,9 @@ async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config
 }
 
 /**
- * `buckle approvals` and `buckle approve` naming no workspace (Q9): over every online one. A token is answered in the
- * workspace whose queue holds it, and audited in its log, as with --workspace; a node with one online workspace reads
- * as before; the list and the watch over several are audited in the node's log.
+ * `buckle approvals --all` and `buckle approve --all`: over every online workspace (Q9, Phase 1b item 4). A token is
+ * answered in the workspace whose queue holds it, and audited in its log; a node with one online workspace reads as a
+ * single one; the list and the watch over several are audited in the node's log.
  */
 async function runApproverCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; confirm: Confirm | null }): Promise<CliResult> {
   const runtimes = await onlineRuntimes(input.workspaces)
@@ -261,11 +271,11 @@ function printUsage(): CliResult {
   buckle <group> <verb> [args]       Run a tool, e.g. buckle fs read src/app.ts
   buckle call <tool> --json '{...}'  Run a tool with raw JSON arguments
 
-  buckle approvals [--json] [--workspace <name>]   Requests waiting for a decision
-  buckle approvals --watch [--workspace <name>]    Ask about each request as it arrives
+  buckle approvals [--json] [--workspace <name> | --all]   Requests waiting for a decision (the current workspace, or every online one)
+  buckle approvals --watch [--workspace <name> | --all]    Ask about each request as it arrives
   buckle approvals show <token> [--json] [--workspace <name>]
                                    One request whole, and the code_run script that made it
-  buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <name>]
+  buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <name> | --all]
                                    Shows the whole action, then approves only once you confirm at a terminal
   buckle check-url <url|host> [--session <id>] [--workspace <name>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
   buckle grants list | revoke <id>
@@ -373,7 +383,7 @@ interface CommandInput {
 const APPROVALS_USAGE = 'Usage: buckle approvals [--json] [--watch] [--workspace <name>], or buckle approvals show <token> [--json] [--workspace <name>]'
 
 function approvalsArguments(argv: string[]) {
-  return parseArgs({ args: argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' } }, allowPositionals: true })
+  return parseArgs({ args: argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, all: { type: 'boolean' } }, allowPositionals: true })
 }
 
 /** Why the arguments name no listing, no watch and no single ask, or null. */
@@ -507,7 +517,7 @@ async function watch(input: { runtimes: () => Promise<BuckleRuntime[]>; pinned?:
 const APPROVE_USAGE = "Usage: buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <id>]"
 
 function approveArguments(argv: string[]) {
-  return parseArgs({ args: argv, options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' } }, allowPositionals: true })
+  return parseArgs({ args: argv, options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' }, all: { type: 'boolean' } }, allowPositionals: true })
 }
 
 async function approve(input: CommandInput & { confirm: Confirm | null }): Promise<CliResult> {

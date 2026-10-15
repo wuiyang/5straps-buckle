@@ -532,7 +532,7 @@ describe('buckle approve shows the whole action before it decides (owner decisio
     writeFileSync(script, `
       import { openSync } from 'node:fs';
       import { spawn } from 'node:child_process';
-      const child = spawn(process.execPath, ['--import', ${JSON.stringify(import.meta.resolve('tsx'))}, '--input-type=module', '-e', ${JSON.stringify(`import { runCli } from ${JSON.stringify(new URL('../cli/main.ts', import.meta.url).href)}; const result = await runCli({ argv: ['approve', ${JSON.stringify(token)}, '--scope', 'session'], config: ${JSON.stringify(nodeConfigOf(config))} }); process.exitCode = result.exitCode;`)}], { stdio: [0, openSync('/dev/null', 'w'), 2] });
+      const child = spawn(process.execPath, ['--import', ${JSON.stringify(import.meta.resolve('tsx'))}, '--input-type=module', '-e', ${JSON.stringify(`import { runCli } from ${JSON.stringify(new URL('../cli/main.ts', import.meta.url).href)}; const result = await runCli({ argv: ['approve', ${JSON.stringify(token)}, '--scope', 'session', '--all'], config: ${JSON.stringify(nodeConfigOf(config))} }); process.exitCode = result.exitCode;`)}], { stdio: [0, openSync('/dev/null', 'w'), 2] });
       child.on('exit', code => { process.exitCode = code ?? 1 });
     `)
     const pty = await import('node-pty')
