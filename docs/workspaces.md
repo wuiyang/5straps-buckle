@@ -108,6 +108,9 @@ before workspaces), else the one holding the client's working directory:
 }
 ```
 
+It checks the registry at every call: a workspace taken offline or removed answers each call with
+a refusal naming it, and one removed and added again needs the client to restart `buckle mcp`.
+
 Neither a workspace's settings nor the defaults it takes from the node come from an MCP client's
 `env`: the node reads them from `workspace.json` and `buckle.env` alone, and says so in its log
 where that `env` sets one otherwise.

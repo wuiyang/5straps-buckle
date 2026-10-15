@@ -511,6 +511,76 @@ describe('the workspace buckle mcp serves (built dist)', () => {
   }, 30_000)
 })
 
+// Fix round 3 of the workspace model, on buckle mcp resolving its workspace once: a workspace the owner takes offline,
+// removes, or removes and registers again must stop being served by a process that started before the change.
+describe('a buckle mcp process whose workspace changes under it (built dist)', () => {
+  it('answers each call with a refusal naming the workspace once it is offline, removed, or registered again, and serves it again once enabled', async () => {
+    const node = await prepareNode({ BUCKLE_ADMIN_TOKEN: 'mcp-guard-admin-fixture' })
+    const { BUCKLE_WORKSPACE_ROOT: _root, BUCKLE_AUTH_TOKEN: _token, ...env } = node.env
+    const project = join(node.root, 'project')
+    mkdirSync(project)
+    writeFileSync(join(project, 'which.txt'), 'OLD-CONTENT')
+    const owner = async (args: string[]) => {
+      const run = spawnBuckle({ entry, args, env, cwd: project })
+      running.push(run)
+      return run.exited
+    }
+    expect(await owner(['workspace', 'init', '--name', 'site'])).toEqual({ code: 0, signal: null })
+
+    const mcp = spawnBuckle({ entry, args: ['mcp', '--workspace', 'site'], env, cwd: node.root, stdin: 'pipe' })
+    running.push(mcp)
+    const replies: Array<{ id?: number; result?: { isError?: boolean; content?: Array<{ text: string }> } }> = []
+    let pending = ''
+    mcp.child.stdout!.on('data', (chunk: Buffer) => {
+      pending += chunk.toString('utf8')
+      const lines = pending.split('\n')
+      pending = lines.pop() ?? ''
+      for (const line of lines) if (line.trim() !== '') replies.push(JSON.parse(line))
+    })
+    let next = 0
+    const send = async (method: string, params: Record<string, unknown>) => {
+      const id = ++next
+      mcp.child.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+      await vi.waitFor(() => expect(replies.some(reply => reply.id === id)).toBe(true), { timeout: 20_000, interval: 50 })
+      return replies.find(reply => reply.id === id)!
+    }
+    const read = async () => {
+      const reply = await send('tools/call', { name: 'fs_read', arguments: { path: 'which.txt' } })
+      return { failed: reply.result?.isError === true, text: reply.result?.content?.map(part => part.text).join('\n') ?? '' }
+    }
+    await mcp.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')
+    await send('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'guard-test', version: '0.0.0' } })
+    mcp.child.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
+
+    expect(await read()).toMatchObject({ failed: false, text: expect.stringContaining('OLD-CONTENT') })
+
+    expect(await owner(['workspace', 'disable', 'site'])).toEqual({ code: 0, signal: null })
+    const offline = await read()
+    expect(offline.failed).toBe(true)
+    expect(offline.text).toContain('Workspace site is not served now: it is offline')
+    expect(offline.text).not.toContain(node.root)
+
+    expect(await owner(['workspace', 'enable', 'site'])).toEqual({ code: 0, signal: null })
+    expect(await read()).toMatchObject({ failed: false, text: expect.stringContaining('OLD-CONTENT') })
+
+    expect(await owner(['workspace', 'remove', 'site'])).toEqual({ code: 0, signal: null })
+    const removed = await read()
+    expect(removed.failed).toBe(true)
+    expect(removed.text).toContain('Workspace site is not served now: it was removed')
+    expect(removed.text).not.toContain(node.root)
+
+    // The same folder registered again is a new registration: the process serves none of it until it is restarted.
+    expect(await owner(['workspace', 'init', '--name', 'site'])).toEqual({ code: 0, signal: null })
+    const again = await read()
+    expect(again.failed).toBe(true)
+    expect(again.text).toContain('Workspace site was removed and registered again')
+    expect(again.text).not.toContain(node.root)
+
+    mcp.child.stdin!.end()
+    expect(await mcp.exited).toEqual({ code: 0, signal: null })
+  }, 90_000)
+})
+
 describe('buckle mcp bootstrap (built dist)', () => {
   it('closes stage by stage and exits 0 when the client closes stdin', async () => {
     const node = await prepareNode()

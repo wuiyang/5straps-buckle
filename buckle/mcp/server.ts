@@ -35,6 +35,11 @@ export interface McpServerOptions {
    * Without it every abort is a dropped transport and the asks stay pending (owner decision D4).
    */
   isCancel?: (reason: unknown) => boolean
+  /**
+   * Runs before each tool call, and a throw is that call's failure. A stdio server serves one runtime for its whole
+   * life, so it asks the registry here whether the workspace is still the one it was started for.
+   */
+  beforeCall?: () => Promise<void>
 }
 
 /**
@@ -76,6 +81,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
       },
       async (args, context) => inScope(async () => {
         try {
+          await options.beforeCall?.()
           const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
           const approvalTokens = await resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
           // The host asks its user itself, so the call reports back at once instead of waiting.

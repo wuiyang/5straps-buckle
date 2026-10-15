@@ -6,6 +6,8 @@ import { withOperationScope, type Logger } from '@5straps/runtime'
 import type { NodeConfig } from '../common/runtime/config.js'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import { createAuditedStdioTransport } from './audited-stdio-transport.js'
+import { WorkspaceError, type ManagedWorkspace, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpServer, type ToolCallScope } from './server.js'
 import { createStdioWire } from './stdio-wire.js'
 
@@ -36,9 +38,30 @@ export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleC
     actions: runtime.actions, workspaceId: runtime.workspaceId, isKnownTool: name => runtime.registry().has(name),
   })
   const callScope = stdioCallScope(common)
-  const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel }), { transport })
+  const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel, beforeCall: stillServed(workspaces, runtime) }), { transport })
   common.owner.onClose('accept', 'mcp stdio', () => stdio.close())
   input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), tools: runtime.registry().capabilities().length })
+}
+
+/**
+ * Asks the registry before each call whether this process's runtime is still the one its workspace is served by, as
+ * `buckle serve` does at each request (resolve compares the record): a workspace removed or taken offline since this
+ * process started, or removed and registered again, answers every call with a refusal naming it, no path among it.
+ * A workspace enabled again is served again by the same runtime, which this process kept open.
+ */
+function stillServed(workspaces: WorkspaceManager, runtime: BuckleRuntime): () => Promise<void> {
+  return async () => {
+    const name = runtime.workspaceName()
+    let current: ManagedWorkspace
+    try { current = await workspaces.resolve(runtime.workspaceId) } catch (error) {
+      if (error instanceof WorkspaceError) {
+        const why = error.status === 404 ? 'it was removed' : error.message.replace(/^Workspace is /, 'it is ')
+        throw new WorkspaceError(`Workspace ${name} is not served now: ${why}. Tell the person you work with: once it is served again this server answers, and if it was removed and added again this MCP server must be restarted.`, 409)
+      }
+      throw error
+    }
+    if (current.runtime !== runtime) throw new WorkspaceError(`Workspace ${name} was removed and registered again, so this MCP server no longer serves it. Tell the person you work with to restart this MCP server.`, 409)
+  }
 }
 
 /**
