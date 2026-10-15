@@ -3,7 +3,7 @@ import { resolve } from 'pathe'
 import { ZodError } from 'zod'
 import type { NodeConfig } from '../common/runtime/config.js'
 import { PolicyError } from '../common/domain/policy.js'
-import { WorkspaceError, type MintedToken, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { WorkspaceError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError } from '../common/services/workspaces/workspace-settings.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
@@ -78,8 +78,8 @@ async function init(context: Context): Promise<CliResult> {
   const { values } = parseArgs({ args: context.rest, options: { name: { type: 'string' }, id: { type: 'string' } }, allowPositionals: false })
   if (context.target.workspace !== undefined) return fail('buckle workspace init makes a workspace: name its folder with --dir, and its id with --id')
   const dir = resolve(context.cwd, context.target.dir ?? '.')
-  const { workspace, token } = await context.workspaces.create({ dir, ...(values.name ? { name: values.name } : {}), ...(values.id ? { id: values.id } : {}) })
-  printMinted(workspace, token)
+  const { workspace, token, takenUp } = await context.workspaces.create({ dir, ...(values.name ? { name: values.name } : {}), ...(values.id ? { id: values.id } : {}) })
+  printMinted(workspace, token, takenUp)
   return { exitCode: 0, detail: `init ${workspace.id}` }
 }
 
@@ -88,13 +88,13 @@ async function add(context: Context): Promise<CliResult> {
   const { positionals, values } = parseArgs({ args: context.rest, options: { root: { type: 'string' }, name: { type: 'string' } }, allowPositionals: true })
   const [id] = positionals
   if (!id || !values.root || positionals.length !== 1) return fail('Usage: buckle workspace add <id> --root <dir> [--name <name>], kept for one release: buckle workspace init --dir <dir> --id <id>')
-  const { workspace, token } = await context.workspaces.create({ id, dir: resolve(context.cwd, values.root), name: values.name ?? id })
-  printMinted(workspace, token)
+  const { workspace, token, takenUp } = await context.workspaces.create({ id, dir: resolve(context.cwd, values.root), name: values.name ?? id })
+  printMinted(workspace, token, takenUp)
   return { exitCode: 0, detail: `init ${workspace.id}` }
 }
 
-function printMinted(workspace: WorkspaceDescriptor, token: MintedToken): void {
-  process.stdout.write(`Workspace ${workspace.id} serves ${workspace.dir}, online.
+function printMinted(workspace: WorkspaceDescriptor, token: MintedToken, takenUp: TakenUp | null): void {
+  process.stdout.write(`Workspace ${workspace.id} serves ${workspace.dir}, online.${takenUp ? ` It takes up the records workspace ${workspace.id} left when it was removed: its settings, grants, and history${takenUp.dangerouslyAllow ? ', and its dangerously-allow switch, which is ON' : ''}.` : ''}
 
   agent token   ${token.token}
 

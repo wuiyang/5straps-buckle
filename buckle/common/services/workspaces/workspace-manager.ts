@@ -5,7 +5,8 @@ import { z } from 'zod'
 import { WorkspacePolicySchema } from '@5straps/protocol'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
-import { actionsPath, NODE_FOLDER_WORKSPACE, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
+import { switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
+import { actionsPath, dangerouslyAllowPath, NODE_FOLDER_WORKSPACE, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
 import { comparablePath, ignoresCase, isInsideComparable, nativePath } from '../../domain/paths.js'
 import { rootsOf } from '../../domain/executable.js'
 import { logger } from '../../runtime/log.js'
@@ -59,6 +60,8 @@ export interface ManagedWorkspace {
   config: BuckleConfig
   runtime: BuckleRuntime
 }
+/** What a registration took up from a workspace removed under its id: its records, and whether its dangerously-allow switch is on. */
+export interface TakenUp { dangerouslyAllow: boolean }
 /** Who a bearer token is: the workspace it belongs to and its id there. */
 export interface TokenOwner { workspaceId: string; tokenId: string }
 
@@ -133,10 +136,12 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     /**
      * Registers a folder as a workspace (D83 (2), `buckle workspace init`), online, with one agent token returned here
      * and never again. Its id is `id`, or one made from the folder's name that no workspace's records hold: a removed
-     * workspace's grants and settings stay on disk (Q7), and only an owner who names that id takes them up again.
-     * Its settings are the defaults, the folder at /workspace, with `policy` and `settings` over them.
+     * workspace's grants and settings stay on disk (Q7), and only an owner who names that id takes them up again, as the
+     * answer says, with whether its dangerously-allow switch is on. Its settings are the defaults, the folder at
+     * /workspace, with `policy` and `settings` over them; naming either over records taken up is refused, as they
+     * would be dropped (finding 36 of the Phase 1 review).
      */
-    async create(value: WorkspaceRegistration & { label?: string; settings?: (defaults: WorkspaceSettings) => WorkspaceSettings }): Promise<{ workspace: WorkspaceDescriptor; token: MintedToken }> {
+    async create(value: WorkspaceRegistration & { label?: string; settings?: (defaults: WorkspaceSettings) => WorkspaceSettings }): Promise<{ workspace: WorkspaceDescriptor; token: MintedToken; takenUp: TakenUp | null }> {
       const named = WorkspaceRegistrationSchema.pick({ id: true, name: true }).safeParse({ id: value.id, name: value.name })
       if (!named.success) throw new WorkspaceError(`Invalid workspace: ${named.error.issues.map(issue => issue.message).join('; ')}`)
       const dir = canonicalDirectory(value.dir, platform)
@@ -148,6 +153,10 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         }
         const id = value.id ?? idFor(dir, state, leftover)
         if (state.workspaces.some(workspace => workspace.id === id)) throw new WorkspaceError(`Workspace ${id} already exists`, 409)
+        const takenUp = leftover(id) ? { dangerouslyAllow: switchKeys(dangerouslyAllowPath({ stateDirectory: join(node.stateDirectory, 'workspaces', id) })).includes(id) } : null
+        if (takenUp && (value.policy || value.settings)) {
+          throw new WorkspaceError(`Workspace ${id}'s records from before it was removed stay in the state directory, and registering it takes them up, its settings among them, in place of the policy or settings named here. Register it without them, or take the records up and delete them first with buckle workspace remove ${id} --purge`, 409)
+        }
         if (!existsSync(settingsPath(node.stateDirectory, id))) {
           const defaults = value.policy ? withPolicy(defaultSettings(), { ...value.policy, mount: WORKSPACE_MOUNT_TARGET }) : defaultSettings()
           await settingsOf(id).update(() => (value.settings ? value.settings(defaults) : defaults))
@@ -156,9 +165,9 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
           tokens: [{ id: minted.id, sha256: tokenDigest(minted.token), label: minted.label, createdAt: minted.createdAt }] }
         state.workspaces.push(workspace)
         nodeRoots.take(state.workspaces.map(item => item.dir))
-        return describe(workspace)
+        return { workspace: describe(workspace), takenUp }
       })
-      return { workspace: created, token: minted }
+      return { ...created, token: minted }
     },
 
     /**

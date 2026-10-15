@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import { ACTIVE_WORK_FRESH_MS, activeElsewhere, activeWorkDirectory } from '../common/services/workspaces/active-work.js'
@@ -178,6 +179,23 @@ describe('buckle workspace enable, disable and remove', () => {
     expect(refused.exitCode).toBe(1)
     expect(refused.err).toContain('Stop serving it with buckle workspace disable default')
     expect(registry().workspaces.map(workspace => workspace.id)).toEqual(['default'])
+  })
+
+  // Finding 36 of the Phase 1 review: a registration under a removed workspace's id takes its records up, the switch
+  // among them, which the owner is now told, and a policy named with it would be dropped, so that is refused.
+  it('says what a registration under a removed workspace\'s id takes up, its switch named where on, and refuses a policy over it', async () => {
+    const workspaces = await openWorkspaceManager({ config: node() })
+    try {
+      const { runtime } = await workspaces.resolve('alpha')
+      await runtime.policy.setDangerouslyAllow(true)
+      expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
+      const strict = { ...emptyWorkspacePolicy(), commands: { allow: [], deny: ['curl *'] } }
+      await expect(workspaces.create({ id: 'alpha', dir: beta, policy: strict })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('buckle workspace remove alpha --purge') })
+      expect(registry().workspaces).toEqual([])
+    } finally { await workspaces.close() }
+    const taken = await buckle(['init', '--id', 'alpha'], { cwd: beta })
+    expect(taken.exitCode).toBe(0)
+    expect(taken.out).toContain('It takes up the records workspace alpha left when it was removed: its settings, grants, and history, and its dangerously-allow switch, which is ON.')
   })
 
   it('names the one id a verb takes', async () => {
