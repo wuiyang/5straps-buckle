@@ -395,15 +395,20 @@ describe('buckle workspace set and unset', () => {
     expect(settings('alpha').env).toEqual({})
   })
 
-  it('refuses a value that is one of this node\'s credentials, without printing it', async () => {
+  // Finding 26 of the Phase 1 review: only an exact admin or workspace token was refused; the node holds more secrets.
+  it('refuses a value holding one of this node\'s credentials, anywhere in it, without printing it', async () => {
     const token = await init(beta)
-    for (const value of [ADMIN, token]) {
-      const result = await set('env.HARMLESS_NAME', value)
+    const secrets = { BUCKLE_FORGE_GITHUB_TOKEN: 'forge-token-fixture-0123456789', BUCKLE_BRAVE_SEARCH_API_KEY: 'brave-key-fixture-0123456789', BUCKLE_REPORT_URL: 'https://rings.test/api/v1/buckle-reports', BUCKLE_REPORT_TOKEN: 'report-token-fixture-0123456789', BUCKLE_RINGS_APPROVAL_KEY: Buffer.alloc(32, 7).toString('base64url'), BUCKLE_APPROVAL_WEBHOOK: 'https://relay.test/approvals?key=webhook-secret-fixture' }
+    const config = node(secrets)
+    const values = [ADMIN, `${ADMIN}\n`, `Bearer ${ADMIN}`, token, ` ${token}`, `https://x:${token}@host/`, ...Object.values(secrets).filter(value => !value.includes('rings.test')), `prefix-${secrets.BUCKLE_FORGE_GITHUB_TOKEN}`]
+    for (const value of values) {
+      const result = await buckle(['set', 'env.HARMLESS_NAME', value], { cwd: alpha, config })
       expect(result.exitCode).toBe(1)
       expect(result.err).toContain('no secret reaches a command Buckle runs')
-      expect(result.err).not.toContain(value)
+      expect(result.err).not.toContain(value.trim())
     }
     expect(settings('alpha').env).toEqual({})
+    expect((await buckle(['set', 'env.HARMLESS_NAME', 'an ordinary value'], { cwd: alpha, config })).exitCode).toBe(0)
   })
 })
 

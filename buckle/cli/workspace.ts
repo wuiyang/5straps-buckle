@@ -207,10 +207,19 @@ function settingKey(key: string): SettingKey | string {
   return SETTING_KEYS.find(item => item.key === key) ?? `${key} is no workspace setting; buckle workspace show lists them`
 }
 
-/** A value that is one of this node's credentials never becomes a variable a command reads (no secret reaches a child process). */
+/**
+ * A value holding one of this node's secrets never becomes a variable a command reads (no secret reaches a child
+ * process): the admin and agent tokens, the forge token, the Brave key, the Rings report token and pairing key, and the
+ * approval webhook's URL, anywhere in the value, and a workspace's agent token as a word of it, which only its digest
+ * can recognise (finding 26 of the Phase 1 review).
+ */
 function credentialValueRefusal(context: Context, value: string): string | null {
-  const held = value === context.config.adminToken || value === context.config.authToken || context.workspaces.tokenOwner(`Bearer ${value}`) !== null
-  return held ? 'That value is one of this node\'s credentials, and no secret reaches a command Buckle runs' : null
+  const { config } = context
+  const secrets = [config.adminToken, config.authToken, config.forgeGithubToken, config.braveSearchApiKey, config.reportToken, config.ringsApprovalKey?.secret.toString('base64url'), config.approvalWebhook]
+    .flatMap(secret => (secret?.trim() ? [secret.trim()] : []))
+  const words = [value.trim(), ...value.split(/[^A-Za-z0-9_-]+/)].filter(Boolean)
+  const held = secrets.some(secret => value.includes(secret)) || words.some(word => context.workspaces.tokenOwner(`Bearer ${word}`) !== null)
+  return held ? 'That value holds one of this node\'s credentials, and no secret reaches a command Buckle runs' : null
 }
 
 /** How many words a 0.1 `token` spelling takes, its workspace's id first. */
