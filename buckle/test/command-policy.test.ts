@@ -1847,6 +1847,12 @@ describe('what no pattern can change', () => {
     ['node', ['./node_modules/.bin/buckle', 'approve', 'abc']],
     ['bash', ['-c', '/usr/local/bin/buckle approve abc']],
     ['bash', ['-c', '"./node_modules/.bin/buckle" approve abc']],
+    // Finding 35 of the workspace-model Phase 1 review: an option word before the subcommand, and the installed entry point.
+    ['buckle', ['--skip-owner-only-check', 'keys', 'enroll', 'ed25519:AAAA', '--purpose', 'approval', '--workspace', 'node']],
+    ['buckle', ['--skip-owner-only-check', 'policy', 'dangerously-allow', 'on']],
+    ['bash', ['-c', 'buckle --skip-owner-only-check keys enroll ed25519:AAAA --purpose approval --workspace node']],
+    ['node', ['/usr/lib/node_modules/@5straps/buckle/dist/main.js', 'keys', 'enroll', 'ed25519:AAAA']],
+    ['node', ['./node_modules/@5straps/buckle/dist/main.js', '--skip-owner-only-check', 'policy', 'dangerously-allow', 'on']],
   ] as Array<[string, string[]]>)('refuses %s %j, whatever path names the binary', (command, args) => {
     expect(reasonOf(evaluate(command, args, { allow: ['*', 'bash -c *'] }))).toContain('cannot administer')
   })
@@ -1857,6 +1863,9 @@ describe('what no pattern can change', () => {
     expect(evaluate('/opt/notbuckle', ['approve', 'abc']).kind).toBe('allow')
     expect(evaluate('pnpm', ['--filter', '@5straps/buckle', 'mcp-probe']).kind).toBe('allow')
     expect(evaluate('cat', ['/srv/buckle', 'policy.json']).kind).toBe('allow')
+    expect(evaluate('buckle', ['--version']).kind).toBe('allow')
+    // The interpreter rule asks about any `node <file>` under an empty policy; the point is that the entry point is not refused as administration.
+    expect(evaluate('node', ['./node_modules/@5straps/buckle/dist/main.js', 'fs', 'read', 'a.ts']).kind).not.toBe('deny')
   })
 
   it('keeps the destructive gate under an allow pattern, so rm -rf still asks', () => {

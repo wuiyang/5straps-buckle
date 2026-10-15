@@ -13,16 +13,18 @@ import { deny } from '../decision.js'
  * it needs to approve itself.
  *
  * The binary is matched by its basename, so a path to it (`/usr/local/bin/buckle`,
- * `./node_modules/.bin/buckle`, or one handed to `node`) and a quoted one in a script body are
- * refused the same way. The subcommand must end the word, so `mcp-probe` or `policy.json` after a
- * directory named `buckle` is not taken for one. This is a speed bump: the real guard is the hidden
- * state directory and the sandbox.
+ * `./node_modules/.bin/buckle`, or one handed to `node`), the installed entry point handed to `node`
+ * (`.../@5straps/buckle/dist/main.js`), and a quoted one in a script body are refused the same way,
+ * with any option words before the subcommand, as `--skip-owner-only-check` may stand there
+ * (finding 35 of the workspace-model Phase 1 review). The subcommand must end the word, so
+ * `mcp-probe` or `policy.json` after a directory named `buckle` is not taken for one. This is a speed
+ * bump: the real guard is the hidden state directory and the sandbox.
  *
  * It is matched once on the whole command line, a shell's separators counting as word boundaries, which meets
  * every statement and every piece of a script body the old per-statement match met, without splitting the body
  * again on each check (slice 7b review W7B-1).
  */
-const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve|check-url|grants|policy|init|settings|plugin|serve|mcp|workspaces?|history|keys|client|service)(?=$|[\s'";&|()`])/
+const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle(?:[/\\]dist[/\\]main\.js)?['"]?(?:\s+-[^\s'";&|()`]*)*\s+(approvals|approve|check-url|grants|policy|init|settings|plugin|serve|mcp|workspaces?|history|keys|client|service)(?=$|[\s'";&|()`])/
 
 /**
  * The owner's command globs, judged one shell word at a time on the parsed command line. Deny
