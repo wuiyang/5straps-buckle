@@ -82,8 +82,9 @@ A state directory that served nothing gets no workspace until `buckle init` make
 
 The move keeps owner-only copies of what it changes: `workspaces.v1.json` and
 `policy.v1.json` in the state directory (empty where the node had no registry or policy), and
-`grants.v1.json` and `dangerously-allow.v1.json` beside each grants and switch file it moved, in
-`workspaces/<id>/` for every workspace. It makes `policy.json`
+`grants.v1.json` and `dangerously-allow.v1.json` beside each grants and switch file it moved: in
+the state directory for the node's folder, and in `workspaces/<0.1 id>/` for each workspace
+registered under 0.1 ([the files](install-02.md)). It makes `policy.json`
 a version 2 stub and takes `BUCKLE_AUTH_TOKEN` out of `buckle.env`, so an older Buckle refuses to
 start.
 
@@ -96,4 +97,4 @@ move.
 
 `workspaces.v1.json` holds the registered workspaces' agent tokens and admin credentials in clear
 text. Once the node works, delete every `*.v1.json` file in the state directory and in each
-`workspaces/<id>/` folder; the way back goes with them.
+`workspaces/<0.1 id>/` folder; the way back goes with them.

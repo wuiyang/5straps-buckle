@@ -146,8 +146,8 @@ on, push policy; Buckle runs without it.
 
 For users:
 
-- [Installing Buckle](https://github.com/wuiyang/5straps-buckle/blob/main/docs/install.md): requirements, platform status, upgrading, and the
-  state directory.
+- [Installing Buckle](https://github.com/wuiyang/5straps-buckle/blob/main/docs/install.md) ([state files](https://github.com/wuiyang/5straps-buckle/blob/main/docs/install-02.md)):
+  requirements, platform status, and upgrading.
 - [First run](https://github.com/wuiyang/5straps-buckle/blob/main/docs/first-run.md): `buckle init`, the two credentials, and the CLI, MCP, and
   HTTP faces.
 - [Workspaces](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces.md) ([settings, and moving from 0.1](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces-02.md)):
