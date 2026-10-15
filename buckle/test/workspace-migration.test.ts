@@ -88,12 +88,15 @@ describe('moving a 0.1 node onto the workspace model', () => {
     expect((await open(input)).list().find(workspace => workspace.id === 'site')).toMatchObject({ online: false })
   })
 
-  it('copies the environment\'s settings into each workspace, the stored policy unioned into default\'s', async () => {
+  it('copies the environment\'s settings into each workspace, the stored policy unioned into default\'s, and says which keys it copied', async () => {
     const input = scene({ BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,web', BUCKLE_APPROVAL_TIMEOUT_MS: '0', BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_WORKSPACE_MOUNT: '/project' })
     writeFileSync(join(input.state, 'policy.json'), JSON.stringify({ version: 1, workspaces: { [input.folder]: policy(value => { value.commands.deny = ['wget *'] }) } }))
     version1(input)
+    const notices = vi.spyOn(logger, 'warn')
     await open(input)
 
+    // Finding 42 of the Phase 1 review: the keys, in the order the node lists them, and what to do with them.
+    expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('BUCKLE_COMMAND_DENY, BUCKLE_WORKSPACE_MOUNT, BUCKLE_PACKS, BUCKLE_ALLOW_SHELL, BUCKLE_APPROVAL_TIMEOUT_MS are workspace settings now: their values were copied into each workspace\'s workspace.json, and Buckle ignores them from here on. Remove them with buckle settings unset.')
     const own = settings(input, 'default')
     expect(own.packs).toMatchObject({ enabled: ['fs', 'web'], shell: false })
     expect(own.approvalWaitMs).toBe(0)
@@ -103,6 +106,18 @@ describe('moving a 0.1 node onto the workspace model', () => {
     expect(site.packs).toMatchObject({ enabled: ['fs', 'web'], shell: false })
     expect(site.policy.commands.deny).toEqual(['curl *'])
     expect(site.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
+  })
+
+  it('names one copied key in the singular, and none where the environment held no workspace setting', async () => {
+    const one = scene({ BUCKLE_ALLOW_CODE: 'false' })
+    const notices = vi.spyOn(logger, 'warn')
+    await open(one)
+    const told = () => notices.mock.calls.map(([message]) => String(message))
+    expect(told()).toContainEqual('BUCKLE_ALLOW_CODE is a workspace setting now: its value was copied into each workspace\'s workspace.json, and Buckle ignores it from here on. Remove it with buckle settings unset.')
+
+    notices.mockClear()
+    await open(scene())
+    expect(told().filter(message => message.includes('copied into each workspace'))).toEqual([])
   })
 
   it('keeps a folder with no mount showing its real path, as the node showed it', async () => {

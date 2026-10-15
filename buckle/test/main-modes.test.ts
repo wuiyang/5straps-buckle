@@ -14,6 +14,8 @@ const entry = vi.hoisted(() => ({
   serveMcpStdio: vi.fn(async () => {}),
   initializeCommon: vi.fn(() => ({ owner: { onClose: vi.fn(), close: vi.fn(async () => {}) }, bindRequester: vi.fn() })),
   configureOwnerOnlyCheck: vi.fn(),
+  /** What the root logger main configures was told to warn about, by message. */
+  warnings: [] as string[],
 }))
 vi.mock('../common/runtime/environment.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/environment.js')>(), loadEnvironmentFile: entry.loadEnvironmentFile }))
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
@@ -23,11 +25,22 @@ vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, bu
 vi.mock('../mcp/stdio.js', async importOriginal => ({ serveMcpStdio: entry.serveMcpStdio, mcpTarget: (await importOriginal<typeof import('../mcp/stdio.js')>()).mcpTarget }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))
 vi.mock('../common/adapters/file-modes.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/adapters/file-modes.js')>(), configureOwnerOnlyCheck: entry.configureOwnerOnlyCheck }))
+vi.mock('../common/runtime/log.js', async importOriginal => {
+  const original = await importOriginal<typeof import('../common/runtime/log.js')>()
+  // The real root, with its warnings kept here: main warns on the root it configures, not on the shared logger.
+  const configureRootLogger: typeof original.configureRootLogger = (config) => {
+    const root = original.configureRootLogger(config)
+    vi.spyOn(root.logger, 'warn').mockImplementation((message) => { entry.warnings.push(String(message)) })
+    return root
+  }
+  return { ...original, configureRootLogger }
+})
 
 const { main, selectMode, stopSignals, takeGlobalFlags } = await import('../main.js')
 
 beforeEach(() => {
   vi.clearAllMocks()
+  entry.warnings.length = 0
   entry.loadConfig.mockReturnValue(config)
   // The service modes install process-wide signal and rejection handlers; none may reach this worker.
   vi.spyOn(process, 'once').mockReturnValue(process)
@@ -90,6 +103,26 @@ describe('main', () => {
     expect(entry.initializeCommon).toHaveBeenCalledWith(expect.objectContaining({ role: 'server' }))
     expect(await main(['policy', 'show'])).toBe(5)
     expect(entry.configureOwnerOnlyCheck).toHaveBeenLastCalledWith({ skip: false })
+  })
+
+  // Finding 42 of the Phase 1 review: the warning for workspace keys the environment still sets had no test.
+  it('warns at start, naming each workspace setting the environment still sets, which a node on the workspace model ignores', async () => {
+    vi.stubEnv('BUCKLE_ALLOW_SHELL', 'false')
+    vi.stubEnv('BUCKLE_PACKS', 'fs')
+    try {
+      expect(await main(['policy', 'show'])).toBe(5)
+      expect(entry.warnings).toContainEqual('Ignored: BUCKLE_PACKS, BUCKLE_ALLOW_SHELL are workspace settings, read only when a node moves to the workspace model. Change a workspace with buckle workspace set or buckle policy, and remove these with buckle settings unset or from the shell or MCP config\'s env.')
+      vi.unstubAllEnvs()
+      vi.stubEnv('BUCKLE_ALLOW_SHELL', 'false')
+      entry.warnings.length = 0
+      expect(await main(['policy', 'show'])).toBe(5)
+      expect(entry.warnings).toContainEqual(expect.stringMatching(/^Ignored: BUCKLE_ALLOW_SHELL is a workspace setting, read only when a node moves to the workspace model\./))
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    entry.warnings.length = 0
+    expect(await main(['policy', 'show'])).toBe(5)
+    expect(entry.warnings.filter(message => message.startsWith('Ignored:'))).toEqual([])
   })
 
   it('runs init and settings before, and without, the environment file and the node config', async () => {

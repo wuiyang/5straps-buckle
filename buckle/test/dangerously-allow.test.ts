@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,10 +9,11 @@ import { policyCommand } from '../cli/policy.js'
 import { AuditUnavailableError } from '../common/adapters/action-log/file-action-log.js'
 import type { ToolEffect } from '../common/domain/effect.js'
 import { dangerousUses, redactedSubject } from '../common/domain/permission/rules/dangerously-allow.js'
-import { dangerouslyAllowPath, type BuckleConfig } from '../common/runtime/config.js'
+import { dangerouslyAllowPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { runCli } from './support/cli.js'
 import { workspacesOf } from './support/workspaces.js'
 import type { Reporter } from '../common/types/ports/reporter.js'
 
@@ -340,6 +341,45 @@ describe('a registered workspace keeps its policy through the switch (review H1 
     expect((await started.manager.resolve('child')).runtime.policy.dangerouslyAllow().on).toBe(false)
     await childRefuses(started)
     await stop(started)
+  })
+})
+
+// Finding 42 of the Phase 1 review: the switch named by --workspace or --dir through the CLI dispatch, from another
+// workspace's folder, lands under the named workspace; only its own tests ran the switch on a resolved runtime.
+describe('buckle policy dangerously-allow --workspace and --dir', () => {
+  it('land the switch and its audit record under the named workspace, never under the folder the command runs in', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-dangerously-target-')))
+    roots.push(root)
+    for (const folder of ['default', 'child']) mkdirSync(join(root, folder))
+    const environment = { BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_APPROVAL_TIMEOUT_MS: '1' }
+    const manager = await workspacesOf(configFromEnvironment(environment))
+    await manager.create({ id: 'child', name: 'Child', dir: join(root, 'child') })
+    await manager.close()
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const config = loadConfig(environment)
+    const stateOf = (id: string) => (id === 'default' ? join(root, 'state') : join(root, 'state', 'workspaces', id))
+    const readJson = (file: string) => (existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as { workspaces: Record<string, { on: boolean }> } : { workspaces: {} })
+    const switchOf = (id: string) => readJson(dangerouslyAllowPath({ stateDirectory: stateOf(id) })).workspaces
+    const changes = (id: string) => {
+      const file = join(stateOf(id), 'actions.jsonl')
+      if (!existsSync(file)) return []
+      // The switch's own record, as written once it changed; the attempt record before it is not counted.
+      return readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { tool: string; event: string; workspaceId: string; detail?: string }).filter(entry => entry.tool === 'policy_dangerously_allow_changed' && entry.event === 'result')
+    }
+    const inDefault = (argv: string[]) => runCli({ argv: ['policy', 'dangerously-allow', ...argv], config, confirm: null, cwd: join(root, 'default') })
+
+    expect((await inDefault(['on', '--workspace', 'child'])).exitCode).toBe(0)
+    expect(switchOf('child')).toMatchObject({ child: { on: true } })
+    expect(switchOf('default')).toEqual({})
+    expect(changes('child')).toMatchObject([{ workspaceId: 'child', detail: 'on' }])
+    expect(changes('default')).toEqual([])
+
+    expect((await inDefault(['off', '--dir', join(root, 'child')])).exitCode).toBe(0)
+    // Off removes the workspace's entry from its own switch file.
+    expect(switchOf('child')).toEqual({})
+    expect(switchOf('default')).toEqual({})
+    expect(changes('child')).toMatchObject([{ workspaceId: 'child', detail: 'on' }, { workspaceId: 'child', detail: 'off' }])
+    expect(changes('default')).toEqual([])
   })
 })
 
