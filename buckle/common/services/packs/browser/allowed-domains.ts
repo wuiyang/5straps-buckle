@@ -65,6 +65,16 @@ export function browserAllowedDomains(lists: ApprovedList[]): BrowserAllowedDoma
   return { value: [...new Set(allowed.map(spell))].join(','), loosened: loosenedEntries(allowed) }
 }
 
+/**
+ * What the browser is handed, as a key to compare two answers by: the hosts the flag passes, as a set, so the same hosts
+ * in another order, listed twice, or reached by another port or path hand it the same flag in effect; a refusal keeps
+ * its text. A change to the approved list that leaves the key as it was changes nothing for a browser already running.
+ */
+export function allowedDomainsKey(domains: BrowserAllowedDomains): string {
+  if ('refusal' in domains) return `refused: ${domains.refusal}`
+  return domains.value === null ? 'none' : [...new Set(domains.value.split(','))].sort().join(',')
+}
+
 function disjointRefusal(list: ApprovedList, bounds: ApprovedList[]): string {
   const bound = bounds.map(item => `the ${item.name} approved list (${item.entries.join(', ')})`).join(' and ')
   return `Buckle does not start the browser: no entry in the ${list.name} approved list (${list.entries.join(', ')}) is allowed by ${bound} on the same host and port, and ${EMPTY_FLAG}. The owner can add to the ${list.name} approved list a host and port that ${bound} allows`

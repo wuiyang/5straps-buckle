@@ -43,6 +43,8 @@ import type { UrlMatcher } from '../../domain/url-pattern.js'
 import type { PermissionRule } from '../../domain/permission/decision.js'
 import { workspaceStateKey } from '../../domain/workspace-key.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
+import { allowedDomainsKey, browserAllowedDomains } from '../packs/browser/allowed-domains.js'
+import { FRESH_BROWSER, modeFingerprint, type BrowserMode } from '../packs/browser/mode.js'
 import { journalDirectory, scriptOfAsk } from '../packs/code/journal.js'
 import { loadRootSkill } from '../packs/pack-skill.js'
 import type { ActionLog, AuditHealth } from '../../types/ports/action-log.js'
@@ -480,7 +482,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     if (input.waitForWork && (rebuild || policyMoved) && await runtime.hasActiveWork()) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowed })
     const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools }) : null
-    const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs(resolved) === browserInputs(before) }) : null
+    const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mount: resolved.mount }) === browserInputs({ config, compiled, mount: before.mount }) }) : null
     if (policyMoved) await workbenches.policyChanged()
     Object.assign(config, fields)
     applied = input.settings
@@ -661,12 +663,17 @@ function packInputs(settings: ResolvedSettings): string {
 const BROWSER_PACK = 'browser'
 
 /**
- * What the browser pack alone is built from (fix brief 2, R2): the browser settings, the approved list it passes as
- * allowed domains, and the mounts its paths resolve against. A rebuild for anything else, the variables among it,
- * carries the pack over with the browsers it runs, so an agent's tabs and cookies survive it.
+ * What the browser pack alone is handed (fix brief 2, R2; recheck finding 13): the allowed domains its approved list
+ * comes to as agent-browser reads them, the mode and window settings it launches under (the node's, until a later
+ * release reads each workspace's own), and the mounts its paths resolve against. Not the stored list, nor the stored
+ * browser block, which the pack does not read: a rebuild for anything else, the variables, or a list changed in
+ * order, port, or path only, carries the pack over with the browsers it runs, so an agent's tabs and cookies survive it.
  */
-function browserInputs(settings: ResolvedSettings): string {
-  return JSON.stringify([settings.browser, settings.policy.network, settings.mount])
+function browserInputs(input: { config: BuckleConfig; compiled: CompiledPolicy; mount: ResolvedSettings['mount'] }): string {
+  const { config } = input
+  const mode: BrowserMode = config.browserCdp ? { kind: 'attached', endpoint: config.browserCdp } : config.browserProfile ? { kind: 'profile', directory: config.browserProfile } : FRESH_BROWSER
+  const domains = browserAllowedDomains(input.compiled.network ? [{ name: 'workspace', entries: input.compiled.network.patterns }] : [])
+  return JSON.stringify([allowedDomainsKey(domains), modeFingerprint(mode, { ...(config.browserArgs === undefined ? {} : { launchArgs: config.browserArgs }), headed: config.browserHeaded }), input.mount])
 }
 
 /**

@@ -216,6 +216,43 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     expect(calls().filter(call => call[0] === 'close')).toHaveLength(1)
   })
 
+  // Recheck finding 13: what the browser is handed decides whether its pack is replaced, not the stored list it comes from.
+  it.each([
+    ['the same hosts in another order', ['*.example.test', 'docs.test'], ['docs.test', '*.example.test']],
+    ['a host listed twice', ['*.example.test', 'docs.test'], ['*.example.test', 'docs.test', 'docs.test']],
+    ['another path on a host already allowed', ['https://app.example.test/admin'], ['https://app.example.test/admin', 'https://app.example.test/billing']],
+    ['a port on a host already allowed', ['app.example.test'], ['app.example.test', 'app.example.test:8443']],
+  ])('keeps the browser, its session, and its tabs through an approved list change to %s, with no close and no notice', async (_change, before, after) => {
+    const { runtime, calls } = await fixture(before)
+    const warn = vi.spyOn(logger, 'warn')
+    try {
+      expect(noticeOf(await browse(runtime, { command: 'open', args: ['https://app.example.test/admin'] }))).toBeNull()
+      const session = sessionOf(calls()[0])
+      await runtime.policy.apply(policy(after))
+
+      expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBeNull()
+      expect(calls().map(call => call[0])).toEqual(['open', 'snapshot'])
+      expect(sessionOf(calls()[1])).toBe(session)
+      expect(warn.mock.calls.some(([message]) => String(message).startsWith('Browser relaunched'))).toBe(false)
+      await runtime.closeSessions()
+      expect(calls().filter(call => call[0] === 'close')).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
+  }, 20000)
+
+  it('keeps the browser through a hand edit of the stored browser block, which no pack reads yet', async () => {
+    const { runtime, calls, config } = await fixture(['*.example.test'])
+    expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
+
+    await openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory!, config.workspaceId) }).update(settings => ({ ...settings, browser: { ...settings.browser, idleTimeoutMs: 120_000 } }))
+    await runtime.takeUpSettings()
+
+    expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBeNull()
+    expect(calls().map(call => call[0])).toEqual(['open', 'snapshot'])
+    await runtime.closeSessions()
+  }, 20000)
+
   it('leaves the flag off when a grant is added mid-session, since grants only answer questions a list never asks', async () => {
     const { runtime, calls } = await fixture([])
     const asked = await browse(runtime, { command: 'open', args: ['http://localhost:4173'] })
