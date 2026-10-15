@@ -1,11 +1,15 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig, type NodeConfig } from '../common/runtime/config.js'
+import { workspaceStateKey } from '../common/domain/workspace-key.js'
+import { ACTIVE_WORK_FRESH_MS, activeElsewhere, activeWorkDirectory } from '../common/services/workspaces/active-work.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { runCli } from './support/cli.js'
+import { fixedInteraction } from './support/interaction.js'
 
 // The workspace-model brief, item 4: buckle workspace init, list, show, enable, disable, remove, set, unset and token,
 // each on the workspace --workspace or --dir names or else the one holding the current directory (D83 (2) to (6)).
@@ -178,6 +182,61 @@ describe('buckle workspace enable, disable and remove', () => {
     expect((await buckle(['enable'])).err).toContain('Usage: buckle workspace enable <id>')
     expect((await buckle(['remove', 'alpha', 'beta'])).err).toContain('Usage: buckle workspace remove <id>')
     expect((await buckle(['disable', 'nothing'])).exitCode).toBe(1)
+  })
+})
+
+// Findings 5 and 9 of the Phase 1 review: disable and remove run in the CLI's own process, which used to see no work at
+// all, on disk or in the process serving the workspace.
+describe('buckle workspace disable and remove, while the workspace has work', () => {
+  beforeEach(async () => { await init(alpha) })
+  const marks = () => activeWorkDirectory(state, 'alpha')
+
+  it('refuse while a shell result waits for review on disk, and delete nothing', async () => {
+    const id = `shell-${randomUUID()}`
+    const directory = join(state, 'workspaces', 'alpha', 'isolated-shell', workspaceStateKey(alpha), id)
+    mkdirSync(join(directory, 'workspace'), { recursive: true })
+    writeFileSync(join(directory, 'run.json'), JSON.stringify({ id, sessionId: 's', stageId: 'st', tool: 'shell_exec', sourceRoot: alpha, copyRoot: join(directory, 'workspace'), writableRoots: [alpha], excluded: [], createdAt: new Date().toISOString(), status: 'needs_review' }))
+
+    for (const verb of [['disable', 'alpha'], ['remove', 'alpha'], ['remove', 'alpha', '--purge']]) {
+      const refused = await buckle(verb)
+      expect(refused.exitCode).toBe(1)
+      expect(refused.err).toContain('Resolve active tools and staged work before')
+    }
+    expect(registry().workspaces[0]).toMatchObject({ id: 'alpha', online: true })
+    expect(existsSync(join(directory, 'run.json'))).toBe(true)
+  })
+
+  it('refuse while another process marks calls running there, and go ahead once that mark stops being refreshed', async () => {
+    mkdirSync(marks(), { recursive: true })
+    const mark = join(marks(), String(process.pid + 1))
+    writeFileSync(mark, '')
+    expect((await buckle(['disable', 'alpha'])).err).toContain('Resolve active tools and staged work before taking this workspace offline')
+    expect((await buckle(['remove', 'alpha', '--purge'])).exitCode).toBe(1)
+    const stale = new Date(Date.now() - ACTIVE_WORK_FRESH_MS - 1_000)
+    utimesSync(mark, stale, stale)
+    expect((await buckle(['disable', 'alpha'])).exitCode).toBe(0)
+  })
+
+  it('refuse --purge of a workspace that will not open, as its staged work cannot be checked, and take it offline anyway', async () => {
+    rmSync(alpha, { recursive: true })
+    const refused = await buckle(['remove', 'alpha', '--purge'])
+    expect(refused.err).toContain('will not open, so its staged work cannot be checked before its records are deleted')
+    expect(existsSync(settingsPath(state, 'alpha'))).toBe(true)
+    expect((await buckle(['disable', 'alpha'])).exitCode).toBe(0)
+  })
+
+  it('are seen by the runtime serving a call, which marks it running until it answers', async () => {
+    // A node entry point with nobody at a terminal: the gated call is held for the workspace's approval wait.
+    const serving = await openWorkspaceManager({ config: node(), interaction: fixedInteraction() })
+    try {
+      await serving.updateSettings('alpha', settings => ({ ...settings, approvalWaitMs: 1_500 }))
+      const { runtime } = await serving.resolve('alpha')
+      const held = runtime.invoke({ request: { requestId: 'held-write', tool: 'fs_write', args: { path: 'new.txt', content: 'x' }, approvalTokens: [] }, sessionId: 'serve' })
+      await vi.waitFor(() => expect(existsSync(join(marks(), String(process.pid)))).toBe(true))
+      expect(activeElsewhere({ directory: marks(), pid: process.pid + 1 })).toBe(true)
+      expect(await held).toMatchObject({ outcome: 'approval_required' })
+      expect(existsSync(join(marks(), String(process.pid)))).toBe(false)
+    } finally { await serving.close() }
   })
 })
 

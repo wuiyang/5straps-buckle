@@ -12,11 +12,12 @@ import { logger } from '../../runtime/log.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { createNodeRoots, type NodeRoots } from './node-roots.js'
 import { bearerDigest, digestMatches, mintToken, tokenDigest, tokenMatches } from '../access/tokens.js'
-import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
+import { storedGrantMatches, WorkbenchError, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
 import { createAuditHealth } from '../audit/audit-health.js'
 import { createExecutionBudget } from '../invocation/executions.js'
 import { unmetPackPrerequisite } from '../packs/index.js'
 import type { ActionLog } from '../../types/ports/action-log.js'
+import { activeElsewhere, activeWorkDirectory } from './active-work.js'
 import { migrateNode } from './migration.js'
 import { openRegistry, touched, WorkspaceError, WorkspaceIdSchema, WorkspaceNameSchema, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
 import { assertNoHostExposure, canonicalDirectory, exposedRoots, overlaps } from './workspace-dirs.js'
@@ -224,12 +225,11 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
 
     /** Renames a workspace or sets it online or offline (D83 addendum (5)); going offline waits for its active work. */
     async update(id: string, patch: z.infer<typeof WorkspacePatchSchema>): Promise<WorkspaceDescriptor> {
+      if (patch.online === false) await assertIdle(id, { refusal: 'Resolve active tools and staged work before taking this workspace offline', deletes: false })
       const opened = await openedRuntime(id)
-      const busy = patch.online === false && opened ? await opened.runtime.hasActiveWork() : false
       const described = await store.update((state) => {
         const workspace = requireStored(state, id)
         if (patch.expectedUpdatedAt !== undefined && workspace.updatedAt !== patch.expectedUpdatedAt) throw new WorkspaceError('Workspace changed; reload before saving', 409)
-        if (busy) throw new WorkspaceError('Resolve active tools and staged work before taking this workspace offline', 409)
         if (patch.name !== undefined) workspace.name = patch.name
         if (patch.online !== undefined) workspace.online = patch.online
         touched(workspace)
@@ -250,8 +250,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
      */
     async remove(id: string, options: { purge?: boolean } = {}): Promise<WorkspaceDescriptor> {
       if (options.purge && id === NODE_FOLDER_WORKSPACE) throw new WorkspaceError('Workspace default keeps its records in the node\'s own state directory, beside the node\'s; remove it without --purge', 409)
+      await assertIdle(id, { refusal: 'Resolve active tools and staged work before removing this workspace', deletes: options.purge === true })
       const opened = await openedRuntime(id)
-      if (opened && await opened.runtime.hasActiveWork()) throw new WorkspaceError('Resolve active tools and staged work before removing this workspace', 409)
       const removed = await store.update((state) => {
         const workspace = requireStored(state, id)
         state.workspaces = state.workspaces.filter(item => item.id !== id)
@@ -377,6 +377,28 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     },
   }
 
+  /**
+   * Refuses taking a workspace offline or removing it while it has work (findings 5 and 9 of the Phase 1 review): calls
+   * another process marks as running, then what its runtime holds, opened here as 0.1 did where this process has not, so
+   * staged shell results and open workbenches on disk are seen from the CLI too. A workspace that will not open runs
+   * nothing here, and taking it offline or forgetting it deletes nothing, so that goes ahead; deleting its records waits
+   * until it opens and shows none.
+   */
+  async function assertIdle(id: string, input: { refusal: string; deletes: boolean }): Promise<void> {
+    requireStored(store.read(), id)
+    if (activeElsewhere({ directory: activeWorkDirectory(node.stateDirectory, id) })) throw new WorkspaceError(input.refusal, 409)
+    let opened = await openedRuntime(id)
+    if (!opened) {
+      try { opened = await manager.resolve(id, { setup: true }) } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        if (input.deletes) throw new WorkspaceError(`Workspace ${id} will not open, so its staged work cannot be checked before its records are deleted: ${reason}. Remove it without --purge, or repair it first`, 409)
+        logger.warn('A workspace would not open to check its staged work; nothing of it is deleted, so the change goes ahead', { workspaceId: id, error })
+        return
+      }
+    }
+    if (await holdsWork(opened.runtime)) throw new WorkspaceError(input.refusal, 409)
+  }
+
   /** Forgets and closes a runtime, where it is still the one this process holds for the id. */
   async function drop(id: string, pending: Promise<ManagedWorkspace>, opened: ManagedWorkspace): Promise<void> {
     if (runtimes.get(id) !== pending) return
@@ -428,6 +450,14 @@ function idFor(dir: string, state: Registry, leftover: (id: string) => boolean):
   const free = (candidate: string) => !taken.has(candidate) && !leftover(candidate) && WorkspaceIdSchema.safeParse(candidate).success
   if (free(word)) return word
   for (let index = 2; ; index++) if (free(`${word}-${index}`)) return `${word}-${index}`
+}
+
+/** Whether a workspace's runtime has work; its workbenches owned by another Buckle process are that process's work. */
+async function holdsWork(runtime: BuckleRuntime): Promise<boolean> {
+  try { return await runtime.hasActiveWork() } catch (error) {
+    if (error instanceof WorkbenchError) return true
+    throw error
+  }
 }
 
 /**

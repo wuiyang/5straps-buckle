@@ -62,6 +62,7 @@ import { BUCKLE_VERSION } from '../../runtime/version.js'
 import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
 import { openSettingsFile, settingsPath, scopeOf, withPolicy, WorkspaceSettingsSchema, type WorkspaceSettings } from './workspace-settings.js'
 import { WorkspaceError } from './registry.js'
+import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 
 /** Said where packs or the folder changed while work is active: no path, as an agent reads it (Q2). */
 const RESHAPE_WAITS = 'This workspace\'s packs or folder changed; the change takes effect once its active work is resolved, so call again then'
@@ -255,6 +256,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
+  // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it (finding 9).
+  const activity = createActiveWorkMark({ directory: activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), workspaceId })
   const executionBudget = input.executionBudget ?? createExecutionBudget()
   const executions = createExecutions({ budget: executionBudget })
   // Every call running here, so shutdown can cancel them and wait for each to answer.
@@ -415,7 +418,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   }
 
   async function invokeNow(call: InvokeInput): Promise<InvokeResponse> {
-      activeInvocations++
+    activeInvocations++
+    try {
+      if (activeInvocations === 1) activity.start()
       const running = createInvoker({
         registry,
         permissions,
@@ -439,10 +444,10 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         nested: nestedCall => invokeNow(nestedCall),
       }).invoke(call)
       inFlight.add(running)
-      try { return await running } finally {
-        inFlight.delete(running)
-        activeInvocations--
-      }
+      try { return await running } finally { inFlight.delete(running) }
+    } finally {
+      if (--activeInvocations === 0) activity.stop()
+    }
   }
 
   // A stored entry a later grammar refuses names the file and the repair (StoredPolicyError).
