@@ -3,13 +3,13 @@
 Each [workspace](workspaces.md) of a node of Buckle, the approval and sandbox runtime on this
 machine, keeps its settings in its own file, `workspaces/<id>/workspace.json` in the state
 directory. The node keeps its own in `buckle.env`. This page lists both, says when a change
-applies, and covers the first start of a node set up before workspaces.
+applies, and covers moving a node set up before workspaces.
 
 ## Settings
 
 `buckle workspace show` prints a workspace's `workspace.json`: its policy, where the agent sees
-its folder, its variables, its packs, its browser settings, its approval wait, and a revision
-counted on at each write. `buckle workspace set <key> <value>` and `unset <key>` change one
+its folder, its variables, packs, browser settings, and approval wait, and a revision counted on
+at each write. `buckle workspace set <key> <value>` and `unset <key>` change one
 setting, checked whole with the rest before anything is written:
 
 | Key | Takes | Default |
@@ -38,15 +38,14 @@ acts on one workspace as every command does ([Policy](policy.md)). Where the age
 folder changes with `buckle policy mount <path>` and `unmount`.
 
 The browser settings (`browser.cdp`, `browser.profile`, `browser.args`, `browser.headed`, and
-`browser.idleTimeoutMs`) are kept in the file but not read yet: the browser runs on the node's
-`BUCKLE_BROWSER_CDP`, `BUCKLE_BROWSER_PROFILE`, `BUCKLE_BROWSER_ARGS`, and
-`BUCKLE_BROWSER_HEADED` until a later release reads each workspace's own, so `buckle workspace
-set` refuses them for now.
+`browser.idleTimeoutMs`) are kept in the file but not read: the browser runs on the node's
+`BUCKLE_BROWSER_*` settings until a later release reads each workspace's own, so `buckle workspace
+set` refuses them.
 
 ## When a change applies
 
 A running `buckle serve` or `buckle mcp` checks a workspace's `workspace.json` at the start of
-each call, a cheap look at the file with no watcher. A change to the policy lists, the variables,
+each call, with no watcher. A change to the policy lists, the variables,
 or the approval wait applies from that call on; a call already running keeps the rules it started
 with. A change to the packs or to where the folder shows waits until the workspace has no active
 work, such as a running call or a shell copy awaiting review, and calls are refused with a 409
@@ -57,8 +56,8 @@ once. `buckle serve` also takes a change up when it lists the workspaces again.
 
 `buckle.env` holds what every workspace shares: the node's name and id, host and port, the admin
 credential, the sandbox mode, logging, request and timeout limits, history and isolation budgets,
-the experimental admin face, where programs such as `agent-browser` are, the browser settings
-above, `BUCKLE_ALLOWED_HOSTS`, and the [Rings](rings.md) pairing. `buckle settings show` lists
+the experimental admin face, where programs such as `agent-browser` are, the browser settings,
+`BUCKLE_ALLOWED_HOSTS`, and the [Rings](rings.md) pairing. `buckle settings show` lists
 them, and a change to one applies when the node restarts. `buckle settings set` refuses a
 setting that belongs to a workspace now, naming the command that changes it, and `buckle
 settings unset` removes its line. `BUCKLE_SHELL_NETWORK` and `BUCKLE_SHELL_ISOLATION` stay
@@ -75,7 +74,7 @@ workspaces, once, under the registry's lock:
 - Each workspace registered with `buckle workspace add` keeps its id, its folder, and its
   tokens. A disabled or retired one is kept offline. Each workspace's own admin credential goes:
   the node's is the one.
-- Every token is kept as its SHA-256 digest alone.
+- The registry keeps every token as its SHA-256 digest alone.
 - The settings the environment held (the command, URL, and interpreter lists, the mount, the
   packs and their switches, the approval wait, and the browser settings) are copied into each
   workspace's `workspace.json`. Workspace `default` also keeps the policy `buckle policy` stored.
@@ -85,12 +84,23 @@ workspaces, once, under the registry's lock:
 - Grants, remembered denials, and the dangerously-allow switch move from the folder they were
   kept under to the workspace's id.
 
-From then on, the node ignores those settings, the browser's excepted, in `buckle.env`, the
-shell, and an MCP client's `env`, and its log names any it finds; `buckle settings unset` removes
-them. The browser settings stay live in `buckle.env` until a later release reads each
-workspace's own. A state directory that served nothing gets no workspace until `buckle init`
+From then on, the node ignores those settings in `buckle.env`, the shell, and an MCP client's
+`env`, except the browser's (see Settings), and its log names any it finds; `buckle settings
+unset` removes them. A state directory that served nothing gets no workspace until `buckle init`
 makes one.
 
-The version 1 registry is kept as `workspaces.v1.json`. An older Buckle meeting the new registry
-fails closed: it refuses to run programs and to open registered workspaces. To go back to 0.1, stop Buckle, copy `workspaces.v1.json`
-over `workspaces.json`, and install the older release; changes made since are not carried back.
+The move keeps owner-only copies of what it changes: `workspaces.v1.json` and
+`policy.v1.json` in the state directory (empty where the node had no registry or policy), and
+`grants.v1.json` and `dangerously-allow.v1.json` beside each grants and switch file it moved, in
+the state directory for `default` and in `workspaces/<id>/` for the others. It makes `policy.json`
+a version 2 stub and takes `BUCKLE_AUTH_TOKEN` out of `buckle.env`, so an older Buckle refuses to
+start.
+
+To go back to 0.1, stop Buckle and its MCP clients. Copy each `*.v1.json` file over its original,
+set `BUCKLE_AUTH_TOKEN` in `buckle.env` to the token your agents use (Buckle kept only its
+digest), and install the older release. Going back loses every workspace registered, token
+created, grant, denial, and `workspace.json` written after the move.
+
+`workspaces.v1.json` holds the registered workspaces' agent tokens and admin credentials in clear
+text. Once the node works, delete every `*.v1.json` file in the state directory and in each
+`workspaces/<id>/` folder; the way back goes with them.
