@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -108,6 +108,14 @@ describe('the workspace a command means', () => {
     expect((await buckle(['show', '--dir', join(beta, 'sub')], { cwd: alpha })).out).toContain('Workspace beta (beta)')
     expect((await buckle(['show'], { cwd: join(beta, 'sub') })).out).toContain('Workspace beta (beta)')
     expect((await buckle([], { cwd: alpha })).out).toContain('Workspace alpha (alpha)')
+  })
+
+  // Finding 33 of the Phase 1 review: a --dir that does not exist yet was compared as typed, links unfollowed.
+  it('is the one holding a --dir that does not exist yet, spelled through a link as without it', async () => {
+    symlinkSync(beta, join(base, 'link-to-beta'))
+    for (const dir of [join('link-to-beta', 'sub', 'not-yet'), join('beta', 'sub', 'not-yet')]) {
+      expect((await buckle(['show', '--dir', dir], { cwd: base })).out).toContain('Workspace beta (beta)')
+    }
   })
 
   it('is refused, listing the ids, where nothing holds the directory, and where both flags are given', async () => {

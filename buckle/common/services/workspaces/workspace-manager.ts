@@ -6,7 +6,7 @@ import { WorkspacePolicySchema } from '@5straps/protocol'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
-import { actionsPath, dangerouslyAllowPath, NODE_FOLDER_WORKSPACE, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
+import { actionsPath, dangerouslyAllowPath, NODE_FOLDER_WORKSPACE, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
 import { comparablePath, ignoresCase, isInsideComparable, nativePath } from '../../domain/paths.js'
 import { rootsOf } from '../../domain/executable.js'
 import { logger } from '../../runtime/log.js'
@@ -444,10 +444,13 @@ function describe(workspace: StoredWorkspace): WorkspaceDescriptor {
   return { id: workspace.id, name: workspace.name, dir: workspace.dir, online: workspace.online, tokens: workspace.tokens.length, revision: workspace.revision, updatedAt: workspace.updatedAt }
 }
 
-/** The workspace whose folder holds `path`, the deepest where one holds another, as the volume compares paths. */
+/**
+ * The workspace whose folder holds `path`, the deepest where one holds another, as the volume compares paths. A path
+ * that does not exist yet is named through its deepest existing folder, links followed, as the stored folders are, so
+ * one spelled through a link resolves as the same path spelled without it does (finding 33 of the Phase 1 review).
+ */
 function holderOf(state: Registry, path: string, platform: NodeJS.Platform): StoredWorkspace | undefined {
-  let real: string
-  try { real = nativePath(realpathSync.native(path)) } catch { real = path }
+  const real = realPathOf(path, platform)
   return state.workspaces
     .filter(workspace => isInsideComparable(workspace.dir, real, ignoresCase(platform), platform))
     .sort((left, right) => right.dir.length - left.dir.length)[0]
