@@ -1,17 +1,33 @@
+import { parseArgs } from 'node:util'
+import { resolve } from 'pathe'
 import { SdkErrorCode } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { withOperationScope, type Logger } from '@5straps/runtime'
-import type { BuckleConfig } from '../common/runtime/config.js'
+import type { NodeConfig } from '../common/runtime/config.js'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import { createAuditedStdioTransport } from './audited-stdio-transport.js'
 import { createMcpServer, type ToolCallScope } from './server.js'
 import { createStdioWire } from './stdio-wire.js'
 
-/** stdout carries the MCP protocol here, so every log line must go to stderr. */
-export async function serveMcpStdio(input: { config: BuckleConfig; common: BuckleCommon; logger: Logger }): Promise<void> {
-  const { config, common } = input
+/** The workspace `buckle mcp` was asked for: `--workspace <id>`, or `--dir <path>`, relative to where it starts. */
+export interface McpTarget { workspace?: string; dir?: string }
+
+export function mcpTarget(options: readonly string[]): McpTarget {
+  const { values } = parseArgs({ args: [...options], options: { workspace: { type: 'string' }, dir: { type: 'string' } }, allowPositionals: false })
+  return { ...(values.workspace === undefined ? {} : { workspace: values.workspace }), ...(values.dir === undefined ? {} : { dir: resolve(values.dir) }) }
+}
+
+/**
+ * stdout carries the MCP protocol here, so every log line must go to stderr. The workspace served is the one asked
+ * for, else the one whose folder holds BUCKLE_WORKSPACE_ROOT, which an MCP config written before the workspace model
+ * sets, else the one whose folder holds the directory the client started this in (the workspace-model brief, item 3).
+ */
+export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleCommon; logger: Logger; target: McpTarget }): Promise<void> {
+  const { common } = input
   await common.start()
-  const runtime = await common.services.getWorkspaceRuntime()
+  const workspaces = await common.services.getWorkspaces()
+  const legacy = input.target.workspace === undefined && input.target.dir === undefined && input.config.workspaceRootSetting !== undefined ? { dir: input.config.workspaceRootSetting } : {}
+  const { config, runtime } = await workspaces.resolve(workspaces.target({ ...input.target, ...legacy, cwd: process.cwd() }))
   const version = runtime.manifest().version
   const transport = createAuditedStdioTransport({
     transport: createStdioWire({ stdin: process.stdin, stdout: process.stdout, maxBufferBytes: config.maxRequestBytes }),
@@ -20,7 +36,7 @@ export async function serveMcpStdio(input: { config: BuckleConfig; common: Buckl
   const callScope = stdioCallScope(common)
   const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel }), { transport })
   common.owner.onClose('accept', 'mcp stdio', () => stdio.close())
-  input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, tools: runtime.registry().capabilities().length })
+  input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, workspaceId: runtime.workspaceId, tools: runtime.registry().capabilities().length })
 }
 
 /**

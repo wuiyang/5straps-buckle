@@ -52,19 +52,19 @@ export function refuseSwitchIn(document: unknown): void {
   if (typeof document === 'object' && document !== null && Object.hasOwn(document, 'dangerouslyAllow')) throw new DangerouslyAllowLocalOnlyError()
 }
 
-/** The stored policy stops the node from loading; the message names the file, what it refuses and the repair. */
+/** The stored policy stops the workspace from loading; the message names the file, what it refuses and the repair. */
 export class StoredPolicyError extends PolicyError {
-  constructor(input: { file: string; reason: string; stored: WorkspacePolicy; environment: WorkspacePolicy }) {
+  constructor(input: { file: string; reason: string; stored: WorkspacePolicy }) {
     super(storedPolicyMessage(input))
   }
 }
 
-function storedPolicyMessage(input: { file: string; reason: string; stored: WorkspacePolicy; environment: WorkspacePolicy }): string {
+function storedPolicyMessage(input: { file: string; reason: string; stored: WorkspacePolicy }): string {
   const refused = refusedNetworkEntries(input.stored.network.allow).map(item => item.entry)
   const repair = refused.length
     ? refused.map(entry => `\`buckle policy remove ${entry}\``).join(', then ')
     : '`buckle policy remove <pattern>` for the refused pattern'
-  const emptiesList = refused.length > 0 && refused.length === input.stored.network.allow.length && input.environment.network.allow.length === 0
+  const emptiesList = refused.length > 0 && refused.length === input.stored.network.allow.length
   return [
     `Stored policy in ${input.file} cannot load: ${input.reason}.`,
     `Repair it with ${repair}, or drop it with \`buckle policy clear\`; until it loads only \`buckle policy show|export|remove|clear\` run.`,

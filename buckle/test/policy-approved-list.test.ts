@@ -3,27 +3,37 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
-import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
-import { loadConfig, policyPath, type BuckleConfig } from '../common/runtime/config.js'
-import { readFileSync } from 'node:fs'
-import { runCli } from '../cli/main.js'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { runCli } from './support/cli.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { workspacesOf } from './support/workspaces.js'
 
-/** A node whose stored approved list holds these entries, written straight to the store. */
+/**
+ * A node whose workspace default's approved list holds these entries, written straight to its workspace.json past the
+ * check every write makes, as a file a later grammar refuses would read.
+ */
 async function withStoredList(allow: string[]): Promise<BuckleConfig> {
-  const config = loadConfig({
+  const config = configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-approved-list-')),
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-approved-list-state-')),
     BUCKLE_ALLOW_SHELL: 'false',
   })
-  const policy = emptyWorkspacePolicy()
-  policy.network.allow = allow
-  await store(config).write(policy)
+  await workspacesOf(config)
+  const settings = JSON.parse(readFileSync(file(config), 'utf8')) as { policy: ReturnType<typeof emptyWorkspacePolicy> }
+  settings.policy.network.allow = allow
+  writeFileSync(file(config), JSON.stringify(settings))
   return config
 }
 
+function file(config: BuckleConfig): string {
+  return settingsPath(config.stateDirectory, 'default')
+}
+
 function store(config: BuckleConfig) {
-  return createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd })
+  return { read: () => openSettingsFile({ filePath: file(config) }).read().policy }
 }
 
 async function run(config: BuckleConfig, ...argv: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
@@ -51,7 +61,7 @@ describe('the approved list in the stored policy', () => {
 
     expect(added.exitCode).toBe(1)
     expect(added.stderr).toContain('A wildcard covers a domain, not an address: *.0.0.1')
-    expect(store(config).read()?.network.allow).toEqual(['example.com'])
+    expect(store(config).read().network.allow).toEqual(['example.com'])
   })
 
   it('says so when policy remove takes out the last entry, because an empty list is no list', async () => {
@@ -61,7 +71,7 @@ describe('the approved list in the stored policy', () => {
 
     expect(removed.exitCode).toBe(0)
     expect(removed.stdout).toContain('The approved list is now empty, which is no list')
-    expect(store(config).read()?.network.allow).toEqual([])
+    expect(store(config).read().network.allow).toEqual([])
   })
 
   it('names the stored policy file, the refused entry and the fix when that entry stops the node', async () => {
@@ -70,7 +80,7 @@ describe('the approved list in the stored policy', () => {
 
     expect(failure).toBeInstanceOf(Error)
     const message = (failure as Error).message
-    expect(message).toContain(policyPath(config))
+    expect(message).toContain(file(config))
     expect(message).toContain('A wildcard covers a domain, not an address: *.127.0.0.1')
     expect(message).toContain('buckle policy remove *.127.0.0.1')
     expect(message).not.toContain('empty')
@@ -89,7 +99,7 @@ describe('the approved list in the stored policy', () => {
     const removed = await run(config, 'policy', 'remove', '*.127.0.0.1')
 
     expect(removed.exitCode).toBe(0)
-    expect(store(config).read()?.network.allow).toEqual(['example.com'])
+    expect(store(config).read().network.allow).toEqual(['example.com'])
     expect((await run(config, 'tools')).exitCode).toBe(0)
   })
 
@@ -109,7 +119,7 @@ describe('the approved list in the stored policy', () => {
 
     expect(removed.exitCode).toBe(1)
     expect(removed.stderr).toContain('*.0.0.1')
-    expect(store(config).read()?.network.allow).toEqual(['*.127.0.0.1', '*.0.0.1'])
+    expect(store(config).read().network.allow).toEqual(['*.127.0.0.1', '*.0.0.1'])
   })
 
   it('lets policy clear, show and export run on a stored policy the node cannot load', async () => {
@@ -125,8 +135,8 @@ describe('the approved list in the stored policy', () => {
 
     const cleared = await run(config, 'policy', 'clear')
     expect(cleared.exitCode).toBe(0)
-    expect(store(config).read()).toBeNull()
-    expect(readFileSync(policyPath(config), 'utf8')).not.toContain('127.0.0.1')
+    expect(store(config).read().network.allow).toEqual([])
+    expect(readFileSync(file(config), 'utf8')).not.toContain('127.0.0.1')
   })
 
   it('refuses other policy edits until the stored policy loads', async () => {
@@ -136,6 +146,6 @@ describe('the approved list in the stored policy', () => {
 
     expect(added.exitCode).toBe(1)
     expect(added.stderr).toContain('buckle policy remove *.127.0.0.1')
-    expect(store(config).read()?.network.allow).toEqual(['*.127.0.0.1'])
+    expect(store(config).read().network.allow).toEqual(['*.127.0.0.1'])
   })
 })

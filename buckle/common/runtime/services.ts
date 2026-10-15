@@ -1,21 +1,22 @@
 import { defineSingleton, useScopeSafe, type AnyServiceDefinition, type CloseStage, type Closer, type OperationScope, type RequestCli, type RuntimeOwner, type ScopedDefinition, type SingletonDefinition } from '@5straps/runtime'
 import { InteractionService, NO_INTERACTION, type InteractionPort, type InteractionSource } from '../services/approvals/interaction.js'
 import { createSetupViews, type SetupViews } from '../services/setup/setup-views.js'
-import { createWorkspaceManager, nodeRootsOf, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
-import { createRuntime, type BuckleRuntime } from '../services/workspaces/workspace-runtime.js'
+import { nodeRootsOf, openWorkspaceManager, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
+import type { BuckleRuntime } from '../services/workspaces/workspace-runtime.js'
+import type { ActionLog } from '../types/ports/action-log.js'
 import { createRequestVerifier, type RequestVerifier } from '../services/access/signed-requests.js'
 import { createNodeSigner, type NodeSigner } from '../services/access/node-signer.js'
 import { createSetupSessions, type SetupSessions } from '../services/access/setup-sessions.js'
 import { createFileClientKeys } from '../adapters/keys/file-client-keys.js'
 import { openFileNonceStore } from '../adapters/approval/file-nonce-store.js'
-import { clientKeysPath, nodeKeyPath, requestNoncesPath, setupSessionsPath, type BuckleConfig } from './config.js'
+import { clientKeysPath, nodeKeyPath, requestNoncesPath, setupSessionsPath, type NodeConfig } from './config.js'
 
 // Typed accessors over the runtime owner's registry (nitro/runtime.md, Lifetimes).
 export interface BuckleServices {
-  /** The node's own workspace: policy, tool registry, stores, audit and history. */
-  getWorkspaceRuntime(): Promise<BuckleRuntime>
-  /** The registered child workspaces, opened on first use. */
+  /** The node's workspaces (D83), each opened on first use; migration runs before the first is read. */
   getWorkspaces(): Promise<WorkspaceManager>
+  /** The node's own audit log: refusals before any workspace is known, and changes to the registry. */
+  getNodeActions(): Promise<ActionLog>
   /** Scoped: how this operation reaches a person. Its transport binds it once, as the operation opens. */
   getInteraction(scope?: OperationScope): Promise<InteractionPort>
   /** What /health reports, from configuration alone: known before startup, so liveness answers while the node starts. */
@@ -39,7 +40,6 @@ export interface NodeIdentity {
 }
 
 export interface BuckleServiceDefinitions {
-  workspaceRuntime: SingletonDefinition<BuckleRuntime>
   workspaces: SingletonDefinition<WorkspaceManager>
   requestVerifier: SingletonDefinition<RequestVerifier>
   setupSessions: SingletonDefinition<SetupSessions>
@@ -57,7 +57,7 @@ type OnClose = (stage: CloseStage, name: string, closer: Closer) => void
  * at 'databases', after the services that use them; queued action reports flush at 'sinks', before
  * the logger.
  */
-function closeWithOwner(input: { onClose: OnClose; registered: boolean; runtimes: () => Promise<BuckleRuntime[]> }): void {
+function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<BuckleRuntime[]> }): void {
   const each = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => { for (const runtime of await input.runtimes()) await step(runtime) }
   // Browser sessions and language servers close for every workspace at once, inside the step's one limit (review L14 of B20-B22).
   const all = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => {
@@ -65,33 +65,23 @@ function closeWithOwner(input: { onClose: OnClose; registered: boolean; runtimes
     const failures = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
     if (failures.length > 0) throw new AggregateError(failures, 'Some workspaces could not close their sessions')
   }
-  const named = (name: string) => (input.registered ? `registered workspace ${name.replace(/^workspace /, '')}` : name)
-  input.onClose('waiters', named('approval waits'), each(runtime => runtime.approvalService.close()))
-  input.onClose('jobs', named('tool calls'), each(runtime => runtime.cancelInvocations()))
-  input.onClose('streams', named('workbench terminals'), each(runtime => runtime.workbenches.stopTerminals()))
-  input.onClose('streams', named('language servers and browser sessions'), all(runtime => runtime.closeSessions()))
-  input.onClose('locks', named('workbench ownership'), each(runtime => runtime.workbenches.close()))
-  input.onClose('databases', named('workspace history'), each(runtime => runtime.history.close()))
-  input.onClose('sinks', named('action reports'), each(runtime => runtime.reporter.flush()))
+  input.onClose('waiters', 'approval waits', each(runtime => runtime.approvalService.close()))
+  input.onClose('jobs', 'tool calls', each(runtime => runtime.cancelInvocations()))
+  input.onClose('streams', 'workbench terminals', each(runtime => runtime.workbenches.stopTerminals()))
+  input.onClose('streams', 'language servers and browser sessions', all(runtime => runtime.closeSessions()))
+  input.onClose('locks', 'workbench ownership', each(runtime => runtime.workbenches.close()))
+  input.onClose('databases', 'workspace history', each(runtime => runtime.history.close()))
+  input.onClose('sinks', 'action reports', each(runtime => runtime.reporter.flush()))
 }
 
-export function defineBuckleServices(input: { config: BuckleConfig; interaction: InteractionSource; onClose: OnClose }): BuckleServiceDefinitions {
+export function defineBuckleServices(input: { config: NodeConfig; interaction: InteractionSource; onClose: OnClose }): BuckleServiceDefinitions {
   // One set of roots for every workspace on the node: a program found in any of them is run by none (NodeRoots).
   const nodeRoots = nodeRootsOf(input.config)
-  const workspaceRuntime = defineSingleton<BuckleRuntime>({
-    name: 'WorkspaceRuntime',
-    create: async () => {
-      const runtime = await createRuntime({ config: input.config, interaction: input.interaction, nodeRoots })
-      closeWithOwner({ onClose: input.onClose, registered: false, runtimes: async () => [runtime] })
-      return runtime
-    },
-  })
   const workspaces = defineSingleton<WorkspaceManager>({
     name: 'WorkspaceManager',
-    dependencies: [workspaceRuntime],
-    create: async ({ get }) => {
-      const manager = createWorkspaceManager({ config: input.config, runtime: await get(workspaceRuntime), interaction: input.interaction, nodeRoots })
-      closeWithOwner({ onClose: input.onClose, registered: true, runtimes: () => manager.opened() })
+    create: async () => {
+      const manager = await openWorkspaceManager({ config: input.config, interaction: input.interaction, nodeRoots })
+      closeWithOwner({ onClose: input.onClose, runtimes: () => manager.opened() })
       return manager
     },
   })
@@ -110,20 +100,20 @@ export function defineBuckleServices(input: { config: BuckleConfig; interaction:
     name: 'SetupSessions',
     create: async () => createSetupSessions({ filePath: setupSessionsPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs }),
   })
-  return { workspaceRuntime, workspaces, nodeSigner, requestVerifier, setupSessions, interaction: InteractionService }
+  return { workspaces, nodeSigner, requestVerifier, setupSessions, interaction: InteractionService }
 }
 
 export function serviceList(definitions: BuckleServiceDefinitions): AnyServiceDefinition[] {
   return Object.values(definitions)
 }
 
-export function createServiceAccessors(input: { owner: RuntimeOwner; definitions: BuckleServiceDefinitions; config: BuckleConfig }): BuckleServices {
+export function createServiceAccessors(input: { owner: RuntimeOwner; definitions: BuckleServiceDefinitions; config: NodeConfig }): BuckleServices {
   const { registry } = input.owner
   const identity: NodeIdentity = Object.freeze({ serverId: input.config.serverId })
   const setupViews = createSetupViews()
   return {
-    getWorkspaceRuntime: () => registry.useSingleton(input.definitions.workspaceRuntime),
     getWorkspaces: () => registry.useSingleton(input.definitions.workspaces),
+    getNodeActions: async () => (await registry.useSingleton(input.definitions.workspaces)).nodeActions,
     getInteraction: scope => registry.useScoped(input.definitions.interaction, scope),
     nodeIdentity: () => identity,
     getSetupViews: () => setupViews,

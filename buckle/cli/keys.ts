@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util'
 import { ClientKeyError, createFileClientKeys, describeScope } from '../common/adapters/keys/file-client-keys.js'
 import { loadNodeKey } from '../common/adapters/keys/file-node-key.js'
-import { clientKeysPath, nodeKeyPath, setupSessionsPath, type BuckleConfig } from '../common/runtime/config.js'
+import { clientKeysPath, nodeKeyPath, setupSessionsPath, type NodeConfig } from '../common/runtime/config.js'
 import { createSetupSessions } from '../common/services/access/setup-sessions.js'
 import { NODE_SCOPE, type KeyPurpose } from '../common/types/ports/client-keys.js'
 
@@ -26,7 +26,7 @@ const USAGE = `Usage:
  * client keeps its private key and the owner enrolls the public half here. Local only: no HTTP route
  * enrolls, lists or revokes a key.
  */
-export async function keysCommand(input: { config: BuckleConfig; argv: string[] }): Promise<CliResult> {
+export async function keysCommand(input: { config: NodeConfig; argv: string[] }): Promise<CliResult> {
   const keys = createFileClientKeys({ filePath: clientKeysPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs })
   const sessions = () => createSetupSessions({ filePath: setupSessionsPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs })
   const [verb, ...rest] = input.argv

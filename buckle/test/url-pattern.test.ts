@@ -3,7 +3,7 @@ import type { ResolvedEffect } from '../common/domain/effect.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
 import { coveringGrant } from '../common/domain/permission/rules/network-egress-rule.js'
-import { compileHostPattern, compileUrlPatterns, intersectUrlMatchers, matchingHostEntry, UrlPatternError } from '../common/domain/url-pattern.js'
+import { compileHostPattern, compileUrlPatterns, matchingHostEntry, UrlPatternError } from '../common/domain/url-pattern.js'
 
 function matches(patterns: string[], url: string): boolean {
   return compileUrlPatterns(patterns).matches(new URL(url))
@@ -195,13 +195,9 @@ describe('network grants read with the pattern grammar', () => {
     expect(judge(null, ['*.localhost'], 'http://127.0.0.1:3000/').kind).toBe('ask')
   })
 
-  it('never get a pattern grant past an approved list, the workspace\'s own or the node\'s limit over it', () => {
+  it('never get a pattern grant past the workspace\'s approved list', () => {
     expect(judge(compileUrlPatterns(['example.com']), ['*.localhost'], 'http://app.localhost:3000/').kind).toBe('deny')
-    // The workspace's own list reaches the host; the node's limit over it does not, so the limit decides.
     const workspaceList = compileUrlPatterns(['*.localhost:3000', 'example.com'])
     expect(judge(workspaceList, ['*.localhost'], 'http://app.localhost:3000/').kind).toBe('allow')
-    const underNodeLimit = intersectUrlMatchers(compileUrlPatterns(['example.com']), workspaceList)
-    expect(judge(underNodeLimit, ['*.localhost'], 'http://app.localhost:3000/').kind).toBe('deny')
-    expect(judge(underNodeLimit, ['*.localhost'], 'https://example.com/').kind).toBe('allow')
   })
 })

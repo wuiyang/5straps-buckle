@@ -6,9 +6,10 @@ import { approvalKey, mintApprovalKey, seal } from '@5straps/protocol/envelope'
 import type { InvokeRequest, InvokeResponse } from '@5straps/protocol'
 import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { runCli } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { createMcpServer } from '../mcp/server.js'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 // Review item 1 of the proof-of-possession fixes (S1 and S2 of the B23-B25 review): a `once` decided on
@@ -51,7 +52,7 @@ async function node(options: { paired?: boolean } = {}): Promise<Setup> {
   const workspace = join(root, 'workspace')
   mkdirSync(join(workspace, 'one'), { recursive: true })
   const key = mintApprovalKey()
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000', ...(options.paired ? { BUCKLE_RINGS_APPROVAL_KEY: key } : {}) })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000', ...(options.paired ? { BUCKLE_RINGS_APPROVAL_KEY: key } : {}) })
   const person = terminal()
   const runtime = await createRuntime({ config, interaction: async () => ({ requestCli: person.requestCli, hold: 'grace' }) })
   return { workspace, config, runtime, key, person }

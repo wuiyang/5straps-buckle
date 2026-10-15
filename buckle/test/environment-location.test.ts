@@ -6,8 +6,8 @@ import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit } from '../cli/init.js'
 import { settingsCommand } from '../cli/settings.js'
-import { defaultEnvironmentFile, environmentFilePath, loadEnvironmentFile, meetOutsideRoot, namesItsNode, outsideRootNotice } from '../common/runtime/environment.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { defaultEnvironmentFile, environmentFilePath, loadEnvironmentFile } from '../common/runtime/environment.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 
 // Owner ruling (2026-09-28): the node's settings live under ~/.5straps, in buckle.env in its state
 // directory, and never in the working directory; BUCKLE_ENV_FILE still names any other file.
@@ -70,7 +70,7 @@ describe('where the environment file is', () => {
     vi.stubEnv('BUCKLE_ENV_FILE', '')
     vi.stubEnv('BUCKLE_STATE_DIR', 'rel-state')
     expect(() => environmentFilePath()).toThrow('BUCKLE_STATE_DIR must be an absolute path, not rel-state')
-    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: 'rel-state' })).toThrow('BUCKLE_STATE_DIR must be an absolute path')
+    expect(() => configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: 'rel-state' })).toThrow('BUCKLE_STATE_DIR must be an absolute path')
     expect(existsSync(join(process.cwd(), 'rel-state'))).toBe(false)
   })
 })
@@ -184,24 +184,3 @@ describe('buckle settings on the state directory file', () => {
   })
 })
 
-describe('a project outside the root the file names (review M4 of B18-B19, owner decision D5)', () => {
-  it('names the working directory, the root, the file and both ways to give the project its own node', () => {
-    const notice = outsideRootNotice({ namedNode: false, root, cwd: base, file: stateFile() })
-    for (const part of [root, base, stateFile(), 'BUCKLE_ENV_FILE', 'BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR', 'in the shell or the MCP config\'s env']) expect(notice).toContain(part)
-  })
-
-  it('says nothing inside the root, or when the process environment named the node itself', () => {
-    mkdirSync(join(root, 'src'))
-    expect(outsideRootNotice({ namedNode: false, root, cwd: root, file: stateFile() })).toBeNull()
-    expect(outsideRootNotice({ namedNode: false, root, cwd: join(root, 'src'), file: stateFile() })).toBeNull()
-    expect(outsideRootNotice({ namedNode: true, root, cwd: base, file: stateFile() })).toBeNull()
-    expect(namesItsNode({})).toBe(false)
-    expect(namesItsNode({ BUCKLE_WORKSPACE_ROOT: root })).toBe(true)
-    expect(namesItsNode({ BUCKLE_ENV_FILE: stateFile() })).toBe(true)
-  })
-
-  it('warns on stderr and goes on: the owner chose warn, not refuse', () => {
-    expect(() => meetOutsideRoot('the notice')).not.toThrow()
-    expect(printed).toBe('Warning: the notice\n')
-  })
-})

@@ -78,7 +78,7 @@ export function defineRegistryHandler(definition: { access: AdminAccess; handler
     guards: [requireAdmin(definition.access, REGISTRY_REFUSED, () => NODE_WORKSPACE, { registry: true })],
     handler: async (event, scope) => {
       const services = useServices(event)
-      const { actions } = await services.getWorkspaceRuntime()
+      const actions = await services.getNodeActions()
       const actorId = scope.context.actor ?? ''
       const call: RegistryCall = {
         event, workspaces: await services.getWorkspaces(), views: services.getSetupViews(),

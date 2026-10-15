@@ -2,22 +2,22 @@
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { Logger, LoggerRoot, RequestCli } from '@5straps/runtime'
-import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand, runsTool } from './cli/main.js'
+import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand } from './cli/main.js'
 import { setupCli } from './cli/setup.js'
 import { clientCommand } from './cli/client.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
-import { loadConfig, type BuckleConfig } from './common/runtime/config.js'
-import { loadEnvironmentFile, meetOutsideRoot, namesItsNode, outsideRootNotice } from './common/runtime/environment.js'
+import { environmentWorkspaceKeys, loadConfig, type NodeConfig } from './common/runtime/config.js'
+import { loadEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
-import { serveMcpStdio } from './mcp/stdio.js'
+import { mcpTarget, serveMcpStdio } from './mcp/stdio.js'
 import { serveHttp } from './server/serve.js'
 import { builtEntryPath, setupServer } from './server/setup-server.js'
 
 export type Mode =
   | { kind: 'init' | 'settings' | 'client' | 'cli'; argv: string[] }
-  | { kind: 'serve' | 'mcp' }
+  | { kind: 'serve' | 'mcp'; options: string[] }
 
 type ServiceKind = 'serve' | 'mcp'
 
@@ -46,7 +46,7 @@ export function takeGlobalFlags(argv: readonly string[]): { argv: string[]; skip
 export function selectMode(argv: readonly string[]): Mode {
   const [command, ...rest] = argv
   if (command === 'init' || command === 'settings' || command === 'client') return { kind: command, argv: rest }
-  if (command === 'serve' || command === 'mcp') return { kind: command }
+  if (command === 'serve' || command === 'mcp') return { kind: command, options: rest }
   return { kind: 'cli', argv: [...argv] }
 }
 
@@ -56,7 +56,7 @@ export async function main(argv: readonly string[]): Promise<number | undefined>
   configureOwnerOnlyCheck({ skip: global.skipOwnerOnlyCheck })
   const mode = selectMode(global.argv)
   if (!('argv' in mode)) {
-    await runService({ kind: mode.kind, ...configureProcess({ servesTools: mode.kind === 'mcp' }) })
+    await runService({ kind: mode.kind, options: mode.options, ...configureProcess() })
     return undefined
   }
   try {
@@ -75,21 +75,18 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<numb
   // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
   const answered = answerWithoutConfiguration(mode.argv)
   if (answered) return answered.exitCode
-  return (await runCli({ argv: mode.argv, config: configureProcess({ servesTools: runsTool(mode.argv) }).config })).exitCode
+  return (await runCli({ argv: mode.argv, config: configureProcess().config })).exitCode
 }
 
-/** `servesTools`: an MCP session, or a command that runs a tool (`buckle call`, `buckle <group> <verb>`), which an agent's project starts and which run on the root. */
-function configureProcess(input: { servesTools: boolean }): { config: BuckleConfig; logging: LoggerRoot } {
-  // Read before the file fills the environment in: only the caller's own choice counts.
-  const namedNode = namesItsNode()
+function configureProcess(): { config: NodeConfig; logging: LoggerRoot } {
   const environment = loadEnvironmentFile()
   const logging = configureRootLogger(loggerConfigFrom(process.env))
   // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
   if (environment.openToOthers && environment.file) logging.logger.warn(`The environment file ${environment.file} can be read by other users; run chmod 600 ${environment.file}`)
-  const config = loadConfig()
-  const notice = input.servesTools ? outsideRootNotice({ namedNode, root: config.cwd, cwd: process.cwd(), file: environment.file }) : null
-  if (notice) meetOutsideRoot(notice)
-  return { config, logging }
+  // Read once, when a node moves to the workspace model; from then on an MCP config's env cannot widen a workspace (Q14).
+  const ignored = environmentWorkspaceKeys(process.env)
+  if (ignored.length > 0) logging.logger.warn(`Ignored: ${ignored.join(', ')} ${ignored.length === 1 ? 'is a workspace setting' : 'are workspace settings'}, read only when a node moves to the workspace model. Change a workspace with buckle workspace set or buckle policy, and remove these with buckle settings unset or from the shell or MCP config's env.`)
+  return { config: loadConfig(), logging }
 }
 
 // A one-shot command answers a person at a terminal: the reason on one line, the detail at debug level.
@@ -100,7 +97,7 @@ function refuseCommand(error: unknown): number {
 }
 
 // One common runtime for the process; main owns its signals and closes it stage by stage.
-async function runService(input: { kind: ServiceKind; config: BuckleConfig; logging: LoggerRoot }): Promise<void> {
+async function runService(input: { kind: ServiceKind; options: string[]; config: NodeConfig; logging: LoggerRoot }): Promise<void> {
   const { logging } = input
   trapUnhandledRejections(logging.logger)
   const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger })
@@ -120,7 +117,7 @@ async function runService(input: { kind: ServiceKind; config: BuckleConfig; logg
   }
 }
 
-async function startService(input: { kind: ServiceKind; config: BuckleConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli }): Promise<void> {
+async function startService(input: { kind: ServiceKind; options: string[]; config: NodeConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli }): Promise<void> {
   if (input.kind === 'serve') {
     // The built app, with the host and the one cli:call listener bound before anything is accepted.
     const server = await setupServer({ ...input, entryPath: builtEntryPath() })
@@ -132,7 +129,7 @@ async function startService(input: { kind: ServiceKind; config: BuckleConfig; co
   input.common.bindRequester(input.requestCli)
   // The client closing stdin ends the session. 'end' needs a reader, so attaching first misses nothing.
   process.stdin.once('end', () => { void input.shutdown.close() })
-  return serveMcpStdio(input)
+  return serveMcpStdio({ ...input, target: mcpTarget(input.options) })
 }
 
 // A terminal running `buckle serve` can answer directly; under mcp, stdin carries the protocol. The question is

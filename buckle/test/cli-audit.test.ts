@@ -3,12 +3,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
-import { loadConfig, actionsPath } from '../common/runtime/config.js'
-import { runCli } from '../cli/main.js'
+import { actionsPath } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+import { runCli } from './support/cli.js'
 
 it('records local policy changes without copying command arguments into the audit', async () => {
   const root = mkdtempSync(join(tmpdir(), 'buckle-cli-audit-'))
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-audit-state-')), BUCKLE_ALLOW_SHELL: 'false' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-audit-state-')), BUCKLE_ALLOW_SHELL: 'false' })
   const output = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
   try {
     expect((await runCli({ argv: ['policy', 'deny-command', 'curl *'], config })).exitCode).toBe(0)
@@ -21,7 +22,7 @@ it('records local policy changes without copying command arguments into the audi
 
 it('records which tool a deny-tool or allow-tool switch named', async () => {
   const root = mkdtempSync(join(tmpdir(), 'buckle-cli-audit-'))
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-audit-state-')), BUCKLE_ALLOW_SHELL: 'false' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-audit-state-')), BUCKLE_ALLOW_SHELL: 'false' })
   const output = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
   try {
     expect((await runCli({ argv: ['policy', 'deny-tool', 'fs_write'], config })).exitCode).toBe(0)

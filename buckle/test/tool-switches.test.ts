@@ -2,14 +2,15 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
-import { runCli } from '../cli/main.js'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+import { runCli } from './support/cli.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 function node(): BuckleConfig {
   const root = mkdtempSync(join(tmpdir(), 'buckle-tool-switch-'))
   writeFileSync(join(root, 'notes.txt'), 'hello\n')
-  return loadConfig({
+  return configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: root,
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-tool-switch-state-')),
     BUCKLE_ALLOW_SHELL: 'false',
@@ -77,7 +78,7 @@ describe('buckle policy deny-tool and allow-tool', () => {
 
     const shown = await cli(config, ['policy', 'show'])
 
-    expect(shown.out).toMatch(/Denied tools[^\n]*\n\s+web_fetch\s+stored/)
+    expect(shown.out).toMatch(/Denied tools[^\n]*\n\s+web_fetch\n/)
   })
 
   it('leaves a tool in a withheld pack unavailable whatever allow-tool says, and says why', async () => {
@@ -86,7 +87,7 @@ describe('buckle policy deny-tool and allow-tool', () => {
     const allowed = await cli(config, ['policy', 'allow-tool', 'git_status'])
 
     expect(allowed.out).toContain('git_status stays unavailable: its pack git is withheld')
-    expect(allowed.out).toContain('BUCKLE_ALLOW_HOST_GIT=true')
+    expect(allowed.out).toContain('packs.hostGit')
     const { response, listed } = await invoke(config, 'git_status', {})
     expect(response.outcome).toBe('error')
     expect(listed).not.toContain('git_status')

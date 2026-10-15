@@ -7,6 +7,7 @@ import { approvalsPath } from '../../common/runtime/config.js'
 import type { ActionLogEntry } from '../../common/types/ports/action-log.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { createBuckleHttp } from '../support/buckle-http.js'
+import { holdToken } from '../support/workspaces.js'
 
 // Pins the edge responses through the Nitro move (Buckle phase plan, B2), on the served surface:
 // the harness answers through the built Nitro app serve listens with. The commits that move a route
@@ -18,7 +19,8 @@ import { createBuckleHttp } from '../support/buckle-http.js'
 const NODE_AGENT = 'node-agent-characterisation-only'
 const NODE_ADMIN = 'node-admin-characterisation-only'
 const ONE_AGENT = 'workspace-one-agent-characterisation'
-const ONE_ADMIN = 'workspace-one-admin-characterisation'
+/** The node's admin credential is every workspace's (D83). */
+const ONE_ADMIN = NODE_ADMIN
 const MAX_REQUEST_BYTES = 4_096
 const WORKBENCH_BODY_LIMIT = 1_048_576
 const SETUP_BODY_LIMIT = 65_536
@@ -40,8 +42,9 @@ async function node(options: { admin?: boolean; adminHttp?: boolean } = {}) {
   cleanups.push(() => buckle.close())
   const request = (path: string, init: RequestInit = {}) => buckle.request(path, init)
   async function registerOne(): Promise<void> {
-    const response = await request('/setup/workspaces', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', root: join(root, 'one'), authToken: ONE_AGENT, adminToken: ONE_ADMIN }) })
+    const response = await request('/setup/workspaces', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', dir: join(root, 'one') }) })
     expect(response.status).toBe(201)
+    await holdToken(join(root, 'state'), 'one', ONE_AGENT)
   }
   async function provisionWorkbench(): Promise<{ id: string; token: string }> {
     const grant = { id: randomUUID(), token: 'workbench-grant-characterisation-only-32', projectId: 'project', chatId: 'chat', allowShell: false }
@@ -244,9 +247,9 @@ describe('workspace routing', () => {
   it('answers 409 for a disabled workspace on a non-setup path', async () => {
     const buckle = await node()
     await buckle.registerOne()
-    expect((await buckle.request('/setup/workspaces/one', { method: 'PATCH', headers: json(NODE_ADMIN), body: JSON.stringify({ enabled: false }) })).status).toBe(200)
+    expect((await buckle.request('/setup/workspaces/one', { method: 'PATCH', headers: json(NODE_ADMIN), body: JSON.stringify({ online: false }) })).status).toBe(200)
     const response = await buckle.request('/workspaces/one/v1/manifest', { headers: bearer(ONE_AGENT) })
-    expect(await shape(response)).toEqual({ status: 409, contentType: 'application/json', body: { error: 'Workspace is disabled or retired' } })
+    expect(await shape(response)).toEqual({ status: 409, contentType: 'application/json', body: { error: 'Workspace is offline' } })
   })
 })
 

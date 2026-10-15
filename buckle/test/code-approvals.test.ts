@@ -11,13 +11,14 @@ import { emptyWorkspacePolicy, WorkspacePolicySchema, type ApprovalWait, type In
 import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { NestedApprovalRequired, ToolExecutionError, type NestedCall, type ToolContext } from '../common/domain/tool.js'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { logger } from '../common/runtime/log.js'
 import { CODE_CALL_LIMIT, CODE_GLOBAL_LIMIT, CODE_REPLAY_DIVERGED, createCodePack, MAX_GLOBAL_CALLS, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
 import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, JOURNAL_TTL_MS, scriptOfAsk, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
-import { runCli } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { createMcpServer } from '../mcp/server.js'
 import { isExplicitCancel } from '../mcp/stdio.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -37,7 +38,7 @@ function setup(environment: Record<string, string> = {}) {
   for (const directory of ['workspace', 'workspace/one', 'workspace/two']) mkdirSync(join(root, directory))
   mkdirSync(join(root, 'state'), { mode: 0o700 })
   writeFileSync(join(workspace, 'notes.md'), 'hello')
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code', ...environment })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code', ...environment })
   return { root, workspace, config }
 }
 
@@ -662,7 +663,7 @@ describe('the replay journal', () => {
 
     const snapshot = join(root, 'state-after-restart')
     cpSync(join(root, 'state'), snapshot, { recursive: true })
-    const after = await open(loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: snapshot, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' }))
+    const after = await open(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: snapshot, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' }))
     slowRetryable(after, 'B')
     expect(await send(after, script, { timeoutMs: 20_000, approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'ok', output: { ok: true, value: ['ok', 'REQUEST_ALREADY_EXECUTED'] } })
     expect(runs).toEqual(['A:slow.md'])

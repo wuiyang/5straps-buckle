@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline/promises'
 import { dirname, resolve } from 'pathe'
 import { parseArgs, parseEnv } from 'node:util'
 import { MountPathSchema } from '@5straps/protocol'
-import { loadConfig, stateDirectoryOf, workspaceHolds, type BuckleConfig } from '../common/runtime/config.js'
+import { loadConfig, realPathOf, stateDirectoryOf, workspaceHolds, type NodeConfig } from '../common/runtime/config.js'
 import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/environment.js'
 import { AS_NAMED, findProgram, ON_PATH, type ProgramSearch, type UntrustedRoots } from '../common/domain/executable.js'
 import { isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
@@ -151,7 +151,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   Seen as     ${mount ?? root}
   Name        ${name}
 ${describeChoices(choices)}${interactive ? '' : 'These are the defaults, kept because nothing was asked. Change one with: buckle settings set <key> <value>\n'}
-${describePrograms({ contents, platform, search: options.programSearch ?? {} })}
+${describePrograms({ contents, root, platform, search: options.programSearch ?? {} })}
 
 Next:
 ${hintStep('  1. Start the node:', serveCommand(out, process.env, platform))}
@@ -308,8 +308,8 @@ interface CheckedProgram {
  * runs, or why the node will not run it, or what it unlocks (program detection brief and review, 2026-10-14). Unlike a
  * pack's reason, which an agent may read, this prints the paths: it is the owner's terminal.
  */
-function describePrograms(input: { contents: string; platform: NodeJS.Platform; search: ProgramSearch }): string {
-  let config: BuckleConfig
+function describePrograms(input: { contents: string; root: string; platform: NodeJS.Platform; search: ProgramSearch }): string {
+  let config: NodeConfig
   try { config = loadConfig(nodeEnvironment(input.contents), input.platform) } catch (error) { return `Programs\n  not checked: ${error instanceof Error ? error.message : String(error)}` }
   const programs: CheckedProgram[] = [
     ...(input.platform === 'linux' ? [{ label: 'bwrap', name: 'bwrap', unlocks: 'the sandboxed shell pack' }] : []),
@@ -317,7 +317,7 @@ function describePrograms(input: { contents: string; platform: NodeJS.Platform; 
     { label: 'git', name: 'git', unlocks: 'the git and forge packs, once host Git is turned on' },
     { label: 'agent-browser', name: config.agentBrowserCommand, unlocks: 'the browser pack', install: BROWSER_INSTALL, setting: 'BUCKLE_AGENT_BROWSER_COMMAND' },
   ]
-  const search = { ...input.search, platform: input.platform, ...workspaceUntrusted({ root: config.cwd, scratchRoots: config.scratchRoots }, nodeRootsOf(config, input.platform)) }
+  const search = { ...input.search, platform: input.platform, ...workspaceUntrusted({ root: realPathOf(input.root, input.platform), scratchRoots: config.scratchRoots }, nodeRootsOf(config, input.platform)) }
   const lines = programs.map(program => `  ${program.label.padEnd(15)} ${programLine(program, search)}`)
   return `Programs\n${lines.join('\n')}`
 }

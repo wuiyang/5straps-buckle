@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type JsonValue } from '@5straps/protocol'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { resolveTarget } from '../common/services/invocation/real-path.js'
-import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { workspacesOf } from './support/workspaces.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 // Review H2 and M1 of the second proof-of-possession re-review, on an emulated macOS volume: the platform
@@ -61,7 +61,7 @@ function volume() {
 }
 
 async function runtimeFor(input: { root: string; typed: string; state: string; rules?: unknown[] }): Promise<BuckleRuntime> {
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: input.typed, BUCKLE_STATE_DIR: input.state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: input.typed, BUCKLE_STATE_DIR: input.state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
   const runtime = await createRuntime({ config })
   runtimes.push(runtime)
   if (input.rules) await runtime.policy.apply(WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: input.rules } }))
@@ -110,12 +110,11 @@ describe('a workspace root typed in another case than the disk\'s (review M1)', 
     const other = join(root, 'code', 'other')
     mkdirSync(other)
     writeFileSync(join(other, 'readme.md'), 'other')
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'code', 'proj'), BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
-    const runtime = await createRuntime({ config })
-    runtimes.push(runtime)
-    const manager = createWorkspaceManager({ config, runtime })
-    const registered = await manager.register({ id: 'other', name: 'Other', root: join(root, 'Code', 'OTHER'), authToken: 'case-other-agent-token-fixture-only', adminToken: 'case-other-admin-token-fixture-only', policy: emptyWorkspacePolicy() })
-    expect(registered.root).toBe(other)
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'code', 'proj'), BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    const manager = await workspacesOf(config)
+    runtimes.push((await manager.resolve('default')).runtime)
+    const { workspace: registered } = await manager.create({ id: 'other', name: 'Other', dir: join(root, 'Code', 'OTHER'), policy: emptyWorkspacePolicy() })
+    expect(registered.dir).toBe(other)
     const opened = await manager.resolve('other')
     runtimes.push(opened.runtime)
     expect(opened.config.cwd).toBe(other)

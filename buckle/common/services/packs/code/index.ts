@@ -67,7 +67,7 @@ export interface CodePackOptions {
   reachableTools: () => ToolCapability[]
   /** Where this workspace's replay journals are kept: `<state>/code-journal/<workspace key>`. */
   journalDirectory: string
-  /** Set by BUCKLE_ALLOW_CODE=false. Never for want of an operating-system sandbox: the VM reaches nothing but tools. */
+  /** Set by the workspace setting packs.code, off. Never for want of an operating-system sandbox: the VM reaches nothing but tools. */
   unavailableReason: string | null
   /** BUCKLE_MAX_REQUEST_BYTES: a call's arguments past it are refused inside the script, as a direct call's are; DEFAULT_ARGUMENT_BYTES when absent. */
   maxRequestBytes?: number

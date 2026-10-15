@@ -26,7 +26,7 @@ export function statusOf(result: unknown): number {
 
 /** The node's own audit log, where refusals before a workspace is resolved are recorded. */
 export async function nodeActions(event: H3Event): Promise<ActionLog> {
-  return (await useServices(event).getWorkspaceRuntime()).actions
+  return useServices(event).getNodeActions()
 }
 
 /**

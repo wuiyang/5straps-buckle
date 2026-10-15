@@ -7,7 +7,7 @@ import type { ApprovalRequest } from '@5straps/protocol'
 import { challengeBytes, generateSigningKey, signRequest, signingKeyFromPem } from '@5straps/protocol/signed-request'
 import { createWebhookNotifier } from '../../common/adapters/approval/webhook-notifier.js'
 import { createWebhookReporter } from '../../common/adapters/report/webhook-reporter.js'
-import { loadConfig } from '../../common/runtime/config.js'
+import { configFromEnvironment } from '../support/workspace-config.js'
 import { settingsCommand } from '../../cli/settings.js'
 import { keysCommand } from '../../cli/keys.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
@@ -187,9 +187,9 @@ describe('sealed approval decisions on the setup face', () => {
   })
 
   it('refuses to start on a malformed key without echoing it', () => {
-    expect(() => loadConfig({ BUCKLE_RINGS_APPROVAL_KEY: 'not-a-key-fixture-zq81', BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-sealed-bad-')), BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-sealed-bad-ws-')) }))
+    expect(() => configFromEnvironment({ BUCKLE_RINGS_APPROVAL_KEY: 'not-a-key-fixture-zq81', BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-sealed-bad-')), BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-sealed-bad-ws-')) }))
       .toThrow(/^BUCKLE_RINGS_APPROVAL_KEY is not a key Rings minted/)
-    try { loadConfig({ BUCKLE_RINGS_APPROVAL_KEY: 'not-a-key-fixture-zq81' }) } catch (error) { expect(String(error)).not.toContain('zq81') }
+    try { configFromEnvironment({ BUCKLE_RINGS_APPROVAL_KEY: 'not-a-key-fixture-zq81' }) } catch (error) { expect(String(error)).not.toContain('zq81') }
   })
 })
 

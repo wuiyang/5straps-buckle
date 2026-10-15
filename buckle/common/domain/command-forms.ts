@@ -210,7 +210,7 @@ export function commandForms(command: string, args: readonly string[]): CommandF
 const formsByEffect = new WeakMap<object, CommandForms>()
 
 /**
- * The forms of one exec effect, read once and shared by every rule that judges it, the node ceiling's included,
+ * The forms of one exec effect, read once and shared by every rule that judges it,
  * and by every check of the same call (slice 7b review W7B-1). Keyed by the effect object, which a call keeps for
  * all of its checks; the forms are read only, never changed.
  */
@@ -239,13 +239,13 @@ export function readLimitOf(forms: CommandForms, allowed: ReadonlySet<string> = 
 
 /**
  * How a reason names a limit: as READ_LIMITS words it, and for an interpreter with the programs the policy does not
- * allow and how to allow one: the stored policy's list, or the environment's, which is also the node ceiling's.
+ * allow and how to allow one in the workspace's policy.
  */
 export function readLimitReason(limit: ReadLimit, forms: CommandForms, allowed: ReadonlySet<string> = NO_INTERPRETERS): string {
   if (limit !== 'interpreter') return READ_LIMITS[limit]
   const names = forms.interpreters.filter(name => !allowed.has(name))
   const fix = names.length === 1 ? `allow it with buckle policy allow-interpreter ${names[0]}` : 'allow each with buckle policy allow-interpreter <name>'
-  return `${READ_LIMITS.interpreter}: ${names.join(', ')} (${fix}, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling)`
+  return `${READ_LIMITS.interpreter}: ${names.join(', ')} (${fix})`
 }
 
 const UNREAD_ORDER = Object.keys(READ_LIMITS) as ReadLimit[]

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { useScope } from '@5straps/runtime'
 import { H3 } from 'h3'
 import { afterEach, describe, expect, it } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
 import { defineOperationHandler } from '../layers/common/server/utils/operation.js'
 
@@ -15,7 +15,7 @@ async function started(): Promise<BuckleCommon> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-layer-operation-'))
   mkdirSync(join(root, 'workspace'))
   mkdirSync(join(root, 'state'), { mode: 0o700 })
-  const common = initializeCommon({ config: loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }), role: 'server' })
+  const common = initializeCommon({ config: configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }), role: 'server' })
   commons.push(common)
   await common.start()
   return common

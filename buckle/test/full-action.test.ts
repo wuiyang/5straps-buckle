@@ -9,10 +9,11 @@ import { argvIdentity } from '../common/domain/argv.js'
 import { describeAsk } from '../common/domain/approval-instruction.js'
 import { reviewableArguments } from '../common/domain/redact.js'
 import { requestFingerprint } from '../common/services/invocation/executions.js'
-import { runCli } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { describeQuestion } from '../cli/terminal-consumer.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { ActionTooLargeError, ApprovalLimitError, createApprovalRegistry, MAX_ASK_BYTES, MAX_PENDING_BYTES, MAX_PENDING_BYTES_PER_ACTOR, MAX_PENDING_BYTES_PER_SESSION, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -48,7 +49,7 @@ async function node(extra: Record<string, string> = {}): Promise<{ root: string;
   const root = mkdtempSync(join(tmpdir(), 'buckle-full-action-'))
   roots.push(root)
   mkdirSync(join(root, 'workspace'))
-  const config = loadConfig({
+  const config = configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true',
     BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...extra,
   })
@@ -438,7 +439,7 @@ describe('the approval budgets, per session, per caller and per workspace (revie
     const timed = async () => { const times: number[] = []; for (let index = 0; index < 5; index++) { const started = performance.now(); expect(await read()).toMatchObject({ outcome: 'ok' }); times.push(performance.now() - started) } return times.sort((a, b) => a - b)[2]! }
     const baseline = await timed()
     // About 60 MiB waiting, from four callers, as the review's 66 MB.
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }), approvalsPath(config), config.cwd)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }), approvalsPath(config), config.cwd)
     for (const caller of ['a', 'b', 'c', 'd']) await registry.ask({ tool: 'fs_write', sessionId: `s-${caller}`, actor: caller, asks: [write(`/${caller}`)], call: whole(15 * 1_024 * 1_024, caller) })
     const before = statSync(approvalsPath(config))
     const loaded = await timed()

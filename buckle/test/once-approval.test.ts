@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import type { PermissionOutcome } from '../common/domain/permission/engine.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 const recorded = { arguments: { path: '/outside' }, cwd: '/workspace', description: null, effects: [], complete: true as const }
@@ -121,7 +121,7 @@ describe('a once approval answered after the grace period', () => {
     writeFileSync(join(outside, 'notes.txt'), 'late')
     writeFileSync(join(other, 'notes.txt'), 'other')
     const runtime = await createRuntime({
-      config: loadConfig({
+      config: configFromEnvironment({
         BUCKLE_AUTH_TOKEN: 'agent',
         BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-once-state-')),
         BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-once-ws-')),

@@ -72,9 +72,9 @@ describe('a request the enrolled key signed (B23)', () => {
     const buckle = await node()
     const signed = await send(buckle, sign(buckle, { session: await openSession(buckle) }))
     expect(signed.status).toBe(200)
-    expect(buckle.runtime.policy.stored()?.commands.deny).toEqual(['rm *'])
+    expect(buckle.runtime.policy.stored().commands.deny).toEqual(['rm *'])
     expect((await buckle.request('/setup/policy', { method: 'DELETE', headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(200)
-    expect(buckle.runtime.policy.stored()).toBeNull()
+    expect(buckle.runtime.policy.stored().commands.deny).toEqual([])
     expect(refusals(buckle)).toEqual([])
   })
 
@@ -122,7 +122,7 @@ describe('a request the enrolled key signed (B23)', () => {
     // Each refusal names the key its payload claims, when one could be read (review H4 of B23-B25).
     const claimed = buckle.runtime.actions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => (entry.args as { claimedKeyId?: string }).claimedKeyId)
     expect(claimed).toEqual([...cases.slice(0, -2).map(() => owner.keyId), stranger.keyId, undefined])
-    expect(buckle.runtime.policy.stored()).toBeNull()
+    expect(buckle.runtime.policy.stored().updatedAt).toBeNull()
   })
 
   it('refuses a replay, an approval signature on the setup guard and a setup signature on the approval guard, and a key substituted into the payload', async () => {
@@ -184,7 +184,7 @@ describe('a request the enrolled key signed (B23)', () => {
     expect((await clientCommand(['session', 'open', url], environment)).exitCode).toBe(0)
     const session = printed.trim()
     expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body, '--session', session], environment)).exitCode).toBe(0)
-    expect(buckle.runtime.policy.stored()?.network.allow).toEqual(['example.com'])
+    expect(buckle.runtime.policy.stored().network.allow).toEqual(['example.com'])
     // A --node that is not the node pinned for this URL signs nothing.
     expect((await clientCommand(['request', 'PUT', `${url}/setup/policy`, '--body', body, '--node', 'another-node', '--session', session], environment)).exitCode).toBe(1)
     expect((await clientCommand(['session', 'close', url, session], environment)).exitCode).toBe(0)
@@ -206,7 +206,7 @@ describe('a key\'s scope over three children (owner decision D10)', () => {
     for (const id of ['child-a', 'child-b', 'child-c']) {
       const root = join(buckle.root, id)
       mkdirSync(root)
-      await workspaces.register({ id, name: id, root, authToken: `${id}-agent-token-for-signed-scope`, adminToken: `${id}-admin-token-for-signed-scope`, policy: { version: 1, commands: { allow: [], deny: [] }, network: { allow: [] }, mount: '/workspace', updatedAt: null } })
+      await workspaces.create({ id, name: id, dir: root })
     }
     const setupOnA = generateSigningKey(), approvalOnB = generateSigningKey(), setupOnDefault = generateSigningKey(), setupOnNode = generateSigningKey()
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
@@ -277,7 +277,7 @@ describe('the node a request is signed for (owner decision D11)', () => {
     expect((await clientCommand(['session', 'open', relayUrl], environment)).exitCode).toBe(1)
     const body = JSON.stringify({ version: 1, network: { allow: ['meant-for-x.example'] } })
     expect((await clientCommand(['request', 'PUT', `${relayUrl}/setup/policy`, '--body', body, '--session', 'AAAAAAAAAAAAAAAAAAAAAA'], environment)).exitCode).toBe(1)
-    expect(buckle.runtime.policy.stored()).toBeNull()
+    expect(buckle.runtime.policy.stored().updatedAt).toBeNull()
     expect(refusals(buckle)).toEqual(['wrong_target', 'wrong_target'])
   })
 })

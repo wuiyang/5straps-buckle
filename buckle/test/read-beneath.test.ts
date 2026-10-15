@@ -5,7 +5,7 @@ import type { JsonValue } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LinkAppearedError, openDirectoryBeneath, openRealDirectory, withFileBeneath } from '../common/adapters/beneath.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { findNames, listTree, readFileEntry } from '../common/services/packs/fs/operations.js'
 import { resolveTarget } from '../common/services/invocation/real-path.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -90,7 +90,7 @@ describe('a read whose target a link replaces during its approval wait', () => {
   it('is refused when it runs, and the state file it now names is never read', async () => {
     const { root, workspace, state } = fixture()
     writeFileSync(join(workspace, '.env'), 'API_TOKEN=workspace-value')
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'buckle-state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'buckle-state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
     const runtime = await createRuntime({ config, interaction: fixedInteraction(headlessGrace) })
     // .env asks (sensitive_path); while it waits, it becomes a link to a state file.
     const call = runtime.invoke({ sessionId: 'reader', request: { requestId: 'swap-read', tool: 'fs_read', args: { path: '.env' }, approvalTokens: [] } })
@@ -161,7 +161,7 @@ describe('a hard link to Buckle\'s state (review L3 of the second proof-of-posse
 
   async function linked() {
     const { root, workspace } = fixture()
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'buckle-state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,browser', BUCKLE_AGENT_BROWSER_COMMAND: stubBrowser(root), BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'buckle-state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,browser', BUCKLE_AGENT_BROWSER_COMMAND: stubBrowser(root), BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
     const runtime = await createRuntime({ config })
     // A state file with owner content, and a workspace name for the same file, as a process that can read the state could make.
     writeFileSync(join(config.stateDirectory, 'owner-state.json'), '{"owner":"secret"}')
@@ -188,7 +188,7 @@ describe('a hard link to Buckle\'s state (review L3 of the second proof-of-posse
     roots.push(root)
     const workspace = join(root, 'node_modules', 'project')
     mkdirSync(workspace, { recursive: true })
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'buckle-state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'buckle-state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
     const runtime = await createRuntime({ config })
     writeFileSync(join(config.stateDirectory, 'owner-state.json'), '{"owner":"secret"}')
     linkSync(join(config.stateDirectory, 'owner-state.json'), join(workspace, 'linked.json'))

@@ -7,7 +7,7 @@ import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createGitHubForgeClient } from '../common/adapters/forge/github.js'
 import { runProcess } from '../common/adapters/process-runner.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { forgeGitHost } from '../common/domain/forge.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { compileUrlPatterns } from '../common/domain/url-pattern.js'
@@ -675,7 +675,7 @@ describe('git_push is sent where no remote name or rewrite rule redirects it (re
   it('holds every write in the workspace while it runs, so a rule written between the check and the spawn waits and redirects nothing', async () => {
     const { server, judged, origin, repository, other } = await served()
     const state = join(temporaryRoot('lock-state'), 'state')
-    const config = loadConfig({
+    const config = configFromEnvironment({
       BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
       BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl,
       BUCKLE_NETWORK_ALLOW: new URL(server.url).host,
@@ -1005,7 +1005,7 @@ describe('a local push or a commit writes only the repository its permission che
     execFileSync('git', ['init', '--bare', '-q', '-b', 'main', destination])
     git(destination, 'config', 'receive.denyDeletes', 'Buckle refused the push in the receiving git: the owner denied this push')
     git(repository, 'remote', 'add', 'origin', destination)
-    const runtime = await createRuntime({ config: loadConfig({
+    const runtime = await createRuntime({ config: configFromEnvironment({
       BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
       BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl, BUCKLE_SCRATCH_ROOTS: scratch,
     }) })
@@ -1030,7 +1030,7 @@ describe('a local push or a commit writes only the repository its permission che
     const destination = join(scratch, 'dest')
     mkdirSync(destination, { recursive: true })
     git(repository, 'remote', 'add', 'origin', destination)
-    const runtime = await createRuntime({ config: loadConfig({
+    const runtime = await createRuntime({ config: configFromEnvironment({
       BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
       BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl, BUCKLE_SCRATCH_ROOTS: scratch,
     }) })
@@ -1086,7 +1086,7 @@ describe('a push to an approved https origin that names userinfo (review M4)', (
 
       // Through a node: the result and the audit log carry no form of it either.
       const state = join(root, 'state')
-      const runtime = await createRuntime({ config: loadConfig({
+      const runtime = await createRuntime({ config: configFromEnvironment({
         BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
         BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl, BUCKLE_NETWORK_ALLOW: new URL(host).host,
       }) })
@@ -1228,7 +1228,7 @@ describe('the credential', () => {
     git(workspace, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-m', 'first')
     git(workspace, 'update-ref', 'refs/remotes/origin/side', 'HEAD')
 
-    const config = loadConfig({
+    const config = configFromEnvironment({
       BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
       BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl,
       BUCKLE_NETWORK_ALLOW: new URL(apiUrl).host,
@@ -1271,7 +1271,7 @@ describe('the credential', () => {
     execFileSync('git', ['init', '-b', 'main', workspace])
     git(workspace, 'remote', 'add', 'origin', 'https://github.com/5straps/demo.git')
 
-    const config = loadConfig({
+    const config = configFromEnvironment({
       BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true',
       BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_FORGE_GITHUB_TOKEN: TOKEN, BUCKLE_FORGE_GITHUB_API_URL: apiUrl,
       BUCKLE_NETWORK_ALLOW: 'example.com',
@@ -1292,7 +1292,7 @@ describe('the credential', () => {
     const root = temporaryRoot('nocred')
     const workspace = join(root, 'workspace')
     mkdirSync(workspace)
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_AUTH_TOKEN: 'agent-token' })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_AUTH_TOKEN: 'agent-token' })
     const runtime = await createRuntime({ config })
     const descriptor = runtime.manifest().packs.find(candidate => candidate.id === 'forge')
     expect(descriptor?.unavailableReason).toContain('BUCKLE_FORGE_GITHUB_TOKEN')

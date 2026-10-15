@@ -28,7 +28,7 @@ import { createWebPack } from './web/index.js'
 
 export interface BuiltinPackOptions {
   sandboxMounts?: SandboxMount[]
-  filesystemPolicy?: { policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null }
+  filesystemPolicy?: { policy: WorkspacePolicy }
   cwd: string
   paths: PathView
   runProcess: ProcessRunner
@@ -63,7 +63,7 @@ export interface BuiltinPackOptions {
   allowHostGit?: boolean
   allowHostLsp?: boolean
   enableShell: boolean
-  /** BUCKLE_ALLOW_CODE: false withholds the code pack (owner decision D82). On when absent. */
+  /** The workspace setting packs.code: false withholds the code pack (owner decision D82). On when absent. */
   allowCode?: boolean
   /** What a script reaches: the workspace manifest's tools as they stand at each call, after tool policy. None when absent. */
   reachableTools?: () => ToolCapability[]
@@ -108,7 +108,7 @@ export const BUILTIN_PACKS: ReadonlyArray<{ id: string; summary: string }> = [
  */
 export function unmetPackPrerequisite(id: string, options: Pick<BuiltinPackOptions, 'environmentValidator'>): string | null {
   if (id === 'environment' && !options.environmentValidator) return 'BUCKLE_ENV_VALIDATOR_COMMAND is not set'
-  // The code pack is always built: BUCKLE_ALLOW_CODE=false withholds it with a reason, as BUCKLE_ALLOW_SHELL does the shell.
+  // The code pack is always built: packs.code off withholds it with a reason, as packs.shell off does the shell.
   return null
 }
 
@@ -193,17 +193,16 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     packs.push(createEnvironmentPack({ command: validator, validator: resolved, cwd: options.cwd, runProcess: options.runProcess, environment }))
   }
   if (!options.allowHostGit) for (const pack of packs) {
-    if (pack.id === 'git' || pack.id === 'forge') pack.unavailableReason = 'Host Git can read repository data outside per-file approval checks; BUCKLE_ALLOW_HOST_GIT=true explicitly trusts repository access outside the shell sandbox'
+    if (pack.id === 'git' || pack.id === 'forge') pack.unavailableReason = 'Host Git can read repository data outside per-file approval checks; the workspace setting packs.hostGit, on, explicitly trusts repository access outside the shell sandbox'
   }
-  const restricted = [options.filesystemPolicy?.policy, options.filesystemPolicy?.ceiling]
-    .some(policy => policy?.filesystem?.rules.some(rule => rule.read === 'deny' || rule.read === 'ask' || rule.write === 'deny' || rule.write === 'ask'))
+  const restricted = options.filesystemPolicy?.policy.filesystem?.rules.some(rule => rule.read === 'deny' || rule.read === 'ask' || rule.write === 'deny' || rule.write === 'ask')
   if (restricted) for (const pack of packs) {
     if (pack.id === 'git' || pack.id === 'dev' || pack.id === 'forge') pack.unavailableReason = 'Host Git and language-server tools do not enforce per-path policy; use the sandboxed shell or filesystem tools'
   }
   return packs
 }
 
-const CODE_OFF = 'Code mode is turned off by BUCKLE_ALLOW_CODE=false'
+const CODE_OFF = 'Code mode is turned off in this workspace: its setting packs.code is off'
 
 function forgeUnavailableReason(options: BuiltinPackOptions, git: ResolvedProgram): string | null {
   if (!options.forge.token) return 'BUCKLE_FORGE_GITHUB_TOKEN is not set, so this node holds no forge credential and cannot commit, push or open a pull request'
@@ -213,7 +212,7 @@ function forgeUnavailableReason(options: BuiltinPackOptions, git: ResolvedProgra
 function shellUnavailableReason(options: BuiltinPackOptions): string | null {
   // Where no sandbox could be had, such as a bwrap refused where an agent writes, that is the reason, not the mounts.
   if (options.sandboxMounts?.length && options.sandbox.mode !== 'bubblewrap') return options.sandboxUnavailableReason ?? 'Explicit mounts require bubblewrap'
-  if (!options.enableShell) return 'Shell tools are turned off by BUCKLE_ALLOW_SHELL=false'
+  if (!options.enableShell) return 'Shell tools are turned off in this workspace: its setting packs.shell is off'
   if (options.shellIsolation && options.sandbox.mode !== 'bubblewrap') return 'Isolated shell execution requires bubblewrap; BUCKLE_SHELL_ISOLATION=false opts into shared-workspace checkpoints'
   if (options.sandboxUnavailableReason) return options.sandboxUnavailableReason
   if (options.paths.mount && !options.sandbox.supportsMount) {

@@ -2,9 +2,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { loadConfig, type BuckleConfig } from '../../common/runtime/config.js'
+import type { BuckleConfig } from '../../common/runtime/config.js'
+import { configFromEnvironment } from '../support/workspace-config.js'
 import { workspaceRegistryCommand } from '../../cli/workspace.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
+import type { WorkspaceManager } from '../../common/services/workspaces/workspace-manager.js'
 import { createCommandPolicyRule } from '../../common/domain/permission/rules/command-policy-rule.js'
 import { compilePolicy } from '../../common/domain/policy.js'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
@@ -12,13 +14,14 @@ import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const NODE_AGENT = 'node-agent-token-fixture'
 const NODE_ADMIN = 'node-admin-credential-fixture'
-const WORKSPACE_AGENT = 'workspace-agent-token-fixture-only'
-const WORKSPACE_ADMIN = 'workspace-admin-credential-fixture-only'
 const headers = (token: string) => ({ authorization: `Bearer ${token}`, 'content-type': 'application/json' })
 let app: BuckleHttp
 let config: BuckleConfig
 let runtime: BuckleRuntime
+let workspaces: WorkspaceManager
 let root: string
+/** Workspace one's first agent token, as registration printed it once (D83 (3)). */
+let workspaceAgent: string
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'buckle-tokens-'))
@@ -28,11 +31,14 @@ beforeEach(async () => {
   app = await createBuckleHttp({ environment: { BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: NODE_ADMIN, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1' } })
   config = app.config
   runtime = app.runtime
+  workspaces = await app.services.getWorkspaces()
 })
 afterEach(() => app.close())
 
-function register(body: Record<string, unknown> = {}) {
-  return app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', root: join(root, 'one'), authToken: WORKSPACE_AGENT, adminToken: WORKSPACE_ADMIN, ...body }) })
+async function register(body: Record<string, unknown> = {}): Promise<Response> {
+  const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', dir: join(root, 'one'), ...body }) })
+  if (response.status === 201) workspaceAgent = (await response.clone().json() as { token: { token: string } }).token.token
+  return response
 }
 
 function read(token: string) {
@@ -51,11 +57,11 @@ describe('several agent tokens per workspace', () => {
     expect(token.label).toBe('second harness')
 
     expect((await read(token.token)).status).toBe(200)
-    expect((await read(WORKSPACE_AGENT)).status).toBe(200)
+    expect((await read(workspaceAgent)).status).toBe(200)
 
     expect((await app.request(`/setup/workspaces/one/tokens/${token.id}`, { method: 'DELETE', headers: headers(NODE_ADMIN) })).status).toBe(204)
     expect((await read(token.token)).status).toBe(401)
-    expect((await read(WORKSPACE_AGENT)).status).toBe(200)
+    expect((await read(workspaceAgent)).status).toBe(200)
   })
 
   it('lists tokens without their secrets and keeps the last one', async () => {
@@ -63,41 +69,42 @@ describe('several agent tokens per workspace', () => {
     const listed = await app.request('/setup/workspaces/one/tokens', { headers: headers(NODE_ADMIN) })
     const body = await listed.text()
     expect(body).toContain('initial')
-    expect(body).not.toContain(WORKSPACE_AGENT)
+    expect(body).not.toContain(workspaceAgent)
     expect((await app.request('/setup/workspaces/one/tokens/initial', { method: 'DELETE', headers: headers(NODE_ADMIN) })).status).toBe(409)
   })
 
   it('mints and revokes under the admin credential alone', async () => {
     await register()
-    for (const token of [NODE_AGENT, WORKSPACE_AGENT, WORKSPACE_ADMIN]) {
+    for (const token of [NODE_AGENT, workspaceAgent]) {
       expect((await app.request('/setup/workspaces/one/tokens', { method: 'POST', headers: headers(token), body: '{}' })).status).toBe(401)
       expect((await app.request('/setup/workspaces/one/tokens/initial', { method: 'DELETE', headers: headers(token) })).status).toBe(401)
     }
   })
 
-  it('refuses a registration that names the admin credential setupToken', async () => {
-    const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', root: join(root, 'one'), authToken: WORKSPACE_AGENT, setupToken: WORKSPACE_ADMIN }) })
+  // Buckle mints every agent token (D83 (3)) and keeps no admin credential per workspace: a body that brings either is refused.
+  it.each([['an agent token', { authToken: 'chosen-by-the-caller-agent-token' }], ['an admin credential', { adminToken: 'chosen-by-the-caller-admin-token' }], ['a setup token', { setupToken: 'chosen-by-the-caller-setup-token' }]])('refuses a registration that brings %s', async (_label, extra) => {
+    const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', dir: join(root, 'one'), ...extra }) })
     expect(response.status).toBe(400)
-    expect((await app.request('/workspaces/one/setup/status', { headers: headers(WORKSPACE_ADMIN) })).status).toBe(401)
+    expect(workspaces.known('one')).toBe(false)
   })
 })
 
 describe('buckle workspace, the owner-side registry command', () => {
   it('refuses to mint on a node with no admin credential', async () => {
-    const bare = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ALLOW_SHELL: 'false' })
-    expect((await workspaceRegistryCommand({ config: bare, runtime, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(1)
+    const bare = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ALLOW_SHELL: 'false' })
+    expect((await workspaceRegistryCommand({ config: bare, workspaces, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(1)
   })
 
   it('adds a workspace, mints a second token and revokes it', async () => {
-    expect((await workspaceRegistryCommand({ config, runtime, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(0)
-    expect((await workspaceRegistryCommand({ config, runtime, argv: ['token', 'add', 'one', '--label', 'laptop'] })).exitCode).toBe(0)
-    expect((await workspaceRegistryCommand({ config, runtime, argv: ['token', 'list', 'one'] })).exitCode).toBe(0)
-    expect((await workspaceRegistryCommand({ config, runtime, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(0)
-    expect((await workspaceRegistryCommand({ config, runtime, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(1)
+    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['token', 'add', 'one', '--label', 'laptop'] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['token', 'list', 'one'] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(1)
   })
 
   it('refuses a workspace root that overlaps the node state directory', async () => {
-    expect((await workspaceRegistryCommand({ config, runtime, argv: ['add', 'one', '--root', join(root, 'state')] })).exitCode).toBe(1)
+    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['add', 'one', '--root', join(root, 'state')] })).exitCode).toBe(1)
   })
 })
 
@@ -114,6 +121,7 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
   const LEGACY_AGENT = 'legacy-agent-credential-fixture-value'
   const LEGACY_SETUP = 'legacy-setup-credential-fixture-value'
 
+  // Written under a running node, which migrated its registry when it started: a file no version reads.
   beforeEach(() => {
     writeFileSync(join(root, 'state', 'workspaces.json'), JSON.stringify({ version: 1, workspaces: [{ id: 'consultation', name: 'Consultation', root: join(root, 'one'), authToken: LEGACY_AGENT, setupToken: LEGACY_SETUP, enabled: true }] }))
   })
@@ -123,8 +131,8 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
     expect(response.status).toBe(409)
     const { error } = await response.json() as { error: string }
     expect(error).toContain(join(root, 'state', 'workspaces.json'))
-    expect(error).toContain('workspaces.0.adminToken')
-    expect(error).toContain('workspaces.0.tokens')
+    expect(error).toContain('version')
+    expect(error).toContain('workspaces.0.dir')
     expect(error).not.toContain(LEGACY_AGENT)
     expect(error).not.toContain(LEGACY_SETUP)
   })
@@ -133,7 +141,6 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
     for (const [path, init, tool] of [
       ['/workspaces/consultation/v1/manifest', { headers: headers(LEGACY_AGENT) }, null],
       ['/workspaces/consultation/v1/invoke', { method: 'POST', headers: headers(LEGACY_AGENT), body: '{}' }, 'workspace_invoke_rejected'],
-      ['/workspaces/anything/setup/status', {}, 'workspace_setup_auth_rejected'],
       ['/workspaces/anything/v1/workbenches/one', { headers: headers('a-plausible-workbench-grant-of-32-characters') }, 'workbench_auth_rejected'],
     ] as const) {
       const response = await app.request(path, init)
@@ -146,17 +153,20 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
     }
     // A workbench path without a grant reads nothing, the registry included: the plain 401 (review L6 of B15-B17).
     expect((await app.request('/workspaces/anything/v1/workbenches/one')).status).toBe(401)
+    // The admin credential is the node's (D83), checked without the registry: a caller without it learns nothing at all.
+    expect((await app.request('/workspaces/anything/setup/status')).status).toBe(401)
+    expect(runtime.actions.read(1)[0]).toMatchObject({ tool: 'workspace_setup_auth_rejected', workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 401' })
   })
 
   it('reports the same repair from buckle workspace list', async () => {
     let stderr = ''
     const err = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true })
     try {
-      expect((await workspaceRegistryCommand({ config, runtime, argv: ['list'] })).exitCode).toBe(1)
+      expect((await workspaceRegistryCommand({ config, workspaces, argv: ['list'] })).exitCode).toBe(1)
     } finally {
       err.mockRestore()
     }
-    expect(stderr).toContain('workspaces.0.adminToken')
+    expect(stderr).toContain('workspaces.0.dir')
   })
 })
 

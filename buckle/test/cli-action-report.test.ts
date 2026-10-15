@@ -2,8 +2,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
-import { runCli } from '../cli/main.js'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+import { runCli } from './support/cli.js'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -11,7 +12,7 @@ afterEach(() => { vi.unstubAllGlobals() })
 function node(): BuckleConfig {
   const root = mkdtempSync(join(tmpdir(), 'buckle-cli-report-'))
   writeFileSync(join(root, 'note.txt'), 'workspace content')
-  return loadConfig({
+  return configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: root,
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-report-state-')),
     BUCKLE_ALLOW_SHELL: 'false',
@@ -58,7 +59,7 @@ describe('a tool call made from the command line', () => {
 
   it('posts nothing on a node the owner configured no report endpoint for', async () => {
     const posts = endpoint()
-    const config = loadConfig({
+    const config = configFromEnvironment({
       BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-cli-report-quiet-')),
       BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-report-quiet-state-')),
       BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs',

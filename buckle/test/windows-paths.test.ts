@@ -12,10 +12,10 @@ import { childPath, descent, isDriveRoot, isInside, isInsideComparable, isPlainN
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
 import { clientDirectory } from '../cli/client.js'
 import { runInit } from '../cli/init.js'
-import { loadConfig, stateDirectoryOf, workspaceHolds } from '../common/runtime/config.js'
+import { stateDirectoryOf, workspaceHolds } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { resolveTarget } from '../common/services/invocation/real-path.js'
-import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { outsideRootNotice } from '../common/runtime/environment.js'
+import { workspacesOf } from './support/workspaces.js'
 import { logger } from '../common/runtime/log.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { applySnapshot, restoredLinkType, restoreLink, snapshot } from '../common/services/history/snapshot.js'
@@ -189,7 +189,7 @@ describe('a folder named like a drive on Linux and macOS: <ws>/c:/x', () => {
 
   it('keeps a state directory there inside the workspace, which refuses to start', () => {
     const root = scratch()
-    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: `${root}/c:/state` })).toThrow(/inside the BUCKLE_WORKSPACE_ROOT/)
+    expect(() => configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: `${root}/c:/state` })).toThrow(/inside the BUCKLE_WORKSPACE_ROOT/)
   })
 })
 
@@ -338,7 +338,7 @@ describe('the backslash case on Linux: inside\\..\\..\\x', () => {
     writeFileSync(join(root, 'x'), 'outside')
     writeFileSync(`${workspace}/inside\\..\\..\\x`, 'literal')
     expect(() => createPathView({ root: workspace, mount: null }).resolve('inside\\..\\..\\x')).toThrow('inside\\..\\..\\x holds a backslash, which Buckle reads as a separator, so Buckle refuses it rather than read it as another path')
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
     const runtime = await createRuntime({ config, interaction: fixedInteraction(headlessGrace) })
     try {
       for (const [tool, args] of [['fs_read', { path: 'inside\\..\\..\\x' }], ['fs_write', { path: 'inside\\..\\..\\x', content: 'written' }]] as const) {
@@ -366,20 +366,12 @@ describe('case and links on Windows, imitated', () => {
   }
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs() })
 
-  it('reads a working directory typed in another case as inside the root, with no outside-the-root notice', () => {
-    const root = scratch()
-    const disk = join(root, 'Project')
-    mkdirSync(disk)
-    diskCase(join(root, 'project'), disk)
-    expect(outsideRootNotice({ namedNode: false, root: disk, cwd: join(root, 'project'), file: null })).toBeNull()
-  })
-
   it('names a scratch root as the disk does, through a link or in another case', () => {
     const root = scratch()
     mkdirSync(join(root, 'Scratch'))
     symlinkSync(join(root, 'Scratch'), join(root, 'link'))
     diskCase(join(root, 'scratch'), join(root, 'Scratch'))
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(scratch(), 'state'), BUCKLE_SCRATCH_ROOTS: `${join(root, 'link')},${join(root, 'scratch')}` })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(scratch(), 'state'), BUCKLE_SCRATCH_ROOTS: `${join(root, 'link')},${join(root, 'scratch')}` })
     expect(config.scratchRoots).toEqual([join(root, 'Scratch'), join(root, 'Scratch')])
   })
 
@@ -654,14 +646,14 @@ describe('a whole drive as a Buckle root on Windows, imitated', () => {
   it('is refused at config load as the workspace root, the working directory, a scratch root, or the state directory', () => {
     const root = scratch()
     const state = join(scratch(), 'state')
-    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: 'D:\\', BUCKLE_STATE_DIR: state }, 'win32')).toThrow(`BUCKLE_WORKSPACE_ROOT is D:/: ${refused}`)
-    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: 'E:\\' }, 'win32')).toThrow(`BUCKLE_STATE_DIR is E:/: ${refused}`)
-    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: state, BUCKLE_SCRATCH_ROOTS: `${join(root, 'scratch')},F:\\` }, 'win32')).toThrow(`BUCKLE_SCRATCH_ROOTS is F:/: ${refused}`)
+    expect(() => configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: 'D:\\', BUCKLE_STATE_DIR: state }, 'win32')).toThrow(`BUCKLE_WORKSPACE_ROOT is D:/: ${refused}`)
+    expect(() => configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: 'E:\\' }, 'win32')).toThrow(`BUCKLE_STATE_DIR is E:/: ${refused}`)
+    expect(() => configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: state, BUCKLE_SCRATCH_ROOTS: `${join(root, 'scratch')},F:\\` }, 'win32')).toThrow(`BUCKLE_SCRATCH_ROOTS is F:/: ${refused}`)
     expect(() => stateDirectoryOf({ BUCKLE_STATE_DIR: 'C:/' }, 'win32')).toThrow(refused)
-    expect(loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: state }, 'win32').cwd).toBe(root)
+    expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: state }, 'win32').cwd).toBe(root)
     // Buckle started in D:\ with no BUCKLE_WORKSPACE_ROOT serves the directory it started in.
     vi.spyOn(process, 'cwd').mockReturnValue('D:\\')
-    expect(() => loadConfig({ BUCKLE_STATE_DIR: state }, 'win32')).toThrow(`The working directory, the workspace root while BUCKLE_WORKSPACE_ROOT is unset, is D:/: ${refused}`)
+    expect(() => configFromEnvironment({ BUCKLE_STATE_DIR: state }, 'win32')).toThrow(`The working directory, the workspace root while BUCKLE_WORKSPACE_ROOT is unset, is D:/: ${refused}`)
   })
 
   it('is refused as the client directory, and by init as the workspace root', async () => {
@@ -678,15 +670,12 @@ describe('a whole drive as a Buckle root on Windows, imitated', () => {
 
   it('is refused when a workspace is registered, and offered as no choice; a mount names no drive at all', async () => {
     const root = scratch()
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(scratch(), 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
-    const runtime = await createRuntime({ config })
-    try {
-      const manager = createWorkspaceManager({ config, runtime, platform: 'win32' })
-      const tokens = { authToken: 'drive-root-agent-token-fixture-only', adminToken: 'drive-root-admin-token-fixture-only' }
-      expect(() => manager.register({ id: 'drive', name: 'Drive', root: 'D:\\', ...tokens, policy: emptyWorkspacePolicy() })).toThrow(`Workspace root D:\\: ${refused}`)
-      expect(manager.eligibility('E:/')).toEqual({ selectable: false, reason: `Workspace root E:/: ${refused}` })
-      expect(manager.list().map(workspace => workspace.id)).toEqual(['default'])
-    } finally { await runtime.history.close() }
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(scratch(), 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    await workspacesOf(config)
+    const manager = await workspacesOf(config, { platform: 'win32' })
+    await expect(manager.create({ id: 'drive', name: 'Drive', dir: 'D:\\', policy: emptyWorkspacePolicy() })).rejects.toThrow(`Workspace folder D:\\: ${refused}`)
+    expect(manager.eligibility('E:/')).toEqual({ selectable: false, reason: `Workspace folder E:/: ${refused}` })
+    expect(manager.list().map(workspace => workspace.id)).toEqual(['default'])
     for (const mount of ['C:/', 'C:\\', '/C:', '/c:/x', 'D:']) expect(MountPathSchema.safeParse(mount).success).toBe(false)
   })
 })

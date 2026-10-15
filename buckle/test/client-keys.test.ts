@@ -5,11 +5,12 @@ import { generateSigningKey } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clientCommand, clientDirectory, CLIENT_KEY_FILE, loadClientKey } from '../cli/client.js'
 import { keysCommand } from '../cli/keys.js'
-import { runCli } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFileClientKeys } from '../common/adapters/keys/file-client-keys.js'
 import { WorkspaceRegistrationSchema } from '../common/services/workspaces/workspace-manager.js'
-import { actionsPath, clientKeysPath, loadConfig, nodeKeyPath, requestNoncesPath, type BuckleConfig } from '../common/runtime/config.js'
+import { actionsPath, clientKeysPath, nodeKeyPath, requestNoncesPath, type BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { initializeCommon } from '../common/runtime/initialize.js'
 import { loadNodeKey } from '../common/adapters/keys/file-node-key.js'
 
@@ -31,7 +32,7 @@ function node(): BuckleConfig {
   const root = scratch()
   mkdirSync(join(root, 'workspace'))
   mkdirSync(join(root, 'state'), { mode: 0o700 })
-  return loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+  return configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
 }
 
 function capture() {
@@ -179,7 +180,7 @@ describe('a key\'s scope (owner decision D10)', () => {
 // so a workspace named node would let a key meant for it change every workspace and the registry.
 describe('the workspace id node', () => {
   it('is reserved, as default is: registration refuses it by name', () => {
-    const registration = { name: 'Node', root: '/srv/node', authToken: 'node-agent-token-fixture-1', adminToken: 'node-admin-token-fixture-1' }
+    const registration = { name: 'Node', dir: '/srv/node' }
     for (const id of ['node', 'default']) {
       const parsed = WorkspaceRegistrationSchema.safeParse({ ...registration, id })
       expect(parsed.success).toBe(false)
@@ -212,7 +213,7 @@ describe('the node\'s own key and the admin-only state (review L11 of B23-B25)',
       const root = scratch()
       mkdirSync(join(root, 'workspace'))
       mkdirSync(join(root, 'state'), { mode: 0o700 })
-      const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: flag })
+      const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: flag })
       const common = initializeCommon({ config, role })
       await common.start()
       try {

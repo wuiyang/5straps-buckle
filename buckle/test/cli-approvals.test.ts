@@ -7,9 +7,10 @@ import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFileGrantStore, createGrantLookup } from '../common/adapters/grant-store/file-grant-store.js'
-import { actionsPath, approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { actionsPath, approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
-import { runCli } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
@@ -19,7 +20,7 @@ import { summarizeEffect } from '../common/domain/effect.js'
 import { reviewableArguments } from '../common/domain/redact.js'
 
 function node(): BuckleConfig {
-  return loadConfig({
+  return configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-cli-approvals-')),
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-approvals-state-')),
     BUCKLE_ALLOW_SHELL: 'false',
@@ -29,7 +30,7 @@ function node(): BuckleConfig {
 /** A request waiting on the node, written through a second registry over the same state files. */
 async function pendingRequest(config: BuckleConfig): Promise<string> {
   const registry = createApprovalRegistry(
-    createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }),
+    createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }),
     approvalsPath(config),
     config.cwd,
   )
@@ -68,7 +69,7 @@ describe('buckle approvals, the queue a person answers from', () => {
 
   it('lists a subject with control characters escaped, so it cannot rewrite the terminal (review M3)', async () => {
     const config = node()
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }), approvalsPath(config), config.cwd)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }), approvalsPath(config), config.cwd)
     await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/x\u001b[2K\rls', reason: 'outside\u0007', offeredScopes: ['once'] }] })
 
     const listed = await capture({ argv: ['approvals'], config })
@@ -174,7 +175,7 @@ describe('buckle approvals, the queue a person answers from', () => {
 })
 
 function registry(config: BuckleConfig) {
-  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }), approvalsPath(config), config.cwd)
+  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }), approvalsPath(config), config.cwd)
 }
 
 /** A private host a web_fetch asked about, waiting on the node. */
@@ -195,7 +196,7 @@ async function captureAll(input: { argv: string[]; config: BuckleConfig }): Prom
 }
 
 function grantStore(config: BuckleConfig) {
-  return createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
+  return createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' })
 }
 
 function networkSubjects(config: BuckleConfig): string[] {
@@ -498,7 +499,7 @@ describe('buckle approve shows the whole action before it decides (owner decisio
     writeFileSync(script, `
       import { openSync } from 'node:fs';
       import { spawn } from 'node:child_process';
-      const child = spawn(process.execPath, ['--import', ${JSON.stringify(import.meta.resolve('tsx'))}, '--input-type=module', '-e', ${JSON.stringify(`import { runCli } from ${JSON.stringify(new URL('../cli/main.ts', import.meta.url).href)}; const result = await runCli({ argv: ['approvals', '--watch'], config: ${JSON.stringify(config)} }); process.exitCode = result.exitCode;`)}], { stdio: [0, openSync(${JSON.stringify(hidden)}, 'w'), 2] });
+      const child = spawn(process.execPath, ['--import', ${JSON.stringify(import.meta.resolve('tsx'))}, '--input-type=module', '-e', ${JSON.stringify(`import { runCli } from ${JSON.stringify(new URL('../cli/main.ts', import.meta.url).href)}; const result = await runCli({ argv: ['approvals', '--watch'], config: ${JSON.stringify(config)}, cwd: ${JSON.stringify(config.cwd)} }); process.exitCode = result.exitCode;`)}], { stdio: [0, openSync(${JSON.stringify(hidden)}, 'w'), 2] });
       child.on('exit', code => { process.exitCode = code ?? 1 });
     `)
     const pty = await import('node-pty')

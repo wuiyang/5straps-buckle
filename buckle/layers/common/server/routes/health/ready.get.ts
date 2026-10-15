@@ -8,7 +8,7 @@ import { useServices } from '../../utils/services.js'
 // (review M2 of B18-B19). Liveness is /health.
 export default defineHandler(async (event) => {
   requireReady(event)
-  const { auditHealth } = await useServices(event).getWorkspaceRuntime()
+  const { auditHealth } = await useServices(event).getWorkspaces()
   await auditHealth.recheck()
   if (!auditHealth.available) {
     throw HTTPError.status(503, 'Service Unavailable', { message: 'The audit log is unavailable; tool calls are refused until the owner repairs it' })

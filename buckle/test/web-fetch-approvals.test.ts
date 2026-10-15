@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 let server: Server
@@ -30,7 +30,7 @@ beforeAll(async () => {
 afterAll(() => { server.close() })
 
 async function runtimeWith(environment: Record<string, string> = {}): Promise<BuckleRuntime> {
-  const config = loadConfig({
+  const config = configFromEnvironment({
     BUCKLE_AUTH_TOKEN: 'agent',
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-fetch-state-')),
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-fetch-ws-')),

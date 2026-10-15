@@ -58,7 +58,7 @@ const scriptInput = z.object({
 
 export interface ShellPackOptions {
   mounts?: SandboxMount[]
-  filesystemPolicy?: { policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null }
+  filesystemPolicy?: { policy: WorkspacePolicy }
   paths: PathView
   runProcess: ProcessRunner
   sandbox: Sandbox
@@ -111,7 +111,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     const hidden = options.sandbox.mode === 'none' ? { directories: options.hiddenPaths, files: [] } : await collectShellHiddenPaths({
       roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths], protectedPaths: options.hiddenPaths, signal: input.signal,
     })
-    if (options.sandbox.mode === 'none' && [options.filesystemPolicy?.policy, options.filesystemPolicy?.ceiling].some(policy => policy?.filesystem?.rules.length)) throw new ToolInputError('Filesystem policy requires an operating-system sandbox', { code: 'PERMISSION_DENIED' })
+    if (options.sandbox.mode === 'none' && options.filesystemPolicy?.policy.filesystem?.rules.length) throw new ToolInputError('Filesystem policy requires an operating-system sandbox', { code: 'PERMISSION_DENIED' })
     const restrictions = options.filesystemPolicy
       ? await projectFilesystemSandbox({ root: options.paths.root, ...options.filesystemPolicy, signal: input.signal })
       : { hiddenPaths: [], hiddenFiles: [], readOnlyWorkspacePaths: [] }

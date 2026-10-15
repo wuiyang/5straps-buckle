@@ -164,22 +164,15 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
       { stage: 'accept', name: 'http server' },
       { stage: 'waiters', name: 'terminal questions' },
       { stage: 'waiters', name: 'approval waits' },
-      { stage: 'waiters', name: 'registered workspace approval waits' },
       // B19: running tool calls, PTY terminals, language servers, browser sessions and action reports.
       { stage: 'jobs', name: 'tool calls' },
-      { stage: 'jobs', name: 'registered workspace tool calls' },
       { stage: 'streams', name: 'workbench terminals' },
       { stage: 'streams', name: 'language servers and browser sessions' },
-      { stage: 'streams', name: 'registered workspace workbench terminals' },
-      { stage: 'streams', name: 'registered workspace language servers and browser sessions' },
       { stage: 'streams', name: 'http server connections' },
       { stage: 'locks', name: 'workbench ownership' },
-      { stage: 'locks', name: 'registered workspace workbench ownership' },
       { stage: 'services', name: 'service registry' },
       { stage: 'databases', name: 'workspace history' },
-      { stage: 'databases', name: 'registered workspace history' },
       { stage: 'sinks', name: 'action reports' },
-      { stage: 'sinks', name: 'registered workspace action reports' },
       { stage: 'sinks', name: 'logger' },
     ]))
     const order = stageOrder(steps)
@@ -354,7 +347,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
 
     expect(await buckle.exited).toEqual({ code: 1, signal: null })
     const failure = buckle.lines().find(line => line.message === 'Buckle failed to start')
-    expect(failure).toMatchObject({ level: 'fatal', error: { message: expect.stringContaining('Unknown BUCKLE_PACKS: no-such-pack') } })
+    expect(failure).toMatchObject({ level: 'fatal', error: { message: expect.stringContaining('packs.enabled.0: Unknown pack no-such-pack') } })
     expect(buckle.lines().some(line => line.message === '5straps Buckle listening')).toBe(false)
     expect(existsSync(join(node.state, 'actions.jsonl'))).toBe(false)
   }, 60_000)
@@ -409,55 +402,52 @@ describe('a state directory other users can reach (ruling 7)', () => {
   }, 60_000)
 })
 
-describe('a project outside the root the environment file names (review M4 of B18-B19, owner decision D5: warn)', () => {
-  // The state directory's own file names the root, as `buckle init` writes it; the process environment names neither the file nor a root.
+// D83 (4) and the workspace-model brief, item 3, in place of the outside-the-root warning of owner decision D5: a
+// command runs on the workspace whose folder holds the directory it starts in, or the one it names; `buckle mcp` also
+// takes BUCKLE_WORKSPACE_ROOT, which MCP configs written before the workspace model set. Elsewhere it refuses, naming
+// the ids and no folder.
+describe('a project outside every workspace\'s folder', () => {
+  // The state directory's own file names the root and token, as 0.1's `buckle init` wrote them; the first command migrates.
   async function nodeFromFile(): Promise<{ node: Node; env: NodeJS.ProcessEnv; elsewhere: string }> {
     const node = await prepareNode({ BUCKLE_PACKS: 'fs' })
     writeFileSync(join(node.state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${node.workspace}\nBUCKLE_AUTH_TOKEN=outside-root-agent-token\n`, { mode: 0o600 })
     const { BUCKLE_ENV_FILE: _file, BUCKLE_WORKSPACE_ROOT: _root, BUCKLE_AUTH_TOKEN: _token, ...env } = node.env
     const elsewhere = join(node.root, 'another-project')
     mkdirSync(elsewhere)
+    const migrate = spawnBuckle({ entry, args: ['tools'], env, cwd: node.workspace })
+    running.push(migrate)
+    expect(await migrate.exited).toEqual({ code: 0, signal: null })
     return { node, env, elsewhere }
   }
-  const warning = (text: string) => text.split('\n').filter(line => line.startsWith('Warning: Buckle serves'))
 
-  it('warns once from buckle call, buckle <group> <verb> and buckle mcp, naming the working directory, the root and both ways to give the project its own node, and still runs (review M5 of B20-B22)', async () => {
+  it('refuses a tool call there, naming the ids and no folder, and runs it on the workspace named', async () => {
     const { node, env, elsewhere } = await nodeFromFile()
-    const call = spawnBuckle({ entry, args: ['call', 'fs_list', '--json', '{"path":"."}'], env, cwd: elsewhere })
-    running.push(call)
-    expect(await call.exited).toEqual({ code: 0, signal: null })
-    const [line] = warning(call.stderr())
-    expect(warning(call.stderr())).toHaveLength(1)
-    for (const part of [node.workspace, elsewhere, join(node.state, 'buckle.env'), 'BUCKLE_ENV_FILE', 'BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR', 'in the shell or the MCP config\'s env']) expect(line).toContain(part)
-    expect(call.stderr()).not.toContain('outside-root-agent-token')
-
-    // The spelling the skills teach agents runs a tool on the root just the same.
-    const verb = spawnBuckle({ entry, args: ['fs', 'list'], env, cwd: elsewhere })
-    running.push(verb)
-    expect(await verb.exited).toEqual({ code: 0, signal: null })
-    expect(warning(verb.stderr())).toEqual([line])
-
-    const mcp = spawnBuckle({ entry, args: ['mcp'], env, cwd: elsewhere, stdin: 'pipe' })
-    running.push(mcp)
-    await mcp.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')
-    mcp.child.stdin!.end()
-    expect(await mcp.exited).toEqual({ code: 0, signal: null })
-    expect(warning(mcp.stderr())).toHaveLength(1)
+    for (const args of [['call', 'fs_list', '--json', '{"path":"."}'], ['fs', 'list']]) {
+      const refused = spawnBuckle({ entry, args, env, cwd: elsewhere })
+      running.push(refused)
+      expect(await refused.exited).toEqual({ code: 1, signal: null })
+      expect(refused.stderr()).toContain('No workspace holds the current directory. Name one with --workspace <id> (default)')
+      expect(refused.stderr()).not.toContain(node.workspace)
+      expect(refused.stderr()).not.toContain('outside-root-agent-token')
+    }
+    const named = spawnBuckle({ entry, args: ['fs', 'list', '--workspace', 'default'], env, cwd: elsewhere })
+    running.push(named)
+    expect(await named.exited).toEqual({ code: 0, signal: null })
   }, 60_000)
 
-  it('stays quiet inside the root, when the process environment names the root or the file, and for other commands', async () => {
+  it('serves buckle mcp the workspace BUCKLE_WORKSPACE_ROOT names, and refuses it elsewhere once nothing names one', async () => {
     const { node, env, elsewhere } = await nodeFromFile()
-    const runs = [
-      spawnBuckle({ entry, args: ['call', 'fs_list', '--json', '{"path":"."}'], env, cwd: node.workspace }),
-      spawnBuckle({ entry, args: ['call', 'fs_list', '--json', '{"path":"."}'], env: { ...env, BUCKLE_WORKSPACE_ROOT: node.workspace }, cwd: elsewhere }),
-      spawnBuckle({ entry, args: ['call', 'fs_list', '--json', '{"path":"."}'], env: { ...env, BUCKLE_ENV_FILE: join(node.state, 'buckle.env') }, cwd: elsewhere }),
-      spawnBuckle({ entry, args: ['tools'], env, cwd: elsewhere }),
-    ]
-    running.push(...runs)
-    for (const run of runs) {
-      expect(await run.exited).toEqual({ code: 0, signal: null })
-      expect(warning(run.stderr())).toEqual([])
-    }
+    const legacy = spawnBuckle({ entry, args: ['mcp'], env, cwd: elsewhere, stdin: 'pipe' })
+    running.push(legacy)
+    await legacy.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')
+    legacy.child.stdin!.end()
+    expect(await legacy.exited).toEqual({ code: 0, signal: null })
+
+    writeFileSync(join(node.state, 'buckle.env'), 'BUCKLE_AUTH_TOKEN=outside-root-agent-token\n', { mode: 0o600 })
+    const refused = spawnBuckle({ entry, args: ['mcp'], env, cwd: elsewhere, stdin: 'pipe' })
+    running.push(refused)
+    expect(await refused.exited).toEqual({ code: 1, signal: null })
+    expect(refused.stderr()).toContain('No workspace holds the current directory')
   }, 60_000)
 })
 

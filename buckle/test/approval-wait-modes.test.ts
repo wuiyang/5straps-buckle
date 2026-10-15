@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
-import { loadConfig, parseApprovalTimeout } from '../common/runtime/config.js'
+import { parseApprovalTimeout } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
@@ -86,7 +87,7 @@ it.each([
 ] as const)('ends a waiting invocation on its caller\'s abort, never writes, and %s', async (_, cancel, pending) => {
   const root = directory()
   mkdirSync(join(root, 'workspace'))
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
   const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   const controller = new AbortController()
   const result = runtime.invoke({ sessionId: 'cancel-test', signal: controller.signal, ...(cancel ? { isCancel: () => true } : {}), request: { requestId: 'cancel-write', tool: 'fs_write', args: { path: 'probe.txt', content: 'must not land' }, approvalTokens: [] } })
@@ -141,7 +142,7 @@ it('offers native elicitation immediately even when the node waits until answere
 async function mcpFixture(nativePrompt = false, isCancel?: (reason: unknown) => boolean) {
   const root = directory()
   mkdirSync(join(root, 'workspace'))
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
   const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   const server = createMcpServer({ runtime, serverName: 'wait-test', version: '1', trustedApprovalResponses: nativePrompt, ...(isCancel ? { isCancel } : {}) })
   // The SDK does not expose handlers publicly; exercise its registered callback with a request context.

@@ -430,7 +430,7 @@ describe('destructive commands', () => {
   it('asks about node script.js, whose code Buckle cannot read as shell', () => {
     const outcome = evaluate([exec('node', ['script.js'])], { write_scope: ['/'] })
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
-    expect(outcome.asks[0]?.reason).toMatch(/^Runs code Buckle cannot read as shell, with an interpreter the policy does not allow \(unknown interpreter\): node \(allow it with buckle policy allow-interpreter node, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling\); asked rather than guessed at$/)
+    expect(outcome.asks[0]?.reason).toMatch(/^Runs code Buckle cannot read as shell, with an interpreter the policy does not allow \(unknown interpreter\): node \(allow it with buckle policy allow-interpreter node\); asked rather than guessed at$/)
   })
 
   it('gates a shell script that pipes a download into a shell', () => {

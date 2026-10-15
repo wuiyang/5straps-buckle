@@ -130,7 +130,7 @@ describe('the manifest an agent token reads', () => {
     expect(body).not.toContain('/opt/private-fixture')
     expect(reasons.broken).toBe('The plugin failed to load; the node\'s log has the error')
     expect(reasons.browser).toBe('BUCKLE_AGENT_BROWSER_COMMAND names a path that holds no program Buckle can run')
-    expect(reasons.shell).toContain('BUCKLE_ALLOW_SHELL=false')
+    expect(reasons.shell).toContain('packs.shell')
   })
 })
 

@@ -1,15 +1,14 @@
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
-import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, isWorkspaceToolAllowed, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
-import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
-import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
+import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
-import { compilePolicy, mergePolicies, PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
-import { actionsPath, policyPath, type BuckleConfig } from '../common/runtime/config.js'
+import { PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
 import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
-import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { scopeOf, withPolicy } from '../common/services/workspaces/workspace-settings.js'
+import type { CommandTarget } from './target.js'
 
 export interface CliResult {
   exitCode: number
@@ -17,8 +16,10 @@ export interface CliResult {
   detail?: string
 }
 
-const USAGE = `Usage:
-  buckle policy show [--json]                 The effective policy and where each part came from
+const USAGE = `Usage: buckle policy <action> [--workspace <id> | --dir <path>]
+Acts on the workspace named, or else on the one whose folder holds the current directory.
+
+  buckle policy show [--json]                 The workspace's policy
   buckle policy allow-command <glob>          Only matching command lines may run
   buckle policy deny-command <glob>           Matching command lines are refused; deny wins
   buckle policy destructive-command <glob>    Matching command lines ask first, once or per session
@@ -30,11 +31,10 @@ const USAGE = `Usage:
   buckle policy deny-tool <tool>              Refuse this tool outright, whatever its pack allows
   buckle policy allow-tool <tool>             Lift that refusal; a tool in a withheld pack stays withheld
   buckle policy remove <pattern>              Drop a pattern from every list
-  buckle policy import <file.json>            Replace the stored policy from a file
-  buckle policy export                        Print the stored policy as JSON
-  buckle policy clear                         Drop the stored policy, leaving the environment's
-  buckle policy dangerously-allow on|off [--workspace <id>]
-                                              DANGEROUS: allow every ask in the workspace without a
+  buckle policy import <file.json>            Replace the workspace's policy from a file
+  buckle policy export                        Print the workspace's policy as JSON
+  buckle policy clear                         Empty every list
+  buckle policy dangerously-allow on|off      DANGEROUS: allow every ask in the workspace without a
                                               person, sensitive files and file writes included, bound
                                               to the workspace root, or its mount when one is set;
                                               each use is audited, and deny rules still refuse
@@ -49,12 +49,12 @@ An allow glob must cover the whole line; a deny glob covers every line starting 
 `
 
 /**
- * Edits the stored policy for this workspace. Each change is validated as the union with the
- * environment's share before it is written, so a bad pattern never lands.
+ * Edits the policy of the workspace the command targets (D83 addendum (7)), in its workspace.json. Each change is
+ * compiled whole before it is written, so a bad pattern never lands.
  */
-export async function policyCommand(runtime: BuckleRuntime, argv: string[], workspaces: WorkspaceManager): Promise<CliResult> {
+export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
   const [action, ...rest] = argv
-  const current = (): WorkspacePolicy => runtime.policy.stored() ?? emptyWorkspacePolicy()
+  const current = (): WorkspacePolicy => runtime.policy.stored()
 
   try {
     refuseUnknownFlags(action, rest)
@@ -80,9 +80,11 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
       case 'allow-url':
         return await save(runtime, edit(current(), policy => policy.network.allow.push(required(rest[0], action))))
       case 'mount':
-        return await save(runtime, edit(current(), policy => { policy.mount = required(rest[0], action) }))
+        await runtime.policy.setMount(required(rest[0], action))
+        return show(runtime, [])
       case 'unmount':
-        return await save(runtime, edit(current(), policy => { policy.mount = null }))
+        await runtime.policy.setMount(null)
+        return show(runtime, [])
       case 'deny-tool':
         return await saveTool(runtime, action, toolName(rest[0], action), edit(current(), policy => denyTool(policy, toolName(rest[0], action))))
       case 'allow-tool':
@@ -91,7 +93,7 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
         const before = current()
         const next = remove(before, required(rest[0], action))
         const result = await save(runtime, next)
-        if (result.exitCode === 0 && opensNetwork(before, next, runtime.policy.base())) process.stdout.write(EMPTY_LIST_WARNING)
+        if (result.exitCode === 0 && opensNetwork(before, next)) process.stdout.write(EMPTY_LIST_WARNING)
         return result
       }
       case 'import': {
@@ -100,14 +102,14 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[], work
         return await save(runtime, WorkspacePolicySchema.parse(document))
       }
       case 'export':
-        return print(runtime.policy.stored() ?? emptyWorkspacePolicy())
+        return print(runtime.policy.stored())
       case 'clear':
         await runtime.policy.clear()
-        process.stdout.write('Stored policy cleared\n')
+        process.stdout.write(`Every list of workspace ${runtime.workspaceId} is empty\n`)
         if (runtime.policy.dangerouslyAllow().on) process.stdout.write('The dangerously-allow switch is apart from the policy and stays on: only `buckle policy dangerously-allow off` turns it off.\n')
         return { exitCode: 0 }
       case 'dangerously-allow':
-        return await dangerouslyAllow({ runtime, workspaces, argv: rest })
+        return await dangerouslyAllow({ runtime, argv: rest })
       case 'help':
       case '--help':
       case '-h':
@@ -133,40 +135,41 @@ function exitCodeOf(error: PolicyError | UsageError): number {
 }
 
 /**
- * The one switch for a workspace's dangerously-allow flags (rulings 11 and H1 of 2026-09-28), local
- * only (H1e). It needs no restart: a running node reads it at every call. A registered workspace's
- * switch takes effect only while the node's own is on too.
+ * The one switch for a workspace's dangerously-allow flag (rulings 11 and H1 of 2026-09-28), local only (H1e), for
+ * the workspace the command targets alone: no node switch stands beside it (Q14). It needs no restart: a running node
+ * reads it at every call.
  */
-async function dangerouslyAllow(input: { runtime: BuckleRuntime; workspaces: WorkspaceManager; argv: string[] }): Promise<CliResult> {
-  const { values, positionals } = parseArgs({ args: input.argv, options: { workspace: { type: 'string' } }, allowPositionals: true })
-  const [state] = positionals
-  if ((state !== 'on' && state !== 'off') || positionals.length !== 1) throw new UsageError(`buckle policy dangerously-allow takes on or off\n${USAGE}`)
-  const target = !values.workspace || values.workspace === 'default' ? input.runtime : (await input.workspaces.resolve(values.workspace, { setup: true })).runtime
+async function dangerouslyAllow(input: { runtime: BuckleRuntime; argv: string[] }): Promise<CliResult> {
+  const [state, ...extra] = input.argv
+  if ((state !== 'on' && state !== 'off') || extra.length > 0) throw new UsageError(`buckle policy dangerously-allow takes on or off\n${USAGE}`)
+  const target = input.runtime
   await target.policy.setDangerouslyAllow(state === 'on')
   const now = target.policy.dangerouslyAllow()
   if (!now.on) process.stdout.write(`Dangerously allow is off for workspace ${target.workspaceId}: asks wait for a person again.\n`)
-  else {
-    process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceId}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited as policy_dangerously_allowed; deny rules and the node's own policy still refuse.\n`)
-    if (now.allowedByNode === false) process.stdout.write('It has no effect until the node\'s own switch is on too: buckle policy dangerously-allow on\n')
-  }
-  return { exitCode: 0, detail: `dangerously-allow ${state}${values.workspace ? ` ${values.workspace}` : ''}` }
+  else process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceId}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited as policy_dangerously_allowed; deny rules still refuse.\n`)
+  return { exitCode: 0, detail: `dangerously-allow ${state} ${target.workspaceId}` }
 }
 
 /**
- * For a stored policy the node cannot load: `show`, `export`, `remove` and `clear` work on the
- * store alone, so the owner can repair it with `buckle policy`. Every other action refuses.
+ * For a workspace whose stored policy will not load: `show`, `export`, `remove` and `clear` work on its workspace.json
+ * alone, so the owner can repair it with `buckle policy`. Every other action refuses. Audited in the node's log.
  */
-export function repairStoredPolicy(input: { config: BuckleConfig; argv: string[]; failure: StoredPolicyError }): Promise<CliResult> {
+export function repairStoredPolicy(input: { workspaces: WorkspaceManager; target: CommandTarget; cwd: string; argv: string[]; failure: StoredPolicyError }): Promise<CliResult> {
+  let id: string
+  try { id = input.workspaces.target({ ...input.target, cwd: input.cwd }) } catch (error) {
+    if (error instanceof WorkspaceError) return Promise.resolve(failed(error.message))
+    throw error
+  }
   return auditOperation({
-    actions: createFileActionLog(actionsPath(input.config)), workspaceId: 'default', tool: 'cli_policy', sessionId: 'local-owner',
-    isSuccessful: result => result.exitCode === 0, operation: () => repairStoredPolicyAction(input),
+    actions: input.workspaces.nodeActions, workspaceId: id, tool: 'cli_policy', sessionId: 'local-owner',
+    isSuccessful: result => result.exitCode === 0, operation: () => repairStoredPolicyAction({ ...input, id }),
   })
 }
 
-async function repairStoredPolicyAction(input: { config: BuckleConfig; argv: string[]; failure: StoredPolicyError }): Promise<CliResult> {
-  const { config, failure } = input
-  const store = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd })
-  const stored = store.read() ?? emptyWorkspacePolicy()
+async function repairStoredPolicyAction(input: { workspaces: WorkspaceManager; id: string; argv: string[]; failure: StoredPolicyError }): Promise<CliResult> {
+  const { workspaces, id, failure } = input
+  const settings = workspaces.settings(id)
+  const stored: WorkspacePolicy = { ...settings.policy, mount: scopeOf(settings).mount }
   const [action, ...rest] = input.argv
   try {
     refuseUnknownFlags(action, rest)
@@ -174,15 +177,14 @@ async function repairStoredPolicyAction(input: { config: BuckleConfig; argv: str
     switch (action) {
       case 'remove': {
         const next = remove(stored, required(rest[0], action))
-        compilePolicy(mergePolicies(config.policy, next))
-        await store.write({ ...next, updatedAt: new Date().toISOString() })
-        process.stdout.write('Stored policy repaired; the node loads it again.\n')
-        if (opensNetwork(stored, next, config.policy)) process.stdout.write(EMPTY_LIST_WARNING)
+        await workspaces.updateSettings(id, current => withPolicy(current, { ...next, updatedAt: new Date().toISOString() }))
+        process.stdout.write('Stored policy repaired; the workspace loads it again.\n')
+        if (opensNetwork(stored, next)) process.stdout.write(EMPTY_LIST_WARNING)
         return { exitCode: 0 }
       }
       case 'clear':
-        await store.update(() => null)
-        process.stdout.write('Stored policy cleared\n')
+        await workspaces.updateSettings(id, current => withPolicy(current, { ...emptyWorkspacePolicy(), mount: stored.mount, updatedAt: new Date().toISOString() }))
+        process.stdout.write(`Every list of workspace ${id} is empty\n`)
         return { exitCode: 0 }
       case 'export':
         return print(stored)
@@ -208,11 +210,10 @@ const EMPTY_LIST_WARNING = 'The approved list is now empty, which is no list: th
 
 /**
  * A stored approved list and an absent one read the same when empty: no list, so the network rule
- * falls back to its defaults. Emptying a list that reached nothing therefore opens the node,
- * unless the environment still names entries of its own.
+ * falls back to its defaults. Emptying a list that reached nothing therefore opens the workspace.
  */
-function opensNetwork(before: WorkspacePolicy, after: WorkspacePolicy, environment: WorkspacePolicy): boolean {
-  return before.network.allow.length > 0 && after.network.allow.length === 0 && environment.network.allow.length === 0
+function opensNetwork(before: WorkspacePolicy, after: WorkspacePolicy): boolean {
+  return before.network.allow.length > 0 && after.network.allow.length === 0
 }
 
 class UsageError extends Error {}
@@ -224,7 +225,7 @@ const FLAGLESS_ACTIONS = new Set([
 ])
 
 /** The actions that parse flags of their own, with the flags each one knows. */
-const OWN_FLAGS = new Map<string, readonly string[]>([['show', ['--json']], ['dangerously-allow', ['--workspace']]])
+const OWN_FLAGS = new Map<string, readonly string[]>([['show', ['--json']]])
 
 /** The actions that take exactly one argument. */
 const ONE_ARGUMENT_ACTIONS = new Set([
@@ -233,17 +234,16 @@ const ONE_ARGUMENT_ACTIONS = new Set([
 ])
 
 /**
- * Refuses a flag an action does not know rather than ignoring it: `allow-command 'git *' --workspace child` would
- * otherwise edit the node's own workspace and exit 0, as if it had changed the one the flag names.
+ * Refuses a flag an action does not know rather than ignoring it: a mistyped `--workspce child` would otherwise be
+ * stored as a pattern, or dropped, and the command exit 0 as if it had done what was typed.
  */
 function refuseUnknownFlags(action: string | undefined, args: readonly string[]): void {
   if (action === undefined) return
   const known = OWN_FLAGS.get(action)
-  if (known === undefined && !FLAGLESS_ACTIONS.has(action)) return
+  if (known === undefined && !FLAGLESS_ACTIONS.has(action) && action !== 'dangerously-allow') return
   const flag = args.find(word => word.length > 1 && word.startsWith('-') && !known?.includes(word.split('=')[0] ?? word))
   if (flag === undefined) return
-  const scope = known === undefined ? '; it edits the node\'s own workspace only' : ''
-  throw new UsageError(`buckle policy ${action} does not know the flag ${flag}${scope}\n${USAGE}`)
+  throw new UsageError(`buckle policy ${action} does not know the flag ${flag}\n${USAGE}`)
 }
 
 /**
@@ -307,16 +307,13 @@ function allowTool(policy: WorkspacePolicy, tool: string): void {
 
 /**
  * Saves a per-tool switch, then says what still decides the tool: the pack gates run first, so
- * `allow-tool` never brings back a tool its pack withholds, and the node's own policy over a
- * registered workspace can still refuse it.
+ * `allow-tool` never brings back a tool its pack withholds.
  */
 async function saveTool(runtime: BuckleRuntime, action: string, tool: string, policy: WorkspacePolicy): Promise<CliResult> {
   const result = await save(runtime, policy)
   const pack = runtime.manifest().packs.find(candidate => candidate.toolNames.includes(tool))
   if (!pack) process.stdout.write(`\n${tool} is not a tool on this node now; the switch is stored and applies if a pack brings it.\n`)
   else if (pack.unavailableReason) process.stdout.write(`\n${tool} stays unavailable: its pack ${pack.id} is withheld. ${pack.unavailableReason}\n`)
-  const ceiling = runtime.policy.ceiling()
-  if (ceiling && !isWorkspaceToolAllowed(ceiling, tool)) process.stdout.write(`\n${tool} stays refused by the node's own tool policy over this workspace.\n`)
   return { ...result, detail: `${action} ${tool}` }
 }
 
@@ -328,33 +325,26 @@ async function save(runtime: BuckleRuntime, policy: WorkspacePolicy): Promise<Cl
 function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   const { values } = parseArgs({ args: argv, options: { json: { type: 'boolean' } }, allowPositionals: false })
   const effective = runtime.policy.effective()
-  const base = runtime.policy.base()
-  const stored = runtime.policy.stored()
   const dangerously = runtime.policy.dangerouslyAllow()
-  if (values.json) return print({ effective, base, stored, dangerouslyAllow: dangerously })
+  if (values.json) return print({ workspaceId: runtime.workspaceId, effective, dangerouslyAllow: dangerously })
 
-  const origin = (list: (policy: WorkspacePolicy) => string[], item: string): string => {
-    const fromBase = list(base).includes(item)
-    const fromStored = stored ? list(stored).includes(item) : false
-    return fromBase && fromStored ? 'env+stored' : fromBase ? 'env' : 'stored'
-  }
-  const section = (title: string, items: string[], list: (policy: WorkspacePolicy) => string[]): void => {
+  const section = (title: string, items: string[]): void => {
     process.stdout.write(`${title}\n`)
     if (items.length === 0) process.stdout.write('  (none)\n')
-    for (const item of items) process.stdout.write(`  ${item.padEnd(48)} ${origin(list, item)}\n`)
+    for (const item of items) process.stdout.write(`  ${item}\n`)
   }
 
-  process.stdout.write(`Workspace ${runtime.paths().root}\n`)
+  process.stdout.write(`Workspace ${runtime.workspaceId} at ${runtime.paths().root}\n`)
   process.stdout.write(`Mount     ${effective.mount ?? '(none: the real path shows through)'}\n`)
   process.stdout.write(`Dangerously allow  ${describeDangerously(dangerously)}\n\n`)
-  section('Command allow list (only these may run)', effective.commands.allow, policy => policy.commands.allow)
-  section('Command deny list (refused outright)', effective.commands.deny, policy => policy.commands.deny)
-  section('Destructive additions (these ask, on top of the built-in floor)', destructivePatterns(effective), destructivePatterns)
-  section('Allowed interpreters (read as ordinary commands; any other runs unknown code)', allowedInterpreters(effective), allowedInterpreters)
-  section('Approved hosts and URLs (only these may be reached)', effective.network.allow, policy => policy.network.allow)
-  section('Denied tools (refused outright, whatever the pack allows)', effective.tools?.deny ?? [], policy => policy.tools?.deny ?? [])
-  if (effective.tools?.allow !== undefined) section('Tool allow list (only these tools may run)', effective.tools.allow, policy => policy.tools?.allow ?? [])
-  process.stdout.write(`\nStored ${stored?.updatedAt ? `at ${stored.updatedAt}` : 'nothing'}; environment and stored parts are unioned.\n`)
+  section('Command allow list (only these may run)', effective.commands.allow)
+  section('Command deny list (refused outright)', effective.commands.deny)
+  section('Destructive additions (these ask, on top of the built-in floor)', destructivePatterns(effective))
+  section('Allowed interpreters (read as ordinary commands; any other runs unknown code)', allowedInterpreters(effective))
+  section('Approved hosts and URLs (only these may be reached)', effective.network.allow)
+  section('Denied tools (refused outright, whatever the pack allows)', effective.tools?.deny ?? [])
+  if (effective.tools?.allow !== undefined) section('Tool allow list (only these tools may run)', effective.tools.allow)
+  process.stdout.write(`\nStored ${effective.updatedAt ? `at ${effective.updatedAt}` : 'nothing yet'} in the workspace's settings.\n`)
   return { exitCode: 0 }
 }
 
@@ -364,9 +354,13 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
  */
 const DANGEROUSLY_ALLOW_COVERS = 'Every ask about a path inside it, and every command, host and process ask, is allowed without a person, sensitive files and file writes included. Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
 
-function describeDangerously(state: { on: boolean; allowedByNode: boolean | null; effective: boolean; boundTo: string }): string {
-  if (!state.on) return 'off'
-  return state.effective ? `ON, ${DANGEROUSLY_ALLOW_SCOPE} (${state.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited.` : 'on, without effect: the node\'s own switch is off'
+function describeDangerously(state: { on: boolean; boundTo: string }): string {
+  return state.on ? `ON, ${DANGEROUSLY_ALLOW_SCOPE} (${state.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited.` : 'off'
+}
+
+function failed(message: string): CliResult {
+  process.stderr.write(`${message}\n`)
+  return { exitCode: 1 }
 }
 
 function print(value: unknown): CliResult {

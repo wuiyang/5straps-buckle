@@ -14,15 +14,14 @@ import { existsSync, realpathSync } from 'node:fs'
 import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
-import { PROTOCOL_VERSION, isWorkspaceToolAllowed, type HarnessManifest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
+import { PROTOCOL_VERSION, emptyWorkspacePolicy, isWorkspaceToolAllowed, type HarnessManifest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { createPluginRegistry, type PluginRegistry } from '../../adapters/plugin-registry.js'
 import { createFileGrantStore } from '../../adapters/grant-store/file-grant-store.js'
-import { createFilePolicyStore } from '../../adapters/policy-store/file-policy-store.js'
 import { runProcess } from '../../adapters/process-runner.js'
 import { createWebhookReporter } from '../../adapters/report/webhook-reporter.js'
 import { resolveSandbox, type SandboxResolution } from '../../adapters/sandbox/create-sandbox.js'
-import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, pluginsPath, policyPath, type BuckleConfig } from '../../runtime/config.js'
+import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, NODE_FOLDER_WORKSPACE, pluginsPath, type BuckleConfig } from '../../runtime/config.js'
 import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
@@ -35,12 +34,12 @@ import { createProcessProbeRule } from '../../domain/permission/rules/process-pr
 import { createReadScopeRule } from '../../domain/permission/rules/read-scope-rule.js'
 import { createSensitivePathRule } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from '../../domain/permission/rules/write-scope-rule.js'
-import { compilePolicy, mergePolicies, policyRevision, PolicyConflictError, PolicyError, StoredPolicyError, type CompiledPolicy } from '../../domain/policy.js'
+import { compilePolicy, policyRevision, PolicyConflictError, PolicyError, StoredPolicyError, type CompiledPolicy } from '../../domain/policy.js'
 import { withDangerouslyAllow } from '../../domain/permission/rules/dangerously-allow.js'
 import { loadSkills } from '../../domain/skill-registry.js'
 import { toDescriptor, type LoadedSkill } from '../../domain/skill.js'
 import { createToolRegistry, type ToolRegistry } from '../../domain/tool-registry.js'
-import { intersectUrlMatchers, type UrlMatcher } from '../../domain/url-pattern.js'
+import type { UrlMatcher } from '../../domain/url-pattern.js'
 import type { PermissionRule } from '../../domain/permission/decision.js'
 import { workspaceStateKey } from '../../domain/workspace-key.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
@@ -61,34 +60,35 @@ import { logger } from '../../runtime/log.js'
 import { auditOperation } from '../audit/audit-operation.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
+import { openSettingsFile, settingsPath, scopeOf, withPolicy, WorkspaceSettingsSchema, type WorkspaceSettings } from './workspace-settings.js'
 
 /**
- * The owner's policy as the runtime holds it. `base` came from the environment, or for a registered
- * workspace from its registration; `stored` from `buckle policy` or a push through setup. A stored
- * policy replaces a registered workspace's registration policy until it is cleared; the node's own
- * policy over it always applies. The default workspace merges both. The dangerously-allow switch is
- * stored apart and never touches either (review H1 of B20-B22).
+ * The workspace's policy as the runtime holds it: one document, in its workspace.json, which `buckle policy` and the
+ * setup face write (D83 addendum (7)); no node policy sits over it (Q14). `mount` is where its mount table shows the
+ * folder. The dangerously-allow switch is stored apart and never touches it (review H1 of B20-B22).
  */
 export interface PolicyHandle {
-  base(): WorkspacePolicy
-  stored(): WorkspacePolicy | null
+  /** The policy as workspace.json holds it, read now. */
+  stored(): WorkspacePolicy
   effective(): WorkspacePolicy
-  /** The node's own policy over a registered workspace, which every call also meets. Null on the node's workspace. */
-  ceiling(): WorkspacePolicy | null
   /** A fresh egress rule and approved list, built by the same construction the engine and packs use, for `buckle check-url`. */
   network(): { rule: PermissionRule; approved: UrlMatcher | null }
-  /** Validates against the base, stores, and rebuilds the rules and packs. Throws PolicyError. */
   revision(): string
-  apply(policy: WorkspacePolicy, expectedRevision?: string): Promise<WorkspacePolicy>
-  /** Drops the stored policy, leaving the environment's, or a registered workspace's registration policy. The switch is left as it is. */
-  clear(expectedRevision?: string): Promise<WorkspacePolicy>
   /**
-   * The dangerously-allow switch as stored now, read from the store at every call, so the local
-   * switch applies in a running node at once: `on`, whether the node's own switch allows it over a
-   * registered workspace (null on the node's workspace), whether calls here are allowed by it, and
-   * the root it is bound to, as the agent names it (owner decision D7).
+   * Validates, stores, and rebuilds the rules and packs. Where the folder shows is not the policy's to change: `mount`
+   * keeps the mount table's, which `setMount` alone changes, from the owner's CLI. Throws PolicyError.
    */
-  dangerouslyAllow(): { on: boolean; allowedByNode: boolean | null; effective: boolean; boundTo: string }
+  apply(policy: WorkspacePolicy, expectedRevision?: string): Promise<WorkspacePolicy>
+  /** Empties every list, keeping where the folder shows. The switch is left as it is. */
+  clear(expectedRevision?: string): Promise<WorkspacePolicy>
+  /** Where the agent sees the folder; null shows the real path. The owner's `buckle policy mount|unmount` alone calls it. */
+  setMount(mount: string | null): Promise<WorkspacePolicy>
+  /**
+   * The dangerously-allow switch as stored now, read from the store at every call, so the local switch applies in a
+   * running node at once: `on`, and the root it is bound to, as the agent names it (owner decision D7). It needs no
+   * node switch beside it (Q14).
+   */
+  dangerouslyAllow(): { on: boolean; boundTo: string }
   /** The one switch, for the owner's local CLI only (ruling H1e), audited `policy_dangerously_allow_changed`. Writes nothing the policy is read from. */
   setDangerouslyAllow(on: boolean): Promise<void>
 }
@@ -143,8 +143,6 @@ interface RuntimeInput {
   auditHealth?: AuditHealth
   /** The node's budget for kept responses, shared with its other workspaces; a fresh one when absent. */
   executionBudget?: ExecutionBudget
-  /** For a registered workspace: whether the node's own dangerously-allow switch is on, the ceiling it needs too. */
-  nodeDangerouslyAllowed?: () => boolean
   /** For a registered workspace: whether it serves calls now (enabled, not retired); its log's failures count toward readiness only then. */
   serving?: () => boolean
   /** Every root the node knows, where no program run here may come from (NodeRoots); this workspace's own alone when absent. */
@@ -153,13 +151,12 @@ interface RuntimeInput {
 
 export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime> {
   const { config } = input
-  const ceiling = config.nodePolicy ? compilePolicy(config.nodePolicy) : null
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
-  const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? 'default'}` })
+  const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? NODE_FOLDER_WORKSPACE}` })
   let closeApprovals: (() => Promise<void>) | undefined
   try {
-    return await assembleRuntime({ ...input, ceiling, history, onApprovalCleanup: close => { closeApprovals = close } })
+    return await assembleRuntime({ ...input, history, onApprovalCleanup: close => { closeApprovals = close } })
   } catch (error) {
     // No close step owns the connection until the runtime exists (runtime.md: clean up after partial initialization).
     try { await closeApprovals?.() } finally { await history.close() }
@@ -167,8 +164,8 @@ export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime>
   }
 }
 
-async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy | null; history: ChangeHistory; onApprovalCleanup: (close: () => Promise<void>) => void }): Promise<BuckleRuntime> {
-  const { config, ceiling, history } = input
+async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; onApprovalCleanup: (close: () => Promise<void>) => void }): Promise<BuckleRuntime> {
+  const { config, history } = input
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
 
@@ -182,8 +179,9 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   })
 
   const lockDeadlineMs = config.stateLockDeadlineMs
-  const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd, lockDeadlineMs })
-  const workspaceId = input.workspaceId ?? 'default'
+  const workspaceId = input.workspaceId ?? NODE_FOLDER_WORKSPACE
+  // Keyed by the workspace's id, so they stay its own whatever its folder is called.
+  const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: workspaceId, lockDeadlineMs })
   // Every notification names its workspace, whose `buckle approve --workspace` answers it.
   const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
   let notices: ApprovalNotices | undefined
@@ -196,7 +194,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const noticeOwner = notices
   input.onApprovalCleanup(() => noticeOwner.settle())
   const auditHealth = input.auditHealth ?? createAuditHealth()
-  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId: input.workspaceId ?? 'default', ...(input.serving ? { serving: input.serving } : {}) })
+  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId, ...(input.serving ? { serving: input.serving } : {}) })
   await actions.recoverInterrupted()
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
@@ -207,8 +205,9 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
   })
   input.onApprovalCleanup(() => approvalService.close())
-  const policyStore = createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd, lockDeadlineMs })
-  const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: config.cwd, lockDeadlineMs })
+  // The settings `buckle workspace` writes; until one does, the ones this runtime was built from.
+  const settingsFile = openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), fallback: () => settingsOf(config), lockDeadlineMs })
+  const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: workspaceId, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
     : nullReporter)
@@ -227,15 +226,14 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   const dangerouslyAllow = () => {
     let on = false
     try { on = switchStore.isOn() } catch { on = false }
-    const allowedByNode = input.nodeDangerouslyAllowed ? input.nodeDangerouslyAllowed() : null
-    return { on, allowedByNode, effective: on && allowedByNode !== false, boundTo: paths.displayRoot }
+    return { on, boundTo: paths.displayRoot }
   }
-  const dangerouslyAllowed = () => dangerouslyAllow().effective
-  let permissions = buildPermissionEngine({ config, compiled, ceiling, paths, dangerouslyAllowed })
+  const dangerouslyAllowed = () => dangerouslyAllow().on
+  let permissions = buildPermissionEngine({ config, compiled, paths, dangerouslyAllowed })
   // What a code mode script reaches: this workspace's manifest as it stands at each call, after tool policy (owner
   // decision D82, point 3), and never another workspace's (BUCKLE-D07: a token opens one workspace).
   const manifestTools = (): ToolCapability[] => registry.capabilities().filter(tool => toolDenial(tool.name) === null)
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
@@ -249,23 +247,23 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
     protectedRoots: protectedStateRoots(config), actions, history,
     ripgrep: () => programOrNull(resolveProgram('rg', untrusted())), environment: hostEnvironment(untrusted), spawnPty: spawnPtyProcess,
-    policyHash: () => workbenchHash(JSON.stringify([compiled.policy, ceiling?.policy ?? null])),
+    policyHash: () => workbenchHash(JSON.stringify(compiled.policy)),
     authorizeTool: tool => toolDenial(tool) === null,
-    authorizePath: (path, operation) => !['deny', 'ask'].includes(resolveFilesystemPermission({ path, operation, policy: compiled.policy, ceiling: ceiling?.policy })),
+    authorizePath: (path, operation) => !['deny', 'ask'].includes(resolveFilesystemPermission({ path, operation, policy: compiled.policy })),
     async prepareTerminal(request) {
       const denial = toolDenial('shell_exec')
       if (denial) throw new WorkbenchError(denial, 403)
       if (!config.enableShell || config.enabledPacks && !config.enabledPacks.includes('shell') || sandbox.sandbox.mode !== 'bubblewrap') throw new WorkbenchError('Interactive terminals require an enabled bubblewrap sandbox', 403)
-      const policies = [compiled.policy, ...(ceiling ? [ceiling.policy] : [])]
-      if (policies.some(policy => policy.commands.allow.length || policy.commands.deny.length || policy.commands.destructive?.length)) throw new WorkbenchError('Interactive shells cannot enforce command allowlists, denylists or command approval rules', 403)
+      const { commands } = compiled.policy
+      if (commands.allow.length || commands.deny.length || commands.destructive?.length) throw new WorkbenchError('Interactive shells cannot enforce command allowlists, denylists or command approval rules', 403)
       const mounts = validateSandboxMounts(config.sandboxMounts ?? [], { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' })
       const signal = AbortSignal.timeout(15_000)
-      const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, ceiling: ceiling?.policy, signal })
+      const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, signal })
       const hidden = await collectShellHiddenPaths({ roots: [request.root, ...config.mountReadOnlyPaths], protectedPaths: [], signal })
       if (projection.hiddenPaths.some(path => isInside(path, request.cwd))) throw new WorkbenchError('Filesystem restrictions hide this terminal working directory', 403)
       const wrapped = sandbox.sandbox.wrap({ command: 'bash', args: ['--noprofile', '--norc', '-i'], cwd: request.cwd,
         workspaceRoot: request.root, writableRoots: [request.root], mount: { root: request.root, at: '/workspace' }, commandIsPid1: true,
-        allowNetwork: config.shellNetwork && !policies.some(policy => policy.network.allow.length) && config.allowedHosts.length === 0,
+        allowNetwork: config.shellNetwork && !compiled.policy.network.allow.length && config.allowedHosts.length === 0,
         hiddenPaths: [...hidden.directories, ...projection.hiddenPaths], hiddenFiles: [...hidden.files, ...projection.hiddenFiles],
         mounts, readOnlyPaths: config.mountReadOnlyPaths, readOnlyWorkspacePaths: projection.readOnlyWorkspacePaths,
       })
@@ -299,22 +297,26 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     reporter,
 
     policy: {
-      base: () => config.policy,
-      stored: () => policyStore.read(),
+      stored: () => storedPolicy(settingsFile.read()),
       effective: () => compiled.policy,
-      ceiling: () => ceiling?.policy ?? null,
-      network: () => ({ rule: networkEgressRule(compiled, ceiling), approved: approvedUrls(compiled, ceiling) }),
-      revision: () => policyRevision(policyStore.read()),
+      network: () => ({ rule: networkEgressRule(compiled), approved: compiled.network }),
+      revision: () => policyRevision(storedPolicy(settingsFile.read())),
       async apply(policy, expectedRevision) {
         if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
-        compileEffective(policy)
-        await policyStore.write({ ...policy, updatedAt: new Date().toISOString() }, expectedRevision)
+        compilePolicy(policy)
+        await writePolicy(current => ({ ...policy, mount: current.mount, updatedAt: new Date().toISOString() }), expectedRevision)
+        await runtime.reload()
+        return compiled.policy
+      },
+      async setMount(mount) {
+        if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
+        await writePolicy(current => compilePolicy({ ...current, mount, updatedAt: new Date().toISOString() }).policy)
         await runtime.reload()
         return compiled.policy
       },
       async clear(expectedRevision) {
         if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
-        await policyStore.update(() => null, expectedRevision)
+        await writePolicy(current => ({ ...emptyWorkspacePolicy(), mount: current.mount, updatedAt: new Date().toISOString() }), expectedRevision)
         await runtime.reload()
         return compiled.policy
       },
@@ -375,8 +377,8 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
       await workbenches.policyChanged()
       compiled = compileEffective()
       paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
-      permissions = buildPermissionEngine({ config, compiled, ceiling, paths, dangerouslyAllowed })
-      packs = await buildPacks({ config, sandbox, plugins, compiled, ceiling, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
+      permissions = buildPermissionEngine({ config, compiled, paths, dangerouslyAllowed })
+      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
       registry = createToolRegistry(availableTools(packs))
       for (const listener of listeners) listener()
     },
@@ -384,22 +386,27 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
     onToolsChanged: listener => void listeners.push(listener),
   }
 
-  // Blames the stored policy only when the environment's share loads on its own.
+  // A stored entry a later grammar refuses names the file and the repair (StoredPolicyError).
   function compileStartupPolicy(): CompiledPolicy {
     try {
       return compileEffective()
     } catch (error) {
-      const stored = policyStore.read()
-      if (!(error instanceof PolicyError) || !stored || !compilesAlone(config.policy)) throw error
-      throw new StoredPolicyError({ file: policyPath(config), reason: error.message, stored, environment: config.policy })
+      if (!(error instanceof PolicyError)) throw error
+      throw new StoredPolicyError({ file: settingsFile.filePath, reason: error.message, stored: storedPolicy(settingsFile.read()) })
     }
   }
 
-  function compileEffective(stored = policyStore.read()): CompiledPolicy {
-    const policy = ceiling
-      ? { ...(stored ?? config.policy), mount: config.policy.mount }
-      : mergePolicies(config.policy, stored)
-    return compilePolicy(policy)
+  function compileEffective(): CompiledPolicy {
+    return compilePolicy(storedPolicy(settingsFile.read()))
+  }
+
+  /** The policy write path: through workspace.json, refused when the policy changed since `expectedRevision`. */
+  async function writePolicy(change: (current: WorkspacePolicy) => WorkspacePolicy, expectedRevision?: string): Promise<void> {
+    await settingsFile.update((current) => {
+      const policy = storedPolicy(current)
+      if (expectedRevision !== undefined && policyRevision(policy) !== expectedRevision) throw new PolicyConflictError('Workspace policy changed; reload before saving')
+      return withPolicy(current, change(policy))
+    })
   }
 
   function allSkills(): LoadedSkill[] {
@@ -407,9 +414,7 @@ async function assembleRuntime(input: RuntimeInput & { ceiling: CompiledPolicy |
   }
 
   function toolDenial(tool: string): string | null {
-    if (ceiling && !isWorkspaceToolAllowed(ceiling.policy, tool)) return 'Disabled by node tool policy'
-    if (!isWorkspaceToolAllowed(compiled.policy, tool)) return 'Disabled by workspace tool policy'
-    return null
+    return isWorkspaceToolAllowed(compiled.policy, tool) ? null : 'Disabled by workspace tool policy'
   }
 
   return runtime
@@ -420,7 +425,6 @@ async function buildPacks(input: {
   sandbox: SandboxResolution
   plugins: PluginRegistry
   compiled: CompiledPolicy
-  ceiling: CompiledPolicy | null
   paths: PathView
   browserStateDirectory: string
   history: ChangeHistory
@@ -438,11 +442,8 @@ async function buildPacks(input: {
     hiddenPaths: protectedStateRoots(input.config),
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
     sandboxMounts: input.config.sandboxMounts,
-    approvedUrls: approvedUrls(input.compiled, input.ceiling),
-    approvedLists: [
-      ...(input.ceiling?.network ? [{ name: 'node' as const, entries: input.ceiling.network.patterns }] : []),
-      ...(input.compiled.network ? [{ name: 'workspace' as const, entries: input.compiled.network.patterns }] : []),
-    ],
+    approvedUrls: input.compiled.network,
+    approvedLists: input.compiled.network ? [{ name: 'workspace' as const, entries: input.compiled.network.patterns }] : [],
     braveSearchApiKey: input.config.braveSearchApiKey,
     forge: { token: input.config.forgeGithubToken, apiUrl: input.config.forgeApiUrl, author: input.config.forgeGitAuthor },
     stateDirectory: input.config.stateDirectory,
@@ -461,7 +462,7 @@ async function buildPacks(input: {
     allowHostGit: input.config.allowHostGit,
     allowHostLsp: input.config.allowHostLsp,
     shellNetwork: input.config.shellNetwork,
-    filesystemPolicy: { policy: input.compiled.policy, ceiling: input.ceiling?.policy },
+    filesystemPolicy: { policy: input.compiled.policy },
     shellIsolation: input.config.isolateShell ? { directory: join(input.config.stateDirectory, 'isolated-shell', workspaceStateKey(input.config.cwd)), maxBytes: input.config.isolationMaxBytes, history: input.history } : undefined,
     environmentValidator: input.config.environmentValidator,
   })
@@ -470,42 +471,32 @@ async function buildPacks(input: {
     const unknown = selected.filter(id => !builtin.some(pack => pack.id === id))
     if (unknown.length) {
       const named = unknown.map(id => { const reason = unmetPackPrerequisite(id, input.config); return reason ? `${id} (${reason})` : id })
-      throw new Error(`Unknown BUCKLE_PACKS: ${named.join(', ')}`)
+      throw new Error(`The workspace's packs.enabled names packs this node cannot build: ${named.join(', ')}`)
     }
     return builtin.filter(pack => selected.includes(pack.id))
   }
-  const filesystemRestricted = Boolean(input.compiled.policy.filesystem?.rules.length || input.ceiling?.policy.filesystem?.rules.length)
+  const filesystemRestricted = Boolean(input.compiled.policy.filesystem?.rules.length)
   return [...builtin, ...(filesystemRestricted ? [] : await input.plugins.load())]
 }
 
-function compilesAlone(policy: WorkspacePolicy): boolean {
-  try {
-    compilePolicy(policy)
-    return true
-  } catch {
-    return false
-  }
+/** The policy a workspace.json holds, with its mount table's target as `mount`. */
+function storedPolicy(settings: WorkspaceSettings): WorkspacePolicy {
+  return { ...settings.policy, mount: scopeOf(settings).mount }
 }
 
-/**
- * A registered workspace's policy with its allowed interpreters cut to those the node ceiling allows too, so a workspace
- * never reads as ordinary an interpreter the ceiling reads as unknown, at its own deny list or at the floor: a
- * workspace never exceeds the node ceiling, whose list is BUCKLE_ALLOWED_INTERPRETERS (docs/dev/architecture.md,
- * Interpreters).
- */
-function withinCeiling(compiled: CompiledPolicy, ceiling: CompiledPolicy): CompiledPolicy {
-  const allowedInterpreters = new Set([...compiled.commands.allowedInterpreters].filter(name => ceiling.commands.allowedInterpreters.has(name)))
-  return { ...compiled, commands: { ...compiled.commands, allowedInterpreters } }
-}
-
-/** The approved list every call meets: the node's over a registered workspace, then the workspace's own. */
-function approvedUrls(compiled: CompiledPolicy, ceiling: CompiledPolicy | null): UrlMatcher | null {
-  return intersectUrlMatchers(ceiling?.network, compiled.network)
+/** The settings a runtime built without a workspace.json stands on: those its configuration was composed from. */
+function settingsOf(config: BuckleConfig): WorkspaceSettings {
+  return WorkspaceSettingsSchema.parse({
+    ...withPolicy(WorkspaceSettingsSchema.parse({ version: 1 }), config.policy),
+    packs: { enabled: config.enabledPacks ?? null, shell: config.enableShell, code: config.allowCode, hostGit: config.allowHostGit, hostLsp: config.allowHostLsp },
+    browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded },
+    approvalWaitMs: config.approvalTimeoutMs ?? 0,
+  })
 }
 
 /** One construction for the engine and `buckle check-url`, so the check cannot drift from the rule. */
-function networkEgressRule(compiled: CompiledPolicy, ceiling: CompiledPolicy | null): PermissionRule {
-  return createNetworkEgressRule({ approved: approvedUrls(compiled, ceiling) })
+function networkEgressRule(compiled: CompiledPolicy): PermissionRule {
+  return createNetworkEgressRule({ approved: compiled.network })
 }
 
 /**
@@ -513,19 +504,17 @@ function networkEgressRule(compiled: CompiledPolicy, ceiling: CompiledPolicy | n
  * can never unlock a credential file or a destructive command inside it. The owner's command
  * policy sits first among the floors, because its answer is a denial rather than a question.
  */
-function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; ceiling: CompiledPolicy | null; paths: PathView; dangerouslyAllowed: () => boolean }): PermissionEngine {
-  const { config, compiled, ceiling, paths } = input
-  const commands = ceiling ? withinCeiling(compiled, ceiling) : compiled
+function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; paths: PathView; dangerouslyAllowed: () => boolean }): PermissionEngine {
+  const { config, compiled, paths } = input
   return withDangerouslyAllow(createPermissionEngine([
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config) }),
-    ...(ceiling ? [createCommandPolicyRule(ceiling, { enforceWrapperAllow: false, source: 'node ceiling', others: [{ policy: commands, source: 'workspace' }] })] : []),
-    createCommandPolicyRule(commands, { enforceWrapperAllow: !ceiling?.commands.allow.length }),
-    createDestructiveCommandRule({ added: [...(ceiling?.commands.destructive ?? []), ...compiled.commands.destructive], allowedInterpreters: commands.commands.allowedInterpreters }),
-    networkEgressRule(compiled, ceiling),
+    createCommandPolicyRule(compiled),
+    createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters }),
+    networkEgressRule(compiled),
     createProcessProbeRule(),
-    createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy, ceiling: ceiling?.policy }),
+    createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy }),
     createReadScopeRule({ paths }),
-    createWriteScopeRule({ paths, strict: config.strictWrites, pathDecision: path => filesystemPathDecision({ root: config.cwd, path, operation: 'write', policy: compiled.policy, ceiling: ceiling?.policy }) }),
+    createWriteScopeRule({ paths, strict: config.strictWrites, pathDecision: path => filesystemPathDecision({ root: config.cwd, path, operation: 'write', policy: compiled.policy }) }),
   ]), { enabled: input.dangerouslyAllowed, root: () => paths.root })
 }
 

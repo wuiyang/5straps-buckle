@@ -35,7 +35,7 @@ function files(directory: string): string[] {
 const BUNDLED_ELSEWHERE = [
   'This process already has its requester bound',
   'Approval was declined',
-  'Workspace is disabled or retired',
+  'Workspace is offline',
   'A cli:call listener is already registered',
   'No operation scope is active',
 ]

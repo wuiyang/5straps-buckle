@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { z } from 'zod'
 import type { DangerouslyAllowStore } from '../../types/ports/dangerously-allow-store.js'
 import { createJsonFileStore } from '../json-file-store.js'
@@ -8,7 +9,7 @@ const fileSchema = z.object({
 })
 
 /**
- * The switch in its own file beside policy.json, keyed by workspace root as that file is, and held
+ * The switch in its own file, keyed by workspace id, and held
  * only while on. Like every state file it lives in the state directory, which the rules refuse to
  * every tool and the sandbox hides from every command.
  */
@@ -23,4 +24,27 @@ export function createFileDangerouslyAllowStore(input: { filePath: string; works
       })
     },
   }
+}
+
+/**
+ * Moves a switch kept under a workspace's folder to its id (the workspace-model migration), or drops it where `to` is
+ * null: a registered workspace's switch needed the node's own on too, and with that gate gone (Q14) a switch the node's
+ * gate held off must not turn on.
+ */
+export async function rekeySwitch(input: { filePath: string; from: string; to: string | null; lockDeadlineMs?: number }): Promise<void> {
+  if (!existsSync(input.filePath)) return
+  const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, workspaces: {} }, lockDeadlineMs: input.lockDeadlineMs })
+  await store.update((state) => {
+    const entry = state.workspaces[input.from]
+    if (entry === undefined) return
+    delete state.workspaces[input.from]
+    if (input.to !== null) state.workspaces[input.to] = entry
+  })
+}
+
+/** Whether a switch file holds the switch on under `key`; false where the file is absent or unreadable. */
+export function switchIsOn(filePath: string, key: string): boolean {
+  try {
+    return createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1 as const, workspaces: {} } }).read().workspaces[key] !== undefined
+  } catch { return false }
 }

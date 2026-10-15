@@ -6,7 +6,8 @@ import type { JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { browserArgumentsRefusal } from '../common/domain/browser-arguments.js'
 import { rootsOf } from '../common/domain/executable.js'
-import { actionsPath, loadConfig } from '../common/runtime/config.js'
+import { actionsPath } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { logger } from '../common/runtime/log.js'
 import { chooseBrowser, settingScrubber } from '../common/services/packs/browser/mode.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
@@ -31,7 +32,7 @@ describe('reading the browser settings', () => {
   it('reads a DevTools port, and a ws://, wss://, http://, or https:// URL, as written', () => {
     const { environment } = base()
     for (const value of ['9222', 'ws://127.0.0.1:9222/devtools/browser/abc', 'wss://browser.example/?token=t', 'http://127.0.0.1:9222', 'https://browser.example:9443']) {
-      expect(loadConfig({ ...environment, BUCKLE_BROWSER_CDP: value }).browserCdp).toBe(value)
+      expect(configFromEnvironment({ ...environment, BUCKLE_BROWSER_CDP: value }).browserCdp).toBe(value)
     }
   })
 
@@ -43,36 +44,36 @@ describe('reading the browser settings', () => {
     ['HTTPS://browser.example:9443', 'https://browser.example:9443'],
   ])('lowers the scheme of %s and keeps the rest as written', (value, passed) => {
     const { environment } = base()
-    expect(loadConfig({ ...environment, BUCKLE_BROWSER_CDP: value }).browserCdp).toBe(passed)
+    expect(configFromEnvironment({ ...environment, BUCKLE_BROWSER_CDP: value }).browserCdp).toBe(passed)
   })
 
   it.each(['chrome', '0', '70000', 'ftp://browser.example/?token=never-shown', 'file:///tmp/devtools'])('refuses %s as BUCKLE_BROWSER_CDP without echoing it', value => {
     const { environment } = base()
-    expect(() => loadConfig({ ...environment, BUCKLE_BROWSER_CDP: value })).toThrow('Invalid BUCKLE_BROWSER_CDP: expected a DevTools port such as 9222, or a ws://, wss://, http://, or https:// URL')
-    expect(() => loadConfig({ ...environment, BUCKLE_BROWSER_CDP: value })).not.toThrow(value)
+    expect(() => configFromEnvironment({ ...environment, BUCKLE_BROWSER_CDP: value })).toThrow('Invalid BUCKLE_BROWSER_CDP: expected a DevTools port such as 9222, or a ws://, wss://, http://, or https:// URL')
+    expect(() => configFromEnvironment({ ...environment, BUCKLE_BROWSER_CDP: value })).not.toThrow(value)
   })
 
   it('reads an empty line, as .env.example ships them, as unset: a fresh browser', () => {
     const { environment } = base()
-    const config = loadConfig({ ...environment, BUCKLE_BROWSER_CDP: '', BUCKLE_BROWSER_PROFILE: '', BUCKLE_BROWSER_ARGS: ' ' })
+    const config = configFromEnvironment({ ...environment, BUCKLE_BROWSER_CDP: '', BUCKLE_BROWSER_PROFILE: '', BUCKLE_BROWSER_ARGS: ' ' })
     expect([config.browserCdp, config.browserProfile, config.browserArgs]).toEqual([undefined, undefined, undefined])
   })
 
   it('refuses a relative profile folder, naming the setting and never the path', () => {
     const { environment } = base()
-    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_PROFILE: 'profiles/private-name' })
+    const load = () => configFromEnvironment({ ...environment, BUCKLE_BROWSER_PROFILE: 'profiles/private-name' })
     expect(load).toThrow('BUCKLE_BROWSER_PROFILE must be an absolute path')
     expect(load).not.toThrow('private-name')
   })
 
   it('keeps the owner\'s arguments as one string, which agent-browser splits at commas and new lines', () => {
     const { environment } = base()
-    expect(loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: '--disable-blink-features=AutomationControlled,--lang=en-GB' }).browserArgs).toBe('--disable-blink-features=AutomationControlled,--lang=en-GB')
+    expect(configFromEnvironment({ ...environment, BUCKLE_BROWSER_ARGS: '--disable-blink-features=AutomationControlled,--lang=en-GB' }).browserArgs).toBe('--disable-blink-features=AutomationControlled,--lang=en-GB')
   })
 
   it.each(['--user-data-dir=/elsewhere', '--lang=en-GB,-User-Data-Dir /elsewhere', '--lang=en-GB\n--profile-directory=Default'])('refuses arguments that choose a profile folder: %j', value => {
     const { environment } = base()
-    expect(() => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value })).toThrow(/BUCKLE_BROWSER_ARGS may not pass --(?:user-data-dir|profile-directory): name a profile folder with BUCKLE_BROWSER_PROFILE/)
+    expect(() => configFromEnvironment({ ...environment, BUCKLE_BROWSER_ARGS: value })).toThrow(/BUCKLE_BROWSER_ARGS may not pass --(?:user-data-dir|profile-directory): name a profile folder with BUCKLE_BROWSER_PROFILE/)
   })
 
   // agent-browser refuses these beside an approved list, at every launch, so they are refused at start.
@@ -85,7 +86,7 @@ describe('reading the browser settings', () => {
     ['--load-and-launch-app=/never-shown', 'load-and-launch-app'],
   ])('refuses %j, which restores or opens pages, naming the switch alone', (value, name) => {
     const { environment } = base()
-    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: value })
+    const load = () => configFromEnvironment({ ...environment, BUCKLE_BROWSER_ARGS: value })
     expect(load).toThrow(`BUCKLE_BROWSER_ARGS may not pass --${name}: it restores or opens pages before the approved list holds, so agent-browser refuses it beside one`)
     expect(load).not.toThrow('never-shown')
   })
@@ -106,7 +107,7 @@ describe('reading the browser settings', () => {
 
   it('refuses a relative path at start through the node\'s configuration', () => {
     const { environment } = base()
-    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: '--disk-cache-dir=../never-shown' })
+    const load = () => configFromEnvironment({ ...environment, BUCKLE_BROWSER_ARGS: '--disk-cache-dir=../never-shown' })
     expect(load).toThrow(UNPLACED)
     expect(load).not.toThrow('never-shown')
   })
@@ -119,17 +120,17 @@ describe('reading the browser settings', () => {
   })
 
   it('refuses on Windows, through the configuration, a profile folder rooted at a slash alone', () => {
-    const load = () => loadConfig({ BUCKLE_WORKSPACE_ROOT: 'C:/work', BUCKLE_STATE_DIR: 'C:/state', BUCKLE_BROWSER_PROFILE: '/owner/never-shown' }, 'win32')
+    const load = () => configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: 'C:/work', BUCKLE_STATE_DIR: 'C:/state', BUCKLE_BROWSER_PROFILE: '/owner/never-shown' }, 'win32')
     expect(load).toThrow('BUCKLE_BROWSER_PROFILE must be an absolute path')
     expect(load).not.toThrow('never-shown')
-    expect(loadConfig({ BUCKLE_WORKSPACE_ROOT: 'C:/work', BUCKLE_STATE_DIR: 'C:/state', BUCKLE_BROWSER_PROFILE: 'C:/owner/profile' }, 'win32').browserProfile).toBe('C:/owner/profile')
+    expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: 'C:/work', BUCKLE_STATE_DIR: 'C:/state', BUCKLE_BROWSER_PROFILE: 'C:/owner/profile' }, 'win32').browserProfile).toBe('C:/owner/profile')
   })
 
   it('passes a URL value and an absolute path, which the pack judges where it lies', () => {
     const value = '--lang=en-GB,--proxy-pac-url=https://pac.example/proxy.pac,--load-extension=/opt/extensions/reader'
     expect(browserArgumentsRefusal(value, 'linux')).toBeNull()
     const { environment } = base()
-    expect(loadConfig({ ...environment, BUCKLE_BROWSER_ARGS: '--lang=en-GB' }).browserArgs).toBe('--lang=en-GB')
+    expect(configFromEnvironment({ ...environment, BUCKLE_BROWSER_ARGS: '--lang=en-GB' }).browserArgs).toBe('--lang=en-GB')
   })
 
   it('reads a slash prefix as a switch on Windows alone, and refuses a drive-relative path there', () => {
@@ -152,14 +153,14 @@ describe('reading the browser settings', () => {
     [{ BUCKLE_BROWSER_PROFILE: '/owner/profile', BUCKLE_BROWSER_HEADED: 'true' }, 'BUCKLE_BROWSER_PROFILE or BUCKLE_BROWSER_HEADED'],
   ])('refuses to start with BUCKLE_BROWSER_CDP beside %j, naming the settings', (settings, named) => {
     const { environment } = base()
-    const load = () => loadConfig({ ...environment, BUCKLE_BROWSER_CDP: 'ws://127.0.0.1:9222/?token=never-shown', ...settings })
+    const load = () => configFromEnvironment({ ...environment, BUCKLE_BROWSER_CDP: 'ws://127.0.0.1:9222/?token=never-shown', ...settings })
     expect(load).toThrow(`BUCKLE_BROWSER_CDP cannot be set with ${named}: an attached browser keeps the profile, arguments, and window its owner started it with`)
     expect(load).not.toThrow('never-shown')
   })
 
   it('lets BUCKLE_BROWSER_HEADED=false stand beside an attached browser, as the shipped example writes it', () => {
     const { environment } = base()
-    expect(loadConfig({ ...environment, BUCKLE_BROWSER_CDP: '9222', BUCKLE_BROWSER_HEADED: 'false' }).browserCdp).toBe('9222')
+    expect(configFromEnvironment({ ...environment, BUCKLE_BROWSER_CDP: '9222', BUCKLE_BROWSER_HEADED: 'false' }).browserCdp).toBe('9222')
   })
 })
 
@@ -282,7 +283,7 @@ describe('where a profile folder may lie', () => {
     mkdirSync(state, { recursive: true })
     const folder = join({ 'the workspace': workspace, 'the state directory': state, 'a scratch root': scratch }[place]!, 'profile')
     mkdirSync(folder)
-    const config = loadConfig({ ...environment, BUCKLE_SCRATCH_ROOTS: scratch, BUCKLE_AGENT_BROWSER_COMMAND: process.execPath, BUCKLE_BROWSER_PROFILE: folder })
+    const config = configFromEnvironment({ ...environment, BUCKLE_SCRATCH_ROOTS: scratch, BUCKLE_AGENT_BROWSER_COMMAND: process.execPath, BUCKLE_BROWSER_PROFILE: folder })
     const runtime = await createRuntime({ config })
     const pack = runtime.manifest().packs.find(item => item.id === 'browser')
     expect(pack?.unavailableReason).toBe(UNTRUSTED)
@@ -295,10 +296,10 @@ describe('where a profile folder may lie', () => {
 
   it('reports the browser pack withheld when BUCKLE_PACKS leaves it out, or when agent-browser is missing', async () => {
     const { environment } = base()
-    const left = loadConfig({ ...environment, BUCKLE_PACKS: 'fs' })
+    const left = configFromEnvironment({ ...environment, BUCKLE_PACKS: 'fs' })
     expect((await createSetupViews().status({ config: left, runtime: await createRuntime({ config: left }) })).browser)
-      .toEqual({ mode: 'fresh', setting: null, withheld: 'BUCKLE_PACKS leaves the browser pack out' })
-    const missing = loadConfig({ ...environment, BUCKLE_AGENT_BROWSER_COMMAND: join(environment.BUCKLE_WORKSPACE_ROOT!, '..', 'no-such-agent-browser') })
+      .toEqual({ mode: 'fresh', setting: null, withheld: 'the workspace setting packs.enabled leaves the browser pack out' })
+    const missing = configFromEnvironment({ ...environment, BUCKLE_AGENT_BROWSER_COMMAND: join(environment.BUCKLE_WORKSPACE_ROOT!, '..', 'no-such-agent-browser') })
     expect((await createSetupViews().status({ config: missing, runtime: await createRuntime({ config: missing }) })).browser)
       .toEqual({ mode: 'fresh', setting: null, withheld: 'BUCKLE_AGENT_BROWSER_COMMAND names a path that holds no program Buckle can run' })
   })
@@ -311,7 +312,7 @@ async function runtimeFixture(settings: NodeJS.ProcessEnv, options: { answer?: s
   const binary = join(root, 'agent-browser')
   writeFileSync(binary, `#!/usr/bin/env node\nconst argv = process.argv.slice(2)\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(argv) + '\\n')\n${options.answer ?? 'process.stdout.write(\'{"success":true}\')'}\n`)
   chmodSync(binary, 0o755)
-  const config = loadConfig({ ...environment, BUCKLE_AGENT_BROWSER_COMMAND: binary, BUCKLE_NETWORK_ALLOW: 'example.com', ...settings })
+  const config = configFromEnvironment({ ...environment, BUCKLE_AGENT_BROWSER_COMMAND: binary, BUCKLE_NETWORK_ALLOW: 'example.com', ...settings })
   const runtime = await createRuntime({ config })
   const response = await runtime.invoke({ request: { requestId: `browse-${randomUUID()}`, tool: 'browser_command', args: options.args ?? { command: 'snapshot', args: [] }, approvalTokens: [] }, sessionId: 'browsing-agent' })
   const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []

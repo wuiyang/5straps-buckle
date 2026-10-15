@@ -1,6 +1,8 @@
 import { createRuntimeOwner, type Logger, type RequestCli, type RuntimeOwner } from '@5straps/runtime'
 import { requireOwnerOnly } from '../adapters/file-modes.js'
-import type { BuckleConfig } from './config.js'
+import type { NodeConfig } from './config.js'
+import { logger } from './log.js'
+import type { WorkspaceManager } from '../services/workspaces/workspace-manager.js'
 import { createServiceAccessors, currentInteraction, defineBuckleServices, serviceList, type BuckleServices } from './services.js'
 
 export type RuntimeRole = 'server' | 'mcp' | 'cli'
@@ -20,7 +22,7 @@ export interface BuckleCommon {
 }
 
 export interface InitializeCommonInput {
-  config: BuckleConfig
+  config: NodeConfig
   role: RuntimeRole
   /** Receives the owner's close-step lines; a CLI command leaves it out and prints no diagnostics. */
   logger?: Logger
@@ -46,18 +48,28 @@ export function initializeCommon(input: InitializeCommonInput): BuckleCommon {
   }
 }
 
-// Opening the workspace runtime recovers interrupted audit and loads policy, packs and history.
+// Opening the workspace manager migrates a node set up before the workspace model and recovers interrupted audit.
 // Every singleton the process uses is built here, never first inside a file lock or a request.
-async function startCommon(input: { config: BuckleConfig; services: BuckleServices; role: RuntimeRole }): Promise<void> {
+async function startCommon(input: { config: NodeConfig; services: BuckleServices; role: RuntimeRole }): Promise<void> {
   const { services } = input
-  // workspaces.json there holds workspace credentials (ruling 7).
+  // workspaces.json there holds workspace token digests and every workspace's settings (ruling 7).
   requireOwnerOnly(input.config.stateDirectory, 'directory')
-  await services.getWorkspaceRuntime()
-  await services.getWorkspaces()
+  const workspaces = await services.getWorkspaces()
+  // serve opens every online workspace before it is ready, so a broken one is reported at start, not at its first call
+  // (the workspace-model brief, item 6); the rest still serve.
+  if (input.role === 'server') await openOnline(workspaces)
   // Only the admin HTTP layer uses the node key, the seen nonces and the setup sessions, so only a
   // serve with it switched on makes or reads their files; a CLI command or MCP never does (review L11 of B23-B25).
   if (input.role !== 'server' || !input.config.experimentalAdminHttp) return
   await services.getNodeSigner()
   await services.getRequestVerifier()
   await services.getSetupSessions()
+}
+
+async function openOnline(workspaces: WorkspaceManager): Promise<void> {
+  for (const workspace of workspaces.list().filter(item => item.online)) {
+    try { await workspaces.resolve(workspace.id) } catch (error) {
+      logger.error('A workspace could not open; it answers each call with the reason until the owner repairs it', { workspaceId: workspace.id, error })
+    }
+  }
 }

@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
-import { runCli } from '../cli/main.js'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { runCli } from './support/cli.js'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 
@@ -37,7 +38,7 @@ async function browsing(): Promise<{ config: BuckleConfig; runtime: BuckleRuntim
     '',
   ].join('\n'))
   chmodSync(binary, 0o755)
-  const config = loadConfig({
+  const config = configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'browser,code',
     BUCKLE_AGENT_BROWSER_COMMAND: binary, BUCKLE_NETWORK_ALLOW: 'example.com',
   })

@@ -6,7 +6,8 @@ import type { ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { actionsPath, approvalsPath, grantsPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { actionsPath, approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { watchApprovals } from '../cli/approvals-watch.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
@@ -17,7 +18,7 @@ import { fixedInteraction } from './support/interaction.js'
 const POLL = { first: 20, idle: 50 }
 
 function node(): BuckleConfig {
-  return loadConfig({
+  return configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-watch-')),
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-watch-state-')),
     BUCKLE_ALLOW_SHELL: 'false',
@@ -26,7 +27,7 @@ function node(): BuckleConfig {
 
 /** A second registry over the node's state files, which is what a second terminal holds. */
 function registryOf(config: BuckleConfig): ApprovalRegistry {
-  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }), approvalsPath(config), config.cwd)
+  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }), approvalsPath(config), config.cwd)
 }
 
 /** The approval service a `buckle approvals --watch` process answers through, over the same state files. */
@@ -80,7 +81,7 @@ async function issuePrivate(registry: ApprovalRegistry, subject: string): Promis
   return request!.token
 }
 
-const grantsOf = (config: BuckleConfig) => createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }).list()
+const grantsOf = (config: BuckleConfig) => createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }).list()
 
 describe('buckle approvals --watch', () => {
   it('shows a group call once while skipped asks remain individually visible and waiting', async () => {
@@ -189,7 +190,7 @@ describe('buckle approvals --watch', () => {
     }
 
     expect(registryOf(config).pending().map(request => request.token)).toEqual([token])
-    expect(createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd }).list()).toEqual([])
+    expect(createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }).list()).toEqual([])
     terminal.type('\x03')
     expect(await done).toEqual({ exitCode: 0 })
     expect(registryOf(config).pending().map(request => request.token)).toEqual([token])
@@ -444,7 +445,7 @@ it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file w
     expect(terminal.shown()).toContain('da) always deny')
     terminal.type(`${key}\n`)
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(0))
-    const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
+    const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' })
     expect(grants.list()).toContainEqual(expect.objectContaining({ denied: true, scope, subject: '/workspace/.env.local' }))
   } finally { terminal.type('\x03'); await done }
 })

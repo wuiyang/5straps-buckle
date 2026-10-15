@@ -71,7 +71,7 @@ export function createDevPack(options: DevPackOptions): Pack {
     id: PACK_ID,
     version: '1.0.0',
     skills: [loadPackSkill(PACK_ID)],
-    unavailableReason: options.allowHostLsp === true ? null : 'Host language servers are outside shell isolation; BUCKLE_ALLOW_HOST_LSP=true explicitly permits host processes and local server attachment',
+    unavailableReason: options.allowHostLsp === true ? null : 'Host language servers are outside shell isolation; the workspace setting packs.hostLsp, on, explicitly permits host processes and local server attachment',
     // The language servers this pack started or attached to, which outlive single calls.
     close: () => pool.closeAll(),
     tools: [

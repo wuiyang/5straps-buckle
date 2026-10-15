@@ -1,4 +1,4 @@
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -111,7 +111,7 @@ it('asks again after a once read and enforces a session denial through the invok
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
   writeFileSync(join(workspace, '.env.local'), 'SYNTHETIC=fixture')
   writeFileSync(join(workspace, '.env.schema'), 'SCHEMA=true')
-  const runtime = await createRuntime({ config: loadConfig({ BUCKLE_AUTH_TOKEN: 'test-agent', BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' }) })
+  const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_AUTH_TOKEN: 'test-agent', BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' }) })
   const read = (path: string, sessionId = 'one') => runtime.invoke({ request: { requestId: crypto.randomUUID(), tool: 'fs_read', args: { path }, approvalTokens: [] }, sessionId })
   expect((await read('.env.schema')).outcome).toBe('ok')
   const first = await read('.env.local')

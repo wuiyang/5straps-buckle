@@ -69,7 +69,7 @@ describe('a setup session (B24)', () => {
     expect((await send(buckle, signed(buckle, { session: 'AAAAAAAAAAAAAAAAAAAAAA' }))).status).toBe(401)
     const session = await open(buckle)
     expect((await send(buckle, signed(buckle, { session }))).status).toBe(200)
-    expect(buckle.runtime.policy.stored()?.commands.deny).toEqual(['rm *'])
+    expect(buckle.runtime.policy.stored().commands.deny).toEqual(['rm *'])
     // The request that opens one names none.
     expect((await send(buckle, signed(buckle, { method: 'POST', path: '/setup/sessions', body: '', session }))).status).toBe(401)
     expect(refusals(buckle)).toEqual(['session_required', 'session_closed', 'session_not_expected'])
@@ -107,7 +107,7 @@ describe('a setup session (B24)', () => {
     expect((await send(buckle, earlier)).status).toBe(401)
     expect((await send(buckle, signed(buckle, { session }))).status).toBe(401)
     expect(refusals(buckle)).toEqual(['replayed', 'session_closed', 'session_closed'])
-    expect(buckle.runtime.policy.stored()).toBeNull()
+    expect(buckle.runtime.policy.stored().updatedAt).toBeNull()
   })
 
   it('closes every session of a key the owner revokes, and a captured request of it is refused for good', async () => {
@@ -119,7 +119,7 @@ describe('a setup session (B24)', () => {
     expect((await buckle.services.getSetupSessions()).list()).toEqual([])
     expect((await send(buckle, captured)).status).toBe(401)
     expect(refusals(buckle)).toEqual(['unknown_key'])
-    expect(buckle.runtime.policy.stored()).toBeNull()
+    expect(buckle.runtime.policy.stored().updatedAt).toBeNull()
   })
 
   it('is not for the admin credential, which changes setup without one', async () => {

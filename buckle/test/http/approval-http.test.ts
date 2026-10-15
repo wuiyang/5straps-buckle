@@ -5,7 +5,7 @@ import { generateSigningKey, publicKeyFrom, readChallenge, signingKeyFromPem, si
 import { keysCommand } from '../../cli/keys.js'
 import { requestIdKey } from '../../common/services/invocation/executions.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { runCli } from '../../cli/main.js'
+import { runCli } from '../support/cli.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 import { captureWebhook } from '../support/webhook.js'

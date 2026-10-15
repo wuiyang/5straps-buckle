@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import type { ApprovalNotice, ApprovalWait } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
@@ -19,7 +20,7 @@ function node(environment: Record<string, string> = {}): BuckleConfig {
   const root = mkdtempSync(join(tmpdir(), 'buckle-notices-'))
   for (const directory of ['workspace', 'workspace/one', 'workspace/two', 'workspace/three']) mkdirSync(join(root, directory))
   mkdirSync(join(root, 'state'), { mode: 0o700 })
-  return loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'notices-agent-token', BUCKLE_ADMIN_TOKEN: 'notices-admin-token', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', ...environment })
+  return configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'notices-agent-token', BUCKLE_ADMIN_TOKEN: 'notices-admin-token', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', ...environment })
 }
 
 const write = (path: string, approvalWait?: ApprovalWait) => ({ requestId: `write-${path}`, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [], ...(approvalWait ? { context: { approvalWait } } : {}) })

@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { loadConfig } from '../../common/runtime/config.js'
+import { configFromEnvironment } from '../support/workspace-config.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
@@ -66,17 +66,20 @@ describe('who may open the setup face', () => {
   })
 
   it('refuses to be the same credential as the agent token', () => {
-    expect(() => loadConfig({ BUCKLE_AUTH_TOKEN: 'same', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'same' })).toThrow(/must differ/)
+    expect(() => configFromEnvironment({ BUCKLE_AUTH_TOKEN: 'same', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'same' })).toThrow(/must differ/)
   })
 
   it('uses only the current admin credential setting', () => {
-    expect(loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_SETUP_TOKEN: SETUP }).adminToken).toBe('')
-    expect(loadConfig({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: SETUP }).adminToken).toBe(SETUP)
+    expect(configFromEnvironment({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_SETUP_TOKEN: SETUP }).adminToken).toBe('')
+    expect(configFromEnvironment({ BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: SETUP }).adminToken).toBe(SETUP)
   })
 })
 
 describe('pushing a policy', () => {
-  it('reports the environment share and the stored share apart, unioned as effective', async () => {
+  // D83 addendum (7): the workspace's policy is one document in its workspace.json; the environment's lists were
+  // copied into it once, at migration, and a push replaces the whole document.
+  it('replaces the workspace\'s one policy, which reads back as stored and effective alike', async () => {
+    expect(runtime.policy.stored().commands.deny).toEqual(['wget *'])
     const put = await app.request('/setup/policy', {
       method: 'PUT',
       headers: bearer(SETUP),
@@ -84,17 +87,15 @@ describe('pushing a policy', () => {
     })
     expect(put.status).toBe(200)
     // Writes return the same policy view as reads.
-    expect(Object.keys(await put.json() as object).sort()).toEqual(['base', 'ceiling', 'dangerouslyAllow', 'effective', 'revision', 'stored'])
+    expect(Object.keys(await put.json() as object).sort()).toEqual(['dangerouslyAllow', 'effective', 'revision', 'stored'])
 
     const body = await (await app.request('/setup/policy', { headers: bearer(SETUP) })).json() as {
-      base: { commands: { deny: string[] } }
       stored: { commands: { deny: string[] }; updatedAt: string | null }
       effective: { commands: { deny: string[] }; network: { allow: string[] } }
     }
-    expect(body.base.commands.deny).toEqual(['wget *'])
     expect(body.stored.commands.deny).toEqual(['curl *'])
     expect(body.stored.updatedAt).not.toBeNull()
-    expect(body.effective.commands.deny).toEqual(['wget *', 'curl *'])
+    expect(body.effective.commands.deny).toEqual(['curl *'])
     expect(body.effective.network.allow).toEqual(['example.com'])
   })
 
@@ -117,20 +118,29 @@ describe('pushing a policy', () => {
       body: JSON.stringify({ version: 1, commands: { allow: ['^pnpm (build|test)'] } }),
     })
     expect(put.status).toBe(400)
-    expect(runtime.policy.stored()).toBeNull()
+    expect(runtime.policy.stored()).toMatchObject({ commands: { allow: [], deny: ['wget *'] }, updatedAt: null })
   })
 
-  it('can be cleared, which leaves the environment share standing', async () => {
+  it('can be cleared, which empties every list', async () => {
     await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, commands: { deny: ['curl'] } }) })
     const cleared = await app.request('/setup/policy', { method: 'DELETE', headers: bearer(SETUP) })
     expect(cleared.status).toBe(200)
-    expect(runtime.policy.effective().commands.deny).toEqual(['wget *'])
+    expect(runtime.policy.effective().commands.deny).toEqual([])
+  })
+
+  // Where the folder shows is the mount table's, which the owner's local CLI alone changes.
+  it('never moves or removes the workspace\'s mount', async () => {
+    await runtime.policy.setMount('/workspace')
+    expect((await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, mount: '/elsewhere' }) })).status).toBe(200)
+    expect(runtime.policy.effective().mount).toBe('/workspace')
+    expect((await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, mount: null }) })).status).toBe(200)
+    expect(runtime.policy.effective().mount).toBe('/workspace')
   })
 })
 
 describe('mounting the workspace', () => {
   beforeEach(async () => {
-    await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, mount: '/workspace' }) })
+    await runtime.policy.setMount('/workspace')
   })
 
   it('is what the manifest now names as the workspace', async () => {

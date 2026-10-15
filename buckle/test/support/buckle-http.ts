@@ -3,7 +3,8 @@ import { inject } from 'vitest'
 import type { NitroApp } from 'nitro/types'
 import { setupCli } from '../../cli/setup.js'
 import type { TerminalOptions } from '../../cli/terminal-consumer.js'
-import { loadConfig, type BuckleConfig } from '../../common/runtime/config.js'
+import { NODE_FOLDER_WORKSPACE, type BuckleConfig } from '../../common/runtime/config.js'
+import { configFromEnvironment } from './workspace-config.js'
 import { initializeCommon, type BuckleCommon } from '../../common/runtime/initialize.js'
 import { logger } from '../../common/runtime/log.js'
 import type { BuckleServices } from '../../common/runtime/services.js'
@@ -15,6 +16,7 @@ import { layerRoutes, type ServedRoute } from './routes.js'
 export interface BuckleHttp {
   readonly config: BuckleConfig
   readonly common: BuckleCommon
+  /** Workspace default: the folder the environment names, as migration makes it of a node set up before the workspace model. */
   readonly runtime: BuckleRuntime
   readonly services: BuckleServices
   readonly nitroApp: NitroApp
@@ -53,7 +55,7 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   if (!build) throw new Error('buckleBuild was not provided: the root tests must run through `pnpm test:integration` (vitest run --config vitest.integration.config.ts), not a bare vitest invocation')
   const entryPath = input.headless ? build.entries.headless : input.instance === 2 ? build.entries.second : build.entries.full
   await holders.get(entryPath)?.()
-  const config = loadConfig(input.environment)
+  const config = configFromEnvironment(input.environment)
   input.configure?.(config)
   const common = initializeCommon({ config, role: 'server' })
   const cli = setupCli({ terminal: input.terminal ?? null })
@@ -67,7 +69,7 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   }))
   holders.set(entryPath, close)
   await common.start()
-  const runtime = await common.services.getWorkspaceRuntime()
+  const runtime = (await (await common.services.getWorkspaces()).resolve(NODE_FOLDER_WORKSPACE)).runtime
   return {
     config, common, runtime, services: common.services, nitroApp: server.nitroApp, requestCli: server.requestCli,
     request: async (request, init) => server.nitroApp.fetch(request instanceof Request ? new Request(request, init) : new Request(new URL(request, 'http://127.0.0.1'), init)),
@@ -80,4 +82,11 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
     routes: () => layerRoutes(input.headless ? ['common', 'mcp'] : ['common', 'mcp', 'admin']),
     close,
   }
+}
+
+/** The agent token a /setup/workspaces registration answered with, shown once (D83 (3)); any other answer fails the test. */
+export async function mintedToken(response: Promise<Response> | Response): Promise<string> {
+  const answered = await response
+  if (answered.status !== 201) throw new Error(`Registration answered ${answered.status}: ${await answered.text()}`)
+  return (await answered.json() as { token: { token: string } }).token.token
 }

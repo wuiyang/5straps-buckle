@@ -6,7 +6,7 @@ import { emptyWorkspacePolicy, type ToolCapability } from '@5straps/protocol'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createBuiltinPacks } from '../common/services/packs/index.js'
 import { CODE_TOOLS } from '../common/services/packs/code/index.js'
 import { codeRunDescription, declare, DECLARATION_BUDGET_TOKENS, withinBudget } from '../common/services/packs/code/declarations.js'
@@ -89,7 +89,7 @@ describe('code_api and the code_run description on a node', () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-code-api-'))
     roots.push(root)
     mkdirSync(join(root, 'workspace'))
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' })
     return createRuntime({ config })
   }
   const api = async (runtime: Awaited<ReturnType<typeof node>>, args: Record<string, unknown>) => {

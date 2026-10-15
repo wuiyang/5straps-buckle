@@ -1,8 +1,9 @@
 import { parseEnv } from 'node:util'
 import { APPROVAL_KEY_PATTERN } from '@5straps/protocol/envelope'
-import { loadConfig } from '../common/runtime/config.js'
+import { legacyWorkspaceRoot, loadConfig, NODE_FOLDER_WORKSPACE, workspaceConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { scopeOf, settingsFromEnvironment } from '../common/services/workspaces/workspace-settings.js'
 import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from './environment-file.js'
 
 /** Where Rings takes a node's action log and its pending approvals. */
@@ -42,7 +43,8 @@ export interface PairingResult {
  */
 export async function redeemPairingCode(input: PairingRequest): Promise<PairingResult> {
   const environment = { ...process.env, ...parseEnv(input.environmentText) }
-  const config = loadConfig(environment)
+  const node = loadConfig(environment)
+  const config = workspaceConfig(node, { id: NODE_FOLDER_WORKSPACE, name: node.serverName, dir: legacyWorkspaceRoot({ node }), ...scopeOf(settingsFromEnvironment(environment)) })
   const runtime = await createRuntime({ config })
 
   const response = await fetch(new URL('/api/v1/harness-servers/pairing/redeem', input.ringsUrl), {

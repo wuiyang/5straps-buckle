@@ -1,7 +1,5 @@
-import { policyRevision, PolicyConflictError } from '../../domain/policy.js'
 import { z } from 'zod'
-import { WorkspacePolicySchema } from '@5straps/protocol'
-import type { PolicyStore } from '../../types/ports/policy-store.js'
+import { WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore } from '../json-file-store.js'
 
 const fileSchema = z.object({
@@ -10,31 +8,10 @@ const fileSchema = z.object({
 })
 
 /**
- * One file per machine, keyed by workspace root like the grants. It lives in the state
- * directory, which the permission rules refuse to every tool and the sandbox hides from every
- * command, so what constrains an agent is never something the agent can read or rewrite.
+ * The policy `buckle policy` stored for one workspace folder before the workspace model, in policy.json keyed by
+ * folder: migration input only, as each workspace's policy now lives in its workspace.json. Null where none was
+ * stored. Throws StateFileError where the file cannot be read.
  */
-export function createFilePolicyStore(input: { filePath: string; workspace: string; lockDeadlineMs?: number }): PolicyStore {
-  const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, workspaces: {} }, lockDeadlineMs: input.lockDeadlineMs })
-
-  return {
-    read: () => store.read().workspaces[input.workspace] ?? null,
-
-    async write(policy, expectedRevision) {
-      await store.update(state => {
-        if (expectedRevision !== undefined && policyRevision(state.workspaces[input.workspace] ?? null) !== expectedRevision) throw new PolicyConflictError('Workspace policy changed; reload before saving')
-        state.workspaces[input.workspace] = policy
-      })
-    },
-
-    async update(change, expectedRevision) {
-      await store.update(state => {
-        const current = state.workspaces[input.workspace] ?? null
-        if (expectedRevision !== undefined && policyRevision(current) !== expectedRevision) throw new PolicyConflictError('Workspace policy changed; reload before saving')
-        const next = change(current)
-        if (next) state.workspaces[input.workspace] = next
-        else delete state.workspaces[input.workspace]
-      })
-    },
-  }
+export function readStoredPolicy(input: { filePath: string; workspace: string }): WorkspacePolicy | null {
+  return createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, workspaces: {} } }).read().workspaces[input.workspace] ?? null
 }

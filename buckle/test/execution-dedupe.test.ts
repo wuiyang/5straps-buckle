@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { createOperationScope, runInScope } from '@5straps/runtime'
 import { emptyWorkspacePolicy, type InvokeRequest, type InvokeResponse } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createExecutionBudget, createExecutions, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint, requestIdKey, SCRIPT_STUB_LIMIT } from '../common/services/invocation/executions.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { ToolExecutionError } from '../common/domain/tool.js'
@@ -19,7 +19,7 @@ async function node() {
   const root = mkdtempSync(join(tmpdir(), 'buckle-dedupe-'))
   mkdirSync(join(root, 'workspace'))
   mkdirSync(join(root, 'state'), { mode: 0o700 })
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
   writeFileSync(join(root, 'workspace', 'note.md'), 'first body')
   const runtime = await createRuntime({ config, interaction: fixedInteraction(headlessGrace) })
   return { root, workspace: join(root, 'workspace'), runtime }

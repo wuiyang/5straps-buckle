@@ -40,17 +40,12 @@ const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve
  * A call Buckle cannot read whole, past READ_BUDGET, MAX_DEPTH or MAX_SUBSTITUTIONS, at a find -exec command that
  * is a primary, at a script that arrives as data, at shell text an expansion supplies (an eval or a shell -c string),
  * or running code with an interpreter this policy does not allow, is refused whenever a deny glob exists, naming the
- * limit that stopped the reading, since the glob might have met the part left unread. Each policy judges interpreters
- * by its own list, so the node ceiling refuses one a workspace allows unless the ceiling allows it too, since a
- * workspace never exceeds the ceiling (docs/dev/architecture.md, Interpreters).
- *
- * `source` names whose policy this is, so a refusal by the node's ceiling says so (slice 7d review R7D-BD-2). `others`
- * are the command policies whose rules run after this one: a glob of theirs that met the parts read is named before
- * this policy's reading limit, so the node ceiling's limit never stands in for the workspace glob that matched (slice
- * 7e review R7E-LW-3). The call is refused either way.
+ * limit that stopped the reading, since the glob might have met the part left unread (docs/dev/architecture.md,
+ * Interpreters). No node policy sits over a workspace's (Q14 of the workspace-model brief), so every refusal here names
+ * the workspace's.
  */
-export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean; source?: CommandPolicySource; others?: readonly NamedCommandPolicy[] } = {}): PermissionRule {
-  const source = options.source ?? 'workspace'
+export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean } = {}): PermissionRule {
+  const source = 'workspace'
   return {
     id: 'command_policy',
     evaluate({ effect }) {
@@ -71,10 +66,6 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       const allowed = policy.commands.allowedInterpreters
       const limit = policy.commands.deny.length > 0 ? readLimitOf(forms, allowed) : null
       if (limit) {
-        for (const other of options.others ?? []) {
-          const matched = deniedBy(other.policy, forms)
-          if (matched) return deny('command_policy', subject(), `Refused by the ${other.source} command policy: ${matched.source}`)
-        }
         return deny('command_policy', subject(), `${readLimitReason(limit, forms, allowed)}, so the ${source} command policy's deny list cannot meet all of it; refused rather than asked`)
       }
 
@@ -123,8 +114,3 @@ function deniedBy(policy: Pick<CompiledPolicy, 'commands'>, forms: CommandForms)
   return policy.commands.deny.find(glob => allForms(forms).some(form => glob.matchesPrefix(form)))
 }
 
-/** Whose command policy a rule applies: a workspace's own, or the node's ceiling over every registered workspace. */
-export type CommandPolicySource = 'workspace' | 'node ceiling'
-
-/** A command policy with the name its refusals give it. */
-export interface NamedCommandPolicy { policy: Pick<CompiledPolicy, 'commands'>; source: CommandPolicySource }

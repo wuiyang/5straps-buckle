@@ -3,15 +3,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
-import { runCli } from '../cli/main.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+import { runCli } from './support/cli.js'
+import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
+import { registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 const NODE_REPORT_TOKEN = 'node-report-token-fixture-only'
-const CHILD_AGENT_TOKEN = 'child-agent-token-fixture-only'
-const CHILD_ADMIN_TOKEN = 'child-admin-token-fixture-only'
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
@@ -20,7 +19,7 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-child-approvals-'))
   roots.push(root)
   for (const directory of ['default', 'child']) mkdirSync(join(root, directory))
-  const config = loadConfig({
+  const config = configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: join(root, 'default'),
     BUCKLE_STATE_DIR: join(root, 'state'),
     BUCKLE_ALLOW_SHELL: 'false',
@@ -29,9 +28,9 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
     BUCKLE_REPORT_TOKEN: NODE_REPORT_TOKEN,
     ...environment,
   })
-  const runtime = await createRuntime({ config, interaction: fixedInteraction() })
-  const manager = createWorkspaceManager({ config, runtime, interaction: fixedInteraction() })
-  await manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: CHILD_AGENT_TOKEN, adminToken: CHILD_ADMIN_TOKEN, policy: emptyWorkspacePolicy() })
+  const manager = await workspacesOf(config, { interaction: fixedInteraction() })
+  await registerWorkspace(manager, { id: 'child', name: 'Child', dir: join(root, 'child'), policy: emptyWorkspacePolicy() })
+  const runtime = (await manager.resolve('default')).runtime
   return { config, runtime, manager }
 }
 
@@ -43,7 +42,7 @@ async function pendingIn(runtime: BuckleRuntime): Promise<string> {
   return request!.token
 }
 
-async function capture(input: { argv: string[]; config: BuckleConfig }): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function capture(input: { argv: string[]; config: BuckleConfig; cwd?: string }): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   let stdout = '', stderr = ''
   const out = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { stdout += String(chunk); return true })
   const error = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true })
@@ -100,7 +99,7 @@ describe('answering a child workspace request from the terminal', () => {
     const { config, manager } = await nodeWithChild()
     const token = await pendingIn((await manager.resolve('child')).runtime)
 
-    const approved = await capture({ argv: ['approve', token, '--scope', 'once'], config })
+    const approved = await capture({ argv: ['approve', token, '--scope', 'once'], config, cwd: config.cwd })
 
     expect(approved.exitCode).toBe(1)
     expect(approved.stderr).toContain('in workspace default')
@@ -122,6 +121,6 @@ describe('answering a child workspace request from the terminal', () => {
     const listed = await capture({ argv: ['approvals', '--workspace', 'nowhere'], config })
 
     expect(listed.exitCode).toBe(1)
-    expect(listed.stderr).toContain('Workspace not found')
+    expect(listed.stderr).toContain('No workspace has the id nowhere')
   }, 30_000)
 })

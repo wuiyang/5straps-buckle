@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { ActionReportSchema, type ActionReport, type InvokeResponse } from '@5straps/protocol'
 import { createOperationScope, runInScope } from '@5straps/runtime'
 import { afterEach, describe, expect, it } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 // Review M4 of the second proof-of-possession re-review (keys-provisioning.md: every grant consumption is
@@ -25,7 +25,7 @@ async function node() {
   roots.push(root)
   mkdirSync(join(root, 'workspace'))
   mkdirSync(join(root, 'outside'))
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
   const reports: ActionReport[] = []
   const runtime = await createRuntime({ config, reporter: { configured: true, record: entry => { reports.push(entry) }, report: async () => {}, flush: async () => {} } })
   runtimes.push(runtime)

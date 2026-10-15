@@ -4,15 +4,16 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { approvalsPath, grantsPath, loadConfig, policyPath, type BuckleConfig } from '../common/runtime/config.js'
+import { approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
+import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { checkUrlCommand } from '../cli/check-url.js'
-import { runCli } from '../cli/main.js'
-import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { runCli } from './support/cli.js'
+import { registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 
 function node(environment: Record<string, string> = {}): BuckleConfig {
-  return loadConfig({
+  return configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-check-url-')),
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-check-url-state-')),
     BUCKLE_ALLOW_SHELL: 'false',
@@ -34,7 +35,7 @@ async function check(config: BuckleConfig, ...argv: string[]): Promise<{ exitCod
 }
 
 function grants(config: BuckleConfig) {
-  return createFileGrantStore({ filePath: grantsPath(config), workspace: config.cwd })
+  return createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' })
 }
 
 describe('buckle check-url', () => {
@@ -139,33 +140,36 @@ describe('buckle check-url', () => {
 
   it('exits 2 when the recorded approvals cannot be read, rather than reading as a denial', async () => {
     const config = node()
+    await workspacesOf(config)
     writeFileSync(grantsPath(config), '{ not json')
 
     expect(await check(config, 'localhost:3000')).toMatchObject({ exitCode: 2, stdout: '', stderr: expect.stringContaining('Cannot read the approvals in workspace default') })
   })
 
-  it('holds a registered workspace to its own list and the node\'s, both at once', async () => {
+  // Q14 of the workspace-model brief: no node list sits over a workspace's, so each judges by its own alone.
+  it('holds each workspace to its own list alone, whichever the command targets', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-check-url-child-'))
     for (const directory of ['default', 'child']) mkdirSync(join(root, directory))
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_NETWORK_ALLOW: '*.example.com' })
-    const runtime = await createRuntime({ config })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_NETWORK_ALLOW: '*.example.com' })
     const policy = emptyWorkspacePolicy()
     policy.network.allow = ['api.example.com', 'other.org']
-    await createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy })
+    await registerWorkspace(await workspacesOf(config), { id: 'child', name: 'Child', dir: join(root, 'child'), policy })
 
-    expect(await check(config, 'api.example.com', '--workspace', 'child')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(approved list entry api.example.com and node approved list entry *.example.com)') })
-    expect((await check(config, 'other.org', '--workspace', 'child')).exitCode).toBe(1)
+    expect(await check(config, 'api.example.com', '--workspace', 'child')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(approved list entry api.example.com)') })
+    expect((await check(config, 'other.org', '--workspace', 'child')).exitCode).toBe(0)
     expect((await check(config, 'docs.example.com', '--workspace', 'child')).exitCode).toBe(1)
     expect((await check(config, 'docs.example.com')).exitCode).toBe(0)
+    expect((await check(config, 'other.org', '--dir', join(root, 'child'))).exitCode).toBe(0)
   }, 30_000)
 
   it('exits 2 for a workspace this node does not know', async () => {
     expect(await check(node(), 'example.com', '--workspace', 'nope')).toMatchObject({ exitCode: 2 })
   })
 
-  it('exits 2 when the stored policy cannot be read, rather than reading as a denial', async () => {
+  it('exits 2 when the workspace settings cannot be read, rather than reading as a denial', async () => {
     const config = node()
-    writeFileSync(policyPath(config), '{ not json')
+    await workspacesOf(config)
+    writeFileSync(settingsPath(config.stateDirectory, 'default'), '{ not json')
 
     expect(await check(config, 'example.com')).toMatchObject({ exitCode: 2, stdout: '', stderr: expect.stringContaining('Cannot read this node\'s policy or state, so there is no verdict') })
   })
@@ -173,9 +177,9 @@ describe('buckle check-url', () => {
   it('exits 2 when a registered workspace fails to open for any reason', async () => {
     const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     try {
-      const result = await checkUrlCommand({ argv: ['example.com', '--workspace', 'child'], allowedHosts: [], runtimeFor: () => Promise.reject(new Error('disk unreadable')) })
+      const result = await checkUrlCommand({ argv: ['example.com'], allowedHosts: [], runtime: () => Promise.reject(new Error('disk unreadable')) })
       expect(result.exitCode).toBe(2)
-      expect(err).toHaveBeenCalledWith('Cannot open workspace child: disk unreadable\n')
+      expect(err).toHaveBeenCalledWith('Cannot open the workspace: disk unreadable\n')
     } finally {
       err.mockRestore()
     }
@@ -197,24 +201,25 @@ describe('buckle check-url', () => {
     expect(await check(config, 'http://app.localhost:3000')).toMatchObject({ exitCode: 1, stdout: expect.stringContaining('not on the workspace\'s approved list') })
   })
 
-  it('denies what the node\'s limit over a registered workspace leaves off, whatever pattern grant it holds', async () => {
-    const withGrant = async (environment: Record<string, string>) => {
+  it('denies what a registered workspace\'s own list leaves off, whatever pattern grant it holds', async () => {
+    const withGrant = async (network: string[]) => {
       const root = mkdtempSync(join(tmpdir(), 'buckle-check-url-limit-'))
       for (const directory of ['default', 'child']) mkdirSync(join(root, directory))
       // Owner-only, as the node requires of a directory holding workspace credentials.
       mkdirSync(join(root, 'state'), { mode: 0o700 })
-      const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', ...environment })
-      const runtime = await createRuntime({ config })
-      await createWorkspaceManager({ config, runtime }).register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-admin-token-fixture-only', policy: emptyWorkspacePolicy() })
+      const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' })
+      const policy = emptyWorkspacePolicy()
+      policy.network.allow = network
+      await registerWorkspace(await workspacesOf(config), { id: 'child', name: 'Child', dir: join(root, 'child'), policy })
       const childState = join(realpathSync(join(root, 'state')), 'workspaces', 'child')
       mkdirSync(childState, { recursive: true })
-      await createFileGrantStore({ filePath: join(childState, 'grants.json'), workspace: join(root, 'child') }).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
+      await createFileGrantStore({ filePath: join(childState, 'grants.json'), workspace: 'child' }).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
       return config
     }
 
-    // Without a limit the child's own pattern grant decides, so the refusal below is the limit's.
-    expect((await check(await withGrant({}), 'http://app.localhost:3000', '--workspace', 'child')).exitCode).toBe(0)
-    expect(await check(await withGrant({ BUCKLE_NETWORK_ALLOW: 'example.com' }), 'http://app.localhost:3000', '--workspace', 'child')).toMatchObject({ exitCode: 1, stdout: expect.stringContaining('approved list') })
+    // Without a list the child's own pattern grant decides, so the refusal below is the list's.
+    expect((await check(await withGrant([]), 'http://app.localhost:3000', '--workspace', 'child')).exitCode).toBe(0)
+    expect(await check(await withGrant(['example.com']), 'http://app.localhost:3000', '--workspace', 'child')).toMatchObject({ exitCode: 1, stdout: expect.stringContaining('approved list') })
   }, 30_000)
 
   it('approves a host a BUCKLE_ALLOWED_HOSTS pattern covers, naming the entry', async () => {

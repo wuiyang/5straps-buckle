@@ -7,10 +7,10 @@ import { RuntimeError } from '@5straps/runtime'
 import { acquireFileLock, SqliteErrorCode } from '@5straps/runtime/sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { runCli } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createJsonFileStore, StateBusyError } from '../common/adapters/json-file-store.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { HistoryBusyError, openChangeHistory, type ChangeHistory } from '../common/services/history/journal.js'
 import { createShellWorkspaceRecovery } from '../common/services/shell/isolated-shell.js'
 import { createWorkbenchStorage } from '../common/services/workbench/storage.js'
@@ -160,7 +160,7 @@ describe('a state file busy past the wait, at the faces', () => {
     const root = directory()
     mkdirSync(join(root, 'workspace'))
     mkdirSync(join(root, 'state'), { mode: 0o700 })
-    const config = { ...loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }), stateLockDeadlineMs: 300 }
+    const config = { ...configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }), stateLockDeadlineMs: 300 }
     const runtime = await createRuntime({ config })
     const grant = await runtime.grants.grant({ sessionId: 's', rule: 'read_scope', subject: '/shots', scope: 'always' })
     await holder(join(root, 'state', `${file}.lock.sqlite`))
@@ -212,7 +212,7 @@ describe('a state file busy past the wait, at the faces', () => {
     const root = directory()
     mkdirSync(join(root, 'workspace'))
     // A scratch root takes writes without asking, so the call reaches its history section.
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_SCRATCH_ROOTS: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_SCRATCH_ROOTS: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
     const runtime = await createRuntime({ config })
     runtime.history.run = async () => { throw new RuntimeError(SqliteErrorCode.sectionWaitTimeout, 'Waited 5000 ms for connection history:default while another flow held it') }
     const response = await runtime.invoke({ sessionId: 's', request: { requestId: 'section-wait', tool: 'fs_write', args: { path: 'note.txt', content: 'x' }, approvalTokens: [] } })

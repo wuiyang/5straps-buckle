@@ -1,8 +1,8 @@
-import { resolveFilesystemAccess, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
+import { resolveFilesystemAccess } from '../../domain/filesystem-policy.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { isRestrictive, refuseSwitchIn } from '../../domain/policy.js'
-import { ApprovalWithdrawSchema, WorkspacePolicyUpdateSchema, type ApprovalWithdraw, type WorkspacePolicy } from '@5straps/protocol'
-import { actionsPath } from '../../runtime/config.js'
+import { ApprovalWithdrawSchema, emptyWorkspacePolicy, WorkspacePolicyUpdateSchema, type ApprovalWithdraw, type WorkspacePolicy } from '@5straps/protocol'
+import { actionsPath, NODE_FOLDER_WORKSPACE } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { WorkspacePatchSchema, WorkspaceRegistrationSchema, WorkspaceTokenInputSchema, type ManagedWorkspace, type WorkspaceManager, type WorkspaceRegistration } from '../workspaces/workspace-manager.js'
 import { browseDirectories, DirectoryQuerySchema } from './directory-browser.js'
@@ -23,7 +23,7 @@ type Query = Record<string, string>
 export interface SetupViews {
   /** How the node is set up for this workspace: identity, root and mount, sandbox, packs, policy state. */
   status(workspace: ManagedWorkspace): Promise<Record<string, unknown>>
-  /** The policy as the setup face shows it: effective, revision, stored, base and the node's ceiling. */
+  /** The policy as the setup face shows it: effective, revision and stored. */
   policy(workspace: ManagedWorkspace): Record<string, unknown>
   /** One page of the workspace's files with the read and write access each has. */
   files(workspace: ManagedWorkspace, query: Query): Promise<Record<string, unknown>>
@@ -39,9 +39,9 @@ export interface SetupViews {
   tokenInput(body: unknown): ReturnType<typeof WorkspaceTokenInputSchema.parse>
 }
 
-/** `on`, or `withheld (<reason>)`: BUCKLE_ALLOW_CODE=false, or BUCKLE_PACKS leaving the pack out. */
+/** `on`, or `withheld (<reason>)`: packs.code off, or packs.enabled leaving the pack out. */
 function codeStatus(pack: { unavailableReason: string | null } | undefined): string {
-  if (!pack) return 'withheld (BUCKLE_PACKS leaves the code pack out)'
+  if (!pack) return 'withheld (the workspace setting packs.enabled leaves the code pack out)'
   return pack.unavailableReason === null ? 'on' : `withheld (${pack.unavailableReason})`
 }
 
@@ -70,7 +70,7 @@ export function createSetupViews(): SetupViews {
         audit: runtime.auditHealth.failing(actionsPath(config)) ? 'unavailable' : 'available',
         auditLastFailureAt: runtime.auditHealth.lastFailureAt(actionsPath(config)),
         // The node's own face names every workspace whose log keeps readiness at 503 (review L5 of B20-B22).
-        ...(runtime.workspaceId === 'default' ? { auditFailingWorkspaces: runtime.auditHealth.failingWorkspaces() } : {}),
+        ...(runtime.workspaceId === NODE_FOLDER_WORKSPACE ? { auditFailingWorkspaces: runtime.auditHealth.failingWorkspaces() } : {}),
         // Read-only here: only the owner's local `buckle policy dangerously-allow` changes it (ruling H1e).
         dangerouslyAllow: runtime.policy.dangerouslyAllow(),
         approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',
@@ -79,29 +79,27 @@ export function createSetupViews(): SetupViews {
       }
     },
 
-    policy: ({ config, runtime }) => ({
+    policy: ({ runtime }) => ({
       effective: runtime.policy.effective(),
       dangerouslyAllow: runtime.policy.dangerouslyAllow(),
       revision: runtime.policy.revision(),
       stored: runtime.policy.stored(),
-      base: runtime.policy.base(),
-      ceiling: config.nodePolicy ?? null,
     }),
 
-    async files({ config, runtime }, query) {
+    // The workspace's policy is the one source (Q14): a file's base access is the empty policy's, and only a
+    // protected file is locked, asking whatever the policy says.
+    async files({ runtime }, query) {
       const parsed = DirectoryQuerySchema.safeParse({ ...query, path: query.path ?? '.' })
       if (!parsed.success) throw new SetupRequestError('Invalid directory request')
       const page = await browseDirectories({ ...parsed.data, workspaceRoot: runtime.paths().root, includeFiles: true })
       const policy = runtime.policy.effective()
-      const ceiling = config.nodePolicy ?? null
       return { ...page, entries: page.entries.map((entry) => {
         const protectedFile = Boolean(sensitivePathReason(entry.path))
-        const access = resolveFilesystemAccess({ path: entry.path, policy, ceiling })
-        const baseline = resolveFilesystemAccess({ path: entry.path, policy: ceiling ?? config.policy })
+        const access = resolveFilesystemAccess({ path: entry.path, policy })
+        const baseline = resolveFilesystemAccess({ path: entry.path, policy: emptyWorkspacePolicy() })
         return { ...entry, baseRead: protectedFile && baseline.read !== 'deny' ? 'ask' : baseline.read, baseWrite: protectedFile && baseline.write !== 'deny' ? 'ask' : baseline.write,
           read: protectedFile && access.read !== 'deny' ? 'ask' : access.read, write: protectedFile && access.write !== 'deny' ? 'ask' : access.write,
-          readLocked: protectedFile || ['deny', 'ask'].includes(resolveFilesystemPermission({ path: entry.path, operation: 'read', policy: ceiling ?? config.policy })),
-          writeLocked: protectedFile || ['deny', 'ask'].includes(resolveFilesystemPermission({ path: entry.path, operation: 'write', policy: ceiling ?? config.policy })),
+          readLocked: protectedFile, writeLocked: protectedFile,
         }
       }) }
     },

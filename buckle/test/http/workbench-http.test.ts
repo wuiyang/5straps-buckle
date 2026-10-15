@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { createBuckleHttp } from '../support/buckle-http.js'
+import { createBuckleHttp, mintedToken } from '../support/buckle-http.js'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
@@ -38,8 +38,9 @@ it('requires setup provisioning and a separate workbench grant for editor operat
 
 it('routes child workbench credentials independently of child agent credentials', async () => {
   const f = await fixture()
-  const agent = 'fixture-child-agent-long-enough', setup = 'fixture-child-setup-long-enough'
-  expect((await f.request('/setup/workspaces', f.config.adminToken, { id: 'child', name: 'Child', root: f.child, authToken: agent, adminToken: setup })).status).toBe(201)
+  const agent = await mintedToken(f.request('/setup/workspaces', f.config.adminToken, { id: 'child', name: 'Child', dir: f.child }))
+  // The node's admin credential is every workspace's (D83).
+  const setup = f.config.adminToken
   const grant = { id: randomUUID(), token: 'fixture-child-workbench-token-long', projectId: 'project', chatId: 'chat', allowShell: false }
   const path = '/workspaces/child/v1/workbenches/' + grant.id
   expect((await f.request('/workspaces/child/setup/workbenches', setup, grant)).status).toBe(200)
@@ -49,9 +50,9 @@ it('routes child workbench credentials independently of child agent credentials'
   expect(await read.text()).toContain('child fixture')
   // A grant is for one workspace: the child's does not open the node's workbench of the same id.
   expect((await f.request('/v1/workbenches/' + grant.id, grant.token)).status).toBe(401)
-  expect((await f.request('/setup/workspaces/child', f.config.adminToken, { enabled: false }, 'PATCH')).status).toBe(409)
+  expect((await f.request('/setup/workspaces/child', f.config.adminToken, { online: false }, 'PATCH')).status).toBe(409)
   expect((await f.request(path + '/discard', grant.token, { actorId: 'alice' })).status).toBe(200)
-  expect((await f.request('/setup/workspaces/child', f.config.adminToken, { enabled: false }, 'PATCH')).status).toBe(200)
+  expect((await f.request('/setup/workspaces/child', f.config.adminToken, { online: false }, 'PATCH')).status).toBe(200)
   expect((await f.request(path, grant.token)).status).toBe(409)
 })
 

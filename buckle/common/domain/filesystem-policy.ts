@@ -10,7 +10,6 @@ export interface FilesystemPolicyInput {
   path: string
   operation: 'read' | 'write'
   policy: WorkspacePolicy
-  ceiling?: WorkspacePolicy | null
   /** Whether the volume ignores case; the platform's default (comparablePath) when absent. */
   caseInsensitive?: boolean
   /** The host's unless a test imitates another: off Windows a rule's names are names under the root (rulePath). */
@@ -19,11 +18,7 @@ export interface FilesystemPolicyInput {
 export type FilesystemDecision = FilesystemPermission | 'inherit'
 
 export function resolveFilesystemPermission(input: FilesystemPolicyInput): FilesystemDecision {
-  const own = matchRules(input.policy, input)
-  const ceiling = input.ceiling ? matchRules(input.ceiling, input) : 'inherit'
-  if (own === 'deny' || ceiling === 'deny') return 'deny'
-  if (ceiling === 'ask') return 'ask'
-  return own === 'inherit' ? ceiling : own
+  return matchRules(input.policy, input)
 }
 
 export function resolveFilesystemAccess(input: Omit<FilesystemPolicyInput, 'operation'>) {
@@ -55,7 +50,7 @@ export function filesystemPathDecision(input: Omit<FilesystemPolicyInput, 'path'
     const target = relativeWithin(input.root, canonicalPolicyPath(rulePath(input.root, rule.path, platform), platform), input.caseInsensitive, platform)
     return target === null ? [rule] : [rule, { ...rule, path: target }]
   }) } })
-  return resolveFilesystemPermission({ ...input, policy: canonical(input.policy), ceiling: input.ceiling ? canonical(input.ceiling) : null, path })
+  return resolveFilesystemPermission({ ...input, policy: canonical(input.policy), path })
 }
 
 /**
@@ -70,7 +65,7 @@ function relativeWithin(root: string, path: string, caseInsensitive: boolean | u
   return within(comparablePath(root, caseInsensitive), comparablePath(path, caseInsensitive))
 }
 
-export function createFilesystemPolicyRule(input: { root: string; policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null; caseInsensitive?: boolean; platform?: NodeJS.Platform }): PermissionRule {
+export function createFilesystemPolicyRule(input: { root: string; policy: WorkspacePolicy; caseInsensitive?: boolean; platform?: NodeJS.Platform }): PermissionRule {
   return {
     id: 'filesystem_policy',
     evaluate({ effect, grants }) {
@@ -86,13 +81,13 @@ export function createFilesystemPolicyRule(input: { root: string; policy: Worksp
   }
 }
 
-export async function projectFilesystemSandbox(input: { root: string; policy: WorkspacePolicy; ceiling?: WorkspacePolicy | null; signal?: AbortSignal; platform?: NodeJS.Platform }) {
+export async function projectFilesystemSandbox(input: { root: string; policy: WorkspacePolicy; signal?: AbortSignal; platform?: NodeJS.Platform }) {
   const platform = input.platform ?? process.platform
   const hiddenPaths = new Set<string>()
   const hiddenFiles = new Set<string>()
   const readOnlyWorkspacePaths = new Set<string>()
   const root = nativePath(await realpath(input.root))
-  const rules = [...input.policy.filesystem?.rules ?? [], ...input.ceiling?.filesystem?.rules ?? []]
+  const rules = input.policy.filesystem?.rules ?? []
   for (const rule of rules) {
     input.signal?.throwIfAborted()
     const read = resolveFilesystemPermission({ ...input, path: rule.path, operation: 'read' })

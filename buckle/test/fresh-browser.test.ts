@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBrowserPack } from '../common/services/packs/browser/index.js'
 import type { BrowserMode } from '../common/services/packs/browser/mode.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
@@ -75,7 +75,7 @@ describe.each(MODES)('on %s', (_, mode) => {
 
 it('exposes only browser tools when the owner selects the browser pack', async () => {
   const { root } = fixture(); const workspace = join(root, 'workspace'); mkdirSync(workspace)
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_AGENT_BROWSER_COMMAND: process.execPath })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_AGENT_BROWSER_COMMAND: process.execPath })
   const runtime = await createRuntime({ config })
   expect(runtime.registry().capabilities().map(tool => tool.name)).toEqual(['browser_command'])
   expect(runtime.registry().has('fs_read')).toBe(false)

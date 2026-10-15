@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { matchingHostEntry } from '../common/domain/url-pattern.js'
 import { guardedFetch } from '../common/services/packs/web/egress.js'
 
@@ -181,16 +181,16 @@ describe('a * in a host', () => {
 describe('BUCKLE_ALLOWED_HOSTS at load', () => {
   it('accepts a pattern and refuses a malformed one, naming the variable', () => {
     const environment = (hosts: string) => ({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-egress-')), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-egress-state-')), BUCKLE_ALLOWED_HOSTS: hosts })
-    expect(loadConfig(environment('db.internal, *.internal.test:8080')).allowedHosts).toEqual(['db.internal', '*.internal.test:8080'])
-    expect(() => loadConfig(environment('*.*.test'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: A wildcard stands only as the whole leftmost label/)
-    expect(() => loadConfig(environment('https://db.internal'))).toThrow(/names no scheme/)
-    expect(loadConfig(environment('my_db, my_db:5432, *.compose_net')).allowedHosts).toEqual(['my_db', 'my_db:5432', '*.compose_net'])
-    expect(() => loadConfig(environment('db.internal.'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry/)
-    const v6 = loadConfig(environment('::1:3000, [::1]:3000')).allowedHosts
+    expect(configFromEnvironment(environment('db.internal, *.internal.test:8080')).allowedHosts).toEqual(['db.internal', '*.internal.test:8080'])
+    expect(() => configFromEnvironment(environment('*.*.test'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: A wildcard stands only as the whole leftmost label/)
+    expect(() => configFromEnvironment(environment('https://db.internal'))).toThrow(/names no scheme/)
+    expect(configFromEnvironment(environment('my_db, my_db:5432, *.compose_net')).allowedHosts).toEqual(['my_db', 'my_db:5432', '*.compose_net'])
+    expect(() => configFromEnvironment(environment('db.internal.'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry/)
+    const v6 = configFromEnvironment(environment('::1:3000, [::1]:3000')).allowedHosts
     expect(v6).toEqual(['::1:3000', '[::1]:3000'])
     expect(matchingHostEntry(v6.slice(0, 1), new URL('http://[::1]:3000/'))).toBeFalsy()
     expect(matchingHostEntry(v6, new URL('http://[::1]:3000/'))).toBe('[::1]:3000')
-    expect(() => loadConfig(environment('my_db:05432'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: Not a port/)
-    expect(() => loadConfig(environment('*.0.0.1'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: A wildcard covers a domain, not an address/)
+    expect(() => configFromEnvironment(environment('my_db:05432'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: Not a port/)
+    expect(() => configFromEnvironment(environment('*.0.0.1'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: A wildcard covers a domain, not an address/)
   })
 })

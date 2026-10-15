@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ActionReport, DeniedRunReport } from '@5straps/protocol'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import type { Reporter } from '../common/types/ports/reporter.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -26,7 +26,7 @@ beforeEach(async () => {
     record: entry => { recorded.push(entry) },
     flush: () => Promise.resolve(),
   }
-  const config = loadConfig({
+  const config = configFromEnvironment({
     BUCKLE_AUTH_TOKEN: 'agent',
     BUCKLE_SERVER_ID: 'node-1',
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-report-state-')),
@@ -91,6 +91,6 @@ describe('the action log Buckle reports', () => {
 
 describe('the reporting configuration', () => {
   it('needs the URL and the token together', () => {
-    expect(() => loadConfig({ BUCKLE_REPORT_URL: 'http://rings.test/api/v1/buckle-reports' })).toThrow(/together/)
+    expect(() => configFromEnvironment({ BUCKLE_REPORT_URL: 'http://rings.test/api/v1/buckle-reports' })).toThrow(/together/)
   })
 })

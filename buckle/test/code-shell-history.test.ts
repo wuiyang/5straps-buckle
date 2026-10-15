@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type JsonObject } from '@5straps/protocol'
-import { runCli } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 
@@ -42,7 +42,7 @@ it('files a script\'s shell and file changes under one stage, which restore-stag
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
   mkdirSync(join(root, 'state'), { mode: 0o700 })
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs,shell,code', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'true' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs,shell,code', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'true' })
   const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   await runtime.policy.apply(WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: '.', write: 'allow' }] } }))
   const invoke = (requestId: string, tool: string, args: JsonObject): Promise<InvokeResponse> => runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId, tool, args, approvalTokens: [] } })

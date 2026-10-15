@@ -1,5 +1,6 @@
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
-import { actionsPath, loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import { actionsPath, loadConfig, type NodeConfig } from '../common/runtime/config.js'
+import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
 import { environmentFilePath } from '../common/runtime/environment.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { randomUUID } from 'node:crypto'
@@ -19,6 +20,7 @@ import { logger } from '../common/runtime/log.js'
 import { setupCli } from './setup.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
 import { policyCommand, repairStoredPolicy } from './policy.js'
+import { takeTarget, TargetError, type CommandTarget } from './target.js'
 import { keysCommand } from './keys.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
 import { isStateBusy } from '../common/services/state-busy.js'
@@ -38,7 +40,7 @@ export interface CliResult {
 
 /** Needs no node config beyond where the audit log lives: init is what writes the configuration. */
 export function runInitCommand(argv: string[]): Promise<CliResult> {
-  return auditOperation({ actions: createFileActionLog(actionsPath(loadConfig())), workspaceId: 'default', tool: 'cli_init', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => runInit(argv) })
+  return auditOperation({ actions: createFileActionLog(actionsPath(loadConfig())), workspaceId: NODE_SCOPE, tool: 'cli_init', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => runInit(argv) })
 }
 
 export function runSettingsCommand(argv: string[]): Promise<CliResult> {
@@ -55,7 +57,8 @@ export function answerWithoutConfiguration(argv: string[]): CliResult | null {
 
 export type { Confirm } from './terminal-consumer.js'
 
-export async function runCli(input: { argv: string[]; config: BuckleConfig; confirm?: Confirm | null }): Promise<CliResult> {
+/** `cwd`: the directory the command means where it names no workspace (D83 (4)); the process's own by default. */
+export async function runCli(input: { argv: string[]; config: NodeConfig; confirm?: Confirm | null; cwd?: string }): Promise<CliResult> {
   const answered = answerWithoutConfiguration(input.argv)
   if (answered) return answered
   const [command = '', ...rest] = input.argv
@@ -70,7 +73,7 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig; conf
   common.bindRequester(cli.requestCli)
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   try {
-    return await runCliCommand({ common, config: input.config, command, rest, confirm })
+    return await runCliCommand({ common, config: input.config, command, rest, confirm, cwd: input.cwd ?? process.cwd() })
   } catch (error) {
     if (isStateBusy(error)) return fail(error.message)
     throw error
@@ -81,45 +84,68 @@ export async function runCli(input: { argv: string[]; config: BuckleConfig; conf
   }
 }
 
-async function runCliCommand(input: { common: BuckleCommon; config: BuckleConfig; command: string; rest: string[]; confirm: Confirm | null }): Promise<CliResult> {
-  const { common, command, rest } = input
+async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; command: string; rest: string[]; confirm: Confirm | null; cwd: string }): Promise<CliResult> {
+  const { common, command } = input
   try {
     await common.start()
   } catch (error) {
     // check-url's exit 1 means denied, so a node it cannot read must not look like one.
     if (command === 'check-url') return checkUrlUnreadable(error)
-    if (command === 'policy' && error instanceof StoredPolicyError) return repairStoredPolicy({ config: input.config, argv: rest, failure: error })
     throw error
   }
-  const runtime = await common.services.getWorkspaceRuntime()
   const workspaces = await common.services.getWorkspaces()
   const scope = common.owner.registry.createScope({ context: { actor: 'local-owner' } })
   return withOperationScope(scope, async () => {
     (await common.services.getInteraction(scope)).bind('prompt')
-    return runAuditedCommand({ runtime, workspaces, config: input.config, command, rest, confirm: input.confirm })
+    if (NODE_COMMANDS.includes(command)) return runNodeCommand({ ...input, workspaces })
+    let taken: ReturnType<typeof takeTarget>
+    try { taken = takeTarget(input.rest) } catch (error) {
+      if (error instanceof TargetError) return fail(error.message)
+      throw error
+    }
+    return runWorkspaceCommand({ ...input, workspaces, target: taken.target, rest: taken.argv })
   })
 }
 
+/** The commands that act on the node rather than on one workspace: its registry and its trusted keys. */
+const NODE_COMMANDS: readonly string[] = Object.freeze(['workspace', 'keys'])
+/** The owner's commands on one workspace that are audited; reads such as `tools` are not. */
+const AUDITED_COMMANDS: readonly string[] = Object.freeze(['approve', 'approvals', 'check-url', 'grants', 'workspaces', 'history', 'plugin', 'policy'])
 /** The commands that run no tool. Any other command resolves to one: `call`, and every `<group> <verb>`. */
-const OWNER_COMMANDS: readonly string[] = Object.freeze(['tools', 'manifest', 'skills', 'approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'log', 'plugin', 'policy', 'keys'])
+const OWNER_COMMANDS: readonly string[] = Object.freeze(['tools', 'manifest', 'skills', 'log', ...AUDITED_COMMANDS])
 
-/** Whether a command runs a tool on the node's root, so a project outside that root is warned (owner decision D5, review M5 of B20-B22). */
-export function runsTool(argv: readonly string[]): boolean {
-  const [command] = argv
-  return command !== undefined && !OWNER_COMMANDS.includes(command)
+/** A command on the node, audited in the node's own log. */
+async function runNodeCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[] }): Promise<CliResult> {
+  const { workspaces, command, rest } = input
+  return auditOperation({ actions: workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, describe: result => result.detail,
+    operation: () => (command === 'keys' ? keysCommand({ config: input.config, argv: rest }) : workspaceRegistryCommand({ config: input.config, workspaces, argv: rest })),
+  })
 }
 
-async function runAuditedCommand(input: CommandContext): Promise<CliResult> {
-  const { runtime, command } = input
+/**
+ * A command on the workspace it targets (D83 (4)): `--workspace <id>`, else `--dir <path>`, else the directory it runs
+ * in. `buckle policy` opens an offline workspace too, so its owner can set it up before it serves.
+ */
+async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; target: CommandTarget; confirm: Confirm | null; cwd: string }): Promise<CliResult> {
+  const { workspaces, command } = input
+  let runtime: BuckleRuntime
   try {
-    if (['approve', 'approvals', 'check-url', 'grants', 'workspace', 'workspaces', 'history', 'plugin', 'policy', 'keys'].includes(command)) {
-      // A check that answers denied or asks has still succeeded; only bad input failed.
-      const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0
-      return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail,
-        operation: () => dispatchRuntimeCommand(input),
-      })
-    }
-    return await dispatchRuntimeCommand(input)
+    const id = workspaces.target({ ...input.target, cwd: input.cwd })
+    runtime = (await workspaces.resolve(id, { setup: command === 'policy' })).runtime
+  } catch (error) {
+    if (command === 'check-url') return checkUrlUnreadable(error)
+    if (command === 'policy' && error instanceof StoredPolicyError) return repairStoredPolicy({ workspaces, target: input.target, cwd: input.cwd, argv: input.rest, failure: error })
+    if (error instanceof WorkspaceError) return fail(error.message)
+    throw error
+  }
+  const context: CommandContext = { runtime, workspaces, config: input.config, command, rest: input.rest, confirm: input.confirm }
+  try {
+    if (!AUDITED_COMMANDS.includes(command)) return await dispatchRuntimeCommand(context)
+    // A check that answers denied or asks has still succeeded; only bad input failed.
+    const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0
+    return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail,
+      operation: () => dispatchRuntimeCommand(context),
+    })
   } finally {
     // One command is one process, and the batch timer is unreferenced so it never holds the
     // process open: without this the entry a CLI call recorded reached Rings for no call at all.
@@ -127,25 +153,23 @@ async function runAuditedCommand(input: CommandContext): Promise<CliResult> {
   }
 }
 
-interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: BuckleConfig; command: string; rest: string[]; confirm: Confirm | null }
+interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; confirm: Confirm | null }
 
 function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliResult> {
   const { runtime, command, rest } = input
-  if (runsTool([command])) return command === 'call' ? callByName(runtime, rest) : callByCommand(runtime, command, rest)
+  if (!OWNER_COMMANDS.includes(command)) return command === 'call' ? callByName(runtime, rest) : callByCommand(runtime, command, rest)
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
   if (command === 'skills') return printSkills(runtime, rest)
-  if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, workspaces: input.workspaces, argv: rest, confirm: input.confirm }))
-  if (command === 'approvals') return reportWorkspaceErrors(() => approvals({ config: input.config, runtime, workspaces: input.workspaces, argv: rest }))
-  if (command === 'check-url') return checkUrlCommand({ argv: rest, allowedHosts: input.config.allowedHosts, runtimeFor: workspace => runtimeForWorkspace({ runtime, workspaces: input.workspaces, workspace }) })
+  if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, argv: rest, confirm: input.confirm }))
+  if (command === 'approvals') return reportWorkspaceErrors(() => approvals({ config: input.config, runtime, argv: rest }))
+  if (command === 'check-url') return checkUrlCommand({ argv: rest, allowedHosts: input.config.allowedHosts, runtime: async () => runtime })
   if (command === 'grants') return grants(runtime, rest)
-  if (command === 'workspace') return workspaceRegistryCommand({ config: input.config, runtime, argv: rest })
   if (command === 'workspaces') return shellWorkspacesCommand(runtime, rest)
   if (command === 'history') return historyCommand(runtime, rest)
   if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
-  if (command === 'policy') return policyCommand(runtime, rest, input.workspaces)
-  if (command === 'keys') return keysCommand({ config: input.config, argv: rest })
+  if (command === 'policy') return policyCommand(runtime, rest)
   throw new Error(`No handler for the owner command ${command}`)
 }
 
@@ -265,20 +289,9 @@ async function reportWorkspaceErrors(operation: () => Promise<CliResult>): Promi
 }
 
 interface CommandInput {
-  config: BuckleConfig
+  config: NodeConfig
   runtime: BuckleRuntime
-  workspaces: WorkspaceManager
   argv: string[]
-}
-
-/**
- * Whose queue is being answered. A token is issued and resolved inside one workspace's own state,
- * so a request from a registered child workspace is reachable only through that workspace's
- * runtime; the node's own is the default.
- */
-async function runtimeForWorkspace(input: { runtime: BuckleRuntime; workspaces: WorkspaceManager; workspace?: string }): Promise<BuckleRuntime> {
-  if (!input.workspace || input.workspace === 'default') return input.runtime
-  return (await input.workspaces.resolve(input.workspace)).runtime
 }
 
 /**
@@ -287,13 +300,13 @@ async function runtimeForWorkspace(input: { runtime: BuckleRuntime; workspaces: 
  * readable through the admin API alone.
  */
 async function approvals(input: CommandInput): Promise<CliResult> {
-  const { values, positionals } = parseArgs({ args: input.argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, workspace: { type: 'string' } }, allowPositionals: true })
+  const { values, positionals } = parseArgs({ args: input.argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' } }, allowPositionals: true })
   const [action, token, ...extra] = positionals
   if (action !== undefined && (action !== 'show' || token === undefined || extra.length > 0 || values.watch)) return fail('Usage: buckle approvals [--json] [--watch] [--workspace <id>], or buckle approvals show <token> [--json] [--workspace <id>]')
   if (values.watch && values.json) return fail('--watch asks in the terminal, so it takes no --json')
-  const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
+  const { runtime } = input
   if (token !== undefined) return showAsk({ runtime, token, json: values.json === true, node: input.config.serverId })
-  if (values.watch) return watch(runtime, input.runtime)
+  if (values.watch) return watch(runtime)
   // The whole call each ask came from (owner decision D17), redacted and never cut, once per request group: each ask
   // names it by callRef and the group's first carries it (review M1 of the slice 5 re-review). An ask recorded before
   // this build has none, and is listed with the command that denies it (review L6 of the slice 5 re-review).
@@ -357,7 +370,7 @@ function showAsk(input: { runtime: BuckleRuntime; token: string; json: boolean; 
  * that reaches the process as a signal, where readline is not reading keys, stops it the same way.
  * Each answer is audited in the node's log, where `buckle approve` records its own.
  */
-async function watch(runtime: BuckleRuntime, node: BuckleRuntime): Promise<CliResult> {
+async function watch(runtime: BuckleRuntime): Promise<CliResult> {
   // The action and the prompt go to stdout, so both ends must be a terminal, as terminalConfirm requires for buckle
   // approve: with stdout redirected a key would grant an action never seen (review L2 of the continuation review).
   if (!process.stdin.isTTY || !process.stdout.isTTY) return fail(`buckle approvals --watch needs a terminal to ask in, on both its input and its output. ${noTerminal(runtime.workspaceId)}`)
@@ -365,7 +378,7 @@ async function watch(runtime: BuckleRuntime, node: BuckleRuntime): Promise<CliRe
   const interrupt = () => interrupted.abort()
   process.once('SIGINT', interrupt)
   try {
-    return await watchApprovals({ approvals: runtime.approvalService, actions: node.actions, workspaceId: runtime.workspaceId, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
+    return await watchApprovals({ approvals: runtime.approvalService, actions: runtime.actions, workspaceId: runtime.workspaceId, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
   } finally {
     process.off('SIGINT', interrupt)
   }
@@ -380,7 +393,7 @@ async function watch(runtime: BuckleRuntime, node: BuckleRuntime): Promise<CliRe
 async function approve(input: CommandInput & { confirm: Confirm | null }): Promise<CliResult> {
   const { positionals, values } = parseArgs({
     args: input.argv,
-    options: { scope: { type: 'string' }, deny: { type: 'boolean' }, workspace: { type: 'string' }, host: { type: 'string' } },
+    options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' } },
     allowPositionals: true,
   })
   const token = positionals[0]
@@ -389,7 +402,7 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
   const scope = GrantScopeSchema.safeParse(values.scope ?? 'once')
   if (!scope.success) return fail(`Invalid scope: ${values.scope}`)
 
-  const runtime = await runtimeForWorkspace({ ...input, workspace: values.workspace })
+  const { runtime } = input
   // The named ask alone, and its call file alone, however many asks its call made (review M1 of the slice 5 re-review).
   const ask = runtime.approvalService.waitingAsk(token)
   if (ask) process.stdout.write(`${token}\n${describeWaitingAsk({ ask, node: input.config.serverId, workspaceId: runtime.workspaceId }).join('\n')}\n`)
@@ -499,7 +512,7 @@ async function invoke(runtime: BuckleRuntime, tool: string, args: unknown): Prom
  * person at a terminal, or a person's device where the node serves its admin face; denying works anywhere.
  */
 function noTerminal(workspaceId: string): string {
-  const named = workspaceId === 'default' ? '' : ` --workspace ${workspaceId}`
+  const named = ` --workspace ${workspaceId}`
   return `At a terminal, answer asks in buckle approvals --watch${named}, or approve one with buckle approve <token>${named}, which shows the action and asks to confirm. Without one, list them with buckle approvals${named} and deny one with buckle approve <token> --deny${named}. Where the node sets BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true, a person's enrolled device approves with buckle client approve <node-url> <token>${named}.`
 }
 

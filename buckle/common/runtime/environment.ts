@@ -1,8 +1,8 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'pathe'
 import { parseEnv } from 'node:util'
 import { isOpenToOthers } from '../adapters/file-modes.js'
-import { isInside, nativePath, typedPath } from '../domain/paths.js'
+import { typedPath } from '../domain/paths.js'
 import { stateDirectoryOf } from './config.js'
 
 /** The node's environment file in its state directory, which `buckle init` and pairing write. */
@@ -77,31 +77,4 @@ function refuseMovedStateDirectory(input: { file: string; variables: Record<stri
   const named = input.variables.BUCKLE_STATE_DIR
   if (named === undefined || resolve(named) === dirname(input.file)) return
   throw new Error(`${input.file} sets BUCKLE_STATE_DIR to another directory, but the environment file in a state directory belongs to that directory. Remove the line and set BUCKLE_STATE_DIR in the shell, or name the file with BUCKLE_ENV_FILE.`)
-}
-
-/** Whether the process environment itself chose the node before its file loaded: BUCKLE_ENV_FILE or BUCKLE_WORKSPACE_ROOT. */
-export function namesItsNode(environment: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(environment.BUCKLE_ENV_FILE || environment.BUCKLE_WORKSPACE_ROOT)
-}
-
-/**
- * One node per state directory (review M4 of B18-B19): `buckle mcp`, or a command that runs a tool
- * (`buckle call`, `buckle <group> <verb>`), started in a project outside the file's workspace root
- * serves that root, not the project. Null when the process environment named its node, or the
- * working directory is inside the root.
- */
-export function outsideRootNotice(input: { namedNode: boolean; root: string; cwd: string; file: string | null }): string | null {
-  if (input.namedNode || isInside(realPath(input.root), realPath(input.cwd))) return null
-  const source = input.file ? `the workspace root ${input.file} sets` : 'its workspace root'
-  return `Buckle serves ${input.root}, ${source}, but started in ${input.cwd}, outside it: this project gets that root's files, grants and history. To give this project its own node, set BUCKLE_ENV_FILE to its own environment file, or BUCKLE_WORKSPACE_ROOT and BUCKLE_STATE_DIR, in the shell or the MCP config's env.`
-}
-
-/** As the disk names it (realpathSync.native, the case it stores), as the root it is compared with is named. */
-function realPath(path: string): string {
-  try { return nativePath(realpathSync.native(path)) } catch { return resolve(path) }
-}
-
-/** Owner decision D5: a project outside the root is warned, not refused. A later ruling flips it here: throw new Error(notice). */
-export function meetOutsideRoot(notice: string): void {
-  process.stderr.write(`Warning: ${notice}\n`)
 }

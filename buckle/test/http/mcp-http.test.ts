@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { useHost } from '@5straps/runtime/nitro'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpHttpHandlers } from '../../common/types/ports/mcp-http.js'
-import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
+import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
 // The MCP face over HTTP on the MCP layer (B16): initialize, a tool call relayed through the invoker,
@@ -103,8 +103,7 @@ describe('the MCP face over HTTP', () => {
     const { mkdirSync } = await import('node:fs')
     mkdirSync(one)
     writeFileSync(join(one, 'note.md'), 'workspace one content')
-    const agent = 'workspace-one-mcp-agent-token-fixture'
-    expect((await buckle.request('/setup/workspaces', { method: 'POST', headers: headers(ADMIN), body: JSON.stringify({ id: 'one', name: 'One', root: one, authToken: agent, adminToken: 'workspace-one-mcp-admin-token-fixture' }) })).status).toBe(201)
+    const agent = await mintedToken(buckle.request('/setup/workspaces', { method: 'POST', headers: headers(ADMIN), body: JSON.stringify({ id: 'one', name: 'One', dir: one }) }))
 
     expect((await buckle.request('/workspaces/one/mcp', { method: 'POST', headers: headers(), body: initialize })).status).toBe(401)
     expect(buckle.runtime.actions.read(20)).toContainEqual(expect.objectContaining({ tool: 'workspace_mcp_auth_rejected', workspaceId: 'one', outcome: 'denied' }))

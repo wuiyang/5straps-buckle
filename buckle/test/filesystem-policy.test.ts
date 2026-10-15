@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it } from 'vitest'
 import { emptyWorkspacePolicy, WorkspacePolicySchema } from '@5straps/protocol'
-import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
+import { openSettingsFile } from '../common/services/workspaces/workspace-settings.js'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
 import { createFilesystemPolicyRule, projectFilesystemSandbox, resolveFilesystemPermission } from '../common/domain/filesystem-policy.js'
 import { policyRevision } from '../common/domain/policy.js'
@@ -13,11 +13,10 @@ function root() { const path = mkdtempSync(join(tmpdir(), 'buckle-path-policy-')
 afterEach(() => { for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true }) })
 const policy = (rules: unknown[]) => WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules } })
 
-it('keeps denied ancestors and node ceilings above child allows', () => {
+it('keeps denied ancestors above child allows', () => {
   const own = policy([{ path: '.', read: 'allow', write: 'allow' }, { path: 'private', read: 'deny' }, { path: 'private/file.txt', read: 'allow' }])
   expect(resolveFilesystemPermission({ path: 'private/file.txt', operation: 'read', policy: own })).toBe('deny')
-  expect(resolveFilesystemPermission({ path: 'src/index.ts', operation: 'write', policy: own, ceiling: policy([{ path: '.', write: 'deny' }]) })).toBe('deny')
-  expect(resolveFilesystemPermission({ path: 'src/index.ts', operation: 'read', policy: own, ceiling: policy([{ path: '.', read: 'ask' }]) })).toBe('ask')
+  expect(resolveFilesystemPermission({ path: 'src/index.ts', operation: 'write', policy: own })).toBe('allow')
 })
 
 it.each(['../secret', '/absolute', 'a/../b', 'a//b', 'a\\b'])('rejects invalid policy path %s', path => {
@@ -45,22 +44,22 @@ it('places readonly workspace masks after writable binds', () => {
   expect(wrapped.args.join(' ')).toContain('--bind /source /workspace --ro-bind /source/private /workspace/private')
 })
 
-it('atomically refuses stale policy revisions across separate store instances', async () => {
-  const filePath = join(root(), 'policies.json')
-  const first = createFilePolicyStore({ filePath, workspace: '/workspace' })
-  const second = createFilePolicyStore({ filePath, workspace: '/workspace' })
-  const revision = policyRevision(null)
-  await first.write(policy([{ path: '.', write: 'deny' }]), revision)
-  await expect(second.write(policy([{ path: '.', write: 'allow' }]), revision)).rejects.toThrow(/changed/)
-  expect(first.read()?.filesystem?.rules[0]?.write).toBe('deny')
+it('atomically refuses stale settings revisions across separate file instances', async () => {
+  const filePath = join(root(), 'workspace.json')
+  const first = openSettingsFile({ filePath })
+  const second = openSettingsFile({ filePath })
+  const revision = first.read().revision
+  await first.update(settings => ({ ...settings, policy: policy([{ path: '.', write: 'deny' }]) }), revision)
+  await expect(second.update(settings => ({ ...settings, policy: policy([{ path: '.', write: 'allow' }]) }), revision)).rejects.toThrow(/changed/)
+  expect(first.read().policy.filesystem?.rules[0]?.write).toBe('deny')
 })
 
 // Review H2 of the second proof-of-possession re-review: on macOS a case variant of an owner-denied
 // directory names that directory, so a new file there was judged by its spelling and allowed. A
 // restriction now meets every spelling the volume folds; an allow meets only its own.
-const judged = (input: { rules: unknown[]; path: string; kind?: 'read_path' | 'write_path'; caseInsensitive: boolean; ceiling?: unknown[] }) => {
+const judged = (input: { rules: unknown[]; path: string; kind?: 'read_path' | 'write_path'; caseInsensitive: boolean }) => {
   const directory = '/Users/owner/project'
-  const rule = createFilesystemPolicyRule({ root: directory, policy: policy(input.rules), ...(input.ceiling ? { ceiling: policy(input.ceiling) } : {}), caseInsensitive: input.caseInsensitive })
+  const rule = createFilesystemPolicyRule({ root: directory, policy: policy(input.rules), caseInsensitive: input.caseInsensitive })
   const path = join(directory, input.path)
   return rule.evaluate({ tool: 'fs_write', effect: { kind: input.kind ?? 'write_path', path, directory: join(path, '..') }, grants: { subjectsFor: () => [] } })
 }
@@ -76,8 +75,7 @@ it.each([
   expect(judged({ rules, path, caseInsensitive: false })).toBeNull()
 })
 
-it('folds a node ceiling and an ask rule the same way', () => {
-  expect(judged({ rules: [], ceiling: [{ path: 'secrets', write: 'deny' }], path: 'SECRETS/new.json', caseInsensitive: true })).toMatchObject({ kind: 'deny' })
+it('folds an ask rule the same way', () => {
   expect(judged({ rules: [{ path: 'docs', read: 'ask' }], path: 'DOCS/plan.md', kind: 'read_path', caseInsensitive: true })).toMatchObject({ kind: 'ask', rule: 'filesystem_policy' })
 })
 

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { snapshot } from '../common/services/history/snapshot.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
@@ -187,9 +187,10 @@ describe('the history database file', () => {
     const root = mkdtempSync('/tmp/buckle-history-leak-'); roots.push(root)
     mkdirSync(join(root, 'workspace'))
     mkdirSync(join(root, 'state'), { mode: 0o700 })
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'no-such-pack', BUCKLE_ALLOW_SHELL: 'false' })
+    // A pack the node cannot build, as the environment pack is without its validator: workspace.json names packs by id alone.
+    const config = { ...configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' }), enabledPacks: ['environment'] }
     // A registered workspace retries its whole creation on every request.
-    for (let attempt = 0; attempt < 3; attempt += 1) await expect(createRuntime({ config })).rejects.toThrow('Unknown BUCKLE_PACKS')
+    for (let attempt = 0; attempt < 3; attempt += 1) await expect(createRuntime({ config })).rejects.toThrow('packs.enabled names packs this node cannot build: environment')
     expect(openDescriptors(root)).toEqual([])
   })
 })
@@ -311,7 +312,7 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
 
   it('lets fs_write run in a workspace whose node_modules is hard-linked, and restores it', async () => {
     const { root, workspace, linked } = await linkedWorkspace()
-    const runtime = await createRuntime({ config: loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }) })
+    const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }) })
     try {
       const request = { requestId: 'linked-write', tool: 'fs_write', args: { path: 'notes.md', content: 'hello' }, approvalTokens: [] as string[], context: { approvalWait: { mode: 'none' as const } } }
       const asked = await runtime.invoke({ sessionId: 's', request })

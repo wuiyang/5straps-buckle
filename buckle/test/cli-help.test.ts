@@ -3,13 +3,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
-import { answerWithoutConfiguration, runCli } from '../cli/main.js'
+import { answerWithoutConfiguration } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { policyCommand, repairStoredPolicy } from '../cli/policy.js'
-import { createFilePolicyStore } from '../common/adapters/policy-store/file-policy-store.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
-import { loadConfig, policyPath } from '../common/runtime/config.js'
-import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { settingsPath, withPolicy } from '../common/services/workspaces/workspace-settings.js'
+import { workspacesOf } from './support/workspaces.js'
 
 // The top-level help once omitted the dangerously-allow switch and `buckle client approve`, and `buckle policy --help`
 // printed its usage but exited 1, so a wrapper that treats a non-zero exit as failure saw asking for help as an error
@@ -25,12 +26,14 @@ const captured = () => {
   return { out: () => out, err: () => err }
 }
 
-/** A node in fresh directories whose stored policy denies `curl *`, with that file's text before any command. */
+/** A node in fresh directories whose workspace default's policy denies `curl *`, with its settings file's text before any command. */
 async function storedNode(prefix: string) {
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), `${prefix}-`)), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), `${prefix}-state-`)), BUCKLE_SANDBOX: 'none' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), `${prefix}-`)), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), `${prefix}-state-`)), BUCKLE_SANDBOX: 'none' })
   const stored = { ...emptyWorkspacePolicy(), commands: { ...emptyWorkspacePolicy().commands, deny: ['curl *'] } }
-  await createFilePolicyStore({ filePath: policyPath(config), workspace: config.cwd }).write(stored)
-  return { config, stored, before: readFileSync(policyPath(config), 'utf8') }
+  const workspaces = await workspacesOf(config)
+  await workspaces.updateSettings('default', current => withPolicy(current, stored))
+  const file = settingsPath(config.stateDirectory, 'default')
+  return { config, stored, workspaces, file, before: readFileSync(file, 'utf8') }
 }
 
 describe('buckle --help', () => {
@@ -52,11 +55,10 @@ describe('buckle --help', () => {
 describe('buckle policy --help', () => {
   // The help case returns before any runtime or workspace is touched, so neither is built for this call.
   const runtime = {} as unknown as BuckleRuntime
-  const workspaces = {} as unknown as WorkspaceManager
 
   it.each(['--help', '-h', 'help'])('prints the usage to stdout and exits 0 for %s', async (flag) => {
     const io = captured()
-    const result = await policyCommand(runtime, [flag], workspaces)
+    const result = await policyCommand(runtime, [flag])
     expect(result.exitCode).toBe(0)
     expect(io.out()).toContain('buckle policy dangerously-allow on|off')
     expect(io.err()).toBe('')
@@ -64,7 +66,7 @@ describe('buckle policy --help', () => {
 
   it('still exits 1 and prints the usage to stderr for an unknown subcommand', async () => {
     const io = captured()
-    const result = await policyCommand(runtime, ['not-a-subcommand'], workspaces)
+    const result = await policyCommand(runtime, ['not-a-subcommand'])
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain('buckle policy show')
     expect(io.out()).toBe('')
@@ -72,11 +74,11 @@ describe('buckle policy --help', () => {
 })
 
 // `buckle policy allow-command 'git *' --workspace child` edited the node's own workspace and exited 0, as if it had
-// changed the workspace the flag names. An edit refuses a flag it does not know before it touches any policy: the
-// runtime here is empty, so any reading or writing of a policy would throw.
+// changed the workspace the flag names. The CLI takes --workspace and --dir before the command sees them (D83 (4)); an
+// edit refuses any flag it does not know before it touches any policy: the runtime here is empty, so any reading or
+// writing of a policy would throw.
 describe('buckle policy refuses a flag it does not know', () => {
   const runtime = {} as unknown as BuckleRuntime
-  const workspaces = {} as unknown as WorkspaceManager
 
   it.each([
     [['allow-command', 'git push *', '--workspace', 'child'], '--workspace'],
@@ -87,9 +89,9 @@ describe('buckle policy refuses a flag it does not know', () => {
     [['export', '--json'], '--json'],
   ])('refuses %j with the usage and exit 1, naming %s', async (argv, flag) => {
     const io = captured()
-    const result = await policyCommand(runtime, argv, workspaces)
+    const result = await policyCommand(runtime, argv)
     expect(result.exitCode).toBe(1)
-    expect(io.err()).toContain(`buckle policy ${argv[0]} does not know the flag ${flag}; it edits the node's own workspace only`)
+    expect(io.err()).toContain(`buckle policy ${argv[0]} does not know the flag ${flag}\n`)
     expect(io.err()).toContain('buckle policy show')
     expect(io.out()).toBe('')
   })
@@ -100,7 +102,7 @@ describe('buckle policy refuses a flag it does not know', () => {
     [['dangerously-allow', '--bogus'], '--bogus'],
   ])('refuses %j, an action with flags of its own, with the usage and exit 1, naming %s', async (argv, flag) => {
     const io = captured()
-    const result = await policyCommand(runtime, argv, workspaces)
+    const result = await policyCommand(runtime, argv)
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain(`buckle policy ${argv[0]} does not know the flag ${flag}\n`)
     expect(io.err()).toContain('buckle policy show')
@@ -108,13 +110,13 @@ describe('buckle policy refuses a flag it does not know', () => {
   })
 
   it('refuses one while repairing a stored policy the node cannot load, and leaves the stored file as it was', async () => {
-    const { config, stored, before } = await storedNode('buckle-flag')
-    const failure = new StoredPolicyError({ file: policyPath(config), reason: 'a test failure', stored, environment: emptyWorkspacePolicy() })
+    const { config, stored, workspaces, file, before } = await storedNode('buckle-flag')
+    const failure = new StoredPolicyError({ file, reason: 'a test failure', stored })
     const io = captured()
-    const result = await repairStoredPolicy({ config, argv: ['clear', '--workspace', 'child'], failure })
+    const result = await repairStoredPolicy({ workspaces, target: {}, cwd: config.cwd, argv: ['clear', '--force'], failure })
     expect(result.exitCode).toBe(1)
-    expect(io.err()).toContain('buckle policy clear does not know the flag --workspace')
-    expect(readFileSync(policyPath(config), 'utf8')).toBe(before)
+    expect(io.err()).toContain('buckle policy clear does not know the flag --force')
+    expect(readFileSync(file, 'utf8')).toBe(before)
   })
 })
 
@@ -123,7 +125,6 @@ describe('buckle policy refuses a flag it does not know', () => {
 // quoted form, before it touches any policy: the runtime here is empty, so any reading or writing would throw.
 describe('buckle policy refuses words past its one argument', () => {
   const runtime = {} as unknown as BuckleRuntime
-  const workspaces = {} as unknown as WorkspaceManager
 
   it.each([
     [['allow-command', 'pnpm', 'test', '*'], `'pnpm test *'`],
@@ -140,7 +141,7 @@ describe('buckle policy refuses words past its one argument', () => {
     [['allow-command', 'echo', 'it\'s'], `'echo it'\\''s'`],
   ])('refuses %j with the usage and exit 1, quoting it as %s', async (argv, quoted) => {
     const io = captured()
-    const result = await policyCommand(runtime, argv, workspaces)
+    const result = await policyCommand(runtime, argv)
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain(`buckle policy ${argv[0]} takes one argument, not ${argv.length - 1}; to pass a glob or path of several words, quote it as one: buckle policy ${argv[0]} ${quoted}\n`)
     expect(io.err()).toContain('buckle policy show')
@@ -148,21 +149,21 @@ describe('buckle policy refuses words past its one argument', () => {
   })
 
   it('stores nothing through the whole command, and the stored file stays as it was', async () => {
-    const { config, before } = await storedNode('buckle-words')
+    const { config, file, before } = await storedNode('buckle-words')
     const io = captured()
     const result = await runCli({ argv: ['policy', 'deny-command', 'git', 'push*'], config })
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain('quote it as one: buckle policy deny-command \'git push*\'')
-    expect(readFileSync(policyPath(config), 'utf8')).toBe(before)
+    expect(readFileSync(file, 'utf8')).toBe(before)
   })
 
   it('refuses them while repairing a stored policy the node cannot load, and leaves the stored file as it was', async () => {
-    const { config, stored, before } = await storedNode('buckle-words')
-    const failure = new StoredPolicyError({ file: policyPath(config), reason: 'a test failure', stored, environment: emptyWorkspacePolicy() })
+    const { config, stored, workspaces, file, before } = await storedNode('buckle-words')
+    const failure = new StoredPolicyError({ file, reason: 'a test failure', stored })
     const io = captured()
-    const result = await repairStoredPolicy({ config, argv: ['remove', 'curl', '*'], failure })
+    const result = await repairStoredPolicy({ workspaces, target: {}, cwd: config.cwd, argv: ['remove', 'curl', '*'], failure })
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain('quote it as one: buckle policy remove \'curl *\'')
-    expect(readFileSync(policyPath(config), 'utf8')).toBe(before)
+    expect(readFileSync(file, 'utf8')).toBe(before)
   })
 })

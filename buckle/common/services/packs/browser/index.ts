@@ -75,7 +75,7 @@ export interface BrowserPackOptions {
   /** The environment it runs with (hostEnvironment); the workspace's own roots alone when absent. */
   environment?: HostEnvironment
   /**
-   * Each configured approved list, node ceiling first, empty when none is set. Passed on every
+   * The workspace's approved list, when it has one, else nothing. Passed on every
    * call as --allowed-domains, so clicks, redirects and page requests stay on their hosts too; the
    * pack is rebuilt when the policy changes, and agent-browser relaunches the browser when a call
    * brings a different list.

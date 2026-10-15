@@ -108,11 +108,11 @@ export function profileSession(directory: string): string {
 /**
  * The mode the node's settings choose, as `/setup/status` reports it: a word, the setting, never its value, and why
  * the browser pack is withheld, or null while it runs, so a refused profile folder never reads as a running mode.
- * `pack` is the browser pack as the manifest lists it, absent when BUCKLE_PACKS leaves it out.
+ * `pack` is the browser pack as the manifest lists it, absent when the workspace's packs.enabled leaves it out.
  */
 export function browserModeStatus(settings: { browserCdp?: string; browserProfile?: string }, pack: { unavailableReason: string | null } | undefined): { mode: BrowserModeName; setting: string | null; withheld: string | null } {
   const mode: BrowserModeName = settings.browserCdp ? 'attached' : settings.browserProfile ? 'profile' : 'fresh'
-  return { mode, setting: MODE_SETTINGS[mode], withheld: pack ? pack.unavailableReason : 'BUCKLE_PACKS leaves the browser pack out' }
+  return { mode, setting: MODE_SETTINGS[mode], withheld: pack ? pack.unavailableReason : 'the workspace setting packs.enabled leaves the browser pack out' }
 }
 
 /** The warning a mode without in-browser containment logs at pack start, or null for a fresh browser. */

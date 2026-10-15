@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
-import { runCli } from '../cli/main.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { runCli } from './support/cli.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
 import { allForms, commandFormsOf, READ_LIMITS } from '../common/domain/command-forms.js'
@@ -148,7 +148,7 @@ describe('a refused shell wrapper names the allow rule that admits it', () => {
 
   /** A node whose policy the CLI stores, and its permission pipeline as the next process reads it; nothing runs. */
   async function stored(rule: string, command: string, args: string[]) {
-    const config = loadConfig({
+    const config = configFromEnvironment({
       BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-wrapper-rule-')), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-wrapper-rule-state-')),
       BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell', BUCKLE_APPROVAL_TIMEOUT_MS: '1',
     })
@@ -365,10 +365,10 @@ describe('a check of a large nested body', () => {
 
 // Slice 7c review R7C-CR-1: past READ_BUDGET, or nested past MAX_DEPTH, the deny globs met nothing, so a denied `git push`
 // after 100,001 statements was asked about, and the dangerously-allow switch allowed it with no click (owner decision
-// D7). A call Buckle cannot read whole is refused whenever a deny glob exists (default D30), on the node ceiling too.
+// D7). A call Buckle cannot read whole is refused whenever a deny glob exists (default D30).
 // Slice 7d review R7D-BD-1 and R7D-BD-2: substitutions nested past MAX_SUBSTITUTIONS and a find primary were refused
-// as "MAX_DEPTH", and a refusal by the node ceiling blamed the workspace policy. Each reason now names the limit that
-// stopped the reading and the policy that refused; every limit still refuses under a deny glob (default D33).
+// as "MAX_DEPTH". Each reason now names the limit that stopped the reading and the policy that refused; every limit
+// still refuses under a deny glob (default D33). No node ceiling sits over a workspace's policy (Q14).
 describe('a call Buckle cannot read whole', () => {
   const push = 'git push origin main'
   const statements = (count: number) => `${Array.from({ length: count }, (_, index) => `:${index.toString(36)}`).join(';')}; ${push}`
@@ -385,13 +385,8 @@ describe('a call Buckle cannot read whole', () => {
   }
   const engines = {
     workspace: (deny: string[]) => [createCommandPolicyRule(policyOf({ allow: ['bash -c *'], deny })), createDestructiveCommandRule()],
-    ceiling: (deny: string[]) => [
-      createCommandPolicyRule(policyOf({ deny }), { enforceWrapperAllow: false, source: 'node ceiling' }),
-      createCommandPolicyRule(policyOf({ allow: ['bash -c *'] })),
-      createDestructiveCommandRule(),
-    ],
   }
-  const named = { workspace: 'the workspace command policy', ceiling: 'the node ceiling command policy' } as const
+  const named = { workspace: 'the workspace command policy' } as const
   const check = (engine: keyof typeof engines, switched: boolean, body: string, deny = ['git push *']) =>
     withDangerouslyAllow(createPermissionEngine(engines[engine](deny)), { enabled: () => switched, root: () => '/workspace' })
       .evaluate({ tool: 'script_run', effects: [{ kind: 'exec', command: 'bash', args: ['-c', body] }], grants: { subjectsFor: () => [] } })
@@ -402,7 +397,7 @@ describe('a call Buckle cannot read whole', () => {
   }
   const overBudget = statements(100_001)
   const eightDeep = evalNested(8)
-  const cases = (['workspace', 'ceiling'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
+  const cases = (['workspace'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
 
   it.each(cases)('refuses git push after 100,001 statements past READ_BUDGET, %s deny, switch on: %s', (engine, switched) => {
     expect(commandFormsOf({ command: 'bash', args: ['-c', overBudget] }).overBudget).toBe(true)
@@ -538,7 +533,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => continued.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a continued force push under %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => continued.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a continued force push under %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -565,7 +560,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => escapeCases.map(([shape, make]) => [engine, shape, make('git push --force origin main')] as const)))('asks at the floor, %s with no deny glob, about a force push an unquoted body hides with %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => escapeCases.map(([shape, make]) => [engine, shape, make('git push --force origin main')] as const)))('asks at the floor, %s with no deny glob, about a force push an unquoted body hides with %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -607,7 +602,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => wholeCases.map(([shape, make]) => [engine, shape, make('git push --force origin main')] as const)))('asks at the floor, %s with no deny glob, about a force push a whole-body reading reveals with %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => wholeCases.map(([shape, make]) => [engine, shape, make('git push --force origin main')] as const)))('asks at the floor, %s with no deny glob, about a force push a whole-body reading reveals with %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -658,7 +653,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
-  it.each(['workspace', 'ceiling'] as const)('asks at the floor, %s with no deny glob, about a force push whose flag a backslash-newline splits', (engine) => {
+  it.each(['workspace'] as const)('asks at the floor, %s with no deny glob, about a force push whose flag a backslash-newline splits', (engine) => {
     for (const body of [`git push --for${B}\nce origin main`, `echo \`git push "--for${B}\nce" origin main\``]) {
       const outcome = check(engine, false, body, [])
       if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
@@ -683,7 +678,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => Object.entries(backtickForce).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push a backtick body escapes in %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => Object.entries(backtickForce).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push a backtick body escapes in %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -704,7 +699,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => Object.entries(continuedBacktick('push --force origin main')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push a backtick continuation joins in %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => Object.entries(continuedBacktick('push --force origin main')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push a backtick continuation joins in %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -723,7 +718,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
-  it.each(['workspace', 'ceiling'] as const)('asks at the floor, %s with no deny glob, about a force push after a commented backtick body', (engine) => {
+  it.each(['workspace'] as const)('asks at the floor, %s with no deny glob, about a force push after a commented backtick body', (engine) => {
     const outcome = check(engine, false, `echo \`id # c\`; git push --force origin main`, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -749,7 +744,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => Object.entries(hiddenByLexer('git push --force origin main')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push behind %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => Object.entries(hiddenByLexer('git push --force origin main')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push behind %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -818,7 +813,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${scriptData}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => dataShapes.map(([shape, body, reason]) => [engine, shape, body, reason] as const)))('asks at the floor, %s with no deny glob, about a script that arrives as data: %s', (engine, _shape, body, reason) => {
+  it.each((['workspace'] as const).flatMap(engine => dataShapes.map(([shape, body, reason]) => [engine, shape, body, reason] as const)))('asks at the floor, %s with no deny glob, about a script that arrives as data: %s', (engine, _shape, body, reason) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(reason)]])
@@ -863,7 +858,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => expandedShapes.filter(([shape]) => !shape.startsWith('su')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about shell text an expansion supplies: %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => expandedShapes.filter(([shape]) => !shape.startsWith('su')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about shell text an expansion supplies: %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
@@ -918,7 +913,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => commandWords.filter(([, body]) => !body.includes('sudo')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a command word an expansion supplies: %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => commandWords.filter(([, body]) => !body.includes('sudo')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a command word an expansion supplies: %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
@@ -948,7 +943,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['git push*']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => loneTildes.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a lone tilde command word: %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => loneTildes.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a lone tilde command word: %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
@@ -1013,7 +1008,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['git push*']))).toBe(`Refused by ${named[engine]}: git push*`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => nested('git push --force origin main').map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push after %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => nested('git push --force origin main').map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push after %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -1036,7 +1031,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => nestedCommandWords.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a command word %s supplies', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => nestedCommandWords.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a command word %s supplies', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
@@ -1114,7 +1109,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['git push*']))).toBe(`${expansion}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => movedCommands.filter(([shape]) => !shape.startsWith('su')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a command an expansion among the wrapper words may move: %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => movedCommands.filter(([shape]) => !shape.startsWith('su')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a command an expansion among the wrapper words may move: %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
@@ -1151,7 +1146,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['git push*']))).toBe(`Refused by ${named[engine]}: git push*`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => keptRead('git push --force origin main').map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push read whole behind %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => keptRead('git push --force origin main').map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push read whole behind %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(body.startsWith('sudo') ? /^sudo escalates privileges$/ : /^Force push rewrites remote history/)]])
@@ -1210,7 +1205,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['terraform destroy *']))).toBe(`${scriptData}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => fedOperands.filter(([, body]) => !body.includes('sudo')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a script operand the call\'s text feeds: %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => fedOperands.filter(([, body]) => !body.includes('sudo')).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a script operand the call\'s text feeds: %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => ask.rule)).toEqual(['destructive_command'])
@@ -1262,7 +1257,7 @@ describe('a call Buckle cannot read whole', () => {
   })
 
   // A device operand (`--rcfile /dev/fd/3`) is asked about first as one, so those rows check the refusal alone.
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => startupShapes.filter(([, body]) => !/ \/dev\//.test(body)).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a startup file the call supplies: %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => startupShapes.filter(([, body]) => !/ \/dev\//.test(body)).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a startup file the call supplies: %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${scriptData}; asked rather than guessed at`]])
@@ -1329,7 +1324,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, body, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => forcedUses.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push an alias spells %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => forcedUses.map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about a force push an alias spells %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -1352,7 +1347,7 @@ describe('a call Buckle cannot read whole', () => {
   })
 
   // A device operand (`source /dev/stdin`) is asked about first as one, so that row checks the refusal alone.
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => aliasedLater.filter(([, body]) => !/ \/dev\//.test(body)).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about an alias reaching %s', (engine, _shape, body) => {
+  it.each((['workspace'] as const).flatMap(engine => aliasedLater.filter(([, body]) => !/ \/dev\//.test(body)).map(([shape, body]) => [engine, shape, body] as const)))('asks at the floor, %s with no deny glob, about an alias reaching %s', (engine, _shape, body) => {
     const outcome = check(engine, false, body, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
@@ -1391,7 +1386,7 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, aliasedForce, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
   })
 
-  it.each(['workspace', 'ceiling'] as const)('asks at the floor, %s with no deny glob, about a force push an alias spells', (engine) => {
+  it.each(['workspace'] as const)('asks at the floor, %s with no deny glob, about a force push an alias spells', (engine) => {
     const outcome = check(engine, false, aliasedForce, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Force push rewrites remote history/)]])
@@ -1423,7 +1418,7 @@ describe('a call Buckle cannot read whole', () => {
   // line and read `\--force`, so the floor let the force push run.
   const tabbedRuns = [[5, `bash <<-EOF\n\tgit push ${B.repeat(5)}\n\t--force origin main\n\tEOF`]] as const
 
-  it.each(['workspace', 'ceiling'] as const)('asks at the floor, %s with no deny glob, about a force push a <<- continuation joins on with its tab', (engine) => {
+  it.each(['workspace'] as const)('asks at the floor, %s with no deny glob, about a force push a <<- continuation joins on with its tab', (engine) => {
     for (const [, body] of tabbedRuns) {
       const outcome = check(engine, false, body, [])
       if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
@@ -1439,31 +1434,6 @@ describe('a call Buckle cannot read whole', () => {
   // --force` and a word glob on it still matches; an empty word between push and the flag would misalign it.
   it.each(cases)('refuses a force push with a space-surrounded continuation, %s deny, switch on: %s, by the force glob', (engine, switched) => {
     expect(refusal(check(engine, switched, `git push ${B}\n --force origin main`, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
-  })
-
-  // Slice 7e review R7E-LW-3: the node ceiling's rule runs first, so with deny lists in both policies it refused at a
-  // reading limit naming itself although the workspace glob had matched the push. A glob that matched in any policy is
-  // named first; the limit is named, ceiling first, only when none matched. The call is refused either way.
-  const bothPolicies = (ceilingDeny: string[], workspaceDeny: string[]) => {
-    const workspace = policyOf({ allow: ['bash -c *'], deny: workspaceDeny })
-    return [
-      createCommandPolicyRule(policyOf({ deny: ceilingDeny }), { enforceWrapperAllow: false, source: 'node ceiling', others: [{ policy: workspace, source: 'workspace' }] }),
-      createCommandPolicyRule(workspace),
-      createDestructiveCommandRule(),
-    ]
-  }
-  const checkBoth = (switched: boolean, body: string, ceilingDeny: string[], workspaceDeny: string[]) =>
-    withDangerouslyAllow(createPermissionEngine(bothPolicies(ceilingDeny, workspaceDeny)), { enabled: () => switched, root: () => '/workspace' })
-      .evaluate({ tool: 'script_run', effects: [{ kind: 'exec', command: 'bash', args: ['-c', body] }], grants: { subjectsFor: () => [] } })
-
-  it.each([false, true].flatMap(switched => [
-    [switched, 'node ceiling terraform, workspace git push, the idiom then a push', `${repoRoot}; ${push}`, ['terraform destroy *'], ['git push *'], 'Refused by the workspace command policy: git push *'],
-    [switched, 'node ceiling git push, workspace terraform, the idiom then a push', `${repoRoot}; ${push}`, ['git push *'], ['terraform destroy *'], 'Refused by the node ceiling command policy: git push *'],
-    [switched, 'node ceiling terraform, workspace git push, the idiom alone', repoRoot, ['terraform destroy *'], ['git push *'], "Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so the node ceiling command policy's deny list cannot meet all of it; refused rather than asked"],
-    [switched, 'node ceiling git push, no workspace deny list, the idiom alone', repoRoot, ['git push *'], [], "Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so the node ceiling command policy's deny list cannot meet all of it; refused rather than asked"],
-    [switched, 'no node ceiling deny list, workspace git push, the idiom alone', repoRoot, [], ['git push *'], "Command substitutions inside double quotes nest deeper than Buckle splits into statements (MAX_SUBSTITUTIONS: 4 levels), so the workspace command policy's deny list cannot meet all of it; refused rather than asked"],
-  ] as const))('names the glob that matched before any limit, switch on: %s, %s', (switched, _shape, body, ceilingDeny, workspaceDeny, reason) => {
-    expect(refusal(checkBoth(switched, body, [...ceilingDeny], [...workspaceDeny]))).toBe(reason)
   })
 
   it('reads a heredoc body of 40,000 lines, every one continued, within a second, joining them in one pass', () => {
@@ -1487,11 +1457,9 @@ describe('a call Buckle cannot read whole', () => {
 
 // The interpreter decision (docs/dev/architecture.md, Interpreters): a body run by python, node, deno, bun, perl, ruby,
 // php, awk (gawk, mawk, nawk), lua, luajit, pwsh, powershell, tsx or ts-node is code Buckle cannot read as shell, so
-// such a call is unknown: refused naming the limit under any deny glob, on the workspace and the node ceiling and with
-// the dangerously-allow switch on or off, and asked at the floor otherwise, as an unread call is, until the policy
-// allows
-// that interpreter, which then reads as an ordinary command under its own globs. The node ceiling judges by its own
-// list, so it refuses an interpreter a workspace allows unless the ceiling allows it too (owner decision D7).
+// such a call is unknown: refused naming the limit under any deny glob, with the dangerously-allow switch on or off,
+// and asked at the floor otherwise, as an unread call is, until the workspace's policy allows that interpreter, which
+// then reads as an ordinary command under its own globs (owner decision D7).
 describe('a call that runs code with an interpreter', () => {
   const policyOf = (input: { deny?: string[]; interpreters?: string[] }) => {
     const policy = emptyWorkspacePolicy()
@@ -1499,27 +1467,19 @@ describe('a call that runs code with an interpreter', () => {
     if (input.interpreters) policy.commands.allowedInterpreters = input.interpreters
     return compilePolicy(policy)
   }
-  interface Setting { deny: string[]; workspaceAllows?: string[]; ceilingAllows?: string[] }
+  interface Setting { deny: string[]; workspaceAllows?: string[] }
   const engines = {
     workspace: (setting: Setting) => {
       const workspace = policyOf({ deny: setting.deny, interpreters: setting.workspaceAllows })
       return [createCommandPolicyRule(workspace, { enforceWrapperAllow: false }), createDestructiveCommandRule({ allowedInterpreters: workspace.commands.allowedInterpreters })]
     },
-    ceiling: (setting: Setting) => {
-      const workspace = policyOf({ interpreters: setting.workspaceAllows })
-      return [
-        createCommandPolicyRule(policyOf({ deny: setting.deny, interpreters: setting.ceilingAllows }), { enforceWrapperAllow: false, source: 'node ceiling', others: [{ policy: workspace, source: 'workspace' }] }),
-        createCommandPolicyRule(workspace, { enforceWrapperAllow: false }),
-        createDestructiveCommandRule({ allowedInterpreters: workspace.commands.allowedInterpreters }),
-      ]
-    },
   }
-  const named = { workspace: 'the workspace command policy', ceiling: 'the node ceiling command policy' } as const
+  const named = { workspace: 'the workspace command policy' } as const
   const check = (engine: keyof typeof engines, switched: boolean, call: readonly [string, readonly string[]], setting: Setting) =>
     withDangerouslyAllow(createPermissionEngine(engines[engine](setting)), { enabled: () => switched, root: () => '/workspace' })
       .evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command: call[0], args: [...call[1]] }], grants: { subjectsFor: () => [] } })
-  const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name} (allow it with buckle policy allow-interpreter ${name}, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling)`
-  const engineCases = (['workspace', 'ceiling'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
+  const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name} (allow it with buckle policy allow-interpreter ${name})`
+  const engineCases = (['workspace'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
   /** Each form runs code: inline code, a script, a module, code on its input, a versioned name, and the same behind a wrapper, a shell body, or xargs. */
   const forms = [
     ['python3', ['-c', 'print(1)'], 'python3'],
@@ -1585,7 +1545,7 @@ describe('a call that runs code with an interpreter', () => {
     expect(refusal(check(engine, switched, [command, args], { deny: ['terraform destroy *'] }))).toBe(`${unknown(name)}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => forms.map(([command, args, name]) => [engine, command, args, name] as const)))('asks at the floor, %s with no deny glob, about %s %j, naming the interpreter', (engine, command, args, name) => {
+  it.each((['workspace'] as const).flatMap(engine => forms.map(([command, args, name]) => [engine, command, args, name] as const)))('asks at the floor, %s with no deny glob, about %s %j, naming the interpreter', (engine, command, args, name) => {
     const outcome = check(engine, false, [command, args], { deny: [] })
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${unknown(name)}; asked rather than guessed at`]])
@@ -1598,22 +1558,20 @@ describe('a call that runs code with an interpreter', () => {
   })
 
   it.each(engineCases.flatMap(([engine, switched]) => forms.map(([command, args, name]) => [engine, switched, command, args, name] as const)))('reads %s, switch on: %s, %s %j as an ordinary command once the policy allows %s', (engine, switched, command, args, name) => {
-    const setting = { deny: ['terraform destroy *'], workspaceAllows: [name], ceilingAllows: [name] }
+    const setting = { deny: ['terraform destroy *'], workspaceAllows: [name] }
     expect(check(engine, switched, [command, args], setting)).toMatchObject({ kind: 'allow' })
     expect(check(engine, switched, [command, args], { deny: [], workspaceAllows: [name] })).toMatchObject({ kind: 'allow' })
   })
 
   it.each(engineCases)('still refuses an allowed interpreter its own deny glob names, %s deny, switch on: %s', (engine, switched) => {
-    expect(refusal(check(engine, switched, ['python3', ['-m', 'venv', '.venv']], { deny: ['python3 -m *'], workspaceAllows: ['python3'], ceilingAllows: ['python3'] }))).toBe(`Refused by ${named[engine]}: python3 -m *`)
+    expect(refusal(check(engine, switched, ['python3', ['-m', 'venv', '.venv']], { deny: ['python3 -m *'], workspaceAllows: ['python3'] }))).toBe(`Refused by ${named[engine]}: python3 -m *`)
   })
 
-  it.each([false, true])('refuses on the node ceiling an interpreter only the workspace allows, switch on: %s', (switched) => {
-    expect(refusal(check('ceiling', switched, ['node', ['script.js']], { deny: ['terraform destroy *'], workspaceAllows: ['node'] }))).toBe(`${unknown('node')}, so the node ceiling command policy's deny list cannot meet all of it; refused rather than asked`)
-  })
+
 
   it('names each interpreter a call runs and how to allow one, by name for one and as <name> for several', () => {
     expect(refusal(check('workspace', false, ['bash', ['-c', 'python3 -c 1; node -e 1']], { deny: ['terraform destroy *'] }))).toBe(
-      "Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): python3, node (allow each with buckle policy allow-interpreter <name>, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling), so the workspace command policy's deny list cannot meet all of it; refused rather than asked",
+      "Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): python3, node (allow each with buckle policy allow-interpreter <name>), so the workspace command policy's deny list cannot meet all of it; refused rather than asked",
     )
     expect(refusal(check('workspace', false, ['bash', ['-c', 'python3 -c 1; node -e 1']], { deny: ['terraform destroy *'], workspaceAllows: ['node'] }))).toBe(`${unknown('python3')}, so the workspace command policy's deny list cannot meet all of it; refused rather than asked`)
   })
@@ -1677,7 +1635,7 @@ describe('a call that runs code with an interpreter', () => {
 // Slice 7i residual and owner decision D7: `sudo git push` was read as `sudo` alone, so the floor asked about sudo and
 // the dangerously-allow switch turned that ask into an allow past a deny glob on `git push *`; `su -c` and `ssh` were
 // judged by their own words only. The command a wrapper runs is now read as a command of its own, beside the wrapper:
-// a deny glob on it refuses on the workspace and the node ceiling with the switch on or off, and the floor asks about a
+// a deny glob on it refuses with the switch on or off, and the floor asks about a
 // destructive one. An interactive session (ssh or su with no command, a sudo or doas shell) is unread: refused naming
 // the limit under any deny glob, and asked at the floor with none (default D33 (b)).
 describe('a command behind a wrapper', () => {
@@ -1688,13 +1646,8 @@ describe('a command behind a wrapper', () => {
   }
   const engines = {
     workspace: (deny: string[]) => [createCommandPolicyRule(policyOf(deny), { enforceWrapperAllow: false }), createDestructiveCommandRule()],
-    ceiling: (deny: string[]) => [
-      createCommandPolicyRule(policyOf(deny), { enforceWrapperAllow: false, source: 'node ceiling' }),
-      createCommandPolicyRule(policyOf([]), { enforceWrapperAllow: false }),
-      createDestructiveCommandRule(),
-    ],
   }
-  const named = { workspace: 'the workspace command policy', ceiling: 'the node ceiling command policy' } as const
+  const named = { workspace: 'the workspace command policy' } as const
   const check = (engine: keyof typeof engines, switched: boolean, call: readonly string[], deny: string[]) =>
     withDangerouslyAllow(createPermissionEngine(engines[engine](deny)), { enabled: () => switched, root: () => '/workspace' })
       .evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command: call[0]!, args: call.slice(1) }], grants: { subjectsFor: () => [] } })
@@ -1703,7 +1656,7 @@ describe('a command behind a wrapper', () => {
     expect(outcome.denial.rule).toBe('command_policy')
     return outcome.denial.reason
   }
-  const cases = (['workspace', 'ceiling'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
+  const cases = (['workspace'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
   /** Each wrapper and option shape around a command: argv wrappers before it, su -c and ssh with it as shell text. */
   const wrappers: Array<[string, (command: string[]) => string[]]> = [
     ...[
@@ -1734,7 +1687,7 @@ describe('a command behind a wrapper', () => {
     expect(refusal(check(engine, switched, wrap(push), ['git push *']))).toBe(`Refused by ${named[engine]}: git push *`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => wrappers.map(([shape, wrap]) => [engine, shape, wrap] as const)))('asks at the floor, %s with no deny glob, about a force push behind %s', (engine, _shape, wrap) => {
+  it.each((['workspace'] as const).flatMap(engine => wrappers.map(([shape, wrap]) => [engine, shape, wrap] as const)))('asks at the floor, %s with no deny glob, about a force push behind %s', (engine, _shape, wrap) => {
     const call = wrap(forcePush)
     const outcome = check(engine, false, call, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
@@ -1753,7 +1706,7 @@ describe('a command behind a wrapper', () => {
     expect(refusal(check(engine, switched, call, ['terraform destroy *']))).toBe(`${session}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => sessions.map(call => [engine, call] as const)))('asks at the floor, %s with no deny glob, about the interactive session %j', (engine, call) => {
+  it.each((['workspace'] as const).flatMap(engine => sessions.map(call => [engine, call] as const)))('asks at the floor, %s with no deny glob, about the interactive session %j', (engine, call) => {
     const outcome = check(engine, false, call, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', privileged(call) ? expect.stringMatching(/^(sudo|doas|su) escalates privileges$/) : `${session}; asked rather than guessed at`]])
@@ -1818,7 +1771,7 @@ describe('a command behind a wrapper', () => {
     expect(refusal(check(engine, switched, call, ['terraform destroy *']))).toBe(`${ownParsing}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
 
-  it.each((['workspace', 'ceiling'] as const).flatMap(engine => unreadOwn.map(([shape, wrap]) => [engine, shape, wrap] as const)))('asks at the floor, %s with no deny glob, about a force push behind %s', (engine, _shape, wrap) => {
+  it.each((['workspace'] as const).flatMap(engine => unreadOwn.map(([shape, wrap]) => [engine, shape, wrap] as const)))('asks at the floor, %s with no deny glob, about a force push behind %s', (engine, _shape, wrap) => {
     const call = wrap('git push --force origin main')
     const outcome = check(engine, false, call, [])
     if (outcome.kind !== 'ask') throw new Error(`expected an ask, got ${outcome.kind}`)

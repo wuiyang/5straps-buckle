@@ -3,13 +3,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BuckleConfig } from '../../common/runtime/config.js'
-import { createWorkspaceManager } from '../../common/services/workspaces/workspace-manager.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const NODE_AGENT = 'node-agent'
 const NODE_SETUP = 'node-setup'
-const agent = (id: string) => `workspace-agent-${id}-fixture-only`
-const setup = (id: string) => `workspace-setup-${id}-fixture-only`
+/** Each workspace's agent token, as registration printed it once (D83 (3)). */
+const minted = new Map<string, string>()
+const agent = (id: string) => minted.get(id) ?? `never-minted-${id}`
 const headers = (token: string) => ({ authorization: `Bearer ${token}`, 'content-type': 'application/json' })
 let app: BuckleHttp
 let root: string
@@ -33,10 +33,15 @@ beforeEach(async () => {
   writeFileSync(join(root, 'one', 'hello.txt'), 'workspace one')
   writeFileSync(join(root, 'two', 'hello.txt'), 'workspace two')
 })
-afterEach(async () => { for (const started of nodes.splice(0)) await started.close() })
+afterEach(async () => {
+  minted.clear()
+  for (const started of nodes.splice(0)) await started.close()
+})
 
-function register(id: string, token = NODE_SETUP, overrides: Record<string, unknown> = {}) {
-  return app.request('/setup/workspaces', { method: 'POST', headers: headers(token), body: JSON.stringify({ id, name: `Workspace ${id}`, root: join(root, id), authToken: agent(id), adminToken: setup(id), ...overrides }) })
+async function register(id: string, token = NODE_SETUP, overrides: Record<string, unknown> = {}): Promise<Response> {
+  const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(token), body: JSON.stringify({ id, name: `Workspace ${id}`, dir: join(root, id), ...overrides }) })
+  if (response.status === 201) minted.set(id, (await response.clone().json() as { token: { token: string } }).token.token)
+  return response
 }
 
 function invoke(id: string, token: string, path = '/workspace/hello.txt') {
@@ -47,8 +52,8 @@ describe('multiple workspaces on one Buckle', () => {
   it('preserves the default endpoints and migrates without rewriting existing workspace state', async () => {
     expect((await app.request('/v1/manifest', { headers: headers(NODE_AGENT) })).status).toBe(200)
     expect((await app.request('/workspaces/default/v1/manifest', { headers: headers(NODE_AGENT) })).status).toBe(200)
-    const body = await (await app.request('/setup/workspaces', { headers: headers(NODE_SETUP) })).json() as { workspaces: Array<{ id: string; default: boolean }> }
-    expect(body.workspaces).toMatchObject([{ id: 'default', default: true }])
+    const body = await (await app.request('/setup/workspaces', { headers: headers(NODE_SETUP) })).json() as { workspaces: Array<{ id: string; online: boolean }> }
+    expect(body.workspaces).toMatchObject([{ id: 'default', online: true }])
   })
 
   it('requires node admin for registration and never returns stored credentials', async () => {
@@ -58,9 +63,8 @@ describe('multiple workspaces on one Buckle', () => {
     const body = await response.text()
     expect(body).toContain('Workspace one')
     expect(body).not.toContain(agent('one'))
-    expect(body).not.toContain(setup('one'))
-    expect((await register('two', NODE_SETUP, { authToken: agent('one') })).status).toBe(409)
-    expect((await register('two', NODE_SETUP, { root: join(root, 'one') })).status).toBe(409)
+    expect((await register('two', NODE_SETUP, { dir: join(root, 'one') })).status).toBe(409)
+    expect((await register('one', NODE_SETUP, { dir: join(root, 'two') })).status).toBe(409)
   })
 
   it('isolates credentials, filesystem access, policies and local audit', async () => {
@@ -68,7 +72,7 @@ describe('multiple workspaces on one Buckle', () => {
     await register('two')
     expect((await invoke('one', NODE_AGENT)).status).toBe(401)
     expect((await invoke('one', agent('two'))).status).toBe(401)
-    expect((await invoke('one', setup('one'))).status).toBe(401)
+    expect((await invoke('one', NODE_SETUP)).status).toBe(401)
     const response = await invoke('one', agent('one'))
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('workspace one')
@@ -76,15 +80,14 @@ describe('multiple workspaces on one Buckle', () => {
     expect(await crossRoot.text()).not.toContain('workspace two')
     const auditPath = '/workspaces/one/setup/audit'
     expect((await app.request(auditPath, { headers: headers(agent('one')) })).status).toBe(401)
-    expect((await app.request(auditPath, { headers: headers(setup('two')) })).status).toBe(401)
-    const audit = await (await app.request(auditPath, { headers: headers(setup('one')) })).json() as { entries: Array<{ workspaceId: string; event: string }> }
+    const audit = await (await app.request(auditPath, { headers: headers(NODE_SETUP) })).json() as { entries: Array<{ workspaceId: string; event: string }> }
     expect(audit.entries.length).toBeGreaterThan(0)
     expect(audit.entries.every(entry => entry.workspaceId === 'one')).toBe(true)
-    const twoAudit = await (await app.request('/workspaces/two/setup/audit', { headers: headers(setup('two')) })).json() as { entries: unknown[] }
+    const twoAudit = await (await app.request('/workspaces/two/setup/audit', { headers: headers(NODE_SETUP) })).json() as { entries: unknown[] }
     expect(twoAudit.entries).toEqual([])
     const policy = { version: 1, commands: { deny: ['curl *'] } }
-    expect((await app.request('/workspaces/one/setup/policy', { method: 'PUT', headers: headers(setup('one')), body: JSON.stringify(policy) })).status).toBe(200)
-    const otherPolicy = await (await app.request('/workspaces/two/setup/policy', { headers: headers(setup('two')) })).text()
+    expect((await app.request('/workspaces/one/setup/policy', { method: 'PUT', headers: headers(NODE_SETUP), body: JSON.stringify(policy) })).status).toBe(200)
+    const otherPolicy = await (await app.request('/workspaces/two/setup/policy', { headers: headers(NODE_SETUP) })).text()
     expect(otherPolicy).not.toContain('curl *')
   })
 
@@ -92,7 +95,7 @@ describe('multiple workspaces on one Buckle', () => {
     await register('one')
     app = await node()
     expect((await invoke('one', agent('one'))).status).toBe(200)
-    const patch = (enabled: boolean) => app.request('/setup/workspaces/one', { method: 'PATCH', headers: headers(NODE_SETUP), body: JSON.stringify({ enabled }) })
+    const patch = (online: boolean) => app.request('/setup/workspaces/one', { method: 'PATCH', headers: headers(NODE_SETUP), body: JSON.stringify({ online }) })
     expect((await patch(false)).status).toBe(200)
     expect((await invoke('one', agent('one'))).status).toBe(409)
     expect((await patch(true)).status).toBe(200)
@@ -104,7 +107,6 @@ describe('multiple workspaces on one Buckle', () => {
     const response = await invoke('one', agent('one'), join(root, 'state', 'workspaces.json'))
     const body = await response.text()
     expect(body).not.toContain(agent('one'))
-    expect(body).not.toContain(setup('one'))
     expect(body).toContain('error')
   })
 })
@@ -123,20 +125,19 @@ it('inherits the node callbacks, so a registered workspace is not absent from th
     config.approvalWebhook = 'https://reports.example.test/approvals'
   })
   await register('one')
-  const response = await app.request('/workspaces/one/setup/status', { headers: headers(setup('one')) })
+  const response = await app.request('/workspaces/one/setup/status', { headers: headers(NODE_SETUP) })
   expect(response.status).toBe(200)
   // Every entry it posts carries workspaceId: 'one', which is the identity that was missing.
   expect(await response.json()).toMatchObject({ reporting: true, workspaceId: 'one' })
 })
 
-it('retains setup history and audit after workspace retirement and requires explicit reactivation', async () => {
+it('retains setup history and audit while a workspace is offline, and serves it again once reactivated', async () => {
   await register('one')
   await invoke('one', agent('one'))
   expect((await app.request('/setup/workspaces/one', { method: 'DELETE', headers: headers(NODE_SETUP) })).status).toBe(204)
   expect((await invoke('one', agent('one'))).status).toBe(409)
-  expect((await app.request('/workspaces/one/setup/audit', { headers: headers(setup('one')) })).status).toBe(200)
-  expect((await app.request('/workspaces/one/setup/history', { headers: headers(setup('one')) })).status).toBe(200)
-  expect((await app.request('/setup/workspaces/one', { method: 'PATCH', headers: headers(NODE_SETUP), body: JSON.stringify({ enabled: true }) })).status).toBe(409)
+  expect((await app.request('/workspaces/one/setup/audit', { headers: headers(NODE_SETUP) })).status).toBe(200)
+  expect((await app.request('/workspaces/one/setup/history', { headers: headers(NODE_SETUP) })).status).toBe(200)
   expect((await app.request('/setup/workspaces/one/reactivate', { method: 'POST', headers: headers(NODE_SETUP) })).status).toBe(200)
   expect(await (await invoke('one', agent('one'))).text()).toContain('workspace one')
 })
@@ -155,14 +156,14 @@ it('shows real host directory entries only under setup authority', async () => {
 it('checks policy revisions and applies read-denied paths to filesystem tools', async () => {
   await register('one')
   const path = '/workspaces/one/setup/policy'
-  const before = await (await app.request(path, { headers: headers(setup('one')) })).json() as { effective: Record<string, unknown>; revision: string }
+  const before = await (await app.request(path, { headers: headers(NODE_SETUP) })).json() as { effective: Record<string, unknown>; revision: string }
   const body = { ...before.effective, filesystem: { rules: [{ path: 'hello.txt', read: 'deny' }] }, expectedRevision: before.revision }
-  expect((await app.request(path, { method: 'PUT', headers: headers(setup('one')), body: JSON.stringify(body) })).status).toBe(200)
-  expect((await app.request(path, { method: 'PUT', headers: headers(setup('one')), body: JSON.stringify(body) })).status).toBe(409)
+  expect((await app.request(path, { method: 'PUT', headers: headers(NODE_SETUP), body: JSON.stringify(body) })).status).toBe(200)
+  expect((await app.request(path, { method: 'PUT', headers: headers(NODE_SETUP), body: JSON.stringify(body) })).status).toBe(409)
   const response = await (await invoke('one', agent('one'))).text()
   expect(response).not.toContain('workspace one')
   expect(response).toContain('PERMISSION_DENIED')
-  const listing = await (await app.request('/workspaces/one/setup/files?path=.', { headers: headers(setup('one')) })).json() as { entries: Array<{ name: string; read: string }> }
+  const listing = await (await app.request('/workspaces/one/setup/files?path=.', { headers: headers(NODE_SETUP) })).json() as { entries: Array<{ name: string; read: string }> }
   expect(listing.entries.find(entry => entry.name === 'hello.txt')?.read).toBe('deny')
 })
 
@@ -170,8 +171,6 @@ it('keeps explicit credential mounts out of managed workspaces', async () => {
   app = await node((config) => { config.sandboxMounts = [{ source: join(root, 'two', 'hello.txt'), target: '/srv/auth/config.json', readOnly: true }] })
   expect((await register('two')).status).toBe(409)
   expect((await register('one')).status).toBe(201)
-  const manager = createWorkspaceManager({ config: app.config, runtime: app.runtime })
-  const child = await manager.resolve('one')
+  const child = await (await app.services.getWorkspaces()).resolve('one')
   expect(child.config.sandboxMounts).toEqual([])
-  await child.runtime.history.close()
 })

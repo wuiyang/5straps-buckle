@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
-import { runCli } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { compilePolicy, mergePolicies, PolicyError } from '../common/domain/policy.js'
-import { loadConfig, type BuckleConfig } from '../common/runtime/config.js'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 /**
  * The interpreter decision (docs/dev/architecture.md, Interpreters): a call that runs code with python, node, deno, bun,
@@ -16,7 +17,7 @@ import { createWorkspaceManager } from '../common/services/workspaces/workspace-
  * interpreter. These drive the CLI verbs and the real permission pipeline of a runtime.
  */
 function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
-  return loadConfig({
+  return configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-interpreter-')),
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-interpreter-state-')),
     BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell', BUCKLE_APPROVAL_TIMEOUT_MS: '1',
@@ -44,7 +45,7 @@ async function call(config: BuckleConfig, command: string, args: string[]) {
   } finally { prepare.mockRestore() }
 }
 
-const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name} (allow it with buckle policy allow-interpreter ${name}, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling)`
+const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name} (allow it with buckle policy allow-interpreter ${name})`
 
 describe('buckle policy allow-interpreter and remove-interpreter', () => {
   it('refuses an unknown interpreter under a deny glob until the workspace allows it, and again once it is removed', async () => {
@@ -54,7 +55,7 @@ describe('buckle policy allow-interpreter and remove-interpreter', () => {
 
     const allowed = await cli(config, ['policy', 'allow-interpreter', 'node'])
     expect(allowed.exitCode).toBe(0)
-    expect(allowed.out).toMatch(/Allowed interpreters[^\n]*\n\s+node\s+stored/)
+    expect(allowed.out).toMatch(/Allowed interpreters[^\n]*\n\s+node\n/)
     expect(JSON.parse((await cli(config, ['policy', 'export'])).out).commands.allowedInterpreters).toEqual(['node'])
     expect(await call(config, 'node', ['script.js'])).toMatchObject({ outcome: 'ok' })
     expect(await call(config, 'python3', ['-c', 'print(1)'])).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
@@ -130,21 +131,20 @@ describe('allowedInterpreters in a policy document', () => {
   })
 })
 
-// A workspace never exceeds the node ceiling (docs/dev/architecture.md, Interpreters): the node ceiling over a
-// registered workspace, its environment policy, allows the interpreters BUCKLE_ALLOWED_INTERPRETERS names, comma separated,
-// default none. A registered workspace's own allowance counts only within that list, at its own deny list and at the
-// floor as well as at the ceiling's; the node's own workspace gains the environment's list beside what it stores.
-describe('BUCKLE_ALLOWED_INTERPRETERS, the node ceiling\'s interpreter allowance', () => {
-  /** A registered workspace under a node whose environment is `environment`, its own policy denying `deny` and allowing `interpreters`. */
+// Each workspace judges interpreters by its own list (docs/dev/architecture.md, Interpreters); no node list sits over a
+// registered workspace's (Q14 of the workspace-model brief). BUCKLE_ALLOWED_INTERPRETERS is what a node set up before
+// the workspace model allowed, which migration copies into its workspaces.
+describe('a workspace\'s own interpreter allowance', () => {
+  /** A registered workspace on a node whose environment is `environment`, its own policy denying `deny` and allowing `interpreters`. */
   async function registered(environment: NodeJS.ProcessEnv, child: { deny?: string[]; interpreters?: string[] } = {}): Promise<BuckleRuntime> {
-    const root = mkdtempSync(join(tmpdir(), 'buckle-interpreter-ceiling-'))
+    const root = mkdtempSync(join(tmpdir(), 'buckle-interpreter-own-'))
     mkdirSync(join(root, 'child'))
     const config = node(environment)
-    const manager = createWorkspaceManager({ config, runtime: await createRuntime({ config }) })
+    const manager = await workspacesOf(config)
     const policy = emptyWorkspacePolicy()
     policy.commands.deny = child.deny ?? []
     if (child.interpreters) policy.commands.allowedInterpreters = child.interpreters
-    await manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture-only', adminToken: 'child-setup-token-fixture-only', policy })
+    await registerWorkspace(manager, { id: 'child', name: 'Child', dir: join(root, 'child'), policy })
     return (await manager.resolve('child')).runtime
   }
 
@@ -153,35 +153,28 @@ describe('BUCKLE_ALLOWED_INTERPRETERS, the node ceiling\'s interpreter allowance
     const execute = vi.fn(async () => 'executed')
     const prepare = vi.spyOn(runtime.registry().get('fs_read'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'node', args: ['script.js'] }], execute })
     try {
-      return await runtime.invoke({ request: { requestId: `ceiling-${randomUUID()}`, approvalTokens: [], tool: 'fs_read', args: { path: '/workspace/file.txt' } }, sessionId: 'ceiling', approvalWait: { mode: 'none' } })
+      return await runtime.invoke({ request: { requestId: `interpreter-${randomUUID()}`, approvalTokens: [], tool: 'fs_read', args: { path: '/workspace/file.txt' } }, sessionId: 'interpreter', approvalWait: { mode: 'none' } })
     } finally { prepare.mockRestore() }
   }
 
-  const refused = (source: string) => ({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: `${unknown('node')}, so the ${source} command policy's deny list cannot meet all of it; refused rather than asked` } })
+  const refused = { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: `${unknown('node')}, so the workspace command policy's deny list cannot meet all of it; refused rather than asked` } }
 
-  it('refuses node under a deny glob when the ceiling allows no interpreter, though the workspace allows node', async () => {
-    expect(await nodeScript(await registered({ BUCKLE_COMMAND_DENY: 'terraform destroy *' }, { interpreters: ['node'] }))).toMatchObject(refused('node ceiling'))
-    expect(await nodeScript(await registered({}, { deny: ['terraform destroy *'], interpreters: ['node'] }))).toMatchObject(refused('workspace'))
-    expect(await nodeScript(await registered({}, { interpreters: ['node'] }))).toMatchObject({ outcome: 'approval_required' })
+  it('reads node script.js as an ordinary command when the workspace allows node, whatever the node\'s environment names', async () => {
+    expect(await nodeScript(await registered({ BUCKLE_COMMAND_DENY: 'terraform destroy *' }, { interpreters: ['node'] }))).toMatchObject({ outcome: 'ok' })
+    expect(await nodeScript(await registered({}, { deny: ['terraform destroy *'], interpreters: ['node'] }))).toMatchObject({ outcome: 'ok' })
   })
 
-  it('reads node script.js as an ordinary command when the ceiling names node and the workspace allows it', async () => {
-    const environment = { BUCKLE_COMMAND_DENY: 'terraform destroy *', BUCKLE_ALLOWED_INTERPRETERS: ' python3 , node ' }
-    expect(await nodeScript(await registered(environment, { interpreters: ['node'] }))).toMatchObject({ outcome: 'ok' })
-    expect(await nodeScript(await registered(environment, { deny: ['terraform destroy *'], interpreters: ['node'] }))).toMatchObject({ outcome: 'ok' })
-  })
-
-  it('still reads node as unknown when the ceiling names node but the workspace does not allow it', async () => {
+  it('reads node as unknown when the workspace does not allow it, whatever the node\'s environment names', async () => {
     const environment = { BUCKLE_COMMAND_DENY: 'terraform destroy *', BUCKLE_ALLOWED_INTERPRETERS: 'node' }
     expect(await nodeScript(await registered(environment))).toMatchObject({ outcome: 'approval_required' })
-    expect(await nodeScript(await registered(environment, { deny: ['terraform destroy *'] }))).toMatchObject(refused('workspace'))
+    expect(await nodeScript(await registered(environment, { deny: ['terraform destroy *'] }))).toMatchObject(refused)
   })
 
-  it('allows the named interpreters in the node\'s own workspace too, shown as coming from the environment', async () => {
+  it('allows the interpreters a node\'s environment named in its own folder, workspace default, once migrated', async () => {
     const config = node({ BUCKLE_COMMAND_DENY: 'terraform destroy *', BUCKLE_ALLOWED_INTERPRETERS: 'node' })
     expect(await call(config, 'node', ['script.js'])).toMatchObject({ outcome: 'ok' })
     expect(await call(config, 'python3', ['-c', 'print(1)'])).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(unknown('python3')) } })
-    expect((await cli(config, ['policy', 'show'])).out).toMatch(/Allowed interpreters[^\n]*\n\s+node\s+env\n/)
+    expect((await cli(config, ['policy', 'show'])).out).toMatch(/Allowed interpreters[^\n]*\n\s+node\n/)
   })
 
   it.each(['bash', 'python3,sh', 'Node'])('refuses to load with %s, naming the variable', (value) => {

@@ -9,7 +9,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { setupCli } from '../cli/setup.js'
 import { createTerminalConsumer } from '../cli/terminal-consumer.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+import { defaultRuntime } from './support/workspaces.js'
 import { ApprovalConflictError, createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, holdFor, questionFor, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 import { NO_INTERACTION } from '../common/services/approvals/interaction.js'
@@ -265,13 +266,13 @@ describe('the interaction each HTTP request binds', () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-stdio-interaction-'))
     mkdirSync(join(root, 'workspace'))
     mkdirSync(join(root, 'state'), { mode: 0o700 })
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '200' })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '200' })
     const common = initializeCommon({ config, role: 'mcp' })
     await common.start()
     const questions: Array<{ actor?: string; sessionId?: string }> = []
     const requestCli: RequestCli = async request => { questions.push({ actor: request.actor, sessionId: request.sessionId }); return { status: 'unavailable', requestId: request.id, reason: 'no_consumer' } }
     common.bindRequester(requestCli)
-    const server = createMcpServer({ runtime: await common.services.getWorkspaceRuntime(), serverName: 'stdio-test', version: '0', trustedApprovalResponses: true, callScope: stdioCallScope(common) })
+    const server = createMcpServer({ runtime: await defaultRuntime(common), serverName: 'stdio-test', version: '0', trustedApprovalResponses: true, callScope: stdioCallScope(common) })
     const tools = (server as unknown as { _registeredTools: Record<string, { handler(args: unknown, context: ServerContext): Promise<{ isError?: boolean }> }> })._registeredTools
 
     const result = await tools.fs_write!.handler({ path: 'a.md', content: 'x' }, { sessionId: 'stdio-session', mcpReq: { signal: new AbortController().signal } } as unknown as ServerContext)
@@ -306,7 +307,7 @@ describe('announcing an ask to the approval webhook', () => {
     try {
       const root = mkdtempSync(join(tmpdir(), 'buckle-announce-'))
       for (const directory of ['one', 'two']) mkdirSync(join(root, directory))
-      const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: `${root}-state`, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_WEBHOOK: webhook.url })
+      const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: `${root}-state`, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_WEBHOOK: webhook.url })
       // No interaction bound: a CLI command without a terminal, which reports back at once.
       const runtime = await createRuntime({ config })
       const write = (requestId: string, path: string, extra = {}) => runtime.invoke({ sessionId: 'chat-1', request: { requestId, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [] }, ...extra })

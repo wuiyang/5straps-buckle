@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { ApprovalNotice } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApprovalNoticeSender } from '../common/adapters/approval/webhook-notifier.js'
-import { loadConfig, policyPath } from '../common/runtime/config.js'
+import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalNotices, type ApprovalNotices } from '../common/services/approvals/approval-notices.js'
@@ -195,8 +196,9 @@ describe('durable approval outcome delivery', () => {
     const blocked = paused()
     const fetch = vi.fn(async () => { await blocked.wait; return new Response('', { status: 503 }) })
     vi.stubGlobal('fetch', fetch)
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: q.workspace, BUCKLE_STATE_DIR: q.root, BUCKLE_AUTH_TOKEN: 'test-agent', BUCKLE_ADMIN_TOKEN: 'test-admin', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_WEBHOOK: 'http://rings.test/approvals' })
-    writeFileSync(policyPath(config), '{')
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: q.workspace, BUCKLE_STATE_DIR: q.root, BUCKLE_AUTH_TOKEN: 'test-agent', BUCKLE_ADMIN_TOKEN: 'test-admin', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_WEBHOOK: 'http://rings.test/approvals' })
+    mkdirSync(dirname(settingsPath(config.stateDirectory, 'default')), { recursive: true })
+    writeFileSync(settingsPath(config.stateDirectory, 'default'), '{')
     const initializing = createRuntime({ config })
     const rejected = expect(initializing).rejects.toThrow('unreadable or invalid')
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))

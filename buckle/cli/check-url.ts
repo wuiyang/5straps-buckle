@@ -16,7 +16,7 @@ const EXIT_CODES: Record<UrlVerdictKind, number> = { approved: 0, denied: 1, ask
 /** Anything that stops a verdict being reached. Never 1, which would read as a denial. */
 export const CHECK_URL_BAD_INPUT = 2
 
-const USAGE = `Usage: buckle check-url <url|host> [--session <id>] [--workspace <id>]
+const USAGE = `Usage: buckle check-url <url|host> [--session <id>] [--workspace <id> | --dir <path>]
 Exits 0 approved, 1 denied, 3 asks, 4 not listed, 2 when no verdict could be reached.`
 
 /**
@@ -29,7 +29,8 @@ Exits 0 approved, 1 denied, 3 asks, 4 not listed, 2 when no verdict could be rea
 export async function checkUrlCommand(input: {
   argv: string[]
   allowedHosts: string[]
-  runtimeFor: (workspace?: string) => Promise<BuckleRuntime>
+  /** The workspace the command targets (D83 (4)), opened. */
+  runtime: () => Promise<BuckleRuntime>
 }): Promise<CliResult> {
   const parsed = parse(input.argv)
   if (!parsed) return badInput(USAGE)
@@ -43,10 +44,10 @@ export async function checkUrlCommand(input: {
 
   let runtime: BuckleRuntime
   try {
-    runtime = await input.runtimeFor(parsed.workspace)
+    runtime = await input.runtime()
   } catch (error) {
     if (error instanceof WorkspaceError) return badInput(error.message)
-    return badInput(`Cannot open workspace ${parsed.workspace}: ${messageOf(error)}`)
+    return badInput(`Cannot open the workspace: ${messageOf(error)}`)
   }
 
   let approvals: NetworkApproval[]
@@ -60,7 +61,6 @@ export async function checkUrlCommand(input: {
     url,
     ...runtime.policy.network(),
     workspaceList: runtime.policy.effective().network.allow,
-    nodeList: runtime.policy.ceiling()?.network.allow ?? null,
     allowedHosts: input.allowedHosts,
     approvals,
   })
@@ -68,11 +68,11 @@ export async function checkUrlCommand(input: {
   return { exitCode: EXIT_CODES[result.verdict] }
 }
 
-function parse(argv: string[]): { target: string; session?: string; workspace?: string } | null {
+function parse(argv: string[]): { target: string; session?: string } | null {
   try {
-    const { positionals, values } = parseArgs({ args: argv, options: { session: { type: 'string' }, workspace: { type: 'string' } }, allowPositionals: true })
+    const { positionals, values } = parseArgs({ args: argv, options: { session: { type: 'string' } }, allowPositionals: true })
     if (positionals.length !== 1) return null
-    return { target: positionals[0]!, session: values.session, workspace: values.workspace }
+    return { target: positionals[0]!, session: values.session }
   } catch {
     return null
   }

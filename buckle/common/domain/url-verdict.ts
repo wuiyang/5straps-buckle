@@ -38,7 +38,6 @@ export function judgeUrl(input: {
   rule: PermissionRule
   approved: UrlMatcher | null
   workspaceList: string[]
-  nodeList: string[] | null
   allowedHosts: string[]
   approvals: NetworkApproval[]
 }): UrlVerdict {
@@ -63,18 +62,10 @@ export function judgeUrl(input: {
     const covered = exact ? decision.via.subject : `pattern ${decision.via.subject}, which covers ${hostSubject(input.url)}`
     return { verdict: 'approved', because: `${approval?.label ?? 'approval'} for ${covered}` }
   }
-  if (input.approved) return { verdict: 'approved', because: matchingEntries({ url: input.url, workspaceList: input.workspaceList, nodeList: input.nodeList }) }
+  if (input.approved) return { verdict: 'approved', because: `approved list entry ${input.workspaceList.find(pattern => compileUrlPatterns([pattern]).matches(input.url))}` }
   if (listedHost) return { verdict: 'approved', because: `BUCKLE_ALLOWED_HOSTS entry ${listedHost}` }
   return { verdict: 'not listed', because: 'no approved list is set, so a public host is reached without asking; web_fetch still refuses one that resolves to a private address' }
 }
 
-function matchingEntries(input: { url: URL; workspaceList: string[]; nodeList: string[] | null }): string {
-  const covers = (pattern: string) => compileUrlPatterns([pattern]).matches(input.url)
-  const first = (list: string[]) => list.find(covers)
-  const parts = [
-    ...(input.workspaceList.length ? [`approved list entry ${first(input.workspaceList)}`] : []),
-    ...(input.nodeList?.length ? [`node approved list entry ${first(input.nodeList)}`] : []),
-  ]
-  return parts.join(' and ')
-}
+
 

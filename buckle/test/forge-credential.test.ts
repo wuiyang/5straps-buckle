@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createGitHubForgeClient } from '../common/adapters/forge/github.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 
 const TOKEN = 'ghp-credential-test-value'
 const REPOSITORY = { owner: '5straps', name: 'demo' }
@@ -54,36 +54,36 @@ const request = (number: number) => ({ repository: REPOSITORY, number, signal: A
 
 describe('the forge credential in configuration', () => {
   it('is absent by default, which is what withholds the pack', () => {
-    expect(loadConfig({}).forgeGithubToken).toBeUndefined()
+    expect(configFromEnvironment({}).forgeGithubToken).toBeUndefined()
   })
 
   it('is read from BUCKLE_FORGE_GITHUB_TOKEN as owner configuration', () => {
-    expect(loadConfig({ BUCKLE_FORGE_GITHUB_TOKEN: TOKEN }).forgeGithubToken).toBe(TOKEN)
+    expect(configFromEnvironment({ BUCKLE_FORGE_GITHUB_TOKEN: TOKEN }).forgeGithubToken).toBe(TOKEN)
   })
 
   it('reaches api.github.com unless the owner points it somewhere else', () => {
-    expect(loadConfig({}).forgeApiUrl).toBe('https://api.github.com')
-    expect(loadConfig({ BUCKLE_FORGE_GITHUB_API_URL: 'https://ghe.example.com/api/v3/' }).forgeApiUrl).toBe('https://ghe.example.com/api/v3')
+    expect(configFromEnvironment({}).forgeApiUrl).toBe('https://api.github.com')
+    expect(configFromEnvironment({ BUCKLE_FORGE_GITHUB_API_URL: 'https://ghe.example.com/api/v3/' }).forgeApiUrl).toBe('https://ghe.example.com/api/v3')
   })
 
   it('refuses an API URL that is not http or https, rather than reaching it', () => {
-    expect(() => loadConfig({ BUCKLE_FORGE_GITHUB_API_URL: 'file:///etc' })).toThrow(/not an http or https URL/)
-    expect(() => loadConfig({ BUCKLE_FORGE_GITHUB_API_URL: 'nonsense' })).toThrow(/Invalid BUCKLE_FORGE_GITHUB_API_URL/)
+    expect(() => configFromEnvironment({ BUCKLE_FORGE_GITHUB_API_URL: 'file:///etc' })).toThrow(/not an http or https URL/)
+    expect(() => configFromEnvironment({ BUCKLE_FORGE_GITHUB_API_URL: 'nonsense' })).toThrow(/Invalid BUCKLE_FORGE_GITHUB_API_URL/)
   })
 
   it('carries a commit identity, defaulting to the agent one', () => {
-    expect(loadConfig({}).forgeGitAuthor).toEqual({ name: '5straps agent', email: 'agent@5straps.local' })
-    expect(loadConfig({ BUCKLE_FORGE_GIT_AUTHOR: 'Demo Bot <bot@example.com>' }).forgeGitAuthor).toEqual({ name: 'Demo Bot', email: 'bot@example.com' })
+    expect(configFromEnvironment({}).forgeGitAuthor).toEqual({ name: '5straps agent', email: 'agent@5straps.local' })
+    expect(configFromEnvironment({ BUCKLE_FORGE_GIT_AUTHOR: 'Demo Bot <bot@example.com>' }).forgeGitAuthor).toEqual({ name: 'Demo Bot', email: 'bot@example.com' })
   })
 
   it('refuses an identity that is not "Name <email>", so no commit carries a broken author', () => {
-    expect(() => loadConfig({ BUCKLE_FORGE_GIT_AUTHOR: 'just-a-name' })).toThrow(/expected "Name <email>"/)
+    expect(() => configFromEnvironment({ BUCKLE_FORGE_GIT_AUTHOR: 'just-a-name' })).toThrow(/expected "Name <email>"/)
   })
 
   it('refuses a state directory inside the workspace, where an agent could write the hooks git runs', () => {
-    expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/work/.buckle' }))
+    expect(() => configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/work/.buckle' }))
       .toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
-    expect(loadConfig({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/state' }).stateDirectory).toBe('/srv/state')
+    expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/state' }).stateDirectory).toBe('/srv/state')
   })
 
   // Review M3: the root was named by its real path and the state directory as typed, so either one spelled
@@ -95,8 +95,8 @@ describe('the forge credential in configuration', () => {
   ])('refuses a state directory inside the workspace with %s', (_, environment) => {
     const spellings = linkedRoot()
     try {
-      expect(() => loadConfig(environment(spellings))).toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
-      expect(loadConfig({ BUCKLE_WORKSPACE_ROOT: spellings.linkedRoot, BUCKLE_STATE_DIR: join(spellings.base, 'state') }).stateDirectory).toBe(join(spellings.base, 'state'))
+      expect(() => configFromEnvironment(environment(spellings))).toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
+      expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: spellings.linkedRoot, BUCKLE_STATE_DIR: join(spellings.base, 'state') }).stateDirectory).toBe(join(spellings.base, 'state'))
     } finally { rmSync(spellings.base, { recursive: true, force: true }) }
   })
 
@@ -105,7 +105,7 @@ describe('the forge credential in configuration', () => {
     const home = process.env.HOME
     process.env.HOME = spellings.linkedRoot
     try {
-      expect(() => loadConfig({ BUCKLE_WORKSPACE_ROOT: spellings.realRoot })).toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
+      expect(() => configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: spellings.realRoot })).toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
     } finally {
       process.env.HOME = home
       rmSync(spellings.base, { recursive: true, force: true })

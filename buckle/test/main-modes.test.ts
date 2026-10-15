@@ -1,3 +1,4 @@
+import { join } from 'pathe'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 
@@ -16,10 +17,10 @@ const entry = vi.hoisted(() => ({
 }))
 vi.mock('../common/runtime/environment.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/environment.js')>(), loadEnvironmentFile: entry.loadEnvironmentFile }))
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
-vi.mock('../cli/main.js', async importOriginal => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runCli: entry.runCli, answerWithoutConfiguration: () => null, runsTool: (await importOriginal<typeof import('../cli/main.js')>()).runsTool }))
+vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runCli: entry.runCli, answerWithoutConfiguration: () => null }))
 vi.mock('../server/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, builtEntryPath: () => '/built/.output/server/index.mjs' }))
-vi.mock('../mcp/stdio.js', () => ({ serveMcpStdio: entry.serveMcpStdio }))
+vi.mock('../mcp/stdio.js', async importOriginal => ({ serveMcpStdio: entry.serveMcpStdio, mcpTarget: (await importOriginal<typeof import('../mcp/stdio.js')>()).mcpTarget }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))
 vi.mock('../common/adapters/file-modes.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/adapters/file-modes.js')>(), configureOwnerOnlyCheck: entry.configureOwnerOnlyCheck }))
 
@@ -51,8 +52,9 @@ describe('selectMode', () => {
     [['init', '--yes'], { kind: 'init', argv: ['--yes'] }],
     [['settings', 'set', 'shell', 'off'], { kind: 'settings', argv: ['set', 'shell', 'off'] }],
     [['client', 'keygen'], { kind: 'client', argv: ['keygen'] }],
-    [['serve'], { kind: 'serve' }],
-    [['mcp'], { kind: 'mcp' }],
+    [['serve'], { kind: 'serve', options: [] }],
+    [['mcp'], { kind: 'mcp', options: [] }],
+    [['mcp', '--workspace', 'site'], { kind: 'mcp', options: ['--workspace', 'site'] }],
     [[], { kind: 'cli', argv: [] }],
     [['--version'], { kind: 'cli', argv: ['--version'] }],
     [['fs', 'read', 'notes.txt'], { kind: 'cli', argv: ['fs', 'read', 'notes.txt'] }],
@@ -125,10 +127,18 @@ describe('main', () => {
   it('starts the stdio MCP server for mcp on one mcp-role common runtime, and no HTTP', async () => {
     expect(await main(['mcp'])).toBeUndefined()
     expect(entry.initializeCommon).toHaveBeenCalledWith(expect.objectContaining({ config, role: 'mcp' }))
-    expect(entry.serveMcpStdio).toHaveBeenCalledWith(expect.objectContaining({ config, common: entry.initializeCommon.mock.results[0]!.value }))
+    expect(entry.serveMcpStdio).toHaveBeenCalledWith(expect.objectContaining({ config, common: entry.initializeCommon.mock.results[0]!.value, target: {} }))
     expect(entry.initializeCommon.mock.results[0]!.value.bindRequester).toHaveBeenCalledTimes(1)
     expect(entry.serveHttp).not.toHaveBeenCalled()
     expect(entry.setupServer).not.toHaveBeenCalled()
+  })
+
+  // The workspace-model brief, item 3: buckle mcp serves the workspace it names, by id or by folder, relative to where it starts.
+  it('hands buckle mcp the workspace its flags name, a folder resolved where it starts', async () => {
+    await main(['mcp', '--workspace', 'site'])
+    expect(entry.serveMcpStdio).toHaveBeenLastCalledWith(expect.objectContaining({ target: { workspace: 'site' } }))
+    await main(['mcp', '--dir', 'project'])
+    expect(entry.serveMcpStdio).toHaveBeenLastCalledWith(expect.objectContaining({ target: { dir: join(process.cwd(), 'project') } }))
   })
 
   it('hands every other argument list to the CLI with the loaded config', async () => {

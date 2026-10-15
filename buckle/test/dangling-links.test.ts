@@ -5,8 +5,10 @@ import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { emptyWorkspacePolicy, type InvokeResponse, type JsonValue } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { clientKeysPath, dangerouslyAllowPath, grantsPath, loadConfig, nodeKeyPath, pluginsPath, policyPath, requestNoncesPath, setupSessionsPath, type BuckleConfig } from '../common/runtime/config.js'
-import { createWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { clientKeysPath, dangerouslyAllowPath, grantsPath, nodeKeyPath, pluginsPath, policyPath, requestNoncesPath, setupSessionsPath, type BuckleConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 // Review H1 and H2 of B23-B25: a dangling link inside the workspace was judged by its own path while
@@ -54,19 +56,20 @@ async function node(): Promise<Node> {
   roots.push(root)
   const workspace = join(root, 'workspace')
   for (const directory of [workspace, join(root, 'child'), join(root, 'home', '.ssh'), join(root, 'elsewhere')]) mkdirSync(directory, { recursive: true })
-  const config = loadConfig({
+  const config = configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false',
     BUCKLE_PACKS: 'fs,browser', BUCKLE_AGENT_BROWSER_COMMAND: stubBrowser(root), BUCKLE_APPROVAL_TIMEOUT_MS: '1',
   })
-  const runtime = await createRuntime({ config })
-  const manager = createWorkspaceManager({ config, runtime })
-  await manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'dangling-child-agent-token', adminToken: 'dangling-child-admin-token', policy: emptyWorkspacePolicy() })
+  const manager = await workspacesOf(config)
+  const runtime = (await manager.resolve('default')).runtime
+  await registerWorkspace(manager, { id: 'child', name: 'Child', dir: join(root, 'child'), policy: emptyWorkspacePolicy() })
+  await manager.updateSettings('child', settings => ({ ...settings, packs: { ...settings.packs, enabled: ['fs', 'browser'] } }))
   const child = (await manager.resolve('child')).config
   return { root, workspace, config, runtime, manager, child }
 }
 
 async function stop(setup: Node): Promise<void> {
-  for (const runtime of [setup.runtime, ...await setup.manager.opened()]) {
+  for (const runtime of await setup.manager.opened()) {
     await runtime.workbenches.close()
     await runtime.history.close()
   }
@@ -176,7 +179,7 @@ describe('a dangling link to an absent target outside the root (review H2 of B23
     const setup = await node()
     const { runtime } = setup
     const { credential, plain } = links(setup)
-    await runtime.policy.apply({ ...emptyWorkspacePolicy(), mount: '/workspace' })
+    await runtime.policy.setMount('/workspace')
     if (switchOn) await runtime.policy.setDangerouslyAllow(true)
     const calls: Array<[string, Record<string, JsonValue>]> = [
       ['fs_write', { path: '/workspace/draft.txt', content: 'x' }],

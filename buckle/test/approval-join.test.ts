@@ -5,7 +5,8 @@ import type { RequestCli } from '@5straps/runtime'
 import type { InvokeRequest, InvokeResponse } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { approvalsPath, loadConfig } from '../common/runtime/config.js'
+import { approvalsPath } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { createApprovalRegistry, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
 import { MAX_SESSION_ID } from '../common/services/invocation/invoker.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
@@ -17,7 +18,7 @@ async function node(interaction = headlessGrace) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-join-'))
   for (const directory of ['workspace', 'workspace/one', 'workspace/two']) mkdirSync(join(root, directory))
   mkdirSync(join(root, 'state'), { mode: 0o700 })
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
   return { config, runtime: await createRuntime({ config, interaction: fixedInteraction(interaction) }) }
 }
 

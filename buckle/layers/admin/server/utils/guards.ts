@@ -79,7 +79,7 @@ export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target:
     const actor = await checkCredential(event, {
       verify: () => (isSignedRequest(authorization(event))
         ? purpose ? verifySigned(event, { access, purpose, workspaceId, registry }) : null
-        : workspaces.authenticateAdmin(workspaceId, authorization(event)) ? `admin:${workspaceId}` : null),
+        : workspaces.authenticateAdmin(authorization(event)) ? `admin:${workspaceId}` : null),
       refusal,
     })
     return { actor, workspaceId }

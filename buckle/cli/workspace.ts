@@ -1,11 +1,11 @@
-import { randomBytes } from 'node:crypto'
 import { parseArgs } from 'node:util'
-import type { BuckleConfig } from '../common/runtime/config.js'
-import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createWorkspaceManager, WorkspaceError, WorkspaceRegistrationSchema } from '../common/services/workspaces/workspace-manager.js'
+import type { NodeConfig } from '../common/runtime/config.js'
+import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 
 export interface CliResult {
   exitCode: number
+  /** For the audit entry: what changed, never a token. */
+  detail?: string
 }
 
 const USAGE = `Usage:
@@ -20,12 +20,12 @@ const USAGE = `Usage:
  * that mints or revokes a workspace token, so every verb here refuses on a node configured
  * without one, and `SELF_ADMINISTRATION` in the command policy keeps a tool from reaching them.
  */
-export async function workspaceRegistryCommand(input: { config: BuckleConfig; runtime: BuckleRuntime; argv: string[] }): Promise<CliResult> {
+export async function workspaceRegistryCommand(input: { config: NodeConfig; workspaces: WorkspaceManager; argv: string[] }): Promise<CliResult> {
   const [verb = 'list', ...rest] = input.argv
   if (!input.config.adminToken) {
     return fail('This node has no admin credential. Set BUCKLE_ADMIN_TOKEN, or run buckle init, before minting workspace credentials.')
   }
-  const manager = createWorkspaceManager({ config: input.config, runtime: input.runtime })
+  const manager = input.workspaces
 
   try {
     if (verb === 'list') return print(manager.list())
@@ -38,30 +38,22 @@ export async function workspaceRegistryCommand(input: { config: BuckleConfig; ru
   return fail(USAGE)
 }
 
-async function addWorkspace(manager: ReturnType<typeof createWorkspaceManager>, argv: string[]): Promise<CliResult> {
+async function addWorkspace(manager: WorkspaceManager, argv: string[]): Promise<CliResult> {
   const { positionals, values } = parseArgs({ args: argv, options: { root: { type: 'string' }, name: { type: 'string' } }, allowPositionals: true })
   const id = positionals[0]
   if (!id || !values.root) return fail('Usage: buckle workspace add <id> --root <dir> [--name <name>]')
+  const { workspace, token } = await manager.create({ id, dir: values.root, name: values.name ?? id })
+  process.stdout.write(`Registered workspace ${workspace.id} at ${workspace.dir}
 
-  const authToken = credential()
-  const adminToken = credential()
-  const parsed = WorkspaceRegistrationSchema.safeParse({ id, name: values.name ?? id, root: values.root, authToken, adminToken })
-  if (!parsed.success) return fail(`Invalid workspace: ${parsed.error.issues.map(issue => issue.message).join('; ')}`)
+  agent token        ${token.token}
 
-  const workspace = await manager.register(parsed.data)
-  process.stdout.write(`Registered workspace ${workspace.id} at ${workspace.root}
-
-  agent token        ${authToken}
-  admin credential   ${adminToken}
-
-Both are shown once. The agent token calls tools under /workspaces/${workspace.id}/v1; the
-admin credential opens /workspaces/${workspace.id}/setup and mints further tokens with
-buckle workspace token add ${workspace.id}.
+Shown once. The agent token calls tools at /mcp and /v1, and under /workspaces/${workspace.id}/; the
+node's admin credential opens its setup face, and buckle workspace token add ${workspace.id} mints more.
 `)
   return { exitCode: 0 }
 }
 
-async function tokenCommand(manager: ReturnType<typeof createWorkspaceManager>, argv: string[]): Promise<CliResult> {
+async function tokenCommand(manager: WorkspaceManager, argv: string[]): Promise<CliResult> {
   const [action, workspaceId, tokenId] = argv
   if (!action || !workspaceId) return fail(USAGE)
 
@@ -84,10 +76,6 @@ Shown once. Revoke it with buckle workspace token revoke ${workspaceId} ${minted
     return { exitCode: 0 }
   }
   return fail(USAGE)
-}
-
-function credential(): string {
-  return randomBytes(24).toString('base64url')
 }
 
 function print(value: unknown): CliResult {

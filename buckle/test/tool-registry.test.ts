@@ -5,7 +5,7 @@ import { createPathView } from '../common/domain/path-view.js'
 import { createBuiltinPacks } from '../common/services/packs/index.js'
 import { availableTools } from '../common/domain/pack.js'
 import { createToolRegistry } from '../common/domain/tool-registry.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { hasExecutable } from '../common/domain/executable.js'
 import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
 import { defineTool } from '../common/domain/tool.js'
@@ -37,9 +37,9 @@ function builtinRegistry(allowHostGit = false) {
 
 describe('built-in tools', () => {
   it('withholds host Git and forge tools by default, including an explicit false setting', () => {
-    expect(loadConfig({}).allowHostGit).toBe(false)
-    expect(loadConfig({ BUCKLE_ALLOW_HOST_GIT: 'false' }).allowHostGit).toBe(false)
-    expect(loadConfig({ BUCKLE_ALLOW_HOST_GIT: 'true' }).allowHostGit).toBe(true)
+    expect(configFromEnvironment({}).allowHostGit).toBe(false)
+    expect(configFromEnvironment({ BUCKLE_ALLOW_HOST_GIT: 'false' }).allowHostGit).toBe(false)
+    expect(configFromEnvironment({ BUCKLE_ALLOW_HOST_GIT: 'true' }).allowHostGit).toBe(true)
     expect(builtinRegistry().capabilities().some(tool => /^(git|forge)_/.test(tool.name))).toBe(false)
   })
 

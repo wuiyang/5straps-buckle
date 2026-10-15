@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { logger } from '../common/runtime/log.js'
 import { browserAllowedDomains, type ApprovedList } from '../common/services/packs/browser/allowed-domains.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -84,7 +84,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
   const roots: string[] = []
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-  async function fixture(network: string[], ceiling?: string[], closeDelayMs = 0) {
+  async function fixture(network: string[], closeDelayMs = 0) {
     const root = mkdtempSync(join(tmpdir(), 'buckle-allowed-domains-'))
     roots.push(root)
     mkdirSync(join(root, 'workspace'))
@@ -93,8 +93,8 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const slowClose = closeDelayMs > 0 ? `if (process.argv[2] === 'close') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${closeDelayMs})\n` : ''
     writeFileSync(binary, `#!/usr/bin/env node\n${slowClose}require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nprocess.stdout.write('{"success":true}')\n`)
     chmodSync(binary, 0o755)
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary })
-    const runtime = await createRuntime({ config: ceiling ? { ...config, nodePolicy: policy(ceiling) } : config })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary })
+    const runtime = await createRuntime({ config })
     if (network.length) await runtime.policy.apply(policy(network))
     const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
     return { runtime, calls }
@@ -134,7 +134,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
   })
 
   it('closes several browsers in parallel under one bound, then forgets them all (review L10 of B18-B19)', async () => {
-    const { runtime, calls } = await fixture(['*.example.test'], undefined, 1_500)
+    const { runtime, calls } = await fixture(['*.example.test'], 1_500)
     for (const agent of ['a', 'b', 'c']) {
       const response = await runtime.invoke({ request: { requestId: `browse-${agent}`, tool: 'browser_command', args: { command: 'open', args: ['https://app.example.test'] }, approvalTokens: [] }, sessionId: `agent-${agent}` })
       expect(response).toMatchObject({ outcome: 'ok' })
@@ -204,21 +204,6 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test/admin/users'] })).toMatchObject({ outcome: 'ok' })
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test/billing'] })).toMatchObject({ outcome: 'error' })
     expect(calls()).toHaveLength(1)
-  })
-
-  it('intersects the node ceiling with the workspace list, port by port, before dropping the ports', async () => {
-    const { runtime, calls } = await fixture(['app.example.test', 'localhost:4000'], ['*.example.test:443', 'localhost:4000'])
-    expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
-    expect(flagOf(calls()[0])).toBe('app.example.test,localhost')
-  })
-
-  it('does not start the browser when the node and workspace lists approve the same host only on different ports', async () => {
-    const { runtime, calls } = await fixture(['localhost:4000'], ['localhost:3000'])
-    expect(await browse(runtime, { command: 'open', args: ['http://localhost:3000'] })).toMatchObject({
-      outcome: 'error',
-      error: { message: expect.stringContaining('no entry in the workspace approved list (localhost:4000) is allowed by the node approved list (localhost:3000) on the same host and port') },
-    })
-    expect(calls()).toEqual([])
   })
 
   it('refuses an allowed-domains list the agent chose, since Buckle sets it', async () => {

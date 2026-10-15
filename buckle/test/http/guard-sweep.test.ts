@@ -15,11 +15,10 @@ import { nodeEnvironment } from '../support/node-environment.js'
 
 const NODE_AGENT = 'sweep-node-agent-token-fixture-only'
 const NODE_ADMIN = 'sweep-node-admin-token-fixture-only'
-const CHILD_AGENT = 'sweep-child-agent-token-fixture-only'
-const CHILD_ADMIN = 'sweep-child-admin-token-fixture-only'
 const GRANT = { id: randomUUID(), token: 'sweep-node-workbench-grant-fixture-only', projectId: 'project', chatId: 'chat', allowShell: false }
 const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const
-const CREDENTIALS = { none: undefined, 'node agent': NODE_AGENT, 'child agent': CHILD_AGENT, 'node admin': NODE_ADMIN, 'child admin': CHILD_ADMIN, 'workbench grant': GRANT.token } as const
+/** The child's agent token is minted when it is registered (D83 (3)), so it is filled in then. */
+const CREDENTIALS: Record<'none' | 'node agent' | 'child agent' | 'node admin' | 'workbench grant', string | undefined> = { none: undefined, 'node agent': NODE_AGENT, 'child agent': undefined, 'node admin': NODE_ADMIN, 'workbench grant': GRANT.token }
 const OPEN_PATHS = ['/health', '/health/ready']
 /** Paths no route file claims (review L10 of B20-B22): only the router's own 404 may answer them. */
 const OFF_TABLE = ['/', '/debug', '/api/debug', '/v2/invoke', '/_nitro/tasks', '/setupx/status', '/healthz', '/health/ready/x', '/mcp/extra', '/workspaces']
@@ -27,9 +26,9 @@ type Credential = keyof typeof CREDENTIALS
 type Face = 'setup' | 'agent' | 'workbench'
 type Workspace = 'node' | 'child'
 
-/** The one credential each face accepts per workspace; the workbench grant was minted on the node. */
+/** The one credential each face accepts per workspace; the node's admin credential is every workspace's (D83); the workbench grant was minted on the node. */
 const ACCEPTS: Record<Face, Record<Workspace, Credential | undefined>> = {
-  setup: { node: 'node admin', child: 'child admin' },
+  setup: { node: 'node admin', child: 'node admin' },
   agent: { node: 'node agent', child: 'child agent' },
   workbench: { node: 'workbench grant', child: undefined },
 }
@@ -57,8 +56,9 @@ beforeAll(async () => {
   ;(buckle.nitroApp.h3 as unknown as { handler: (event: unknown) => unknown }).handler({ req: { method: 'GET' }, url: new URL('/sweep-baseline', 'http://127.0.0.1'), context: {} })
   internalsBefore = internals()
   mkdirSync(join(root, 'child'))
-  const registered = await buckle.request('/setup/workspaces', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify({ id: 'child', name: 'child', root: join(root, 'child'), authToken: CHILD_AGENT, adminToken: CHILD_ADMIN }) })
+  const registered = await buckle.request('/setup/workspaces', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify({ id: 'child', name: 'child', dir: join(root, 'child') }) })
   expect(registered.status).toBe(201)
+  CREDENTIALS['child agent'] = (await registered.json() as { token: { token: string } }).token.token
   expect((await buckle.request('/setup/workbenches', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify(GRANT) })).status).toBe(200)
   probes = await sweep(concretePaths())
   offTable = await sweep(new Map(OFF_TABLE.map(path => [path, new Set<string>()])))
@@ -394,7 +394,7 @@ describe('the admin layer with its experimental flag off (owner decision D8)', (
     let closing: Promise<void> | undefined
     try {
       mkdirSync(join(root, 'child'))
-      await (await off.services.getWorkspaces()).register({ id: 'child', name: 'child', root: join(root, 'child'), authToken: CHILD_AGENT, adminToken: CHILD_ADMIN, policy: emptyWorkspacePolicy() })
+      await (await off.services.getWorkspaces()).create({ id: 'child', name: 'child', dir: join(root, 'child'), policy: emptyWorkspacePolicy() })
       const unmatched = await off.request('/sweep-off-table', { headers: bearer(NODE_ADMIN) })
       const expected = { status: 404, type: unmatched.headers.get('content-type'), body: await unmatched.text() }
       expect(expected.status).toBe(404)

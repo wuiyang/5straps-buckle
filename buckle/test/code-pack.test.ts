@@ -5,12 +5,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type JsonObject, type JsonValue, type ToolCapability } from '@5straps/protocol'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import type { NestedCall, ToolContext } from '../common/domain/tool.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { logger } from '../common/runtime/log.js'
 import { CODE_CALL_LIMIT, CODE_VM_BUSY, createCodePack, ERROR_CHARS, MAX_IN_FLIGHT, MAX_NESTED_CALLS, OUTPUT_CHARS, REQUEST_TOO_LARGE, SANDBOX_FAILED } from '../common/services/packs/code/index.js'
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
-import { createWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 
@@ -28,7 +28,7 @@ async function node(environment: Record<string, string> = {}) {
   mkdirSync(join(root, 'state'), { mode: 0o700 })
   for (const name of ['alpha', 'beta', 'gamma']) writeFileSync(join(workspace, 'docs', `${name}.md`), `# ${name} title\n${'filler line\n'.repeat(2_000)}`)
   writeFileSync(join(workspace, 'secret', 'key.txt'), 'never shown')
-  const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code', ...environment })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code', ...environment })
   return { root, workspace, config, runtime: await createRuntime({ config, interaction: fixedInteraction() }) }
 }
 
@@ -206,15 +206,15 @@ describe('a code_run script on a workspace', () => {
 describe('the code pack setting', () => {
   it('withholds the pack with its reason under BUCKLE_ALLOW_CODE=false, and the status view says so', async () => {
     const off = await node({ BUCKLE_ALLOW_CODE: 'false' })
-    expect(off.runtime.manifest().packs.find(pack => pack.id === 'code')).toEqual({ id: 'code', version: '1.0.0', toolNames: ['code_run', 'code_api'], unavailableReason: 'Code mode is turned off by BUCKLE_ALLOW_CODE=false' })
+    expect(off.runtime.manifest().packs.find(pack => pack.id === 'code')).toEqual({ id: 'code', version: '1.0.0', toolNames: ['code_run', 'code_api'], unavailableReason: 'Code mode is turned off in this workspace: its setting packs.code is off' })
     expect(off.runtime.manifest().tools.map(tool => tool.name).filter(name => name.startsWith('code_'))).toEqual([])
-    expect((await createSetupViews().status({ config: off.config, runtime: off.runtime })).code).toBe('withheld (Code mode is turned off by BUCKLE_ALLOW_CODE=false)')
+    expect((await createSetupViews().status({ config: off.config, runtime: off.runtime })).code).toBe('withheld (Code mode is turned off in this workspace: its setting packs.code is off)')
 
     const on = await node()
     expect(on.runtime.manifest().tools.map(tool => tool.name).filter(name => name.startsWith('code_'))).toEqual(['code_api', 'code_run'])
     expect((await createSetupViews().status({ config: on.config, runtime: on.runtime })).code).toBe('on')
     const left = await node({ BUCKLE_PACKS: 'fs' })
-    expect((await createSetupViews().status({ config: left.config, runtime: left.runtime })).code).toBe('withheld (BUCKLE_PACKS leaves the code pack out)')
+    expect((await createSetupViews().status({ config: left.config, runtime: left.runtime })).code).toBe('withheld (the workspace setting packs.enabled leaves the code pack out)')
     for (const { runtime } of [off, on, left]) await runtime.history.close()
   })
 
@@ -262,11 +262,10 @@ describe('code mode inside one workspace (BUCKLE-D07: a token opens one workspac
     roots.push(root)
     for (const directory of ['default', 'child']) mkdirSync(join(root, directory))
     writeFileSync(join(root, 'default', 'private.txt'), 'the default workspace only')
-    const config = loadConfig({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' })
-    const runtime = await createRuntime({ config, interaction: fixedInteraction() })
-    const manager = createWorkspaceManager({ config, runtime, interaction: fixedInteraction() })
-    await manager.register({ id: 'child', name: 'Child', root: join(root, 'child'), authToken: 'child-agent-token-fixture', adminToken: 'child-admin-token-fixture', policy: childPolicy })
-    return { root, runtime, child: (await manager.resolve('child')).runtime }
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' })
+    const manager = await workspacesOf(config, { interaction: fixedInteraction() })
+    await registerWorkspace(manager, { id: 'child', name: 'Child', dir: join(root, 'child'), policy: childPolicy })
+    return { root, runtime: (await manager.resolve('default')).runtime, child: (await manager.resolve('child')).runtime }
   }
 
   it('reaches only the registered workspace: the default root is refused there, and nothing lands in the default workspace\'s log', async () => {

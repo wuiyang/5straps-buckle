@@ -11,18 +11,30 @@ import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_TIMEOUT_MS = 300_000
-const DEFAULT_APPROVAL_TIMEOUT_MS = 15_000
+/** How long a gated call is held for an answer when the workspace names no wait of its own. */
+export const DEFAULT_APPROVAL_WAIT_MS = 15_000
 const DEFAULT_FORGE_API_URL = 'https://api.github.com'
 const DEFAULT_FORGE_GIT_AUTHOR = '5straps agent <agent@5straps.local>'
 const GIT_AUTHOR_PATTERN = /^(.+?)\s*<([^<>\s]+@[^<>\s]+)>$/
 
-export interface BuckleConfig {
+/** The workspace the node's own folder became at migration (owner decision Q15): its id, and its state stays in the node's directory. */
+export const NODE_FOLDER_WORKSPACE = 'default'
+
+/**
+ * The node's settings (Q3 of the workspace-model brief): what every workspace on the node shares. buckle.env holds them,
+ * and a change needs a restart (BUCKLE-D19). Each workspace's own settings live in its workspace.json instead.
+ */
+export interface NodeConfig {
   host: string
   port: number
   serverId: string
   serverName: string
   description: string
   usage: string
+  /**
+   * BUCKLE_AUTH_TOKEN, the agent token of a node set up before the workspace model: migration hashes it into workspace
+   * default's tokens as `node`, and pairing sends it to Rings. No request is checked against it here.
+   */
   authToken: string
   /**
    * The admin credential. It opens `/setup`, where the policy is read and pushed, mints and
@@ -36,20 +48,20 @@ export interface BuckleConfig {
    * answers the router's 404, admin credential or not. The local CLI never needs it.
    */
   experimentalAdminHttp: boolean
-  cwd: string
+  /** BUCKLE_WORKSPACE_ROOT as typed, from a node set up before the workspace model: migration input, and `buckle mcp`'s legacy pick. */
+  workspaceRootSetting?: string
+  /**
+   * The workspace settings the environment names (WORKSPACE_ENVIRONMENT_KEYS and the browser's), as a node set up
+   * before the workspace model kept them: read once, when migration copies them into each workspace (Q14).
+   */
+  legacySettings: Readonly<Record<string, string>>
   /** Directories writable without asking. Empty by default, so the first write anywhere asks. */
   scratchRoots: string[]
   strictWrites: boolean
   sandboxMode: 'auto' | 'none' | 'bubblewrap' | 'seatbelt'
   acknowledgedUnsandboxed: boolean
-  enabledPacks?: string[]
   historyMaxBytes: number
   historyRetentionDays: number
-  allowHostGit: boolean
-  allowHostLsp: boolean
-  enableShell: boolean
-  /** BUCKLE_ALLOW_CODE: code mode's code_run and code_api (owner decision D82). On unless it is false. */
-  allowCode: boolean
   shellNetwork: boolean
   isolateShell: boolean
   isolationMaxBytes: number
@@ -74,15 +86,9 @@ export interface BuckleConfig {
   browserProfile?: string
   /** BUCKLE_BROWSER_ARGS: Chromium arguments for a browser Buckle launches, as agent-browser's `--args` reads them. */
   browserArgs?: string
-  /** How long a gated call is held for an answer, in milliseconds; null holds it until someone answers (BUCKLE_APPROVAL_TIMEOUT_MS=0). */
-  approvalTimeoutMs: number | null
   /** Where to announce a pending approval, so a person can be reached away from the machine. */
   approvalWebhook?: string
-  /** The owner's constraints from the environment. Merged with what `buckle policy` or Rings stored. */
-  policy: WorkspacePolicy
-  /** Immutable installation policy, enforced independently for managed child workspaces. */
-  nodePolicy?: WorkspacePolicy
-  /** Owner-authorized read-only file and folder aliases, scoped to the default workspace. */
+  /** Owner-authorized read-only file and folder aliases, scoped to the node's own folder (workspace default). */
   sandboxMounts?: SandboxMount[]
   /** Host directories still readable inside a mounted sandbox, for toolchains outside /usr. */
   mountReadOnlyPaths: string[]
@@ -96,7 +102,6 @@ export interface BuckleConfig {
   ringsApprovalKey?: ApprovalKey
   skillDirectories: string[]
   stateDirectory: string
-  nodeStateDirectory?: string
   /** How long a state file update waits for another process's lock; the store's default when absent. Never read from the environment. */
   stateLockDeadlineMs?: number
   maxRequestBytes: number
@@ -104,19 +109,29 @@ export interface BuckleConfig {
   maxTimeoutMs: number
 }
 
-/** `platform`: the host's unless a test imitates another; on Windows a whole drive is refused as any root (realFolder). */
-export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): BuckleConfig {
-  // Named as the disk names it (realpathSync.native), as every judged effect path is: a root typed in
-  // another case than the disk's put every existing file outside it on macOS (review M1 of the second
-  // proof-of-possession re-review), and a linked root put every file outside it everywhere.
-  const rootSetting = environment.BUCKLE_WORKSPACE_ROOT ? 'BUCKLE_WORKSPACE_ROOT' : 'The working directory, the workspace root while BUCKLE_WORKSPACE_ROOT is unset,'
-  const typedRoot = environment.BUCKLE_WORKSPACE_ROOT ? typedPath(environment.BUCKLE_WORKSPACE_ROOT, platform) : workingDirectory(platform)
-  const cwd = realFolder(typedRoot, rootSetting, platform)
-  const stateDirectory = stateDirectoryOf(environment, platform)
-  if (workspaceHolds(typedRoot, stateDirectory, platform)) {
-    throw new Error(`BUCKLE_STATE_DIR is ${stateDirectory}, inside the BUCKLE_WORKSPACE_ROOT at ${cwd}: an agent writes anywhere in the workspace, and the state directory holds the recorded grants, the approvals and the empty hooks directory the forge tools run git with`)
-  }
+/**
+ * One workspace's runtime configuration: the node's settings with the workspace's own over them, from its registry
+ * record and its workspace.json (workspaceConfig). `serverName` is the workspace's name.
+ */
+export interface BuckleConfig extends NodeConfig {
+  cwd: string
+  enabledPacks?: string[]
+  allowHostGit: boolean
+  allowHostLsp: boolean
+  enableShell: boolean
+  /** Code mode's code_run and code_api (owner decision D82). */
+  allowCode: boolean
+  /** How long a gated call is held for an answer, in milliseconds; null holds it until someone answers. */
+  approvalTimeoutMs: number | null
+  /** The workspace's policy, from its workspace.json, with its mount's target as `mount`. */
+  policy: WorkspacePolicy
+  /** The node's own state directory, which holds the registry and every workspace's settings. */
+  nodeStateDirectory?: string
+}
 
+/** `platform`: the host's unless a test imitates another. */
+export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeConfig {
+  const stateDirectory = stateDirectoryOf(environment, platform)
   const sandboxMode = parseSandboxMode(environment.BUCKLE_SANDBOX)
   const authToken = environment.BUCKLE_AUTH_TOKEN ?? ''
   const adminToken = environment.BUCKLE_ADMIN_TOKEN?.trim() ?? ''
@@ -136,19 +151,15 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     usage: environment.BUCKLE_USAGE ?? '',
     authToken,
     adminToken,
-    cwd,
+    ...(environment.BUCKLE_WORKSPACE_ROOT ? { workspaceRootSetting: typedPath(environment.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
+    legacySettings: Object.freeze(Object.fromEntries([...WORKSPACE_ENVIRONMENT_KEYS, ...BROWSER_KEYS].flatMap(key => environment[key] === undefined ? [] : [[key, environment[key]]]))),
     // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
     scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
     sandboxMode,
     acknowledgedUnsandboxed: sandboxMode === 'none',
-    enabledPacks: environment.BUCKLE_PACKS ? parseList(environment.BUCKLE_PACKS) : undefined,
     historyMaxBytes: parsePositiveInteger(environment.BUCKLE_HISTORY_MAX_BYTES, 1_073_741_824),
     historyRetentionDays: parsePositiveInteger(environment.BUCKLE_HISTORY_RETENTION_DAYS, 30),
-    allowHostGit: environment.BUCKLE_ALLOW_HOST_GIT === 'true',
-    allowHostLsp: environment.BUCKLE_ALLOW_HOST_LSP === 'true',
-    enableShell: environment.BUCKLE_ALLOW_SHELL !== 'false',
-    allowCode: environment.BUCKLE_ALLOW_CODE !== 'false',
     experimentalAdminHttp: environment.BUCKLE_EXPERIMENTAL_ADMIN_HTTP === 'true',
     shellNetwork: environment.BUCKLE_SHELL_NETWORK === 'true',
     isolateShell: environment.BUCKLE_SHELL_ISOLATION !== 'false',
@@ -163,9 +174,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND || 'agent-browser',
     browserHeaded: environment.BUCKLE_BROWSER_HEADED === 'true',
     ...parseBrowserSettings(environment, platform),
-    approvalTimeoutMs: parseApprovalTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_TIMEOUT_MS),
     approvalWebhook: environment.BUCKLE_APPROVAL_WEBHOOK || undefined,
-    policy: parsePolicy(environment),
     sandboxMounts: parseSandboxMounts(environment.BUCKLE_MOUNTS),
     mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => typedPath(path, platform)),
     reportUrl: environment.BUCKLE_REPORT_URL || undefined,
@@ -180,11 +189,89 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
 }
 
 /**
+ * The workspace settings a node set up before the workspace model kept in its environment (Q14 of the workspace-model
+ * brief): migration input only, and ignored by a node once its workspaces carry their own (environmentWorkspaceKeys).
+ */
+export const WORKSPACE_ENVIRONMENT_KEYS: readonly string[] = Object.freeze([
+  'BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW',
+  'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
+  'BUCKLE_APPROVAL_TIMEOUT_MS',
+])
+
+const BROWSER_KEYS = ['BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED']
+
+/** The workspace settings the environment still names, which a node on the workspace model ignores. */
+export function environmentWorkspaceKeys(environment: NodeJS.ProcessEnv = process.env): string[] {
+  return WORKSPACE_ENVIRONMENT_KEYS.filter(key => environment[key] !== undefined)
+}
+
+/**
+ * The folder a node set up before the workspace model served, as the disk names it: BUCKLE_WORKSPACE_ROOT, or the
+ * directory the command runs in. Refused where it is a whole drive, or where it holds the state directory, which an
+ * agent writing anywhere in its workspace could then rewrite. Migration takes it as workspace default's folder (Q15).
+ */
+export function legacyWorkspaceRoot(input: { node: Pick<NodeConfig, 'workspaceRootSetting' | 'stateDirectory'>; platform?: NodeJS.Platform }): string {
+  const platform = input.platform ?? process.platform
+  const setting = input.node.workspaceRootSetting ? 'BUCKLE_WORKSPACE_ROOT' : 'The working directory, the workspace root while BUCKLE_WORKSPACE_ROOT is unset,'
+  const typedRoot = input.node.workspaceRootSetting ?? workingDirectory(platform)
+  const root = realFolder(typedRoot, setting, platform)
+  if (workspaceHolds(typedRoot, input.node.stateDirectory, platform)) {
+    throw new Error(`BUCKLE_STATE_DIR is ${input.node.stateDirectory}, inside the BUCKLE_WORKSPACE_ROOT at ${root}: an agent writes anywhere in the workspace, and the state directory holds the recorded grants, the approvals and the empty hooks directory the forge tools run git with`)
+  }
+  return root
+}
+
+/** What one workspace's runtime is built from, beside the node's settings. */
+export interface WorkspaceScope {
+  id: string
+  name: string
+  /** The workspace's folder, as the disk names it. */
+  dir: string
+  /** Where the agent sees the folder, from its mount table; null shows the real path. */
+  mount: string | null
+  policy: WorkspacePolicy
+  packs: { enabled: string[] | null; shell: boolean; code: boolean; hostGit: boolean; hostLsp: boolean }
+  /** Milliseconds a gated call is held for an answer; 0 holds it until someone answers. */
+  approvalWaitMs: number
+}
+
+/**
+ * One workspace's runtime configuration (D83): the node's settings, then the workspace's own. Workspace default, the
+ * node's own folder, keeps its state in the node's directory and the folders BUCKLE_MOUNTS, BUCKLE_SCRATCH_ROOTS and
+ * BUCKLE_SKILLS_DIRS name until the mount table takes them over; every other workspace has a state directory of its
+ * own, nothing outside its folder written without asking, and writes asked once at a time.
+ */
+export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): BuckleConfig {
+  const own = scope.id === NODE_FOLDER_WORKSPACE
+  return {
+    ...node,
+    cwd: scope.dir,
+    serverName: scope.name,
+    stateDirectory: own ? node.stateDirectory : join(node.stateDirectory, 'workspaces', scope.id),
+    nodeStateDirectory: node.stateDirectory,
+    scratchRoots: own ? node.scratchRoots : [],
+    sandboxMounts: own ? node.sandboxMounts : [],
+    skillDirectories: own ? node.skillDirectories : [],
+    strictWrites: own ? node.strictWrites : true,
+    policy: { ...scope.policy, mount: scope.mount },
+    ...(scope.packs.enabled === null ? {} : { enabledPacks: [...scope.packs.enabled] }),
+    enableShell: scope.packs.shell,
+    allowCode: scope.packs.code,
+    allowHostGit: scope.packs.hostGit,
+    allowHostLsp: scope.packs.hostLsp,
+    approvalTimeoutMs: scope.approvalWaitMs === 0 ? null : scope.approvalWaitMs,
+  }
+}
+
+/** A workspace's own state directory, and the node's when they differ. */
+type StateDirectories = Pick<BuckleConfig, 'stateDirectory'> & Partial<Pick<BuckleConfig, 'nodeStateDirectory'>>
+
+/**
  * Node configuration and all workspace maps are owner-only, never tool-accessible. Effects are judged
  * at their real paths, so each root is named by its real path too (a symlinked home, macOS /var), in
  * the case the disk stores it (realpathSync.native); the rule folds case where the disk ignores it.
  */
-export function protectedStateRoots(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string[] {
+export function protectedStateRoots(config: StateDirectories): string[] {
   const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory]
   return [...new Set([...named, ...named.map(path => realPathOf(path))])]
 }
@@ -238,21 +325,15 @@ export function stateDirectoryOf(environment: NodeJS.ProcessEnv, platform: NodeJ
   return typed
 }
 
-/** The HTTP face exposes tools over the network, so it refuses to start without a token. */
-export function requireAuthToken(config: BuckleConfig): string {
-  if (!config.authToken) throw new Error('BUCKLE_AUTH_TOKEN is required to serve over HTTP')
-  return config.authToken
-}
-
-export function grantsPath(config: BuckleConfig): string {
+export function grantsPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
   return join(config.stateDirectory, 'grants.json')
 }
 
-export function pluginsPath(config: BuckleConfig): string {
+export function pluginsPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
   return join(config.stateDirectory, 'plugins.json')
 }
 
-export function approvalsPath(config: BuckleConfig): string {
+export function approvalsPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
   return join(config.stateDirectory, 'approvals.json')
 }
 
@@ -264,27 +345,27 @@ export function actionsPath(config: Pick<BuckleConfig, 'stateDirectory'>): strin
   return join(config.stateDirectory, 'actions.jsonl')
 }
 
-export function policyPath(config: BuckleConfig): string {
+export function policyPath(config: Pick<BuckleConfig, 'stateDirectory'>): string {
   return join(config.stateDirectory, 'policy.json')
 }
 
 /** The client keys the owner enrolled on this node (owner ruling H4 of 2026-09-28): one list per node, beside its registry. */
-export function clientKeysPath(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string {
+export function clientKeysPath(config: StateDirectories): string {
   return join(config.nodeStateDirectory ?? config.stateDirectory, 'client-keys.json')
 }
 
 /** The nonces of signed requests this node verified, so none lands twice inside its window. */
-export function requestNoncesPath(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string {
+export function requestNoncesPath(config: StateDirectories): string {
   return join(config.nodeStateDirectory ?? config.stateDirectory, 'request-nonces.json')
 }
 
 /** The node's own signing key, which signs what it shows a person's client (B24). */
-export function nodeKeyPath(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string {
+export function nodeKeyPath(config: StateDirectories): string {
   return join(config.nodeStateDirectory ?? config.stateDirectory, 'node-signing-key.pem')
 }
 
 /** The setup sessions persons' keys opened on this node (B24). */
-export function setupSessionsPath(config: Pick<BuckleConfig, 'stateDirectory' | 'nodeStateDirectory'>): string {
+export function setupSessionsPath(config: StateDirectories): string {
   return join(config.nodeStateDirectory ?? config.stateDirectory, 'setup-sessions.json')
 }
 
@@ -304,13 +385,11 @@ function parseRingsApprovalKey(value: string | undefined): ApprovalKey | undefin
 }
 
 /**
- * The environment's share of the policy. Patterns are shell-word globs, one per line or
- * separated by `;;`. BUCKLE_ALLOWED_INTERPRETERS names, comma separated, the interpreters read as
- * ordinary commands: for the node's own workspace beside what `buckle policy` stores, and as the
- * node ceiling's list, within which alone a registered workspace's allowance counts (docs/dev/architecture.md,
- * Interpreters).
+ * The policy a node set up before the workspace model kept in its environment, migration input only (Q14). Patterns
+ * are shell-word globs, one per line or separated by `;;`. BUCKLE_ALLOWED_INTERPRETERS names, comma separated, the
+ * interpreters read as ordinary commands.
  */
-function parsePolicy(environment: NodeJS.ProcessEnv): WorkspacePolicy {
+export function policyFromEnvironment(environment: NodeJS.ProcessEnv): WorkspacePolicy {
   const policy = emptyWorkspacePolicy()
   policy.commands.allow = parsePatterns(environment.BUCKLE_COMMAND_ALLOW)
   policy.commands.deny = parsePatterns(environment.BUCKLE_COMMAND_DENY)
@@ -329,7 +408,7 @@ function parsePatterns(value: string | undefined): string[] {
   return value.split(/\r?\n|;;/).map(item => item.trim()).filter(Boolean)
 }
 
-function parseSandboxMode(value: string | undefined): BuckleConfig['sandboxMode'] {
+function parseSandboxMode(value: string | undefined): NodeConfig['sandboxMode'] {
   if (!value || value === 'auto') return 'auto'
   const parsed = SandboxModeSchema.safeParse(value)
   if (!parsed.success) throw new Error(`Invalid BUCKLE_SANDBOX: ${value}`)
@@ -376,7 +455,7 @@ function parseGitAuthor(value: string | undefined): { name: string; email: strin
  * and window, so BUCKLE_BROWSER_CDP is refused beside the settings that would choose them. A refusal names the
  * settings, never a value: a DevTools URL can carry a token, and a profile path is the owner's.
  */
-function parseBrowserSettings(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): Pick<BuckleConfig, 'browserCdp' | 'browserProfile' | 'browserArgs'> {
+export function parseBrowserSettings(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): Pick<NodeConfig, 'browserCdp' | 'browserProfile' | 'browserArgs'> {
   const browserCdp = parseBrowserCdp(environment.BUCKLE_BROWSER_CDP)
   const browserProfile = parseBrowserProfile(environment.BUCKLE_BROWSER_PROFILE, platform)
   const browserArgs = parseBrowserArgs(environment.BUCKLE_BROWSER_ARGS, platform)
