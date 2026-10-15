@@ -169,7 +169,10 @@ export interface ApprovalServiceOptions {
   workspaceId: string
   /** The node's serverId, which each challenge names. */
   serverId: string
-  /** `BUCKLE_APPROVAL_TIMEOUT_MS`: how long a `grace` hold lasts when the caller sends no wait, in positive ms; null holds it until answered. */
+  /**
+   * The workspace's approvalWaitMs: how long a `grace` hold lasts when the caller sends no wait, in positive ms; null
+   * holds it until answered. Read at each ask, so a runtime may pass a getter that follows its workspace.json (Q2).
+   */
   graceMs: number | null
   /** The current operation's interaction; an unbound operation asks nobody. */
   interaction: InteractionSource

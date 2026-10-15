@@ -21,7 +21,7 @@ import { createFileGrantStore } from '../../adapters/grant-store/file-grant-stor
 import { runProcess } from '../../adapters/process-runner.js'
 import { createWebhookReporter } from '../../adapters/report/webhook-reporter.js'
 import { resolveSandbox, type SandboxResolution } from '../../adapters/sandbox/create-sandbox.js'
-import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, NODE_FOLDER_WORKSPACE, pluginsPath, type BuckleConfig } from '../../runtime/config.js'
+import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, NODE_FOLDER_WORKSPACE, pluginsPath, workspaceFields, type BuckleConfig } from '../../runtime/config.js'
 import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
@@ -61,6 +61,10 @@ import { auditOperation } from '../audit/audit-operation.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
 import { openSettingsFile, settingsPath, scopeOf, withPolicy, WorkspaceSettingsSchema, type WorkspaceSettings } from './workspace-settings.js'
+import { WorkspaceError } from './registry.js'
+
+/** Said where packs or the folder changed while work is active: no path, as an agent reads it (Q2). */
+const RESHAPE_WAITS = 'This workspace\'s packs or folder changed; the change takes effect once its active work is resolved, so call again then'
 
 /**
  * The workspace's policy as the runtime holds it: one document, in its workspace.json, which `buckle policy` and the
@@ -143,7 +147,7 @@ interface RuntimeInput {
   auditHealth?: AuditHealth
   /** The node's budget for kept responses, shared with its other workspaces; a fresh one when absent. */
   executionBudget?: ExecutionBudget
-  /** For a registered workspace: whether it serves calls now (enabled, not retired); its log's failures count toward readiness only then. */
+  /** Whether the workspace serves calls now (online); a call to it is refused otherwise, and its log's failures count toward readiness only then. */
   serving?: () => boolean
   /** Every root the node knows, where no program run here may come from (NodeRoots); this workspace's own alone when absent. */
   nodeRoots?: NodeRoots
@@ -199,7 +203,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
   const approvalService = createApprovalService({
-    registry: approvals, workspaceId, serverId: config.serverId, graceMs: config.approvalTimeoutMs,
+    registry: approvals, workspaceId, serverId: config.serverId,
+    // Read at each ask, so a change to approvalWaitMs applies from the next call (Q2).
+    get graceMs() { return config.approvalTimeoutMs },
     interaction: input.interaction ?? (async () => undefined),
     announce: webhook ? createWebhookNotifier(webhook) : undefined,
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
@@ -219,8 +225,15 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
 
   const localSkills = [loadRootSkill(), ...await loadSkills(config.skillDirectories)]
   const listeners: Array<() => void> = []
+  // What this runtime last took up from workspace.json, and the file's version then, read first so a write landing
+  // meanwhile is seen at the next call (Q2: a stat per call, no watcher).
+  let appliedVersion = settingsFile.version()
+  let applied = settingsFile.read()
+  // A version that would not read, so it is reported once and the settings in force stay.
+  let unreadVersion: string | undefined
+  let pickingUp: Promise<void> | undefined
 
-  let compiled = compileStartupPolicy()
+  let compiled = compileStartupPolicy(applied)
   let paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
   // Read from the store at each evaluation; an unreadable store fails closed.
   const dangerouslyAllow = () => {
@@ -334,6 +347,67 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     scriptOfAsk: token => scriptOfAsk(journalDirectory({ stateDirectory: config.stateDirectory, cwd: config.cwd }), token),
 
     async invoke(call) {
+      if (input.serving && !input.serving()) throw new WorkspaceError('Workspace is offline', 409)
+      await pickUp()
+      return invokeNow(call)
+    },
+
+    async cancelInvocations() {
+      stopping.abort(new InvocationsClosedError())
+      await Promise.allSettled([...inFlight])
+    },
+
+    async closeSessions() {
+      const results = await Promise.allSettled(packs.map(async pack => pack.close?.()))
+      for (const result of results) if (result.status === 'rejected') logger.warn('A pack could not close what it opened', { error: result.reason })
+    },
+
+    async reload() {
+      const version = settingsFile.version()
+      const settings = settingsFile.read()
+      Object.assign(config, workspaceFields(scopeOf(settings)))
+      applied = settings
+      appliedVersion = version
+      unreadVersion = undefined
+      await workbenches.policyChanged()
+      compiled = compilePolicy(storedPolicy(settings))
+      paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
+      permissions = buildPermissionEngine({ config, compiled, paths, dangerouslyAllowed })
+      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
+      registry = createToolRegistry(availableTools(packs))
+      for (const listener of listeners) listener()
+    },
+
+    onToolsChanged: listener => void listeners.push(listener),
+  }
+
+  /**
+   * Takes up a write to workspace.json at a call's start (Q2 of the workspace-model brief): lists, URLs, interpreters,
+   * variables and the approval wait apply from this call on, and a call already running keeps the rules and tools it
+   * started with. A change to the packs or to where the folder shows waits until no work is active, refusing the call
+   * until then. A file that will not read leaves the settings in force, said once in the owner's log.
+   */
+  function pickUp(): Promise<void> {
+    if (settingsFile.version() === appliedVersion) return Promise.resolve()
+    pickingUp ??= takeUp().finally(() => { pickingUp = undefined })
+    return pickingUp
+  }
+
+  async function takeUp(): Promise<void> {
+    const version = settingsFile.version()
+    if (version === appliedVersion || version === unreadVersion) return
+    let next: WorkspaceSettings
+    try { next = settingsFile.read() } catch (error) {
+      unreadVersion = version
+      logger.error('Workspace settings changed but cannot be read; the ones in force stay', { workspaceId, error })
+      return
+    }
+    if (JSON.stringify([applied.packs, applied.mounts]) !== JSON.stringify([next.packs, next.mounts]) && await runtime.hasActiveWork()) throw new WorkspaceError(RESHAPE_WAITS, 409)
+    await runtime.reload()
+    logger.info('Workspace settings changed and took effect', { workspaceId, revision: applied.revision })
+  }
+
+  async function invokeNow(call: InvokeInput): Promise<InvokeResponse> {
       activeInvocations++
       const running = createInvoker({
         registry,
@@ -353,51 +427,25 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         maxTimeoutMs: config.maxTimeoutMs,
         toolDenial,
         shutdown: stopping.signal,
-        // A script's calls run here too, so they are counted, cancelled at shutdown, and kept to this workspace.
-        nested: nestedCall => runtime.invoke(nestedCall),
+        // A script's calls run here too, so they are counted, cancelled at shutdown, and kept to this workspace; they
+        // run under the settings their script started with.
+        nested: nestedCall => invokeNow(nestedCall),
       }).invoke(call)
       inFlight.add(running)
       try { return await running } finally {
         inFlight.delete(running)
         activeInvocations--
       }
-    },
-
-    async cancelInvocations() {
-      stopping.abort(new InvocationsClosedError())
-      await Promise.allSettled([...inFlight])
-    },
-
-    async closeSessions() {
-      const results = await Promise.allSettled(packs.map(async pack => pack.close?.()))
-      for (const result of results) if (result.status === 'rejected') logger.warn('A pack could not close what it opened', { error: result.reason })
-    },
-
-    async reload() {
-      await workbenches.policyChanged()
-      compiled = compileEffective()
-      paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
-      permissions = buildPermissionEngine({ config, compiled, paths, dangerouslyAllowed })
-      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
-      registry = createToolRegistry(availableTools(packs))
-      for (const listener of listeners) listener()
-    },
-
-    onToolsChanged: listener => void listeners.push(listener),
   }
 
   // A stored entry a later grammar refuses names the file and the repair (StoredPolicyError).
-  function compileStartupPolicy(): CompiledPolicy {
+  function compileStartupPolicy(settings: WorkspaceSettings): CompiledPolicy {
     try {
-      return compileEffective()
+      return compilePolicy(storedPolicy(settings))
     } catch (error) {
       if (!(error instanceof PolicyError)) throw error
-      throw new StoredPolicyError({ file: settingsFile.filePath, reason: error.message, stored: storedPolicy(settingsFile.read()) })
+      throw new StoredPolicyError({ file: settingsFile.filePath, reason: error.message, stored: storedPolicy(settings) })
     }
-  }
-
-  function compileEffective(): CompiledPolicy {
-    return compilePolicy(storedPolicy(settingsFile.read()))
   }
 
   /** The policy write path: through workspace.json, refused when the policy changed since `expectedRevision`. */

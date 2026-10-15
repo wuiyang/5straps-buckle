@@ -257,8 +257,17 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
     sandboxMounts: own ? node.sandboxMounts : [],
     skillDirectories: own ? node.skillDirectories : [],
     strictWrites: own ? node.strictWrites : true,
+    ...workspaceFields(scope),
+  }
+}
+
+/** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
+
+export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'>): WorkspaceFields {
+  return {
     policy: { ...scope.policy, mount: scope.mount },
-    ...(scope.packs.enabled === null ? {} : { enabledPacks: [...scope.packs.enabled] }),
+    enabledPacks: scope.packs.enabled === null ? undefined : [...scope.packs.enabled],
     enableShell: scope.packs.shell,
     allowCode: scope.packs.code,
     allowHostGit: scope.packs.hostGit,
