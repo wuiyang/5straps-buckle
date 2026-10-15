@@ -7,7 +7,7 @@ import { setupCli } from './cli/setup.js'
 import { clientCommand } from './cli/client.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
-import { loadConfig, type NodeConfig } from './common/runtime/config.js'
+import { loadConfig, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
@@ -87,7 +87,11 @@ function configureProcess(): { config: NodeConfig; logging: LoggerRoot } {
   const logging = configureRootLogger(loggerConfigFrom(process.env))
   // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
   if (environment.openToOthers && environment.file) logging.logger.warn(`The environment file ${environment.file} can be read by other users; run chmod 600 ${environment.file}`)
-  return { config: loadConfig(process.env, process.platform, { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller }), logging }
+  const layers = { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller }
+  // D85, Q3: every workspace's defaults come from the file alone, so a shell's or an MCP config's env never lifts them.
+  const unread = unreadWorkspaceDefaults(layers)
+  if (unread.length > 0) logging.logger.warn(`Not read: ${unread.join(', ')} ${unread.length === 1 ? 'is' : 'are'} set in this command's environment to another value than ${environment.file} holds. A node takes every workspace's defaults from its environment file alone, so a shell's or an MCP config's env cannot change them; change them with buckle settings set.`)
+  return { config: loadConfig(process.env, process.platform, layers), logging }
 }
 
 const SERVICE_USAGE: Record<ServiceKind, string> = {

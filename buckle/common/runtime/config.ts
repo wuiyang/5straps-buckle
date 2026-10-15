@@ -190,7 +190,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     adminToken,
     ...(layers.caller.BUCKLE_WORKSPACE_ROOT ? { callerWorkspaceRoot: typedPath(layers.caller.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
     migration: migrationInput(environment, layers, platform),
-    workspaceDefaults: nodeDefaultsFrom(environment, platform),
+    // From the environment file alone, where the node has one, as migration reads it (finding 34): a shell's or an MCP
+    // config's env, which an agent may be able to write, never sets or lifts every workspace's defaults and deny floor.
+    workspaceDefaults: nodeDefaultsFrom(layers.file?.values ?? environment, platform),
     // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
     scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
@@ -224,6 +226,20 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     defaultTimeoutMs: parsePositiveInteger(environment.BUCKLE_DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
     maxTimeoutMs: parsePositiveInteger(environment.BUCKLE_MAX_TIMEOUT_MS, DEFAULT_MAX_TIMEOUT_MS),
   }
+}
+
+/** The node settings that are every workspace's defaults (D85, Q3), which a node reads from its environment file alone. */
+export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
+  'BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW',
+  'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
+  'BUCKLE_APPROVAL_TIMEOUT_MS',
+])
+
+/** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read. */
+export function unreadWorkspaceDefaults(layers: EnvironmentLayers): string[] {
+  const file = layers.file
+  if (file === null) return []
+  return WORKSPACE_DEFAULT_KEYS.filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file.values[key])
 }
 
 /**
@@ -282,7 +298,8 @@ export interface WorkspaceScope {
  * The workspace settings a node's buckle.env names (D85, Q3 and Q14): the defaults every workspace takes where its own
  * workspace.json holds no value, as the workspace's, else these, else Buckle's built-in default (resolveSettings). An
  * empty value names none. Its allow-type lists (command allow, interpreters, approved URLs) stand where a workspace has
- * no list of its own; its deny-type lists (command deny, destructive) are a floor over every workspace's. buckle.env
+ * no list of its own; its deny-type lists (command deny, destructive) are a floor over every workspace's. They come
+ * from the node's environment file alone where it has one (WORKSPACE_DEFAULT_KEYS; loadConfig). buckle.env
  * takes BUCKLE_ names alone, so it names no command variable, and `env` is empty: a workspace's own merge over it key by
  * key. A change applies when the node restarts, as every node setting's does (BUCKLE-D19).
  */

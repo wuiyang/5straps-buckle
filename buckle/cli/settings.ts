@@ -70,9 +70,13 @@ function show(context: SettingsContext): CliResult {
   const fileValues = context.fileText === null ? {} : parseEnv(context.fileText)
   process.stdout.write(`Node settings, from ${describeSource(context)}\n\n`)
   const line = (setting: NodeSetting) => {
-    const [value, source] = context.environment[setting.key] !== undefined
-      ? [context.environment[setting.key]!, fileValues[setting.key] !== undefined ? 'process environment, over the file' : 'process environment']
-      : fileValues[setting.key] !== undefined ? [fileValues[setting.key]!, 'environment file'] : [setting.fallback, 'default']
+    // A workspace default is read from the file alone where there is one, whatever this shell sets (D85, Q3).
+    const fromFileAlone = setting.workspace !== undefined && context.fileText !== null && context.environment[setting.key] !== undefined
+    const [value, source] = fromFileAlone
+      ? [fileValues[setting.key] ?? setting.fallback, `${fileValues[setting.key] !== undefined ? 'environment file' : 'default'}; this shell's value is not read`]
+      : context.environment[setting.key] !== undefined
+        ? [context.environment[setting.key]!, fileValues[setting.key] !== undefined ? 'process environment, over the file' : 'process environment']
+        : fileValues[setting.key] !== undefined ? [fileValues[setting.key]!, 'environment file'] : [setting.fallback, 'default']
     process.stdout.write(`  ${setting.alias.padEnd(20)} ${setting.key.padEnd(28)} ${(value || '(empty)').padEnd(40)} ${source}\n`)
   }
   for (const setting of NODE_SETTINGS.filter(item => !item.workspace)) line(setting)
@@ -123,10 +127,12 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   process.stdout.write(next === null
     ? `Removed ${setting.key} from ${context.file}; the default applies: ${setting.fallback}\n`
     : `Set ${setting.key}=${next} in ${context.file}\n`)
-  if (context.environment[setting.key] !== undefined) {
-    process.stdout.write(`${setting.key} is also set in this shell's environment, which wins over the file until it is unset there.\n`)
-  }
   const workspace = findNodeSetting(name)?.workspace
+  if (context.environment[setting.key] !== undefined) {
+    process.stdout.write(workspace
+      ? `${setting.key} is also set in this shell's environment, which the node does not read for a workspace default: the file's value applies.\n`
+      : `${setting.key} is also set in this shell's environment, which wins over the file until it is unset there.\n`)
+  }
   if (workspace) process.stdout.write(FLOOR_KEYS.has(setting.key)
     ? `It applies to every workspace, over each one's own ${workspace.key}.\n`
     : `It is the default of every workspace whose own settings leave ${workspace.key} unset.\n`)

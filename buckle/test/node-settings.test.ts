@@ -108,6 +108,15 @@ describe('buckle settings show', () => {
     expect(result.out).toMatch(/experimental-admin-http\s+BUCKLE_EXPERIMENTAL_ADMIN_HTTP\s+true\s+process environment, over the file/)
   })
 
+  // D85, Q3: a workspace default is read from the file alone, so a shell's value is named as not read.
+  it('names a workspace default this shell sets as not read, and the file\'s value as the one in force', async () => {
+    const shown = await settings(['show'], { BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    expect(shown.out).toMatch(/shell\s+BUCKLE_ALLOW_SHELL\s+true\s+environment file; this shell's value is not read\n/)
+    expect(shown.out).toMatch(/packs\s+BUCKLE_PACKS\s+\(every built-in pack, and plugins\)\s+default; this shell's value is not read\n/)
+    const set = await settings(['set', 'shell', 'off'], { BUCKLE_ALLOW_SHELL: 'true' })
+    expect(set.out).toContain('BUCKLE_ALLOW_SHELL is also set in this shell\'s environment, which the node does not read for a workspace default: the file\'s value applies.')
+  })
+
   it('never prints a secret that sits in the process environment either', async () => {
     const result = await settings(['show'], { BUCKLE_AUTH_TOKEN: `env-${SECRET}`, BUCKLE_FORGE_GITHUB_TOKEN: `forge-${SECRET}` })
 

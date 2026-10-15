@@ -119,6 +119,20 @@ describe('main', () => {
     }
   })
 
+  // D85, Q3: a workspace default the caller's env sets otherwise is not read, and the start says so, naming no value.
+  it('warns at start, naming each workspace default the environment sets to another value than the file, which it does not read', async () => {
+    entry.loadEnvironmentFile.mockReturnValueOnce({ file: '/state/buckle.env', openToOthers: false, values: { BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' } } as never)
+    vi.stubEnv('BUCKLE_ALLOW_SHELL', 'true')
+    vi.stubEnv('BUCKLE_PACKS', 'fs')
+    vi.stubEnv('BUCKLE_COMMAND_DENY', '')
+    try {
+      expect(await main(['policy', 'show'])).toBe(5)
+      expect(entry.warnings).toContainEqual('Not read: BUCKLE_COMMAND_DENY, BUCKLE_ALLOW_SHELL are set in this command\'s environment to another value than /state/buckle.env holds. A node takes every workspace\'s defaults from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; change them with buckle settings set.')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('runs init and settings before, and without, the environment file and the node config', async () => {
     expect(await main(['init', '--yes'])).toBe(3)
     expect(entry.runInitCommand).toHaveBeenCalledWith(['--yes'])

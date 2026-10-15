@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { PolicyError } from '../common/domain/policy.js'
 import { credentialLikeName, defaultSettings, openSettingsFile, resolveSettings, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsError, WorkspaceSettingsInvalidError, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { loadConfig, unreadWorkspaceDefaults } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
@@ -66,6 +66,19 @@ describe('a workspace\'s settings', () => {
     const own = resolveSettings(WorkspaceSettingsSchema.parse({ version: 1, policy: { ...emptyWorkspacePolicy(), tools: { allow: [], deny: ['fs_write'] } } }), node)
     expect(own.policy.tools).toEqual({ allow: [], deny: ['shell_exec', 'fs_write'] })
     expect(own.sources).toMatchObject({ 'policy.tools.allow': 'workspace', 'policy.tools.deny': 'node' })
+  })
+
+  // As finding 34 kept the move to the file: a shell's or an MCP config's env, which an agent may be able to write, never
+  // sets or lifts every workspace's defaults, its deny floor among them.
+  it('come from the node\'s environment file alone where it has one, whatever the caller\'s env says', () => {
+    const values = { BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_ALLOW_SHELL: 'false' }
+    const caller = { BUCKLE_COMMAND_DENY: '', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_PACKS: 'fs', BUCKLE_STATE_DIR: join(scratch(), 'state') }
+    const layers = { file: { path: join(scratch(), 'buckle.env'), values }, caller }
+    expect(loadConfig({ ...values, ...caller }, process.platform, layers).workspaceDefaults).toMatchObject({ policy: { commands: { deny: ['curl *'] } }, packs: { shell: false } })
+    expect(loadConfig({ ...values, ...caller }, process.platform, layers).workspaceDefaults.packs).not.toHaveProperty('enabled')
+    expect(unreadWorkspaceDefaults(layers)).toEqual(['BUCKLE_COMMAND_DENY', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL'])
+    // A node with no file is configured by the environment it starts with.
+    expect(loadConfig({ BUCKLE_ALLOW_SHELL: 'false' }).workspaceDefaults.packs.shell).toBe(false)
   })
 
   it('refuse a node setting the node would not read, naming the variable', async () => {
