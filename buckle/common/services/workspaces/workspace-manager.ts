@@ -232,22 +232,35 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       return directory !== null && storedGrantMatches({ directory, workbenchId, token: token! })
     },
 
-    /** Renames a workspace or sets it online or offline (D83 addendum (5)); going offline waits for its active work. */
+    /**
+     * Renames a workspace or sets it online or offline (D83 addendum (5)); going offline waits for its active work, and
+     * then closes the runtime this process holds for it, whether the check opened it or it was open before (fix brief
+     * 2, R1), so its browser, terminals, and language servers end with the change; `buckle serve` closes what other
+     * processes took offline at its next look at the registry (closeUnserved).
+     */
     async update(id: string, patch: z.infer<typeof WorkspacePatchSchema>): Promise<WorkspaceDescriptor> {
-      if (patch.online === false) await assertIdle(id, { refusal: 'Resolve active tools and staged work before taking this workspace offline', deletes: false })
+      const checked = patch.online === false ? await assertIdle(id, { refusal: 'Resolve active tools and staged work before taking this workspace offline', deletes: false }) : null
       const opened = await openedRuntime(id)
-      const described = await store.update((state) => {
-        const workspace = requireStored(state, id)
-        if (patch.expectedUpdatedAt !== undefined && workspace.updatedAt !== patch.expectedUpdatedAt) throw new WorkspaceError('Workspace changed; reload before saving', 409)
-        if (patch.name !== undefined) workspace.name = patch.name
-        if (patch.online !== undefined) workspace.online = patch.online
-        touched(workspace)
-        return describe(workspace)
-      })
-      if (opened) {
+      const pending = runtimes.get(id)
+      let described: WorkspaceDescriptor
+      try {
+        described = await store.update((state) => {
+          const workspace = requireStored(state, id)
+          if (patch.expectedUpdatedAt !== undefined && workspace.updatedAt !== patch.expectedUpdatedAt) throw new WorkspaceError('Workspace changed; reload before saving', 409)
+          if (patch.name !== undefined) workspace.name = patch.name
+          if (patch.online !== undefined) workspace.online = patch.online
+          touched(workspace)
+          return describe(workspace)
+        })
+      } catch (error) {
+        // The change was refused: a runtime opened for the check alone has nothing to stay open for.
+        if (checked?.openedForCheck && opened && pending) await drop(id, pending, opened)
+        throw error
+      }
+      if (opened && pending) {
         opened.config.serverName = described.name
-        // An offline workspace serves no call, so its log no longer holds the node's readiness (review L5 of B20-B22).
-        if (!described.online) auditHealth.forget(actionsPath(opened.config))
+        // An offline workspace serves no call: its runtime closes, and its log no longer holds the node's readiness (review L5 of B20-B22).
+        if (!described.online) await drop(id, pending, opened)
       }
       return described
     },
@@ -392,21 +405,28 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
    * another process marks as running, then what its runtime holds, opened here as 0.1 did where this process has not, so
    * staged shell results and open workbenches on disk are seen from the CLI too. A workspace that will not open runs
    * nothing here, and taking it offline or forgetting it deletes nothing, so that goes ahead; deleting its records waits
-   * until it opens and shows none.
+   * until it opens and shows none. Answers whether the check opened the runtime, which the refusal closes again (fix
+   * brief 2, R1): the change was refused, so nothing stays open for it.
    */
-  async function assertIdle(id: string, input: { refusal: string; deletes: boolean }): Promise<void> {
+  async function assertIdle(id: string, input: { refusal: string; deletes: boolean }): Promise<{ openedForCheck: boolean }> {
     requireStored(store.read(), id)
     if (activeElsewhere({ directory: activeWorkDirectory(node.stateDirectory, id) })) throw new WorkspaceError(input.refusal, 409)
     let opened = await openedRuntime(id)
+    const openedForCheck = opened === null
     if (!opened) {
       try { opened = await manager.resolve(id, { setup: true }) } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
         if (input.deletes) throw new WorkspaceError(`Workspace ${id} will not open, so its staged work cannot be checked before its records are deleted: ${reason}. Remove it without --purge, or repair it first`, 409)
         logger.warn('A workspace would not open to check its staged work; nothing of it is deleted, so the change goes ahead', { workspaceId: id, error })
-        return
+        return { openedForCheck: false }
       }
     }
-    if (await holdsWork(opened.runtime)) throw new WorkspaceError(input.refusal, 409)
+    if (await holdsWork(opened.runtime)) {
+      const pending = runtimes.get(id)
+      if (openedForCheck && pending) await drop(id, pending, opened)
+      throw new WorkspaceError(input.refusal, 409)
+    }
+    return { openedForCheck }
   }
 
   /** Forgets and closes a runtime, where it is still the one this process holds for the id. */

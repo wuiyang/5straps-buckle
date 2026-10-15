@@ -220,10 +220,7 @@ describe('buckle workspace disable and remove, while the workspace has work', ()
   const marks = () => activeWorkDirectory(state, 'alpha')
 
   it('refuse while a shell result waits for review on disk, and delete nothing', async () => {
-    const id = `shell-${randomUUID()}`
-    const directory = join(state, 'workspaces', 'alpha', 'isolated-shell', workspaceStateKey(alpha), id)
-    mkdirSync(join(directory, 'workspace'), { recursive: true })
-    writeFileSync(join(directory, 'run.json'), JSON.stringify({ id, sessionId: 's', stageId: 'st', tool: 'shell_exec', sourceRoot: alpha, copyRoot: join(directory, 'workspace'), writableRoots: [alpha], excluded: [], createdAt: new Date().toISOString(), status: 'needs_review' }))
+    const directory = stageShellResult()
 
     for (const verb of [['disable', 'alpha'], ['remove', 'alpha'], ['remove', 'alpha', '--purge']]) {
       const refused = await buckle(verb)
@@ -265,6 +262,53 @@ describe('buckle workspace disable and remove, while the workspace has work', ()
       expect(await held).toMatchObject({ outcome: 'approval_required' })
       expect(existsSync(join(marks(), String(process.pid)))).toBe(false)
     } finally { await serving.close() }
+  })
+})
+
+/** A shell result of workspace alpha waiting for review on disk, as an isolated shell leaves it; its folder. */
+function stageShellResult(): string {
+  const id = `shell-${randomUUID()}`
+  const directory = join(state, 'workspaces', 'alpha', 'isolated-shell', workspaceStateKey(alpha), id)
+  mkdirSync(join(directory, 'workspace'), { recursive: true })
+  writeFileSync(join(directory, 'run.json'), JSON.stringify({ id, sessionId: 's', stageId: 'st', tool: 'shell_exec', sourceRoot: alpha, copyRoot: join(directory, 'workspace'), writableRoots: [alpha], excluded: [], createdAt: new Date().toISOString(), status: 'needs_review' }))
+  return directory
+}
+
+// Fix brief 2, R1: disable opened the workspace's runtime to look for work and left it open, so a disabled workspace's
+// browser, terminals, and language servers stayed open in the process that disabled it, and in the HTTP process.
+describe('the runtime of a workspace taken offline', () => {
+  let manager: WorkspaceManager
+  beforeEach(async () => {
+    await init(alpha)
+    manager = await openWorkspaceManager({ config: node() })
+  })
+  afterEach(async () => { await manager.close() })
+  const opened = async () => (await manager.opened()).map(runtime => runtime.workspaceId)
+
+  it('closes in the process that took it offline, and opens anew once the workspace is enabled', async () => {
+    const { runtime } = await manager.resolve('alpha')
+    const closed = vi.spyOn(runtime, 'closeSessions')
+    expect(await opened()).toEqual(['alpha'])
+
+    await manager.update('alpha', { online: false })
+    expect(await opened()).toEqual([])
+    expect(closed).toHaveBeenCalledTimes(1)
+
+    await manager.update('alpha', { online: true })
+    expect((await manager.resolve('alpha')).runtime).not.toBe(runtime)
+    expect(await opened()).toEqual(['alpha'])
+  })
+
+  it('is opened for the check alone and closed with it, whether the workspace goes offline or the change is refused', async () => {
+    expect(await opened()).toEqual([])
+    await manager.update('alpha', { online: false })
+    expect(await opened()).toEqual([])
+
+    await manager.update('alpha', { online: true })
+    stageShellResult()
+    await expect(manager.update('alpha', { online: false })).rejects.toMatchObject({ status: 409, message: 'Resolve active tools and staged work before taking this workspace offline' })
+    expect(await opened()).toEqual([])
+    expect(registry().workspaces[0]).toMatchObject({ id: 'alpha', online: true })
   })
 })
 
