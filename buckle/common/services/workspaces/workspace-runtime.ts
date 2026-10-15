@@ -462,6 +462,7 @@ async function buildPacks(input: {
     allowHostGit: input.config.allowHostGit,
     allowHostLsp: input.config.allowHostLsp,
     shellNetwork: input.config.shellNetwork,
+    commandEnvironment: input.config.commandEnvironment,
     filesystemPolicy: { policy: input.compiled.policy },
     shellIsolation: input.config.isolateShell ? { directory: join(input.config.stateDirectory, 'isolated-shell', workspaceStateKey(input.config.cwd)), maxBytes: input.config.isolationMaxBytes, history: input.history } : undefined,
     environmentValidator: input.config.environmentValidator,
@@ -491,6 +492,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
     packs: { enabled: config.enabledPacks ?? null, shell: config.enableShell, code: config.allowCode, hostGit: config.allowHostGit, hostLsp: config.allowHostLsp },
     browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded },
     approvalWaitMs: config.approvalTimeoutMs ?? 0,
+    env: config.commandEnvironment,
   })
 }
 

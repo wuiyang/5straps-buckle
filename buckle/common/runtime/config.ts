@@ -123,6 +123,8 @@ export interface BuckleConfig extends NodeConfig {
   allowCode: boolean
   /** How long a gated call is held for an answer, in milliseconds; null holds it until someone answers. */
   approvalTimeoutMs: number | null
+  /** The plain variables the workspace's settings give its shell commands (Q13); a call's own `env` is set over them. */
+  commandEnvironment: Readonly<Record<string, string>>
   /** The workspace's policy, from its workspace.json, with its mount's target as `mount`. */
   policy: WorkspacePolicy
   /** The node's own state directory, which holds the registry and every workspace's settings. */
@@ -233,6 +235,8 @@ export interface WorkspaceScope {
   packs: { enabled: string[] | null; shell: boolean; code: boolean; hostGit: boolean; hostLsp: boolean }
   /** Milliseconds a gated call is held for an answer; 0 holds it until someone answers. */
   approvalWaitMs: number
+  /** Variables its shell commands see. */
+  env: Readonly<Record<string, string>>
 }
 
 /**
@@ -260,6 +264,7 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
     allowHostGit: scope.packs.hostGit,
     allowHostLsp: scope.packs.hostLsp,
     approvalTimeoutMs: scope.approvalWaitMs === 0 ? null : scope.approvalWaitMs,
+    commandEnvironment: { ...scope.env },
   }
 }
 

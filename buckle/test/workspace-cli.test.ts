@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig, type NodeConfig } from '../common/runtime/config.js'
+import { openWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { runCli } from './support/cli.js'
 
@@ -232,6 +233,11 @@ describe('buckle workspace set and unset', () => {
     expect(result.out).not.toContain('workspace-cli-variable-value')
     expect(audit()).not.toContain('workspace-cli-variable-value')
     expect(audit()).toContain('set alpha env.NODE_ENV')
+    // The runtime that serves the workspace gives them to its shell commands (Q13).
+    const workspaces = await openWorkspaceManager({ config: node() })
+    try {
+      expect((await workspaces.resolve('alpha')).config.commandEnvironment).toEqual({ NODE_ENV: 'workspace-cli-variable-value' })
+    } finally { await workspaces.close() }
     expect((await buckle(['unset', 'env.NODE_ENV'], { cwd: alpha })).exitCode).toBe(0)
     expect(settings('alpha').env).toEqual({})
   })

@@ -63,6 +63,8 @@ export interface BuiltinPackOptions {
   allowHostGit?: boolean
   allowHostLsp?: boolean
   enableShell: boolean
+  /** The workspace's own variables for its shell commands (Q13), under each call's `env`. None when absent. */
+  commandEnvironment?: Readonly<Record<string, string>>
   /** The workspace setting packs.code: false withholds the code pack (owner decision D82). On when absent. */
   allowCode?: boolean
   /** What a script reaches: the workspace manifest's tools as they stand at each call, after tool policy. None when absent. */
@@ -169,6 +171,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     readOnlyPaths: options.mountReadOnlyPaths,
     mounts: options.sandboxMounts,
     unavailableReason: shellUnavailableReason(options),
+    ...(options.commandEnvironment ? { commandEnvironment: options.commandEnvironment } : {}),
     isolation: options.shellIsolation,
     filesystemPolicy: options.filesystemPolicy,
     allowNetwork: options.shellNetwork === true && !options.approvedUrls && options.allowedHosts.length === 0,

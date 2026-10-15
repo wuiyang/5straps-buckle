@@ -129,3 +129,29 @@ describe('a call that sets many variables', () => {
     } finally { rmSync(workspace, { recursive: true, force: true }) }
   })
 })
+
+// Q13 of the workspace-model brief: a workspace's settings hold plain variables for its commands. Each command sees
+// them, the call's own `env` over them, and still none of Buckle's secrets.
+describe('the workspace\'s own variables', () => {
+  it('reach every shell command under the call\'s env, beside the inherited list alone', async () => {
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-env-workspace-')))
+    vi.stubEnv('GITHUB_TOKEN', 'forge-token-never-passed')
+    try {
+      const spawned: ProcessRequest[] = []
+      const pack = createShellPack({
+        paths: createPathView({ root: workspace, mount: null }), sandbox: createNoneSandbox(), writableRoots: [workspace], hiddenPaths: [], readOnlyPaths: [], unavailableReason: null,
+        commandEnvironment: { NODE_ENV: 'development', GREETING: 'from the workspace' },
+        runProcess: async (request) => { spawned.push(request); return { exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false } },
+      })
+      const context = { requestId: 'r1', sessionId: 's1', timeoutMs: 1_000, signal: AbortSignal.timeout(1_000) }
+      await pack.tools[0]!.prepare({ command: 'true', env: { NODE_ENV: 'test' } }).execute(context)
+      await pack.tools[1]!.prepare({ runtime: 'bash', script: 'true' }).execute({ ...context, requestId: 'r2' })
+
+      expect(spawned.map(request => request.environment)).toEqual([
+        expect.objectContaining({ NODE_ENV: 'test', GREETING: 'from the workspace' }),
+        expect.objectContaining({ NODE_ENV: 'development', GREETING: 'from the workspace' }),
+      ])
+      for (const request of spawned) expect(request.environment.GITHUB_TOKEN).toBeUndefined()
+    } finally { rmSync(workspace, { recursive: true, force: true }) }
+  })
+})

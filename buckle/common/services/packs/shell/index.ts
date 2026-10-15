@@ -75,6 +75,8 @@ export interface ShellPackOptions {
   programSearch?: ProgramSearch
   /** Where no program an unsandboxed command word names may come from, beside the writable roots: every root the node knows. */
   untrusted?: () => UntrustedRoots
+  /** The workspace's own variables (Q13), which every command sees under the call's `env`. None when absent. */
+  commandEnvironment?: Readonly<Record<string, string>>
 }
 
 export function createShellPack(options: ShellPackOptions): Pack {
@@ -137,7 +139,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
       })
       return options.runProcess({
         command: wrapped.command, argv0: program?.argv0, args: wrapped.args, cwd: mapped(cwd), timeoutMs: input.timeoutMs,
-        environment: buildChildEnvironment({ parent: process.env, extra: input.env }), signal: input.signal,
+        environment: buildChildEnvironment({ parent: process.env, extra: { ...options.commandEnvironment, ...input.env } }), signal: input.signal,
       })
     }
     if (!options.isolation) return toJson(await run(), options.sandbox.mode)

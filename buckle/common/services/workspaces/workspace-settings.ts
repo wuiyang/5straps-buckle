@@ -201,9 +201,9 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 }
 
 /** What a workspace's runtime takes from its settings (workspaceConfig). */
-export function scopeOf(settings: WorkspaceSettings): Pick<WorkspaceScope, 'mount' | 'policy' | 'packs' | 'approvalWaitMs'> {
+export function scopeOf(settings: WorkspaceSettings): Pick<WorkspaceScope, 'mount' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'> {
   const mount = settings.mounts.find(entry => entry.kind === 'workspace')
-  return { mount: mount?.target ?? null, policy: settings.policy, packs: settings.packs, approvalWaitMs: settings.approvalWaitMs }
+  return { mount: mount?.target ?? null, policy: settings.policy, packs: settings.packs, approvalWaitMs: settings.approvalWaitMs, env: settings.env }
 }
 
 /** The policy and the mount a runtime holds, back as settings: the mount moves to `mounts`, where it is stored. */
