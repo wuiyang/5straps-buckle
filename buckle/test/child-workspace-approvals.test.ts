@@ -8,7 +8,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { runCli } from './support/cli.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
-import { registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 const NODE_REPORT_TOKEN = 'node-report-token-fixture-only'
 const roots: string[] = []
@@ -30,7 +30,7 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
   })
   const manager = await workspacesOf(config, { interaction: fixedInteraction() })
   await registerWorkspace(manager, { id: 'child', name: 'Child', dir: join(root, 'child'), policy: emptyWorkspacePolicy() })
-  const runtime = (await manager.resolve('default')).runtime
+  const runtime = (await byName(manager, 'default')).runtime
   return { config, runtime, manager }
 }
 
@@ -57,19 +57,19 @@ describe('what a child workspace runtime inherits from the node', () => {
   it('keeps the report endpoint and the approval webhook, so its calls are not invisible', async () => {
     const { manager } = await nodeWithChild()
 
-    const child = await manager.resolve('child')
+    const child = await byName(manager, 'child')
 
     expect(child.config.reportUrl).toBe('http://127.0.0.1:9/reports')
     // The node's own credential, not merely some value: a child filing under another node's
     // credential is what Rings refuses, and definedness alone would not have caught it.
     expect(child.config.reportToken).toBe(NODE_REPORT_TOKEN)
     expect(child.config.approvalWebhook).toBe('http://127.0.0.1:9/approvals')
-    expect(child.runtime.workspaceId).toBe('child')
+    expect(child.runtime.workspaceId).toBe(idOf(manager, 'child'))
   }, 30_000)
 
   it.each([['with', {}], ['without', { BUCKLE_APPROVAL_WEBHOOK: '' }]])('holds a child call for the owner\'s CLI decision %s a webhook', async (_label, environment) => {
     const { config, manager } = await nodeWithChild(environment)
-    const child = await manager.resolve('child')
+    const child = await byName(manager, 'child')
     const call = child.runtime.invoke({ request: { requestId: 'child-write', tool: 'fs_write', args: { path: '/workspace/note.md', content: 'held' }, approvalTokens: [] }, sessionId: 'chat-1' })
     await vi.waitFor(() => expect(child.runtime.approvals.pending()).toHaveLength(1))
     const token = child.runtime.approvals.pending()[0]!.token
@@ -85,20 +85,20 @@ describe('what a child workspace runtime inherits from the node', () => {
 describe('answering a child workspace request from the terminal', () => {
   it('resolves it when the workspace is named, and says which workspace it answered', async () => {
     const { config, manager } = await nodeWithChild()
-    const child = await manager.resolve('child')
+    const child = await byName(manager, 'child')
     const token = await pendingIn(child.runtime)
 
     const approved = await capture({ argv: ['approve', token, '--scope', 'once', '--workspace', 'child'], config })
 
     expect(approved.exitCode).toBe(0)
     expect(approved.stdout).toContain('in workspace Child')
-    expect((await manager.resolve('child')).runtime.approvals.pending()).toEqual([])
+    expect((await byName(manager, 'child')).runtime.approvals.pending()).toEqual([])
   }, 30_000)
 
   // Q9 of the workspace-model brief: naming no workspace means every online one, and the token is answered where it waits.
   it('answers the same token unnamed in the workspace whose queue holds it, and refuses it where --dir names another', async () => {
     const { config, manager } = await nodeWithChild()
-    const token = await pendingIn((await manager.resolve('child')).runtime)
+    const token = await pendingIn((await byName(manager, 'child')).runtime)
 
     const elsewhere = await capture({ argv: ['approve', token, '--scope', 'once', '--dir', config.cwd], config, cwd: config.cwd })
     expect(elsewhere.exitCode).toBe(1)
@@ -107,12 +107,12 @@ describe('answering a child workspace request from the terminal', () => {
     const approved = await capture({ argv: ['approve', token, '--scope', 'once'], config, cwd: config.cwd })
     expect(approved.exitCode).toBe(0)
     expect(approved.stdout).toContain('in workspace Child')
-    expect((await manager.resolve('child')).runtime.approvals.pending()).toEqual([])
+    expect((await byName(manager, 'child')).runtime.approvals.pending()).toEqual([])
   }, 30_000)
 
   it('lists the child queue with the command that answers it there', async () => {
     const { config, manager } = await nodeWithChild()
-    const token = await pendingIn((await manager.resolve('child')).runtime)
+    const token = await pendingIn((await byName(manager, 'child')).runtime)
 
     const listed = await capture({ argv: ['approvals', '--workspace', 'child'], config })
 

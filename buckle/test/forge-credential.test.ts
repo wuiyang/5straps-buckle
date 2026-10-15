@@ -83,7 +83,7 @@ describe('the forge credential in configuration', () => {
   it('refuses a state directory inside the workspace, where an agent could write the hooks git runs', () => {
     expect(() => configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/work/.buckle' }))
       .toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
-    expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/state' }).stateDirectory).toBe('/srv/state')
+    expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: '/srv/work', BUCKLE_STATE_DIR: '/srv/state' }).nodeStateDirectory).toBe('/srv/state')
   })
 
   // Review M3: the root was named by its real path and the state directory as typed, so either one spelled
@@ -96,7 +96,7 @@ describe('the forge credential in configuration', () => {
     const spellings = linkedRoot()
     try {
       expect(() => configFromEnvironment(environment(spellings))).toThrow(/BUCKLE_STATE_DIR .* inside the BUCKLE_WORKSPACE_ROOT/)
-      expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: spellings.linkedRoot, BUCKLE_STATE_DIR: join(spellings.base, 'state') }).stateDirectory).toBe(join(spellings.base, 'state'))
+      expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: spellings.linkedRoot, BUCKLE_STATE_DIR: join(spellings.base, 'state') }).nodeStateDirectory).toBe(join(spellings.base, 'state'))
     } finally { rmSync(spellings.base, { recursive: true, force: true }) }
   })
 

@@ -675,7 +675,7 @@ describe('a whole drive as a Buckle root on Windows, imitated', () => {
     const manager = await workspacesOf(config, { platform: 'win32' })
     await expect(manager.create({ id: 'drive', name: 'Drive', dir: 'D:\\', policy: emptyWorkspacePolicy() })).rejects.toThrow(`Workspace folder D:\\: ${refused}`)
     expect(manager.eligibility('E:/')).toEqual({ selectable: false, reason: `Workspace folder E:/: ${refused}` })
-    expect(manager.list().map(workspace => workspace.id)).toEqual(['default'])
+    expect(manager.list().map(workspace => workspace.id)).toEqual([config.workspaceId])
     for (const mount of ['C:/', 'C:\\', '/C:', '/c:/x', 'D:']) expect(MountPathSchema.safeParse(mount).success).toBe(false)
   })
 })

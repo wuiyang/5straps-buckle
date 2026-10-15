@@ -36,7 +36,7 @@ async function node(): Promise<Node> {
   const started = await createBuckleHttp({ environment })
   nodes.push(started)
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-  expect((await keysCommand({ config: started.config, workspaces: await started.services.getWorkspaces(), argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0)
+  expect((await keysCommand({ config: started.config, workspaces: await started.services.getWorkspaces(), argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', started.runtime.workspaceId] })).exitCode).toBe(0)
   vi.mocked(process.stdout.write).mockRestore()
   return Object.assign(started, { root, nodeKey: (await started.services.getNodeSigner()).keyId })
 }
@@ -52,11 +52,11 @@ async function ask(buckle: Node, request: InvokeRequest): Promise<string> {
 }
 
 function signed(buckle: Node, input: { method: string; path: string; body: string; at?: number }): string {
-  return signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: buckle.config.serverId, nodeKey: buckle.nodeKey, workspace: 'default', method: input.method, path: input.path, body: input.body, now: input.at ?? Date.now() })
+  return signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: buckle.config.serverId, nodeKey: buckle.nodeKey, workspace: buckle.runtime.workspaceId, method: input.method, path: input.path, body: input.body, now: input.at ?? Date.now() })
 }
 
 async function challenges(buckle: Node): Promise<{ node: { keyId: string; publicKey: string }; challenges: Array<{ token: string; signed: string; digest: string; error?: string }> }> {
-  const path = '/setup/approvals/challenges'
+  const path = buckle.setup('approvals/challenges')
   const response = await buckle.request(path, { headers: { authorization: signed(buckle, { method: 'GET', path, body: '' }) } })
   expect(response.status).toBe(200)
   return await response.json() as Awaited<ReturnType<typeof challenges>>
@@ -64,8 +64,8 @@ async function challenges(buckle: Node): Promise<{ node: { keyId: string; public
 
 function decide(buckle: Node, body: object, at?: number): { send: () => Promise<Response> } {
   const text = JSON.stringify(body)
-  const authorization = signed(buckle, { method: 'POST', path: '/setup/approvals', body: text, ...(at ? { at } : {}) })
-  return { send: () => buckle.request('/setup/approvals', { method: 'POST', headers: { authorization, 'content-type': 'application/json' }, body: text }) }
+  const authorization = signed(buckle, { method: 'POST', path: buckle.setup('approvals'), body: text, ...(at ? { at } : {}) })
+  return { send: () => buckle.request(buckle.setup('approvals'), { method: 'POST', headers: { authorization, 'content-type': 'application/json' }, body: text }) }
 }
 
 describe('an approval decision a person\'s key proves (B24)', () => {
@@ -74,7 +74,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     const token = await ask(buckle, write(buckle.root, `signed-${scope}`))
     const [item] = (await challenges(buckle)).challenges
     const unsigned = { token, approved: true, scope }
-    expect((await buckle.request('/setup/approvals', { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify(unsigned) })).status).toBe(409)
+    expect((await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify(unsigned) })).status).toBe(409)
     expect(buckle.runtime.grants.list()).toEqual([])
     expect((await decide(buckle, { ...unsigned, challenge: item!.digest }).send()).status).toBe(200)
     expect(buckle.runtime.grants.activeSubjects({ sessionId: 'chat-1', rule: 'write_scope' })).toContain(buckle.root)
@@ -122,7 +122,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     expect((await decide(buckle, body).send()).status).toBe(200)
     now += 30_000
     expect((await decide(buckle, body).send()).status).toBe(200)
-    const unsigned = await buckle.request('/setup/approvals', { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify({ token, approved: true, scope: 'once' }) })
+    const unsigned = await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify({ token, approved: true, scope: 'once' }) })
     expect(unsigned.status).toBe(409)
     const stored = JSON.parse(readFileSync(join(buckle.config.stateDirectory, 'approvals.json'), 'utf8')) as { once: Array<{ token: string; expiresAt: string }> }
     expect(stored.once).toHaveLength(1)
@@ -145,7 +145,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     // The call as shown, and its digest, which a person's device recomputes from it (owner decision D9).
     const shown = reviewableArguments(request.args)
     expect(verified?.challenge).toMatchObject({
-      node: buckle.config.serverId, workspace: 'default', token, tool: 'fs_write', rule: 'write_scope', sessionId: 'chat-1', arguments: shown, cwd: buckle.config.cwd, callDigest: callDigestOf({ tool: 'fs_write', arguments: shown }),
+      node: buckle.config.serverId, workspace: buckle.runtime.workspaceId, token, tool: 'fs_write', rule: 'write_scope', sessionId: 'chat-1', arguments: shown, cwd: buckle.config.cwd, callDigest: callDigestOf({ tool: 'fs_write', arguments: shown }),
       // What the call does, in the node's words, inside the signed bytes (owner decision D9), and what the rules judged it to touch (D17).
       description: `Write 7 bytes to ${JSON.stringify(join(buckle.root, 'outside.md'))} in ${JSON.stringify(buckle.config.cwd)}`, effects: [`write ${join(buckle.root, 'outside.md')}`],
     })
@@ -193,7 +193,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['revoke', owner.keyId] })
     expect((await decide(buckle, { token: second, approved: true, scope: 'once', challenge: digestOf(second) }).send()).status).toBe(401)
     expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual([second])
-    expect(buckle.runtime.actions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)).toEqual(['expired', 'replayed', 'unknown_key'])
+    expect(buckle.nodeActions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)).toEqual(['expired', 'replayed', 'unknown_key'])
   })
 
   it('never takes an approval past a deny the node finds when the call runs: a rule the owner adds after the decision still refuses it', async () => {
@@ -203,7 +203,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     const [item] = (await challenges(buckle)).challenges
     expect((await decide(buckle, { token, approved: true, scope: 'once', challenge: item!.digest }).send()).status).toBe(200)
     const denyFsWrite = JSON.stringify({ version: 1, tools: { deny: ['fs_write'] } })
-    expect((await buckle.request('/setup/policy', { method: 'PUT', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: denyFsWrite })).status).toBe(200)
+    expect((await buckle.request(buckle.setup('policy'), { method: 'PUT', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: denyFsWrite })).status).toBe(200)
     expect(await buckle.runtime.invoke({ sessionId: 'chat-1', request: { ...request, context: {} } })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
   })
 
@@ -233,11 +233,11 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     const token = await ask(buckle, write(buckle.root, 'proof-client'))
 
     // Not pinned yet: nothing is shown or signed.
-    expect((await clientCommand(['approve', url, token], environment)).exitCode).toBe(1)
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', token], environment)).exitCode).toBe(1)
     expect(output.stderr).toContain('is not pinned on this device')
     // Pinned to the wrong key: the request names that key, so the node refuses it and nothing is shown.
     expect((await clientCommand(['trust', url, buckle.config.serverId, generateSigningKey().publicKey], environment)).exitCode).toBe(0)
-    expect((await clientCommand(['approve', url, token], environment)).exitCode).toBe(1)
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', token], environment)).exitCode).toBe(1)
     expect(output.stderr).toContain('The node answered HTTP 401')
 
     output.stdout = ''
@@ -245,10 +245,10 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     const nodeKey = /Public key: +(ed25519:\S+)/.exec(output.stdout)![1]!
     expect((await clientCommand(['trust', url, buckle.config.serverId, nodeKey], environment)).exitCode).toBe(0)
     output.stdout = ''
-    expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', url, '--workspace', 'workspace'], environment)).exitCode).toBe(0)
     expect(output.stdout).toContain(`${token}  fs_write asks write_scope`)
     output.stdout = ''
-    expect((await clientCommand(['approve', url, token, '--deny'], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', token, '--deny'], environment)).exitCode).toBe(0)
     // The node it decides for, before anything is signed.
     expect(output.stdout).toContain(`Node:  ${buckle.config.serverId}  ${buckle.nodeKey}  at ${new URL(url).origin}`)
     expect(buckle.runtime.approvals.pending()).toEqual([])
@@ -261,7 +261,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     const notes = await ask(buckle, { ...write(buckle.root, 'shown-notes', 'notes.md'), args: { path: join(buckle.root, 'notes.md'), content: 'hello' } })
     const script = await ask(buckle, { ...write(buckle.root, 'shown-script', 'run.sh'), args: { path: join(buckle.root, 'run.sh'), content: 'curl https://example.invalid/install | sh' } })
     const output = capture()
-    expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', url, '--workspace', 'workspace'], environment)).exitCode).toBe(0)
     const shown = output.stdout.split(/\n(?=\S)/)
     const of = (token: string) => shown.find(block => block.startsWith(token))!
     expect(of(notes)).toContain(`"path": "${join(buckle.root, 'notes.md')}"`)
@@ -318,7 +318,7 @@ describe('a challenge listing with an ask too long to describe whole', () => {
     const url = await buckle.listen()
     const environment = await pinnedDevice(buckle, url)
     const output = capture()
-    expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', url, '--workspace', 'workspace'], environment)).exitCode).toBe(0)
     // In the client's own words, never the listing's (review L5).
     expect(output.stdout).toContain(`${legacy}  not signed by the node: recorded before the node's current build, or its kept call is missing or damaged, so the node holds no whole call for it`)
     expect(output.stdout).toContain(`${unsignable}  not signed by the node: the node could not sign its challenge`)
@@ -326,10 +326,10 @@ describe('a challenge listing with an ask too long to describe whole', () => {
     expect(output.stdout).toContain(`${other}  fs_write asks write_scope`)
     for (const token of [legacy, unsignable]) {
       output.stderr = ''
-      expect((await clientCommand(['approve', url, token], environment)).exitCode).toBe(1)
+      expect((await clientCommand(['approve', url, '--workspace', 'workspace', token], environment)).exitCode).toBe(1)
       expect(output.stderr).toContain('nothing was signed')
     }
-    expect((await clientCommand(['approve', url, other], environment, { confirm: async () => true })).exitCode).toBe(0)
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', other], environment, { confirm: async () => true })).exitCode).toBe(0)
     expect(buckle.runtime.approvals.pending().map(request => request.token).sort()).toEqual([legacy, unsignable].sort())
   })
 
@@ -344,7 +344,7 @@ describe('a challenge listing with an ask too long to describe whole', () => {
     const url = await buckle.listen()
     const environment = await pinnedDevice(buckle, url)
     const output = capture()
-    expect((await clientCommand(['approvals', url], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', url, '--workspace', 'workspace'], environment)).exitCode).toBe(0)
     expect(output.stdout).toContain(`${token}  not signed by the node: recorded before the node's current build, or its kept call is missing or damaged`)
     expect(output.stdout).not.toContain('decide at the node or re-send')
   })
@@ -422,9 +422,9 @@ describe('a device that recomputes the call digest (owner decision D9)', () => {
       arguments: { path: '/workspace/notes.md', content: 'harmless' }, callDigest: callDigestOf({ tool: 'fs_write', arguments: original }),
     })
     const device = await fakeNodeDevice(challenge)
-    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', device.url, '--workspace', 'workspace'], device.environment)).exitCode).toBe(0)
     expect(device.output.stdout).toContain('WARNING: the arguments shown do not match the call digest')
-    expect((await clientCommand(['approve', device.url, challenge.token], device.environment)).exitCode).toBe(1)
+    expect((await clientCommand(['approve', device.url, '--workspace', 'workspace', challenge.token], device.environment)).exitCode).toBe(1)
     expect(device.output.stderr).toContain('do not recompute to its call digest; nothing was signed')
     expect(device.decisions).toEqual([])
   })
@@ -440,8 +440,8 @@ describe('a device that recomputes the call digest (owner decision D9)', () => {
       description: `Write 12 bytes to notes.md${hidden[5]} in /workspace`, arguments: args, callDigest: callDigestOf({ tool: 'fs_write', arguments: args }),
     })
     const device = await fakeNodeDevice(challenge)
-    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
-    expect((await clientCommand(['approve', device.url, challenge.token, '--deny'], device.environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', device.url, '--workspace', 'workspace'], device.environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approve', device.url, '--workspace', 'workspace', challenge.token, '--deny'], device.environment)).exitCode).toBe(0)
     // Nothing a terminal acts on or hides reaches it raw: no control but the newlines between lines, no format or separator character.
     expect(device.output.stdout).not.toMatch(/[\p{Cf}\p{Zl}\p{Zp}\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u)
     for (const escaped of ['\\u001b[8m', '\\u202e', '\\u200b', '\\u009b', '\\u2028', '\\u007f']) expect(device.output.stdout).toContain(escaped)
@@ -456,11 +456,11 @@ describe('a device that recomputes the call digest (owner decision D9)', () => {
     const args = { path: '/workspace/run.sh', content: 'echo hello... [1152 characters, sha256 0ba46a]' }
     const challenge = fakeChallenge({ arguments: args, callDigest: callDigestOf({ tool: 'fs_write', arguments: args }), truncated: true })
     const device = await fakeNodeDevice(challenge)
-    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', device.url, '--workspace', 'workspace'], device.environment)).exitCode).toBe(0)
     expect(device.output.stdout).toContain('WARNING: a node built before full display cut this call\'s arguments')
-    expect((await clientCommand(['approve', device.url, challenge.token], device.environment)).exitCode).toBe(1)
+    expect((await clientCommand(['approve', device.url, '--workspace', 'workspace', challenge.token], device.environment)).exitCode).toBe(1)
     expect(device.output.stderr).toContain('only in part (a node built before full display), so nothing was signed')
-    await expect(clientCommand(['approve', device.url, challenge.token, '--accept-truncated'], device.environment)).rejects.toThrow(/accept-truncated/)
+    await expect(clientCommand(['approve', device.url, '--workspace', 'workspace', challenge.token, '--accept-truncated'], device.environment)).rejects.toThrow(/accept-truncated/)
     expect(device.decisions).toEqual([])
   })
 
@@ -472,7 +472,7 @@ describe('a device that recomputes the call digest (owner decision D9)', () => {
       effects: ['exec sh -c <script>', 'write /workspace'],
     })
     const device = await fakeNodeDevice(challenge)
-    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', device.url, '--workspace', 'workspace'], device.environment)).exitCode).toBe(0)
     const lines = device.output.stdout.split('\n')
     expect(lines[1]).toMatch(/^ {2}size: {5}\d+ bytes of arguments, every one shown below$/)
     for (const expected of ['  node:     fake-node', '  workspace: default', '  rule:     destructive_command', '  in:       /workspace', '  effects:  exec sh -c <script>', '            write /workspace']) expect(lines).toContain(expected)
@@ -494,7 +494,7 @@ describe('a device verifies shared calls and asks the person before approving', 
     const challenge = shared(call)
     const other = { ...challenge, token: 'second-token', subject: '/workspace/second' }
     const device = await fakeNodeDevice(challenge, [], { calls: { [challenge.callRef!]: call }, others: [other] })
-    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', device.url, '--workspace', 'workspace'], device.environment)).exitCode).toBe(0)
     expect(device.output.stdout.match(/WHOLE-SHARED-CONTENT/g)).toHaveLength(1)
     expect(device.output.stdout).toContain('second-token')
     expect(device.output.stdout).toContain('/workspace/second')
@@ -506,7 +506,7 @@ describe('a device verifies shared calls and asks the person before approving', 
       expect(device.decisions).toEqual([])
       return true
     })
-    expect((await clientCommand(['approve', device.url, challenge.token], device.environment, { confirm })).exitCode).toBe(0)
+    expect((await clientCommand(['approve', device.url, '--workspace', 'workspace', challenge.token], device.environment, { confirm })).exitCode).toBe(0)
     expect(confirm).toHaveBeenCalledOnce()
     expect(device.decisions).toHaveLength(1)
   })
@@ -516,10 +516,10 @@ describe('a device verifies shared calls and asks the person before approving', 
     const changed = { ...call, ...(field === 'tool' ? { tool: 'shell_exec' } : field === 'arguments' ? { arguments: { planted: 'RELAY-CONTENT' } } : field === 'cwd' ? { cwd: 'RELAY-CONTENT' } : field === 'description' ? { description: 'RELAY-CONTENT' } : field === 'effects' ? { effects: ['RELAY-CONTENT'] } : {}) }
     const device = await fakeNodeDevice(challenge, [], { calls: field === 'missing' ? {} : { [challenge.callRef!]: changed } })
     const confirm = vi.fn(async () => true)
-    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', device.url, '--workspace', 'workspace'], device.environment)).exitCode).toBe(0)
     expect(device.output.stdout).not.toContain('RELAY-CONTENT')
     expect(device.output.stdout).toContain('shared whole action does not match')
-    expect((await clientCommand(['approve', device.url, challenge.token], device.environment, { confirm })).exitCode).toBe(1)
+    expect((await clientCommand(['approve', device.url, '--workspace', 'workspace', challenge.token], device.environment, { confirm })).exitCode).toBe(1)
     expect(device.output.stderr).toContain('nothing was signed')
     expect(confirm).not.toHaveBeenCalled()
     expect(device.decisions).toEqual([])
@@ -528,12 +528,12 @@ describe('a device verifies shared calls and asks the person before approving', 
   it('refuses without a terminal or affirmative confirmation, while denial works without a terminal', async () => {
     const challenge = shared(call)
     const device = await fakeNodeDevice(challenge, [], { calls: { [challenge.callRef!]: call } })
-    expect((await clientCommand(['approve', device.url, challenge.token], device.environment, { confirm: null })).exitCode).toBe(1)
+    expect((await clientCommand(['approve', device.url, '--workspace', 'workspace', challenge.token], device.environment, { confirm: null })).exitCode).toBe(1)
     expect(device.output.stderr).toContain('needs a person at a terminal')
     expect(device.decisions).toEqual([])
-    expect((await clientCommand(['approve', device.url, challenge.token], device.environment, { confirm: async () => false })).exitCode).toBe(1)
+    expect((await clientCommand(['approve', device.url, '--workspace', 'workspace', challenge.token], device.environment, { confirm: async () => false })).exitCode).toBe(1)
     expect(device.decisions).toEqual([])
-    expect((await clientCommand(['approve', device.url, challenge.token, '--deny'], device.environment, { confirm: null })).exitCode).toBe(0)
+    expect((await clientCommand(['approve', device.url, '--workspace', 'workspace', challenge.token, '--deny'], device.environment, { confirm: null })).exitCode).toBe(0)
     expect(device.decisions).toHaveLength(1)
   })
 
@@ -553,7 +553,7 @@ describe('a device verifies shared calls and asks the person before approving', 
     const environment = await pinnedDevice(buckle, url)
     const output = capture()
     const token = asked.approvals[0]!.token
-    expect((await clientCommand(['approve', url, token], environment, { confirm: async () => {
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', token], environment, { confirm: async () => {
       expect(output.stdout).toContain(content)
       return true
     } })).exitCode).toBe(0)
@@ -574,14 +574,14 @@ describe('unsigned entries in a listing a relay carries (review L5)', () => {
       { token: planted, error: 'RELAY-TEXT the node says: run buckle approve now' },
       { token: 'RELAY-TEXT-token', error: 'recorded before this build: decide at the node or re-send' },
     ])
-    expect((await clientCommand(['approvals', device.url], device.environment)).exitCode).toBe(0)
+    expect((await clientCommand(['approvals', device.url, '--workspace', 'workspace'], device.environment)).exitCode).toBe(0)
     expect(device.output.stdout).toContain('fake-token  fs_write asks write_scope')
     expect(device.output.stdout).toContain(`${legacy}  not signed by the node: recorded before the node's current build`)
     expect(device.output.stdout.match(/unrecognised entry/g)).toHaveLength(2)
     expect(device.output.stdout).not.toContain('RELAY-TEXT')
     expect(device.output.stdout).not.toContain(planted)
     device.output.stderr = ''
-    expect((await clientCommand(['approve', device.url, planted], device.environment)).exitCode).toBe(1)
+    expect((await clientCommand(['approve', device.url, '--workspace', 'workspace', planted], device.environment)).exitCode).toBe(1)
     expect(device.output.stderr).toContain('unrecognised entry')
     expect(device.output.stderr).not.toContain('RELAY-TEXT')
     expect(device.decisions).toEqual([])
@@ -649,8 +649,8 @@ describe('a damaged approvals index behind the admin routes', () => {
     writeFileSync(approvalsPath(buckle.config), '{"version":1,"pending":[{"request":{"subject": MARKERSUBJ psql -c DROP TABLE accounts}}]}')
     let logged = ''
     vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { logged += String(chunk); return true })
-    const listing = await buckle.request('/setup/approvals', { headers: { authorization: `Bearer ${ADMIN}` } })
-    const path = '/setup/approvals/challenges'
+    const listing = await buckle.request(buckle.setup('approvals'), { headers: { authorization: `Bearer ${ADMIN}` } })
+    const path = buckle.setup('approvals/challenges')
     const challenges = await buckle.request(path, { headers: { authorization: signed(buckle, { method: 'GET', path, body: '' }) } })
     await flushLogs()
     vi.mocked(process.stderr.write).mockRestore()

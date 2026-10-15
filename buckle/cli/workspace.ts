@@ -26,7 +26,7 @@ export interface NamePrompt {
 const USAGE = `Usage: buckle workspace <verb>. A verb that takes no name acts on the workspace --workspace <name> names, or
 the one whose folder holds --dir <path>, or else the current directory. <name> is a workspace's name, or its id.
 
-  buckle workspace init [--dir <path>] [--name <name>] [--id <id>] [--yes]
+  buckle workspace init [--dir <path>] [--name <name>] [--yes]
                                        Serve a folder as a workspace, and print its agent token once
   buckle workspace add <dir> [--name <name>] [--yes]
                                        The same, with the folder named first
@@ -94,10 +94,14 @@ interface Context { config: NodeConfig; workspaces: WorkspaceManager; target: Co
 
 /** `buckle workspace init`: the folder --dir names, relative to where it runs, or that directory; the token printed once. */
 async function init(context: Context): Promise<CliResult> {
-  const { values } = parseArgs({ args: context.rest, options: { name: { type: 'string' }, id: { type: 'string' }, yes: { type: 'boolean' } }, allowPositionals: false })
+  let values: { name?: string; yes?: boolean }
+  // 0.1's `--id` went with the typed id (D85, Q15): an unknown flag is refused with the usage, as `add` refuses `--root`.
+  try { ({ values } = parseArgs({ args: context.rest, options: { name: { type: 'string' }, yes: { type: 'boolean' } }, allowPositionals: false })) } catch (error) {
+    return fail(`${(error instanceof Error ? error.message : String(error)).split('. ')[0]}\nUsage: buckle workspace init [--dir <folder>] [--name <name>] [--yes]`)
+  }
   if (context.target.workspace !== undefined) return fail('buckle workspace init makes a workspace: name its folder with --dir, and its name with --name')
   const dir = resolve(context.cwd, context.target.dir ?? '.')
-  return serve(context, { dir, name: values.name, id: values.id, yes: values.yes === true })
+  return serve(context, { dir, name: values.name, yes: values.yes === true })
 }
 
 /** `buckle workspace add <dir> [--name <name>]`: init with the folder named first (D85, Q15). */
@@ -115,8 +119,8 @@ async function add(context: Context): Promise<CliResult> {
  * Serves a folder as a new workspace, named as asked, or after its folder. A name another workspace holds is asked
  * about at a terminal until one is free; with --yes, or no terminal, it is refused, naming --name (D85, Q15).
  */
-async function serve(context: Context, input: { dir: string; name?: string; id?: string; yes: boolean }): Promise<CliResult> {
-  const { workspace, token, takenUp } = await createNamed(context.prompt, { ...input, refusal: 'name it with --name <name>' }, name => context.workspaces.create({ dir: input.dir, ...(name === undefined ? {} : { name }), ...(input.id === undefined ? {} : { id: input.id }) }))
+async function serve(context: Context, input: { dir: string; name?: string; yes: boolean }): Promise<CliResult> {
+  const { workspace, token, takenUp } = await createNamed(context.prompt, { ...input, refusal: 'name it with --name <name>' }, name => context.workspaces.create({ dir: input.dir, ...(name === undefined ? {} : { name }) }))
   printMinted(workspace, token, takenUp)
   return { exitCode: 0, detail: `init ${workspace.name}` }
 }
@@ -139,7 +143,7 @@ export async function createNamed<T>(prompt: NamePrompt, input: { name?: string;
 }
 
 function printMinted(workspace: WorkspaceDescriptor, token: MintedToken, takenUp: TakenUp | null): void {
-  process.stdout.write(`Workspace ${workspace.name} serves ${workspace.dir}, online.${takenUp ? ` It takes up the records workspace ${workspace.id} left when it was removed: its settings, grants, and history${takenUp.dangerouslyAllow ? ', and its dangerously-allow switch, which is ON' : ''}.` : ''}
+  process.stdout.write(`Workspace ${workspace.name} serves ${workspace.dir}, online.${takenUp ? ` It takes up the records this folder left when its workspace was removed: its settings, grants, and history${takenUp.dangerouslyAllow ? ', and its dangerously-allow switch, which is ON' : ''}.` : ''}
 
   agent token   ${token.token}
 
@@ -203,7 +207,7 @@ async function remove(context: Context): Promise<CliResult> {
   const removed = await context.workspaces.remove(named.id, { purge: values.purge === true })
   process.stdout.write(values.purge
     ? `Removed workspace ${removed.name} and deleted its records. Its folder ${removed.dir} is untouched.\n`
-    : `Removed workspace ${removed.name}. Its folder ${removed.dir} is untouched, and its records stay in the state directory: buckle workspace init --dir <folder> --id ${removed.id} takes them up again.\n`)
+    : `Removed workspace ${removed.name}. Its folder ${removed.dir} is untouched, and its records stay in the state directory under workspaces/${removed.id}/: serving the folder again takes them up.\n`)
   return { exitCode: 0, detail: `remove ${removed.name}${values.purge ? ' --purge' : ''}` }
 }
 

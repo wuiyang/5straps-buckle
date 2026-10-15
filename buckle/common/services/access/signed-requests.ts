@@ -9,6 +9,11 @@ export interface SignedRequestInput {
   authorization: string | undefined
   purpose: SignedRequestPurpose
   workspaceId: string
+  /**
+   * The handle the request's path names the workspace by, where it does (D85, Q15): a client signs for the path it
+   * typed, so a request signed for the name is bound as one signed for the id, the path being signed too.
+   */
+  workspaceHandle?: string
   /** A change to the node's workspace registry, which only a node-scoped key signs (owner decision D10). */
   registry: boolean
   method: string
@@ -41,13 +46,16 @@ export function createRequestVerifier(input: { keys: ClientKeys; nonces: NonceCl
     approvalProofDeadline: request => approvalProofDeadlines.get(request),
     async verify(request) {
       if (request.requestIdentity) approvalProofDeadlines.delete(request.requestIdentity)
-      const checked = checkSignedRequest({
+      const check = (workspace: string) => checkSignedRequest({
         authorization: request.authorization,
-        expected: { purpose: request.purpose, node: input.serverId, nodeKey: input.nodeKeyId, workspace: request.workspaceId, method: request.method, path: request.path },
+        expected: { purpose: request.purpose, node: input.serverId, nodeKey: input.nodeKeyId, workspace, method: request.method, path: request.path },
         body: request.body,
         now: now(),
         publicKeyFor: payload => input.keys.publicKeyFor(payload.keyId, { purpose: request.purpose, workspace: request.workspaceId, registry: request.registry }),
       })
+      // Nothing is claimed by a check, so one signed for the path's own handle is checked again as such (workspaceHandle).
+      let checked = check(request.workspaceId)
+      if (!checked.ok && checked.reason === 'wrong_target' && request.workspaceHandle !== undefined && request.workspaceHandle !== request.workspaceId) checked = check(request.workspaceHandle)
       if (!checked.ok) return checked
       const { keyId, nonce, keepUntil } = nonceClaim(checked.payload)
       // The clock is read again under the lock, so both the window and what is pruned are judged at the claim.

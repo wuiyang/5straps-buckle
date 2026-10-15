@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { approvalsPath } from '../../common/runtime/config.js'
-import type { ActionLogEntry } from '../../common/types/ports/action-log.js'
+import type { ActionLog, ActionLogEntry } from '../../common/types/ports/action-log.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { createBuckleHttp } from '../support/buckle-http.js'
 import { holdToken } from '../support/workspaces.js'
@@ -42,16 +42,16 @@ async function node(options: { admin?: boolean; adminHttp?: boolean } = {}) {
   cleanups.push(() => buckle.close())
   const request = (path: string, init: RequestInit = {}) => buckle.request(path, init)
   async function registerOne(): Promise<void> {
-    const response = await request('/setup/workspaces', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', dir: join(root, 'one') }) })
+    const response = await request('/setup/workspaces', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify({ name: 'one', dir: join(root, 'one') }) })
     expect(response.status).toBe(201)
-    await holdToken(join(root, 'state'), 'one', ONE_AGENT)
+    await holdToken(join(root, 'state'), await buckle.idOf('one'), ONE_AGENT)
   }
   async function provisionWorkbench(): Promise<{ id: string; token: string }> {
     const grant = { id: randomUUID(), token: 'workbench-grant-characterisation-only-32', projectId: 'project', chatId: 'chat', allowShell: false }
-    expect((await request('/setup/workbenches', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify(grant) })).status).toBe(200)
+    expect((await request(buckle.setup('workbenches'), { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify(grant) })).status).toBe(200)
     return grant
   }
-  return { root, config, runtime, request, registerOne, provisionWorkbench }
+  return { root, config, runtime, request, registerOne, provisionWorkbench, setup: buckle.setup, nodeActions: buckle.nodeActions, idOf: buckle.idOf }
 }
 
 function json(token?: string): Record<string, string> {
@@ -84,8 +84,9 @@ async function shape(response: Response): Promise<{ status: number; contentType:
   return { status: response.status, contentType: contentType?.split(';')[0] ?? null, body: contentType?.includes('json') ? JSON.parse(text) : text }
 }
 
-function audited(runtime: BuckleRuntime): ActionLogEntry[] {
-  return runtime.actions.read(500)
+/** The node's log and the node folder's workspace's, together: a refusal before a workspace is known lands on the first (D85, Q15). */
+function audited(buckle: { runtime: BuckleRuntime; nodeActions: ActionLog }): ActionLogEntry[] {
+  return [...buckle.nodeActions.read(500), ...buckle.runtime.actions.read(500)]
 }
 
 describe('413 on every face (content-length and chunked)', () => {
@@ -99,7 +100,7 @@ describe('413 on every face (content-length and chunked)', () => {
     { face: '/v1/workbenches/:grant/invoke', token: ':grant', limit: WORKBENCH_BODY_LIMIT, expected: tooLarge },
     // B17 flips: the registry's JSON 500 and the workbench setup route's 422 became the JSON 413.
     { face: '/setup/workspaces', token: NODE_ADMIN, limit: SETUP_BODY_LIMIT, expected: tooLarge },
-    { face: '/setup/workbenches', token: NODE_ADMIN, limit: SETUP_BODY_LIMIT, expected: tooLarge },
+    { face: '/workspaces/default/setup/workbenches', token: NODE_ADMIN, limit: SETUP_BODY_LIMIT, expected: tooLarge },
   ]
   for (const { face, token, limit, expected } of faces) {
     for (const kind of ['content-length', 'chunked'] as const) {
@@ -120,15 +121,15 @@ describe('unhandled setup-face errors', () => {
   it('answers the JSON 500 at node level when the approvals file is unreadable', async () => {
     const buckle = await node()
     writeFileSync(approvalsPath(buckle.config), '{ not json')
-    expect(await shape(await buckle.request('/setup/approvals', { headers: bearer(NODE_ADMIN) }))).toEqual({ status: 500, contentType: 'application/json', body: { error: 'Internal Buckle error' } })
-    expect(audited(buckle.runtime)).toContainEqual(expect.objectContaining({ tool: 'setup_get_approvals', event: 'result', outcome: 'error', detail: 'HTTP 500' }))
+    expect(await shape(await buckle.request(buckle.setup('approvals'), { headers: bearer(NODE_ADMIN) }))).toEqual({ status: 500, contentType: 'application/json', body: { error: 'Internal Buckle error' } })
+    expect(audited(buckle)).toContainEqual(expect.objectContaining({ tool: 'setup_get_approvals', event: 'result', outcome: 'error', detail: 'HTTP 500' }))
   })
 
   it('answers the JSON 500 under /workspaces/:id/setup', async () => {
     const buckle = await node()
     await buckle.registerOne()
     expect((await buckle.request('/workspaces/one/setup/status', { headers: bearer(ONE_ADMIN) })).status).toBe(200)
-    writeFileSync(join(buckle.root, 'state', 'workspaces', 'one', 'approvals.json'), '{ not json')
+    writeFileSync(join(buckle.root, 'state', 'workspaces', await buckle.idOf('one'), 'approvals.json'), '{ not json')
     expect(await shape(await buckle.request('/workspaces/one/setup/approvals', { headers: bearer(ONE_ADMIN) }))).toEqual({ status: 500, contentType: 'application/json', body: { error: 'Internal Buckle error' } })
   })
 })
@@ -204,17 +205,17 @@ describe('unknown /setup paths', () => {
   it('audits a probe without the admin token as setup_auth_rejected and answers 401', async () => {
     const buckle = await node()
     expect(await shape(await buckle.request('/setup/x'))).toEqual({ status: 401, contentType: 'application/json', body: { error: 'Unauthorized' } })
-    expect(audited(buckle.runtime)).toContainEqual(expect.objectContaining({ tool: 'setup_auth_rejected', outcome: 'denied', sessionId: 'http-untrusted', workspaceId: 'default' }))
+    expect(audited(buckle)).toContainEqual(expect.objectContaining({ tool: 'setup_auth_rejected', outcome: 'denied', sessionId: 'http-untrusted', workspaceId: 'node' }))
   })
 
   // B17 flip: the text 404 became the JSON 404.
   it('audits an unknown path with the admin token as setup_get_unknown and answers the JSON 404', async () => {
     const buckle = await node()
     expect(await shape(await buckle.request('/setup/x', { headers: bearer(NODE_ADMIN) }))).toEqual({ status: 404, contentType: 'application/json', body: { error: 'Not Found' } })
-    expect(audited(buckle.runtime)).toContainEqual(expect.objectContaining({ tool: 'setup_get_unknown', event: 'result', outcome: 'error', detail: 'HTTP 404' }))
+    expect(audited(buckle)).toContainEqual(expect.objectContaining({ tool: 'setup_get_unknown', event: 'result', outcome: 'error', detail: 'HTTP 404' }))
   })
 
-  // B17 flips: the text 404 became the JSON 404, and /workspaces/default/setup/** answers it too
+  // B17 flips: the text 404 became the JSON 404, and /workspaces/<name>/setup/** answers it too
   // (it was 401): the node's workspace has no admin credential to check. With the experimental flag
   // on, so this is the no-token check and not the flag's (review M4 of B23-B25).
   it('answers every /setup path 404 without an admin token, and audits nothing', async () => {
@@ -224,12 +225,12 @@ describe('unknown /setup paths', () => {
       expect(await shape(await buckle.request(path, { headers: bearer(NODE_AGENT) })), path).toEqual(notFound)
       expect(await shape(await buckle.request(path)), path).toEqual(notFound)
     }
-    expect(audited(buckle.runtime).filter(entry => entry.tool.startsWith('setup_'))).toEqual([])
+    expect(audited(buckle).filter(entry => entry.tool.startsWith('setup_'))).toEqual([])
   })
 })
 
 describe('workspace routing', () => {
-  it('serves /workspaces/default/** as an alias of the node faces', async () => {
+  it('serves /workspaces/<name>/** as an alias of the node faces, the name being the folder\'s (D85, Q15)', async () => {
     const buckle = await node()
     const direct = await (await buckle.request('/v1/manifest', { headers: bearer(NODE_AGENT) })).json() as Record<string, unknown>
     const alias = await buckle.request('/workspaces/default/v1/manifest', { headers: bearer(NODE_AGENT) })
@@ -241,7 +242,7 @@ describe('workspace routing', () => {
     const buckle = await node()
     const response = await buckle.request('/workspaces/ghost/v1/invoke', { method: 'POST', headers: json(NODE_AGENT), body: '{}' })
     expect(await shape(response)).toEqual({ status: 401, contentType: 'application/json', body: { error: 'Unauthorized' } })
-    expect(audited(buckle.runtime)).toContainEqual(expect.objectContaining({ tool: 'workspace_invoke_rejected', workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 401' }))
+    expect(audited(buckle)).toContainEqual(expect.objectContaining({ tool: 'workspace_invoke_rejected', workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 401' }))
   })
 
   it('answers 409 for a disabled workspace on a non-setup path', async () => {
@@ -257,7 +258,7 @@ describe('workbench edges', () => {
   async function provisioned() {
     const buckle = await node()
     const grant = { id: randomUUID(), token: 'workbench-grant-characterisation-only-32', projectId: 'project', chatId: 'chat', allowShell: false }
-    const provision = await buckle.request('/setup/workbenches', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify(grant) })
+    const provision = await buckle.request(buckle.setup('workbenches'), { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify(grant) })
     expect(provision.status).toBe(200)
     expect(provision.headers.get('cache-control')).toBe('no-store')
     return { ...buckle, grant }
@@ -286,11 +287,11 @@ describe('audit tool names per face', () => {
     await buckle.request('/mcp', { method: 'POST', headers: { ...MCP_HEADERS, ...bearer(NODE_AGENT) }, body: INITIALIZE })
     await buckle.request(`/v1/workbenches/${randomUUID()}/invoke`, { method: 'POST', headers: json('wrong-workbench-token'), body: '{}' })
     await buckle.request('/setup/workspaces', { headers: bearer(NODE_ADMIN) })
-    await buckle.request('/setup/status', { headers: bearer(NODE_ADMIN) })
+    await buckle.request(buckle.setup('status'), { headers: bearer(NODE_ADMIN) })
     await buckle.request('/v1/invoke', { method: 'POST', headers: json('wrong-token'), body: '{}' })
     await buckle.request('/workspaces/one/mcp', { method: 'POST', headers: MCP_HEADERS, body: INITIALIZE })
     await buckle.request('/workspaces/one/setup/status')
-    const tools = audited(buckle.runtime).map(entry => `${entry.tool}:${entry.event}:${entry.outcome}`)
+    const tools = audited(buckle).map(entry => `${entry.tool}:${entry.event}:${entry.outcome}`)
     expect(tools).toEqual(expect.arrayContaining([
       'http_workspace_registry_post:attempt:started', 'http_workspace_registry_post:result:ok',
       'workspace_register:attempt:started', 'workspace_register:result:ok',
@@ -303,8 +304,8 @@ describe('audit tool names per face', () => {
       'workspace_setup_auth_rejected:result:denied',
     ]))
     // A registry change names the actor on its own entries, not only on the transport entry beside them (review item 19).
-    const registered = audited(buckle.runtime).filter(entry => entry.tool === 'workspace_register')
-    expect(registered.map(entry => [entry.event, entry.actorId])).toEqual([['attempt', 'admin:default'], ['result', 'admin:default']])
+    const registered = audited(buckle).filter(entry => entry.tool === 'workspace_register')
+    expect(registered.map(entry => [entry.event, entry.actorId])).toEqual([['attempt', 'admin:node'], ['result', 'admin:node']])
   })
 })
 
@@ -333,7 +334,7 @@ describe('HEAD on GET routes', () => {
       { path: '/v1/manifest', status: 401 },
       { path: '/v1/manifest', token: NODE_AGENT, status: 200 },
       { path: '/workspaces/one/v1/skills', token: ONE_AGENT, status: 200 },
-      { path: '/setup/status', token: NODE_ADMIN, status: 200 },
+      { path: buckle.setup('status'), token: NODE_ADMIN, status: 200 },
       { path: '/workspaces/one/setup/status', token: ONE_ADMIN, status: 200 },
       { path: '/v1/invoke', token: NODE_AGENT, status: 404 },
     ]
@@ -342,7 +343,7 @@ describe('HEAD on GET routes', () => {
       expect({ path: row.path, status: response.status, body: await response.text() }).toEqual({ path: row.path, status: row.status, body: '' })
     }
     // The owner's route audits HEAD under its own method.
-    expect(audited(buckle.runtime).map(entry => entry.tool)).toContain('setup_head_status')
+    expect(audited(buckle).map(entry => entry.tool)).toContain('setup_head_status')
   })
 
   it('leaves a route that serves every method its own answer: MCP answers HEAD 405', async () => {
@@ -361,7 +362,7 @@ describe('other methods on /v1/invoke', () => {
     expect((await buckle.request('/v1/invoke')).status).toBe(401)
     expect((await buckle.request('/v1/invoke', { method: 'PUT', headers: bearer(NODE_AGENT) })).status).toBe(404)
     expect((await buckle.request('/workspaces/one/v1/invoke', { method: 'DELETE' })).status).toBe(401)
-    const entries = audited(buckle.runtime).filter(entry => entry.tool.endsWith('invoke_rejected')).map(entry => `${entry.tool}:${entry.workspaceId}:${entry.detail}`)
-    expect(entries).toEqual(expect.arrayContaining(['rpc_invoke_rejected:default:HTTP 401', 'rpc_invoke_rejected:default:HTTP 404', 'workspace_invoke_rejected:one:HTTP 401']))
+    const entries = audited(buckle).filter(entry => entry.tool.endsWith('invoke_rejected')).map(entry => `${entry.tool}:${entry.workspaceId}:${entry.detail}`)
+    expect(entries).toEqual(expect.arrayContaining(['rpc_invoke_rejected:node:HTTP 401', 'rpc_invoke_rejected:node:HTTP 404', `workspace_invoke_rejected:${await buckle.idOf('one')}:HTTP 401`]))
   })
 })

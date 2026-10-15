@@ -11,12 +11,15 @@ import { tokenDigest } from '../common/services/access/tokens.js'
 import { logger } from '../common/runtime/log.js'
 import { migrateNode, MigrationError, REGISTRY_BACKUP } from '../common/services/workspaces/migration.js'
 import { openWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { workspaceIdFor } from '../common/services/workspaces/workspace-id.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { byName, workspaceIdOf } from './support/workspaces.js'
 
-// The workspace-model brief, item 1, Q14 and Q15: a node set up before the workspace model moves onto it at its first
-// start, once. Its own folder becomes workspace default; every token is kept as its sha256; each workspace's admin
-// credential goes; what the node enforced on each workspace is kept in that workspace's workspace.json, exactly, or
-// the move refuses and changes nothing.
+// The workspace-model brief, item 1, Q14 and Q15, and D85, Q15: a node set up before the workspace model moves onto it at
+// its first start, once. Its own folder becomes a workspace named after the folder, with an id derived from it, and its
+// records move to the workspace's own directory; every token is kept as its sha256; each workspace's admin credential
+// goes; what the node enforced on each workspace is kept in that workspace's workspace.json, exactly, or the move
+// refuses and changes nothing.
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -59,25 +62,31 @@ function version1(input: Scene, workspace: { policy?: WorkspacePolicy; enabled?:
 
 const open = (input: Scene, extra: Record<string, string> = {}) => openWorkspaceManager({ config: loadConfig({ ...input.environment, ...extra }) })
 const settings = (input: Scene, id: string) => openSettingsFile({ filePath: settingsPath(input.state, id) }).read()
+/** The ids the node's folder and the registered site derive (D85, Q15), which their records are keyed by. */
+const ownId = (input: Scene) => workspaceIdOf(input.folder)
+const siteId = (input: Scene) => workspaceIdOf(input.site)
 const registry = (input: Scene) => readFileSync(join(input.state, 'workspaces.json'), 'utf8')
 
 describe('moving a 0.1 node onto the workspace model', () => {
-  it('stores the node\'s own folder as workspace default, and keeps every token as its digest alone', async () => {
+  it('stores the node\'s own folder as a workspace named after it, keyed by the id it derives, and keeps every token as its digest alone', async () => {
     const input = scene()
     const before = version1(input)
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     const manager = await open(input)
 
     expect(JSON.parse(registry(input))).toMatchObject({ version: 2, workspaces: [
-      { id: 'default', name: 'project', dir: input.folder, online: true, tokens: [{ id: 'node', sha256: tokenDigest(NODE_TOKEN) }] },
+      { id: ownId(input), name: 'project', dir: input.folder, online: true, tokens: [{ id: 'node', sha256: tokenDigest(NODE_TOKEN) }] },
       // D85, Q15: the node's folder is named after it, and a registered workspace after its 0.1 id, the handle its MCP configs name.
-      { id: 'site', name: 'site', dir: input.site, online: true, tokens: [{ id: 'initial', sha256: tokenDigest(SITE_TOKEN), label: 'Registered' }] },
+      { id: siteId(input), name: 'site', dir: input.site, online: true, tokens: [{ id: 'initial', sha256: tokenDigest(SITE_TOKEN), label: 'Registered' }] },
     ] })
     for (const secret of [NODE_TOKEN, SITE_TOKEN, SITE_ADMIN]) expect(registry(input)).not.toContain(secret)
     expect(registry(input)).not.toContain('adminToken')
     expect(readFileSync(join(input.state, REGISTRY_BACKUP), 'utf8')).toBe(before)
-    expect(manager.tokenOwner(`Bearer ${NODE_TOKEN}`)).toEqual({ workspaceId: 'default', tokenId: 'node' })
-    expect(manager.tokenOwner(`Bearer ${SITE_TOKEN}`)).toEqual({ workspaceId: 'site', tokenId: 'initial' })
+    expect(manager.tokenOwner(`Bearer ${NODE_TOKEN}`)).toEqual({ workspaceId: ownId(input), tokenId: 'node' })
+    expect(manager.tokenOwner(`Bearer ${SITE_TOKEN}`)).toEqual({ workspaceId: siteId(input), tokenId: 'initial' })
+    // The records of the node's folder are in its own directory now (D85, Q15); the registered site's moved beside its 0.1 folder.
+    expect(existsSync(settingsPath(input.state, ownId(input)))).toBe(true)
+    expect(existsSync(settingsPath(input.state, siteId(input)))).toBe(true)
     // The admin credential is the node's alone (D83): a workspace's old one opens nothing.
     expect(manager.authenticateAdmin(`Bearer ${SITE_ADMIN}`)).toBe(false)
     expect(manager.authenticateAdmin(`Bearer ${NODE_ADMIN}`)).toBe(true)
@@ -94,7 +103,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
   it('reads a retired workspace as offline', async () => {
     const input = scene()
     version1(input, { retiredAt: '2026-10-02T00:00:00.000Z', enabled: false })
-    expect((await open(input)).list().find(workspace => workspace.id === 'site')).toMatchObject({ online: false })
+    expect((await open(input)).list().find(workspace => workspace.id === siteId(input))).toMatchObject({ online: false })
   })
 
   it('copies the environment\'s settings into each workspace, the stored policy unioned into default\'s, and says which keys it copied', async () => {
@@ -106,12 +115,12 @@ describe('moving a 0.1 node onto the workspace model', () => {
 
     // Finding 42 of the Phase 1 review: the keys, in the order the node lists them, and what to do with them.
     expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('BUCKLE_COMMAND_DENY, BUCKLE_WORKSPACE_MOUNT, BUCKLE_PACKS, BUCKLE_ALLOW_SHELL, BUCKLE_APPROVAL_TIMEOUT_MS are workspace settings now: their values were copied into each workspace\'s workspace.json, and Buckle ignores them from here on. Remove them with buckle settings unset.')
-    const own = settings(input, 'default')
+    const own = settings(input, ownId(input))
     expect(own.packs).toMatchObject({ enabled: ['fs', 'web'], shell: false })
     expect(own.approvalWaitMs).toBe(0)
     expect(own.policy.commands.deny).toEqual(['curl *', 'wget *'])
     expect(own.mounts).toEqual([{ kind: 'workspace', target: '/project', access: 'write' }])
-    const site = settings(input, 'site')
+    const site = settings(input, siteId(input))
     expect(site.packs).toMatchObject({ enabled: ['fs', 'web'], shell: false })
     expect(site.policy.commands.deny).toEqual(['curl *'])
     expect(site.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
@@ -132,7 +141,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
   it('keeps a folder with no mount showing its real path, as the node showed it', async () => {
     const input = scene()
     await open(input)
-    expect(settings(input, 'default').mounts).toEqual([])
+    expect(settings(input, ownId(input)).mounts).toEqual([])
   })
 
   // Q14: the node's lists were a ceiling over each registered workspace; one list per workspace keeps exactly what both admitted.
@@ -147,7 +156,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
     const input = scene(environment)
     version1(input, { policy: own })
     await open(input)
-    expect(settings(input, 'site').policy.commands).toMatchObject(commands)
+    expect(settings(input, siteId(input)).policy.commands).toMatchObject(commands)
   })
 
   // Finding 38: under the node's deny list alone, an interpreter only the node allowed was asked about; one list refuses it.
@@ -165,7 +174,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
     const input = scene({ BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_ALLOWED_INTERPRETERS: 'python3,node' })
     version1(input, { policy: policy(value => { value.commands.deny = ['rm *']; value.commands.allowedInterpreters = ['node'] }) })
     await open(input)
-    expect(settings(input, 'site').policy.commands).toMatchObject({ deny: ['curl *', 'rm *'], allowedInterpreters: ['node'] })
+    expect(settings(input, siteId(input)).policy.commands).toMatchObject({ deny: ['curl *', 'rm *'], allowedInterpreters: ['node'] })
   })
 
   it('refuses where no one list admits exactly what both did, naming the workspace and the lists, and changes nothing', async () => {
@@ -176,7 +185,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
     expect(failure).toBeInstanceOf(MigrationError)
     expect((failure as Error).message).toContain('workspace site: the command allow lists and the approved URL lists')
     expect(registry(input)).toBe(before)
-    for (const id of ['default', 'site']) expect(existsSync(settingsPath(input.state, id))).toBe(false)
+    for (const id of [ownId(input), siteId(input)]) expect(existsSync(settingsPath(input.state, id))).toBe(false)
   })
 
   // A registered workspace's switch took effect only while the node's own was on; with that gate gone (Q14) a switch
@@ -190,8 +199,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
     writeFileSync(join(input.state, 'workspaces', 'site', 'dangerously-allow.json'), JSON.stringify({ version: 1, workspaces: { [input.site]: on } }))
     const manager = await open(input)
 
-    expect((await manager.resolve('site')).runtime.policy.dangerouslyAllow().on).toBe(kept)
-    expect((await manager.resolve('default')).runtime.policy.dangerouslyAllow().on).toBe(nodeOn)
+    expect((await byName(manager, 'site')).runtime.policy.dangerouslyAllow().on).toBe(kept)
+    expect((await byName(manager, 'project')).runtime.policy.dangerouslyAllow().on).toBe(nodeOn)
   })
 
   it('moves grants from the folder they were kept under to the workspace\'s id', async () => {
@@ -200,16 +209,18 @@ describe('moving a 0.1 node onto the workspace model', () => {
     writeFileSync(join(input.state, 'grants.json'), JSON.stringify({ version: 1, grants: [grant, { ...grant, id: 'grant-2', workspace: '/elsewhere' }] }))
     const manager = await open(input)
 
-    expect((await manager.resolve('default')).runtime.grants.list().map(item => item.id)).toEqual(['grant-1'])
-    expect(JSON.parse(readFileSync(join(input.state, 'grants.json'), 'utf8')).grants.map((item: { workspace: string }) => item.workspace)).toEqual(['default', '/elsewhere'])
+    expect((await byName(manager, 'project')).runtime.grants.list().map(item => item.id)).toEqual(['grant-1'])
+    // Moved to the workspace's own directory, keyed by its id (D85, Q15); the node's directory keeps the copy for going back alone.
+    expect(existsSync(join(input.state, 'grants.json'))).toBe(false)
+    expect(JSON.parse(readFileSync(join(input.state, 'workspaces', ownId(input), 'grants.json'), 'utf8')).grants.map((item: { workspace: string }) => item.workspace)).toEqual([ownId(input), '/elsewhere'])
   })
 
   it('reads the environment once: a later start\'s workspace settings change nothing', async () => {
     const input = scene({ BUCKLE_ALLOW_SHELL: 'false' })
     await open(input)
     await open(input, { BUCKLE_ALLOW_SHELL: 'true', BUCKLE_COMMAND_ALLOW: 'curl *' })
-    expect(settings(input, 'default').packs.shell).toBe(false)
-    expect(settings(input, 'default').policy.commands.allow).toEqual([])
+    expect(settings(input, ownId(input)).packs.shell).toBe(false)
+    expect(settings(input, ownId(input)).policy.commands.allow).toEqual([])
   })
 
   it('refuses where the node\'s folder would overlap a registered workspace, and changes nothing', async () => {
@@ -245,7 +256,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       const input = scene()
       version1(input)
       await fromFile(input, { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_LOG_LEVEL: 'warn' })
-      expect(settings(input, 'site')).toMatchObject({ packs: { shell: false }, policy: { commands: { deny: ['curl *'] }, network: { allow: ['api.example.com'] } } })
+      expect(settings(input, siteId(input))).toMatchObject({ packs: { shell: false }, policy: { commands: { deny: ['curl *'] }, network: { allow: ['api.example.com'] } } })
     })
 
     it('refuses a caller whose environment sets a workspace key otherwise, naming the keys and no value, and changes nothing', async () => {
@@ -257,7 +268,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect((failure as Error).message).toContain(`BUCKLE_COMMAND_DENY, BUCKLE_NETWORK_ALLOW, BUCKLE_PACKS, BUCKLE_ALLOW_SHELL are set in this command's environment to another value than ${join(input.root, 'buckle.env')} holds`)
       expect((failure as Error).message).not.toContain('curl')
       expect(registry(input)).toBe(before)
-      for (const id of ['default', 'site']) expect(existsSync(settingsPath(input.state, id))).toBe(false)
+      for (const id of [ownId(input), siteId(input)]) expect(existsSync(settingsPath(input.state, id))).toBe(false)
     })
 
     it('refuses a 0.1 node whose token and folder its caller names but its file does not, rather than leave it no workspace', async () => {
@@ -292,9 +303,9 @@ describe('moving a 0.1 node onto the workspace model', () => {
       version1(input)
       const notices = vi.spyOn(logger, 'warn')
       const manager = await open(input)
-      const name = manager.list().find(workspace => workspace.id === 'default')!.name
+      const name = manager.list().find(workspace => workspace.id === workspaceIdOf(folder))!.name
       expect(name).toBe('project folder '.repeat(8).trim())
-      expect(notices.mock.calls.some(([message]) => String(message).includes(`Workspace default's name was ${LONG.length} characters, more than the 120 a workspace name holds, so it is named ${name}`))).toBe(true)
+      expect(notices.mock.calls.some(([message]) => String(message).includes(`The node's folder ${folder}'s name was ${LONG.length} characters, more than the 120 a workspace name holds, so it is named ${name}`))).toBe(true)
       await expect(open(input)).resolves.toBeDefined()
     })
 
@@ -306,7 +317,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(failure).toBeInstanceOf(MigrationError)
       expect((failure as Error).message).toContain('workspaces.1.tokens.0.label')
       expect(registry(input)).toBe(text)
-      for (const id of ['default', 'site']) expect(existsSync(settingsPath(input.state, id))).toBe(false)
+      for (const id of [ownId(input), siteId(input)]) expect(existsSync(settingsPath(input.state, id))).toBe(false)
     })
 
     it('refuses a records file that will not read before it moves anything, naming it, as a refusal to move rather than an unreadable registry', async () => {
@@ -324,21 +335,25 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect((failure as Error).message).toContain('Nothing was changed')
       expect(registry(input)).toBe(before)
       expect(readFileSync(join(input.state, 'grants.json'), 'utf8')).toBe(grants)
-      expect(existsSync(settingsPath(input.state, 'default'))).toBe(false)
+      expect(existsSync(settingsPath(input.state, ownId(input)))).toBe(false)
     })
 
-    it('runs again to the same end after a move a crash stopped partway, reading the node\'s switch under either key', async () => {
+    it('runs again to the same end after a move a crash stopped partway, finding the node folder\'s records moved and keyed by its id already', async () => {
       const input = scene()
       version1(input)
       const on = { on: true, changedAt: '2026-10-01T00:00:00.000Z' }
-      // Workspace default's part was written; the registry is still version 1, and site's switch still under its folder.
-      writeFileSync(join(input.state, 'dangerously-allow.json'), JSON.stringify({ version: 1, workspaces: { default: on } }))
+      // The node folder's part was written: its switch moved to its own directory under its id; the registry is still version 1, and site's switch still under its folder.
+      mkdirSync(join(input.state, 'workspaces', ownId(input)), { recursive: true })
+      writeFileSync(join(input.state, 'workspaces', ownId(input), 'dangerously-allow.json'), JSON.stringify({ version: 1, workspaces: { [ownId(input)]: on } }))
       mkdirSync(join(input.state, 'workspaces', 'site'), { recursive: true })
       writeFileSync(join(input.state, 'workspaces', 'site', 'dangerously-allow.json'), JSON.stringify({ version: 1, workspaces: { [input.site]: on } }))
       const manager = await open(input)
 
-      expect((await manager.resolve('site')).runtime.policy.dangerouslyAllow().on).toBe(true)
-      expect((await manager.resolve('default')).runtime.policy.dangerouslyAllow().on).toBe(true)
+      expect((await byName(manager, 'site')).runtime.policy.dangerouslyAllow().on).toBe(true)
+      expect((await byName(manager, 'project')).runtime.policy.dangerouslyAllow().on).toBe(true)
+      // The site's records moved beside its 0.1 folder, which keeps nothing but what stays for going back.
+      expect(existsSync(join(input.state, 'workspaces', siteId(input), 'dangerously-allow.json'))).toBe(true)
+      expect(existsSync(join(input.state, 'workspaces', 'site', 'dangerously-allow.json'))).toBe(false)
     })
 
     it('finds a registered workspace\'s records under its folder as the disk names it, through a link', async () => {
@@ -351,8 +366,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
       writeFileSync(join(input.state, 'workspaces', 'site', 'policy.json'), JSON.stringify({ version: 1, workspaces: { [input.site]: policy(value => { value.commands.deny = ['curl *'] }) } }))
       const manager = await open(input)
 
-      expect(manager.list().find(workspace => workspace.id === 'site')!.dir).toBe(input.site)
-      expect(settings(input, 'site').policy.commands.deny).toEqual(['curl *'])
+      expect(manager.list().find(workspace => workspace.id === siteId(input))!.dir).toBe(input.site)
+      expect(settings(input, siteId(input)).policy.commands.deny).toEqual(['curl *'])
     })
 
     it.each([
@@ -366,7 +381,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
       mkdirSync(join(input.state, 'workspaces', 'site'), { recursive: true })
       writeFileSync(join(input.state, 'workspaces', 'site', 'policy.json'), JSON.stringify({ version: 1, workspaces: { [input.site]: policy(value => { value.commands.deny = ['curl *'] }) } }))
       await migrateNode({ node: loadConfig(input.environment), platform })
-      expect(settings(input, 'site').policy.commands.deny).toEqual(deny)
+      // The id derives from the spelling the disk answers, or the registry's where (as here) the disk has no such folder.
+      expect(settings(input, workspaceIdFor(renamed)).policy.commands.deny).toEqual(deny)
     })
 
     it('refuses two keys naming the one folder where the volume ignores case, and changes nothing', async () => {
@@ -409,17 +425,18 @@ describe('moving a 0.1 node onto the workspace model', () => {
       const notices = vi.spyOn(logger, 'warn')
       const manager = await openWorkspaceManager({ config })
 
-      expect(manager.tokenOwner(`Bearer ${NODE_TOKEN}`)).toEqual({ workspaceId: 'default', tokenId: 'node' })
+      expect(manager.tokenOwner(`Bearer ${NODE_TOKEN}`)).toEqual({ workspaceId: ownId(input), tokenId: 'node' })
       expect(readFileSync(path, 'utf8')).toBe(`# a 0.1 node\nBUCKLE_SERVER_NAME=Fixture node\nBUCKLE_WORKSPACE_ROOT=${input.folder}\n`)
       // 0.1 read policy.json with this same reader, version 1 alone, and refused to start on anything else.
       expect(() => readStoredPolicies(join(input.state, 'policy.json'))).toThrow(StateFileError)
-      expect(settings(input, 'default').policy.commands.deny).toEqual(['wget *'])
+      expect(settings(input, ownId(input)).policy.commands.deny).toEqual(['wget *'])
       const told = notices.mock.calls.map(([message]) => String(message))
-      expect(told).toContainEqual(expect.stringContaining(`BUCKLE_AUTH_TOKEN is now token node of workspace default, so agents configured with it keep working, and it was taken out of ${path}`))
-      expect(told).toContainEqual(expect.stringContaining('buckle workspace token create --workspace default, give agents the new token, then buckle workspace token revoke node --workspace default'))
+      expect(told).toContainEqual(expect.stringContaining(`BUCKLE_AUTH_TOKEN is now token node of workspace project, so agents configured with it keep working, and it was taken out of ${path}`))
+      expect(told).toContainEqual(expect.stringContaining('buckle workspace token create --workspace project, give agents the new token, then buckle workspace token revoke node --workspace project'))
       expect(told).toContainEqual(expect.stringContaining('An older Buckle sharing this state directory now refuses to start'))
+      expect(told).toContainEqual(expect.stringContaining(`the node's own folder ${input.folder} is workspace project (id ${ownId(input)}), with its records in workspaces/${ownId(input)}/ in the state directory`))
       // What docs/workspaces-02.md says of going back: the four copies, the stub, the token out of the file, and its digest alone kept.
-      expect(told).toContainEqual(expect.stringContaining('The registry and policy files it changed are kept as workspaces.v1.json and policy.v1.json in the state directory, with grants.v1.json and dangerously-allow.v1.json beside each grants and switch file it moved, for going back to 0.1'))
+      expect(told).toContainEqual(expect.stringContaining('The registry and policy files it changed are kept as workspaces.v1.json and policy.v1.json in the state directory, with grants.v1.json and dangerously-allow.v1.json beside where each grants and switch file it moved was, for going back to 0.1'))
       expect(told).toContainEqual(expect.stringContaining('policy.json is a version 2 file it cannot read'))
       expect(told).toContainEqual(expect.stringContaining('Buckle keeps the token as its digest alone, with no copy of its value: to go back to 0.1, set BUCKLE_AUTH_TOKEN again from an agent\'s own configuration'))
       expect(told.join('\n')).not.toContain(NODE_TOKEN)
@@ -446,7 +463,11 @@ describe('moving a 0.1 node onto the workspace model', () => {
         expect(readFileSync(join(input.state, copy), 'utf8')).toBe(text)
         expect(statSync(join(input.state, copy)).mode & 0o777).toBe(0o600)
       }
-      expect(readFileSync(join(input.state, 'grants.json'), 'utf8')).not.toBe(before['grants.json'])
+      // The live files moved to each workspace's own directory, rekeyed; the copies stay where 0.1 read the files.
+      expect(existsSync(join(input.state, 'grants.json'))).toBe(false)
+      expect(readFileSync(join(input.state, 'workspaces', ownId(input), 'grants.json'), 'utf8')).not.toBe(before['grants.json'])
+      expect(existsSync(join(input.state, 'workspaces', 'site', 'grants.json'))).toBe(false)
+      expect(readFileSync(join(input.state, 'workspaces', siteId(input), 'grants.json'), 'utf8')).toContain(siteId(input))
     })
 
     it('keeps an empty version 1 registry for a node that had none, which 0.1 reads as it read no file', async () => {
@@ -462,7 +483,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       writeFileSync(join(input.state, 'policy.v1.json'), JSON.stringify({ version: 1, workspaces: { [input.folder]: policy(value => { value.commands.deny = ['wget *'] }) } }))
       writeFileSync(join(input.state, 'policy.json'), JSON.stringify({ version: 2, note: 'moved' }))
       await openWorkspaceManager({ config })
-      expect(settings(input, 'default').policy.commands.deny).toEqual(['wget *'])
+      expect(settings(input, ownId(input)).policy.commands.deny).toEqual(['wget *'])
       expect(JSON.parse(readFileSync(join(input.state, 'policy.v1.json'), 'utf8')).workspaces[input.folder].commands.deny).toEqual(['wget *'])
     })
 
@@ -475,7 +496,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       await openWorkspaceManager({ config })
       const said = notices.mock.calls.map(([message]) => String(message)).filter(message => message.startsWith(`${path} sets BUCKLE_WORKSPACE_ROOT`))
       expect(said).toHaveLength(2)
-      expect(said[0]).toContain('Add --workspace <id> to your MCP configs, then run buckle settings unset root.')
+      expect(said[0]).toContain('Add --workspace <name> to your MCP configs, then run buckle settings unset root.')
       expect(config.callerWorkspaceRoot).toBeUndefined()
       expect(loadConfig({}, process.platform, { file: { path, values: { BUCKLE_WORKSPACE_ROOT: input.folder } }, caller: { BUCKLE_WORKSPACE_ROOT: input.site } }).callerWorkspaceRoot).toBe(input.site)
     })
@@ -486,7 +507,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       const notices = vi.spyOn(logger, 'warn')
       await open(input, { BUCKLE_AUTH_TOKEN: 'rotated-the-0.1-way-fixture' })
       expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual(expect.stringContaining('BUCKLE_AUTH_TOKEN is set in the environment, but a node on the workspace model does not read it'))
-      expect(notices.mock.calls.join('\n')).toContain('buckle workspace token revoke node --workspace default')
+      expect(notices.mock.calls.join('\n')).toContain('buckle workspace token revoke node --workspace project')
     })
   })
 

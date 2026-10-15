@@ -47,15 +47,16 @@ function breakStoredPolicy(state: string, id: string): void {
   writeFileSync(file, JSON.stringify(settings))
 }
 
+/** The node's own log, where a refusal before a workspace is known is recorded (D85, Q15). */
 function nodeLog(buckle: BuckleHttp): ActionLogEntry[] {
-  return buckle.runtime.actions.read(200)
+  return buckle.nodeActions.read(200)
 }
 
 describe('a workspace whose stored policy will not load', () => {
   it('answers every agent-facing caller without the state path, and only the owner with the repair', async () => {
     const buckle = await node()
     await register(buckle, 'two')
-    breakStoredPolicy(buckle.state, 'two')
+    breakStoredPolicy(buckle.state, await buckle.idOf('two'))
     const workbench = `/workspaces/two/v1/workbenches/${randomUUID()}`
     const probes: Array<{ path: string; token?: string; method?: string; status: number; error: string }> = [
       // The review's probe: no credential on a workbench twin opens nothing and says nothing.
@@ -83,10 +84,10 @@ describe('a workspace whose stored policy will not load', () => {
   it('audits the workbench refusal on the node log under the workspace, without the credential', async () => {
     const buckle = await node()
     await register(buckle, 'two')
-    breakStoredPolicy(buckle.state, 'two')
+    breakStoredPolicy(buckle.state, await buckle.idOf('two'))
     await buckle.request(`/workspaces/two/v1/workbenches/${randomUUID()}`, { headers: bearer(FAKE_GRANT) })
     const refusal = nodeLog(buckle).find(entry => entry.tool === 'workbench_auth_rejected')
-    expect(refusal).toMatchObject({ workspaceId: 'two', detail: 'HTTP 401' })
+    expect(refusal).toMatchObject({ workspaceId: await buckle.idOf('two'), detail: 'HTTP 401' })
     expect(JSON.stringify(nodeLog(buckle))).not.toContain(FAKE_GRANT)
   })
 })
@@ -112,17 +113,17 @@ describe('a fake grant before authentication (review L1 of B18-B19)', () => {
     const buckle = await node()
     const gone = await register(buckle, 'gone')
     await register(buckle, 'broken')
-    breakStoredPolicy(buckle.state, 'broken')
+    breakStoredPolicy(buckle.state, await buckle.idOf('broken'))
     await register(buckle, 'sleepy')
     await register(buckle, 'healthy')
     expect((await buckle.request('/setup/workspaces/sleepy', { method: 'PATCH', headers: bearer(NODE_ADMIN), body: JSON.stringify({ online: false }) })).status).toBe(200)
     rmSync(gone, { recursive: true })
     const opened = async () => (await (await buckle.services.getWorkspaces()).opened()).map(runtime => runtime.workspaceId)
     const before = await opened()
-    // Only workspace default opened, when the node started; the probes below must open no other.
-    expect(before).toEqual(['default'])
+    // Only the node folder's workspace opened, when the node started; the probes below must open no other.
+    expect(before).toEqual([buckle.runtime.workspaceId])
 
-    for (const workspace of ['gone', 'broken', 'sleepy', 'healthy', 'default']) {
+    for (const workspace of ['gone', 'broken', 'sleepy', 'healthy', buckle.runtime.workspaceId]) {
       const response = await buckle.request(`/workspaces/${workspace}/v1/workbenches/${randomUUID()}`, { headers: bearer(FAKE_GRANT) })
       expect({ workspace, status: response.status, body: await response.json() }).toEqual({ workspace, status: 401, body: { error: 'Unauthorized' } })
     }

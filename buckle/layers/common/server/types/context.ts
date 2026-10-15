@@ -11,6 +11,8 @@ declare module 'h3' {
     requestBody?: Uint8Array<ArrayBuffer>
     /** The workspace an agent's bearer token belongs to, which requireAgent found for a path that names none (/mcp, /v1). */
     tokenWorkspace?: string
+    /** The id of the workspace a /workspaces/[id]/ path names, by id or by name, as the guard that let the request in looked it up (D85, Q15). */
+    workspaceId?: string
   }
 }
 

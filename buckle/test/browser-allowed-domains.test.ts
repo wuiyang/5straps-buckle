@@ -205,7 +205,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
     const session = sessionOf(calls()[0])
 
-    await openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, 'default') }).update(settings => ({ ...settings, env: { GREETING: 'hello' } }))
+    await openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory!, config.workspaceId) }).update(settings => ({ ...settings, env: { GREETING: 'hello' } }))
     await runtime.takeUpSettings()
 
     expect(config.commandEnvironment).toEqual({ GREETING: 'hello' })

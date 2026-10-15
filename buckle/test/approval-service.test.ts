@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { setupCli } from '../cli/setup.js'
 import { createTerminalConsumer } from '../cli/terminal-consumer.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { configFromEnvironment } from './support/workspace-config.js'
+import { configFromEnvironment, nodeConfigOf } from './support/workspace-config.js'
 import { defaultRuntime } from './support/workspaces.js'
 import { ApprovalConflictError, createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, holdFor, questionFor, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
@@ -267,7 +267,7 @@ describe('the interaction each HTTP request binds', () => {
     mkdirSync(join(root, 'workspace'))
     mkdirSync(join(root, 'state'), { mode: 0o700 })
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '200' })
-    const common = initializeCommon({ config, role: 'mcp' })
+    const common = initializeCommon({ config: nodeConfigOf(config), role: 'mcp' })
     await common.start()
     const questions: Array<{ actor?: string; sessionId?: string }> = []
     const requestCli: RequestCli = async request => { questions.push({ actor: request.actor, sessionId: request.sessionId }); return { status: 'unavailable', requestId: request.id, reason: 'no_consumer' } }
@@ -320,7 +320,7 @@ describe('announcing an ask to the approval webhook', () => {
       await runtime.approvalService.close()
 
       expect(webhook.bodies.filter(body => body.approvals).map(body => body.approvals!.map(approval => approval.subject))).toEqual([[join(root, 'one')], [join(root, 'two')]])
-      expect(webhook.bodies[0]).toMatchObject({ serverId: config.serverId, workspaceId: 'default', approvals: [{ tool: 'fs_write', approveCommand: expect.stringContaining('buckle approve ') }] })
+      expect(webhook.bodies[0]).toMatchObject({ serverId: config.serverId, workspaceId: config.workspaceId, approvals: [{ tool: 'fs_write', approveCommand: expect.stringContaining('buckle approve ') }] })
       await runtime.history.close()
     } finally {
       await webhook.close()

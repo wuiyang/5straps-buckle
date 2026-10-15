@@ -89,7 +89,7 @@ describe('lifecycle notices on the approval webhook', () => {
 
       // `buckle approve` is another process's view of the same state, confirmed at its terminal (owner decision D17); the setup face is this one's.
       expect((await runCli({ argv: ['approve', first!, '--scope', 'session'], config: buckle.config, confirm: async () => true })).exitCode).toBe(0)
-      expect((await buckle.request('/setup/approvals', { method: 'POST', headers: { authorization: 'Bearer approval-http-admin-token', 'content-type': 'application/json' }, body: JSON.stringify({ token: second, approved: false, scope: 'once' }) })).status).toBe(200)
+      expect((await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: { authorization: 'Bearer approval-http-admin-token', 'content-type': 'application/json' }, body: JSON.stringify({ token: second, approved: false, scope: 'once' }) })).status).toBe(200)
       await buckle.runtime.approvalService.close()
 
       expect(webhook.notices).toEqual(expect.arrayContaining([
@@ -97,7 +97,7 @@ describe('lifecycle notices on the approval webhook', () => {
         expect.objectContaining({ token: first, event: 'answered', scope: 'session' }),
         expect.objectContaining({ token: second, event: 'denied', scope: 'once' }),
       ]))
-      expect(webhook.bodies[0]).toMatchObject({ serverId: buckle.config.serverId, workspaceId: 'default' })
+      expect(webhook.bodies[0]).toMatchObject({ serverId: buckle.config.serverId, workspaceId: buckle.runtime.workspaceId })
     } finally {
       await webhook.close()
     }
@@ -110,15 +110,15 @@ describe('a withdraw of a call already answered (review L1 of B23-B25)', () => {
     const admin = { authorization: 'Bearer approval-http-admin-token', 'content-type': 'application/json' }
     const asked = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'answered-1', tool: 'fs_write', args: { path: 'answered.md', content: 'x' }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { approvals: Array<{ token: string }> }
     const token = asked.approvals[0]!.token
-    expect((await buckle.request('/setup/approvals', { method: 'POST', headers: admin, body: JSON.stringify({ token, approved: true, scope: 'once' }) })).status).toBe(409)
+    expect((await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: admin, body: JSON.stringify({ token, approved: true, scope: 'once' }) })).status).toBe(409)
     expect(buckle.runtime.approvals.unspent('rings-chat')).toEqual([])
     const owner = generateSigningKey()
     const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    try { expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0) }
+    try { expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', buckle.runtime.workspaceId] })).exitCode).toBe(0) }
     finally { output.mockRestore() }
     const identity = await buckle.services.getNodeSigner()
-    const authorization = (method: string, path: string, body: string) => signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: buckle.config.serverId, nodeKey: identity.keyId, workspace: 'default', method, path, body })
-    const path = '/setup/approvals/challenges'
+    const authorization = (method: string, path: string, body: string) => signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: buckle.config.serverId, nodeKey: identity.keyId, workspace: buckle.runtime.workspaceId, method, path, body })
+    const path = buckle.setup('approvals/challenges')
     const listed = await buckle.request(path, { headers: { authorization: authorization('GET', path, '') } })
     expect(listed.status).toBe(200)
     const item = ((await listed.json()) as { challenges: Array<{ token: string; signed: string; digest: string }> }).challenges.find(item => item.token === token)!
@@ -126,10 +126,10 @@ describe('a withdraw of a call already answered (review L1 of B23-B25)', () => {
     expect(verified.digest).toBe(item.digest)
     expect(verified.challenge).toMatchObject({ token, tool: 'fs_write', arguments: { path: 'answered.md', content: 'x' }, cwd: buckle.config.cwd })
     const body = JSON.stringify({ token, approved: true, scope: 'once', challenge: verified.digest })
-    expect((await buckle.request('/setup/approvals', { method: 'POST', headers: { ...admin, authorization: authorization('POST', '/setup/approvals', body) }, body })).status).toBe(200)
+    expect((await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: { ...admin, authorization: authorization('POST', buckle.setup('approvals'), body) }, body })).status).toBe(200)
     expect(buckle.runtime.approvals.unspent('rings-chat')).toHaveLength(1)
     // Rings cancels the run: the token form finds the answered group and drops its once.
-    const withdrawn = await (await buckle.request('/setup/approvals/withdraw', { method: 'POST', headers: admin, body: JSON.stringify({ token }) })).json()
+    const withdrawn = await (await buckle.request(buckle.setup('approvals/withdraw'), { method: 'POST', headers: admin, body: JSON.stringify({ token }) })).json()
     expect(withdrawn).toEqual({ withdrawn: [], dropped: [token] })
     expect(buckle.runtime.approvals.unspent('rings-chat')).toEqual([])
     const other = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'answered-2', tool: 'fs_write', args: { path: 'other.md', content: 'y' }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { outcome: string }
@@ -142,7 +142,7 @@ describe('the admin approvals listing (review M1)', () => {
     const buckle = await node({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'approval-http-admin-token' })
     const admin = { authorization: 'Bearer approval-http-admin-token' }
     const asked = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'listed-1', tool: 'fs_write', args: { path: 'listed.md', content: 'listed content' }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { approvals: Array<{ token: string }> }
-    const listed = await (await buckle.request('/setup/approvals', { headers: admin })).json() as { approvals: Array<Record<string, unknown>> }
+    const listed = await (await buckle.request(buckle.setup('approvals'), { headers: admin })).json() as { approvals: Array<Record<string, unknown>> }
     expect(listed.approvals).toEqual([expect.objectContaining({
       token: asked.approvals[0]!.token, tool: 'fs_write',
       call: { arguments: { content: 'listed content', path: 'listed.md' }, cwd: buckle.config.cwd, description: expect.stringContaining('listed.md'), effects: [`write ${join(buckle.config.cwd, 'listed.md')}`] },
@@ -157,7 +157,7 @@ describe('the setup face withdraws one call\'s asks (owner decision D6, review M
       const buckle = await node({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'approval-http-admin-token', BUCKLE_APPROVAL_WEBHOOK: webhook.url, BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
       for (const directory of ['one', 'two', 'three']) mkdirSync(join(buckle.workspace, directory))
       const admin = { authorization: 'Bearer approval-http-admin-token', 'content-type': 'application/json' }
-      const withdraw = (body: unknown, path = '/setup/approvals/withdraw') => buckle.request(path, { method: 'POST', headers: admin, body: JSON.stringify(body) })
+      const withdraw = (body: unknown, path = buckle.setup('approvals/withdraw')) => buckle.request(path, { method: 'POST', headers: admin, body: JSON.stringify(body) })
       const invoke = (requestId: string, path: string) => buckle.request('/v1/invoke', { method: 'POST', headers,
         body: JSON.stringify({ requestId, tool: 'fs_write_batch', args: { files: [{ path: `${path}/a.md`, content: 'x' }, { path: `${path}/b/c.md`, content: 'y' }] }, context: { sessionId: 'rings-chat' } }) })
 
@@ -173,10 +173,10 @@ describe('the setup face withdraws one call\'s asks (owner decision D6, review M
       expect(await (await waiting).json()).toMatchObject({ requestId: 'run-1', outcome: 'error', error: { code: 'APPROVAL_UNANSWERED' } })
       expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual(kept.approvals.map(request => request.token))
 
-      // By a token of the group, under the workspace twin; a second withdraw finds nothing and says so.
+      // By a token of the group, with the workspace named by its name (the folder's, D85, Q15); a second withdraw finds nothing and says so.
       mkdirSync(join(buckle.workspace, 'three', 'b'))
       const three = await (await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'run-3', tool: 'fs_write_batch', args: { files: [{ path: 'three/a.md', content: 'x' }, { path: 'three/b/c.md', content: 'y' }] }, context: { sessionId: 'rings-chat', approvalWait: { mode: 'none' } } }) })).json() as { approvals: Array<{ token: string }> }
-      const byToken = await withdraw({ token: three.approvals[0]!.token }, '/workspaces/default/setup/approvals/withdraw')
+      const byToken = await withdraw({ token: three.approvals[0]!.token }, '/workspaces/workspace/setup/approvals/withdraw')
       expect((await byToken.json() as { withdrawn: string[] }).withdrawn.sort()).toEqual(three.approvals.map(request => request.token).sort())
       expect(await (await withdraw({ token: three.approvals[0]!.token })).json()).toEqual({ withdrawn: [], dropped: [] })
       expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual(kept.approvals.map(request => request.token))

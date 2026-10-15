@@ -66,12 +66,12 @@ describe('/v1/invoke over node:http', () => {
     expect(JSON.parse(reply.body)).toEqual({ error: 'Request body is too large' })
   })
 
-  it('reads a body streamed in pieces into the route, and the same under /workspaces/default', async () => {
+  it('reads a body streamed in pieces into the route, and the same under /workspaces/<name>', async () => {
     const { url, workspace } = await listening()
     writeFileSync(join(workspace, 'note.md'), 'streamed through')
     const body = JSON.stringify({ requestId: 'wire-1', tool: 'fs_read', args: { path: 'note.md' } })
     const pieces = [body.slice(0, 10), body.slice(10, 25), body.slice(25)]
-    for (const path of ['/v1/invoke', '/workspaces/default/v1/invoke']) {
+    for (const path of ['/v1/invoke', '/workspaces/workspace/v1/invoke']) {
       const reply = await post(url, { path, chunks: pieces, pauseMs: 20 })
       expect(reply.status).toBe(200)
       expect(JSON.parse(reply.body)).toMatchObject({ outcome: 'ok', output: { content: 'streamed through' } })

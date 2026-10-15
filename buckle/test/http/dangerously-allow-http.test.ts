@@ -22,8 +22,8 @@ async function node(): Promise<BuckleHttp & { root: string }> {
 }
 
 const headers = (token = ADMIN) => ({ authorization: `Bearer ${token}`, 'content-type': 'application/json' })
-const status = async (buckle: BuckleHttp, path = '/setup/status', token = ADMIN) => (await (await buckle.request(path, { headers: headers(token) })).json()) as { dangerouslyAllow: unknown }
-const put = (buckle: BuckleHttp, body: unknown) => buckle.request('/setup/policy', { method: 'PUT', headers: headers(), body: JSON.stringify(body) })
+const status = async (buckle: BuckleHttp, path = buckle.setup('status'), token = ADMIN) => (await (await buckle.request(path, { headers: headers(token) })).json()) as { dangerouslyAllow: unknown }
+const put = (buckle: BuckleHttp, body: unknown) => buckle.request(buckle.setup('policy'), { method: 'PUT', headers: headers(), body: JSON.stringify(body) })
 const policy = { version: 1, commands: { allow: [], deny: [] }, network: { allow: ['example.com'] }, mount: null, updatedAt: null }
 
 describe('the dangerously-allow switch on the admin face', () => {
@@ -34,7 +34,7 @@ describe('the dangerously-allow switch on the admin face', () => {
     // The owner's local CLI switched it on.
     await buckle.runtime.policy.setDangerouslyAllow(true)
     expect((await status(buckle)).dangerouslyAllow).toEqual({ on: true, boundTo })
-    expect(await (await buckle.request('/setup/policy', { headers: headers() })).json()).toMatchObject({ dangerouslyAllow: { on: true } })
+    expect(await (await buckle.request(buckle.setup('policy'), { headers: headers() })).json()).toMatchObject({ dangerouslyAllow: { on: true } })
 
     const refused = await put(buckle, { ...policy, dangerouslyAllow: { commands: false, fileReads: false } })
     expect(refused.status).toBe(409)
@@ -46,7 +46,7 @@ describe('the dangerously-allow switch on the admin face', () => {
     expect(stored.status).toBe(200)
     expect(Object.keys((await stored.json() as { stored: object }).stored)).not.toContain('dangerouslyAllow')
     expect(buckle.runtime.policy.dangerouslyAllow().on).toBe(true)
-    expect((await buckle.request('/setup/policy', { method: 'DELETE', headers: headers() })).status).toBe(200)
+    expect((await buckle.request(buckle.setup('policy'), { method: 'DELETE', headers: headers() })).status).toBe(200)
     expect(buckle.runtime.policy.dangerouslyAllow().on).toBe(true)
 
     await buckle.runtime.policy.setDangerouslyAllow(false)
@@ -64,7 +64,7 @@ describe('the dangerously-allow switch on the admin face', () => {
     // Registration cannot carry the switch in: only the local CLI sets it.
     const smuggled = await buckle.request('/setup/workspaces', { method: 'POST', headers: headers(), body: JSON.stringify({ ...child, id: 'other', dir: join(buckle.root, 'other'), policy: { ...policy, dangerouslyAllow: { commands: true, fileReads: true } } }) })
     expect(smuggled.status).toBe(409)
-    const childRuntime = (await (await buckle.services.getWorkspaces()).resolve('child')).runtime
+    const childRuntime = (await (await buckle.services.getWorkspaces()).resolve(await buckle.idOf('child'))).runtime
     await childRuntime.policy.setDangerouslyAllow(true)
     expect((await status(buckle, '/workspaces/child/setup/status')).dangerouslyAllow).toEqual({ on: true, boundTo: '/workspace' })
     expect(buckle.runtime.policy.dangerouslyAllow().on).toBe(false)

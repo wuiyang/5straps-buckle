@@ -3,21 +3,29 @@ import { inject } from 'vitest'
 import type { NitroApp } from 'nitro/types'
 import { setupCli } from '../../cli/setup.js'
 import type { TerminalOptions } from '../../cli/terminal-consumer.js'
-import { NODE_FOLDER_WORKSPACE, type BuckleConfig } from '../../common/runtime/config.js'
-import { configFromEnvironment } from './workspace-config.js'
+import type { BuckleConfig } from '../../common/runtime/config.js'
+import type { ActionLog } from '../../common/types/ports/action-log.js'
+import { configFromEnvironment, nodeConfigOf } from './workspace-config.js'
 import { initializeCommon, type BuckleCommon } from '../../common/runtime/initialize.js'
 import { logger } from '../../common/runtime/log.js'
 import type { BuckleServices } from '../../common/runtime/services.js'
 import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { createHttpServer, setupServer } from '../../server/setup-server.js'
 import { layerRoutes, type ServedRoute } from './routes.js'
+import { idOf } from './workspaces.js'
 
 /** A node as serve composes it, answering in process through its Nitro app, or on node:http through the built middleware serve uses. */
 export interface BuckleHttp {
   readonly config: BuckleConfig
   readonly common: BuckleCommon
-  /** Workspace default: the folder the environment names, as migration makes it of a node set up before the workspace model. */
+  /** The node folder's workspace: the folder the environment names, as migration makes it of a node set up before the workspace model. */
   readonly runtime: BuckleRuntime
+  /** The node's own log, where refusals before a workspace is known and registry changes are recorded. */
+  readonly nodeActions: ActionLog
+  /** A path of the node folder's workspace's setup face: `/workspaces/<id>/setup/<path>`, since the node level serves no workspace (D85, Q15). */
+  setup(path: string): string
+  /** The id of the workspace named `name`, as the registry assigned it (D85, Q15). */
+  idOf(name: string): Promise<string>
   readonly services: BuckleServices
   readonly nitroApp: NitroApp
   /** The process's one requester, which the common runtime and the app's host both carry. */
@@ -57,7 +65,7 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   await holders.get(entryPath)?.()
   const config = configFromEnvironment(input.environment)
   input.configure?.(config)
-  const common = initializeCommon({ config, role: 'server' })
+  const common = initializeCommon({ config: nodeConfigOf(config), role: 'server' })
   const cli = setupCli({ terminal: input.terminal ?? null })
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   const server = await setupServer({ common, logger, requestCli: cli.requestCli, entryPath })
@@ -69,9 +77,12 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   }))
   holders.set(entryPath, close)
   await common.start()
-  const runtime = (await (await common.services.getWorkspaces()).resolve(NODE_FOLDER_WORKSPACE)).runtime
+  const workspaces = await common.services.getWorkspaces()
+  const runtime = (await workspaces.resolve(config.workspaceId)).runtime
   return {
-    config, common, runtime, services: common.services, nitroApp: server.nitroApp, requestCli: server.requestCli,
+    config, common, runtime, nodeActions: workspaces.nodeActions, services: common.services, nitroApp: server.nitroApp, requestCli: server.requestCli,
+    setup: path => `/workspaces/${runtime.workspaceId}/setup/${path}`,
+    idOf: async name => idOf(await common.services.getWorkspaces(), name),
     request: async (request, init) => server.nitroApp.fetch(request instanceof Request ? new Request(request, init) : new Request(new URL(request, 'http://127.0.0.1'), init)),
     // As serve listens (server/serve.ts): the built entry's middleware, with srvx's lazy body and socket-bound signal.
     listen: async () => {

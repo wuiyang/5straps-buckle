@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { runCli } from '../cli/main.js'
+import { runCli } from './support/cli.js'
 import { takeTarget, TargetError } from '../cli/target.js'
 import { configFromEnvironment } from './support/workspace-config.js'
-import { registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { registerWorkspace, workspaceIdOf, workspacesOf } from './support/workspaces.js'
 
 // D83 (4): a command acts on the workspace it names with --workspace, else the one whose folder holds --dir, else the
 // one whose folder holds the directory it runs in; where none does, it refuses and lists the ids, never a folder.
@@ -45,7 +45,7 @@ describe('the workspace a command runs on', () => {
     const workspaces = await workspacesOf(config)
     await registerWorkspace(workspaces, { id: 'site', dir: join(root, 'site') })
     mkdirSync(join(root, 'the-site'))
-    await workspaces.create({ id: 'the-site', dir: join(root, 'the-site'), name: 'The site' })
+    await workspaces.create({ dir: join(root, 'the-site'), name: 'The site' })
     return { root, config }
   }
 
@@ -71,7 +71,7 @@ describe('the workspace a command runs on', () => {
     const { root, config } = await node()
     expect(workspaceOf((await run({ argv: ['manifest', '--workspace', 'site'], config, cwd: join(root, 'elsewhere') })).stdout)).toBe('site')
     expect(workspaceOf((await run({ argv: ['manifest', '--workspace', 'The Site'], config, cwd: join(root, 'elsewhere') })).stdout)).toBe('The site')
-    expect(workspaceOf((await run({ argv: ['manifest', '--workspace', 'the-site'], config, cwd: join(root, 'elsewhere') })).stdout)).toBe('The site')
+    expect(workspaceOf((await run({ argv: ['manifest', '--workspace', workspaceIdOf(join(root, 'the-site'))], config, cwd: join(root, 'elsewhere') })).stdout)).toBe('The site')
     expect(workspaceOf((await run({ argv: ['manifest', '--dir', '../site/src'], config, cwd: join(root, 'elsewhere') })).stdout)).toBe('site')
   })
 

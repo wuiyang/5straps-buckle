@@ -174,7 +174,7 @@ describe('the question a hinted call still puts to the terminal (review L3)', ()
     const response = await runtime.invoke({ sessionId: 'chat-1', request: single('hinted'), approvalWait: { mode: 'none' } })
 
     if (response.outcome !== 'approval_required') throw new Error(`expected approval_required, got ${response.outcome}`)
-    await vi.waitFor(() => expect(asked).toEqual([`approval:default:${response.approvals[0]!.token}`]))
+    await vi.waitFor(() => expect(asked).toEqual([`approval:${runtime.workspaceId}:${response.approvals[0]!.token}`]))
     await runtime.approvalService.close()
     await runtime.history.close()
   })

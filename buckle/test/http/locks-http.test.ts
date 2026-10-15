@@ -20,9 +20,9 @@ describe('a state file busy past the wait, over HTTP', () => {
     const buckle = await createBuckleHttp({ environment, configure: (config) => { config.stateLockDeadlineMs = 300 } })
     nodes.push(buckle)
     const grant = await buckle.runtime.grants.grant({ sessionId: 's', rule: 'read_scope', subject: '/shots', scope: 'always' })
-    holders.push(await holdLockInProcess(join(state, 'grants.json.lock.sqlite')))
+    holders.push(await holdLockInProcess(join(state, 'workspaces', buckle.runtime.workspaceId, 'grants.json.lock.sqlite')))
 
-    const response = await buckle.request(`/setup/grants/${grant.id}`, { method: 'DELETE', headers: { authorization: 'Bearer busy-admin-token-fixture' } })
+    const response = await buckle.request(buckle.setup(`grants/${grant.id}`), { method: 'DELETE', headers: { authorization: 'Bearer busy-admin-token-fixture' } })
 
     expect(response.status).toBe(503)
     expect(await response.json()).toEqual({ error: expect.stringContaining('is busy in another Buckle process') })
@@ -35,7 +35,7 @@ describe('busy audit state while the invoke attempt is recorded (review L3 of B1
     const { state, workspace, environment } = nodeEnvironment('buckle-locks-audit-', { BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_PACKS: 'fs' })
     const buckle = await createBuckleHttp({ environment, configure: (config) => { config.stateLockDeadlineMs = 300 } })
     nodes.push(buckle)
-    holders.push(await holdLockInProcess(join(state, 'actions.jsonl.pending.json.lock.sqlite')))
+    holders.push(await holdLockInProcess(join(state, 'workspaces', buckle.runtime.workspaceId, 'actions.jsonl.pending.json.lock.sqlite')))
 
     const response = await buckle.request('/v1/invoke', { method: 'POST', headers: { authorization: 'Bearer busy-agent-token-fixture', 'content-type': 'application/json' },
       body: JSON.stringify({ requestId: 'busy-1', tool: 'fs_write', args: { path: 'never.md', content: 'x' } }) })
@@ -53,9 +53,9 @@ describe('a refusal while the audit state is busy (review L7 of B20-B22)', () =>
     const { state, environment } = nodeEnvironment('buckle-locks-refusal-', { BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_PACKS: 'fs' })
     const buckle = await createBuckleHttp({ environment, configure: (config) => { config.stateLockDeadlineMs = 300 } })
     nodes.push(buckle)
-    holders.push(await holdLockInProcess(join(state, 'actions.jsonl.pending.json.lock.sqlite')))
+    holders.push(await holdLockInProcess(join(state, 'workspaces', buckle.runtime.workspaceId, 'actions.jsonl.pending.json.lock.sqlite')))
     const wrong = { authorization: 'Bearer wrong-token-fixture-only-000000', 'content-type': 'application/json' }
-    for (const [path, method] of [['/setup/status', 'GET'], ['/setup/policy', 'PUT'], ['/v1/invoke', 'POST'], ['/mcp', 'POST'], ['/workspaces/default/setup/status', 'GET']] as const) {
+    for (const [path, method] of [[buckle.setup('status'), 'GET'], [buckle.setup('policy'), 'PUT'], ['/v1/invoke', 'POST'], ['/mcp', 'POST'], ['/workspaces/workspace/setup/status', 'GET']] as const) {
       const response = await buckle.request(path, { method, headers: wrong, ...(method === 'GET' ? {} : { body: '{}' }) })
       expect({ path, status: response.status }).toEqual({ path, status: 401 })
     }

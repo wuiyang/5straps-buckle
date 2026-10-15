@@ -22,6 +22,7 @@ import { runCli } from './support/cli.js'
 import { createMcpServer } from '../mcp/server.js'
 import { isExplicitCancel } from '../mcp/stdio.js'
 import { fixedInteraction } from './support/interaction.js'
+import { workspaceIdOf } from './support/workspaces.js'
 
 // An ask inside a script (owner decision D82, points 6 and 7): the script stops, the outer call answers with the
 // nested call's own ask, shown whole (owner decision D17), and the same script sent again replays what already ran.
@@ -104,7 +105,7 @@ async function answer(runtime: BuckleRuntime, token: string, approved = true) {
 }
 
 function journals(root: string): string[] {
-  const directory = join(root, 'state', 'code-journal')
+  const directory = join(root, 'state', 'workspaces', workspaceIdOf(join(root, 'workspace')), 'code-journal')
   return existsSync(directory) ? readdirSync(directory, { recursive: true, encoding: 'utf8' }).filter(name => name.endsWith('.json')).map(name => join(directory, name)) : []
 }
 

@@ -7,6 +7,7 @@ import { actionsPath, loadConfig, type NodeConfig } from '../common/runtime/conf
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { describeOnline, watchOnline } from '../server/roster.js'
 import { runCli } from './support/cli.js'
+import { byName, idOf } from './support/workspaces.js'
 
 // The workspace-model brief, item 6 and Q9, and D85, Q15: every ask names its workspace by name, `buckle approvals`, its
 // watch, and `buckle approve` cover every online workspace unless --workspace or --dir names one, and `buckle serve`
@@ -23,8 +24,8 @@ beforeEach(async () => {
   for (const folder of ['one', 'two', 'outside']) mkdirSync(join(base, folder))
   node = loadConfig({ BUCKLE_STATE_DIR: join(base, 'state'), BUCKLE_ADMIN_TOKEN: 'approver-admin-fixture', BUCKLE_SANDBOX: 'none' })
   manager = await openWorkspaceManager({ config: node })
-  await manager.create({ id: 'one', name: 'Site one', dir: join(base, 'one') })
-  await manager.create({ id: 'two', name: 'Site two', dir: join(base, 'two'), settings: settings => ({ ...settings, policy: { ...settings.policy, network: { allow: ['example.com', '*.example.org'] } } }) })
+  await manager.create({ name: 'Site one', dir: join(base, 'one') })
+  await manager.create({ name: 'Site two', dir: join(base, 'two'), settings: settings => ({ ...settings, policy: { ...settings.policy, network: { allow: ['example.com', '*.example.org'] } } }) })
   out = ''
   err = ''
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true })
@@ -36,9 +37,9 @@ afterEach(async () => {
   rmSync(base, { recursive: true, force: true })
 })
 
-/** An ask waiting in workspace `id`, as a call made there leaves one. */
-async function ask(id: string, path: string): Promise<string> {
-  const { runtime } = await manager.resolve(id)
+/** An ask waiting in the workspace named `name`, as a call made there leaves one. */
+async function ask(name: string, path: string): Promise<string> {
+  const { runtime } = await byName(manager, name)
   const [request] = (await runtime.approvals.ask({
     tool: 'fs_write', sessionId: 'chat', call: { arguments: { path, content: 'x' }, cwd: '/workspace', description: `Write "${path}"`, effects: [`write ${path}`], complete: true },
     asks: [{ kind: 'ask', rule: 'write_scope', subject: path, reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
@@ -55,8 +56,8 @@ async function buckle(argv: string[], cwd = join(base, 'outside')): Promise<{ ex
 
 describe('buckle approvals naming no workspace', () => {
   it('lists every online workspace\'s asks under its name, each with the command that answers it, the name quoted as a shell word', async () => {
-    const first = await ask('one', '/outside/one.md')
-    const second = await ask('two', '/outside/two.md')
+    const first = await ask('Site one', '/outside/one.md')
+    const second = await ask('Site two', '/outside/two.md')
 
     const listed = await buckle(['approvals'])
     expect(listed.exitCode).toBe(0)
@@ -68,15 +69,15 @@ describe('buckle approvals naming no workspace', () => {
     expect(listed.out.indexOf(second)).toBeGreaterThan(listed.out.indexOf('Workspace Site two:'))
 
     const json = JSON.parse((await buckle(['approvals', '--json'])).out) as Array<{ token: string; workspaceId: string; workspaceName: string }>
-    expect(json.map(entry => [entry.token, entry.workspaceId, entry.workspaceName])).toEqual([[first, 'one', 'Site one'], [second, 'two', 'Site two']])
+    expect(json.map(entry => [entry.token, entry.workspaceId, entry.workspaceName])).toEqual([[first, idOf(manager, 'Site one'), 'Site one'], [second, idOf(manager, 'Site two'), 'Site two']])
     // The list over several workspaces is the node's to audit.
     expect(readFileSync(actionsPath(node), 'utf8')).toContain('"tool":"cli_approvals"')
   })
 
   it('narrows to the workspace --workspace names, by name in any case or by id, or --dir names', async () => {
-    const first = await ask('one', '/outside/one.md')
-    const second = await ask('two', '/outside/two.md')
-    for (const flags of [['--workspace', 'two'], ['--workspace', 'Site two'], ['--workspace', 'site TWO'], ['--dir', join(base, 'two')]]) {
+    const first = await ask('Site one', '/outside/one.md')
+    const second = await ask('Site two', '/outside/two.md')
+    for (const flags of [['--workspace', idOf(manager, 'Site two')], ['--workspace', 'Site two'], ['--workspace', 'site TWO'], ['--dir', join(base, 'two')]]) {
       const listed = await buckle(['approvals', ...flags])
       expect(listed.out).toContain(second)
       expect(listed.out).not.toContain(first)
@@ -88,31 +89,31 @@ describe('buckle approvals naming no workspace', () => {
   })
 
   it('leaves out a workspace switched offline', async () => {
-    const second = await ask('two', '/outside/two.md')
-    await manager.update('two', { online: false })
+    const second = await ask('Site two', '/outside/two.md')
+    await manager.update(idOf(manager, 'Site two'), { online: false })
     expect((await buckle(['approvals'])).out).not.toContain(second)
   })
 })
 
 describe('buckle approve naming no workspace', () => {
   it('answers the ask in the workspace whose queue holds it, audited in that workspace\'s log', async () => {
-    await ask('one', '/outside/one.md')
-    const second = await ask('two', '/outside/two.md')
+    await ask('Site one', '/outside/one.md')
+    const second = await ask('Site two', '/outside/two.md')
 
     const approved = await buckle(['approve', second, '--scope', 'once'])
     expect(approved.exitCode).toBe(0)
     expect(approved.out).toContain('fs_write needs approval in workspace Site two')
     expect(approved.out).toContain(`Approved ${second} in workspace Site two`)
-    const { runtime, config } = await manager.resolve('two')
+    const { runtime, config } = await byName(manager, 'Site two')
     expect(runtime.approvals.pending()).toEqual([])
     expect(readFileSync(actionsPath(config), 'utf8')).toContain('"tool":"cli_approve"')
     // D85, Q15: the workspace's entries carry its name beside its id.
-    expect(runtime.actions.read(5).filter(entry => entry.tool === 'cli_approve').map(entry => [entry.workspaceId, entry.workspaceName])).toEqual([['two', 'Site two'], ['two', 'Site two']])
-    expect((await manager.resolve('one')).runtime.approvals.pending()).toHaveLength(1)
+    expect(runtime.actions.read(5).filter(entry => entry.tool === 'cli_approve').map(entry => [entry.workspaceId, entry.workspaceName])).toEqual([[idOf(manager, 'Site two'), 'Site two'], [idOf(manager, 'Site two'), 'Site two']])
+    expect((await byName(manager, 'Site one')).runtime.approvals.pending()).toHaveLength(1)
   })
 
   it('shows one ask whole wherever it waits', async () => {
-    const second = await ask('two', '/outside/two.md')
+    const second = await ask('Site two', '/outside/two.md')
     const shown = await buckle(['approvals', 'show', second])
     expect(shown.exitCode).toBe(0)
     expect(shown.out).toContain('  workspace: Site two')
@@ -143,7 +144,7 @@ describe('an approver\'s command refused before any workspace answers it', () =>
 // in a workspace that came online later; it follows the online workspaces however many there are at its start.
 describe('buckle approvals --watch naming no workspace', () => {
   it('follows every online workspace even where one is online at its start, audited in the node\'s log', async () => {
-    await manager.update('two', { online: false })
+    await manager.update(idOf(manager, 'Site two'), { online: false })
     const refused = await buckle(['approvals', '--watch'])
     // Without a terminal it asks nothing; the way it refuses shows the path it took.
     expect(refused.err).toContain('needs a terminal to ask in')
@@ -154,11 +155,11 @@ describe('buckle approvals --watch naming no workspace', () => {
 
 describe('the workspaces buckle serve lists', () => {
   it('names each online one with where its folder shows, its URL mode, and the packs it offers', async () => {
-    await manager.update('one', { online: true })
+    await manager.update(idOf(manager, 'Site one'), { online: true })
     const text = await describeOnline(manager)
     expect(text).toContain('Serving 2 workspaces:')
-    expect(text).toContain(`  Site one\n    id      one\n    folder  /workspace from ${join(base, 'one')}\n    URLs    no approved list\n    packs   `)
-    expect(text).toContain('  Site two\n    id      two')
+    expect(text).toContain(`  Site one\n    id      ${idOf(manager, 'Site one')}\n    folder  /workspace from ${join(base, 'one')}\n    URLs    no approved list\n    packs   `)
+    expect(text).toContain(`  Site two\n    id      ${idOf(manager, 'Site two')}`)
     expect(text).toContain('    URLs    an approved list of 2 entries')
     expect(text).toMatch(/packs {3}.*\bfs\b/)
   })
@@ -167,29 +168,29 @@ describe('the workspaces buckle serve lists', () => {
     const written: string[] = []
     const stop = watchOnline({ workspaces: manager, write: text => void written.push(text), intervalMs: 20 })
     try {
-      await manager.update('two', { online: false })
+      await manager.update(idOf(manager, 'Site two'), { online: false })
       await vi.waitFor(() => expect(written.join('')).toContain('Workspaces changed.\nServing 1 workspace:\n  Site one\n'))
       expect(written.join('')).not.toContain('Site two')
     } finally { stop() }
     const count = written.length
-    await manager.update('two', { online: true })
+    await manager.update(idOf(manager, 'Site two'), { online: true })
     await new Promise(resolve => setTimeout(resolve, 80))
     expect(written).toHaveLength(count)
   })
 
   // Finding 2 of the Phase 1 review: what a workspace taken offline or removed left open ends at serve's next look.
   it('closes the runtime of a workspace taken offline at its next look, while the others stay open', async () => {
-    await manager.resolve('one')
-    await manager.resolve('two')
+    await byName(manager, 'Site one')
+    await byName(manager, 'Site two')
     const stop = watchOnline({ workspaces: manager, write: () => {}, intervalMs: 20 })
     try {
-      await manager.update('two', { online: false })
-      await vi.waitFor(async () => expect((await manager.opened()).map(runtime => runtime.workspaceId)).toEqual(['one']))
+      await manager.update(idOf(manager, 'Site two'), { online: false })
+      await vi.waitFor(async () => expect((await manager.opened()).map(runtime => runtime.workspaceId)).toEqual([idOf(manager, 'Site one')]))
     } finally { stop() }
   })
 
   it('says how to serve one where none is online', async () => {
-    for (const id of ['one', 'two']) await manager.update(id, { online: false })
+    for (const name of ['Site one', 'Site two']) await manager.update(idOf(manager, name), { online: false })
     expect(await describeOnline(manager)).toBe('No workspace is online: buckle workspace init serves a folder, and buckle workspace enable <id> serves one again.\n')
     expect(existsSync(join(base, 'state', 'workspaces.json'))).toBe(true)
   })

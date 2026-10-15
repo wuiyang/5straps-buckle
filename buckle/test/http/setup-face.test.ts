@@ -50,19 +50,19 @@ async function invoke(tool: string, args: Record<string, unknown>) {
 
 describe('who may open the setup face', () => {
   it('refuses the agent token, a missing token, and a wrong token', async () => {
-    expect((await app.request('/setup/policy', { headers: bearer(AGENT) })).status).toBe(401)
-    expect((await app.request('/setup/policy')).status).toBe(401)
-    expect((await app.request('/setup/policy', { headers: bearer('nope') })).status).toBe(401)
+    expect((await app.request(app.setup('policy'), { headers: bearer(AGENT) })).status).toBe(401)
+    expect((await app.request(app.setup('policy'))).status).toBe(401)
+    expect((await app.request(app.setup('policy'), { headers: bearer('nope') })).status).toBe(401)
   })
 
   it('admits the setup token there and nowhere else', async () => {
-    expect((await app.request('/setup/policy', { headers: bearer(SETUP) })).status).toBe(200)
+    expect((await app.request(app.setup('policy'), { headers: bearer(SETUP) })).status).toBe(200)
     expect((await app.request('/v1/manifest', { headers: bearer(SETUP) })).status).toBe(401)
   })
 
   it('is absent altogether when no setup token is configured', async () => {
     const bare = await node()
-    expect((await bare.request('/setup/policy', { headers: bearer(SETUP) })).status).toBe(404)
+    expect((await bare.request(bare.setup('policy'), { headers: bearer(SETUP) })).status).toBe(404)
   })
 
   it('refuses to be the same credential as the agent token', () => {
@@ -80,7 +80,7 @@ describe('pushing a policy', () => {
   // copied into it once, at migration, and a push replaces the whole document.
   it('replaces the workspace\'s one policy, which reads back as stored and effective alike', async () => {
     expect(runtime.policy.stored().commands.deny).toEqual(['wget *'])
-    const put = await app.request('/setup/policy', {
+    const put = await app.request(app.setup('policy'), {
       method: 'PUT',
       headers: bearer(SETUP),
       body: JSON.stringify({ version: 1, network: { allow: ['example.com'] }, commands: { deny: ['curl *'] } }),
@@ -89,7 +89,7 @@ describe('pushing a policy', () => {
     // Writes return the same policy view as reads.
     expect(Object.keys(await put.json() as object).sort()).toEqual(['dangerouslyAllow', 'effective', 'revision', 'stored'])
 
-    const body = await (await app.request('/setup/policy', { headers: bearer(SETUP) })).json() as {
+    const body = await (await app.request(app.setup('policy'), { headers: bearer(SETUP) })).json() as {
       stored: { commands: { deny: string[] }; updatedAt: string | null }
       effective: { commands: { deny: string[] }; network: { allow: string[] } }
     }
@@ -100,7 +100,7 @@ describe('pushing a policy', () => {
   })
 
   it('takes effect on the next call without a restart', async () => {
-    await app.request('/setup/policy', {
+    await app.request(app.setup('policy'), {
       method: 'PUT',
       headers: bearer(SETUP),
       body: JSON.stringify({ version: 1, network: { allow: ['example.com'] } }),
@@ -112,7 +112,7 @@ describe('pushing a policy', () => {
   })
 
   it('refuses a regular expression before storing anything', async () => {
-    const put = await app.request('/setup/policy', {
+    const put = await app.request(app.setup('policy'), {
       method: 'PUT',
       headers: bearer(SETUP),
       body: JSON.stringify({ version: 1, commands: { allow: ['^pnpm (build|test)'] } }),
@@ -122,8 +122,8 @@ describe('pushing a policy', () => {
   })
 
   it('can be cleared, which empties every list', async () => {
-    await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, commands: { deny: ['curl'] } }) })
-    const cleared = await app.request('/setup/policy', { method: 'DELETE', headers: bearer(SETUP) })
+    await app.request(app.setup('policy'), { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, commands: { deny: ['curl'] } }) })
+    const cleared = await app.request(app.setup('policy'), { method: 'DELETE', headers: bearer(SETUP) })
     expect(cleared.status).toBe(200)
     expect(runtime.policy.effective().commands.deny).toEqual([])
   })
@@ -131,9 +131,9 @@ describe('pushing a policy', () => {
   // Where the folder shows is the mount table's, which the owner's local CLI alone changes.
   it('never moves or removes the workspace\'s mount', async () => {
     await runtime.policy.setMount('/workspace')
-    expect((await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, mount: '/elsewhere' }) })).status).toBe(200)
+    expect((await app.request(app.setup('policy'), { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, mount: '/elsewhere' }) })).status).toBe(200)
     expect(runtime.policy.effective().mount).toBe('/workspace')
-    expect((await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, mount: null }) })).status).toBe(200)
+    expect((await app.request(app.setup('policy'), { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, mount: null }) })).status).toBe(200)
     expect(runtime.policy.effective().mount).toBe('/workspace')
   })
 })
@@ -185,15 +185,15 @@ describe("Buckle's own state", () => {
 describe('workspace audit inspection', () => {
   it('records attempt and result while hiding content and restricting reads to setup', async () => {
     await invoke('fs_read', { path: 'hello.txt' })
-    expect((await app.request('/setup/audit', { headers: bearer(AGENT) })).status).toBe(401)
-    const response = await app.request('/setup/audit?limit=20', { headers: bearer(SETUP) })
+    expect((await app.request(app.setup('audit'), { headers: bearer(AGENT) })).status).toBe(401)
+    const response = await app.request(app.setup('audit?limit=20'), { headers: bearer(SETUP) })
     const body = await response.json() as { entries: Array<{ event: string; auditId: string; workspaceId: string; tool: string }> }
     const toolEntries = body.entries.filter(item => item.tool === 'fs_read')
     expect(toolEntries.map(item => item.event)).toEqual(['result', 'attempt'])
     expect(toolEntries[0]?.auditId).toBe(toolEntries[1]?.auditId)
-    expect(body.entries.every(item => item.workspaceId === 'default')).toBe(true)
+    expect(body.entries.every(item => item.workspaceId === app.runtime.workspaceId)).toBe(true)
     expect(JSON.stringify(body)).not.toContain('hello.txt')
-    expect((await app.request('/setup/audit?limit=9999', { headers: bearer(SETUP) })).status).toBe(400)
+    expect((await app.request(app.setup('audit?limit=9999'), { headers: bearer(SETUP) })).status).toBe(400)
   })
 
   it('does not execute a tool if the attempt cannot be persisted', async () => {
@@ -226,18 +226,19 @@ describe('audit coverage outside tool execution', () => {
   it('records rejected RPC requests without storing supplied payload or credentials', async () => {
     const response = await app.request('/v1/invoke', { method: 'POST', headers: bearer('not-authorized-secret'), body: JSON.stringify({ secret: 'private-payload' }) })
     expect(response.status).toBe(401)
-    const entries = runtime.actions.read(20)
+    // A refusal before a workspace is known lands on the node's log (D85, Q15).
+    const entries = app.nodeActions.read(20)
     expect(entries.at(-1)).toMatchObject({ tool: 'rpc_invoke_rejected', outcome: 'denied' })
     expect(JSON.stringify(entries)).not.toContain('private-payload')
     expect(JSON.stringify(entries)).not.toContain('not-authorized-secret')
   })
 
   it('records setup changes and audit inspection', async () => {
-    await app.request('/setup/policy', { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, commands: { deny: ['curl *'] } }) })
+    await app.request(app.setup('policy'), { method: 'PUT', headers: bearer(SETUP), body: JSON.stringify({ version: 1, commands: { deny: ['curl *'] } }) })
     const changes = runtime.actions.read(20).filter(entry => entry.tool === 'setup_put_policy')
     expect(changes.map(entry => entry.event)).toEqual(['attempt', 'result'])
     expect(changes[0]?.auditId).toBe(changes[1]?.auditId)
-    await app.request('/setup/audit', { headers: bearer(SETUP) })
+    await app.request(app.setup('audit'), { headers: bearer(SETUP) })
     expect(runtime.actions.read(1)[0]).toMatchObject({ tool: 'setup_get_audit', outcome: 'ok' })
   })
 })
@@ -267,10 +268,10 @@ it('records the authenticated agent as the actor of a call that forges another r
 
 it('records MCP transport failures and setup authentication rejection without submitted secrets', async () => {
   expect((await app.request('/mcp', { method: 'POST', headers: bearer('wrong-private-token'), body: JSON.stringify({ secret: 'private-content' }) })).status).toBe(401)
-  await app.request('/setup/policy', { headers: bearer('wrong-private-token') })
-  const entries = runtime.actions.read(20)
+  await app.request(app.setup('policy'), { headers: bearer('wrong-private-token') })
+  const entries = [...app.nodeActions.read(20), ...runtime.actions.read(20)]
   expect(entries.some(entry => entry.tool === 'http_mcp_post' && entry.outcome === 'denied')).toBe(true)
-  expect(entries.some(entry => entry.tool === 'setup_auth_rejected')).toBe(true)
+  expect(entries.some(entry => entry.tool === 'workspace_setup_auth_rejected')).toBe(true)
   expect(JSON.stringify(entries)).not.toContain('wrong-private-token')
   expect(JSON.stringify(entries)).not.toContain('private-content')
 })

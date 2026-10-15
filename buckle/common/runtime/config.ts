@@ -17,9 +17,6 @@ const DEFAULT_FORGE_API_URL = 'https://api.github.com'
 const DEFAULT_FORGE_GIT_AUTHOR = '5straps agent <agent@5straps.local>'
 const GIT_AUTHOR_PATTERN = /^(.+?)\s*<([^<>\s]+@[^<>\s]+)>$/
 
-/** The workspace the node's own folder became at migration (owner decision Q15): its id, and its state stays in the node's directory. */
-export const NODE_FOLDER_WORKSPACE = 'default'
-
 /**
  * The node's settings (Q3 of the workspace-model brief): what every workspace on the node shares. buckle.env holds them,
  * and a change needs a restart (BUCKLE-D19). Each workspace's own settings live in its workspace.json instead.
@@ -116,6 +113,8 @@ export interface NodeConfig {
  * record and its workspace.json (workspaceConfig). `serverName` is the workspace's name.
  */
 export interface BuckleConfig extends NodeConfig {
+  /** The workspace's id (D85, Q15): a UUID Buckle assigned, which its records are keyed by. */
+  workspaceId: string
   cwd: string
   enabledPacks?: string[]
   allowHostGit: boolean
@@ -131,6 +130,8 @@ export interface BuckleConfig extends NodeConfig {
   policy: WorkspacePolicy
   /** The node's own state directory, which holds the registry and every workspace's settings. */
   nodeStateDirectory?: string
+  /** True for the workspace migration made of the node's own folder (D85, Q15): its face carries the node-wide readiness, and a node-level workbench grant opens here. */
+  nodeFolder?: boolean
 }
 
 /**
@@ -278,6 +279,8 @@ export function legacyWorkspaceRoot(input: { node: Pick<NodeConfig, 'migration' 
 export interface WorkspaceScope {
   id: string
   name: string
+  /** True for the workspace migration made of the node's own folder (D85, Q15). */
+  nodeFolder?: boolean
   /** The workspace's folder, as the disk names it. */
   dir: string
   /** Where the agent sees the folder, from its mount table; null shows the real path. */
@@ -291,18 +294,19 @@ export interface WorkspaceScope {
 }
 
 /**
- * One workspace's runtime configuration (D83): the node's settings, then the workspace's own. Workspace default, the
- * node's own folder, keeps its state in the node's directory; every other workspace has a state directory of its own.
+ * One workspace's runtime configuration (D83): the node's settings, then the workspace's own. Every workspace keeps its
+ * state in `workspaces/<id>/` under the node's directory, the one made from the node's own folder included (D85, Q15).
  * Each takes the node's BUCKLE_SCRATCH_ROOTS, BUCKLE_MOUNTS, BUCKLE_SKILLS_DIRS, and BUCKLE_STRICT_WRITES until the mount
- * table holds them per workspace (fix brief 1, F; finding 43 of the Phase 1 review): they gave workspace default alone
- * what the docs say every workspace gets, and a node set up fresh has no default.
+ * table holds them per workspace (fix brief 1, F; finding 43 of the Phase 1 review).
  */
 export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): BuckleConfig {
   return {
     ...node,
+    workspaceId: scope.id,
     cwd: scope.dir,
     serverName: scope.name,
-    stateDirectory: scope.id === NODE_FOLDER_WORKSPACE ? node.stateDirectory : join(node.stateDirectory, 'workspaces', scope.id),
+    nodeFolder: scope.nodeFolder === true,
+    stateDirectory: join(node.stateDirectory, 'workspaces', scope.id),
     nodeStateDirectory: node.stateDirectory,
     ...workspaceFields(scope),
   }

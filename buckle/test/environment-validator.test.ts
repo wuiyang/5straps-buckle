@@ -1,11 +1,12 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'pathe'
+import { basename, join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type InvokeResponse } from '@5straps/protocol'
-import { configFromEnvironment } from './support/workspace-config.js'
+import { configFromEnvironment, nodeConfigOf } from './support/workspace-config.js'
 import { initializeCommon } from '../common/runtime/initialize.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { byName } from './support/workspaces.js'
 
 // The environment validator, and every other program Buckle runs on the host, inherited the node's PATH, which `npx`
 // and `pnpm exec` start at the default workspace's node_modules/.bin: a trusted validator that starts
@@ -47,15 +48,15 @@ async function validateOnNode(validator: (scene: { workspace: string; outside: s
   script(join(workspace, 'node_modules', '.bin', 'node'), `#!/bin/sh\necho PLANTED-NODE >> '${log}'\nexit 0\n`)
   const command = validator({ workspace, outside, log })
   vi.stubEnv('PATH', `${join(workspace, 'node_modules', '.bin')}:${process.env.PATH ?? ''}`)
-  const common = initializeCommon({ role: 'cli', config: configFromEnvironment({
+  const common = initializeCommon({ role: 'cli', config: nodeConfigOf(configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'environment', BUCKLE_ENV_VALIDATOR_COMMAND: command,
-  }) })
+  })) })
   try {
     await common.start()
     const workspaces = await common.services.getWorkspaces()
     await workspaces.create({ id: 'child', name: 'Child', dir: child, policy: emptyWorkspacePolicy(), settings: settings => ({ ...settings, packs: { ...settings.packs, enabled: ['environment'] } }) })
     const answers: Array<{ response: InvokeResponse; ran: string[] }> = []
-    for (const runtime of [(await workspaces.resolve('default')).runtime, (await workspaces.resolve('child')).runtime] as BuckleRuntime[]) {
+    for (const runtime of [(await byName(workspaces, basename(workspace))).runtime, (await byName(workspaces, 'child')).runtime] as BuckleRuntime[]) {
       rmSync(log, { force: true })
       const response = await runtime.invoke({ request: { requestId: `validate-${runtime.workspaceId}`, tool: 'env_validate', args: {}, approvalTokens: [] }, sessionId: 'validator' })
       answers.push({ response, ran: existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [] })

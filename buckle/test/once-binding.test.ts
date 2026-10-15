@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CliOutcome, CliRequest } from '@5straps/runtime'
-import { approvalKey, mintApprovalKey, seal } from '@5straps/protocol/envelope'
+import { approvalDecisionPath, approvalKey, mintApprovalKey, seal } from '@5straps/protocol/envelope'
 import type { InvokeRequest, InvokeResponse } from '@5straps/protocol'
 import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -161,7 +161,7 @@ describe.each([['the admin bearer', false], ['a sealed envelope', true]] as cons
       const token = await asked(setup, approved('unsigned-complete'))
       const decide = (approved: boolean, scope: 'once' | 'session' | 'always') => {
         const decision = { token, approved, scope }
-        const body = paired ? seal(approvalKey(setup.key), { method: 'POST', path: '/setup/approvals', body: decision }) : decision
+        const body = paired ? seal(approvalKey(setup.key), { method: 'POST', path: approvalDecisionPath(setup.config.workspaceId), body: decision }) : decision
         return setup.runtime.approvalService.decideSealed({ body })
       }
       for (const scope of ['once', 'session', 'always'] as const) {
@@ -190,7 +190,7 @@ describe.each([['the admin bearer', false], ['a sealed envelope', true]] as cons
       }
       const decide = (approved: boolean, scope: 'once' | 'session') => {
         const decision = { token, approved, scope }
-        const body = paired ? seal(approvalKey(setup.key), { method: 'POST', path: '/setup/approvals', body: decision }) : decision
+        const body = paired ? seal(approvalKey(setup.key), { method: 'POST', path: approvalDecisionPath(setup.config.workspaceId), body: decision }) : decision
         return setup.runtime.approvalService.decideSealed({ body })
       }
       for (const scope of ['once', 'session'] as const) {

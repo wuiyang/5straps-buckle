@@ -5,7 +5,7 @@ import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { resolveTarget } from '../common/services/invocation/real-path.js'
-import { workspacesOf } from './support/workspaces.js'
+import { byName, workspacesOf } from './support/workspaces.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 // Review H2 and M1 of the second proof-of-possession re-review, on an emulated macOS volume: the platform
@@ -112,10 +112,10 @@ describe('a workspace root typed in another case than the disk\'s (review M1)', 
     writeFileSync(join(other, 'readme.md'), 'other')
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'code', 'proj'), BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
     const manager = await workspacesOf(config)
-    runtimes.push((await manager.resolve('default')).runtime)
+    runtimes.push((await byName(manager, 'proj')).runtime)
     const { workspace: registered } = await manager.create({ id: 'other', name: 'Other', dir: join(root, 'Code', 'OTHER'), policy: emptyWorkspacePolicy() })
     expect(registered.dir).toBe(other)
-    const opened = await manager.resolve('other')
+    const opened = await byName(manager, 'other')
     runtimes.push(opened.runtime)
     expect(opened.config.cwd).toBe(other)
     expect(await call(opened.runtime, 'fs_read', { path: '/workspace/readme.md' })).toMatchObject({ outcome: 'ok', output: { content: 'other' } })

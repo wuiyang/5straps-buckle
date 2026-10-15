@@ -14,6 +14,7 @@ import { createApprovalRegistry, type ApprovalRegistry } from '../common/service
 import { createApprovalService, type ApprovalService } from '../common/services/approvals/approval-service.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { fixedInteraction } from './support/interaction.js'
+import { mkdirSync } from 'node:fs'
 
 const POLL = { first: 20, idle: 50 }
 
@@ -27,7 +28,7 @@ function node(): BuckleConfig {
 
 /** A second registry over the node's state files, which is what a second terminal holds. */
 function registryOf(config: BuckleConfig): ApprovalRegistry {
-  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }), approvalsPath(config), config.cwd)
+  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), config.cwd)
 }
 
 /** The approval service a `buckle approvals --watch` process answers through, over the same state files. */
@@ -81,7 +82,7 @@ async function issuePrivate(registry: ApprovalRegistry, subject: string): Promis
   return request!.token
 }
 
-const grantsOf = (config: BuckleConfig) => createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }).list()
+const grantsOf = (config: BuckleConfig) => createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }).list()
 
 // Q9 of the workspace-model brief: one watch asks for every online workspace, each question marked with its own.
 describe('buckle approvals --watch over several workspaces', () => {
@@ -248,7 +249,7 @@ describe('buckle approvals --watch', () => {
     }
 
     expect(registryOf(config).pending().map(request => request.token)).toEqual([token])
-    expect(createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }).list()).toEqual([])
+    expect(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }).list()).toEqual([])
     terminal.type('\x03')
     expect(await done).toEqual({ exitCode: 0 })
     expect(registryOf(config).pending().map(request => request.token)).toEqual([token])
@@ -328,6 +329,7 @@ describe('buckle approvals --watch', () => {
 
   it('exits non-zero with a clear error when the node\'s approvals cannot be read', async () => {
     const config = node()
+    mkdirSync(config.stateDirectory, { recursive: true })
     writeFileSync(approvalsPath(config), '{ not json')
     const { terminal, done } = watch(serviceOf(config))
 
@@ -503,7 +505,7 @@ it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file w
     expect(terminal.shown()).toContain('da) always deny')
     terminal.type(`${key}\n`)
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(0))
-    const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' })
+    const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId })
     expect(grants.list()).toContainEqual(expect.objectContaining({ denied: true, scope, subject: '/workspace/.env.local' }))
   } finally { terminal.type('\x03'); await done }
 })

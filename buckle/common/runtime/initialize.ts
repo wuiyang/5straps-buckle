@@ -3,6 +3,7 @@ import { requireOwnerOnly } from '../adapters/file-modes.js'
 import type { NodeConfig } from './config.js'
 import { logger } from './log.js'
 import type { WorkspaceManager } from '../services/workspaces/workspace-manager.js'
+import type { AskName } from '../services/workspaces/migration.js'
 import { createServiceAccessors, currentInteraction, defineBuckleServices, serviceList, type BuckleServices } from './services.js'
 
 export type RuntimeRole = 'server' | 'mcp' | 'cli'
@@ -26,6 +27,8 @@ export interface InitializeCommonInput {
   role: RuntimeRole
   /** Receives the owner's close-step lines; a CLI command leaves it out and prints no diagnostics. */
   logger?: Logger
+  /** Asks the owner at a terminal where the move onto workspaces needs a name (D85, Q15); a command with no terminal leaves it out. */
+  askName?: AskName
 }
 
 // One common runtime per process owner (nitro/runtime.md, Lifetimes); nothing runs until start().
@@ -33,7 +36,7 @@ export function initializeCommon(input: InitializeCommonInput): BuckleCommon {
   let requester: RequestCli | undefined
   // The owner needs the definitions; their factories run after it exists and register close steps on it.
   const interaction = currentInteraction({ owner: () => owner, requester: () => requester })
-  const definitions = defineBuckleServices({ config: input.config, interaction, onClose: (stage, name, closer) => owner.onClose(stage, name, closer) })
+  const definitions = defineBuckleServices({ config: input.config, interaction, onClose: (stage, name, closer) => owner.onClose(stage, name, closer), ...(input.askName ? { askName: input.askName } : {}) })
   const owner = createRuntimeOwner({ name: `buckle-${input.role}`, services: serviceList(definitions), logger: input.logger })
   const services = createServiceAccessors({ owner, definitions, config: input.config })
   return {

@@ -6,7 +6,7 @@ import { WorkspacePolicySchema } from '@5straps/protocol'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
-import { actionsPath, dangerouslyAllowPath, NODE_FOLDER_WORKSPACE, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
+import { actionsPath, dangerouslyAllowPath, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
 import { comparablePath, ignoresCase, isInsideComparable, nativePath } from '../../domain/paths.js'
 import { rootsOf } from '../../domain/executable.js'
 import { logger } from '../../runtime/log.js'
@@ -19,9 +19,11 @@ import { createExecutionBudget } from '../invocation/executions.js'
 import { unmetPackPrerequisite } from '../packs/index.js'
 import type { ActionLog } from '../../types/ports/action-log.js'
 import { activeElsewhere, activeWorkDirectory } from './active-work.js'
-import { migrateNode } from './migration.js'
-import { openRegistry, sameName, touched, WorkspaceError, WorkspaceIdSchema, WorkspaceNameSchema, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
+import { migrateNode, type AskName } from './migration.js'
+import { openRegistry, sameName, touched, WorkspaceError, WorkspaceNameSchema, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
 import { assertNoHostExposure, canonicalDirectory, exposedRoots, overlaps } from './workspace-dirs.js'
+import { NODE_SCOPE } from '../../types/ports/client-keys.js'
+import { workspaceIdFor } from './workspace-id.js'
 import { defaultSettings, openSettingsFile, scopeOf, settingsPath, withPolicy, WORKSPACE_MOUNT_TARGET, type WorkspaceSettings } from './workspace-settings.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
@@ -39,8 +41,8 @@ const REGISTERED_AGAIN = 'This workspace was registered again while work under i
 const ABSENT_DIGEST = 'f'.repeat(64)
 
 export const WorkspaceRegistrationSchema = z.object({
-  // Workspace default is the node's own folder, which migration alone makes (Q15): its records share the node's directory.
-  id: WorkspaceIdSchema.refine(value => value !== NODE_FOLDER_WORKSPACE, 'default is reserved: it names the node\'s own folder, which migration makes a workspace').optional(),
+  /** The 0.1 spelling of `name`: ids are assigned now (D85, Q15), and a registration that still sends one names its workspace by it. */
+  id: WorkspaceNameSchema.optional(),
   name: WorkspaceNameSchema.optional(),
   dir: z.string().min(1).max(4096),
   policy: WorkspacePolicySchema.optional(),
@@ -90,8 +92,8 @@ export function nodeRootsOf(config: NodeConfig, platform: NodeJS.Platform = proc
 }
 
 /** The node's workspaces (D83): migrates a node set up before the workspace model first (migrateNode), then serves the registry. */
-export async function openWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots }): Promise<WorkspaceManager> {
-  for (const notice of await migrateNode({ node: input.config, ...(input.platform ? { platform: input.platform } : {}) })) logger.warn(notice)
+export async function openWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots; askName?: AskName }): Promise<WorkspaceManager> {
+  for (const notice of await migrateNode({ node: input.config, ...(input.platform ? { platform: input.platform } : {}), ...(input.askName ? { askName: input.askName } : {}) })) logger.warn(notice)
   const manager = createWorkspaceManager(input)
   await manager.nodeActions.recoverInterrupted()
   return manager
@@ -114,8 +116,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
   /** The registration each runtime was opened for: its folder as stored, and when it was made. */
   const registrations = new WeakMap<ManagedWorkspace, Pick<StoredWorkspace, 'dir' | 'createdAt'>>()
   const settingsOf = (id: string) => openSettingsFile({ filePath: settingsPath(node.stateDirectory, id), lockDeadlineMs })
-  /** Whether records of a workspace by this id are still on disk, from one removed without --purge. */
-  const leftover = (id: string) => id === NODE_FOLDER_WORKSPACE || existsSync(join(node.stateDirectory, 'workspaces', id))
+  /** Whether records of a workspace by this id are still on disk, from one removed without --purge (Q7). */
+  const leftover = (id: string) => existsSync(join(node.stateDirectory, 'workspaces', id))
 
   /** Whether a workspace serves calls now. An unreadable registry counts it as serving, so a failure still shows. */
   function serving(id: string): boolean {
@@ -141,11 +143,11 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
 
     /**
      * Registers a folder as a workspace (D83 (2), `buckle workspace init`), online, with one agent token returned here
-     * and never again. Its id is `id`, or one made from the folder's name that no workspace's records hold: a removed
-     * workspace's grants and settings stay on disk (Q7), and only an owner who names that id takes them up again, as the
-     * answer says, with whether its dangerously-allow switch is on. Its settings are the defaults, the folder at
-     * /workspace, with `policy` and `settings` over them; naming either over records taken up is refused, as they
-     * would be dropped (finding 36 of the Phase 1 review).
+     * and never again. Its id is derived from the folder (D85, Q15, workspaceIdFor), so a removed workspace's grants and
+     * settings, which stay on disk (Q7), are taken up again when the folder is registered again, as the answer says,
+     * with whether its dangerously-allow switch is on. Its name is `name`, else the folder's, unique on the node. Its
+     * settings are the defaults, the folder at /workspace, with `policy` and `settings` over them; naming either over
+     * records taken up is refused, as they would be dropped (finding 36 of the Phase 1 review).
      */
     async create(value: WorkspaceRegistration & { label?: string; settings?: (defaults: WorkspaceSettings) => WorkspaceSettings }): Promise<{ workspace: WorkspaceDescriptor; token: MintedToken; takenUp: TakenUp | null }> {
       const named = WorkspaceRegistrationSchema.pick({ id: true, name: true }).safeParse({ id: value.id, name: value.name })
@@ -157,13 +159,13 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         if ([stateRoot, ...state.workspaces.map(workspace => workspace.dir)].some(existing => overlaps(existing, dir, platform))) {
           throw new WorkspaceError('A workspace folder must not hold, or sit inside, another workspace or Buckle state', 409)
         }
-        const id = value.id ?? idFor(dir, state, leftover)
-        if (state.workspaces.some(workspace => workspace.id === id)) throw new WorkspaceError(`Workspace ${id} already exists`, 409)
-        const name = value.name ?? basename(dir)
+        const id = workspaceIdFor(dir)
+        if (state.workspaces.some(workspace => workspace.id === id)) throw new WorkspaceError('This folder is a workspace already', 409)
+        const name = value.name ?? value.id ?? basename(dir)
         if (nameTaken(state, name)) throw new WorkspaceNameTakenError(name)
         const takenUp = leftover(id) ? { dangerouslyAllow: switchKeys(dangerouslyAllowPath({ stateDirectory: join(node.stateDirectory, 'workspaces', id) })).includes(id) } : null
         if (takenUp && (value.policy || value.settings)) {
-          throw new WorkspaceError(`Workspace ${id}'s records from before it was removed stay in the state directory, and registering it takes them up, its settings among them, in place of the policy or settings named here. Register it without them, or take the records up and delete them first with buckle workspace remove ${id} --purge`, 409)
+          throw new WorkspaceError(`This folder's records from before it was removed stay in the state directory, and registering it takes them up, its settings among them, in place of the policy or settings named here. Register it without them, delete them with buckle workspace remove ${name} --purge, then register it again with them`, 409)
         }
         if (!existsSync(settingsPath(node.stateDirectory, id))) {
           const defaults = value.policy ? withPolicy(defaultSettings(), { ...value.policy, mount: WORKSPACE_MOUNT_TARGET }) : defaultSettings()
@@ -234,10 +236,14 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
      * broken or unknown workspace and a wrong grant are one 401 (review L6 of B15-B17, L1 of
      * B18-B19); only an unreadable registry throws.
      */
-    authenticateWorkbench(id: string, workbenchId: string, authorization: string | undefined): boolean {
+    authenticateWorkbench(id: string, workbenchId: string, authorization: string | undefined): string | null {
       const token = workbenchGrant(authorization)
-      const directory = token ? workbenchesOf(id) : null
-      return directory !== null && storedGrantMatches({ directory, workbenchId, token: token! })
+      if (!token) return null
+      // A path that names no workspace (NODE_SCOPE) is served by the node's own folder's workspace, as 0.1 served the node folder (D85, Q15).
+      const target = id === NODE_SCOPE ? store.read().workspaces.find(item => item.nodeFolder)?.id : id
+      if (target === undefined) return null
+      const directory = workbenchesOf(target)
+      return directory !== null && storedGrantMatches({ directory, workbenchId, token }) ? target : null
     },
 
     /**
@@ -276,12 +282,10 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
 
     /**
      * Removes the registration alone, as removing an MCP server removes its config (D83 addendum (6), Q7): the folder is
-     * never touched, and the workspace's records (settings, grants, history, audit) stay unless `purge` deletes them.
-     * Workspace default is refused: migration alone makes that id, so nothing could take its records up again (findings
-     * 6 and 16 of the Phase 1 review), and they share the node's own directory.
+     * never touched, and the workspace's records (settings, grants, history, audit) stay unless `purge` deletes them;
+     * the folder registered again takes them up (create).
      */
     async remove(id: string, options: { purge?: boolean } = {}): Promise<WorkspaceDescriptor> {
-      if (id === NODE_FOLDER_WORKSPACE) throw new WorkspaceError('Workspace default is the node\'s own folder from before workspaces: its id cannot be registered again, and its records share the node\'s state directory, so it is not removed. Stop serving it with buckle workspace disable default', 409)
       await assertIdle(id, { refusal: 'Resolve active tools and staged work before removing this workspace', deletes: options.purge === true })
       const opened = await openedRuntime(id)
       const removed = await store.update((state) => {
@@ -322,8 +326,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       const workspace = registered.find(item => item.id === id)
       if (!workspace) throw new WorkspaceError('Workspace not found', 404)
       if (!options.setup && !workspace.online) throw new WorkspaceError('Workspace is offline', 409)
-      // The node's own folder was never held to the host exposure, which it may hold (a toolchain under the owner's home); every other folder is.
-      if (id !== NODE_FOLDER_WORKSPACE) assertNoHostExposure(workspace.dir, exposed, platform)
+      // Every registered folder is held to the host exposure; the node's own folder is not, as 0.1 did not hold it (D85, Q15, StoredWorkspaceSchema.nodeFolder).
+      if (!workspace.nodeFolder) assertNoHostExposure(workspace.dir, exposed, platform)
       // A folder stored before folders were named in the disk's case still loads, in that case (review M1 of the second re-review).
       const dir = canonicalDirectory(workspace.dir, platform)
       if (comparablePath(dir) !== comparablePath(workspace.dir)) throw new WorkspaceError('Workspace folder changed; owner repair is required', 409)
@@ -334,7 +338,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
           const settings = settingsOf(id).read()
           // `reportUrl`, `reportToken` and `approvalWebhook` come with the node's settings on purpose: every action a
           // workspace reports carries its own workspaceId, and a notification names the workspace that answers it.
-          const config = workspaceConfig(node, { id, name: workspace.name, dir, ...scopeOf(settings) })
+          const config = workspaceConfig(node, { id, name: workspace.name, nodeFolder: workspace.nodeFolder === true, dir, ...scopeOf(settings) })
           const opening: Promise<ManagedWorkspace> = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), ...(input.interaction ? { interaction: input.interaction } : {}) })
             .then((runtime) => {
               const managed = { config, runtime }
@@ -461,7 +465,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
   function workbenchesOf(id: string): string | null {
     const workspace = store.read().workspaces.find(item => item.id === id)
     if (!workspace) return null
-    const config = workspaceConfig(node, { id, name: workspace.name, dir: workspace.dir, ...scopeOf(defaultSettings()) })
+    const config = workspaceConfig(node, { id, name: workspace.name, nodeFolder: workspace.nodeFolder === true, dir: workspace.dir, ...scopeOf(defaultSettings()) })
     return workbenchesDirectory({ stateDirectory: config.stateDirectory, root: workspace.dir })
   }
 
@@ -504,15 +508,6 @@ function holderOf(state: Registry, path: string, platform: NodeJS.Platform): Sto
   return state.workspaces
     .filter(workspace => isInsideComparable(workspace.dir, real, ignoresCase(platform), platform))
     .sort((left, right) => right.dir.length - left.dir.length)[0]
-}
-
-/** A workspace id from its folder's name: lower case, words joined by hyphens, numbered past one taken or whose records remain. */
-function idFor(dir: string, state: Registry, leftover: (id: string) => boolean): string {
-  const word = basename(dir).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^[^a-z]+/, '').replace(/-+$/, '').slice(0, 56) || 'workspace'
-  const taken = new Set(state.workspaces.map(workspace => workspace.id))
-  const free = (candidate: string) => !taken.has(candidate) && !leftover(candidate) && WorkspaceIdSchema.safeParse(candidate).success
-  if (free(word)) return word
-  for (let index = 2; ; index++) if (free(`${word}-${index}`)) return `${word}-${index}`
 }
 
 /** Whether a workspace's runtime has work; its workbenches owned by another Buckle process are that process's work. */

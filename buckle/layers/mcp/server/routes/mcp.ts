@@ -5,11 +5,11 @@ import { mapAgentFailures } from '../../../common/server/utils/errors.js'
 import { isMutation, requireAgent, type RefusalAudit } from '../../../common/server/utils/guards.js'
 import { defineOperationHandler } from '../../../common/server/utils/operation.js'
 import { useServices } from '../../../common/server/utils/services.js'
-import { NODE_WORKSPACE, useTarget } from '../../../common/server/utils/target.js'
+import { NODE_LEVEL, useTarget } from '../../../common/server/utils/target.js'
 
 /** At node level the transport audit took in the credential check; under a workspace the node's log names the face. */
 const MCP_REFUSED: RefusalAudit = {
-  node: ({ event, actions, status }) => recordTransportRefusal(actions, { tool: transportTool(event), workspaceId: NODE_WORKSPACE, status }),
+  node: ({ event, actions, status }) => recordTransportRefusal(actions, { tool: transportTool(event), workspaceId: NODE_LEVEL, status }),
   named: 'workspace_mcp_auth_rejected',
 }
 

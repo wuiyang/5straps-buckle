@@ -54,7 +54,7 @@ export interface InvokerOptions {
   reporter: Reporter
   paths: PathView
   serverId: string
-  workspaceId?: string
+  workspaceId: string
   defaultTimeoutMs: number
   maxTimeoutMs: number
   toolDenial?(tool: string): string | null
@@ -130,7 +130,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
       await options.actions.record({
-        auditId, event: 'attempt', workspaceId: options.workspaceId ?? 'default',
+        auditId, event: 'attempt', workspaceId: options.workspaceId,
         at: new Date().toISOString(), requestId: request.requestId.slice(0, MAX_LOGGED_ID), sessionId: sessionId.slice(0, MAX_LOGGED_ID),
         tool: request.tool.slice(0, MAX_LOGGED_ID), outcome: 'started', durationMs: 0, effects: [], args: redactAuditArguments(request.args),
         ...auditContext(request, via),
@@ -252,7 +252,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         durationMs: Math.round(performance.now() - startedAt),
         replayed,
       })
-      const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId ?? 'default', ...auditContext(request, via) }
+      const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId, ...auditContext(request, via) }
       // A call that ran answers with what it did even when its result cannot be written: refusing it
       // would tell the caller it did not run, and a retry would run it twice (review L5 of B18-B19). The
       // attempt is already in the log, and recovery marks it interrupted.
@@ -381,7 +381,7 @@ function grantUseRecorder(input: { grants: GrantStore; sessionId: string }): Gra
  */
 async function auditDangerousUses(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; allowedBy: readonly string[]; audited: Set<string> }): Promise<void> {
   const { options, request } = input
-  const workspaceId = options.workspaceId ?? 'default'
+  const workspaceId = options.workspaceId
   for (const use of dangerousUses(input.allowedBy)) {
     const key = JSON.stringify([use.rule, use.subject])
     if (input.audited.has(key)) continue
@@ -441,7 +441,7 @@ function reportEntry(input: { options: InvokerOptions; entry: ActionLogEntry; de
   const { entry, denial } = input
   input.options.reporter.record({
     workspace: input.options.paths.root,
-    workspaceId: input.options.workspaceId ?? 'default',
+    workspaceId: input.options.workspaceId,
     at: entry.at,
     requestId: entry.requestId,
     sessionId: entry.sessionId,

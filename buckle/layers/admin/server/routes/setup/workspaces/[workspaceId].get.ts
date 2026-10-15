@@ -1,12 +1,11 @@
-import { getRouterParam } from 'h3'
 import { notFound } from '../../../../../common/server/utils/errors.js'
-import { defineRegistryHandler } from '../../../utils/setup.js'
+import { defineRegistryHandler, registryTarget } from '../../../utils/setup.js'
 
+// By id or by name (D85, Q15); the body carries the id.
 export default defineRegistryHandler({
   access: 'inspection',
   handler: ({ event, workspaces }) => {
-    const id = getRouterParam(event, 'workspaceId', { decode: true })
-    const workspace = workspaces.list().find(item => item.id === id)
+    const workspace = workspaces.lookup(registryTarget(event, workspaces))
     if (!workspace) throw notFound('Workspace not found')
     return { workspace }
   },

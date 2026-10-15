@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit, serveCommand, type InitPrompt } from '../cli/init.js'
 import type { ProgramSearch } from '../common/domain/executable.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { workspaceIdOf } from './support/workspaces.js'
 import { defaultEnvironmentFile } from '../common/runtime/environment.js'
 import { openSettingsFile, settingsPath, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 
@@ -150,7 +151,7 @@ describe('buckle init on a node set up already', () => {
     const again = await init(scripted([], false), ['--dir', join(workspace, 'sub', '..')])
 
     expect(again.exitCode).toBe(0)
-    expect(again.printed).toContain(`is already in workspace ${served().id}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${served().id}.`)
+    expect(again.printed).toContain(`is already in workspace ${served().name}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${served().name}.`)
     expect(again.printed).not.toMatch(/agent token {8}/)
     expect(readFileSync(join(state, 'workspaces.json'), 'utf8')).toBe(before)
   })
@@ -247,7 +248,7 @@ describe('workspace-first initialization defaults', () => {
   })
   it('derives the name from an explicit folder when accepting defaults with --yes, and takes --root as --dir', async () => {
     const env = parseEnv((await init(scripted([]), ['--root', workspace, '--yes'])).written)
-    expect(served()).toMatchObject({ id: 'workspace', name: 'workspace' })
+    expect(served()).toMatchObject({ id: workspaceIdOf(workspace), name: 'workspace' })
     expect(env.BUCKLE_SERVER_NAME).toBe(workspace.replace(/[\\/]/g, '-'))
   })
   it('preserves explicit mount and name overrides', async () => {
@@ -287,9 +288,10 @@ describe('buckle init on a node set up before workspaces', () => {
     expect(result.exitCode).toBe(0)
     expect(result.printed).toContain(`${workspace} is already in workspace ${basename(workspace)}: nothing was added`)
     const registry = JSON.parse(readFileSync(join(state, 'workspaces.json'), 'utf8')) as { workspaces: Array<{ id: string; dir: string; tokens: Array<{ id: string }> }> }
-    expect(registry.workspaces).toMatchObject([{ id: 'default', dir: workspace, tokens: [{ id: 'node' }] }])
+    expect(registry.workspaces).toMatchObject([{ id: workspaceIdOf(workspace), dir: workspace, tokens: [{ id: 'node' }] }])
     expect(served().settings.policy.commands.deny).toEqual(['curl *', 'rm -rf *'])
-    expect(JSON.parse(readFileSync(join(state, 'grants.json'), 'utf8')).grants.map((item: { workspace: string }) => item.workspace)).toEqual(['default'])
+    // The records moved to the workspace's own directory (D85, Q15), keyed by its id.
+    expect(JSON.parse(readFileSync(join(state, 'workspaces', workspaceIdOf(workspace), 'grants.json'), 'utf8')).grants.map((item: { workspace: string }) => item.workspace)).toEqual([workspaceIdOf(workspace)])
     expect(parseEnv(result.written).BUCKLE_ADMIN_TOKEN).not.toBe('old-admin-fixture')
   })
 })

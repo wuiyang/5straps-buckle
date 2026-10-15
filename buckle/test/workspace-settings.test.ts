@@ -7,7 +7,7 @@ import { PolicyError } from '../common/domain/policy.js'
 import { defaultSettings, openSettingsFile, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsError, WorkspaceSettingsInvalidError, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
-import { registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 // The workspace-model brief, item 2: each workspace's settings in its own workspace.json, a strict document the
 // owner's CLI writes through the locked store, holding no credential.
@@ -125,14 +125,14 @@ describe('a workspace\'s runtime on its settings', () => {
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state') })
     const manager = await workspacesOf(config)
     await registerWorkspace(manager, { id: 'site', dir: join(root, 'site') })
-    await manager.updateSettings('site', settings => ({
+    await manager.updateSettings(idOf(manager, 'site'), settings => ({
       ...settings,
       packs: { ...settings.packs, shell: false, code: false },
       approvalWaitMs: 0,
       policy: { ...settings.policy, commands: { ...settings.policy.commands, deny: ['curl *'] } },
       mounts: [{ kind: 'workspace', target: '/site', access: 'write' }],
     }))
-    const { config: site, runtime } = await manager.resolve('site')
+    const { config: site, runtime } = await byName(manager, 'site')
 
     expect(site).toMatchObject({ enableShell: false, allowCode: false, approvalTimeoutMs: null })
     expect(runtime.manifest().packs.find(pack => pack.id === 'shell')?.unavailableReason).toBe('Shell tools are turned off in this workspace: its setting packs.shell is off')
@@ -150,7 +150,7 @@ describe('a workspace\'s runtime on its settings', () => {
     const node = loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_SCRATCH_ROOTS: join(folder, 'scratch'), BUCKLE_SKILLS_DIRS: join(root, 'skills'), BUCKLE_STRICT_WRITES: 'true', BUCKLE_MOUNTS: '[{"source":"/etc/hostname","target":"/etc/hostname","readOnly":true}]' })
     const manager = await workspacesOf(node)
     await registerWorkspace(manager, { id: 'site', dir: folder })
-    const { config, runtime } = await manager.resolve('site')
+    const { config, runtime } = await byName(manager, 'site')
 
     expect(config).toMatchObject({ scratchRoots: node.scratchRoots, sandboxMounts: node.sandboxMounts, skillDirectories: node.skillDirectories, strictWrites: true })
     const written = await runtime.invoke({ request: { requestId: 'scratch-write', tool: 'fs_write', args: { path: 'scratch/a.txt', content: 'x' }, approvalTokens: [] }, sessionId: 'site' })

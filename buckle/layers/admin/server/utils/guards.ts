@@ -1,4 +1,4 @@
-import type { H3Event } from 'h3'
+import { getRouterParam, type H3Event } from 'h3'
 import type { Guard } from '@5straps/runtime/nitro'
 import { isSignedRequest, type SignedRequestPayload, type SignedRequestPurpose } from '@5straps/protocol/signed-request'
 import type { SetupSessions } from '../../../../common/services/access/setup-sessions.js'
@@ -7,7 +7,7 @@ import { readBody, SETUP_BODY_LIMIT } from '../../../common/server/utils/body.js
 import { notFound } from '../../../common/server/utils/errors.js'
 import { authorization, checkCredential, isMutation, type RefusalAudit } from '../../../common/server/utils/guards.js'
 import { useServices } from '../../../common/server/utils/services.js'
-import { NODE_WORKSPACE, targetId } from '../../../common/server/utils/target.js'
+import { canonicalTargetId, NODE_LEVEL } from '../../../common/server/utils/target.js'
 
 /**
  * What an admin route does: reads (every GET), changes (workspaces, policy, grants, history,
@@ -27,13 +27,13 @@ const ACCEPTS: Readonly<Record<AdminAccess, readonly Credential[]>> = { inspecti
 
 /** A per-workspace setup route's refusal, as the setup face audited it before the move. */
 export const SETUP_REFUSED: RefusalAudit = {
-  node: ({ actions, status }) => recordRefusal(actions, { tool: 'setup_auth_rejected', workspaceId: NODE_WORKSPACE, sessionId: 'http-untrusted', status }),
+  node: ({ actions, status }) => recordRefusal(actions, { tool: 'setup_auth_rejected', workspaceId: NODE_LEVEL, sessionId: 'http-untrusted', status }),
   named: 'workspace_setup_auth_rejected',
 }
 
 /** A registry route's refusal: the transport audit took in the credential check. Registry routes have no twin. */
 export const REGISTRY_REFUSED: RefusalAudit = {
-  node: ({ event, actions, status }) => recordTransportRefusal(actions, { tool: registryTransportTool(event), workspaceId: NODE_WORKSPACE, status }),
+  node: ({ event, actions, status }) => recordTransportRefusal(actions, { tool: registryTransportTool(event), workspaceId: NODE_LEVEL, status }),
   named: 'workspace_setup_auth_rejected',
 }
 
@@ -51,14 +51,13 @@ export const requireAdminHttp: Guard = (event) => {
 }
 
 /**
- * A node without BUCKLE_ADMIN_TOKEN has no owner's face at the node level: its admin routes answer the
- * router's 404, as when the face was not mounted, and, known from the settings before start, answer it
- * while the node starts and closes too, never a 503 (review item 23 of the proof-of-possession fixes).
+ * A node without BUCKLE_ADMIN_TOKEN has no owner's face: its admin routes answer the router's 404, as when
+ * the face was not mounted, and, known from the settings before start, answer it while the node starts and
+ * closes too, never a 503 (review item 23 of the proof-of-possession fixes). Every workspace's face is the
+ * node's credential's since the workspace model retired the per-workspace credentials (D85, Q15).
  */
-export function requireNodeAdminCredential(target: (event: H3Event) => string): Guard {
-  return (event) => {
-    if (target(event) === NODE_WORKSPACE && !useServices(event).nodeAdminCredential()) throw notFound()
-  }
+export const requireNodeAdminCredential: Guard = (event) => {
+  if (!useServices(event).nodeAdminCredential()) throw notFound()
 }
 
 /**
@@ -69,20 +68,25 @@ export function requireNodeAdminCredential(target: (event: H3Event) => string): 
  * this). The actor is admin:<workspace> for the admin credential and key:<fingerprint> for a signed
  * request.
  */
-export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target: (event: H3Event) => string = targetId, options: { registry?: boolean } = {}): Guard {
+export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target: (event: H3Event) => Promise<string> = canonicalTargetId, options: { registry?: boolean } = {}): Guard {
   const registry = options.registry === true
   return async (event) => {
     if (!useServices(event).adminHttp()) throw notFound()
-    const workspaceId = target(event)
     const workspaces = await useServices(event).getWorkspaces()
     const purpose = ACCEPTS[access].find((credential): credential is SignedRequestPurpose => credential !== 'admin')
-    const actor = await checkCredential(event, {
-      verify: () => (isSignedRequest(authorization(event))
-        ? purpose ? verifySigned(event, { access, purpose, workspaceId, registry }) : null
-        : workspaces.authenticateAdmin(authorization(event)) ? `admin:${workspaceId}` : null),
+    const found = await checkCredential(event, {
+      // The path's handle is looked up by id or by name (D85, Q15); a signed request is bound to the id it resolves to.
+      verify: async () => {
+        const signed = isSignedRequest(authorization(event))
+        // The admin credential is the node's, compared before the registry is read: a caller without it learns nothing, the registry's state included.
+        if (!signed && !workspaces.authenticateAdmin(authorization(event))) return null
+        const workspaceId = await target(event)
+        const actor = signed ? (purpose ? await verifySigned(event, { access, purpose, workspaceId, registry }) : null) : `admin:${workspaceId}`
+        return actor === null ? null : { actor, workspaceId }
+      },
       refusal,
     })
-    return { actor, workspaceId }
+    return found
   }
 }
 
@@ -93,8 +97,11 @@ export function requireAdmin(access: AdminAccess, refusal: RefusalAudit, target:
  */
 async function verifySigned(event: H3Event, input: { access: AdminAccess; purpose: SignedRequestPurpose; workspaceId: string; registry: boolean }): Promise<string | null> {
   const services = useServices(event)
+  // The path's handle, by id or by name, is what a client signs for (D85, Q15); the key's scope is judged against the id it resolves to.
+  const workspaceHandle = getRouterParam(event, 'id', { decode: true })
   const verdict = await (await services.getRequestVerifier()).verify({
     requestIdentity: event, authorization: authorization(event), purpose: input.purpose, workspaceId: input.workspaceId, registry: input.registry,
+    ...(workspaceHandle === undefined ? {} : { workspaceHandle }),
     method: event.req.method, path: `${event.url.pathname}${event.url.search}`, body: await readBody(event, SETUP_BODY_LIMIT),
   })
   const refused = verdict.ok ? await sessionRefusal({ access: input.access, payload: verdict.payload, workspaceId: input.workspaceId, sessions: await services.getSetupSessions() }) : verdict.reason
@@ -103,7 +110,7 @@ async function verifySigned(event: H3Event, input: { access: AdminAccess; purpos
   }
   const claimedKeyId = verdict.ok ? verdict.payload.keyId : verdict.claimedKeyId
   await recordRefusal(tolerantLog(event, await nodeActions(event)), {
-    tool: 'setup_signed_request_refused', workspaceId: NODE_WORKSPACE, sessionId: 'http-untrusted', status: 401, detail: refused ?? 'refused',
+    tool: 'setup_signed_request_refused', workspaceId: NODE_LEVEL, sessionId: 'http-untrusted', status: 401, detail: refused ?? 'refused',
     ...(claimedKeyId === undefined ? {} : { args: { claimedKeyId } }),
   })
   return null

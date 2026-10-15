@@ -163,7 +163,7 @@ describe('a state file busy past the wait, at the faces', () => {
     const config = { ...configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'busy-agent-token-fixture', BUCKLE_ADMIN_TOKEN: 'busy-admin-token-fixture', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }), stateLockDeadlineMs: 300 }
     const runtime = await createRuntime({ config })
     const grant = await runtime.grants.grant({ sessionId: 's', rule: 'read_scope', subject: '/shots', scope: 'always' })
-    await holder(join(root, 'state', `${file}.lock.sqlite`))
+    await holder(join(config.stateDirectory, `${file}.lock.sqlite`))
     return { config, runtime, grant }
   }
 

@@ -5,10 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type HarnessManifest } from '@5straps/protocol'
 import { resolveSandbox } from '../common/adapters/sandbox/create-sandbox.js'
 import { resolveProgram, rootsOf, type ExecutableLookup } from '../common/domain/executable.js'
-import { configFromEnvironment } from './support/workspace-config.js'
+import { configFromEnvironment, nodeConfigOf } from './support/workspace-config.js'
 import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
 import { nodeRootsOf } from '../common/services/workspaces/workspace-manager.js'
-import { defaultRuntime } from './support/workspaces.js'
+import { byName, defaultRuntime } from './support/workspaces.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 // The sandbox program is the one program every shell, script, and terminal call runs through. `npx` and `pnpm exec`
@@ -37,10 +37,10 @@ function bwrapIn(directory: string): string {
 
 /** The node as `buckle` starts it, its default workspace at `workspace`, run by `use` and closed after. */
 async function onNode<T>(input: { workspace: string; state: string; mounts?: string }, use: (common: BuckleCommon) => Promise<T>): Promise<T> {
-  const common = initializeCommon({ role: 'cli', config: configFromEnvironment({
+  const common = initializeCommon({ role: 'cli', config: nodeConfigOf(configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: input.workspace, BUCKLE_STATE_DIR: input.state, BUCKLE_SANDBOX: process.platform === 'linux' ? 'auto' : 'bubblewrap',
     BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell', ...(input.mounts ? { BUCKLE_MOUNTS: input.mounts } : {}),
-  }) })
+  })) })
   try {
     await common.start()
     return await use(common)
@@ -123,7 +123,7 @@ describe('the sandbox program planted in another root of the node', () => {
     await onNode({ workspace, state }, async common => {
       const workspaces = await common.services.getWorkspaces()
       await workspaces.create({ id: 'child', name: 'Child', dir: child, policy: emptyWorkspacePolicy() })
-      for (const manifest of [(await workspaces.resolve('child')).runtime.manifest(), (await defaultRuntime(common)).manifest()]) {
+      for (const manifest of [(await byName(workspaces, 'child')).runtime.manifest(), (await defaultRuntime(common)).manifest()]) {
         expect(manifest.sandbox.mode).toBe('none')
         expect(shellReason(manifest)).toMatch(WITHHELD)
         expect(manifest.tools.map(tool => tool.name)).not.toContain('shell_exec')
@@ -131,7 +131,7 @@ describe('the sandbox program planted in another root of the node', () => {
     })
     rmSync(planted)
     await onNode({ workspace, state }, async common => {
-      for (const runtime of [await defaultRuntime(common), (await (await common.services.getWorkspaces()).resolve('child')).runtime]) {
+      for (const runtime of [await defaultRuntime(common), (await byName(await common.services.getWorkspaces(), 'child')).runtime]) {
         expect(runtime.manifest().sandbox.mode).toBe('bubblewrap')
         expect(shellReason(runtime.manifest())).toBeNull()
       }
@@ -164,7 +164,7 @@ describe('the sandbox program planted in another root of the node', () => {
     writeFileSync(join(state, 'workspaces.json'), '{ not json')
     await expect(onNode({ workspace, state }, async () => undefined)).rejects.toThrow('workspaces.json')
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state })
-    const resolved = resolveSandbox({ requested: 'bubblewrap', acknowledgedUnsandboxed: false, ...nodeRootsOf(config).current(), environment: { PATH: dirname(trusted) }, platform: 'linux' })
+    const resolved = resolveSandbox({ requested: 'bubblewrap', acknowledgedUnsandboxed: false, ...nodeRootsOf(nodeConfigOf(config)).current(), environment: { PATH: dirname(trusted) }, platform: 'linux' })
     expect(resolved.unavailableReason).toBe('bwrap is not run while the workspace registry cannot be read: it could lie in a registered workspace, where an agent can write; no process sandbox is available, so shell tools are withheld')
   })
 })
@@ -183,7 +183,7 @@ describe('the sandbox program reached through a link in a workspace', () => {
     await onNode({ workspace, state }, async common => {
       const workspaces = await common.services.getWorkspaces()
       await workspaces.create({ id: 'child', name: 'Child', dir: child, policy: emptyWorkspacePolicy() })
-      for (const manifest of [(await defaultRuntime(common)).manifest(), (await workspaces.resolve('child')).runtime.manifest()]) {
+      for (const manifest of [(await defaultRuntime(common)).manifest(), (await byName(workspaces, 'child')).runtime.manifest()]) {
         expect(manifest.sandbox.mode).toBe('none')
         expect(shellReason(manifest)).toMatch(WITHHELD)
       }
@@ -191,7 +191,7 @@ describe('the sandbox program reached through a link in a workspace', () => {
     unlinkSync(join(workspace, 'tools', 'bwrap'))
     bwrapIn(join(workspace, 'tools'))
     await onNode({ workspace, state }, async common => {
-      for (const runtime of [await defaultRuntime(common), (await (await common.services.getWorkspaces()).resolve('child')).runtime]) {
+      for (const runtime of [await defaultRuntime(common), (await byName(await common.services.getWorkspaces(), 'child')).runtime]) {
         expect(runtime.manifest().sandbox.mode).toBe('none')
         expect(shellReason(runtime.manifest())).toMatch(WITHHELD)
       }
@@ -240,7 +240,7 @@ describe('the sandbox program in a folder a mount shares', () => {
     const shared = bwrapIn(join(scratch(), 'tools'))
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state })
     // Every mount is read-only today; a writable one is imitated past the schema that allows no other.
-    const roots = nodeRootsOf({ ...config, sandboxMounts: [{ source: dirname(shared), target: '/opt/tools', readOnly: false as unknown as true }] }).current()
+    const roots = nodeRootsOf({ ...nodeConfigOf(config), sandboxMounts: [{ source: dirname(shared), target: '/opt/tools', readOnly: false as unknown as true }] }).current()
     const resolved = resolveSandbox({ requested: 'bubblewrap', acknowledgedUnsandboxed: false, ...roots, environment: { PATH: dirname(shared) }, platform: 'linux' })
     expect(resolved.unavailableReason).toBe('bwrap is found in or through the source of a writable mount of this node, where an agent can write, so Buckle does not run it; no process sandbox is available, so shell tools are withheld')
   })

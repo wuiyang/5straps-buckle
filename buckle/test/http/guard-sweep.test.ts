@@ -6,6 +6,7 @@ import { generateSigningKey, signingKeyFromPem, signRequest, type SignedRequestP
 import { enrollEarlierKey } from '../support/earlier-keys.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
+import type { ActionLog } from '../../common/types/ports/action-log.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
 // Review M2 of B15-B17: the guard property across the whole route table, not by sample. Every route
@@ -43,6 +44,8 @@ function accepts(probe: Probe): Credential[] {
 interface Probe { path: string; method: string; credential: Credential; status: number; audited: boolean; served: boolean }
 
 let buckle: BuckleHttp
+/** The child's log: a refusal on its /workspaces/child/ paths is recorded there (D85, Q15). */
+let childActions: ActionLog | undefined
 let probes: Probe[]
 let offTable: Probe[]
 let signedProbes: SignedProbe[]
@@ -66,7 +69,8 @@ beforeAll(async () => {
   const registered = await buckle.request('/setup/workspaces', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify({ id: 'child', name: 'child', dir: join(root, 'child') }) })
   expect(registered.status).toBe(201)
   CREDENTIALS['child agent'] = (await registered.json() as { token: { token: string } }).token.token
-  expect((await buckle.request('/setup/workbenches', { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify(GRANT) })).status).toBe(200)
+  childActions = (await (await buckle.services.getWorkspaces()).resolve(await buckle.idOf('child'))).runtime.actions
+  expect((await buckle.request(buckle.setup('workbenches'), { method: 'POST', headers: bearer(NODE_ADMIN), body: JSON.stringify(GRANT) })).status).toBe(200)
   probes = await sweep(concretePaths())
   offTable = await sweep(new Map(OFF_TABLE.map(path => [path, new Set<string>()])))
   signedProbes = await signedSweep()
@@ -90,7 +94,7 @@ function concretePaths(): Map<string, Set<string>> {
     .replace(/\*\*$/, 'sweep-probe')
   const served = new Map<string, Set<string>>()
   for (const route of buckle.routes()) {
-    const twins = route.path.startsWith('/workspaces/:id/') ? ['default', 'child'].map(id => route.path.replace(':id', id)) : [route.path]
+    const twins = route.path.startsWith('/workspaces/:id/') ? [buckle.runtime.workspaceId, 'child'].map(id => route.path.replace(':id', id)) : [route.path]
     for (const path of twins.map(fill)) served.set(path, (served.get(path) ?? new Set()).add(route.method))
   }
   return served
@@ -130,8 +134,8 @@ async function signedSweep(): Promise<SignedProbe[]> {
     method: input.method, path: input.path, body: '', ...(input.session ? { session: input.session } : {}),
   })
   const sessions = new Map<string, string>()
-  for (const workspace of ['default', 'child']) {
-    const path = workspace === 'default' ? '/setup/sessions' : `/workspaces/${workspace}/setup/sessions`
+  for (const workspace of [buckle.runtime.workspaceId, 'child']) {
+    const path = `/workspaces/${workspace}/setup/sessions`
     const opened = await buckle.request(path, { method: 'POST', headers: { authorization: sign({ key: enrolled, purpose: 'buckle-setup', workspace, method: 'POST', path }) } })
     expect(opened.status).toBe(201)
     sessions.set(workspace, (await opened.json() as { session: { id: string } }).session.id)
@@ -139,7 +143,7 @@ async function signedSweep(): Promise<SignedProbe[]> {
   const results: SignedProbe[] = []
   for (const [path, methods] of concretePaths()) {
     if (!isSetup(path)) continue
-    const workspace = path.startsWith('/workspaces/child/') ? 'child' : 'default'
+    const workspace = path.startsWith('/workspaces/child/') ? 'child' : buckle.runtime.workspaceId
     for (const method of METHODS) {
       const signers: Array<[Signer, string]> = [
         ['setup in session', sign({ key: enrolled, purpose: 'buckle-setup', workspace, method, path, session: sessions.get(workspace)! })],
@@ -204,9 +208,9 @@ function matchedRoutes(): Map<string, { data: object; handler: unknown }> {
   return matched
 }
 
-// Every refusal before authentication is recorded on the node's log, the twins' included.
+// Every refusal before authentication is recorded on the node's log, or on the named workspace's own (D85, Q15).
 function newestAudit(): string | undefined {
-  return buckle.runtime.actions.read(1)[0]?.auditId
+  return [buckle.nodeActions, buckle.runtime.actions, childActions].flatMap(actions => actions?.read(1)[0]?.auditId ?? []).join(' ')
 }
 
 function isSetup(path: string): boolean {
@@ -259,9 +263,9 @@ describe('the guard sweep over every route, method and credential', () => {
 
   it('refuses each workspace\'s agent credential on the other\'s /workspaces/[id]/ paths, and serves each its own on /v1 and /mcp', () => {
     const nodeOnChild = probes.filter(probe => probe.credential === 'node agent' && workspaceOf(probe.path) === 'child')
-    const childOnDefault = probes.filter(probe => probe.credential === 'child agent' && probe.path.startsWith('/workspaces/default/'))
+    const childOnDefault = probes.filter(probe => probe.credential === 'child agent' && probe.path.startsWith(`/workspaces/${buckle.runtime.workspaceId}/`))
     expect(nodeOnChild.some(probe => probe.path.startsWith('/workspaces/child/v1/'))).toBe(true)
-    expect(childOnDefault.some(probe => probe.path.startsWith('/workspaces/default/v1/'))).toBe(true)
+    expect(childOnDefault.some(probe => probe.path.startsWith(`/workspaces/${buckle.runtime.workspaceId}/v1/`))).toBe(true)
     expect([...nodeOnChild, ...childOnDefault].filter(probe => probe.status !== 401).map(describeProbe)).toEqual([])
     const childManifest = probes.find(probe => probe.credential === 'child agent' && probe.path === '/v1/manifest' && probe.method === 'GET')
     expect(childManifest?.status).toBe(200)

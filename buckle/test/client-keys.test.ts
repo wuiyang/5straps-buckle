@@ -10,7 +10,7 @@ import { createFileActionLog } from '../common/adapters/action-log/file-action-l
 import { createFileClientKeys } from '../common/adapters/keys/file-client-keys.js'
 import { WorkspaceRegistrationSchema } from '../common/services/workspaces/workspace-manager.js'
 import { actionsPath, clientKeysPath, nodeKeyPath, requestNoncesPath, type BuckleConfig } from '../common/runtime/config.js'
-import { configFromEnvironment } from './support/workspace-config.js'
+import { configFromEnvironment, nodeConfigOf } from './support/workspace-config.js'
 import { initializeCommon } from '../common/runtime/initialize.js'
 import { loadNodeKey } from '../common/adapters/keys/file-node-key.js'
 
@@ -116,9 +116,9 @@ describe('buckle keys: the node side, local only', () => {
     expect(createFileClientKeys({ filePath: clientKeysPath(config) }).publicKeyFor(device.keyId, SETUP_ON_DEFAULT)).toEqual({ refused: 'unknown_key' })
     expect((await runCli({ argv: ['keys', 'revoke', 'SHA256:nobody'], config })).exitCode).toBe(1)
 
-    const audited = createFileActionLog(actionsPath(config)).read(20).filter(entry => entry.tool === 'cli_keys' && entry.event === 'result')
+    const audited = createFileActionLog(join(config.nodeStateDirectory!, 'actions.jsonl')).read(20).filter(entry => entry.tool === 'cli_keys' && entry.event === 'result')
     expect(audited.map(entry => entry.detail)).toEqual([`enroll ${device.keyId} setup node`, undefined, undefined, `revoke ${device.keyId}`, undefined])
-    expect(JSON.stringify(createFileActionLog(actionsPath(config)).read(50))).not.toContain(device.publicKey.slice('ed25519:'.length))
+    expect(JSON.stringify(createFileActionLog(join(config.nodeStateDirectory!, 'actions.jsonl')).read(50))).not.toContain(device.publicKey.slice('ed25519:'.length))
   })
 
   it('refuses what is not an Ed25519 public key, and a key revoked before', async () => {
@@ -186,14 +186,12 @@ describe('a key\'s scope (owner decision D10)', () => {
 // Review items 9 and 22 of the proof-of-possession fixes: `--workspace node` scopes a key to the whole node,
 // so a workspace named node would let a key meant for it change every workspace and the registry.
 describe('the workspace id node', () => {
-  it('is reserved, as default is: registration refuses it by name', () => {
-    const registration = { name: 'The node', dir: '/srv/node' }
-    for (const id of ['node', 'default']) {
-      const parsed = WorkspaceRegistrationSchema.safeParse({ ...registration, id })
-      expect(parsed.success).toBe(false)
-      expect(JSON.stringify(parsed.error?.issues)).toContain(`${id} is reserved`)
-    }
-    expect(WorkspaceRegistrationSchema.safeParse({ ...registration, id: 'nodes' }).success).toBe(true)
+  it('is reserved: registration refuses it as the 0.1 id spelling of a name too, where default is an ordinary name now (D85, Q15)', () => {
+    const registration = { dir: '/srv/node' }
+    const parsed = WorkspaceRegistrationSchema.safeParse({ ...registration, id: 'node' })
+    expect(parsed.success).toBe(false)
+    expect(JSON.stringify(parsed.error?.issues)).toContain('node is reserved')
+    for (const id of ['nodes', 'default']) expect(WorkspaceRegistrationSchema.safeParse({ ...registration, id }).success).toBe(true)
   })
 
   // D85, Q15: --workspace takes a workspace's name, and the scope keeps the id a rename never changes.
@@ -267,7 +265,7 @@ describe('the node\'s own key and the admin-only state (review L11 of B23-B25)',
       mkdirSync(join(root, 'workspace'))
       mkdirSync(join(root, 'state'), { mode: 0o700 })
       const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: flag })
-      const common = initializeCommon({ config, role })
+      const common = initializeCommon({ config: nodeConfigOf(config), role })
       await common.start()
       try {
         for (const file of [nodeKeyPath(config), requestNoncesPath(config)]) expect({ role, flag, file: basename(file), exists: existsSync(file) }).toEqual({ role, flag, file: basename(file), exists: made })

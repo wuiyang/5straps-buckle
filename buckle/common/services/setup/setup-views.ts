@@ -2,7 +2,7 @@ import { resolveFilesystemAccess } from '../../domain/filesystem-policy.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { isRestrictive, refuseSwitchIn } from '../../domain/policy.js'
 import { ApprovalWithdrawSchema, emptyWorkspacePolicy, WorkspacePolicyUpdateSchema, type ApprovalWithdraw, type WorkspacePolicy } from '@5straps/protocol'
-import { actionsPath, NODE_FOLDER_WORKSPACE } from '../../runtime/config.js'
+import { actionsPath } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { WorkspacePatchSchema, WorkspaceRegistrationSchema, WorkspaceTokenInputSchema, type ManagedWorkspace, type WorkspaceManager, type WorkspaceRegistration } from '../workspaces/workspace-manager.js'
 import { browseDirectories, DirectoryQuerySchema } from './directory-browser.js'
@@ -69,8 +69,8 @@ export function createSetupViews(): SetupViews {
         // Unavailable while this workspace's audit log refuses writes: its tool calls are refused until it is repaired (B19).
         audit: runtime.auditHealth.failing(actionsPath(config)) ? 'unavailable' : 'available',
         auditLastFailureAt: runtime.auditHealth.lastFailureAt(actionsPath(config)),
-        // The node's own face names every workspace whose log keeps readiness at 503 (review L5 of B20-B22).
-        ...(runtime.workspaceId === NODE_FOLDER_WORKSPACE ? { auditFailingWorkspaces: runtime.auditHealth.failingWorkspaces() } : {}),
+        // The node's own folder's workspace face names the workspaces whose logs keep readiness at 503 (review L5 of B20-B22); a registered workspace's own face does not (D85, Q15).
+        ...(config.nodeFolder ? { auditFailingWorkspaces: runtime.auditHealth.failingWorkspaces() } : {}),
         // Read-only here: only the owner's local `buckle policy dangerously-allow` changes it (ruling H1e).
         dangerouslyAllow: runtime.policy.dangerouslyAllow(),
         approvalEnvelope: config.ringsApprovalKey ? 'enabled' : 're-pair required',

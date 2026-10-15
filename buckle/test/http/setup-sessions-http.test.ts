@@ -34,9 +34,9 @@ interface Call { key?: typeof owner; purpose?: SignedRequestPurpose; method?: st
 
 function signed(buckle: BuckleHttp, call: Call = {}): { authorization: string; call: Required<Pick<Call, 'method' | 'path' | 'body'>> } {
   const method = call.method ?? 'PUT'
-  const path = call.path ?? '/setup/policy'
+  const path = call.path ?? buckle.setup('policy')
   const body = call.body ?? policy
-  const authorization = signRequest({ key: signingKeyFromPem((call.key ?? owner).privateKeyPem), purpose: call.purpose ?? 'buckle-setup', node: buckle.config.serverId, nodeKey: nodeKeys.get(buckle)!, workspace: 'default', method, path, body, ...(call.session ? { session: call.session } : {}) })
+  const authorization = signRequest({ key: signingKeyFromPem((call.key ?? owner).privateKeyPem), purpose: call.purpose ?? 'buckle-setup', node: buckle.config.serverId, nodeKey: nodeKeys.get(buckle)!, workspace: buckle.runtime.workspaceId, method, path, body, ...(call.session ? { session: call.session } : {}) })
   return { authorization, call: { method, path, body } }
 }
 
@@ -46,7 +46,7 @@ function send(buckle: BuckleHttp, request: ReturnType<typeof signed>): Promise<R
 }
 
 async function open(buckle: BuckleHttp, key = owner): Promise<string> {
-  const response = await send(buckle, signed(buckle, { key, method: 'POST', path: '/setup/sessions', body: '' }))
+  const response = await send(buckle, signed(buckle, { key, method: 'POST', path: buckle.setup('sessions'), body: '' }))
   expect(response.status).toBe(201)
   const { session } = await response.json() as { session: { id: string; idleExpiresAt: string; lastActivityAt: string } }
   expect(Date.parse(session.idleExpiresAt) - Date.parse(session.lastActivityAt)).toBe(10 * 60_000)
@@ -58,7 +58,7 @@ async function lastActivity(buckle: BuckleHttp, id: string): Promise<string | un
 }
 
 function refusals(buckle: BuckleHttp): Array<string | undefined> {
-  return buckle.runtime.actions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)
+  return buckle.nodeActions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)
 }
 
 describe('a setup session (B24)', () => {
@@ -70,7 +70,7 @@ describe('a setup session (B24)', () => {
     expect((await send(buckle, signed(buckle, { session }))).status).toBe(200)
     expect(buckle.runtime.policy.stored().commands.deny).toEqual(['rm *'])
     // The request that opens one names none.
-    expect((await send(buckle, signed(buckle, { method: 'POST', path: '/setup/sessions', body: '', session }))).status).toBe(401)
+    expect((await send(buckle, signed(buckle, { method: 'POST', path: buckle.setup('sessions'), body: '', session }))).status).toBe(401)
     expect(refusals(buckle)).toEqual(['session_required', 'session_closed', 'session_not_expected'])
   })
 
@@ -89,7 +89,7 @@ describe('a setup session (B24)', () => {
     expect(await lastActivity(buckle, session)).toBe(before)
     expect(refusals(buckle)).toEqual(['unknown_key', 'replayed', 'body_mismatch', 'session_closed'])
     // A GET is inspection: it needs the admin credential and touches no session.
-    expect((await buckle.request('/setup/status', { headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(200)
+    expect((await buckle.request(buckle.setup('status'), { headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(200)
     expect(await lastActivity(buckle, session)).toBe(before)
     expect((await send(buckle, signed(buckle, { session }))).status).toBe(200)
     expect(Date.parse((await lastActivity(buckle, session))!)).toBeGreaterThan(Date.parse(before!))
@@ -100,7 +100,7 @@ describe('a setup session (B24)', () => {
     const session = await open(buckle)
     // Signed while the session was open, sent after it closed.
     const earlier = signed(buckle, { session })
-    const finish = signed(buckle, { method: 'DELETE', path: `/setup/sessions/${session}`, body: '', session })
+    const finish = signed(buckle, { method: 'DELETE', path: buckle.setup(`sessions/${session}`), body: '', session })
     expect((await send(buckle, finish)).status).toBe(204)
     expect((await send(buckle, finish)).status).toBe(401)
     expect((await send(buckle, earlier)).status).toBe(401)
@@ -124,7 +124,7 @@ describe('a setup session (B24)', () => {
   it('is not for the admin credential, which changes setup without one', async () => {
     const buckle = await node()
     const admin = { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }
-    expect((await buckle.request('/setup/sessions', { method: 'POST', headers: admin })).status).toBe(400)
-    expect((await buckle.request('/setup/policy', { method: 'PUT', headers: admin, body: policy })).status).toBe(200)
+    expect((await buckle.request(buckle.setup('sessions'), { method: 'POST', headers: admin })).status).toBe(400)
+    expect((await buckle.request(buckle.setup('policy'), { method: 'PUT', headers: admin, body: policy })).status).toBe(200)
   })
 })

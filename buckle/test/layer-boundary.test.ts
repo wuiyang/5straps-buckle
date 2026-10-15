@@ -195,7 +195,7 @@ describe('the layer boundary', () => {
     expect(utils('layers/common/server/utils/workbench.ts')).toMatch(/defineOperationHandler\(\{\s*guards: \[requireWorkbench\],/)
     expect(utils('layers/admin/server/utils/setup.ts').match(/guards: \[[^\]]*requireAdmin\(/g)).toHaveLength(2)
     // The experimental flag, then a node without BUCKLE_ADMIN_TOKEN, answer before readiness on both admin builders (review L9 of B23-B25, item 23).
-    expect(utils('layers/admin/server/utils/setup.ts').match(/preflight: \[requireAdminHttp, requireNodeAdminCredential\([^\]]*\)\],/g)).toHaveLength(2)
+    expect(utils('layers/admin/server/utils/setup.ts').match(/preflight: \[requireAdminHttp, requireNodeAdminCredential\],/g)).toHaveLength(2)
   })
 
   it('names the workspace parameter [id] only as routes/workspaces/[id]/, so the registry routes stay node-admin only (review L5 of B15-B17)', () => {

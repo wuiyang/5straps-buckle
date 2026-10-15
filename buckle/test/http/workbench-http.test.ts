@@ -20,17 +20,17 @@ async function fixture() {
 it('requires setup provisioning and a separate workbench grant for editor operations', async () => {
   const f = await fixture()
   const grant = { id: randomUUID(), token: 'fixture-workbench-grant-long-enough', projectId: 'project', chatId: 'chat', allowShell: false }
-  expect((await f.request('/setup/workbenches', f.config.authToken, grant)).status).toBe(401)
-  expect((await f.request('/setup/workbenches', f.config.adminToken, grant)).status).toBe(200)
+  expect((await f.request(f.buckle.setup('workbenches'), f.config.authToken, grant)).status).toBe(401)
+  expect((await f.request(f.buckle.setup('workbenches'), f.config.adminToken, grant)).status).toBe(200)
   const path = '/v1/workbenches/' + grant.id
   for (const token of [f.config.authToken, f.config.adminToken, 'wrong-fixture-workbench-grant-long']) expect((await f.request(path, token)).status).toBe(401)
   const read = await f.request(path + '/invoke', grant.token, { actorId: 'user-alice', tool: 'fs_read', args: { path: 'note.txt' } })
   expect(read.status).toBe(200)
   expect(read.headers.get('cache-control')).toBe('no-store')
   expect(await read.text()).toContain('default fixture')
-  const policy = await f.request('/setup/policy', f.config.adminToken)
+  const policy = await f.request(f.buckle.setup('policy'), f.config.adminToken)
   const revision = (await policy.json() as { revision: string }).revision
-  const replacement = await f.request('/setup/policy', f.config.adminToken, { expectedRevision: revision, version: 1, commands: { allow: [], deny: [] }, network: { allow: [] }, mount: null, updatedAt: null }, 'PUT')
+  const replacement = await f.request(f.buckle.setup('policy'), f.config.adminToken, { expectedRevision: revision, version: 1, commands: { allow: [], deny: [] }, network: { allow: [] }, mount: null, updatedAt: null }, 'PUT')
   expect(replacement.status).toBe(409)
   expect(await replacement.text()).toContain('Resolve active work')
   await f.request(path + '/discard', grant.token, { actorId: 'user-alice' })
@@ -59,10 +59,10 @@ it('routes child workbench credentials independently of child agent credentials'
 it('audits a changing workbench call as transport status beside the operation, and a refused grant', async () => {
   const f = await fixture()
   const grant = { id: randomUUID(), token: 'fixture-workbench-grant-long-enough', projectId: 'project', chatId: 'chat', allowShell: false }
-  expect((await f.request('/setup/workbenches', f.config.adminToken, grant)).status).toBe(200)
+  expect((await f.request(f.buckle.setup('workbenches'), f.config.adminToken, grant)).status).toBe(200)
   expect((await f.request(`/v1/workbenches/${grant.id}/reviews`, grant.token, { actorId: 'alice' })).status).toBe(200)
   expect((await f.request(`/v1/workbenches/${grant.id}/reviews`, 'wrong-fixture-workbench-grant-long', { actorId: 'alice' })).status).toBe(401)
-  const tools = f.runtime.actions.read(200).map(entry => `${entry.tool}:${entry.outcome}`)
+  const tools = [...f.buckle.nodeActions.read(200), ...f.runtime.actions.read(200)].map(entry => `${entry.tool}:${entry.outcome}`)
   expect(tools).toEqual(expect.arrayContaining(['http_workbench_post:started', 'http_workbench_post:ok', 'http_workbench_post:denied', 'workbench_auth_rejected:denied']))
   await f.request(`/v1/workbenches/${grant.id}/discard`, grant.token, { actorId: 'alice' })
 })

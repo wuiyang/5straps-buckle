@@ -1,14 +1,14 @@
-import type { H3Event } from 'h3'
+import { getRouterParam, type H3Event } from 'h3'
 import type { JsonValue } from '@5straps/protocol'
 import type { SetupViews } from '../../../../common/services/setup/setup-views.js'
 import type { ManagedWorkspace, WorkspaceManager } from '../../../../common/services/workspaces/workspace-manager.js'
 import { withTransportAudit } from '../../../common/server/utils/audit.js'
 import { isMutation } from '../../../common/server/utils/guards.js'
 import { readJson, SETUP_BODY_LIMIT } from '../../../common/server/utils/body.js'
-import { mapFailures } from '../../../common/server/utils/errors.js'
+import { mapFailures, notFound } from '../../../common/server/utils/errors.js'
 import { defineOperationHandler } from '../../../common/server/utils/operation.js'
 import { useServices } from '../../../common/server/utils/services.js'
-import { NODE_WORKSPACE, targetId } from '../../../common/server/utils/target.js'
+import { NODE_LEVEL, namedWorkspace, targetId } from '../../../common/server/utils/target.js'
 import { withRegistryAudit, withSetupAudit } from './audit.js'
 import { REGISTRY_REFUSED, registryTransportTool, requireAdmin, requireAdminHttp, requireNodeAdminCredential, SETUP_REFUSED, type AdminAccess } from './guards.js'
 
@@ -18,6 +18,8 @@ interface SetupCall {
   actor: string
   proofDeadline?: number
   workspace: ManagedWorkspace
+  /** The id the route serves (D85, Q15): the addressed workspace's, or NODE_LEVEL for a node-level session route. */
+  workspaceId: string
   views: SetupViews
   /** The request body as JSON, read up to 64 KiB (413 past it); undefined when it is not JSON. */
   body(): Promise<unknown>
@@ -33,27 +35,53 @@ interface SetupCall {
  * with service failures answered by their status. `active` resolves as an agent route does, so a
  * disabled workspace answers 409; the rest reach a disabled or retired workspace too.
  */
-export function defineSetupHandler(definition: { access: AdminAccess | ((event: H3Event) => AdminAccess); resource: string | ((event: H3Event) => string); active?: boolean; handler: (call: SetupCall) => unknown }) {
+export function defineSetupHandler(definition: { access: AdminAccess | ((event: H3Event) => AdminAccess); resource: string | ((event: H3Event) => string); active?: boolean; /** The catch-all: a path no face serves, whose 404 says nothing more at the node level either. */ unknown?: boolean; /** Served at the node level too (the node-scoped setup session), with workspaceId NODE_LEVEL. */ nodeLevel?: boolean; handler: (call: SetupCall) => unknown }) {
   const accessOf = (event: H3Event) => (typeof definition.access === 'function' ? definition.access(event) : definition.access)
   return defineOperationHandler({
-    preflight: [requireAdminHttp, requireNodeAdminCredential(targetId)],
+    preflight: [requireAdminHttp, requireNodeAdminCredential],
     guards: [event => requireAdmin(accessOf(event), SETUP_REFUSED)(event)],
     handler: async (event, scope) => {
-      const workspace = await useSetupTarget(event, { setup: !definition.active })
       const resource = typeof definition.resource === 'function' ? definition.resource(event) : definition.resource
-      const audited: Record<string, JsonValue> = {}
       const actor = scope.context.actor ?? ''
+      if (!namedWorkspace(event)) {
+        const actions = await useServices(event).getNodeActions()
+        if (!definition.nodeLevel) {
+          // No workspace is served at the node level (D85, Q15): the call is recorded on the node's log, as a probe of
+          // an unknown path is, then answered 404 naming where the workspaces are.
+          return mapFailures(() => withSetupAudit(event, { actions, workspaceId: NODE_LEVEL, resource, actorId: actor }, async () => { throw definition.unknown ? notFound() : notFound(NODE_LEVEL_REFUSAL) }))
+        }
+        // The node-scoped setup session: no workspace, so the handler reads workspaceId NODE_LEVEL and the node log.
+        const nodeAudited: Record<string, JsonValue> = {}
+        const nodeProofDeadline = actor.startsWith('key:') ? (await useServices(event).getRequestVerifier()).approvalProofDeadline(event) : undefined
+        const nodeCall: SetupCall = { event, actor, proofDeadline: nodeProofDeadline, workspace: undefined as unknown as ManagedWorkspace, workspaceId: NODE_LEVEL, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(nodeAudited, args) } }
+        return mapFailures(() => withSetupAudit(event, { actions, workspaceId: NODE_LEVEL, resource, actorId: actor, args: () => nodeAudited }, async () => definition.handler(nodeCall)))
+      }
+      const workspace = await useSetupTarget(event, { setup: !definition.active })
+      const audited: Record<string, JsonValue> = {}
       const proofDeadline = actor.startsWith('key:') ? (await useServices(event).getRequestVerifier()).approvalProofDeadline(event) : undefined
-      const call: SetupCall = { event, actor, proofDeadline, workspace, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(audited, args) } }
+      const call: SetupCall = { event, actor, proofDeadline, workspace, workspaceId: workspace.runtime.workspaceId, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(audited, args) } }
       return mapFailures(() => withSetupAudit(event, { actions: workspace.runtime.actions, workspaceId: workspace.runtime.workspaceId, resource, actorId: call.actor, args: () => audited }, async () => definition.handler(call)))
     },
   })
 }
 
-/** The addressed workspace as the owner's face opens it: failures with their full messages, since only its admin credential reaches here. */
+const NODE_LEVEL_REFUSAL = 'No workspace is served at the node level: address one at /workspaces/<id>/setup/..., by its id or its name; GET /setup/workspaces lists them'
+
+/**
+ * The addressed workspace as the owner's face opens it: failures with their full messages, since only its admin
+ * credential reaches here. No workspace is served at the node level since the node's own folder became one of its
+ * workspaces (D85, Q15): a workspace route there answers 404, naming where the workspaces are.
+ */
 async function useSetupTarget(event: H3Event, options: { setup: boolean }): Promise<ManagedWorkspace> {
+  if (!namedWorkspace(event)) throw notFound(NODE_LEVEL_REFUSAL)
   const workspaces = await useServices(event).getWorkspaces()
   return mapFailures(() => workspaces.resolve(targetId(event), options))
+}
+
+/** The workspace a registry route's `workspaceId` parameter names, by id or by name (D85, Q15): its id, or the handle as typed where none matches. */
+export function registryTarget(event: H3Event, workspaces: Pick<WorkspaceManager, 'lookup'>): string {
+  const handle = getRouterParam(event, 'workspaceId', { decode: true }) ?? ''
+  return workspaces.lookup(handle)?.id ?? handle
 }
 
 interface RegistryCall {
@@ -73,9 +101,9 @@ interface RegistryCall {
  */
 export function defineRegistryHandler(definition: { access: AdminAccess; handler: (call: RegistryCall) => unknown }) {
   return defineOperationHandler({
-    preflight: [requireAdminHttp, requireNodeAdminCredential(() => NODE_WORKSPACE)],
+    preflight: [requireAdminHttp, requireNodeAdminCredential],
     // A signed change to the registry needs a node-scoped key (owner decision D10).
-    guards: [requireAdmin(definition.access, REGISTRY_REFUSED, () => NODE_WORKSPACE, { registry: true })],
+    guards: [requireAdmin(definition.access, REGISTRY_REFUSED, async () => NODE_LEVEL, { registry: true })],
     handler: async (event, scope) => {
       const services = useServices(event)
       const actions = await services.getNodeActions()
@@ -85,7 +113,7 @@ export function defineRegistryHandler(definition: { access: AdminAccess; handler
         audited: (input, run) => withRegistryAudit(actions, { ...input, actorId }, run),
         body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams),
       }
-      return mapFailures(() => withTransportAudit(event, actions, { tool: registryTransportTool(event), workspaceId: NODE_WORKSPACE, required: isMutation(event), actorId }, async () => definition.handler(call)))
+      return mapFailures(() => withTransportAudit(event, actions, { tool: registryTransportTool(event), workspaceId: NODE_LEVEL, required: isMutation(event), actorId }, async () => definition.handler(call)))
     },
   })
 }

@@ -1,5 +1,6 @@
 import { basename } from 'pathe'
-import { legacyWorkspaceRoot, loadConfig, NODE_FOLDER_WORKSPACE, workspaceConfig, type BuckleConfig } from '../../common/runtime/config.js'
+import { legacyWorkspaceRoot, loadConfig, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../common/runtime/config.js'
+import { workspaceIdFor } from '../../common/services/workspaces/workspace-id.js'
 import { scopeOf, settingsFromEnvironment } from '../../common/services/workspaces/workspace-settings.js'
 
 /**
@@ -8,9 +9,17 @@ import { scopeOf, settingsFromEnvironment } from '../../common/services/workspac
  * BUCKLE_WORKSPACE_ROOT or the working directory, and the workspace's own settings as migration reads them. One seam,
  * so the tests that build a runtime from an environment move once.
  */
+/**
+ * The node's own configuration behind a workspace's: its state directory is the node's, where the registry and every
+ * workspace's records live, not the workspace's own (D85, Q15). What a test hands the entry points that take the node.
+ */
+export function nodeConfigOf(config: NodeConfig & Partial<Pick<BuckleConfig, 'nodeStateDirectory'>>): NodeConfig {
+  return { ...config, stateDirectory: config.nodeStateDirectory ?? config.stateDirectory }
+}
+
 export function configFromEnvironment(environment: NodeJS.ProcessEnv = {}, platform: NodeJS.Platform = process.platform): BuckleConfig {
   const node = loadConfig(environment, platform)
   const dir = legacyWorkspaceRoot({ node, platform })
-  // Named after its folder, as migration names the node's folder (D85, Q15).
-  return workspaceConfig(node, { id: NODE_FOLDER_WORKSPACE, name: basename(dir), dir, ...scopeOf(settingsFromEnvironment(environment, platform)) })
+  // Named and keyed after its folder, as migration names and keys the node's folder (D85, Q15), so a manager over the same state directory finds the same workspace.
+  return workspaceConfig(node, { id: workspaceIdFor(dir), name: basename(dir), dir, ...scopeOf(settingsFromEnvironment(environment, platform)) })
 }

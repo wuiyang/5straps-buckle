@@ -29,24 +29,24 @@ describe('owner approval authority', () => {
     const { runtime, app, config } = await fixture()
     const [approval] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 'read-session', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/synthetic', reason: 'outside', offeredScopes: ['session'] }], call: { arguments: { path: '/synthetic/fixture.txt' }, cwd: config.cwd, description: 'Read fixture.txt', effects: ['read /synthetic/fixture.txt'], complete: true } })).requests
     const body = JSON.stringify({ token: approval!.token, approved: true, scope: 'session' })
-    expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('agent-token'), body })).status).toBe(401)
+    expect((await app.request(app.setup('approvals'), { method: 'POST', headers: headers('agent-token'), body })).status).toBe(401)
     expect((await app.request('/v1/approvals', { method: 'POST', headers: headers('agent-token'), body })).status).toBe(404)
     // A workbench-shaped or agent credential never passes any admin guard: inspection, setup or approval.
-    for (const [method, path] of [['GET', '/setup/approvals'], ['PUT', '/setup/policy'], ['POST', '/setup/approvals'], ['GET', '/workspaces/default/setup/status']] as const) {
+    for (const [method, path] of [['GET', app.setup('approvals')], ['PUT', app.setup('policy')], ['POST', app.setup('approvals')], ['GET', '/workspaces/workspace/setup/status']] as const) {
       expect((await app.request(path, { method, headers: headers('agent-token'), ...(method === 'GET' ? {} : { body }) })).status).toBe(401)
     }
     expect(runtime.grants.activeSubjects({ sessionId: 'read-session', rule: 'read_scope' })).toEqual([])
-    expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('owner-token'), body })).status).toBe(409)
+    expect((await app.request(app.setup('approvals'), { method: 'POST', headers: headers('owner-token'), body })).status).toBe(409)
     expect(runtime.grants.activeSubjects({ sessionId: 'read-session', rule: 'read_scope' })).toEqual([])
     expect(runtime.approvals.pending().map(request => request.token)).toContain(approval!.token)
-    expect((await app.request('/setup/approvals', { method: 'POST', headers: headers('owner-token'), body: JSON.stringify({ token: approval!.token, approved: false, scope: 'once' }) })).status).toBe(200)
+    expect((await app.request(app.setup('approvals'), { method: 'POST', headers: headers('owner-token'), body: JSON.stringify({ token: approval!.token, approved: false, scope: 'once' }) })).status).toBe(200)
     expect(runtime.approvals.pending()).toEqual([])
   })
 
   it('does not expose standing grants to the agent credential', async () => {
     const { app } = await fixture()
-    expect((await app.request('/setup/grants', { headers: headers('agent-token') })).status).toBe(401)
-    expect((await app.request('/setup/grants', { headers: headers('owner-token') })).status).toBe(200)
+    expect((await app.request(app.setup('grants'), { headers: headers('agent-token') })).status).toBe(401)
+    expect((await app.request(app.setup('grants'), { headers: headers('owner-token') })).status).toBe(200)
   })
 })
 
@@ -87,9 +87,9 @@ describe('owner filesystem restore', () => {
     const [checkpoint] = await runtime.history.list()
     expect(checkpoint?.stageId).toBe('message-edit')
     expect(checkpoint?.paths).toContain(join(workspace, 'created.txt'))
-    expect((await app.request('/setup/history', { headers: headers('agent-token') })).status).toBe(401)
-    expect((await app.request(`/setup/history/${checkpoint!.id}/restore`, { method: 'POST', headers: headers('agent-token') })).status).toBe(401)
-    expect((await app.request(`/setup/history/${checkpoint!.id}/restore`, { method: 'POST', headers: headers('owner-token') })).status).toBe(200)
+    expect((await app.request(app.setup('history'), { headers: headers('agent-token') })).status).toBe(401)
+    expect((await app.request(app.setup(`history/${checkpoint!.id}/restore`), { method: 'POST', headers: headers('agent-token') })).status).toBe(401)
+    expect((await app.request(app.setup(`history/${checkpoint!.id}/restore`), { method: 'POST', headers: headers('owner-token') })).status).toBe(200)
     expect(await runtime.history.list()).toHaveLength(2)
   })
 })

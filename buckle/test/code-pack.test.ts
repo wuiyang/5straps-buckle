@@ -10,7 +10,7 @@ import { logger } from '../common/runtime/log.js'
 import { CODE_CALL_LIMIT, CODE_VM_BUSY, createCodePack, ERROR_CHARS, MAX_IN_FLIGHT, MAX_NESTED_CALLS, OUTPUT_CHARS, REQUEST_TOO_LARGE, SANDBOX_FAILED } from '../common/services/packs/code/index.js'
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
-import { registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 
@@ -265,7 +265,7 @@ describe('code mode inside one workspace (BUCKLE-D07: a token opens one workspac
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,code' })
     const manager = await workspacesOf(config, { interaction: fixedInteraction() })
     await registerWorkspace(manager, { id: 'child', name: 'Child', dir: join(root, 'child'), policy: childPolicy })
-    return { root, runtime: (await manager.resolve('default')).runtime, child: (await manager.resolve('child')).runtime }
+    return { root, runtime: (await byName(manager, 'default')).runtime, child: (await byName(manager, 'child')).runtime }
   }
 
   it('reaches only the registered workspace: the default root is refused there, and nothing lands in the default workspace\'s log', async () => {

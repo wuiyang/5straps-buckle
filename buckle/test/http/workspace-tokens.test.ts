@@ -36,7 +36,7 @@ beforeEach(async () => {
 afterEach(() => app.close())
 
 async function register(body: Record<string, unknown> = {}): Promise<Response> {
-  const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', dir: join(root, 'one'), ...body }) })
+  const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ name: 'one', dir: join(root, 'one'), ...body }) })
   if (response.status === 201) workspaceAgent = (await response.clone().json() as { token: { token: string } }).token.token
   return response
 }
@@ -83,9 +83,9 @@ describe('several agent tokens per workspace', () => {
 
   // Buckle mints every agent token (D83 (3)) and keeps no admin credential per workspace: a body that brings either is refused.
   it.each([['an agent token', { authToken: 'chosen-by-the-caller-agent-token' }], ['an admin credential', { adminToken: 'chosen-by-the-caller-admin-token' }], ['a setup token', { setupToken: 'chosen-by-the-caller-setup-token' }]])('refuses a registration that brings %s', async (_label, extra) => {
-    const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ id: 'one', name: 'Workspace one', dir: join(root, 'one'), ...extra }) })
+    const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(NODE_ADMIN), body: JSON.stringify({ name: 'one', dir: join(root, 'one'), ...extra }) })
     expect(response.status).toBe(400)
-    expect(workspaces.known('one')).toBe(false)
+    expect(workspaces.lookup('one')).toBeNull()
   })
 })
 
@@ -149,13 +149,13 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
       expect(JSON.parse(body)).toEqual({ error: 'Workspace registry needs owner repair' })
       expect(body).not.toContain(root)
       expect(body).not.toContain('workspaces.0')
-      if (tool) expect(runtime.actions.read(1)[0]).toMatchObject({ tool, workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 503' })
+      if (tool) expect(app.nodeActions.read(1)[0]).toMatchObject({ tool, workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 503' })
     }
     // A workbench path without a grant reads nothing, the registry included: the plain 401 (review L6 of B15-B17).
     expect((await app.request('/workspaces/anything/v1/workbenches/one')).status).toBe(401)
     // The admin credential is the node's (D83), checked without the registry: a caller without it learns nothing at all.
     expect((await app.request('/workspaces/anything/setup/status')).status).toBe(401)
-    expect(runtime.actions.read(1)[0]).toMatchObject({ tool: 'workspace_setup_auth_rejected', workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 401' })
+    expect(app.nodeActions.read(1)[0]).toMatchObject({ tool: 'workspace_setup_auth_rejected', workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 401' })
   })
 
   it('reports the same repair from buckle workspace list', async () => {

@@ -39,7 +39,7 @@ afterEach(async () => {
 })
 
 async function register(id: string, token = NODE_SETUP, overrides: Record<string, unknown> = {}): Promise<Response> {
-  const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(token), body: JSON.stringify({ id, name: `Workspace ${id}`, dir: join(root, id), ...overrides }) })
+  const response = await app.request('/setup/workspaces', { method: 'POST', headers: headers(token), body: JSON.stringify({ name: id, dir: join(root, id), ...overrides }) })
   if (response.status === 201) minted.set(id, (await response.clone().json() as { token: { token: string } }).token.token)
   return response
 }
@@ -53,7 +53,7 @@ describe('multiple workspaces on one Buckle', () => {
     expect((await app.request('/v1/manifest', { headers: headers(NODE_AGENT) })).status).toBe(200)
     expect((await app.request('/workspaces/default/v1/manifest', { headers: headers(NODE_AGENT) })).status).toBe(200)
     const body = await (await app.request('/setup/workspaces', { headers: headers(NODE_SETUP) })).json() as { workspaces: Array<{ id: string; online: boolean }> }
-    expect(body.workspaces).toMatchObject([{ id: 'default', online: true }])
+    expect(body.workspaces).toMatchObject([{ id: app.runtime.workspaceId, name: 'default', online: true }])
   })
 
   it('requires node admin for registration and never returns stored credentials', async () => {
@@ -61,7 +61,7 @@ describe('multiple workspaces on one Buckle', () => {
     expect((await register('one')).status).toBe(201)
     const response = await app.request('/setup/workspaces', { headers: headers(NODE_SETUP) })
     const body = await response.text()
-    expect(body).toContain('Workspace one')
+    expect(body).toContain('"name":"one"')
     expect(body).not.toContain(agent('one'))
     expect((await register('two', NODE_SETUP, { dir: join(root, 'one') })).status).toBe(409)
     expect((await register('one', NODE_SETUP, { dir: join(root, 'two') })).status).toBe(409)
@@ -80,9 +80,10 @@ describe('multiple workspaces on one Buckle', () => {
     expect(await crossRoot.text()).not.toContain('workspace two')
     const auditPath = '/workspaces/one/setup/audit'
     expect((await app.request(auditPath, { headers: headers(agent('one')) })).status).toBe(401)
+    const idOfOne = await app.idOf('one')
     const audit = await (await app.request(auditPath, { headers: headers(NODE_SETUP) })).json() as { entries: Array<{ workspaceId: string; event: string }> }
     expect(audit.entries.length).toBeGreaterThan(0)
-    expect(audit.entries.every(entry => entry.workspaceId === 'one')).toBe(true)
+    expect(audit.entries.every(entry => entry.workspaceId === app.runtime.workspaceId || entry.workspaceId === idOfOne)).toBe(true)
     const twoAudit = await (await app.request('/workspaces/two/setup/audit', { headers: headers(NODE_SETUP) })).json() as { entries: unknown[] }
     expect(twoAudit.entries).toEqual([])
     const policy = { version: 1, commands: { deny: ['curl *'] } }
@@ -128,7 +129,7 @@ it('inherits the node callbacks, so a registered workspace is not absent from th
   const response = await app.request('/workspaces/one/setup/status', { headers: headers(NODE_SETUP) })
   expect(response.status).toBe(200)
   // Every entry it posts carries workspaceId: 'one', which is the identity that was missing.
-  expect(await response.json()).toMatchObject({ reporting: true, workspaceId: 'one' })
+  expect(await response.json()).toMatchObject({ reporting: true, workspaceId: await app.idOf('one') })
 })
 
 it('retains setup history and audit while a workspace is offline, and serves it again once reactivated', async () => {
@@ -174,6 +175,6 @@ it('refuses a workspace holding a mount\'s source, and gives every other the nod
   app = await node((config) => { config.sandboxMounts = mounts })
   expect((await register('two')).status).toBe(409)
   expect((await register('one')).status).toBe(201)
-  const child = await (await app.services.getWorkspaces()).resolve('one')
+  const child = await (await app.services.getWorkspaces()).resolve(await app.idOf('one'))
   expect(child.config.sandboxMounts).toEqual(mounts)
 })

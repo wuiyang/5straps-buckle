@@ -106,7 +106,7 @@ describe('the MCP face over HTTP', () => {
     const agent = await mintedToken(buckle.request('/setup/workspaces', { method: 'POST', headers: headers(ADMIN), body: JSON.stringify({ id: 'one', name: 'One', dir: one }) }))
 
     expect((await buckle.request('/workspaces/one/mcp', { method: 'POST', headers: headers(), body: initialize })).status).toBe(401)
-    expect(buckle.runtime.actions.read(20)).toContainEqual(expect.objectContaining({ tool: 'workspace_mcp_auth_rejected', workspaceId: 'one', outcome: 'denied' }))
+    expect(buckle.nodeActions.read(20)).toContainEqual(expect.objectContaining({ tool: 'workspace_mcp_auth_rejected', workspaceId: await buckle.idOf('one'), outcome: 'denied' }))
     const read = toolCall('fs_read', { path: '/workspace/note.md' })
     const response = await buckle.request('/workspaces/one/mcp', { method: 'POST', headers: headers(agent, read.headers), body: read.body })
     expect(response.status).toBe(200)

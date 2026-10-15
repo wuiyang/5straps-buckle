@@ -9,7 +9,7 @@ import type { ToolEffect } from '../common/domain/effect.js'
 import { createWebPack } from '../common/services/packs/web/index.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpServer } from '../mcp/server.js'
-import { registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 // D83 addendum (7) and Q14 of the workspace-model brief: every list is bound to a workspace, and no node list sits over
 // a workspace's. The lists a node's environment named before the workspace model are migration input only.
@@ -34,7 +34,7 @@ async function workspace(child: WorkspacePolicy = policy(), environment: Record<
   const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...environment })
   const manager = await workspacesOf(config)
   await registerWorkspace(manager, { id: 'child', name: 'Child', dir: join(root, 'child'), policy: child })
-  return (await manager.resolve('child')).runtime
+  return (await byName(manager, 'child')).runtime
 }
 
 // Keep the real invocation permission pipeline; a prepared effect avoids launching host tools.

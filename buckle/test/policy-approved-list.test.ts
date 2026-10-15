@@ -29,7 +29,7 @@ async function withStoredList(allow: string[]): Promise<BuckleConfig> {
 }
 
 function file(config: BuckleConfig): string {
-  return settingsPath(config.stateDirectory, 'default')
+  return settingsPath(config.nodeStateDirectory!, config.workspaceId)
 }
 
 function store(config: BuckleConfig) {

@@ -15,8 +15,8 @@ import { logger } from '../common/runtime/log.js'
 
 const at = new Date('2026-10-01T12:00:00.000Z').getTime()
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
-function queue(workspaceRoot?: string) {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-outbox-'))
+function queue(workspaceRoot?: string, stateDirectory?: string) {
+  const root = stateDirectory ?? mkdtempSync(join(tmpdir(), 'buckle-outbox-'))
   const file = join(root, 'approvals.json')
   const workspace = workspaceRoot ?? root
   const open = () => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), file, workspace, 1, { durableNotices: true })
@@ -190,15 +190,18 @@ describe('durable approval outcome delivery', () => {
 
   it('closes the delivery owner when runtime initialization fails with a network attempt in flight', async () => {
     vi.useFakeTimers(); vi.setSystemTime(at)
-    const q = queue(mkdtempSync(join(tmpdir(), 'buckle-outbox-workspace-')))
+    const workspace = mkdtempSync(join(tmpdir(), 'buckle-outbox-workspace-'))
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-outbox-')), BUCKLE_AUTH_TOKEN: 'test-agent', BUCKLE_ADMIN_TOKEN: 'test-admin', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_WEBHOOK: 'http://rings.test/approvals' })
+    // The queue the runtime takes over lives in the workspace's own records folder (D85, Q15).
+    mkdirSync(config.stateDirectory, { recursive: true })
+    const q = queue(workspace, config.stateDirectory)
     const [ask] = await q.ask()
     await q.registry.cancel([ask!.token])
     const blocked = paused()
     const fetch = vi.fn(async () => { await blocked.wait; return new Response('', { status: 503 }) })
     vi.stubGlobal('fetch', fetch)
-    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: q.workspace, BUCKLE_STATE_DIR: q.root, BUCKLE_AUTH_TOKEN: 'test-agent', BUCKLE_ADMIN_TOKEN: 'test-admin', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_WEBHOOK: 'http://rings.test/approvals' })
-    mkdirSync(dirname(settingsPath(config.stateDirectory, 'default')), { recursive: true })
-    writeFileSync(settingsPath(config.stateDirectory, 'default'), '{')
+    mkdirSync(dirname(settingsPath(config.nodeStateDirectory!, config.workspaceId)), { recursive: true })
+    writeFileSync(settingsPath(config.nodeStateDirectory!, config.workspaceId), '{')
     const initializing = createRuntime({ config })
     const rejected = expect(initializing).rejects.toThrow('unreadable or invalid')
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))

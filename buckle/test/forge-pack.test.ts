@@ -19,6 +19,7 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 import { resolveEffects } from '../common/services/invocation/resolve-effects.js'
 import type { PathView } from '../common/domain/path-view.js'
 import { startGitHttp, type GitHttpServer } from './support/git-http.js'
+import { actionsPath } from '../common/runtime/config.js'
 
 /**
  * The runtime's process runner, passed through, with a hook a test may set to act just before git is
@@ -1101,7 +1102,7 @@ describe('a push to an approved https origin that names userinfo (review M4)', (
       const basic = Buffer.from(`alice:${password}`).toString('base64')
       for (const form of [password, basic]) {
         expect(JSON.stringify(response)).not.toContain(form)
-        expect(readFileSync(join(state, 'actions.jsonl'), 'utf8')).not.toContain(form)
+        expect(readFileSync(actionsPath(runtime.paths().root === repository ? { stateDirectory: join(state, 'workspaces', runtime.workspaceId) } : { stateDirectory: state }), 'utf8')).not.toContain(form)
       }
     } finally { await server.close() }
   }, 30_000)
@@ -1244,7 +1245,7 @@ describe('the credential', () => {
       expect(response.error.message).not.toContain(TOKEN)
     }
     expect(JSON.stringify(response)).not.toContain(TOKEN)
-    expect(readFileSync(join(root, 'state', 'actions.jsonl'), 'utf8')).not.toContain(TOKEN)
+    expect(readFileSync(actionsPath(config), 'utf8')).not.toContain(TOKEN)
   })
 
   it('stays out of the refusals the push checks write, even when the remote itself carries it', async () => {

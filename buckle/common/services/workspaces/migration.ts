@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'pathe'
 import { z, ZodError } from 'zod'
 import { WorkspacePolicySchema, allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
@@ -8,21 +8,23 @@ import { createJsonFileStore, StateFileError } from '../../adapters/json-file-st
 import { grantKeys, rekeyGrants } from '../../adapters/grant-store/file-grant-store.js'
 import { rekeySwitch, switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { readStoredPolicies } from '../../adapters/policy-store/file-policy-store.js'
+import { workspaceArgument } from '../../domain/approval-instruction.js'
 import { comparablePath, ignoresCase, nativePath } from '../../domain/paths.js'
 import { mergePolicies } from '../../domain/policy.js'
-import { dangerouslyAllowPath, environmentWorkspaceKeys, grantsPath, legacyWorkspaceRoot, NODE_FOLDER_WORKSPACE, policyPath, type MigrationInput, type NodeConfig } from '../../runtime/config.js'
+import { dangerouslyAllowPath, environmentWorkspaceKeys, grantsPath, legacyWorkspaceRoot, policyPath, type MigrationInput, type NodeConfig } from '../../runtime/config.js'
 import { tokenDigest } from '../access/tokens.js'
-import { registryPath, RegistrySchema, WorkspaceRegistryError, type StoredWorkspace } from './registry.js'
-import { overlaps } from './workspace-dirs.js'
+import { openRegistry, registryPath, RegistrySchema, sameName, WorkspaceNameSchema, WorkspaceRegistryError, type StoredWorkspace } from './registry.js'
+import { exposedRoots, overlaps } from './workspace-dirs.js'
+import { workspaceIdFor } from './workspace-id.js'
 import { openSettingsFile, settingsFromEnvironment, settingsPath, WORKSPACE_MOUNT_TARGET, type WorkspaceSettings } from './workspace-settings.js'
 
-/** The id migration gives BUCKLE_AUTH_TOKEN among workspace default's tokens, as the node reported it before. */
+/** The id migration gives BUCKLE_AUTH_TOKEN among the node folder's workspace's tokens, as the node reported it before. */
 export const NODE_TOKEN_ID = 'node'
 
 /**
  * The copies migration keeps of what it changes, owner-only, so an owner going back to 0.1 moves each over its file
  * (fix brief 1, A3): the registry and policy.json in the state directory, and every grants and switch file it rekeys,
- * beside it. Made once: a move run again after a crash keeps the copies made before anything changed.
+ * beside where 0.1 kept it. Made once: a move run again after a crash keeps the copies made before anything changed.
  */
 export const REGISTRY_BACKUP = 'workspaces.v1.json'
 export const POLICY_BACKUP = 'policy.v1.json'
@@ -33,10 +35,18 @@ const EMPTY_REGISTRY_V1 = '{"version":1,"workspaces":[]}\n'
 const EMPTY_POLICY_V1 = '{"version":1,"workspaces":{}}\n'
 /**
  * policy.json once the node moved: a version 2 file 0.1 refuses to read, so an older Buckle sharing the state directory
- * refuses to start rather than serve workspace default with a token or a policy the node has since changed (finding 4).
+ * refuses to start rather than serve the node's folder with a token or a policy the node has since changed (finding 4).
  */
 const PolicyStubSchema = z.object({ version: z.literal(2), note: z.string() }).strict()
 const POLICY_STUB = { version: 2 as const, note: 'Each workspace keeps its policy in workspaces/<id>/workspace.json since the workspace model; policy.v1.json holds what this file held, for going back to 0.1.' }
+
+/**
+ * The records 0.1 kept for the node's own folder in the state directory itself, which move to the folder's workspace
+ * directory (D85, Q15). The node's own audit log, registry, keys, and credentials stay where they are.
+ */
+const NODE_FOLDER_RECORDS = ['grants.json', 'dangerously-allow.json', 'approvals.json', 'approval-calls', 'approval-nonces.json', 'plugins.json', 'history', 'code-journal', 'isolated-shell', 'browser-sessions', 'workbenches', 'receive-git-hooks']
+/** What stays in a registered workspace's 0.1 directory: the copies for going back, 0.1's own policy file, and lock files. */
+const STAYS_BEHIND = /(?:\.v1\.json|\.lock\.sqlite)$|^policy\.json$|^active-work$/
 
 const V1WorkspaceSchema = z.object({
   id: z.string(), name: z.string(), root: z.string(), adminToken: z.string(),
@@ -54,8 +64,12 @@ export class MigrationError extends Error {}
 interface Planned {
   record: StoredWorkspace
   settings: WorkspaceSettings
-  /** The workspace's own state directory, whose grants and switch move from its folder to its id. */
+  /** Where 0.1 kept the workspace's records: the state directory for the node's folder, `workspaces/<0.1 id>/` for a registered one. */
+  oldStateDirectory: string
+  /** The workspace's own state directory now, `workspaces/<id>/`, where its records move. */
   stateDirectory: string
+  /** The node's own folder, whose records are the named set in the state directory rather than a directory of their own. */
+  nodeFolder: boolean
   /** The key its grants file kept its grants under, as that file spells the folder; null where it kept none. */
   grantsKey: string | null
   /** The key its switch file kept the switch under; null where it kept none. */
@@ -67,7 +81,7 @@ interface Planned {
 /** What the move writes, and what the owner is told beside the notices: a name it had to change. */
 interface Plan { plans: Planned[]; notes: string[] }
 
-/** What a 0.1 node's files kept for one state directory, read whole before anything is written. */
+/** What a 0.1 node's files kept for one workspace, read whole before anything is written. */
 interface Kept { policies: Record<string, WorkspacePolicy>; grants: string[]; switches: string[] }
 
 /** The name a workspace takes where its own is empty: a folder's name never is, but a 0.1 id read from a hand-edited registry could be. */
@@ -75,25 +89,30 @@ const UNNAMED = 'workspace'
 /** The longest name the registry reads (WorkspaceNameSchema). */
 const NAME_LIMIT = 120
 
+/** Asked for another name for the node's folder where a registered workspace holds the folder's name (D85, Q15); none without a terminal. */
+export type AskName = (question: string) => Promise<string>
+
 /**
  * Moves a node set up before the workspace model onto it, once, at the first start of a Buckle that has it (the
- * workspace-model brief, item 1, Q14, Q15). workspaces.json becomes version 2: tokens kept as their sha256, each
- * workspace's admin credential dropped (the node's admin token is the one), `retiredAt` read as offline, and the node's
- * own folder stored as workspace `default`, its folder BUCKLE_WORKSPACE_ROOT or the directory this command runs in,
- * its agent token BUCKLE_AUTH_TOKEN, each read from the environment file (MigrationInput). Each workspace gets a
- * workspace.json holding what the node enforced on it: the file's settings, and its policy (default: the file's with
- * what `buckle policy` stored; a registered one: its own within the file's lists, exactly, or the migration refuses).
- * Grants and switches move from the folder to the id. Owner-only copies of every file it changes are kept to go back to
- * 0.1 with (REGISTRY_BACKUP); policy.json becomes a version 2 file and BUCKLE_AUTH_TOKEN leaves the environment file, so
- * an older Buckle sharing the state directory refuses to start (fix brief 1, A3).
+ * workspace-model brief, item 1, Q14, Q15; D85, Q15). workspaces.json becomes version 2: tokens kept as their sha256,
+ * each workspace's admin credential dropped (the node's admin token is the one), `retiredAt` read as offline, and the
+ * node's own folder stored as a workspace of its own, named after the folder, its folder BUCKLE_WORKSPACE_ROOT or the
+ * directory this command runs in, its agent token BUCKLE_AUTH_TOKEN, each read from the environment file
+ * (MigrationInput). Each workspace gets an id derived from its folder (workspaceIdFor), a registered one keeps its 0.1
+ * id as its name, and each gets a workspace.json holding what the node enforced on it: the file's settings, and its
+ * policy (the node's folder: the file's with what `buckle policy` stored; a registered one: its own within the file's
+ * lists, exactly, or the migration refuses). Records move to `workspaces/<id>/`, grants and switches rekeyed from the
+ * folder to the id. Owner-only copies of every file it changes are kept to go back to 0.1 with (REGISTRY_BACKUP);
+ * policy.json becomes a version 2 file and BUCKLE_AUTH_TOKEN leaves the environment file, so an older Buckle sharing
+ * the state directory refuses to start (fix brief 1, A3).
  *
  * Every file the move touches is read, and every record it writes checked against the registry's own reader, before
  * anything is written (finding 3 and 17 of the Phase 1 review), so a move that cannot finish refuses with
- * MigrationError and changes nothing; a move a crash stopped partway runs again to the same end. Returns what the owner
- * is told; on a node moved already, what its environment still sets that it no longer reads. Throws
- * WorkspaceRegistryError, as a version 2 registry that will not parse does, where version 1 will not.
+ * MigrationError and changes nothing; a move a crash stopped partway runs again to the same end, as each id derives
+ * from its folder. Returns what the owner is told; on a node moved already, what its environment still sets that it no
+ * longer reads. Throws WorkspaceRegistryError, as a version 2 registry that will not parse does, where version 1 will not.
  */
-export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.Platform }): Promise<string[]> {
+export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.Platform; askName?: AskName }): Promise<string[]> {
   const { node } = input
   const filePath = registryPath(node.stateDirectory)
   if (versionOf(filePath) === 2) return movedNodeNotices(node)
@@ -105,7 +124,7 @@ export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.P
       if (raw.version !== 0 && raw.version !== 1) throw new MigrationError(`${filePath} is version ${raw.version}, which this Buckle does not read; it was written by another release`)
       const hadRegistry = raw.version === 1
       const registered = hadRegistry ? version1Workspaces(filePath, raw) : []
-      const plan = beforeWriting(() => planMove({ ...input, platform: input.platform ?? process.platform, registered, hadRegistry }))
+      const plan = await beforeWriting(() => planMove({ ...input, platform: input.platform ?? process.platform, registered, hadRegistry }))
       if (plan.plans.length > 0) keepRollbackCopies({ node, plans: plan.plans, registryFile: filePath, hadRegistry })
       for (const planned of plan.plans) await partway(() => apply(node, planned))
       if (plan.plans.length > 0) await createJsonFileStore({ filePath: policyPath(node), schema: PolicyStubSchema, fallback: POLICY_STUB }).write(POLICY_STUB)
@@ -131,8 +150,8 @@ export function movedOntoWorkspaces(stateDirectory: string): boolean {
 }
 
 /** A file read before the move writes anything: one that will not read refuses the move, which has changed nothing. */
-function beforeWriting<R>(read: () => R): R {
-  try { return read() } catch (error) {
+async function beforeWriting<R>(read: () => Promise<R>): Promise<R> {
+  try { return await read() } catch (error) {
     if (error instanceof StateFileError) throw new MigrationError(`${error.message}, so Buckle cannot move the node onto workspaces. Nothing was changed.`)
     throw error
   }
@@ -177,58 +196,66 @@ function servedBefore(node: NodeConfig, hadRegistry: boolean): boolean {
     || [policyPath(node), grantsPath(node)].some(path => existsSync(path))
 }
 
-function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; registered: z.infer<typeof V1WorkspaceSchema>[]; hadRegistry: boolean }): Plan {
+async function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; registered: z.infer<typeof V1WorkspaceSchema>[]; hadRegistry: boolean; askName?: AskName }): Promise<Plan> {
   const { node, platform } = input
   if (!servedBefore(node, input.hadRegistry)) return { plans: [], notes: [] }
   refuseCallerSettings(node.migration)
   const environment = environmentSettings(node.migration)
   const now = new Date().toISOString()
   const notes: string[] = []
-  const named = (id: string, name: string) => fittingName({ id, name, notes })
   const stateRoot = nativePath(realpathSync.native(node.stateDirectory))
   const dir = ownFolder({ node, platform, stateRoot })
   const roots = input.registered.map(workspace => ({ workspace, root: diskSpelling(workspace.root) }))
   for (const { workspace, root } of roots) {
-    if (overlaps(root, dir, platform)) throw new MigrationError(`The node's own folder would become workspace default at ${dir}, which overlaps workspace ${workspace.id} at ${root}. Run this command from the folder buckle serve serves, or set BUCKLE_WORKSPACE_ROOT to it, so the node's folder keeps its place.`)
+    if (overlaps(root, dir, platform)) throw new MigrationError(`The node's own folder would become a workspace at ${dir}, which overlaps workspace ${workspace.id} at ${root}. Run this command from the folder buckle serve serves, or set BUCKLE_WORKSPACE_ROOT to it, so the node's folder keeps its place.`)
     if (overlaps(root, stateRoot, platform)) throw new MigrationError(`Workspace ${workspace.id} at ${root} overlaps the state directory ${stateRoot}, where an agent writing anywhere in its folder could rewrite Buckle's records; move one of them, then start Buckle again. Nothing was changed.`)
   }
 
   // The node's own folder: the environment's policy with what `buckle policy` stored, unioned, as the node merged them.
-  const own = kept(node.stateDirectory, ownPolicyFile(node))
-  const ownSpellings = [dir, ...node.migration.workspaceRoot === undefined ? [] : [node.migration.workspaceRoot]]
+  const ownId = workspaceIdFor(dir)
+  const ownState = join(node.stateDirectory, 'workspaces', ownId)
+  const own = kept({ policyFile: ownPolicyFile(node), stateDirectories: [node.stateDirectory, ownState] })
+  const ownSpellings = [dir, ...node.migration.workspaceRoot === undefined ? [] : [node.migration.workspaceRoot], ownId]
   const ownPolicy = keyOf({ keys: Object.keys(own.policies), spellings: ownSpellings, platform, file: policyPath(node) })
   const merged = mergePolicies({ ...environment.policy, mount: environment.mounts[0]?.target ?? null }, ownPolicy === null ? null : own.policies[ownPolicy]!)
   const ownSwitch = keyOf({ keys: own.switches, spellings: ownSpellings, platform, file: dangerouslyAllowPath(node) })
+  // Named after its folder (D85, Q15), unless a registered workspace's 0.1 id, which is its name now, is the same word.
+  const registeredNames = roots.map(({ workspace }) => workspace.id)
+  const ownName = await folderName({ dir, id: ownId, taken: registeredNames, notes, askName: input.askName })
   const ownPlan: Planned = {
-    // Named after its folder (D85, Q15): the node's name stays the node's.
-    record: { id: NODE_FOLDER_WORKSPACE, name: named(NODE_FOLDER_WORKSPACE, basename(dir)), dir, online: true, revision: 0, updatedAt: now, createdAt: now,
+    record: { id: ownId, name: ownName, dir, online: true, nodeFolder: true, revision: 0, updatedAt: now, createdAt: now,
       tokens: node.migration.authToken ? [{ id: NODE_TOKEN_ID, sha256: tokenDigest(node.migration.authToken), label: 'BUCKLE_AUTH_TOKEN', createdAt: now }] : [] },
     settings: { ...environment, policy: { ...merged, mount: null }, mounts: merged.mount === null ? [] : [{ kind: 'workspace', target: merged.mount, access: 'write' }] },
-    stateDirectory: node.stateDirectory,
+    oldStateDirectory: node.stateDirectory,
+    stateDirectory: ownState,
+    nodeFolder: true,
     grantsKey: keyOf({ keys: own.grants, spellings: ownSpellings, platform, file: grantsPath(node) }),
     switchKey: ownSwitch,
     keepSwitch: true,
   }
-  // Read under either key, so a move a crash stopped after default's switch moved still keeps the registered ones (finding 17).
-  const nodeSwitch = ownSwitch !== null || own.switches.includes(NODE_FOLDER_WORKSPACE)
+  const nodeSwitch = ownSwitch !== null
   const conflicts: string[] = []
   const registered = roots.map(({ workspace, root }): Planned => {
-    const stateDirectory = join(node.stateDirectory, 'workspaces', workspace.id)
-    const records = kept(stateDirectory, policyPath({ stateDirectory }))
-    // 0.1 keyed a registered workspace's records by its folder as the disk names it (finding 18).
-    const spellings = [root, workspace.root]
-    const policyKey = keyOf({ keys: Object.keys(records.policies), spellings, platform, file: policyPath({ stateDirectory }) })
+    const id = workspaceIdFor(root)
+    const oldStateDirectory = join(node.stateDirectory, 'workspaces', workspace.id)
+    const stateDirectory = join(node.stateDirectory, 'workspaces', id)
+    const records = kept({ policyFile: policyPath({ stateDirectory: oldStateDirectory }), stateDirectories: [oldStateDirectory, stateDirectory] })
+    // 0.1 keyed a registered workspace's records by its folder as the disk names it (finding 18); a move run again finds them under the id.
+    const spellings = [root, workspace.root, id]
+    const policyKey = keyOf({ keys: Object.keys(records.policies), spellings, platform, file: policyPath({ stateDirectory: oldStateDirectory }) })
     const keptLists = withinLists(environment.policy, policyKey === null ? workspace.policy : records.policies[policyKey]!)
     if ('conflicts' in keptLists) conflicts.push(`workspace ${workspace.id}: ${keptLists.conflicts.join(' and ')}`)
+    // Its 0.1 id is the handle its MCP configs name, so that is its name (D85, Q15); its 0.1 display name is said in a note.
     if (workspace.name.trim() !== '' && workspace.name.trim() !== workspace.id) notes.push(`Workspace ${workspace.id} was shown as ${workspace.name.trim()} before; its name is now ${workspace.id}, the handle --workspace takes, and buckle workspace rename ${workspace.id} <name> gives it another.`)
     return {
-      // Its 0.1 id is the handle its MCP configs name, so that is its name (D85, Q15); its 0.1 display name is said in a note.
-      record: { id: workspace.id, name: named(workspace.id, workspace.id), dir: root, online: workspace.enabled && !workspace.retiredAt, revision: 0, updatedAt: workspace.updatedAt ?? now, createdAt: now,
+      record: { id, name: fittingName({ label: `Workspace ${workspace.id}`, name: workspace.id, notes }), dir: root, online: workspace.enabled && !workspace.retiredAt, revision: 0, updatedAt: workspace.updatedAt ?? now, createdAt: now,
         tokens: workspace.tokens.map(token => ({ id: token.id, sha256: tokenDigest(token.token), label: token.label, createdAt: token.createdAt })) },
       settings: { ...environment, policy: 'policy' in keptLists ? keptLists.policy : environment.policy, mounts: [{ kind: 'workspace', target: WORKSPACE_MOUNT_TARGET, access: 'write' }] },
+      oldStateDirectory,
       stateDirectory,
-      grantsKey: keyOf({ keys: records.grants, spellings, platform, file: grantsPath({ stateDirectory }) }),
-      switchKey: keyOf({ keys: records.switches, spellings, platform, file: dangerouslyAllowPath({ stateDirectory }) }),
+      nodeFolder: false,
+      grantsKey: keyOf({ keys: records.grants, spellings, platform, file: grantsPath({ stateDirectory: oldStateDirectory }) }),
+      switchKey: keyOf({ keys: records.switches, spellings, platform, file: dangerouslyAllowPath({ stateDirectory: oldStateDirectory }) }),
       keepSwitch: nodeSwitch,
     }
   })
@@ -249,16 +276,34 @@ function environmentSettings(input: MigrationInput): WorkspaceSettings {
 }
 
 /**
- * The folder workspace default takes: refused where it holds the state directory or sits inside it, as `buckle
- * workspace init` refuses the same folder (finding 19), since an agent writes anywhere in its workspace.
+ * The folder the node's own workspace takes: refused where it holds the state directory or sits inside it, as `buckle
+ * workspace init` refuses the same folder (finding 19), since an agent writes anywhere in its workspace, and where it
+ * overlaps a host toolchain or read-only mount, which every workspace is held to now (D85, Q15): the workspace would
+ * refuse to open at every call, so the move says so first and changes nothing.
  */
 function ownFolder(input: { node: NodeConfig; platform: NodeJS.Platform; stateRoot: string }): string {
   let dir: string
   try { dir = legacyWorkspaceRoot(input) } catch (error) {
-    throw new MigrationError(`The node's own folder cannot become workspace default: ${error instanceof Error ? error.message : String(error)}`)
+    throw new MigrationError(`The node's own folder cannot become a workspace: ${error instanceof Error ? error.message : String(error)}`)
   }
-  if (overlaps(dir, input.stateRoot, input.platform)) throw new MigrationError(`The node's own folder would become workspace default at ${dir}, which overlaps the state directory ${input.stateRoot}. Run this command from the folder buckle serve serves, or set BUCKLE_WORKSPACE_ROOT to it. Nothing was changed.`)
+  if (overlaps(dir, input.stateRoot, input.platform)) throw new MigrationError(`The node's own folder would become a workspace at ${dir}, which overlaps the state directory ${input.stateRoot}. Run this command from the folder buckle serve serves, or set BUCKLE_WORKSPACE_ROOT to it. Nothing was changed.`)
   return dir
+}
+
+/**
+ * The node folder's name (D85, Q15): the folder's own, cut to what the registry reads. Where a registered workspace's
+ * 0.1 id, which is its name now, is the same word, the owner is asked for another at a terminal; without one, or with
+ * an answer that is taken or refused too, the folder's name with the first eight characters of its id, said in a note.
+ */
+async function folderName(input: { dir: string; id: string; taken: readonly string[]; notes: string[]; askName?: AskName }): Promise<string> {
+  const name = fittingName({ label: `The node's folder ${input.dir}`, name: basename(input.dir), notes: input.notes })
+  const free = (candidate: string) => !input.taken.some(other => sameName(other, candidate)) && WorkspaceNameSchema.safeParse(candidate).success
+  if (free(name)) return name
+  const answer = input.askName === undefined ? '' : (await input.askName(`The node's folder ${input.dir} would be workspace ${name}, but a registered workspace is named ${name} already. Another name for the folder, or Enter for ${name}-${input.id.slice(0, 8)}: `)).trim()
+  if (answer !== '' && free(answer)) return answer
+  const fallback = `${name}-${input.id.slice(0, 8)}`
+  input.notes.push(`The node's folder ${input.dir} is workspace ${fallback}: a registered workspace is named ${name} already${answer === '' ? '' : `, and ${answer} could not be used`}. Rename it with buckle workspace rename ${workspaceArgument(fallback)} <name>.`)
+  return fallback
 }
 
 /** policy.json as 0.1 left it: its copy, where a move a crash stopped already put the stub in its place. */
@@ -267,9 +312,9 @@ function ownPolicyFile(node: NodeConfig): string {
 }
 
 /**
- * Copies of every file the move changes, owner-only, each made once (REGISTRY_BACKUP). The registry is copied again on
- * a second run, as it is still version 1 then; policy.json and a registry the node never had are kept as the empty
- * version 1 files 0.1 reads as none.
+ * Copies of every file the move changes, owner-only, each made once (REGISTRY_BACKUP), beside where 0.1 kept the file.
+ * The registry is copied again on a second run, as it is still version 1 then; policy.json and a registry the node
+ * never had are kept as the empty version 1 files 0.1 reads as none.
  */
 function keepRollbackCopies(input: { node: NodeConfig; plans: Planned[]; registryFile: string; hadRegistry: boolean }): void {
   const state = input.node.stateDirectory
@@ -277,9 +322,9 @@ function keepRollbackCopies(input: { node: NodeConfig; plans: Planned[]; registr
   else keepOnce(join(state, REGISTRY_BACKUP), EMPTY_REGISTRY_V1)
   const policy = policyPath(input.node)
   if (versionOf(policy) !== 2) keepOnce(join(state, POLICY_BACKUP), existsSync(policy) ? readFileSync(policy, 'utf8') : EMPTY_POLICY_V1)
-  for (const { stateDirectory } of input.plans) {
-    for (const [file, copy] of [[grantsPath({ stateDirectory }), GRANTS_BACKUP], [dangerouslyAllowPath({ stateDirectory }), SWITCH_BACKUP]] as const) {
-      if (existsSync(file)) keepOnce(join(stateDirectory, copy), readFileSync(file, 'utf8'))
+  for (const { oldStateDirectory } of input.plans) {
+    for (const [file, copy] of [[grantsPath({ stateDirectory: oldStateDirectory }), GRANTS_BACKUP], [dangerouslyAllowPath({ stateDirectory: oldStateDirectory }), SWITCH_BACKUP]] as const) {
+      if (existsSync(file)) keepOnce(join(oldStateDirectory, copy), readFileSync(file, 'utf8'))
     }
   }
 }
@@ -294,7 +339,7 @@ function keepOnce(path: string, text: string): void {
 }
 
 /**
- * Takes BUCKLE_AUTH_TOKEN out of the environment file once the registry holds it as workspace default's token `node`,
+ * Takes BUCKLE_AUTH_TOKEN out of the environment file once the registry holds it as the node folder's token `node`,
  * so 0.1's buckle serve, which needs it, refuses to start (finding 14), and so the file no longer looks like where the
  * token is changed (finding 20). Answers what the owner is told where the line could not be taken out.
  */
@@ -315,9 +360,18 @@ function diskSpelling(root: string): string {
   try { return nativePath(realpathSync.native(root)) } catch { return root }
 }
 
-/** What a 0.1 node's files kept for one state directory; StateFileError where one will not read. */
-function kept(stateDirectory: string, policyFile: string): Kept {
-  return { policies: readStoredPolicies(policyFile), grants: grantKeys(grantsPath({ stateDirectory })), switches: switchKeys(dangerouslyAllowPath({ stateDirectory })) }
+/**
+ * What a 0.1 node's files kept for one workspace: its stored policies from `policyFile`, and the keys of its grants and
+ * switch files in each directory they may be in, where 0.1 kept them and where a move run again finds them moved;
+ * StateFileError where one will not read.
+ */
+function kept(input: { policyFile: string; stateDirectories: readonly string[] }): Kept {
+  const union = (read: (file: string) => string[], name: (stateDirectory: string) => string) => [...new Set(input.stateDirectories.flatMap(stateDirectory => read(name(stateDirectory))))]
+  return {
+    policies: readStoredPolicies(input.policyFile),
+    grants: union(grantKeys, stateDirectory => grantsPath({ stateDirectory })),
+    switches: union(switchKeys, stateDirectory => dangerouslyAllowPath({ stateDirectory })),
+  }
 }
 
 /**
@@ -335,13 +389,13 @@ function keyOf(input: { keys: readonly string[]; spellings: readonly string[]; p
 
 /**
  * A name the registry reads (WorkspaceNameSchema, finding 3): one over 120 characters is cut at a word's end, and an
- * empty one is the node's default name; the owner is told either way.
+ * empty one is a fixed word; the owner is told either way.
  */
-function fittingName(input: { id: string; name: string; notes: string[] }): string {
+function fittingName(input: { label: string; name: string; notes: string[] }): string {
   const trimmed = input.name.trim()
   if (trimmed !== '' && trimmed.length <= NAME_LIMIT) return trimmed
   const fit = (trimmed === '' ? '' : cutName(trimmed)) || UNNAMED
-  input.notes.push(`Workspace ${input.id}'s name ${trimmed === '' ? 'was empty' : `was ${trimmed.length} characters, more than the ${NAME_LIMIT} a workspace name holds`}, so it is named ${fit}; rename it with buckle workspace set name <name> --workspace ${input.id}.`)
+  input.notes.push(`${input.label}'s name ${trimmed === '' ? 'was empty' : `was ${trimmed.length} characters, more than the ${NAME_LIMIT} a workspace name holds`}, so it is named ${fit}; rename it with buckle workspace rename ${workspaceArgument(fit)} <name>.`)
   return fit
 }
 
@@ -407,25 +461,54 @@ function withinLists(ceiling: WorkspacePolicy, own: WorkspacePolicy): { policy: 
   return conflicts.length > 0 ? { conflicts } : { policy }
 }
 
+/**
+ * One workspace's move: its records into `workspaces/<id>/`, its settings written there, and its grants and switch
+ * rekeyed from the folder to the id. Each step finds its work done on a move run again, so a crash partway is finished
+ * at the next start.
+ */
 async function apply(node: NodeConfig, planned: Planned): Promise<void> {
   const { record, stateDirectory } = planned
   const lockDeadlineMs = node.stateLockDeadlineMs
+  mkdirSync(stateDirectory, { recursive: true, mode: 0o700 })
+  moveRecords(planned)
   await openSettingsFile({ filePath: settingsPath(node.stateDirectory, record.id), lockDeadlineMs }).migrate(planned.settings)
   if (planned.grantsKey !== null) await rekeyGrants({ filePath: grantsPath({ stateDirectory }), from: planned.grantsKey, to: record.id, lockDeadlineMs })
   if (planned.switchKey !== null) await rekeySwitch({ filePath: dangerouslyAllowPath({ stateDirectory }), from: planned.switchKey, to: planned.keepSwitch ? record.id : null, lockDeadlineMs })
 }
 
+/**
+ * Moves what 0.1 kept for the workspace into its own directory (D85, Q15): the named set from the state directory for
+ * the node's folder, and everything but what stays behind (STAYS_BEHIND) from a registered workspace's 0.1 directory.
+ * A record already moved, or never kept, is left alone, so a move run again changes nothing more.
+ */
+function moveRecords(planned: Planned): void {
+  const entries = planned.nodeFolder ? NODE_FOLDER_RECORDS : listed(planned.oldStateDirectory).filter(entry => !STAYS_BEHIND.test(entry))
+  for (const entry of entries) {
+    const from = join(planned.oldStateDirectory, entry)
+    const to = join(planned.stateDirectory, entry)
+    if (existsSync(from) && !existsSync(to)) renameSync(from, to)
+  }
+}
+
+function listed(directory: string): string[] {
+  try { return readdirSync(directory) } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return []
+    throw error
+  }
+}
+
 function notices(input: { node: NodeConfig; plans: Planned[]; hadRegistry: boolean; retired: string[] }): string[] {
-  const own = input.plans.find(planned => planned.record.id === NODE_FOLDER_WORKSPACE)
+  const own = input.plans.find(planned => planned.nodeFolder)
   if (!own) return []
   const keys = environmentWorkspaceKeys(input.node.migration.settings)
   const token = input.node.migration.authToken !== ''
   const file = input.node.migration.file
+  const named = workspaceArgument(own.record.name)
   return [
-    `Buckle moved this node to the workspace model: workspaces.json is version 2, and the node's own folder is workspace default at ${own.record.dir}. The registry and policy files it changed are kept as ${REGISTRY_BACKUP} and ${POLICY_BACKUP} in the state directory, with ${GRANTS_BACKUP} and ${SWITCH_BACKUP} beside each grants and switch file it moved, for going back to 0.1 (docs/workspaces-02.md). An older Buckle sharing this state directory now refuses to start: policy.json is a version 2 file it cannot read.`,
-    ...(token ? [`BUCKLE_AUTH_TOKEN is now token node of workspace default, so agents configured with it keep working${file === null ? '; the node no longer reads the variable, so remove it from the environment Buckle starts with' : `, and it was taken out of ${file}, which the node no longer reads it from`}. Buckle keeps the token as its digest alone, with no copy of its value: to go back to 0.1, set BUCKLE_AUTH_TOKEN again from an agent's own configuration. To rotate it, run buckle workspace token create --workspace default, give agents the new token, then buckle workspace token revoke node --workspace default.`] : []),
+    `Buckle moved this node to the workspace model: workspaces.json is version 2, and the node's own folder ${own.record.dir} is workspace ${own.record.name} (id ${own.record.id}), with its records in workspaces/${own.record.id}/ in the state directory. The registry and policy files it changed are kept as ${REGISTRY_BACKUP} and ${POLICY_BACKUP} in the state directory, with ${GRANTS_BACKUP} and ${SWITCH_BACKUP} beside where each grants and switch file it moved was, for going back to 0.1 (docs/workspaces-02.md). An older Buckle sharing this state directory now refuses to start: policy.json is a version 2 file it cannot read.`,
+    ...(token ? [`BUCKLE_AUTH_TOKEN is now token node of workspace ${own.record.name}, so agents configured with it keep working${file === null ? '; the node no longer reads the variable, so remove it from the environment Buckle starts with' : `, and it was taken out of ${file}, which the node no longer reads it from`}. Buckle keeps the token as its digest alone, with no copy of its value: to go back to 0.1, set BUCKLE_AUTH_TOKEN again from an agent's own configuration. To rotate it, run buckle workspace token create --workspace ${named}, give agents the new token, then buckle workspace token revoke node --workspace ${named}.`] : []),
     ...input.retired,
-    ...(input.plans.length > 1 ? ['Each registered workspace\'s admin credential is retired: the node\'s admin token opens every workspace.'] : []),
+    ...(input.plans.length > 1 ? ['Each registered workspace\'s admin credential is retired: the node\'s admin token opens every workspace. Each keeps its 0.1 id as its name, the handle --workspace takes, and has an id of its own now; its records moved to workspaces/<id>/, and its 0.1 folder there keeps the copies for going back.'] : []),
     ...(input.hadRegistry ? [`${REGISTRY_BACKUP} holds the registered workspaces' agent tokens and admin credentials in clear text: once the node works as it should, delete every *.v1.json file in the state directory and in its workspaces folders.`] : []),
     ...(keys.length > 0 ? [`${keys.join(', ')} ${keys.length === 1 ? 'is a workspace setting now: its value was' : 'are workspace settings now: their values were'} copied into each workspace's workspace.json, and Buckle ignores ${keys.length === 1 ? 'it' : 'them'} from here on. Remove ${keys.length === 1 ? 'it' : 'them'} with buckle settings unset.`] : []),
     ...rootLineNotice(input.node),
@@ -433,13 +516,13 @@ function notices(input: { node: NodeConfig; plans: Planned[]; hadRegistry: boole
 }
 
 /**
- * The BUCKLE_WORKSPACE_ROOT line 0.1's buckle init always wrote: read once, as workspace default's folder, and never by
- * `buckle mcp`, which takes it only from an MCP config's own env (fix brief 1, B; findings 1 and 13).
+ * The BUCKLE_WORKSPACE_ROOT line 0.1's buckle init always wrote: read once, as the node folder's workspace's folder, and
+ * never by `buckle mcp`, which takes it only from an MCP config's own env (fix brief 1, B; findings 1 and 13).
  */
 function rootLineNotice(node: NodeConfig): string[] {
   const file = node.migration.file
   if (file === null || node.migration.workspaceRoot === undefined) return []
-  return [`${file} sets BUCKLE_WORKSPACE_ROOT, which the node reads only when it moves onto workspaces, as workspace default's folder. A plain buckle mcp never serves that folder for it: it serves the workspace holding the directory it starts in, or the folder an MCP config's own env names in BUCKLE_WORKSPACE_ROOT. Add --workspace <id> to your MCP configs, then run buckle settings unset root.`]
+  return [`${file} sets BUCKLE_WORKSPACE_ROOT, which the node reads only when it moves onto workspaces, as the folder of the workspace it makes of it. A plain buckle mcp never serves that folder for it: it serves the workspace holding the directory it starts in, or the folder an MCP config's own env names in BUCKLE_WORKSPACE_ROOT. Add --workspace <name> to your MCP configs, then run buckle settings unset root.`]
 }
 
 /**
@@ -449,8 +532,14 @@ function rootLineNotice(node: NodeConfig): string[] {
  */
 function movedNodeNotices(node: NodeConfig): string[] {
   const where = node.migration.file !== null && node.migration.authToken !== '' ? `in ${node.migration.file}` : 'in the environment'
+  const holder = node.authToken === '' ? undefined : workspaceArgument(nodeTokenHolder(node) ?? 'the workspace made from the node\'s folder')
   return [
-    ...(node.authToken === '' ? [] : [`BUCKLE_AUTH_TOKEN is set ${where}, but a node on the workspace model does not read it: the token it held when the node moved is workspace default's token node, and changing the variable changes nothing. Rotate the token with buckle workspace token create --workspace default, then buckle workspace token revoke node --workspace default, and remove the variable.`]),
+    ...(holder === undefined ? [] : [`BUCKLE_AUTH_TOKEN is set ${where}, but a node on the workspace model does not read it: the token it held when the node moved is token node of workspace ${holder}, and changing the variable changes nothing. Rotate the token with buckle workspace token create --workspace ${holder}, then buckle workspace token revoke node --workspace ${holder}, and remove the variable.`]),
     ...rootLineNotice(node),
   ]
+}
+
+/** The name of the workspace holding token `node`, or undefined where the registry does not say. */
+function nodeTokenHolder(node: NodeConfig): string | undefined {
+  try { return openRegistry({ stateDirectory: node.stateDirectory, lockDeadlineMs: node.stateLockDeadlineMs }).read().workspaces.find(workspace => workspace.tokens.some(token => token.id === NODE_TOKEN_ID))?.name } catch { return undefined }
 }

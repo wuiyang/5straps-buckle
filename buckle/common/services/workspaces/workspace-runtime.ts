@@ -21,7 +21,7 @@ import { createFileGrantStore } from '../../adapters/grant-store/file-grant-stor
 import { runProcess } from '../../adapters/process-runner.js'
 import { createWebhookReporter } from '../../adapters/report/webhook-reporter.js'
 import { resolveSandbox, type SandboxResolution } from '../../adapters/sandbox/create-sandbox.js'
-import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, NODE_FOLDER_WORKSPACE, pluginsPath, workspaceFields, type BuckleConfig } from '../../runtime/config.js'
+import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, pluginsPath, workspaceFields, type BuckleConfig } from '../../runtime/config.js'
 import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
@@ -172,7 +172,7 @@ export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime>
   const { config } = input
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
-  const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? NODE_FOLDER_WORKSPACE}` })
+  const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? config.workspaceId}` })
   let closeApprovals: (() => Promise<void>) | undefined
   try {
     return await assembleRuntime({ ...input, history, onApprovalCleanup: close => { closeApprovals = close } })
@@ -198,7 +198,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   })
 
   const lockDeadlineMs = config.stateLockDeadlineMs
-  const workspaceId = input.workspaceId ?? NODE_FOLDER_WORKSPACE
+  const workspaceId = input.workspaceId ?? config.workspaceId
   // Keyed by the workspace's id, so they stay its own whatever its folder is called.
   const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: workspaceId, lockDeadlineMs })
   // Every notification names its workspace, whose `buckle approve --workspace` answers it, by id and by its name as it

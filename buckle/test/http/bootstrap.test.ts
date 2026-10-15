@@ -8,6 +8,7 @@ import { CLOSE_STAGES } from '@5straps/runtime'
 import { generateSigningKey, keyIdOf, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest } from '@5straps/protocol/signed-request'
 import { afterAll, describe, expect, inject, it, vi } from 'vitest'
 import { firstResponse, freePort, spawnBuckle, waitForStatus, type BuckleProcess, type LogLine } from '../support/buckle-process.js'
+import { workspaceIdOf } from '../support/workspaces.js'
 
 // The package as installed: dist/main.js, and .output beside it, found from the package root.
 const entry = inject('buckleBuild').main
@@ -205,8 +206,8 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     const node = await prepareNode({ BUCKLE_APPROVAL_TIMEOUT_MS: '0', BUCKLE_PACKS: 'fs' })
     const buckle = serve(node)
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
-    const pendingTokens = () => existsSync(join(node.state, 'approvals.json'))
-      ? (JSON.parse(readFileSync(join(node.state, 'approvals.json'), 'utf8')) as { pending: Array<{ request: { token: string } }> }).pending.map(entry => entry.request.token)
+    const pendingTokens = () => existsSync(join(node.state, 'workspaces', workspaceIdOf(node.workspace), 'approvals.json'))
+      ? (JSON.parse(readFileSync(join(node.state, 'workspaces', workspaceIdOf(node.workspace), 'approvals.json'), 'utf8')) as { pending: Array<{ request: { token: string } }> }).pending.map(entry => entry.request.token)
       : []
     const waiting = fetch(`http://127.0.0.1:${node.port}/v1/invoke`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-agent-token', 'content-type': 'application/json' },
       body: JSON.stringify({ requestId: 'held-write', tool: 'fs_write', args: { path: 'held.md', content: 'must not land' } }) })
@@ -227,9 +228,9 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     const node = await prepareNode({ BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'bootstrap-admin-token', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
     const owner = generateSigningKey()
     const cli = (args: string[]) => execFileSync(process.execPath, [entry, ...args], { cwd: node.workspace, env: node.env, encoding: 'utf8' })
-    expect(cli(['keys', 'enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'])).toContain(owner.keyId)
+    expect(cli(['keys', 'enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'workspace'])).toContain(owner.keyId)
     const nodePublicKey = /Public key: +(ed25519:\S+)/.exec(cli(['keys', 'node']))![1]!
-    const authorization = (method: string, path: string, body: string) => signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: 'local-dev', nodeKey: keyIdOf(nodePublicKey), workspace: 'default', method, path, body })
+    const authorization = (method: string, path: string, body: string) => signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: 'local-dev', nodeKey: keyIdOf(nodePublicKey), workspace: workspaceIdOf(node.workspace), method, path, body })
     const buckle = serve(node)
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
     // Unsandboxed, the command word is spawned by the path PATH gives, so ps shows `/usr/bin/sleep <marker>` or the like.
@@ -240,13 +241,15 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     const waiting = fetch(`http://127.0.0.1:${node.port}/v1/invoke`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-agent-token', 'content-type': 'application/json' },
       body: JSON.stringify({ requestId: 'long-shell', tool: 'shell_exec', args: { command: 'sleep', args: [marker] } }) })
     // The shell stays held until an enrolled device verifies and signs its exact action.
-    const pending = () => existsSync(join(node.state, 'approvals.json')) ? (JSON.parse(readFileSync(join(node.state, 'approvals.json'), 'utf8')) as { pending: Array<{ request: { token: string } }> }).pending.map(entry => entry.request.token) : []
+    const approvals = join(node.state, 'workspaces', workspaceIdOf(node.workspace), 'approvals.json')
+    const pending = () => existsSync(approvals) ? (JSON.parse(readFileSync(approvals, 'utf8')) as { pending: Array<{ request: { token: string } }> }).pending.map(entry => entry.request.token) : []
     await expect.poll(pending, { timeout: 20_000 }).toHaveLength(1)
     const token = pending()[0]!
-    const unsigned = await fetch(`http://127.0.0.1:${node.port}/setup/approvals`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-admin-token', 'content-type': 'application/json' }, body: JSON.stringify({ token, approved: true, scope: 'once' }) })
+    const decisions = `/workspaces/${workspaceIdOf(node.workspace)}/setup/approvals`
+    const unsigned = await fetch(`http://127.0.0.1:${node.port}${decisions}`, { method: 'POST', headers: { authorization: 'Bearer bootstrap-admin-token', 'content-type': 'application/json' }, body: JSON.stringify({ token, approved: true, scope: 'once' }) })
     expect(unsigned.status).toBe(409)
     expect(running()).toBe(false)
-    const path = '/setup/approvals/challenges'
+    const path = `${decisions}/challenges`
     const listed = await fetch(`http://127.0.0.1:${node.port}${path}`, { headers: { authorization: authorization('GET', path, '') } })
     expect(listed.status).toBe(200)
     const item = ((await listed.json()) as { challenges: Array<{ token: string; signed: string; digest: string }> }).challenges.find(item => item.token === token)!
@@ -254,7 +257,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     expect(verified.digest).toBe(item.digest)
     expect(verified.challenge).toMatchObject({ token, tool: 'shell_exec', arguments: { command: 'sleep', args: [marker] }, cwd: node.workspace })
     const body = JSON.stringify({ token, approved: true, scope: 'once', challenge: verified.digest })
-    const answered = await fetch(`http://127.0.0.1:${node.port}/setup/approvals`, { method: 'POST', headers: { authorization: authorization('POST', '/setup/approvals', body), 'content-type': 'application/json' }, body })
+    const answered = await fetch(`http://127.0.0.1:${node.port}${decisions}`, { method: 'POST', headers: { authorization: authorization('POST', decisions, body), 'content-type': 'application/json' }, body })
     expect(answered.status).toBe(200)
     await expect.poll(running, { timeout: 20_000 }).toBe(true)
 
@@ -286,7 +289,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     expect(await buckle.exited).toEqual({ code: 0, signal: null })
     const finished = buckle.lines().filter(line => line.message === 'request finished').map(line => line.fields ?? {})
     expect(finished).toEqual(expect.arrayContaining([
-      expect.objectContaining({ method: 'GET', route: '/v1/skills/:skillId', status: 404, actor: 'agent:node', workspaceId: 'default', clientRequestId: 'caller-7' }),
+      expect.objectContaining({ method: 'GET', route: '/v1/skills/:skillId', status: 404, actor: 'agent:node', workspaceId: workspaceIdOf(node.workspace), clientRequestId: 'caller-7' }),
       expect.objectContaining({ method: 'GET', route: '/v1/manifest', status: 401 }),
       expect.objectContaining({ method: 'GET', route: null, status: 404 }),
       expect.objectContaining({ method: 'GET', route: '/v1/manifest', status: 200, actor: 'agent:node' }),
@@ -449,11 +452,11 @@ describe('a project outside every workspace\'s folder', () => {
     running.push(refused)
     expect(await refused.exited).toEqual({ code: 1, signal: null })
     expect(refused.stderr()).toContain('No workspace holds the current directory')
-    expect(refused.lines().some(line => line.level === 'warn' && line.message.includes('Add --workspace <id> to your MCP configs, then run buckle settings unset root'))).toBe(true)
+    expect(refused.lines().some(line => line.level === 'warn' && line.message.includes('Add --workspace <name> to your MCP configs, then run buckle settings unset root'))).toBe(true)
 
     const legacy = spawnBuckle({ entry, args: ['mcp'], env: { ...env, BUCKLE_WORKSPACE_ROOT: node.workspace }, cwd: elsewhere, stdin: 'pipe' })
     running.push(legacy)
-    expect((await legacy.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')).fields?.workspaceId).toBe('default')
+    expect((await legacy.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')).fields?.workspaceId).toBe(workspaceIdOf(node.workspace))
     legacy.child.stdin!.end()
     expect(await legacy.exited).toEqual({ code: 0, signal: null })
   }, 60_000)
@@ -469,7 +472,7 @@ describe('the workspace buckle mcp serves (built dist)', () => {
     const projB = join(node.root, 'proj-b')
     for (const [dir, id] of [[projA, 'proja'], [projB, 'projb']] as const) {
       mkdirSync(dir)
-      const made = spawnBuckle({ entry, args: ['workspace', 'init', '--id', id], env, cwd: dir })
+      const made = spawnBuckle({ entry, args: ['workspace', 'init', '--name', id], env, cwd: dir })
       running.push(made)
       expect(await made.exited).toEqual({ code: 0, signal: null })
     }
@@ -487,15 +490,15 @@ describe('the workspace buckle mcp serves (built dist)', () => {
 
   it('serves the workspace holding the directory it starts in, where nothing names one', async () => {
     const { env, projB } = await twoWorkspaces()
-    expect(await served({ env, cwd: projB })).toBe('projb')
+    expect(await served({ env, cwd: projB })).toBe(workspaceIdOf(projB))
   }, 60_000)
 
   it('serves the workspace --dir or --workspace names over the BUCKLE_WORKSPACE_ROOT its environment sets, and that one without them', async () => {
     const { env, projA, projB } = await twoWorkspaces()
     const legacy = { ...env, BUCKLE_WORKSPACE_ROOT: projA }
-    expect(await served({ env: legacy, cwd: projA, args: ['--dir', projB] })).toBe('projb')
-    expect(await served({ env: legacy, cwd: projA, args: ['--workspace', 'projb'] })).toBe('projb')
-    expect(await served({ env: legacy, cwd: projB })).toBe('proja')
+    expect(await served({ env: legacy, cwd: projA, args: ['--dir', projB] })).toBe(workspaceIdOf(projB))
+    expect(await served({ env: legacy, cwd: projA, args: ['--workspace', 'projb'] })).toBe(workspaceIdOf(projB))
+    expect(await served({ env: legacy, cwd: projB })).toBe(workspaceIdOf(projA))
   }, 60_000)
 
   // Finding 24: help starts nothing, needs no configuration, and prints the usage.

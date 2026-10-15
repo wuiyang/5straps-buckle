@@ -10,6 +10,7 @@ import { createSetupSessions, type SetupSessions } from '../services/access/setu
 import { createFileClientKeys } from '../adapters/keys/file-client-keys.js'
 import { openFileNonceStore } from '../adapters/approval/file-nonce-store.js'
 import { clientKeysPath, nodeKeyPath, requestNoncesPath, setupSessionsPath, type NodeConfig } from './config.js'
+import type { AskName } from '../services/workspaces/migration.js'
 
 // Typed accessors over the runtime owner's registry (nitro/runtime.md, Lifetimes).
 export interface BuckleServices {
@@ -74,13 +75,13 @@ function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<Buckl
   input.onClose('sinks', 'action reports', each(runtime => runtime.reporter.flush()))
 }
 
-export function defineBuckleServices(input: { config: NodeConfig; interaction: InteractionSource; onClose: OnClose }): BuckleServiceDefinitions {
+export function defineBuckleServices(input: { config: NodeConfig; interaction: InteractionSource; onClose: OnClose; askName?: AskName }): BuckleServiceDefinitions {
   // One set of roots for every workspace on the node: a program found in any of them is run by none (NodeRoots).
   const nodeRoots = nodeRootsOf(input.config)
   const workspaces = defineSingleton<WorkspaceManager>({
     name: 'WorkspaceManager',
     create: async () => {
-      const manager = await openWorkspaceManager({ config: input.config, interaction: input.interaction, nodeRoots })
+      const manager = await openWorkspaceManager({ config: input.config, interaction: input.interaction, nodeRoots, ...(input.askName ? { askName: input.askName } : {}) })
       closeWithOwner({ onClose: input.onClose, runtimes: () => manager.opened() })
       return manager
     },

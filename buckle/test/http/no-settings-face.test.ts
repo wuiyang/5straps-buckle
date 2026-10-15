@@ -42,7 +42,7 @@ describe('no face exposes node settings', () => {
     const buckle = await node()
     const headers = { authorization: 'Bearer admin-token-fixture', 'content-type': 'application/json' }
 
-    for (const path of ['/setup/settings', '/setup/env', '/setup/config']) {
+    for (const path of ['settings', 'env', 'config'].map(face => buckle.setup(face))) {
       expect((await buckle.request(path, { headers })).status).toBe(404)
       expect((await buckle.request(path, { method: 'PUT', headers, body: '{}' })).status).toBe(404)
     }
@@ -93,11 +93,12 @@ describe('no face exposes node settings', () => {
     // entries awaits the maintainer's ruling under BUCKLE-D19; any other value reaching a body fails here.
     const reported: Record<string, string[]> = {
       '/v1/manifest': ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_SCRATCH_ROOTS'],
-      '/setup/status': ['BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT'],
+      [app.setup('status')]: ['BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT'],
       '/setup/workspaces': ['BUCKLE_WORKSPACE_ROOT'],
-      '/setup/policy': ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_NETWORK_ALLOW'],
+      [app.setup('policy')]: ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_NETWORK_ALLOW'],
     }
-    const paths = [...new Set(app.routes().filter(route => route.method === 'GET' && !/[:*]/.test(route.path)).map(route => route.path))]
+    // Each GET route without a parameter, and the workspace's own faces under /workspaces/<id>/ (D85, Q15).
+    const paths = [...new Set(app.routes().filter(route => route.method === 'GET' && !/[:*]/.test(route.path.replace('/workspaces/:id/', ''))).map(route => route.path.replace('/workspaces/:id/', `/workspaces/${app.runtime.workspaceId}/`)))]
 
     const answered: string[] = []
     for (const path of paths) {
@@ -106,10 +107,10 @@ describe('no face exposes node settings', () => {
         if (response.status !== 200) continue
         const body = await response.text()
         answered.push(path)
-        expect(Object.keys(values).filter(key => body.includes(values[key]!)), `${path} with ${token}`).toEqual(reported[path] ?? [])
+        expect(Object.keys(values).filter(key => body.includes(values[key]!)), `${path} with ${token}`).toEqual(reported[path] ?? reported[path.replace(/^\/workspaces\/[^/]+/, '')] ?? [])
       }
     }
-    expect(answered).toEqual(expect.arrayContaining(['/v1/manifest', '/setup/status', '/setup/policy', '/setup/tools', '/setup/audit']))
+    expect(answered).toEqual(expect.arrayContaining(['/v1/manifest', app.setup('status'), app.setup('policy'), app.setup('tools'), app.setup('audit')]))
   })
 })
 

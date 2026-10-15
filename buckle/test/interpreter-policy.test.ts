@@ -9,7 +9,7 @@ import { compilePolicy, mergePolicies, PolicyError } from '../common/domain/poli
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 /**
  * The interpreter decision (docs/dev/architecture.md, Interpreters): a call that runs code with python, node, deno, bun,
@@ -145,7 +145,7 @@ describe('a workspace\'s own interpreter allowance', () => {
     policy.commands.deny = child.deny ?? []
     if (child.interpreters) policy.commands.allowedInterpreters = child.interpreters
     await registerWorkspace(manager, { id: 'child', name: 'Child', dir: join(root, 'child'), policy })
-    return (await manager.resolve('child')).runtime
+    return (await byName(manager, 'child')).runtime
   }
 
   /** The registered workspace's real permission pipeline on `node script.js`; a prepared effect stands in, and nothing runs. */

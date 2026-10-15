@@ -8,9 +8,10 @@ import { defineSetupHandler } from '../../utils/setup.js'
 export default defineSetupHandler({
   access: 'session',
   resource: 'sessions',
-  handler: async ({ event, actor, workspace }) => {
+  nodeLevel: true,
+  handler: async ({ event, actor, workspaceId }) => {
     if (!actor.startsWith('key:')) throw HTTPError.status(400, 'Bad Request', { message: 'A setup session is for a request a person\'s enrolled key signs; the admin credential needs none' })
     const sessions = await useServices(event).getSetupSessions()
-    return json({ session: await sessions.open({ keyId: actor.slice('key:'.length), workspaceId: workspace.runtime.workspaceId }) }, { status: 201 })
+    return json({ session: await sessions.open({ keyId: actor.slice('key:'.length), workspaceId }) }, { status: 201 })
   },
 })

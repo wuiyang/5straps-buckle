@@ -29,13 +29,13 @@ const USAGE = `Usage:
   buckle client request <METHOD> <url> [--body <json>] [--purpose setup|approval] [--node <server-id>] [--session <id>]
                                       Send one request to a pinned node's setup face, signed with this device's key;
                                       --node, when given, must name the node pinned for the URL
-  buckle client session open <node-url> [--workspace <id>]
-  buckle client session close <node-url> <session-id> [--workspace <id>]
+  buckle client session open <node-url> --workspace <name>
+  buckle client session close <node-url> <session-id> --workspace <name>
                                       A setup session: signed setup changes name it with --session
   buckle client trust <node-url> <server-id> <node-public-key>
                                       Pin the node at that URL, as \`buckle keys node\` prints it on that node
-  buckle client approvals <node-url> [--workspace <id>]
-  buckle client approve <node-url> <token> [--deny] [--scope once|session|always] [--workspace <id>]
+  buckle client approvals <node-url> --workspace <name>
+  buckle client approve <node-url> <token> [--deny] [--scope once|session|always] --workspace <name>
                                       Show the whole action an ask is, as the pinned node signed it, and decide on exactly that
 
 The key and the pinned nodes live in BUCKLE_CLIENT_DIR (an absolute path), ~/.5straps/client by default, owner-only.
@@ -111,7 +111,7 @@ function showKey(environment: NodeJS.ProcessEnv): CliResult {
 }
 
 function describe(key: { publicKey: string; keyId: string }): string {
-  return `Public key:  ${key.publicKey}\nFingerprint: ${key.keyId}\nOn the node: buckle keys enroll ${key.publicKey} --purpose setup|approval --workspace <id>|node --label <this device>\n`
+  return `Public key:  ${key.publicKey}\nFingerprint: ${key.keyId}\nOn the node: buckle keys enroll ${key.publicKey} --purpose setup|approval --workspace <name>|node --label <this device>\n`
 }
 
 async function request(argv: string[], environment: NodeJS.ProcessEnv): Promise<CliResult> {
@@ -130,7 +130,8 @@ async function request(argv: string[], environment: NodeJS.ProcessEnv): Promise<
  */
 async function send(input: { environment: NodeJS.ProcessEnv; method: string; url: URL; body: string; purpose: SignedRequestPurpose; node?: string; session?: string }): Promise<Response> {
   const method = input.method.toUpperCase()
-  const workspace = decodeURIComponent(/^\/workspaces\/([^/]+)\//.exec(input.url.pathname)?.[1] ?? 'default')
+  // A path that names no workspace is the node level, which a node-scoped key signs for (D85, Q15).
+  const workspace = decodeURIComponent(/^\/workspaces\/([^/]+)\//.exec(input.url.pathname)?.[1] ?? 'node')
   const pin = pinFor(input.environment, input.url)
   if (input.node !== undefined && input.node !== pin.serverId) throw new ClientError(`--node names ${input.node}, but ${input.url.origin} is pinned as ${pin.serverId}; nothing was signed`)
   const authorization = signRequest({
@@ -146,9 +147,9 @@ function report(response: Response, text: string): CliResult {
   return { exitCode: response.ok ? 0 : 1 }
 }
 
-/** A node URL and an optional workspace as the route for one of its setup paths. */
+/** A node URL and the workspace, by name or id, as the route for one of its setup paths; without one, the node level, which serves no workspace. */
 function setupUrl(node: string, workspace: string | undefined, path: string): URL {
-  const prefix = workspace && workspace !== 'default' ? `/workspaces/${encodeURIComponent(workspace)}` : ''
+  const prefix = workspace ? `/workspaces/${encodeURIComponent(workspace)}` : ''
   return new URL(`${prefix}/setup/${path}`, new URL(node).origin)
 }
 

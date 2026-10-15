@@ -31,8 +31,8 @@ async function storedNode(prefix: string) {
   const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), `${prefix}-`)), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), `${prefix}-state-`)), BUCKLE_SANDBOX: 'none' })
   const stored = { ...emptyWorkspacePolicy(), commands: { ...emptyWorkspacePolicy().commands, deny: ['curl *'] } }
   const workspaces = await workspacesOf(config)
-  await workspaces.updateSettings('default', current => withPolicy(current, stored))
-  const file = settingsPath(config.stateDirectory, 'default')
+  await workspaces.updateSettings(config.workspaceId, current => withPolicy(current, stored))
+  const file = settingsPath(config.nodeStateDirectory!, config.workspaceId)
   return { config, stored, workspaces, file, before: readFileSync(file, 'utf8') }
 }
 

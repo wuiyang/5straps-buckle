@@ -4,6 +4,7 @@ import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
 import { environmentFilePath } from '../common/runtime/environment.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { randomUUID } from 'node:crypto'
+import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
@@ -64,8 +65,9 @@ export async function runCli(input: { argv: string[]; config: NodeConfig; confir
   const [command = '', ...rest] = input.argv
   const confirm = input.confirm !== undefined ? input.confirm : terminalConfirm({ input: process.stdin, output: process.stdout })
 
-  // One command is one process owner: its common runtime closes when the command ends.
-  const common = initializeCommon({ config: input.config, role: 'cli' })
+  // One command is one process owner: its common runtime closes when the command ends. At a terminal, the move onto
+  // workspaces may ask for a name (D85, Q15), on stderr, where its questions go.
+  const common = initializeCommon({ config: input.config, role: 'cli', ...(process.stdin.isTTY && process.stderr.isTTY ? { askName: question => askAtTerminal(question) } : {}) })
   // A terminal answers a gated call in place; without one the call reports back at once (exit 3). The question is
   // shown on stderr, so both ends must be a terminal: with stderr redirected a key would answer an unseen action
   // (review L2 of the continuation review).
@@ -666,6 +668,12 @@ function print(value: unknown): CliResult {
 function fail(message: string): CliResult {
   process.stderr.write(`${message}\n`)
   return { exitCode: 1 }
+}
+
+/** One question at this process's terminal, on stderr, closed once answered. */
+async function askAtTerminal(question: string): Promise<string> {
+  const readline = createInterface({ input: process.stdin, output: process.stderr })
+  try { return await readline.question(question) } finally { readline.close() }
 }
 
 async function historyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {

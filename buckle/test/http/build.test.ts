@@ -124,8 +124,9 @@ describe('the built server (.output)', () => {
 
     // The positive control (review L3 of B13-B14): the same credential opens the full build's face.
     const full = await node({ environment: environment({ BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'build-admin-token' }) })
-    expect((await full.request('/setup/status', { headers: admin })).status).toBe(200)
-    expect((await full.request('/workspaces/default/setup/status', { headers: admin })).status).toBe(200)
+    expect((await full.request(full.setup('status'), { headers: admin })).status).toBe(200)
+    // The workspace by its name, the folder's (D85, Q15).
+    expect((await full.request('/workspaces/workspace/setup/status', { headers: admin })).status).toBe(200)
   })
 
   it('compiles exactly the layers\' file routes, and no middleware, into the router: every handler entry parsed, meta or not (review M3 of B18-B19, M6 of B20-B22)', () => {

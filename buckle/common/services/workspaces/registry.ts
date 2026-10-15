@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
+import { looksLikeWorkspaceId } from './workspace-id.js'
 
 /** The code a transport tells an unreadable registry by, before it has authenticated anyone. */
 export const WORKSPACE_REGISTRY_UNREADABLE = 'WORKSPACE_REGISTRY_UNREADABLE'
@@ -17,9 +18,8 @@ export class WorkspaceRegistryError extends WorkspaceError {
   override readonly code = WORKSPACE_REGISTRY_UNREADABLE
 }
 
-/** A workspace id: a lower-case word, `node` excepted, which names the whole node in a key's scope (review items 9 and 22). */
-export const WorkspaceIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'A workspace id is a lower-case letter, then up to 63 lower-case letters, digits or hyphens')
-  .refine(value => value !== NODE_SCOPE, 'node is reserved: it names the whole node in a key\'s scope')
+/** A workspace id: a UUID Buckle assigns (D85, Q15, workspaceIdFor), which nobody types, so it never names `node`, a key's scope for the whole node. */
+export const WorkspaceIdSchema = z.uuid('A workspace id is a UUID Buckle assigns')
 
 /**
  * A workspace's name: the handle the owner types after `--workspace` and keeps in MCP configs (D85, Q15), unique on
@@ -27,6 +27,7 @@ export const WorkspaceIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'A w
  */
 export const WorkspaceNameSchema = z.string().trim().min(1).max(120)
   .refine(value => !sameName(value, NODE_SCOPE), 'node is reserved: it names the whole node in a key\'s scope')
+  .refine(value => !looksLikeWorkspaceId(value), 'A name cannot have the form of a UUID, which is a workspace id')
 
 /** Whether two names are one workspace's: compared without regard to case, stored as typed. */
 export function sameName(left: string, right: string): boolean {
@@ -49,6 +50,11 @@ const StoredWorkspaceSchema = z.object({
   dir: z.string().min(1).max(4096),
   /** Whether `buckle serve` serves it, as an MCP server is enabled or disabled (D83 addendum (5)). */
   online: z.boolean(),
+  /**
+   * The workspace migration made of the node's own folder (D85, Q15): the node's read-only mounts and toolchains may
+   * overlap it, as 0.1 let them overlap the folder it served, where every registered workspace is refused such a folder.
+   */
+  nodeFolder: z.boolean().optional(),
   tokens: z.array(StoredTokenSchema),
   /** Counts the record's changes. */
   revision: z.number().int().nonnegative(),

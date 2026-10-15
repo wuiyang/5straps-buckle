@@ -4,7 +4,7 @@ import type { ActionLog } from '../../../../common/types/ports/action-log.js'
 import { nodeActions, recordRefusal, recordTransportRefusal, tolerantLog } from './audit.js'
 import { beforeCredential, isRegistryFailure, unauthorized } from './errors.js'
 import { useServices } from './services.js'
-import { NODE_WORKSPACE, namedWorkspace, targetId } from './target.js'
+import { canonicalTargetId, NODE_LEVEL, namedWorkspace } from './target.js'
 
 const UNRESOLVED = 'unresolved'
 
@@ -57,16 +57,18 @@ export async function checkCredential<T>(event: H3Event, input: { verify: () => 
  */
 export function requireAgent(refusal?: RefusalAudit): Guard {
   return async (event) => {
-    const named = getRouterParam(event, 'id')
+    const named = namedWorkspace(event)
     const workspaces = await useServices(event).getWorkspaces()
     const owner = await checkCredential(event, {
-      verify: () => {
+      verify: async () => {
         const found = workspaces.tokenOwner(authorization(event))
-        return found !== null && (named === undefined || found.workspaceId === named) ? found : null
+        // The path's handle, by id or by name (D85, Q15): a token of another workspace and one of no workspace refuse alike.
+        const target = named ? await canonicalTargetId(event) : undefined
+        return found !== null && (target === undefined || found.workspaceId === target) ? found : null
       },
       ...(refusal ? { refusal } : {}),
     })
-    if (named === undefined) event.context.tokenWorkspace = owner.workspaceId
+    if (!named) event.context.tokenWorkspace = owner.workspaceId
     return { actor: `agent:${owner.tokenId}`, workspaceId: owner.workspaceId }
   }
 }
@@ -78,8 +80,8 @@ export function requireAgent(refusal?: RefusalAudit): Guard {
  */
 const WORKBENCH_REFUSED: RefusalAudit = {
   node: async ({ event, actions, status }) => {
-    await recordRefusal(actions, { tool: 'workbench_auth_rejected', workspaceId: NODE_WORKSPACE, sessionId: 'workbench-untrusted', status, detail: `HTTP ${status}` })
-    if (isMutation(event)) await recordTransportRefusal(actions, { tool: workbenchTransportTool(event), workspaceId: NODE_WORKSPACE, status })
+    await recordRefusal(actions, { tool: 'workbench_auth_rejected', workspaceId: NODE_LEVEL, sessionId: 'workbench-untrusted', status, detail: `HTTP ${status}` })
+    if (isMutation(event)) await recordTransportRefusal(actions, { tool: workbenchTransportTool(event), workspaceId: NODE_LEVEL, status })
   },
   named: 'workbench_auth_rejected',
 }
@@ -91,10 +93,15 @@ const WORKBENCH_REFUSED: RefusalAudit = {
  * answers its 409 to the grant holder only, from the route.
  */
 export const requireWorkbench: Guard = async (event) => {
-  const workspaceId = targetId(event)
   const workbenchId = getRouterParam(event, 'workbenchId', { decode: true }) ?? ''
   const workspaces = await useServices(event).getWorkspaces()
-  await checkCredential(event, { verify: async () => (await workspaces.authenticateWorkbench(workspaceId, workbenchId, authorization(event))) || null, refusal: WORKBENCH_REFUSED })
+  // On a path that names no workspace, the workspace holding the grant answers (D85, Q15), as a token's does on /v1 and /mcp.
+  const workspaceId = await checkCredential(event, {
+    // A caller presenting no credential learns nothing, the registry not read (review L6 of B15-B17); a credential resolves the workspace, and only its own grant opens the workbench.
+    verify: async () => (authorization(event) === undefined ? null : workspaces.authenticateWorkbench(await canonicalTargetId(event), workbenchId, authorization(event))),
+    refusal: WORKBENCH_REFUSED,
+  })
+  if (!namedWorkspace(event)) event.context.tokenWorkspace = workspaceId
   return { actor: `workbench:${workbenchId}`, workspaceId }
 }
 
@@ -115,16 +122,17 @@ async function auditRefusal(event: H3Event, refusal: RefusalAudit | undefined, i
   if (!refusal) return
   const actions = tolerantLog(event, await nodeActions(event))
   if (!namedWorkspace(event)) return refusal.node({ event, actions, status: input.status })
-  const workspaceId = targetId(event)
-  const known = input.registryReadable && await knownWorkspace(event, workspaceId)
+  const known = input.registryReadable ? await knownWorkspace(event) : undefined
   // Refused before anyone was authenticated, the registry's 503 included.
-  await recordRefusal(actions, { tool: refusal.named, workspaceId: known ? workspaceId : UNRESOLVED, sessionId: 'http-untrusted', status: input.status, outcome: 'denied', detail: `HTTP ${input.status}` })
+  await recordRefusal(actions, { tool: refusal.named, workspaceId: known ?? UNRESOLVED, sessionId: 'http-untrusted', status: input.status, outcome: 'denied', detail: `HTTP ${input.status}` })
 }
 
-async function knownWorkspace(event: H3Event, workspaceId: string): Promise<boolean> {
+/** The id of the workspace the path names, by id or by name; undefined where none does, or the registry will not read. */
+async function knownWorkspace(event: H3Event): Promise<string | undefined> {
   try {
-    return (await useServices(event).getWorkspaces()).known(workspaceId)
+    const handle = getRouterParam(event, 'id', { decode: true }) ?? ''
+    return (await useServices(event).getWorkspaces()).lookup(handle)?.id
   } catch {
-    return false
+    return undefined
   }
 }

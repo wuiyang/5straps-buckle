@@ -9,7 +9,7 @@ import { settingsPath } from '../common/services/workspaces/workspace-settings.j
 import { configFromEnvironment } from './support/workspace-config.js'
 import { checkUrlCommand } from '../cli/check-url.js'
 import { runCli } from './support/cli.js'
-import { registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 
 function node(environment: Record<string, string> = {}): BuckleConfig {
@@ -35,7 +35,7 @@ async function check(config: BuckleConfig, ...argv: string[]): Promise<{ exitCod
 }
 
 function grants(config: BuckleConfig) {
-  return createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' })
+  return createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId })
 }
 
 describe('buckle check-url', () => {
@@ -169,7 +169,7 @@ describe('buckle check-url', () => {
   it('exits 2 when the workspace settings cannot be read, rather than reading as a denial', async () => {
     const config = node()
     await workspacesOf(config)
-    writeFileSync(settingsPath(config.stateDirectory, 'default'), '{ not json')
+    writeFileSync(settingsPath(config.nodeStateDirectory!, config.workspaceId), '{ not json')
 
     expect(await check(config, 'example.com')).toMatchObject({ exitCode: 2, stdout: '', stderr: expect.stringContaining('Cannot read this node\'s policy or state, so there is no verdict') })
   })
@@ -210,10 +210,12 @@ describe('buckle check-url', () => {
       const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' })
       const policy = emptyWorkspacePolicy()
       policy.network.allow = network
-      await registerWorkspace(await workspacesOf(config), { id: 'child', name: 'Child', dir: join(root, 'child'), policy })
-      const childState = join(realpathSync(join(root, 'state')), 'workspaces', 'child')
+      const manager = await workspacesOf(config)
+      await registerWorkspace(manager, { id: 'child', name: 'Child', dir: join(root, 'child'), policy })
+      const childId = idOf(manager, 'child')
+      const childState = join(realpathSync(join(root, 'state')), 'workspaces', childId)
       mkdirSync(childState, { recursive: true })
-      await createFileGrantStore({ filePath: join(childState, 'grants.json'), workspace: 'child' }).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
+      await createFileGrantStore({ filePath: join(childState, 'grants.json'), workspace: childId }).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: '*.localhost', scope: 'always', pattern: true })
       return config
     }
 

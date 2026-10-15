@@ -59,7 +59,7 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
         if (error instanceof StateBusyError) throw error
         // A disabled or retired workspace serves no call, so its log does not hold the node's readiness,
         // even when the owner reads it (review L12 of B23-B25).
-        if (options.serving?.() !== false) options.health?.failed(filePath, { probe: () => probe(filePath, pending), workspaceId: options.workspaceId ?? 'default' })
+        if (options.serving?.() !== false) options.health?.failed(filePath, { probe: () => probe(filePath, pending), workspaceId: options.workspaceId ?? 'node' })
         throw new AuditUnavailableError({ cause: error })
       }
     },

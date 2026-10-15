@@ -12,6 +12,7 @@ import { openSettingsFile, settingsPath } from '../common/services/workspaces/wo
 import { workspaceRegistryCommand, type NamePrompt } from '../cli/workspace.js'
 import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
+import { byName, idOf, workspaceIdOf } from './support/workspaces.js'
 
 // The workspace-model brief, item 4: buckle workspace init, list, show, enable, disable, remove, set, unset and token,
 // each on the workspace --workspace or --dir names or else the one holding the current directory (D83 (2) to (6)).
@@ -60,22 +61,24 @@ async function init(dir: string, extra: string[] = []): Promise<string> {
 
 const registryText = () => readFileSync(join(state, 'workspaces.json'), 'utf8')
 const registry = () => JSON.parse(registryText()) as { workspaces: { id: string; name: string; dir: string; online: boolean; tokens: { id: string; label: string }[] }[] }
-const settings = (id: string) => openSettingsFile({ filePath: settingsPath(state, id) }).read()
+/** A folder's workspace settings, under the id the folder derives (D85, Q15). */
+const settings = (dir: string) => openSettingsFile({ filePath: settingsPath(state, workspaceIdOf(dir)) }).read()
 const audit = () => readFileSync(join(state, 'actions.jsonl'), 'utf8')
 
 describe('buckle workspace init', () => {
   it('serves the current directory, named and keyed after it, and prints its token once, kept as a digest alone', async () => {
     const token = await init(alpha)
 
-    expect(registry().workspaces).toMatchObject([{ id: 'alpha', name: 'alpha', dir: alpha, online: true, tokens: [{ label: 'Registered' }] }])
+    expect(registry().workspaces).toMatchObject([{ id: workspaceIdOf(alpha), name: 'alpha', dir: alpha, online: true, tokens: [{ label: 'Registered' }] }])
     expect(registryText()).not.toContain(token)
-    expect(settings('alpha').mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
+    expect(settings(alpha).mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
     expect(audit()).not.toContain(token)
   })
 
-  it('takes --dir from where it runs, with --id and --name', async () => {
-    await init(base, ['--dir', 'beta', '--id', 'site', '--name', 'The site'])
-    expect(registry().workspaces).toMatchObject([{ id: 'site', name: 'The site', dir: beta }])
+  it('takes --dir from where it runs, with --name, and derives the id from the folder (D85, Q15)', async () => {
+    await init(base, ['--dir', 'beta', '--name', 'The site'])
+    expect(registry().workspaces).toMatchObject([{ id: workspaceIdOf(beta), name: 'The site', dir: beta }])
+    expect((await buckle(['init', '--id', 'site'], { cwd: alpha })).err).toContain('Unknown option')
   })
 
   it('refuses a folder inside one served already, and --workspace, which names no folder', async () => {
@@ -84,7 +87,7 @@ describe('buckle workspace init', () => {
     expect(nested.exitCode).toBe(1)
     expect(nested.err).toContain('A workspace folder must not hold, or sit inside, another workspace or Buckle state')
     expect((await buckle(['init', '--workspace', 'beta'], { cwd: alpha })).err).toContain('name its folder with --dir')
-    expect(registry().workspaces.map(workspace => workspace.id)).toEqual(['beta'])
+    expect(registry().workspaces.map(workspace => workspace.id)).toEqual([workspaceIdOf(beta)])
   })
 
   // D85, Q15: `add <dir> [--name <name>]` names the folder first; the 0.1 `add <id> --root <dir>` is gone with the typed id.
@@ -93,7 +96,7 @@ describe('buckle workspace init', () => {
     expect(result.exitCode).toBe(0)
     expect(result.out).toMatch(/agent token {3}\S+/)
     expect(result.out).toContain("buckle workspace token create --workspace 'The alpha site'")
-    expect(registry().workspaces).toMatchObject([{ id: 'alpha', name: 'The alpha site', dir: alpha }])
+    expect(registry().workspaces).toMatchObject([{ id: workspaceIdOf(alpha), name: 'The alpha site', dir: alpha }])
     expect((await buckle(['add', 'old', '--root', alpha])).err).toContain('Usage: buckle workspace add <dir> [--name <name>]')
   })
 
@@ -155,13 +158,13 @@ describe('a workspace\'s name', () => {
 
   it('is what every verb and --workspace take, in any case, beside the id, and rename changes it with the id kept', async () => {
     await init(alpha, ['--name', 'The alpha site'])
-    expect((await buckle(['show', '--workspace', 'the ALPHA site'])).out).toContain('Workspace The alpha site (id alpha)')
-    expect((await buckle(['show', '--workspace', 'alpha'])).out).toContain('Workspace The alpha site (id alpha)')
+    expect((await buckle(['show', '--workspace', 'the ALPHA site'])).out).toContain(`Workspace The alpha site (id ${workspaceIdOf(alpha)})`)
+    expect((await buckle(['show', '--workspace', workspaceIdOf(alpha)])).out).toContain(`Workspace The alpha site (id ${workspaceIdOf(alpha)})`)
     expect((await buckle(['disable', 'The alpha site'])).out).toContain('Workspace The alpha site is offline')
     const renamed = await buckle(['rename', 'the alpha site', 'Alpha, renamed'])
     expect(renamed.exitCode).toBe(0)
-    expect(renamed.out).toContain('Workspace The alpha site is now named Alpha, renamed; its id alpha is unchanged.')
-    expect(registry().workspaces).toMatchObject([{ id: 'alpha', name: 'Alpha, renamed', online: false }])
+    expect(renamed.out).toContain(`Workspace The alpha site is now named Alpha, renamed; its id ${workspaceIdOf(alpha)} is unchanged.`)
+    expect(registry().workspaces).toMatchObject([{ id: workspaceIdOf(alpha), name: 'Alpha, renamed', online: false }])
     expect((await buckle(['enable', 'Alpha, renamed'])).exitCode).toBe(0)
     expect((await buckle(['rename', 'nothing', 'x'])).err).toContain('No workspace is named nothing')
     expect((await buckle(['rename', 'Alpha, renamed', 'node'])).err).toContain('node is reserved')
@@ -173,17 +176,17 @@ describe('the workspace a command means', () => {
   beforeEach(async () => { await init(alpha); await init(beta) })
 
   it('is the one --workspace names, else the one holding --dir, else the one holding the current directory', async () => {
-    expect((await buckle(['show', '--workspace', 'beta'], { cwd: alpha })).out).toContain('Workspace beta (id beta)')
-    expect((await buckle(['show', '--dir', join(beta, 'sub')], { cwd: alpha })).out).toContain('Workspace beta (id beta)')
-    expect((await buckle(['show'], { cwd: join(beta, 'sub') })).out).toContain('Workspace beta (id beta)')
-    expect((await buckle([], { cwd: alpha })).out).toContain('Workspace alpha (id alpha)')
+    expect((await buckle(['show', '--workspace', 'beta'], { cwd: alpha })).out).toContain(`Workspace beta (id ${workspaceIdOf(beta)})`)
+    expect((await buckle(['show', '--dir', join(beta, 'sub')], { cwd: alpha })).out).toContain(`Workspace beta (id ${workspaceIdOf(beta)})`)
+    expect((await buckle(['show'], { cwd: join(beta, 'sub') })).out).toContain(`Workspace beta (id ${workspaceIdOf(beta)})`)
+    expect((await buckle([], { cwd: alpha })).out).toContain(`Workspace alpha (id ${workspaceIdOf(alpha)})`)
   })
 
   // Finding 33 of the Phase 1 review: a --dir that does not exist yet was compared as typed, links unfollowed.
   it('is the one holding a --dir that does not exist yet, spelled through a link as without it', async () => {
     symlinkSync(beta, join(base, 'link-to-beta'))
     for (const dir of [join('link-to-beta', 'sub', 'not-yet'), join('beta', 'sub', 'not-yet')]) {
-      expect((await buckle(['show', '--dir', dir], { cwd: base })).out).toContain('Workspace beta (id beta)')
+      expect((await buckle(['show', '--dir', dir], { cwd: base })).out).toContain(`Workspace beta (id ${workspaceIdOf(beta)})`)
     }
   })
 
@@ -202,13 +205,13 @@ describe('buckle workspace list and show', () => {
     await buckle(['disable', 'beta'])
 
     const listed = await buckle(['list'])
-    expect(listed.out).toMatch(/alpha\s+online\s+alpha\s+/)
-    expect(listed.out).toMatch(/beta\s+offline\s+beta\s+/)
+    expect(listed.out).toMatch(/alpha\s+online\s+[0-9a-f-]{36}\s+/)
+    expect(listed.out).toMatch(/beta\s+offline\s+[0-9a-f-]{36}\s+/)
     const json = await buckle(['list', '--json'])
-    expect(JSON.parse(json.out)).toMatchObject([{ id: 'alpha', online: true, tokens: 1 }, { id: 'beta', online: false }])
+    expect(JSON.parse(json.out)).toMatchObject([{ id: workspaceIdOf(alpha), name: 'alpha', online: true, tokens: 1 }, { id: workspaceIdOf(beta), name: 'beta', online: false }])
 
     const shown = await buckle(['show', '--json'], { cwd: alpha })
-    expect(JSON.parse(shown.out)).toMatchObject({ id: 'alpha', settings: { version: 1, packs: { shell: true } } })
+    expect(JSON.parse(shown.out)).toMatchObject({ id: workspaceIdOf(alpha), settings: { version: 1, packs: { shell: true } } })
     const text = await buckle(['show'], { cwd: alpha })
     expect(text.out).toContain('packs.shell')
     for (const printed of [listed.out, json.out, shown.out, text.out]) {
@@ -233,46 +236,46 @@ describe('buckle workspace enable, disable and remove', () => {
     expect(audit()).toMatch(/"detail":"disable alpha"/)
   })
 
-  it('forgets a workspace and keeps its records, which init takes up again, or deletes them with --purge; the folder stays', async () => {
+  it('forgets a workspace and keeps its records, which serving the folder again takes up, or deletes them with --purge; the folder stays', async () => {
     await buckle(['set', 'packs.shell', 'off'], { cwd: alpha })
-    expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
+    const removed = await buckle(['remove', 'alpha'])
+    expect(removed.exitCode).toBe(0)
+    expect(removed.out).toContain(`its records stay in the state directory under workspaces/${workspaceIdOf(alpha)}/: serving the folder again takes them up`)
     expect(registry().workspaces).toEqual([])
-    expect(existsSync(settingsPath(state, 'alpha'))).toBe(true)
+    expect(existsSync(settingsPath(state, workspaceIdOf(alpha)))).toBe(true)
 
-    await init(alpha, ['--id', 'alpha'])
-    expect(settings('alpha').packs.shell).toBe(false)
+    await init(alpha)
+    expect(settings(alpha).packs.shell).toBe(false)
 
     expect((await buckle(['remove', 'alpha', '--purge'])).out).toContain('deleted its records')
-    expect(existsSync(join(state, 'workspaces', 'alpha'))).toBe(false)
+    expect(existsSync(join(state, 'workspaces', workspaceIdOf(alpha)))).toBe(false)
     expect(existsSync(alpha)).toBe(true)
   })
 
-  // Findings 6 and 16 of the Phase 1 review: migration alone makes the id default, so a removed default could never be
-  // taken up again, though the CLI said it could.
-  it.each([[[]], [['--purge']]])('refuses to remove workspace default, whose id nothing registers again, pointing to disable (%j)', async (purge) => {
+  // Findings 6 and 16 of the Phase 1 review, and D85, Q15: the node's own folder is a workspace like any other, removed like any other.
+  it('removes the workspace made of the node\'s own folder like any other', async () => {
     const legacy = node({ BUCKLE_WORKSPACE_ROOT: beta, BUCKLE_AUTH_TOKEN: LEGACY_AGENT })
     rmSync(state, { recursive: true, force: true })
-    const refused = await buckle(['remove', 'default', ...purge], { config: legacy })
-    expect(refused.exitCode).toBe(1)
-    expect(refused.err).toContain('Stop serving it with buckle workspace disable default')
-    expect(registry().workspaces.map(workspace => workspace.id)).toEqual(['default'])
+    const removed = await buckle(['remove', 'beta'], { config: legacy })
+    expect(removed.exitCode).toBe(0)
+    expect(registry().workspaces).toEqual([])
   })
 
-  // Finding 36 of the Phase 1 review: a registration under a removed workspace's id takes its records up, the switch
-  // among them, which the owner is now told, and a policy named with it would be dropped, so that is refused.
-  it('says what a registration under a removed workspace\'s id takes up, its switch named where on, and refuses a policy over it', async () => {
+  // Finding 36 of the Phase 1 review, and D85, Q15: a folder registered again takes its records up, the switch among them,
+  // which the owner is now told, and a policy named with it would be dropped, so that is refused.
+  it('says what a folder registered again takes up, its switch named where on, and refuses a policy over it', async () => {
     const workspaces = await openWorkspaceManager({ config: node() })
     try {
-      const { runtime } = await workspaces.resolve('alpha')
+      const { runtime } = await byName(workspaces, 'alpha')
       await runtime.policy.setDangerouslyAllow(true)
       expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
       const strict = { ...emptyWorkspacePolicy(), commands: { allow: [], deny: ['curl *'] } }
-      await expect(workspaces.create({ id: 'alpha', dir: beta, policy: strict })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('buckle workspace remove alpha --purge') })
+      await expect(workspaces.create({ dir: alpha, policy: strict })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('buckle workspace remove alpha --purge') })
       expect(registry().workspaces).toEqual([])
     } finally { await workspaces.close() }
-    const taken = await buckle(['init', '--id', 'alpha'], { cwd: beta })
+    const taken = await buckle(['init'], { cwd: alpha })
     expect(taken.exitCode).toBe(0)
-    expect(taken.out).toContain('It takes up the records workspace alpha left when it was removed: its settings, grants, and history, and its dangerously-allow switch, which is ON.')
+    expect(taken.out).toContain('It takes up the records this folder left when its workspace was removed: its settings, grants, and history, and its dangerously-allow switch, which is ON.')
   })
 
   it('names the one name a verb takes', async () => {
@@ -286,7 +289,7 @@ describe('buckle workspace enable, disable and remove', () => {
 // all, on disk or in the process serving the workspace.
 describe('buckle workspace disable and remove, while the workspace has work', () => {
   beforeEach(async () => { await init(alpha) })
-  const marks = () => activeWorkDirectory(state, 'alpha')
+  const marks = () => activeWorkDirectory(state, workspaceIdOf(alpha))
 
   it('refuse while a shell result waits for review on disk, and delete nothing', async () => {
     const directory = stageShellResult()
@@ -296,7 +299,7 @@ describe('buckle workspace disable and remove, while the workspace has work', ()
       expect(refused.exitCode).toBe(1)
       expect(refused.err).toContain('Resolve active tools and staged work before')
     }
-    expect(registry().workspaces[0]).toMatchObject({ id: 'alpha', online: true })
+    expect(registry().workspaces[0]).toMatchObject({ id: workspaceIdOf(alpha), online: true })
     expect(existsSync(join(directory, 'run.json'))).toBe(true)
   })
 
@@ -312,10 +315,11 @@ describe('buckle workspace disable and remove, while the workspace has work', ()
   })
 
   it('refuse --purge of a workspace that will not open, as its staged work cannot be checked, and take it offline anyway', async () => {
+    const alphaId = workspaceIdOf(alpha)
     rmSync(alpha, { recursive: true })
     const refused = await buckle(['remove', 'alpha', '--purge'])
     expect(refused.err).toContain('will not open, so its staged work cannot be checked before its records are deleted')
-    expect(existsSync(settingsPath(state, 'alpha'))).toBe(true)
+    expect(existsSync(settingsPath(state, alphaId))).toBe(true)
     expect((await buckle(['disable', 'alpha'])).exitCode).toBe(0)
   })
 
@@ -323,8 +327,8 @@ describe('buckle workspace disable and remove, while the workspace has work', ()
     // A node entry point with nobody at a terminal: the gated call is held for the workspace's approval wait.
     const serving = await openWorkspaceManager({ config: node(), interaction: fixedInteraction() })
     try {
-      await serving.updateSettings('alpha', settings => ({ ...settings, approvalWaitMs: 1_500 }))
-      const { runtime } = await serving.resolve('alpha')
+      await serving.updateSettings(idOf(serving, 'alpha'), settings => ({ ...settings, approvalWaitMs: 1_500 }))
+      const { runtime } = await byName(serving, 'alpha')
       const held = runtime.invoke({ request: { requestId: 'held-write', tool: 'fs_write', args: { path: 'new.txt', content: 'x' }, approvalTokens: [] }, sessionId: 'serve' })
       await vi.waitFor(() => expect(existsSync(join(marks(), String(process.pid)))).toBe(true))
       expect(activeElsewhere({ directory: marks(), pid: process.pid + 1 })).toBe(true)
@@ -337,7 +341,7 @@ describe('buckle workspace disable and remove, while the workspace has work', ()
 /** A shell result of workspace alpha waiting for review on disk, as an isolated shell leaves it; its folder. */
 function stageShellResult(): string {
   const id = `shell-${randomUUID()}`
-  const directory = join(state, 'workspaces', 'alpha', 'isolated-shell', workspaceStateKey(alpha), id)
+  const directory = join(state, 'workspaces', workspaceIdOf(alpha), 'isolated-shell', workspaceStateKey(alpha), id)
   mkdirSync(join(directory, 'workspace'), { recursive: true })
   writeFileSync(join(directory, 'run.json'), JSON.stringify({ id, sessionId: 's', stageId: 'st', tool: 'shell_exec', sourceRoot: alpha, copyRoot: join(directory, 'workspace'), writableRoots: [alpha], excluded: [], createdAt: new Date().toISOString(), status: 'needs_review' }))
   return directory
@@ -355,29 +359,29 @@ describe('the runtime of a workspace taken offline', () => {
   const opened = async () => (await manager.opened()).map(runtime => runtime.workspaceId)
 
   it('closes in the process that took it offline, and opens anew once the workspace is enabled', async () => {
-    const { runtime } = await manager.resolve('alpha')
+    const { runtime } = await byName(manager, 'alpha')
     const closed = vi.spyOn(runtime, 'closeSessions')
-    expect(await opened()).toEqual(['alpha'])
+    expect(await opened()).toEqual([workspaceIdOf(alpha)])
 
-    await manager.update('alpha', { online: false })
+    await manager.update(idOf(manager, 'alpha'), { online: false })
     expect(await opened()).toEqual([])
     expect(closed).toHaveBeenCalledTimes(1)
 
-    await manager.update('alpha', { online: true })
-    expect((await manager.resolve('alpha')).runtime).not.toBe(runtime)
-    expect(await opened()).toEqual(['alpha'])
+    await manager.update(idOf(manager, 'alpha'), { online: true })
+    expect((await byName(manager, 'alpha')).runtime).not.toBe(runtime)
+    expect(await opened()).toEqual([workspaceIdOf(alpha)])
   })
 
   it('is opened for the check alone and closed with it, whether the workspace goes offline or the change is refused', async () => {
     expect(await opened()).toEqual([])
-    await manager.update('alpha', { online: false })
+    await manager.update(idOf(manager, 'alpha'), { online: false })
     expect(await opened()).toEqual([])
 
-    await manager.update('alpha', { online: true })
+    await manager.update(idOf(manager, 'alpha'), { online: true })
     stageShellResult()
-    await expect(manager.update('alpha', { online: false })).rejects.toMatchObject({ status: 409, message: 'Resolve active tools and staged work before taking this workspace offline' })
+    await expect(manager.update(idOf(manager, 'alpha'), { online: false })).rejects.toMatchObject({ status: 409, message: 'Resolve active tools and staged work before taking this workspace offline' })
     expect(await opened()).toEqual([])
-    expect(registry().workspaces[0]).toMatchObject({ id: 'alpha', online: true })
+    expect(registry().workspaces[0]).toMatchObject({ id: workspaceIdOf(alpha), online: true })
   })
 })
 
@@ -394,7 +398,7 @@ describe('a workspace removed and registered again while buckle serve runs', () 
       mkdirSync(folder, { recursive: true })
       writeFileSync(join(folder, 'which.txt'), text)
     }
-    await init(older, ['--id', 'site'])
+    await init(older, ['--name', 'site'])
     // The serving node, a process of its own, opened the workspace before the owner's commands ran.
     serving = await openWorkspaceManager({ config: node() })
     expect(await readWhich()).toBe('OLD')
@@ -402,16 +406,16 @@ describe('a workspace removed and registered again while buckle serve runs', () 
   afterEach(async () => { await serving.close() })
 
   async function readWhich(): Promise<unknown> {
-    const { runtime } = await serving.resolve('site')
+    const { runtime } = await byName(serving, 'site')
     const response = await runtime.invoke({ request: { requestId: `which-${Math.random()}`, tool: 'fs_read', args: { path: 'which.txt' }, approvalTokens: [] }, sessionId: 'serve' })
     return response.outcome === 'ok' ? (response.output as { content: string }).content : response
   }
 
-  it.each([[[], ['--id', 'site']], [['--purge'], []]])('serves the new registration from its own folder (remove %j)', async (removal, again) => {
+  it.each([[[]], [['--purge']]])('serves the new registration from its own folder (remove %j)', async (removal) => {
     expect((await buckle(['remove', 'site', ...removal])).exitCode).toBe(0)
-    await init(newer, again)
+    await init(newer, ['--name', 'site'])
     expect(await readWhich()).toBe('NEW')
-    expect((await serving.resolve('site')).config.cwd).toBe(newer)
+    expect((await byName(serving, 'site')).config.cwd).toBe(newer)
   })
 
   it('serves a new registration of the same folder from records of its own, after the earlier ones were purged', async () => {
@@ -420,19 +424,20 @@ describe('a workspace removed and registered again while buckle serve runs', () 
     expect(await readWhich()).toBe('OLD')
   })
 
+  // The same folder registered again has the same id (D85, Q15), so the runtime of its earlier registration is the one that waits.
   it('refuses a call while the earlier registration\'s runtime has work, naming no path', async () => {
-    const { runtime } = await serving.resolve('site')
+    const { runtime } = await byName(serving, 'site')
     vi.spyOn(runtime, 'hasActiveWork').mockResolvedValue(true)
     expect((await buckle(['remove', 'site'])).exitCode).toBe(0)
-    await init(newer, ['--id', 'site'])
-    const refused = await serving.resolve('site').catch((error: unknown) => error)
+    await init(older, ['--name', 'site'])
+    const refused = await serving.resolve(workspaceIdOf(older)).catch((error: unknown) => error)
     expect(refused).toMatchObject({ status: 409 })
     expect(String((refused as Error).message)).toContain('registered again while work under its earlier registration is active')
     expect(String((refused as Error).message)).not.toContain(base)
   })
 
   it('closes the runtime of a workspace removed or taken offline, once it has no work, when serve looks at the registry', async () => {
-    const { runtime } = await serving.resolve('site')
+    const { runtime } = await byName(serving, 'site')
     const closed = vi.spyOn(runtime, 'closeSessions')
     expect((await buckle(['disable', 'site'])).exitCode).toBe(0)
     await serving.closeUnserved()
@@ -446,16 +451,16 @@ describe('buckle workspace set and unset', () => {
   const set = (...words: string[]) => buckle(['set', ...words], { cwd: alpha })
 
   it('changes one setting in workspace.json, a revision at a time, and unset puts the default back', async () => {
-    const before = settings('alpha').revision
+    const before = settings(alpha).revision
     expect((await set('packs.shell', 'off')).exitCode).toBe(0)
-    expect(settings('alpha')).toMatchObject({ revision: before + 1, packs: { shell: false } })
+    expect(settings(alpha)).toMatchObject({ revision: before + 1, packs: { shell: false } })
     expect((await set('approvalWaitMs', '0')).exitCode).toBe(0)
     expect((await set('packs.enabled', 'fs, web')).exitCode).toBe(0)
     expect((await set('packs.hostGit', 'on')).exitCode).toBe(0)
-    expect(settings('alpha')).toMatchObject({ approvalWaitMs: 0, packs: { enabled: ['fs', 'web'], hostGit: true } })
+    expect(settings(alpha)).toMatchObject({ approvalWaitMs: 0, packs: { enabled: ['fs', 'web'], hostGit: true } })
 
     for (const key of ['packs.shell', 'packs.enabled', 'approvalWaitMs']) expect((await buckle(['unset', key], { cwd: alpha })).exitCode).toBe(0)
-    expect(settings('alpha')).toMatchObject({ approvalWaitMs: 15_000, packs: { enabled: null, shell: true } })
+    expect(settings(alpha)).toMatchObject({ approvalWaitMs: 15_000, packs: { enabled: null, shell: true } })
   })
 
   it('renames the workspace', async () => {
@@ -473,39 +478,39 @@ describe('buckle workspace set and unset', () => {
     [['mounts', '/elsewhere'], 'mounts is no workspace setting'],
     [['packs.shell'], 'Usage: buckle workspace set <key> <value>'],
   ])('refuses %j, saying why, and writes nothing', async (words, reason) => {
-    const before = settings('alpha')
+    const before = settings(alpha)
     const result = await set(...words)
     expect(result.exitCode).toBe(1)
     expect(result.err).toContain(reason)
-    expect(settings('alpha')).toEqual(before)
+    expect(settings(alpha)).toEqual(before)
   })
 
   it('refuses the environment pack while the node has no BUCKLE_ENV_VALIDATOR_COMMAND, naming it', async () => {
     const result = await set('packs.enabled', 'fs,environment')
     expect(result.err).toContain('environment (BUCKLE_ENV_VALIDATOR_COMMAND is not set)')
-    expect(settings('alpha').packs.enabled).toBeNull()
+    expect(settings(alpha).packs.enabled).toBeNull()
   })
 
   it('sets a variable the workspace\'s commands see, never echoing or auditing its value, and unsets it', async () => {
     const result = await set('env.NODE_ENV', 'workspace-cli-variable-value')
     expect(result.exitCode).toBe(0)
-    expect(settings('alpha').env).toEqual({ NODE_ENV: 'workspace-cli-variable-value' })
+    expect(settings(alpha).env).toEqual({ NODE_ENV: 'workspace-cli-variable-value' })
     expect(result.out).not.toContain('workspace-cli-variable-value')
     expect(audit()).not.toContain('workspace-cli-variable-value')
     expect(audit()).toContain('set alpha env.NODE_ENV')
     // The runtime that serves the workspace gives them to its shell commands (Q13).
     const workspaces = await openWorkspaceManager({ config: node() })
     try {
-      expect((await workspaces.resolve('alpha')).config.commandEnvironment).toEqual({ NODE_ENV: 'workspace-cli-variable-value' })
+      expect((await byName(workspaces, 'alpha')).config.commandEnvironment).toEqual({ NODE_ENV: 'workspace-cli-variable-value' })
     } finally { await workspaces.close() }
     expect((await buckle(['unset', 'env.NODE_ENV'], { cwd: alpha })).exitCode).toBe(0)
-    expect(settings('alpha').env).toEqual({})
+    expect(settings(alpha).env).toEqual({})
   })
 
   it.each(['API_KEY', 'GITHUB_TOKEN', 'DB_PASSWORD', 'BUCKLE_ADMIN_TOKEN', 'PATH', 'HOME', 'lower case'])('refuses the variable %s, which a credential or Buckle itself owns', async (name) => {
     const result = await set(`env.${name}`, 'value')
     expect(result.exitCode).toBe(1)
-    expect(settings('alpha').env).toEqual({})
+    expect(settings(alpha).env).toEqual({})
   })
 
   // Finding 26 of the Phase 1 review: only an exact admin or workspace token was refused; the node holds more secrets.
@@ -520,7 +525,7 @@ describe('buckle workspace set and unset', () => {
       expect(result.err).toContain('no secret reaches a command Buckle runs')
       expect(result.err).not.toContain(value.trim())
     }
-    expect(settings('alpha').env).toEqual({})
+    expect(settings(alpha).env).toEqual({})
     expect((await buckle(['set', 'env.HARMLESS_NAME', 'an ordinary value'], { cwd: alpha, config })).exitCode).toBe(0)
   })
 })

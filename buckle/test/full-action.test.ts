@@ -439,7 +439,7 @@ describe('the approval budgets, per session, per caller and per workspace (revie
     const timed = async () => { const times: number[] = []; for (let index = 0; index < 5; index++) { const started = performance.now(); expect(await read()).toMatchObject({ outcome: 'ok' }); times.push(performance.now() - started) } return times.sort((a, b) => a - b)[2]! }
     const baseline = await timed()
     // About 60 MiB waiting, from four callers, as the review's 66 MB.
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }), approvalsPath(config), config.cwd)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), config.cwd)
     for (const caller of ['a', 'b', 'c', 'd']) await registry.ask({ tool: 'fs_write', sessionId: `s-${caller}`, actor: caller, asks: [write(`/${caller}`)], call: whole(15 * 1_024 * 1_024, caller) })
     const before = statSync(approvalsPath(config))
     const loaded = await timed()

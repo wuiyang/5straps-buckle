@@ -76,7 +76,7 @@ describe('the action log Buckle reports', () => {
     await invoke('fs_read', { path: 'missing.txt' })
 
     expect(recorded.map(entry => entry.outcome)).toEqual(['ok', 'approval_required', 'denied', 'error'])
-    expect(recorded.every(entry => entry.workspace === workspace && entry.workspaceId === 'default')).toBe(true)
+    expect(recorded.every(entry => entry.workspace === workspace && entry.workspaceId === runtime.workspaceId)).toBe(true)
     expect(recorded[2]).toMatchObject({ tool: 'web_fetch', rule: 'network_egress', subject: 'file:' })
     expect(recorded[0]).toMatchObject({ tool: 'fs_read', rule: null, reason: '' })
   })

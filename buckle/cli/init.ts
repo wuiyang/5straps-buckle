@@ -117,7 +117,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
 
   const name = answers.name?.trim() || defaultNodeName(folder)
   if (writesNode && existsSync(out)) {
-    const refused = await moveFromOwnFile(out, platform)
+    const refused = await moveFromOwnFile(out, platform, interactive ? question => prompt.question(question) : undefined)
     if (refused) return refused
   }
   const adminToken = writesNode ? credential() : null
@@ -130,7 +130,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   const node = nodeConfig(out, contents, platform)
   mkdirSync(node.stateDirectory, { recursive: true, mode: 0o700 })
   let workspaces: WorkspaceManager
-  try { workspaces = await openWorkspaceManager({ config: node, platform }) } catch (error) {
+  try { workspaces = await openWorkspaceManager({ config: node, platform, ...(interactive ? { askName: question => prompt.question(question) } : {}) }) } catch (error) {
     if (error instanceof WorkspaceError || error instanceof MigrationError) return fail(error.message)
     throw error
   }
@@ -174,7 +174,7 @@ switch it on: buckle settings set experimental-admin-http on
  * 11 and 21): workspace default keeps its 0.1 folder, token, policy, and grants, which the rewritten file no longer
  * names. A file that will not load is left for --force to rewrite once the node has moved; before, it is refused.
  */
-async function moveFromOwnFile(out: string, platform: NodeJS.Platform): Promise<CliResult | null> {
+async function moveFromOwnFile(out: string, platform: NodeJS.Platform, askName?: (question: string) => Promise<string>): Promise<CliResult | null> {
   let node: NodeConfig
   try { node = nodeConfig(out, readFileSync(out, 'utf8'), platform) } catch (error) {
     if (movedOntoWorkspaces(stateDirectoryOf(process.env, platform))) return null
@@ -182,7 +182,7 @@ async function moveFromOwnFile(out: string, platform: NodeJS.Platform): Promise<
   }
   if (movedOntoWorkspaces(node.stateDirectory)) return null
   mkdirSync(node.stateDirectory, { recursive: true, mode: 0o700 })
-  try { await (await openWorkspaceManager({ config: node, platform })).close() } catch (error) {
+  try { await (await openWorkspaceManager({ config: node, platform, ...(askName ? { askName } : {}) })).close() } catch (error) {
     if (error instanceof WorkspaceError || error instanceof MigrationError) return fail(error.message)
     throw error
   }

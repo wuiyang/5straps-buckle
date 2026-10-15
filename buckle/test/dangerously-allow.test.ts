@@ -14,7 +14,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { runCli } from './support/cli.js'
-import { workspacesOf } from './support/workspaces.js'
+import { byName, idOf, workspaceIdOf, workspacesOf } from './support/workspaces.js'
 import type { Reporter } from '../common/types/ports/reporter.js'
 
 // B20, rulings 11 and H1 of 2026-09-28, owner decision D7 of 2026-09-29: one local switch per
@@ -293,7 +293,7 @@ describe('a registered workspace keeps its policy through the switch (review H1 
   async function start(root: string) {
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell,web', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
     const manager = await workspacesOf(config)
-    const runtime = (await manager.resolve('default')).runtime
+    const runtime = (await byName(manager, 'default')).runtime
     return { config, runtime, manager }
   }
 
@@ -305,7 +305,7 @@ describe('a registered workspace keeps its policy through the switch (review H1 
   }
 
   async function childRefuses(started: Awaited<ReturnType<typeof start>>): Promise<void> {
-    const { runtime: child } = await started.manager.resolve('child')
+    const { runtime: child } = await byName(started.manager, 'child')
     expect(child.policy.effective()).toMatchObject({ commands: { deny: ['rm *', 'curl *'] }, tools: { deny: ['fs_write'] }, network: { allow: ['example.com'] }, filesystem: { rules: [{ path: 'private', read: 'deny' }] }, mount: '/workspace' })
     expect(Object.keys(child.policy.effective())).not.toContain('dangerouslyAllow')
     // A registered workspace runs no shell without bubblewrap, so its command denies are checked in the effective policy above.
@@ -321,24 +321,24 @@ describe('a registered workspace keeps its policy through the switch (review H1 
     let started = await start(root)
     await started.manager.create({ id: 'child', name: 'Child', dir: join(root, 'child'), policy: REGISTERED })
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    const settings = settingsPath(started.config.stateDirectory, 'child')
+    const settings = settingsPath(started.config.nodeStateDirectory!, idOf(started.manager, 'child'))
     const before = readFileSync(settings, 'utf8')
 
-    await policyCommand((await started.manager.resolve('child')).runtime, ['dangerously-allow', 'on'])
-    const childState = (await started.manager.resolve('child')).config
+    await policyCommand((await byName(started.manager, 'child')).runtime, ['dangerously-allow', 'on'])
+    const childState = (await byName(started.manager, 'child')).config
     // The switch writes its own file, keyed by the workspace's id, and never the settings the child's policy is read from.
     expect(readFileSync(settings, 'utf8')).toBe(before)
-    expect(JSON.parse(readFileSync(dangerouslyAllowPath(childState), 'utf8'))).toMatchObject({ version: 1, workspaces: { child: { on: true } } })
+    expect(JSON.parse(readFileSync(dangerouslyAllowPath(childState), 'utf8'))).toMatchObject({ version: 1, workspaces: { [idOf(started.manager, 'child')]: { on: true } } })
     await stop(started)
 
     started = await start(root)
-    expect((await started.manager.resolve('child')).runtime.policy.dangerouslyAllow()).toMatchObject({ on: true })
+    expect((await byName(started.manager, 'child')).runtime.policy.dangerouslyAllow()).toMatchObject({ on: true })
     await childRefuses(started)
 
-    await policyCommand((await started.manager.resolve('child')).runtime, ['dangerously-allow', 'off'])
+    await policyCommand((await byName(started.manager, 'child')).runtime, ['dangerously-allow', 'off'])
     await stop(started)
     started = await start(root)
-    expect((await started.manager.resolve('child')).runtime.policy.dangerouslyAllow().on).toBe(false)
+    expect((await byName(started.manager, 'child')).runtime.policy.dangerouslyAllow().on).toBe(false)
     await childRefuses(started)
     await stop(started)
   })
@@ -357,11 +357,13 @@ describe('buckle policy dangerously-allow --workspace and --dir', () => {
     await manager.close()
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     const config = loadConfig(environment)
-    const stateOf = (id: string) => (id === 'default' ? join(root, 'state') : join(root, 'state', 'workspaces', id))
+    // Every workspace keeps its records under its own id (D85, Q15); the id a folder derives is the registry's.
+    const idsOf = { default: workspaceIdOf(join(root, 'default')), child: workspaceIdOf(join(root, 'child')) }
+    const stateOf = (name: 'default' | 'child') => join(root, 'state', 'workspaces', idsOf[name])
     const readJson = (file: string) => (existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as { workspaces: Record<string, { on: boolean }> } : { workspaces: {} })
-    const switchOf = (id: string) => readJson(dangerouslyAllowPath({ stateDirectory: stateOf(id) })).workspaces
-    const changes = (id: string) => {
-      const file = join(stateOf(id), 'actions.jsonl')
+    const switchOf = (name: 'default' | 'child') => readJson(dangerouslyAllowPath({ stateDirectory: stateOf(name) })).workspaces
+    const changes = (name: 'default' | 'child') => {
+      const file = join(stateOf(name), 'actions.jsonl')
       if (!existsSync(file)) return []
       // The switch's own record, as written once it changed; the attempt record before it is not counted.
       return readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { tool: string; event: string; workspaceId: string; detail?: string }).filter(entry => entry.tool === 'policy_dangerously_allow_changed' && entry.event === 'result')
@@ -369,16 +371,16 @@ describe('buckle policy dangerously-allow --workspace and --dir', () => {
     const inDefault = (argv: string[]) => runCli({ argv: ['policy', 'dangerously-allow', ...argv], config, confirm: null, cwd: join(root, 'default') })
 
     expect((await inDefault(['on', '--workspace', 'child'])).exitCode).toBe(0)
-    expect(switchOf('child')).toMatchObject({ child: { on: true } })
+    expect(switchOf('child')).toMatchObject({ [idsOf.child]: { on: true } })
     expect(switchOf('default')).toEqual({})
-    expect(changes('child')).toMatchObject([{ workspaceId: 'child', detail: 'on' }])
+    expect(changes('child')).toMatchObject([{ workspaceId: idsOf.child, workspaceName: 'Child', detail: 'on' }])
     expect(changes('default')).toEqual([])
 
     expect((await inDefault(['off', '--dir', join(root, 'child')])).exitCode).toBe(0)
     // Off removes the workspace's entry from its own switch file.
     expect(switchOf('child')).toEqual({})
     expect(switchOf('default')).toEqual({})
-    expect(changes('child')).toMatchObject([{ workspaceId: 'child', detail: 'on' }, { workspaceId: 'child', detail: 'off' }])
+    expect(changes('child')).toMatchObject([{ workspaceId: idsOf.child, detail: 'on' }, { workspaceId: idsOf.child, detail: 'off' }])
     expect(changes('default')).toEqual([])
   })
 })

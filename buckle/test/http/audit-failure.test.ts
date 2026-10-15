@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
+import { actionsPath } from '../../common/runtime/config.js'
 
 // B19: an audit log that will not take writes refuses what it would have to record, with a 503 an agent
 // may read, makes readiness 503, and still lets the owner inspect the node and refusals answer.
@@ -22,7 +23,7 @@ async function brokenAudit(): Promise<{ buckle: BuckleHttp; state: string; works
   nodes.push(buckle)
   writeFileSync(join(workspace, 'note.md'), 'audited read')
   // The log file becomes a directory: every append fails, as on a full or read-only disk.
-  const log = join(state, 'actions.jsonl')
+  const log = actionsPath(buckle.config)
   rmSync(log, { force: true })
   mkdirSync(log)
   return { buckle, state, workspace, repair: () => rmSync(log, { recursive: true }) }
@@ -73,7 +74,7 @@ describe('an audit log that will not take writes', () => {
     const childToken = await mintedToken(buckle.request('/setup/workspaces', { method: 'POST', headers: headers(ADMIN), body: JSON.stringify(child) }))
     const childRead = (requestId: string) => buckle.request('/workspaces/child/v1/invoke', { method: 'POST', headers: headers(childToken), body: JSON.stringify({ requestId, tool: 'fs_read', args: { path: '/workspace/note.md' } }) })
     expect(await (await childRead('child-opens')).json()).toMatchObject({ outcome: 'ok' })
-    const childLog = join(state, 'workspaces', 'child', 'actions.jsonl')
+    const childLog = join(state, 'workspaces', await buckle.idOf('child'), 'actions.jsonl')
     rmSync(childLog, { force: true })
     mkdirSync(childLog)
 
@@ -84,14 +85,14 @@ describe('an audit log that will not take writes', () => {
 
     expect((await buckle.request('/health/ready')).status).toBe(503)
     // The node's own face names the workspace keeping it unready, and each log says when it last failed (review M4 and L5 of B20-B22).
-    expect(await (await buckle.request('/setup/status', { headers: headers(ADMIN) })).json()).toMatchObject({ audit: 'available', auditLastFailureAt: null, auditFailingWorkspaces: ['child'] })
+    expect(await (await buckle.request(buckle.setup('status'), { headers: headers(ADMIN) })).json()).toMatchObject({ audit: 'available', auditLastFailureAt: null, auditFailingWorkspaces: [await buckle.idOf('child')] })
     const childStatus = await (await buckle.request('/workspaces/child/setup/status', { headers: headers(ADMIN) })).json() as Record<string, unknown>
     expect(childStatus).toMatchObject({ audit: 'unavailable', auditLastFailureAt: expect.stringMatching(/^\d{4}-/) })
     expect(Object.keys(childStatus)).not.toContain('auditFailingWorkspaces')
 
     rmSync(childLog, { recursive: true })
     await vi.waitFor(async () => expect((await buckle.request('/health/ready')).status).toBe(200), { timeout: 10_000, interval: 250 })
-    expect(await (await buckle.request('/setup/status', { headers: headers(ADMIN) })).json()).toMatchObject({ auditFailingWorkspaces: [] })
+    expect(await (await buckle.request(buckle.setup('status'), { headers: headers(ADMIN) })).json()).toMatchObject({ auditFailingWorkspaces: [] })
   })
 
   it('stops counting a retired workspace\'s broken log toward readiness (review L5 of B20-B22)', async () => {
@@ -103,7 +104,7 @@ describe('an audit log that will not take writes', () => {
     const childToken = await mintedToken(buckle.request('/setup/workspaces', { method: 'POST', headers: headers(ADMIN), body: JSON.stringify(child) }))
     const childRead = (requestId: string) => buckle.request('/workspaces/child/v1/invoke', { method: 'POST', headers: headers(childToken), body: JSON.stringify({ requestId, tool: 'fs_list', args: { path: '/workspace' } }) })
     expect((await childRead('opens')).status).toBe(200)
-    const childLog = join(state, 'workspaces', 'child', 'actions.jsonl')
+    const childLog = join(state, 'workspaces', await buckle.idOf('child'), 'actions.jsonl')
     rmSync(childLog, { force: true })
     mkdirSync(childLog)
     expect((await childRead('refused')).status).toBe(503)
@@ -132,13 +133,13 @@ describe('an audit log that will not take writes', () => {
     const { buckle } = await brokenAudit()
     await buckle.request('/v1/invoke', { method: 'POST', headers: headers(AGENT), body: read('marks-it') })
 
-    const status = await buckle.request('/setup/status', { headers: headers(ADMIN) })
+    const status = await buckle.request(buckle.setup('status'), { headers: headers(ADMIN) })
     expect(status.status).toBe(200)
     expect(await status.json()).toMatchObject({ audit: 'unavailable' })
     expect((await buckle.request('/setup/workspaces', { headers: headers(ADMIN) })).status).toBe(200)
-    const change = await buckle.request('/setup/policy', { method: 'DELETE', headers: headers(ADMIN) })
+    const change = await buckle.request(buckle.setup('policy'), { method: 'DELETE', headers: headers(ADMIN) })
     expect(change.status).toBe(503)
     expect((await buckle.request('/v1/manifest', { headers: headers('not-the-agent-token') })).status).toBe(401)
-    expect((await buckle.request('/setup/status', { headers: headers('not-the-admin-token') })).status).toBe(401)
+    expect((await buckle.request(buckle.setup('status'), { headers: headers('not-the-admin-token') })).status).toBe(401)
   })
 })
