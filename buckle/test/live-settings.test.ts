@@ -173,3 +173,36 @@ describe('what a change to workspace.json rebuilds', () => {
     expect(config).toMatchObject({ approvalTimeoutMs: 5_000, enabledPacks: ['fs', 'environment'] })
   })
 })
+
+// Finding 27 of the Phase 1 review: a code_run script's calls ran under whatever another call had taken up meanwhile.
+describe('a code_run script\'s calls', () => {
+  it('run under the settings the script started with, and its tools stay open until it ends, whatever is applied meanwhile', async () => {
+    const log = join(base, 'packs.log')
+    const plugin = join(base, 'probe-plugin.mjs')
+    writeFileSync(plugin, `import { appendFileSync } from 'node:fs'\nexport function createPack() { appendFileSync(${JSON.stringify(log)}, 'built\\n'); return { id: 'probe', version: '1.0.0', tools: [], skills: [], unavailableReason: null, close() { appendFileSync(${JSON.stringify(log)}, 'closed\\n') } } }\n`)
+    writeFileSync(join(base, 'state', 'workspaces', 'site', 'plugins.json'), JSON.stringify({ version: 1, plugins: [{ id: 'probe', specifier: pathToFileURL(plugin).href, enabled: true }] }))
+    await owner.updateSettings('site', settings => ({ ...settings, packs: { ...settings.packs, enabled: null } }))
+    await read()
+    const { runtime } = await serving.resolve('site')
+    const go = join(folder, 'go')
+    const script = `const first = await tools.fs_read({ path: 'note.md' })
+      while (!(await tools.fs_list({ path: '.' })).entries.some(entry => entry.name === 'go')) {}
+      const second = await tools.fs_read({ path: 'note.md' })
+      return [first.content, second.content]`
+    const running = runtime.invoke({ request: { requestId: 'script', tool: 'code_run', args: { script }, approvalTokens: [] }, sessionId: 'live' })
+    await vi.waitFor(() => expect(runtime.actions.read(50).some(entry => entry.tool === 'fs_list')).toBe(true))
+
+    // The owner's own reload applies a deny at once, as `buckle policy` in this process would, while the script runs.
+    await owner.updateSettings('site', settings => ({ ...settings, policy: { ...settings.policy, filesystem: { rules: [{ path: 'note.md', read: 'deny' }] } } }))
+    await runtime.reload()
+    // The rebuilt packs leave plugins out under a filesystem rule; the probe the script started with is not closed yet.
+    expect(readFileSync(log, 'utf8')).toBe('built\n')
+    writeFileSync(go, '')
+
+    const response = await running
+    expect(response).toMatchObject({ outcome: 'ok' })
+    expect(JSON.stringify(response)).toContain('["a note","a note"]')
+    await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toBe('built\nclosed\n'))
+    expect(await read()).toMatchObject({ outcome: 'error' })
+  })
+})

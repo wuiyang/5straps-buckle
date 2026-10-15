@@ -64,6 +64,16 @@ import { openSettingsFile, settingsPath, scopeOf, withPolicy, WorkspaceSettingsS
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 
+const TOOL_DISABLED = 'Disabled by workspace tool policy'
+
+/** What a call runs under, captured as it starts. */
+interface InForce {
+  registry: ToolRegistry
+  permissions: PermissionEngine
+  paths: PathView
+  toolDenial(tool: string): string | null
+}
+
 /** Said where a change that rebuilds the tools waits for active work: no path, as an agent reads it (Q2). */
 const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds its tools; the change takes effect once its active work is resolved, so call again then'
 
@@ -258,6 +268,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
+  /** Packs a rebuild replaced while calls ran on them, closed when the last of those calls ends. */
+  const retiring: Pack[] = []
   // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it (finding 9).
   const activity = createActiveWorkMark({ directory: activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), workspaceId })
   const executionBudget = input.executionBudget ?? createExecutionBudget()
@@ -361,7 +373,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     async invoke(call) {
       if (input.serving && !input.serving()) throw new WorkspaceError('Workspace is offline', 409)
       await pickUp()
-      return invokeNow(call)
+      return invokeNow(call, inForce())
     },
 
     async cancelInvocations() {
@@ -369,7 +381,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       await Promise.allSettled([...inFlight])
     },
 
-    closeSessions: () => closePacks(packs),
+    closeSessions: () => closePacks([...packs, ...retiring.splice(0)]),
 
     /** The owner's own write (a policy, a plugin): every pack rebuilt from workspace.json as it stands, with no wait. */
     async reload() {
@@ -441,18 +453,28 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     if (rebuild) {
       packs = nextPacks
       registry = createToolRegistry(availableTools(packs))
-      await closePacks(replaced)
+      await retire(replaced)
     }
     for (const listener of listeners) listener()
   }
 
-  async function invokeNow(call: InvokeInput): Promise<InvokeResponse> {
+  /** The settings a call runs under: those in force as it starts, which a later pickup does not change for it. */
+  function inForce(): InForce {
+    const policy = compiled.policy
+    return { registry, permissions, paths, toolDenial: tool => (isWorkspaceToolAllowed(policy, tool) ? null : TOOL_DISABLED) }
+  }
+
+  /**
+   * One call, under the settings it started with. A code_run script's calls run under its own, captured as the
+   * script started, however other calls take up a change meanwhile (finding 27 of the Phase 1 review).
+   */
+  async function invokeNow(call: InvokeInput, settled: InForce): Promise<InvokeResponse> {
     activeInvocations++
     try {
       if (activeInvocations === 1) activity.start()
       const running = createInvoker({
-        registry,
-        permissions,
+        registry: settled.registry,
+        permissions: settled.permissions,
         approvals,
         approvalService,
         executions,
@@ -461,22 +483,30 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         history,
         historyRoots: [nativePath(realpathSync(config.cwd)), ...config.scratchRoots.map(root => { let existing = root; while (!existsSync(existing) && parentDirectory(existing) !== existing) existing = parentDirectory(existing); return nativePath(realpathSync(existing)) })],
         reporter,
-        paths,
+        paths: settled.paths,
         serverId: config.serverId,
         workspaceId,
         defaultTimeoutMs: config.defaultTimeoutMs,
         maxTimeoutMs: config.maxTimeoutMs,
-        toolDenial,
+        toolDenial: settled.toolDenial,
         shutdown: stopping.signal,
-        // A script's calls run here too, so they are counted, cancelled at shutdown, and kept to this workspace; they
-        // run under the settings their script started with.
-        nested: nestedCall => invokeNow(nestedCall),
+        // A script's calls run here too, so they are counted, cancelled at shutdown, and kept to this workspace.
+        nested: nestedCall => invokeNow(nestedCall, settled),
       }).invoke(call)
       inFlight.add(running)
       try { return await running } finally { inFlight.delete(running) }
     } finally {
-      if (--activeInvocations === 0) activity.stop()
+      if (--activeInvocations === 0) {
+        activity.stop()
+        if (retiring.length > 0) void closePacks(retiring.splice(0))
+      }
     }
+  }
+
+  /** Packs replaced close once no call still runs on them: a script started before keeps its own tools to its end. */
+  async function retire(replaced: Pack[]): Promise<void> {
+    if (activeInvocations === 0) await closePacks(replaced)
+    else retiring.push(...replaced)
   }
 
   /** Each pack closes what it opened; one that fails to is logged, and the rest still close. */
@@ -509,7 +539,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   }
 
   function toolDenial(tool: string): string | null {
-    return isWorkspaceToolAllowed(compiled.policy, tool) ? null : 'Disabled by workspace tool policy'
+    return isWorkspaceToolAllowed(compiled.policy, tool) ? null : TOOL_DISABLED
   }
 
   return runtime
