@@ -1,6 +1,7 @@
 import { generateSigningKey, signingKeyFromPem, signRequest, type SignedRequestPurpose } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { keysCommand } from '../../cli/keys.js'
+import { enrollEarlierKey } from '../support/earlier-keys.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
@@ -24,9 +25,7 @@ async function node(): Promise<BuckleHttp> {
   const { environment } = nodeEnvironment('buckle-setup-sessions-', { BUCKLE_AUTH_TOKEN: 'setup-sessions-agent-token', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
   const started = await createBuckleHttp({ environment })
   nodes.push(started)
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-  for (const key of [owner, colleague]) expect((await keysCommand({ config: started.config, argv: ['enroll', key.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(0)
-  vi.mocked(process.stdout.write).mockRestore()
+  for (const key of [owner, colleague]) await enrollEarlierKey(started.config, key.publicKey)
   nodeKeys.set(started, (await started.services.getNodeSigner()).keyId)
   return started
 }

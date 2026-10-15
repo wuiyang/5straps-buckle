@@ -12,10 +12,10 @@ export interface CliResult {
 }
 
 const USAGE = `Usage:
-  buckle keys enroll <public-key> --purpose setup|approval|both --workspace <id>|node [--label <text>]
-                                                     Trust a person's client key for signed setup changes,
-                                                     approval decisions or both, on one workspace or the
-                                                     whole node (the registry needs node)
+  buckle keys enroll <public-key> --purpose setup|approval --workspace <id>|node [--label <text>]
+                                                     Trust a person's client key for signed setup changes
+                                                     or approval decisions, on one workspace or the whole
+                                                     node (the registry needs node); one key, one purpose
   buckle keys list [--json]                          The enrolled keys with their scope, revoked ones included
   buckle keys revoke <key-id>                        Stop trusting a key, at once, and close its setup sessions
   buckle keys sessions                               The setup sessions keys hold open
@@ -76,10 +76,14 @@ export async function keysCommand(input: { config: NodeConfig; argv: string[] })
 
 const WORKSPACE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 
-/** The scope an enrollment names, both parts required (owner decision D10), or why it cannot be used. */
+/**
+ * The scope an enrollment names, both parts required (owner decision D10), or why it cannot be used. A key signs for
+ * one purpose (D15, D84): `both` is refused, and a key enrolled for both before keeps both.
+ */
 function enrollScope(values: { purpose?: string; workspace?: string }): { purpose: KeyPurpose; workspace: string } | string {
   const { purpose, workspace } = values
-  if (purpose !== 'setup' && purpose !== 'approval' && purpose !== 'both') return `--purpose takes setup, approval or both: what this key may sign\n${USAGE}`
+  if (purpose === 'both') return `--purpose both is no longer enrolled: a key signs setup changes or approval decisions, not both. Enroll one key for each\n${USAGE}`
+  if (purpose !== 'setup' && purpose !== 'approval') return `--purpose takes setup or approval: what this key may sign\n${USAGE}`
   if (workspace === undefined || (workspace !== NODE_SCOPE && !WORKSPACE_ID.test(workspace))) return `--workspace takes a workspace id, or node for every workspace and the registry\n${USAGE}`
   return { purpose, workspace }
 }

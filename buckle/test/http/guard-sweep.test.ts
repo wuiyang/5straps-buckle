@@ -3,8 +3,8 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { generateSigningKey, signingKeyFromPem, signRequest, type SignedRequestPurpose } from '@5straps/protocol/signed-request'
-import { keysCommand } from '../../cli/keys.js'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { enrollEarlierKey } from '../support/earlier-keys.js'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
@@ -123,9 +123,7 @@ async function sweep(paths: Map<string, Set<string>>): Promise<Probe[]> {
  * body, so only the scope and the route's kind of access decide.
  */
 async function signedSweep(): Promise<SignedProbe[]> {
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-  expect((await keysCommand({ config: buckle.config, argv: ['enroll', enrolled.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(0)
-  vi.restoreAllMocks()
+  await enrollEarlierKey(buckle.config, enrolled.publicKey)
   const nodeKey = (await buckle.services.getNodeSigner()).keyId
   const sign = (input: { key: typeof enrolled; purpose: SignedRequestPurpose; workspace: string; method: string; path: string; session?: string }) => signRequest({
     key: signingKeyFromPem(input.key.privateKeyPem), purpose: input.purpose, node: buckle.config.serverId, nodeKey, workspace: input.workspace,

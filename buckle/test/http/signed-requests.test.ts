@@ -6,6 +6,7 @@ import { generateSigningKey, signingKeyFromPem, signRequest, SIGNED_REQUEST_MAX_
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clientCommand } from '../../cli/client.js'
 import { keysCommand } from '../../cli/keys.js'
+import { enrollEarlierKey } from '../support/earlier-keys.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
@@ -35,9 +36,7 @@ async function node(extra: Record<string, string> = {}, options: { instance?: 1 
   const { root, workspace, environment } = nodeEnvironment('buckle-signed-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs', ...extra })
   const started = await createBuckleHttp({ environment, ...(options.instance ? { instance: options.instance } : {}) })
   nodes.push(started)
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-  if (options.enroll !== false) expect((await keysCommand({ config: started.config, argv: ['enroll', owner.publicKey, '--label', 'owner laptop', '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(0)
-  vi.mocked(process.stdout.write).mockRestore()
+  if (options.enroll !== false) await enrollEarlierKey(started.config, owner.publicKey, 'owner laptop')
   return Object.assign(started, { workspace, root, nodeKey: (await started.services.getNodeSigner()).keyId })
 }
 
@@ -150,7 +149,7 @@ describe('a request the enrolled key signed (B23)', () => {
     expect((await keysCommand({ config: buckle.config, argv: ['revoke', owner.keyId] })).exitCode).toBe(0)
     expect((await send(buckle, sign(buckle, { session }))).status).toBe(401)
     // Enrolling the same key again does not undo the revocation.
-    expect((await keysCommand({ config: buckle.config, argv: ['enroll', owner.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(1)
+    expect((await keysCommand({ config: buckle.config, argv: ['enroll', owner.publicKey, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
     expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('was revoked')
     expect((await send(buckle, sign(buckle, { session }))).status).toBe(401)
     expect(refusals(buckle)).toEqual(['unknown_key', 'unknown_key'])

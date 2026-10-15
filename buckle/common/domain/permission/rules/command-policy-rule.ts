@@ -22,7 +22,7 @@ import { deny } from '../decision.js'
  * every statement and every piece of a script body the old per-statement match met, without splitting the body
  * again on each check (slice 7b review W7B-1).
  */
-const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve|check-url|grants|policy|init|settings|plugin|serve|mcp|workspaces?|history)(?=$|[\s'";&|()`])/
+const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle['"]?\s+(approvals|approve|check-url|grants|policy|init|settings|plugin|serve|mcp|workspaces?|history|keys|client|service)(?=$|[\s'";&|()`])/
 
 /**
  * The owner's command globs, judged one shell word at a time on the parsed command line. Deny

@@ -1828,7 +1828,8 @@ describe('what no pattern can change', () => {
     expect(evaluate('bash', ['-c', 'buckle check-url 10.0.0.1'], { allow: ['bash -c *'] }).kind).toBe('deny')
   })
 
-  it.each(['workspaces', 'history', 'settings', 'init'])('rejects %s administration directly and through a wrapper', command => {
+  // The workspace-model brief, item 5: keys enrolls who signs, client holds a person's key, service starts the node.
+  it.each(['workspaces', 'workspace', 'history', 'settings', 'init', 'keys', 'client', 'service'])('rejects %s administration directly and through a wrapper', command => {
     expect(evaluate('buckle', [command, 'list'], { allow: ['*'] }).kind).toBe('deny')
     expect(evaluate('bash', ['-c', `buckle ${command} list`], { allow: ['bash -c *'] }).kind).toBe('deny')
   })

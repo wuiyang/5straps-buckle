@@ -88,29 +88,29 @@ describe('buckle keys: the node side, local only', () => {
     const config = node()
     const device = generateSigningKey()
     const output = capture()
-    expect((await runCli({ argv: ['keys', 'enroll', device.publicKey, '--label', 'laptop', '--purpose', 'both', '--workspace', 'node'], config })).exitCode).toBe(0)
-    expect(output.stdout).toContain(`Enrolled ${device.keyId} (laptop) for setup and approval on the whole node`)
+    expect((await runCli({ argv: ['keys', 'enroll', device.publicKey, '--label', 'laptop', '--purpose', 'setup', '--workspace', 'node'], config })).exitCode).toBe(0)
+    expect(output.stdout).toContain(`Enrolled ${device.keyId} (laptop) for setup on the whole node`)
     expect(statSync(clientKeysPath(config)).mode & 0o777).toBe(0o600)
     expect(createFileClientKeys({ filePath: clientKeysPath(config) }).publicKeyFor(device.keyId, SETUP_ON_DEFAULT)).toHaveProperty('key')
     // Enrolling it again with the same scope changes nothing; with another scope it is refused.
-    expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(0)
+    expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(0)
     expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'approval', '--workspace', 'node'] })).exitCode).toBe(1)
     expect(output.stderr).toContain('a scope is fixed at enrollment')
     expect(createFileClientKeys({ filePath: clientKeysPath(config) }).list()).toHaveLength(1)
 
     output.stdout = ''
     expect((await runCli({ argv: ['keys', 'list', '--json'], config })).exitCode).toBe(0)
-    expect(JSON.parse(output.stdout)).toEqual([expect.objectContaining({ keyId: device.keyId, publicKey: device.publicKey, label: 'laptop', purpose: 'both', workspace: 'node', revokedAt: null })])
+    expect(JSON.parse(output.stdout)).toEqual([expect.objectContaining({ keyId: device.keyId, publicKey: device.publicKey, label: 'laptop', purpose: 'setup', workspace: 'node', revokedAt: null })])
     output.stdout = ''
     expect((await runCli({ argv: ['keys', 'list'], config })).exitCode).toBe(0)
-    expect(output.stdout).toContain(`${device.keyId}  setup and approval on the whole node  enrolled`)
+    expect(output.stdout).toContain(`${device.keyId}  setup on the whole node  enrolled`)
 
     expect((await runCli({ argv: ['keys', 'revoke', device.keyId], config })).exitCode).toBe(0)
     expect(createFileClientKeys({ filePath: clientKeysPath(config) }).publicKeyFor(device.keyId, SETUP_ON_DEFAULT)).toEqual({ refused: 'unknown_key' })
     expect((await runCli({ argv: ['keys', 'revoke', 'SHA256:nobody'], config })).exitCode).toBe(1)
 
     const audited = createFileActionLog(actionsPath(config)).read(20).filter(entry => entry.tool === 'cli_keys' && entry.event === 'result')
-    expect(audited.map(entry => entry.detail)).toEqual([`enroll ${device.keyId} both node`, undefined, undefined, `revoke ${device.keyId}`, undefined])
+    expect(audited.map(entry => entry.detail)).toEqual([`enroll ${device.keyId} setup node`, undefined, undefined, `revoke ${device.keyId}`, undefined])
     expect(JSON.stringify(createFileActionLog(actionsPath(config)).read(50))).not.toContain(device.publicKey.slice('ed25519:'.length))
   })
 
@@ -122,7 +122,7 @@ describe('buckle keys: the node side, local only', () => {
     const device = generateSigningKey()
     // Both parts of the scope are named at enrollment (owner decision D10).
     expect((await keysCommand({ config, argv: ['enroll', device.publicKey] })).exitCode).toBe(1)
-    expect(output.stderr).toContain('--purpose takes setup, approval or both')
+    expect(output.stderr).toContain('--purpose takes setup or approval')
     expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'setup'] })).exitCode).toBe(1)
     expect(output.stderr).toContain('--workspace takes a workspace id, or node')
     expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'Not A Workspace'] })).exitCode).toBe(1)
@@ -190,6 +190,30 @@ describe('the workspace id node', () => {
   })
 })
 
+// D15 and D84: a key signs for one purpose. A key enrolled for both before keeps both; none is enrolled so again.
+describe('a key for both purposes', () => {
+  it('is refused at enrollment, naming the two purposes, and nothing is stored', async () => {
+    const config = node()
+    const output = capture()
+    const device = generateSigningKey()
+    expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(1)
+    expect(output.stderr).toContain('--purpose both is no longer enrolled: a key signs setup changes or approval decisions, not both')
+    expect(output.stderr).not.toContain('setup|approval|both')
+    expect(createFileClientKeys({ filePath: clientKeysPath(config) }).list()).toEqual([])
+  })
+
+  it('still signs both where it was enrolled before, and is listed as it was', async () => {
+    const config = node()
+    const output = capture()
+    const device = generateSigningKey()
+    const keys = createFileClientKeys({ filePath: clientKeysPath(config) })
+    await keys.enroll({ publicKey: device.publicKey, label: '', purpose: 'both', workspace: 'node' })
+    expect(keys.publicKeyFor(device.keyId, SETUP_ON_DEFAULT)).toMatchObject({ covers: true })
+    expect((await keysCommand({ config, argv: ['list'] })).exitCode).toBe(0)
+    expect(output.stdout).toContain(`${device.keyId}  setup and approval on the whole node  enrolled`)
+  })
+})
+
 describe('a small-order key (review L3 of B23-B25)', () => {
   const identity = `ed25519:${Buffer.from('01'.padEnd(64, '0'), 'hex').toString('base64url')}`
   const orderEight = `ed25519:${Buffer.from('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05', 'hex').toString('base64url')}`
@@ -198,7 +222,7 @@ describe('a small-order key (review L3 of B23-B25)', () => {
     const config = node()
     const output = capture()
     for (const key of [identity, orderEight]) {
-      expect((await keysCommand({ config, argv: ['enroll', key, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(1)
+      expect((await keysCommand({ config, argv: ['enroll', key, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
       expect(output.stderr).toContain('A small-order Ed25519 public key proves nothing')
       expect((await clientCommand(['trust', 'http://127.0.0.1:4320', 'node-1', key], { BUCKLE_CLIENT_DIR: join(scratch(), 'device') })).exitCode).toBe(1)
       expect(output.stderr).toContain('Not pinned: A small-order Ed25519 public key proves nothing')
