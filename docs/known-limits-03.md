@@ -1,7 +1,7 @@
 # Known limits, part three
 
-What Buckle, the approval and sandbox runtime on this machine, does not yet handle in code mode and
-on the command line. [Known limits](known-limits.md) covers reading commands, credential hiding, and
+What Buckle, the approval and sandbox runtime on this machine, does not yet handle in code mode, on
+the command line, and in workspaces. [Known limits](known-limits.md) covers reading commands, credential hiding, and
 paths, and [part two](known-limits-02.md) the programs Buckle starts itself.
 
 ## Code mode
@@ -41,3 +41,22 @@ paths, and [part two](known-limits-02.md) the programs Buckle starts itself.
   argument stops it with "Buckle failed to start", where 0.1 ignored one, so an MCP config left
   with an old argument starts nothing until the argument goes. `buckle serve` ignores an argument
   it does not know.
+
+## Workspaces
+
+The first release of [workspaces](workspaces.md) leaves these open for Phase 2 of the workspace
+model or later.
+
+- `approvals.json` is keyed by the workspace's folder path, inside each workspace's own state
+  directory. A workspace's folder is fixed once registered, so the key cannot drift; keying it by
+  workspace id is left for a later release.
+- The browser settings in `workspace.json` are stored and checked but not read. The browser runs
+  on the node's `BUCKLE_BROWSER_*` settings, the same for every workspace, until Phase 2 reads
+  each workspace's own and `buckle workspace set` accepts them.
+- The setup face's `/setup/status` reports `browser.setting` as the node's `BUCKLE_BROWSER_*`
+  setting that chose the mode. [Rings](rings.md), a separate 5straps control plane for agents,
+  reads that field, so the name stays until Phase 2, and renaming it then means Rings has to
+  follow.
+- A command in the sandbox can read `/proc/self/mountinfo`, which lists the host folder behind
+  each bind. Phase 2, which builds the sandbox from each workspace's mount table, covers this in
+  these limits.
