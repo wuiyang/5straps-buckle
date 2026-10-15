@@ -25,11 +25,13 @@ setting, checked whole with the rest before anything is written:
 
 A variable name that looks like a credential (holding token, secret, password, or key), one
 starting `BUCKLE_`, and the names Buckle sets for every command (`PATH`, `HOME`, `USER`,
-`LOGNAME`, `SHELL`, and `TMPDIR`) are refused; so is a value that is one of the node's
-credentials. Keep secrets in your own secret store: `buckle workspace set` does not echo a
-variable's value and no audit record holds it, but `buckle workspace show` prints the file whole,
-and every command in the workspace can read it. A call's own `env` is set over the workspace's
-variables.
+`LOGNAME`, `SHELL`, and `TMPDIR`) are refused. So is a value that, after trimming, contains a
+secret the node holds (the admin token, `BUCKLE_AUTH_TOKEN`, the forge token, the Brave search
+key, the report token, the Rings pairing key, or the approval webhook's URL) or a workspace's
+agent token as a word of it. Keep secrets in your own secret store: `buckle workspace set` does
+not echo a variable's value and no audit record holds it, but `buckle workspace show` prints the
+file whole, and every command in the workspace can read it. A call's own `env` is set over the
+workspace's variables.
 
 The policy, its command, URL, interpreter, and tool lists, changes with `buckle policy`, which
 acts on one workspace as every command does ([Policy](policy.md)). Where the agent sees the
