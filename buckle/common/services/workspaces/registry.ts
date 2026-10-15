@@ -43,6 +43,11 @@ const StoredWorkspaceSchema = z.object({
   /** Counts the record's changes. */
   revision: z.number().int().nonnegative(),
   updatedAt: z.string(),
+  /**
+   * When this registration was made, which a remove and a new registration under the same id change: a runtime opened
+   * for an earlier one is not this one's (finding 2 of the Phase 1 review). Absent on a record written before it was kept.
+   */
+  createdAt: z.string().optional(),
 }).strict()
 export type StoredWorkspace = z.infer<typeof StoredWorkspaceSchema>
 

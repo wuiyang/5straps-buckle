@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig, type NodeConfig } from '../common/runtime/config.js'
-import { openWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { runCli } from './support/cli.js'
 
@@ -178,6 +178,66 @@ describe('buckle workspace enable, disable and remove', () => {
     expect((await buckle(['enable'])).err).toContain('Usage: buckle workspace enable <id>')
     expect((await buckle(['remove', 'alpha', 'beta'])).err).toContain('Usage: buckle workspace remove <id>')
     expect((await buckle(['disable', 'nothing'])).exitCode).toBe(1)
+  })
+})
+
+// Finding 2 of the Phase 1 review: buckle serve kept the runtime of a workspace another process removed, and served a
+// new registration of the same id from the removed folder.
+describe('a workspace removed and registered again while buckle serve runs', () => {
+  let serving: WorkspaceManager
+  let older: string
+  let newer: string
+  beforeEach(async () => {
+    older = join(base, 'old', 'site')
+    newer = join(base, 'new', 'site')
+    for (const [folder, text] of [[older, 'OLD'], [newer, 'NEW']] as const) {
+      mkdirSync(folder, { recursive: true })
+      writeFileSync(join(folder, 'which.txt'), text)
+    }
+    await init(older, ['--id', 'site'])
+    // The serving node, a process of its own, opened the workspace before the owner's commands ran.
+    serving = await openWorkspaceManager({ config: node() })
+    expect(await readWhich()).toBe('OLD')
+  })
+  afterEach(async () => { await serving.close() })
+
+  async function readWhich(): Promise<unknown> {
+    const { runtime } = await serving.resolve('site')
+    const response = await runtime.invoke({ request: { requestId: `which-${Math.random()}`, tool: 'fs_read', args: { path: 'which.txt' }, approvalTokens: [] }, sessionId: 'serve' })
+    return response.outcome === 'ok' ? (response.output as { content: string }).content : response
+  }
+
+  it.each([[[], ['--id', 'site']], [['--purge'], []]])('serves the new registration from its own folder (remove %j)', async (removal, again) => {
+    expect((await buckle(['remove', 'site', ...removal])).exitCode).toBe(0)
+    await init(newer, again)
+    expect(await readWhich()).toBe('NEW')
+    expect((await serving.resolve('site')).config.cwd).toBe(newer)
+  })
+
+  it('serves a new registration of the same folder from records of its own, after the earlier ones were purged', async () => {
+    expect((await buckle(['remove', 'site', '--purge'])).exitCode).toBe(0)
+    await init(older)
+    expect(await readWhich()).toBe('OLD')
+  })
+
+  it('refuses a call while the earlier registration\'s runtime has work, naming no path', async () => {
+    const { runtime } = await serving.resolve('site')
+    vi.spyOn(runtime, 'hasActiveWork').mockResolvedValue(true)
+    expect((await buckle(['remove', 'site'])).exitCode).toBe(0)
+    await init(newer, ['--id', 'site'])
+    const refused = await serving.resolve('site').catch((error: unknown) => error)
+    expect(refused).toMatchObject({ status: 409 })
+    expect(String((refused as Error).message)).toContain('registered again while work under its earlier registration is active')
+    expect(String((refused as Error).message)).not.toContain(base)
+  })
+
+  it('closes the runtime of a workspace removed or taken offline, once it has no work, when serve looks at the registry', async () => {
+    const { runtime } = await serving.resolve('site')
+    const closed = vi.spyOn(runtime, 'closeSessions')
+    expect((await buckle(['disable', 'site'])).exitCode).toBe(0)
+    await serving.closeUnserved()
+    expect(await serving.opened()).toEqual([])
+    expect(closed).toHaveBeenCalledTimes(1)
   })
 })
 

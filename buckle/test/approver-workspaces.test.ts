@@ -147,6 +147,17 @@ describe('the workspaces buckle serve lists', () => {
     expect(written).toHaveLength(count)
   })
 
+  // Finding 2 of the Phase 1 review: what a workspace taken offline or removed left open ends at serve's next look.
+  it('closes the runtime of a workspace taken offline at its next look, while the others stay open', async () => {
+    await manager.resolve('one')
+    await manager.resolve('two')
+    const stop = watchOnline({ workspaces: manager, write: () => {}, intervalMs: 20 })
+    try {
+      await manager.update('two', { online: false })
+      await vi.waitFor(async () => expect((await manager.opened()).map(runtime => runtime.workspaceId)).toEqual(['one']))
+    } finally { stop() }
+  })
+
   it('says how to serve one where none is online', async () => {
     for (const id of ['one', 'two']) await manager.update(id, { online: false })
     expect(await describeOnline(manager)).toBe('No workspace is online: buckle workspace init serves a folder, and buckle workspace enable <id> serves one again.\n')

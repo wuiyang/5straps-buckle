@@ -200,7 +200,7 @@ function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; register
   const merged = mergePolicies({ ...environment.policy, mount: environment.mounts[0]?.target ?? null }, ownPolicy === null ? null : own.policies[ownPolicy]!)
   const ownSwitch = keyOf({ keys: own.switches, spellings: ownSpellings, platform, file: dangerouslyAllowPath(node) })
   const ownPlan: Planned = {
-    record: { id: NODE_FOLDER_WORKSPACE, name: named(NODE_FOLDER_WORKSPACE, node.serverName), dir, online: true, revision: 0, updatedAt: now,
+    record: { id: NODE_FOLDER_WORKSPACE, name: named(NODE_FOLDER_WORKSPACE, node.serverName), dir, online: true, revision: 0, updatedAt: now, createdAt: now,
       tokens: node.migration.authToken ? [{ id: NODE_TOKEN_ID, sha256: tokenDigest(node.migration.authToken), label: 'BUCKLE_AUTH_TOKEN', createdAt: now }] : [] },
     settings: { ...environment, policy: { ...merged, mount: null }, mounts: merged.mount === null ? [] : [{ kind: 'workspace', target: merged.mount, access: 'write' }] },
     stateDirectory: node.stateDirectory,
@@ -220,7 +220,7 @@ function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; register
     const keptLists = withinLists(environment.policy, policyKey === null ? workspace.policy : records.policies[policyKey]!)
     if ('conflicts' in keptLists) conflicts.push(`workspace ${workspace.id}: ${keptLists.conflicts.join(' and ')}`)
     return {
-      record: { id: workspace.id, name: named(workspace.id, workspace.name), dir: root, online: workspace.enabled && !workspace.retiredAt, revision: 0, updatedAt: workspace.updatedAt ?? now,
+      record: { id: workspace.id, name: named(workspace.id, workspace.name), dir: root, online: workspace.enabled && !workspace.retiredAt, revision: 0, updatedAt: workspace.updatedAt ?? now, createdAt: now,
         tokens: workspace.tokens.map(token => ({ id: token.id, sha256: tokenDigest(token.token), label: token.label, createdAt: token.createdAt })) },
       settings: { ...environment, policy: 'policy' in keptLists ? keptLists.policy : environment.policy, mounts: [{ kind: 'workspace', target: WORKSPACE_MOUNT_TARGET, access: 'write' }] },
       stateDirectory,

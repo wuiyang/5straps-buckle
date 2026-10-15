@@ -48,21 +48,25 @@ async function describeWorkspace(workspaces: WorkspaceManager, workspace: Worksp
 
 /**
  * Lists the online workspaces again whenever the registry or a workspace's settings change, read every `intervalMs`
- * on a timer that never holds the process open. Returns what stops it.
+ * on a timer that never holds the process open, and at each look closes what a workspace removed or taken offline left
+ * open, its browser, terminals, and language servers among it (finding 2 of the Phase 1 review). Returns what stops it.
  */
 export function watchOnline(input: { workspaces: WorkspaceManager; write: (text: string) => void; intervalMs?: number }): () => void {
   let last = fingerprint(input.workspaces)
   let running = false
-  const timer = setInterval(() => {
-    if (running) return
+  const look = async () => {
+    await input.workspaces.closeUnserved().catch((error: unknown) => { logger.error('Could not close a workspace this node no longer serves', { error }) })
     const now = fingerprint(input.workspaces)
     if (now === last) return
     last = now
-    running = true
-    void describeOnline(input.workspaces)
+    await describeOnline(input.workspaces)
       .then(text => input.write(`Workspaces changed.\n${text}`))
       .catch((error: unknown) => { logger.error('Could not list the online workspaces after a change', { error }) })
-      .finally(() => { running = false })
+  }
+  const timer = setInterval(() => {
+    if (running) return
+    running = true
+    void look().finally(() => { running = false })
   }, input.intervalMs ?? ROSTER_POLL_MS)
   timer.unref()
   return () => clearInterval(timer)

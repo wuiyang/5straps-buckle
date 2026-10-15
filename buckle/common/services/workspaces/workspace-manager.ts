@@ -24,6 +24,9 @@ import { defaultSettings, openSettingsFile, scopeOf, settingsPath, withPolicy, W
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
 
+/** Said where a workspace was registered again while its earlier registration's runtime has work: no path, as an agent reads it. */
+const REGISTERED_AGAIN = 'This workspace was registered again while work under its earlier registration is active; it serves its new registration once that work is resolved, or after buckle serve restarts, so call again then'
+
 /** A digest nothing hashes to, compared once more after the scan, so an empty registry costs a comparison too. */
 const ABSENT_DIGEST = 'f'.repeat(64)
 
@@ -98,6 +101,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
   /** The node's own log: refusals before any workspace is known, and registry changes. Workspace default writes it too. */
   const nodeActions: ActionLog = createFileActionLog(actionsPath(node), { lockDeadlineMs, health: auditHealth, workspaceId: 'node' })
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
+  /** The registration each runtime was opened for: its folder as stored, and when it was made. */
+  const registrations = new WeakMap<ManagedWorkspace, Pick<StoredWorkspace, 'dir' | 'createdAt'>>()
   const settingsOf = (id: string) => openSettingsFile({ filePath: settingsPath(node.stateDirectory, id), lockDeadlineMs })
   /** Whether records of a workspace by this id are still on disk, from one removed without --purge. */
   const leftover = (id: string) => id === NODE_FOLDER_WORKSPACE || existsSync(join(node.stateDirectory, 'workspaces', id))
@@ -146,7 +151,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
           const defaults = value.policy ? withPolicy(defaultSettings(), { ...value.policy, mount: WORKSPACE_MOUNT_TARGET }) : defaultSettings()
           await settingsOf(id).update(() => (value.settings ? value.settings(defaults) : defaults))
         }
-        const workspace: StoredWorkspace = { id, name: value.name ?? basename(dir), dir, online: true, revision: 0, updatedAt: minted.createdAt,
+        const workspace: StoredWorkspace = { id, name: value.name ?? basename(dir), dir, online: true, revision: 0, updatedAt: minted.createdAt, createdAt: minted.createdAt,
           tokens: [{ id: minted.id, sha256: tokenDigest(minted.token), label: minted.label, createdAt: minted.createdAt }] }
         state.workspaces.push(workspace)
         nodeRoots.take(state.workspaces.map(item => item.dir))
@@ -253,11 +258,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         nodeRoots.take(state.workspaces.map(item => item.dir))
         return describe(workspace)
       })
-      if (opened) {
-        runtimes.delete(id)
-        auditHealth.forget(actionsPath(opened.config))
-        await closeRuntime(opened.runtime)
-      }
+      const pending = runtimes.get(id)
+      if (opened && pending) await drop(id, pending, opened)
       if (options.purge) rmSync(join(node.stateDirectory, 'workspaces', id), { recursive: true, force: true })
       return removed
     },
@@ -293,21 +295,55 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       // A folder stored before folders were named in the disk's case still loads, in that case (review M1 of the second re-review).
       const dir = canonicalDirectory(workspace.dir, platform)
       if (comparablePath(dir) !== comparablePath(workspace.dir)) throw new WorkspaceError('Workspace folder changed; owner repair is required', 409)
-      let pending = runtimes.get(id)
-      if (!pending) {
-        const settings = settingsOf(id).read()
-        // `reportUrl`, `reportToken` and `approvalWebhook` come with the node's settings on purpose: every action a
-        // workspace reports carries its own workspaceId, and a notification names the workspace that answers it.
-        const config = workspaceConfig(node, { id, name: workspace.name, dir, ...scopeOf(settings) })
-        pending = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), ...(input.interaction ? { interaction: input.interaction } : {}) })
-          .then(runtime => ({ config, runtime }))
-        runtimes.set(id, pending)
-        void pending.catch(() => { runtimes.delete(id) })
+      // At most twice round: a runtime opened for an earlier registration of this id is closed, and the next is this one's.
+      for (;;) {
+        let pending = runtimes.get(id)
+        if (!pending) {
+          const settings = settingsOf(id).read()
+          // `reportUrl`, `reportToken` and `approvalWebhook` come with the node's settings on purpose: every action a
+          // workspace reports carries its own workspaceId, and a notification names the workspace that answers it.
+          const config = workspaceConfig(node, { id, name: workspace.name, dir, ...scopeOf(settings) })
+          const opening: Promise<ManagedWorkspace> = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), ...(input.interaction ? { interaction: input.interaction } : {}) })
+            .then((runtime) => {
+              const managed = { config, runtime }
+              registrations.set(managed, { dir: workspace.dir, createdAt: workspace.createdAt })
+              return managed
+            })
+          runtimes.set(id, opening)
+          void opening.catch(() => { if (runtimes.get(id) === opening) runtimes.delete(id) })
+          pending = opening
+        }
+        const resolved = await pending
+        const registration = registrations.get(resolved)
+        if (registration?.dir === workspace.dir && registration.createdAt === workspace.createdAt) {
+          // A rename from another process reaches the next answer.
+          resolved.config.serverName = workspace.name
+          return resolved
+        }
+        // Removed and registered again from another process: this runtime still serves the folder that was removed
+        // (finding 2 of the Phase 1 review). It goes once its work is resolved; meanwhile the call waits, naming no path.
+        if (await earlierHasWork(resolved.runtime)) throw new WorkspaceError(REGISTERED_AGAIN, 409)
+        await drop(id, pending, resolved)
       }
-      const resolved = await pending
-      // A rename from another process reaches the next answer.
-      resolved.config.serverName = workspace.name
-      return resolved
+    },
+
+    /**
+     * Closes the runtimes this process opened for workspaces the registry no longer holds or holds offline, once each
+     * has no active work, so a removed workspace's browser, terminals, and language servers end with it. `buckle serve`
+     * calls it at each look at the registry (finding 2).
+     */
+    async closeUnserved(): Promise<void> {
+      let registered: StoredWorkspace[]
+      // An unreadable registry is reported where the workspaces are listed; nothing is closed on a guess.
+      try { registered = store.read().workspaces } catch (error) {
+        if (error instanceof WorkspaceRegistryError) return
+        throw error
+      }
+      for (const [id, pending] of [...runtimes]) {
+        if (registered.some(workspace => workspace.id === id && workspace.online)) continue
+        const opened = await pending.catch(() => null)
+        if (opened && !await earlierHasWork(opened.runtime)) await drop(id, pending, opened)
+      }
     },
 
     /**
@@ -339,6 +375,14 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       for (const runtime of await manager.opened()) await closeRuntime(runtime)
       runtimes.clear()
     },
+  }
+
+  /** Forgets and closes a runtime, where it is still the one this process holds for the id. */
+  async function drop(id: string, pending: Promise<ManagedWorkspace>, opened: ManagedWorkspace): Promise<void> {
+    if (runtimes.get(id) !== pending) return
+    runtimes.delete(id)
+    auditHealth.forget(actionsPath(opened.config))
+    await closeRuntime(opened.runtime)
   }
 
   async function openedRuntime(id: string): Promise<ManagedWorkspace | null> {
@@ -384,6 +428,18 @@ function idFor(dir: string, state: Registry, leftover: (id: string) => boolean):
   const free = (candidate: string) => !taken.has(candidate) && !leftover(candidate) && WorkspaceIdSchema.safeParse(candidate).success
   if (free(word)) return word
   for (let index = 2; ; index++) if (free(`${word}-${index}`)) return `${word}-${index}`
+}
+
+/**
+ * Whether a runtime opened for a registration the registry no longer holds still has work. Its records may be purged:
+ * hasActiveWork counts the calls running first, and only reads the records on disk once none is, so a record folder
+ * that is gone leaves it nothing to wait for.
+ */
+async function earlierHasWork(runtime: BuckleRuntime): Promise<boolean> {
+  try { return await runtime.hasActiveWork() } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false
+    throw error
+  }
 }
 
 /** Shutdown's steps for one workspace removed while the node runs. */
