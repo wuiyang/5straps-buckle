@@ -1,9 +1,9 @@
 # Workspace settings, and moving from 0.1
 
-Each [workspace](workspaces.md) of a Buckle node keeps its settings in its own file,
-`workspaces/<id>/workspace.json` in the state directory. The node keeps its own in `buckle.env`.
-This page lists both, says when a change applies, and covers the first start of a node set up
-before workspaces.
+Each [workspace](workspaces.md) of a node of Buckle, the approval and sandbox runtime on this
+machine, keeps its settings in its own file, `workspaces/<id>/workspace.json` in the state
+directory. The node keeps its own in `buckle.env`. This page lists both, says when a change
+applies, and covers the first start of a node set up before workspaces.
 
 ## Settings
 
@@ -26,8 +26,10 @@ setting, checked whole with the rest before anything is written:
 A variable name that looks like a credential (holding token, secret, password, or key), one
 starting `BUCKLE_`, and the names Buckle sets for every command (`PATH`, `HOME`, `USER`,
 `LOGNAME`, `SHELL`, and `TMPDIR`) are refused; so is a value that is one of the node's
-credentials. Keep secrets in your own secret store. A call's own `env` is set over the
-workspace's variables, and the value is never printed or written to the audit log.
+credentials. Keep secrets in your own secret store: `buckle workspace set` does not echo a
+variable's value and no audit record holds it, but `buckle workspace show` prints the file whole,
+and every command in the workspace can read it. A call's own `env` is set over the workspace's
+variables.
 
 The policy, its command, URL, interpreter, and tool lists, changes with `buckle policy`, which
 acts on one workspace as every command does ([Policy](policy.md)). Where the agent sees the
@@ -57,7 +59,8 @@ the experimental admin face, where programs such as `agent-browser` are, the bro
 above, `BUCKLE_ALLOWED_HOSTS`, and the [Rings](rings.md) pairing. `buckle settings show` lists
 them, and a change to one applies when the node restarts. `buckle settings set` refuses a
 setting that belongs to a workspace now, naming the command that changes it, and `buckle
-settings unset` removes its line.
+settings unset` removes its line. `BUCKLE_SHELL_NETWORK` and `BUCKLE_SHELL_ISOLATION` stay
+node-level settings until Phase 2 of the workspace model moves them into each `workspace.json`.
 
 ## Moving a node from 0.1
 
@@ -80,9 +83,11 @@ workspaces, once, under the registry's lock:
 - Grants, remembered denials, and the dangerously-allow switch move from the folder they were
   kept under to the workspace's id.
 
-From then on, the node ignores those settings in `buckle.env`, the shell, and an MCP client's
-`env`, and its log names any it finds; `buckle settings unset` removes them. A state directory
-that served nothing gets no workspace until `buckle init` makes one.
+From then on, the node ignores those settings, the browser's excepted, in `buckle.env`, the
+shell, and an MCP client's `env`, and its log names any it finds; `buckle settings unset` removes
+them. The browser settings stay live in `buckle.env` until a later release reads each
+workspace's own. A state directory that served nothing gets no workspace until `buckle init`
+makes one.
 
 The version 1 registry is kept as `workspaces.v1.json`. An older Buckle meeting the new registry
 fails closed: it refuses to run programs and to open registered workspaces. To go back to 0.1, stop Buckle, copy `workspaces.v1.json`
