@@ -89,8 +89,10 @@ start.
 
 To go back to 0.1, stop Buckle and its MCP clients. Copy each `*.v1.json` file over its original,
 set `BUCKLE_AUTH_TOKEN` in `buckle.env` to the token your agents use (Buckle kept only its
-digest), and install the older release. Going back loses every workspace registered, token
-created, grant, denial, and `workspace.json` written after the move.
+digest), set `BUCKLE_WORKSPACE_ROOT` there to the node's folder (`buckle workspace list` shows it)
+if `buckle settings unset root` removed the line, and install the older release. Going back loses
+every workspace registered, token created, grant, denial, and `workspace.json` written after the
+move.
 
 `workspaces.v1.json` holds the registered workspaces' agent tokens and admin credentials in clear
 text. Once the node works, delete every `*.v1.json` file in the state directory and in each

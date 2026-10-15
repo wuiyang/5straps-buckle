@@ -452,7 +452,7 @@ describe('a project outside every workspace\'s folder', () => {
     running.push(refused)
     expect(await refused.exited).toEqual({ code: 1, signal: null })
     expect(refused.stderr()).toContain('No workspace holds the current directory')
-    expect(refused.lines().some(line => line.level === 'warn' && line.message.includes('Add --workspace <name> to your MCP configs, then run buckle settings unset root'))).toBe(true)
+    expect(refused.lines().some(line => line.level === 'warn' && line.message.includes('Add --workspace <name> to your MCP configs, then, once you no longer need the way back to 0.1, run buckle settings unset root'))).toBe(true)
 
     const legacy = spawnBuckle({ entry, args: ['mcp'], env: { ...env, BUCKLE_WORKSPACE_ROOT: node.workspace }, cwd: elsewhere, stdin: 'pipe' })
     running.push(legacy)

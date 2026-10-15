@@ -463,7 +463,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
       await openWorkspaceManager({ config })
       const said = notices.mock.calls.map(([message]) => String(message)).filter(message => message.startsWith(`${path} sets BUCKLE_WORKSPACE_ROOT`))
       expect(said).toHaveLength(2)
-      expect(said[0]).toContain('Add --workspace <name> to your MCP configs, then run buckle settings unset root.')
+      // Recheck finding 6: unsetting the line drops the folder the way back to 0.1 needs, so the notice says when to.
+      expect(said[0]).toContain('Add --workspace <name> to your MCP configs, then, once you no longer need the way back to 0.1, run buckle settings unset root.')
       expect(config.callerWorkspaceRoot).toBeUndefined()
       expect(loadConfig({}, process.platform, { file: { path, values: { BUCKLE_WORKSPACE_ROOT: input.folder } }, caller: { BUCKLE_WORKSPACE_ROOT: input.site } }).callerWorkspaceRoot).toBe(input.site)
     })

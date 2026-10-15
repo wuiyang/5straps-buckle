@@ -500,7 +500,7 @@ function notices(input: { node: NodeConfig; plans: Planned[]; hadRegistry: boole
 function rootLineNotice(node: NodeConfig): string[] {
   const file = node.migration.file
   if (file === null || node.migration.workspaceRoot === undefined) return []
-  return [`${file} sets BUCKLE_WORKSPACE_ROOT, which the node reads only when it moves onto workspaces, as the folder of the workspace it makes of it. A plain buckle mcp never serves that folder for it: it serves the workspace holding the directory it starts in, or the folder an MCP config's own env names in BUCKLE_WORKSPACE_ROOT. Add --workspace <name> to your MCP configs, then run buckle settings unset root.`]
+  return [`${file} sets BUCKLE_WORKSPACE_ROOT, which the node reads only when it moves onto workspaces, as the folder of the workspace it makes of it. A plain buckle mcp never serves that folder for it: it serves the workspace holding the directory it starts in, or the folder an MCP config's own env names in BUCKLE_WORKSPACE_ROOT. Add --workspace <name> to your MCP configs, then, once you no longer need the way back to 0.1, run buckle settings unset root.`]
 }
 
 /**
