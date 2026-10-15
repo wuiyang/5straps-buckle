@@ -501,10 +501,18 @@ describe('a workspace removed and registered again while buckle serve runs', () 
     expect((await byName(serving, 'site')).config.cwd).toBe(newer)
   })
 
+  // Recheck finding 12: the stamp is what tells this registration from the earlier one when the folder, and so the id, is the same.
   it('serves a new registration of the same folder from records of its own, after the earlier ones were purged', async () => {
+    const earlier = (await byName(serving, 'site')).runtime
+    const closed = vi.spyOn(earlier, 'closeSessions')
     expect((await buckle(['remove', 'site', '--purge'])).exitCode).toBe(0)
+    expect(existsSync(settingsPath(state, workspaceIdOf(older)))).toBe(false)
     await init(older)
     expect(await readWhich()).toBe('OLD')
+    const { runtime } = await byName(serving, 'site')
+    expect(runtime).not.toBe(earlier)
+    expect(closed).toHaveBeenCalledTimes(1)
+    expect(existsSync(settingsPath(state, workspaceIdOf(older)))).toBe(true)
   })
 
   // The same folder registered again has the same id (D85, Q15), so the runtime of its earlier registration is the one that waits.
