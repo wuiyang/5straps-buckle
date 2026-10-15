@@ -1129,12 +1129,22 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     const warned = vi.spyOn(logger, 'warn')
     const withdrawNested = vi.fn(async () => {})
     const invoked = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
-    await expect(codeRun(directory, invoked, { withdrawNested })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED, message: expect.stringContaining('Change the script') })
+    // Every send is refused while the record stays, not only the first (recheck 5 of the final review of 0.1.4,
+    // finding journal.ts:219), each a fresh pack, as after a restart.
+    for (let send = 2; send <= 3; send++) {
+      await expect(codeRun(directory, invoked, { withdrawNested })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED, message: expect.stringContaining('Change the script') })
+      expect(readdirSync(directory).filter(name => name.endsWith('.json'))).toEqual([file])
+    }
     expect(invoked).not.toHaveBeenCalled()
     expect(withdrawNested).toHaveBeenCalledWith(['token-2'])
-    expect(kept(directory)).toEqual([])
     expect(warned.mock.calls.find(([message]) => message.startsWith('A code mode replay journal could not be read'))?.[1]).toMatchObject({ fields: expect.stringContaining('tools.0.inputSchema') })
     warned.mockRestore()
+
+    // Its ten minutes past by its file time, the sweep removes it.
+    const aged = (Date.now() - JOURNAL_TTL_MS - 1_000) / 1_000
+    utimesSync(join(directory, file!), aged, aged)
+    createJournalStore({ directory })
+    expect(readdirSync(directory)).toEqual([])
   })
 
   // Recheck 4 of the final review of 0.1.4, finding code index.ts:497: a resumed send whose sandbox fails before the VM

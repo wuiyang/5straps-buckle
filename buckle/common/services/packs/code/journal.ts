@@ -150,7 +150,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export interface JournalStore {
-  /** The script's journal, or null when it has none or it expired (removed); throws UnreadableJournalError for one it cannot read (removed). */
+  /**
+   * The script's journal, or null when it has none or it expired (removed); throws UnreadableJournalError for one it
+   * cannot read, which stays until it expires by its file time.
+   */
   read(key: string): Journal | null
   /**
    * Writes it whole, expiring JOURNAL_TTL_MS from now, or at `expiresAt` for a record rewritten as kept; false, and the
@@ -219,10 +222,16 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
       const raw: unknown = (() => { try { return JSON.parse(text) } catch { return null } })()
       const parsed = JournalSchema.safeParse(raw)
       if (!parsed.success || parsed.data.key !== key) {
-        remove(key)
-        // One past its expiry is gone either way; any other fails closed, its asks handed back where they can be read.
+        // One past its expiry, by its own field or by its file time as the sweep counts it, is gone either way. Any
+        // other fails closed and stays, so every send is refused until the sweep removes it by its file time, never
+        // only the first (recheck 5 of the final review of 0.1.4, finding journal.ts:219); its asks are handed back
+        // where they can be read.
         const fields = isRecord(raw) ? raw : {}
-        if (typeof fields.expiresAt === 'number' && fields.expiresAt <= now()) return null
+        const madeAt = statSync(pathOf(key), { throwIfNoEntry: false })?.mtimeMs
+        if ((typeof fields.expiresAt === 'number' && fields.expiresAt <= now()) || (madeAt !== undefined && madeAt + JOURNAL_TTL_MS <= now())) {
+          remove(key)
+          return null
+        }
         // Named by the field paths alone: a journal holds tool results, which may hold file contents.
         logger.warn('A code mode replay journal could not be read; the script is refused, and changed it runs from its start', { fields: parsed.success ? 'key' : [...new Set(parsed.error.issues.map(issue => issue.path.join('.') || '(root)'))].join(', ') })
         const asks = Array.isArray(fields.asks) ? fields.asks.filter((token): token is string => typeof token === 'string') : []
