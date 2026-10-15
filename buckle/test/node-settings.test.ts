@@ -9,7 +9,7 @@ import { createFileActionLog } from '../common/adapters/action-log/file-action-l
 import { runProcess } from '../common/adapters/process-runner.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { acquireFileLock } from '@5straps/runtime/sqlite'
-import { editEnvironmentVariable, environmentLockPath } from '../cli/environment-file.js'
+import { editEnvironmentVariable, environmentLockPath } from '../common/adapters/environment-file.js'
 import { settingsCommand } from '../cli/settings.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 import { BUILTIN_PACKS, createBuiltinPacks, unmetPackPrerequisite } from '../common/services/packs/index.js'

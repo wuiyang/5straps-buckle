@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFile
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { editEnvironmentVariable, environmentLockPath, setEnvironmentVariable, updateEnvironmentFile, writeEnvironmentFile } from '../cli/environment-file.js'
+import { editEnvironmentVariable, environmentLockPath, setEnvironmentVariable, updateEnvironmentFile, writeEnvironmentFile } from '../common/adapters/environment-file.js'
 import { loadEnvironmentFile } from '../common/runtime/environment.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 

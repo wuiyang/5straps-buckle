@@ -15,7 +15,7 @@ import { nodeRootsOf, openWorkspaceManager, WorkspaceError, type MintedToken, ty
 import { MigrationError } from '../common/services/workspaces/migration.js'
 import { workspaceUntrusted } from '../common/services/workspaces/node-roots.js'
 import type { WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
-import { writeEnvironmentFile } from './environment-file.js'
+import { writeEnvironmentFile } from '../common/adapters/environment-file.js'
 import { findNodeSetting, normaliseSetting } from './node-settings.js'
 import { redeemPairingCode } from './pairing.js'
 

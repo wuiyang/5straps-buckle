@@ -32,8 +32,9 @@ export interface NodeConfig {
   description: string
   usage: string
   /**
-   * BUCKLE_AUTH_TOKEN, the agent token of a node set up before the workspace model: migration hashes it into workspace
-   * default's tokens as `node`, and pairing sends it to Rings. No request is checked against it here.
+   * BUCKLE_AUTH_TOKEN, the agent token of a node set up before the workspace model, as this process sees it: migration
+   * hashes the file's into workspace default's tokens as `node` (MigrationInput) and takes it out of the file; a node
+   * already moved warns that it is set. No request is checked against it, and pairing sends a workspace's own token.
    */
   authToken: string
   /**

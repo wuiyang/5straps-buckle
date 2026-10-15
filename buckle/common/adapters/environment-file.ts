@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'pathe'
 import { parseEnv } from 'node:util'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { withFileLock } from '@5straps/runtime/sqlite'
-import { setDescriptorMode, setMode } from '../common/adapters/file-modes.js'
+import { setDescriptorMode, setMode } from './file-modes.js'
 
 /**
  * Sets one variable in an environment file's text, in place where it is already there: the line

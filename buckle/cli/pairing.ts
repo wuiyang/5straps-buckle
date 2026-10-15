@@ -1,7 +1,7 @@
 import type { HarnessManifest } from '@5straps/protocol'
 import { APPROVAL_KEY_PATTERN } from '@5straps/protocol/envelope'
 import { logger } from '../common/runtime/log.js'
-import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from './environment-file.js'
+import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from '../common/adapters/environment-file.js'
 
 /** Where Rings takes a node's action log and its pending approvals. */
 const REPORT_PATH = '/api/v1/buckle-reports'

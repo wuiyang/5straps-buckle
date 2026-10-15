@@ -1,8 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parseEnv } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
+import { StateFileError } from '../common/adapters/json-file-store.js'
+import { readStoredPolicies } from '../common/adapters/policy-store/file-policy-store.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { tokenDigest } from '../common/services/access/tokens.js'
 import { logger } from '../common/runtime/log.js'
@@ -340,6 +343,90 @@ describe('moving a 0.1 node onto the workspace model', () => {
       input.environment.BUCKLE_WORKSPACE_ROOT = inside
       await expect(open(input)).rejects.toThrow(`which overlaps the state directory ${input.state}`)
       expect(existsSync(join(input.state, 'workspaces.json'))).toBe(false)
+    })
+  })
+
+  // Findings 4, 14, 15, 20, and 22 of the Phase 1 review, fix brief A3: an older Buckle refuses the moved node, and
+  // the v1 copies take the node back to 0.1 as it was.
+  describe('leaving an older Buckle nothing to start on, and copies to go back with', () => {
+    function withFile(input: Scene, extra = '') {
+      vi.stubEnv('HOME', input.root)
+      const path = join(input.root, 'buckle.env')
+      writeFileSync(path, `# a 0.1 node\nBUCKLE_SERVER_NAME=Fixture node\nBUCKLE_AUTH_TOKEN=${NODE_TOKEN}\nBUCKLE_WORKSPACE_ROOT=${input.folder}\n${extra}`, { mode: 0o600 })
+      const values = Object.fromEntries(Object.entries(parseEnv(readFileSync(path, 'utf8'))).filter(([name]) => name.startsWith('BUCKLE_'))) as Record<string, string>
+      const config = loadConfig({ ...values, BUCKLE_STATE_DIR: input.state }, process.platform, { file: { path, values }, caller: { BUCKLE_STATE_DIR: input.state } })
+      return { path, config }
+    }
+    afterEach(() => { vi.unstubAllEnvs() })
+
+    it('takes BUCKLE_AUTH_TOKEN out of buckle.env once it is default\'s token node, and puts a policy.json 0.1 cannot read in place', async () => {
+      const input = scene()
+      const { path, config } = withFile(input)
+      const stored = JSON.stringify({ version: 1, workspaces: { [input.folder]: policy(value => { value.commands.deny = ['wget *'] }) } })
+      writeFileSync(join(input.state, 'policy.json'), stored)
+      const notices = vi.spyOn(logger, 'warn')
+      const manager = await openWorkspaceManager({ config })
+
+      expect(manager.tokenOwner(`Bearer ${NODE_TOKEN}`)).toEqual({ workspaceId: 'default', tokenId: 'node' })
+      expect(readFileSync(path, 'utf8')).toBe(`# a 0.1 node\nBUCKLE_SERVER_NAME=Fixture node\nBUCKLE_WORKSPACE_ROOT=${input.folder}\n`)
+      // 0.1 read policy.json with this same reader, version 1 alone, and refused to start on anything else.
+      expect(() => readStoredPolicies(join(input.state, 'policy.json'))).toThrow(StateFileError)
+      expect(settings(input, 'default').policy.commands.deny).toEqual(['wget *'])
+      const told = notices.mock.calls.map(([message]) => String(message))
+      expect(told).toContainEqual(expect.stringContaining(`BUCKLE_AUTH_TOKEN is now token node of workspace default, so agents configured with it keep working, and it was taken out of ${path}`))
+      expect(told).toContainEqual(expect.stringContaining('buckle workspace token create --workspace default, give agents the new token, then buckle workspace token revoke node --workspace default'))
+      expect(told).toContainEqual(expect.stringContaining('An older Buckle sharing this state directory now refuses to start'))
+      expect(told.join('\n')).not.toContain(NODE_TOKEN)
+    })
+
+    it('keeps owner-only copies of every file it changed, which moved back give 0.1 the node as it was', async () => {
+      const input = scene()
+      const { config } = withFile(input)
+      const registryBefore = version1(input)
+      const on = { on: true, changedAt: '2026-10-01T00:00:00.000Z' }
+      const grant = { id: 'grant-1', workspace: input.folder, rule: 'network_egress', subject: 'localhost:3000', scope: 'always', sessionId: null, createdAt: '2026-10-01T00:00:00.000Z', expiresAt: null }
+      const before = {
+        'grants.json': JSON.stringify({ version: 1, grants: [grant] }),
+        'dangerously-allow.json': JSON.stringify({ version: 1, workspaces: { [input.folder]: on } }),
+        [join('workspaces', 'site', 'grants.json')]: JSON.stringify({ version: 1, grants: [{ ...grant, workspace: input.site }] }),
+        [join('workspaces', 'site', 'dangerously-allow.json')]: JSON.stringify({ version: 1, workspaces: { [input.site]: on } }),
+      }
+      mkdirSync(join(input.state, 'workspaces', 'site'), { recursive: true })
+      for (const [file, text] of Object.entries(before)) writeFileSync(join(input.state, file), text)
+      await openWorkspaceManager({ config })
+
+      const copies = { 'workspaces.v1.json': registryBefore, 'policy.v1.json': '{"version":1,"workspaces":{}}\n', ...Object.fromEntries(Object.entries(before).map(([file, text]) => [file.replace('.json', '.v1.json'), text])) }
+      for (const [copy, text] of Object.entries(copies)) {
+        expect(readFileSync(join(input.state, copy), 'utf8')).toBe(text)
+        expect(statSync(join(input.state, copy)).mode & 0o777).toBe(0o600)
+      }
+      expect(readFileSync(join(input.state, 'grants.json'), 'utf8')).not.toBe(before['grants.json'])
+    })
+
+    it('keeps an empty version 1 registry for a node that had none, which 0.1 reads as it read no file', async () => {
+      const input = scene()
+      const { config } = withFile(input)
+      await openWorkspaceManager({ config })
+      expect(JSON.parse(readFileSync(join(input.state, REGISTRY_BACKUP), 'utf8'))).toEqual({ version: 1, workspaces: [] })
+    })
+
+    it('reads the policy 0.1 stored from its copy when a move a crash stopped already put the stub in place', async () => {
+      const input = scene()
+      const { config } = withFile(input)
+      writeFileSync(join(input.state, 'policy.v1.json'), JSON.stringify({ version: 1, workspaces: { [input.folder]: policy(value => { value.commands.deny = ['wget *'] }) } }))
+      writeFileSync(join(input.state, 'policy.json'), JSON.stringify({ version: 2, note: 'moved' }))
+      await openWorkspaceManager({ config })
+      expect(settings(input, 'default').policy.commands.deny).toEqual(['wget *'])
+      expect(JSON.parse(readFileSync(join(input.state, 'policy.v1.json'), 'utf8')).workspaces[input.folder].commands.deny).toEqual(['wget *'])
+    })
+
+    it('warns at each later start where BUCKLE_AUTH_TOKEN is set again, naming the rotation, as the node does not read it', async () => {
+      const input = scene()
+      await open(input)
+      const notices = vi.spyOn(logger, 'warn')
+      await open(input, { BUCKLE_AUTH_TOKEN: 'rotated-the-0.1-way-fixture' })
+      expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual(expect.stringContaining('BUCKLE_AUTH_TOKEN is set in the environment, but a node on the workspace model does not read it'))
+      expect(notices.mock.calls.join('\n')).toContain('buckle workspace token revoke node --workspace default')
     })
   })
 

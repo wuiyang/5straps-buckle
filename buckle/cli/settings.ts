@@ -5,7 +5,7 @@ import { createFileActionLog } from '../common/adapters/action-log/file-action-l
 import { actionsPath, stateDirectoryOf } from '../common/runtime/config.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
-import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from './environment-file.js'
+import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from '../common/adapters/environment-file.js'
 import { findMovedSetting, findNodeSetting, MOVED_SETTINGS, NODE_SETTINGS, normaliseSetting, type NodeSetting } from './node-settings.js'
 
 export interface CliResult {
