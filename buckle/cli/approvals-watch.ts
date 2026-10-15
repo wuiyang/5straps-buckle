@@ -41,8 +41,11 @@ export interface WatchSource {
 }
 
 export interface ApprovalWatchOptions {
-  /** The workspaces it asks for: the one --workspace names, or every online one (Q9). */
-  sources: WatchSource[]
+  /**
+   * The workspaces it asks for, read again at each poll: the one --workspace names, or every online one as it stands,
+   * so one initialised or enabled meanwhile is asked about too (Q9, finding 10 of the Phase 1 review).
+   */
+  sources: () => Promise<WatchSource[]>
   input: Readable
   output: Writable
   errors: Writable
@@ -71,6 +74,8 @@ type Outcome = { exitCode: number }
  */
 export async function watchApprovals(options: ApprovalWatchOptions): Promise<Outcome> {
   const poll = options.pollMs ?? WATCH_POLL_MS
+  let sources: WatchSource[]
+  try { sources = await options.sources() } catch (error) { return unreadableWorkspaces(options, error) }
   const stopped = new AbortController()
   // Terminal mode, so a half-typed line can be thrown away; no history, so an arrow key cannot
   // bring back an earlier answer.
@@ -81,14 +86,16 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
     stopped.abort()
     keys.stop()
     readline.close()
-    options.output.write(`\nStopped watching ${watched(options.sources)}.\n`)
+    options.output.write(`\nStopped watching ${watched(sources)}.\n`)
   }
   // With a listener here readline no longer closes on Ctrl-C by itself, so it is closed in stop.
   readline.on('SIGINT', stop)
   readline.on('close', stop)
   options.signal?.addEventListener('abort', stop, { once: true })
 
-  options.output.write(`Watching ${watched(options.sources)} for approvals. Keys: o once, s session, the word always, d deny, n skip; Enter grants nothing. Ctrl-C stops.\n`)
+  options.output.write(`Watching ${watched(sources)} for approvals. Keys: o once, s session, the word always, d deny, n skip; Enter grants nothing. Ctrl-C stops.\n`)
+  // An interrupt that came while the workspaces were first read fires no listener of its own.
+  if (options.signal?.aborted) stop()
   // By workspace and token, as a token is issued within one workspace's queue.
   const seen = new Set<string>()
   // Each request group's whole action is shown with the first of its asks asked here; the others name that ask
@@ -98,7 +105,11 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
   let afterDrop = false
   try {
     while (!stopped.signal.aborted) {
-      const pending = readPending(options.sources)
+      let now: WatchSource[]
+      try { now = await options.sources() } catch (error) { return unreadableWorkspaces(options, error) }
+      announceChanges(options.output, sources, now)
+      sources = now
+      const pending = readPending(sources)
       if (!pending.ok) return unreachable(options, pending.source, pending.message)
       const next = pending.asks.find(({ source, ask }) => !seen.has(askKey(source, ask.request.token)))
       if (!next) {
@@ -239,6 +250,18 @@ function readPending(sources: WatchSource[]): { ok: true; asks: Array<{ source: 
 
 function askKey(source: WatchSource, key: string): string {
   return JSON.stringify([source.workspaceId, key])
+}
+
+/** Says which workspaces a watch started or stopped asking for since its last poll. */
+function announceChanges(output: Writable, before: WatchSource[], after: WatchSource[]): void {
+  const held = (list: WatchSource[], source: WatchSource) => list.some(other => other.workspaceId === source.workspaceId)
+  for (const source of after) if (!held(before, source)) output.write(`Now also watching workspace ${workspaceLabel(source.workspaceId, source.workspaceName)}.\n`)
+  for (const source of before) if (!held(after, source)) output.write(`Stopped watching workspace ${workspaceLabel(source.workspaceId, source.workspaceName)}, which is no longer online.\n`)
+}
+
+function unreadableWorkspaces(options: ApprovalWatchOptions, error: unknown): Outcome {
+  options.errors.write(`Cannot read which workspaces are online: ${error instanceof Error ? error.message : 'Unknown error'}.\n`)
+  return { exitCode: 1 }
 }
 
 /** The workspaces a watch asks for, as its first and last lines name them. */

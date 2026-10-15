@@ -122,6 +122,19 @@ describe('buckle approve naming no workspace', () => {
   })
 })
 
+// Finding 10 of the Phase 1 review: a watch begun with one online workspace took the one-workspace path, and never asked
+// in a workspace that came online later; it follows the online workspaces however many there are at its start.
+describe('buckle approvals --watch naming no workspace', () => {
+  it('follows every online workspace even where one is online at its start, audited in the node\'s log', async () => {
+    await manager.update('two', { online: false })
+    const refused = await buckle(['approvals', '--watch'])
+    // Without a terminal it asks nothing; the way it refuses shows the path it took.
+    expect(refused.err).toContain('needs a terminal to ask in')
+    expect(refused.err).not.toContain('--workspace one')
+    expect(readFileSync(actionsPath(node), 'utf8')).toContain('"tool":"cli_approvals"')
+  })
+})
+
 describe('the workspaces buckle serve lists', () => {
   it('names each online one with where its folder shows, its URL mode, and the packs it offers', async () => {
     await manager.update('one', { online: true })

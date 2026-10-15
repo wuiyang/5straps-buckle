@@ -153,7 +153,9 @@ async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config
 async function runApproverCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; confirm: Confirm | null }): Promise<CliResult> {
   const runtimes = await onlineRuntimes(input.workspaces)
   if (runtimes.length === 0) return fail('No workspace is online, so none has asks waiting. Name one with --workspace <id>, or serve one again with buckle workspace enable <id>.')
-  if (runtimes.length === 1) return runOnWorkspace({ ...input, runtime: runtimes[0]! })
+  // A watch follows the online workspaces as they change, however many there are at its start (finding 10).
+  const watching = input.command === 'approvals' && input.rest.includes('--watch')
+  if (runtimes.length === 1 && !watching) return runOnWorkspace({ ...input, runtime: runtimes[0]! })
   const token = input.command === 'approve' ? approveArguments(input.rest).positionals[0] : approvalsArguments(input.rest).positionals[1]
   if (token !== undefined) {
     const holder = holderOfAsk(runtimes, token)
@@ -161,16 +163,20 @@ async function runApproverCommand(input: { workspaces: WorkspaceManager; config:
   }
   if (input.command === 'approve') return fail(APPROVE_USAGE)
   return auditOperation({ actions: input.workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: 'cli_approvals', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0,
-    operation: () => approvalsAcross({ runtimes, config: input.config, argv: input.rest }),
+    operation: () => approvalsAcross({ runtimes, workspaces: input.workspaces, config: input.config, argv: input.rest }),
   })
 }
 
-/** Every online workspace's runtime; one that will not open is named with its reason, and the rest are answered. */
-async function onlineRuntimes(workspaces: WorkspaceManager): Promise<BuckleRuntime[]> {
+/**
+ * Every online workspace's runtime; one that will not open is named with its reason, once for each `told`, and the
+ * rest are answered.
+ */
+async function onlineRuntimes(workspaces: WorkspaceManager, told = new Set<string>()): Promise<BuckleRuntime[]> {
   const runtimes: BuckleRuntime[] = []
   for (const workspace of workspaces.list().filter(item => item.online)) {
     try { runtimes.push((await workspaces.resolve(workspace.id)).runtime) } catch (error) {
-      process.stderr.write(`Workspace ${workspace.id} could not open, so its asks are left out: ${error instanceof Error ? error.message : String(error)}\n`)
+      if (!told.has(workspace.id)) process.stderr.write(`Workspace ${workspace.id} could not open, so its asks are left out: ${error instanceof Error ? error.message : String(error)}\n`)
+      told.add(workspace.id)
     }
   }
   return runtimes
@@ -376,7 +382,7 @@ async function approvals(input: CommandInput): Promise<CliResult> {
   const { values, positionals: [, token] } = parsed
   const { runtime } = input
   if (token !== undefined) return showAsk({ runtime, token, json: values.json === true, node: input.config.serverId })
-  if (values.watch) return watch([runtime])
+  if (values.watch) return watch({ runtimes: async () => [runtime], pinned: runtime.workspaceId })
   if (values.json) return print(listingOf(runtime))
   const waiting = runtime.approvalService.waiting()
   if (waiting.length === 0) process.stdout.write(`Nothing is waiting for a decision in workspace ${runtime.workspaceId}.\n`)
@@ -385,11 +391,14 @@ async function approvals(input: CommandInput): Promise<CliResult> {
 }
 
 /** `buckle approvals` over several workspaces (Q9): each one's asks under its name, or one line where none waits. */
-async function approvalsAcross(input: { runtimes: BuckleRuntime[]; config: NodeConfig; argv: string[] }): Promise<CliResult> {
+async function approvalsAcross(input: { runtimes: BuckleRuntime[]; workspaces: WorkspaceManager; config: NodeConfig; argv: string[] }): Promise<CliResult> {
   const parsed = approvalsArguments(input.argv)
   const refusal = approvalsRefusal(parsed)
   if (refusal) return fail(refusal)
-  if (parsed.values.watch) return watch(input.runtimes)
+  if (parsed.values.watch) {
+    const told = new Set<string>()
+    return watch({ runtimes: () => onlineRuntimes(input.workspaces, told) })
+  }
   if (parsed.values.json) return print(input.runtimes.flatMap(listingOf))
   let any = false
   for (const runtime of input.runtimes) {
@@ -465,15 +474,15 @@ function showAsk(input: { runtime: BuckleRuntime; token: string; json: boolean; 
  * that reaches the process as a signal, where readline is not reading keys, stops it the same way.
  * Each answer is audited in the node's log, where `buckle approve` records its own.
  */
-async function watch(runtimes: BuckleRuntime[]): Promise<CliResult> {
+async function watch(input: { runtimes: () => Promise<BuckleRuntime[]>; pinned?: string }): Promise<CliResult> {
   // The action and the prompt go to stdout, so both ends must be a terminal, as terminalConfirm requires for buckle
   // approve: with stdout redirected a key would grant an action never seen (review L2 of the continuation review).
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return fail(`buckle approvals --watch needs a terminal to ask in, on both its input and its output. ${noTerminal(runtimes.length === 1 ? runtimes[0]!.workspaceId : undefined)}`)
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return fail(`buckle approvals --watch needs a terminal to ask in, on both its input and its output. ${noTerminal(input.pinned)}`)
   const interrupted = new AbortController()
   const interrupt = () => interrupted.abort()
   process.once('SIGINT', interrupt)
   try {
-    const sources = runtimes.map(runtime => ({ approvals: runtime.approvalService, actions: runtime.actions, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName() }))
+    const sources = async () => (await input.runtimes()).map(runtime => ({ approvals: runtime.approvalService, actions: runtime.actions, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName() }))
     return await watchApprovals({ sources, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
   } finally {
     process.off('SIGINT', interrupt)
