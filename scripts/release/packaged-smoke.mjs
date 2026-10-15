@@ -5,7 +5,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { createServer } from 'node:net'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -18,6 +18,18 @@ const state = join(root, 'state')
 const backup = join(root, 'backup')
 const agentToken = randomBytes(32).toString('hex')
 const adminToken = randomBytes(32).toString('hex')
+// The node's own folder is a workspace named after it (D85, Q15); its setup face is under /workspaces/<name>/.
+const workspaceName = basename(workspace)
+const setup = path => `/workspaces/${workspaceName}/setup/${path}`
+let workspaceId
+async function resolveWorkspaceId() {
+  if (workspaceId === undefined) {
+    const registry = await request('/setup/workspaces')
+    workspaceId = registry.workspaces.find(entry => entry.name === workspaceName)?.id
+    assert(workspaceId, 'The node did not register its own folder as a workspace')
+  }
+  return workspaceId
+}
 const environment = { PATH: process.env.PATH, HOME: root, TMPDIR: root, SystemRoot: process.env.SystemRoot,
   npm_config_userconfig: join(root, 'npmrc'), npm_config_audit: 'false', npm_config_fund: 'false' }
 // Strings only Buckle's common code or @5straps/runtime holds: in .output they would mean a bundled second copy.
@@ -198,19 +210,19 @@ async function request(path, { token = adminToken, body, status = 200 } = {}) {
 }
 
 async function checkApprovalAndAudit() {
-  await request('/setup/audit', { token: agentToken, status: 401 })
+  await request(setup('audit'), { token: agentToken, status: 401 })
   const invocation = { requestId: `smoke-${++sequence}`, tool: 'fs_write', args: { path: 'demo.txt', content: 'after' },
     context: { sessionId: 'smoke-session', stageId: 'smoke-stage' }, approvalTokens: [] }
   const blocked = await request('/v1/invoke', { token: agentToken, body: invocation })
   assert.equal(blocked.outcome, 'approval_required')
   assert.equal(readFileSync(join(workspace, 'demo.txt'), 'utf8'), 'before')
-  const pending = await request('/setup/approvals')
+  const pending = await request(setup('approvals'))
   assert.equal(pending.approvals.length, blocked.approvals.length)
   const commandQueue = JSON.parse(cli(['approvals', '--json']))
   assert(Array.isArray(commandQueue) && commandQueue.length > 0)
   const client = await prepareApprovalClient()
   for (const approval of blocked.approvals) {
-    await request('/setup/approvals', { body: { token: approval.token, approved: true, scope: 'once' }, status: 409 })
+    await request(setup('approvals'), { body: { token: approval.token, approved: true, scope: 'once' }, status: 409 })
     assert.equal(readFileSync(join(workspace, 'demo.txt'), 'utf8'), 'before')
     await approveVerifiedAction({ client, approval, invocation })
   }
@@ -218,7 +230,7 @@ async function checkApprovalAndAudit() {
     requestId: `smoke-${++sequence}`, approvalTokens: blocked.approvals.map(approval => approval.token) } })
   assert.equal(completed.outcome, 'ok')
   assert.equal(readFileSync(join(workspace, 'demo.txt'), 'utf8'), 'after')
-  const audit = await request('/setup/audit')
+  const audit = await request(setup('audit'))
   assert(audit.entries.some(entry => entry.tool === 'fs_write' && entry.outcome === 'ok'))
   assert.match(cli(['log', '--json']), /fs_write/)
 }
@@ -238,14 +250,14 @@ async function checkCodeRunOverHttp() {
     context: { sessionId: 'smoke-session', stageId: 'code-stage' }, approvalTokens: [] } })
   assert.equal(ran.outcome, 'ok', `code_run over HTTP answered ${JSON.stringify(ran)}`)
   assertCodeRun(ran.output, readFileSync(join(workspace, 'demo.txt'), 'utf8'))
-  const audit = await request('/setup/audit')
+  const audit = await request(setup('audit'))
   assert(audit.entries.some(entry => entry.tool === 'fs_read' && entry.stageId === 'code-stage' && entry.requestId.startsWith('code:')), 'The script\'s fs_read is not in the audit log under its stage')
 }
 
 async function prepareApprovalClient() {
   const publicKey = /Public key: +(ed25519:\S+)/.exec(cli(['client', 'keygen']))?.[1]
   assert(publicKey, 'The packaged device client did not generate a public key')
-  cli(['keys', 'enroll', publicKey, '--purpose', 'approval', '--workspace', 'default'])
+  cli(['keys', 'enroll', publicKey, '--purpose', 'approval', '--workspace', workspaceName])
   const nodePublicKey = /Public key: +(ed25519:\S+)/.exec(cli(['keys', 'node']))?.[1]
   assert(nodePublicKey, 'The local node CLI did not expose its public identity')
   const url = `http://127.0.0.1:${port}`
@@ -257,7 +269,7 @@ async function prepareApprovalClient() {
 
 async function approveVerifiedAction({ client, approval, invocation }) {
   const { url, nodePublicKey, protocol } = client
-  const listing = JSON.parse(cli(['client', 'request', 'GET', `${url}/setup/approvals/challenges`]))
+  const listing = JSON.parse(cli(['client', 'request', 'GET', `${url}${setup('approvals/challenges')}`]))
   const item = listing.challenges.find(candidate => candidate.token === approval.token)
   assert(item?.signed, 'The packaged node did not sign the requested challenge')
   const verified = protocol.readChallenge({ signed: item.signed, nodeKey: protocol.publicKeyFrom(nodePublicKey) })
@@ -265,7 +277,7 @@ async function approveVerifiedAction({ client, approval, invocation }) {
   assert.equal(verified.digest, item.digest)
   assert.equal(verified.challenge.token, approval.token)
   assert.equal(verified.challenge.node, 'package-smoke')
-  assert.equal(verified.challenge.workspace, 'default')
+  assert.equal(verified.challenge.workspace, await resolveWorkspaceId())
   assert.equal(verified.challenge.sessionId, invocation.context.sessionId)
   assert.equal(verified.challenge.tool, invocation.tool)
   assert.deepEqual(verified.challenge.arguments, invocation.args)
@@ -273,17 +285,17 @@ async function approveVerifiedAction({ client, approval, invocation }) {
   assert.equal(verified.challenge.callDigest, protocol.callDigestOf({ tool: invocation.tool, arguments: invocation.args }))
   assert(verified.challenge.description?.includes('demo.txt'))
   assert.deepEqual(verified.challenge.effects, [`write ${join(workspace, 'demo.txt')}`])
-  const displayed = cli(['client', 'approvals', url])
+  const displayed = cli(['client', 'approvals', url, '--workspace', workspaceName])
   assert(displayed.includes(approval.token) && displayed.includes('demo.txt') && displayed.includes('after') && displayed.includes(workspace), 'The packaged client did not show the complete verified action')
-  assert.throws(() => cli(['client', 'approve', url, approval.token]), error => error.status === 1 && String(error.stderr).includes('person at a terminal'), 'A piped packaged client must never approve without confirmation')
+  assert.throws(() => cli(['client', 'approve', url, approval.token, '--workspace', workspaceName]), error => error.status === 1 && String(error.stderr).includes('person at a terminal'), 'A piped packaged client must never approve without confirmation')
   assert(JSON.parse(cli(['approvals', '--json'])).some(candidate => candidate.token === approval.token), 'Non-terminal refusal removed the pending ask')
   const body = JSON.stringify({ token: approval.token, approved: true, scope: 'once', challenge: verified.digest })
-  const decided = JSON.parse(cli(['client', 'request', 'POST', `${url}/setup/approvals`, '--body', body]))
+  const decided = JSON.parse(cli(['client', 'request', 'POST', `${url}${setup('approvals')}`, '--body', body]))
   assert.equal(decided.resolved, true)
 }
 
 async function checkBackupAndRestore() {
-  const checkpoints = (await request('/setup/history')).checkpoints
+  const checkpoints = (await request(setup('history'))).checkpoints
   const checkpoint = checkpoints.find(item => item.sessionId === 'smoke-session')
   assert(checkpoint, 'The approved write has no checkpoint')
   await stopService()
@@ -297,13 +309,13 @@ async function checkBackupAndRestore() {
   // A copy does not keep the directory's mode, and the node refuses a state directory others can reach.
   chmodSync(state, 0o700)
   await startService()
-  const audit = await request('/setup/audit')
+  const audit = await request(setup('audit'))
   assert(audit.entries.some(entry => entry.tool === 'fs_write' && entry.outcome === 'ok'))
   writeFileSync(join(workspace, 'demo.txt'), 'external edit')
-  await request(`/setup/history/${encodeURIComponent(checkpoint.id)}/restore`, { body: {}, status: 409 })
+  await request(setup(`history/${encodeURIComponent(checkpoint.id)}/restore`), { body: {}, status: 409 })
   assert.equal(readFileSync(join(workspace, 'demo.txt'), 'utf8'), 'external edit')
   writeFileSync(join(workspace, 'demo.txt'), 'after')
-  await request(`/setup/history/${encodeURIComponent(checkpoint.id)}/restore`, { body: {} })
+  await request(setup(`history/${encodeURIComponent(checkpoint.id)}/restore`), { body: {} })
   assert.equal(readFileSync(join(workspace, 'demo.txt'), 'utf8'), 'before')
 }
 
@@ -330,7 +342,7 @@ async function checkCleanStop() {
 async function checkSetupWithoutAdminToken() {
   await startService({ admin: false, adminHttp: true })
   for (const token of [adminToken, agentToken, undefined]) {
-    const response = await nodeFetch('/setup/status', { headers: token ? { authorization: `Bearer ${token}` } : {} })
+    const response = await nodeFetch(setup('status'), { headers: token ? { authorization: `Bearer ${token}` } : {} })
     await response.body?.cancel()
     assert.equal(response.status, 404, 'A node without an admin token must serve no /setup')
   }
@@ -347,7 +359,7 @@ async function checkSetupWithFlagOff() {
   await startService({ admin: true, adminHttp: false })
   const unmatched = await nodeFetch('/not-a-route')
   const expected = await unmatched.text()
-  for (const [path, token] of [['/setup/status', adminToken], ['/setup/policy', adminToken], ['/workspaces/default/setup/status', adminToken], ['/setup/status', agentToken], ['/setup/status', undefined]]) {
+  for (const [path, token] of [[setup('status'), adminToken], [setup('policy'), adminToken], ['/setup/status', adminToken], ['/setup/status', agentToken], ['/setup/status', undefined]]) {
     const response = await nodeFetch(path, { headers: token ? { authorization: `Bearer ${token}` } : {} })
     assert.equal(response.status, 404, `${path} must answer 404 while the experimental admin flag is off`)
     assert.equal(await response.text(), expected, `${path} must answer as an unmatched path does`)
