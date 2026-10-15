@@ -16,11 +16,11 @@ buckle init
 The first run sets this machine's node up, then serves the current directory as a
 [workspace](workspaces.md). It writes the node's settings to one file, `buckle.env`, in the
 state directory: `~/.5straps/buckle`, or the absolute path in `BUCKLE_STATE_DIR`. On Linux and
-macOS it creates that directory with mode 700 and the file with mode 600, readable by you alone.
-It never writes into the project. `--out <file>`, or `BUCKLE_ENV_FILE`, puts the file elsewhere;
-then name that file with `BUCKLE_ENV_FILE` whenever you start Buckle. A node set up already keeps
-its file unless you pass `--force`, and `buckle init` in another project adds it as another
-workspace.
+macOS it creates that directory with mode 700 and the file with mode 600. It never writes into
+the project. `--out <file>`, or `BUCKLE_ENV_FILE`, puts the file elsewhere; then name that file
+with `BUCKLE_ENV_FILE` whenever you start Buckle; `buckle mcp` needs it in the state
+directory. A node set up already keeps its file unless you pass `--force`, and `buckle init` in
+another project adds it as another workspace.
 
 In a terminal it asks each question with a default. Enter keeps it, leaving a workspace
 setting to the node's default in `buckle.env`, else the one shown:
@@ -104,7 +104,7 @@ For a client configured in JSON, the usual entry is:
 ```
 
 `--workspace` pins the workspace, so the client's working directory does not matter; without
-it, `buckle mcp` serves the workspace holding that directory. Each available tool registers with its schema, and each skill is a resource at
+it, `buckle mcp` serves the workspace holding that directory. Each available tool registers with its schema; each skill is a resource at
 `buckle://skills/<id>`. Logs go to stderr, because stdout carries the protocol.
 
 ### HTTP
@@ -114,7 +114,7 @@ buckle serve
 ```
 
 It listens on `127.0.0.1:4320`, or `BUCKLE_HOST` and `BUCKLE_PORT`. There is no TLS; put a
-proxy in front before exposing it beyond the machine. Every route but `/health` and
+proxy in front before exposing it. Every route but `/health` and
 `/health/ready` wants an agent token, and serves that token's workspace:
 
 | Route | What it does |

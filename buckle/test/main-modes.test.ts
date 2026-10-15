@@ -1,4 +1,6 @@
-import { join } from 'pathe'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'pathe'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 
@@ -191,6 +193,57 @@ describe('main', () => {
       await main(['fs', 'read', 'notes.txt'])
       expect(entry.loadConfig).toHaveBeenCalledWith(process.env, process.platform, { file: { path: '/state/buckle.env', values: { BUCKLE_ALLOW_SHELL: 'false' } }, caller: expect.objectContaining({ BUCKLE_ALLOW_SHELL: 'true' }) })
     } finally { vi.unstubAllEnvs() }
+  })
+
+  // Fix brief 4, finding 7: an MCP config's env, which an agent may be able to write, named another settings file, or
+  // none, and so lifted every workspace's deny lists; buckle mcp now reads only the node's own.
+  describe('with BUCKLE_ENV_FILE set', () => {
+    let state: string
+    let elsewhere: string
+    beforeEach(() => {
+      state = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-mode-state-')))
+      elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-mode-elsewhere-')))
+      vi.stubEnv('BUCKLE_STATE_DIR', state)
+    })
+    afterEach(() => {
+      vi.unstubAllEnvs()
+      for (const directory of [state, elsewhere]) rmSync(directory, { recursive: true, force: true })
+    })
+    const file = (directory: string, name: string) => { const path = join(directory, name); writeFileSync(path, 'BUCKLE_COMMAND_DENY=\n'); return path }
+
+    it.each([
+      ['a file outside the state directory', () => file(elsewhere, 'buckle.env')],
+      ['a file outside it, spelled through it', () => { file(elsewhere, 'buckle.env'); return `${state}/../${basename(elsewhere)}/buckle.env` }],
+      ['a link in it to a file outside it', () => { const link = join(state, 'linked.env'); symlinkSync(file(elsewhere, 'buckle.env'), link); return link }],
+      ['no file, in the state directory', () => join(state, 'missing.env')],
+      ['a relative path', () => 'project/settings.env'],
+    ])('refuses buckle mcp %s, naming the variable and never the path, before it reads anything', async (_case, named) => {
+      const path = named()
+      vi.stubEnv('BUCKLE_ENV_FILE', path)
+      const refused = await main(['mcp']).catch((error: unknown) => error)
+      expect(refused).toBeInstanceOf(Error)
+      expect((refused as Error).message).toContain('BUCKLE_ENV_FILE names a file outside the node\'s state directory, or no file')
+      expect((refused as Error).message).not.toContain(path)
+      expect(entry.loadEnvironmentFile).not.toHaveBeenCalled()
+      expect(entry.serveMcpStdio).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['the default buckle.env, there or not', () => join(state, 'buckle.env')],
+      ['a file in the state directory', () => { mkdirSync(join(state, 'settings')); return file(join(state, 'settings'), 'node.env') }],
+    ])('lets buckle mcp read %s', async (_case, named) => {
+      vi.stubEnv('BUCKLE_ENV_FILE', named())
+      expect(await main(['mcp'])).toBeUndefined()
+      expect(entry.serveMcpStdio).toHaveBeenCalledTimes(1)
+    })
+
+    it('lets buckle serve and the owner\'s commands read a file anywhere, as before', async () => {
+      vi.stubEnv('BUCKLE_ENV_FILE', file(elsewhere, 'buckle.env'))
+      expect(await main(['serve'])).toBeUndefined()
+      expect(entry.serveHttp).toHaveBeenCalledTimes(1)
+      expect(await main(['policy', 'show'])).toBe(5)
+      expect(entry.loadEnvironmentFile).toHaveBeenCalledTimes(2)
+    })
   })
 
   // Finding 24 of the workspace-model Phase 1 review: help starts nothing and reads no configuration.

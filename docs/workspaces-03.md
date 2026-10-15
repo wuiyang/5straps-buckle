@@ -15,8 +15,10 @@ again. A workspace's variables (`env.<NAME>`) are its own; where a later release
 variables of its own, the workspace's are set over them, name by name.
 
 The node reads these defaults from `buckle.env` alone, never from a shell's or an MCP config's
-`env`: an MCP config an agent could write cannot change them. A command started with one of them
-set to another value says at start that it is not read. A change to `buckle.env` applies when
+`env`: an MCP config an agent could write cannot change them. Nor can it point `buckle mcp` at
+another file: `buckle mcp` takes `BUCKLE_ENV_FILE` only where it names a file in the state
+directory, and refuses to start otherwise, naming the variable. A command started with one of the
+defaults set to another value says at start that it is not read. A change to `buckle.env` applies when
 the node restarts.
 
 ## The policy lists

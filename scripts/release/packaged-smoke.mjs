@@ -131,7 +131,9 @@ function assertExecutableBin(path) {
 
 /** The admin HTTP layer is experimental (owner decision D8): switched on here wherever the smoke drives /setup. */
 function nodeEnvironment({ admin = true, adminHttp = admin } = {}) {
-  return { ...environment, BUCKLE_ENV_FILE: join(root, 'no-environment-file'), BUCKLE_HOST: '127.0.0.1',
+  // The state directory's own file, which is not there: the node is set up by this environment alone, and buckle mcp
+  // takes no settings file outside the state directory.
+  return { ...environment, BUCKLE_ENV_FILE: join(state, 'buckle.env'), BUCKLE_HOST: '127.0.0.1',
     BUCKLE_PORT: String(port ?? 4320), BUCKLE_SERVER_ID: 'package-smoke', BUCKLE_WORKSPACE_ROOT: workspace,
     BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'fs,code', BUCKLE_ALLOW_SHELL: 'false',
     BUCKLE_AUTH_TOKEN: agentToken, ...(admin ? { BUCKLE_ADMIN_TOKEN: adminToken } : {}), ...(adminHttp ? { BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true' } : {}), BUCKLE_APPROVAL_TIMEOUT_MS: '1' }

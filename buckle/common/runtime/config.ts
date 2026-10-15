@@ -191,7 +191,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     ...(layers.caller.BUCKLE_WORKSPACE_ROOT ? { callerWorkspaceRoot: typedPath(layers.caller.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
     migration: migrationInput(environment, layers, platform),
     // From the environment file alone, where the node has one, as migration reads it (finding 34): a shell's or an MCP
-    // config's env, which an agent may be able to write, never sets or lifts every workspace's defaults and deny floor.
+    // config's env, which an agent may be able to write, never sets or lifts every workspace's defaults and deny floor,
+    // and buckle mcp reads no file outside the state directory (refuseForeignEnvironmentFile; fix brief 4, finding 7).
     workspaceDefaults: nodeDefaultsFrom(layers.file?.values ?? environment, platform),
     // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
     scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)),

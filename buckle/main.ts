@@ -8,7 +8,7 @@ import { clientCommand } from './cli/client.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
 import { loadConfig, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
-import { loadEnvironmentFile } from './common/runtime/environment.js'
+import { loadEnvironmentFile, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
 import { mcpTarget, serveMcpStdio } from './mcp/stdio.js'
@@ -58,7 +58,7 @@ export async function main(argv: readonly string[]): Promise<number | undefined>
   if (!('argv' in mode)) {
     // Help needs no configuration, and starts nothing (finding 24 of the workspace-model Phase 1 review).
     if (mode.options.some(option => option === '--help' || option === '-h')) return printServiceUsage(mode.kind)
-    await runService({ kind: mode.kind, options: mode.options, ...configureProcess() })
+    await runService({ kind: mode.kind, options: mode.options, ...configureProcess(mode.kind) })
     return undefined
   }
   try {
@@ -77,10 +77,12 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<numb
   // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
   const answered = answerWithoutConfiguration(mode.argv)
   if (answered) return answered.exitCode
-  return (await runCli({ argv: mode.argv, config: configureProcess().config })).exitCode
+  return (await runCli({ argv: mode.argv, config: configureProcess('cli').config })).exitCode
 }
 
-function configureProcess(): { config: NodeConfig; logging: LoggerRoot } {
+function configureProcess(kind: ServiceKind | 'cli'): { config: NodeConfig; logging: LoggerRoot } {
+  // An MCP client starts buckle mcp, from a config an agent may write: it reads no settings file but the node's own.
+  if (kind === 'mcp') refuseForeignEnvironmentFile()
   // What the process was started with, before the file fills in the rest: migration reads the file alone (MigrationInput).
   const caller = { ...process.env }
   const environment = loadEnvironmentFile()

@@ -29,7 +29,8 @@ async function prepareNode(extra: NodeJS.ProcessEnv = {}): Promise<Node> {
   const port = await freePort()
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH, HOME: root, TMPDIR: root,
-    BUCKLE_ENV_FILE: join(root, 'no-environment-file'), BUCKLE_HOST: '127.0.0.1', BUCKLE_PORT: String(port),
+    // The state directory's own file, which is not there: a node set up by its environment alone, as buckle mcp reads one too.
+    BUCKLE_ENV_FILE: join(state, 'buckle.env'), BUCKLE_HOST: '127.0.0.1', BUCKLE_PORT: String(port),
     BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_AUTH_TOKEN: 'bootstrap-agent-token',
     BUCKLE_ALLOW_SHELL: 'false', ...extra,
   }

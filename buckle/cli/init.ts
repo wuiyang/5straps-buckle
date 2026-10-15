@@ -32,11 +32,12 @@ Sets this machine's node up once, then serves a folder as one of its workspaces:
 (--root is its earlier name), seen by the agent at /workspace, or at --mount. --name names the node.
 
 The node's settings go to buckle.env in the state directory (~/.5straps/buckle, or BUCKLE_STATE_DIR), owner-only;
---out or BUCKLE_ENV_FILE selects a custom file instead. They hold its name, host, port and admin credential, and a
-node already set up keeps them unless --force writes them again. The workspace's own settings go to its
-workspace.json. In a terminal, init asks for the folder, which packs to offer, the shell, host Git and the approved
-hosts; --yes, or no terminal, takes the defaults and says what it kept. Change them later with buckle workspace set
-and buckle policy. The workspace's agent token is printed once; buckle workspace token create mints more.
+--out or BUCKLE_ENV_FILE selects a custom file instead, which buckle mcp reads only inside the state directory. They
+hold its name, host, port and admin credential, and a node already set up keeps them unless --force writes them
+again. The workspace's own settings go to its workspace.json. In a terminal, init asks for the folder, which packs
+to offer, the shell, host Git and the approved hosts; --yes, or no terminal, takes the defaults and says what it
+kept. Change them later with buckle workspace set and buckle policy. The workspace's agent token is printed once;
+buckle workspace token create mints more.
 
 With --pair, the node registers itself with Rings by redeeming a code issued there, with the workspace's token, so no
 credential is typed from one screen into another. --url is where Rings reaches this node, and defaults to

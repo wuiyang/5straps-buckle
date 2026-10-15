@@ -1,9 +1,9 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'pathe'
 import { parseEnv } from 'node:util'
 import { isOpenToOthers } from '../adapters/file-modes.js'
-import { typedPath } from '../domain/paths.js'
-import { stateDirectoryOf } from './config.js'
+import { isInside, typedPath } from '../domain/paths.js'
+import { realPathOf, stateDirectoryOf } from './config.js'
 
 /** The node's environment file in its state directory, which `buckle init` and pairing write. */
 export const ENVIRONMENT_FILE_NAME = 'buckle.env'
@@ -23,6 +23,32 @@ export function environmentFilePath(environment: NodeJS.ProcessEnv = process.env
   // Relative, it would name another file in every directory a command starts in (review L9 of B18-B19).
   if (!isAbsolute(named)) throw new Error(`BUCKLE_ENV_FILE must be an absolute path, not ${named}: Buckle never resolves its settings against the working directory`)
   return typedPath(named)
+}
+
+/** Why `buckle mcp` refuses a BUCKLE_ENV_FILE: the variable alone, never its value, which is the owner's path. */
+export const FOREIGN_ENVIRONMENT_FILE = 'BUCKLE_ENV_FILE names a file outside the node\'s state directory, or no file: buckle mcp takes the node\'s settings only from its own buckle.env or a file in its state directory, as an MCP config\'s env may be within an agent\'s reach. Remove BUCKLE_ENV_FILE from the MCP config\'s env, or move the file into the state directory.'
+
+/**
+ * `buckle mcp` is started by an MCP client, from a config an agent may be able to write, so the file it takes the
+ * node's settings from, every workspace's deny lists among them, must be the node's own (fix brief 4, finding 7): the
+ * default buckle.env, or a file in the state directory, which is owner-only and hidden from agents. Any other
+ * BUCKLE_ENV_FILE, or one naming no file, is refused, naming the variable and never its value; a missing file would
+ * otherwise leave the defaults to the caller's own environment. The owner's own commands keep honouring any file.
+ */
+export function refuseForeignEnvironmentFile(environment: NodeJS.ProcessEnv = process.env): void {
+  const named = environment.BUCKLE_ENV_FILE
+  if (!named || ownEnvironmentFile(named, environment)) return
+  throw new Error(FOREIGN_ENVIRONMENT_FILE)
+}
+
+/** Whether a BUCKLE_ENV_FILE value names the default file, or a file that is there inside the state directory, where each really is. */
+function ownEnvironmentFile(named: string, environment: NodeJS.ProcessEnv): boolean {
+  if (!isAbsolute(named)) return false
+  let path: string
+  try { path = typedPath(named) } catch { return false }
+  if (path === typedPath(defaultEnvironmentFile(environment))) return true
+  if (!existsSync(path) || !statSync(path).isFile()) return false
+  return isInside(realPathOf(stateDirectoryOf(environment)), realPathOf(path))
 }
 
 /** buckle.env in the state directory the process environment names. */
