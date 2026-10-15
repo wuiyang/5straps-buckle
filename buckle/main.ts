@@ -7,7 +7,7 @@ import { setupCli } from './cli/setup.js'
 import { clientCommand } from './cli/client.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
-import { environmentWorkspaceKeys, loadConfig, type NodeConfig } from './common/runtime/config.js'
+import { loadConfig, type NodeConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
@@ -87,9 +87,6 @@ function configureProcess(): { config: NodeConfig; logging: LoggerRoot } {
   const logging = configureRootLogger(loggerConfigFrom(process.env))
   // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
   if (environment.openToOthers && environment.file) logging.logger.warn(`The environment file ${environment.file} can be read by other users; run chmod 600 ${environment.file}`)
-  // Read once, when a node moves to the workspace model; from then on an MCP config's env cannot widen a workspace (Q14).
-  const ignored = environmentWorkspaceKeys(process.env)
-  if (ignored.length > 0) logging.logger.warn(`Ignored: ${ignored.join(', ')} ${ignored.length === 1 ? 'is a workspace setting' : 'are workspace settings'}, read only when a node moves to the workspace model. Change a workspace with buckle workspace set or buckle policy, and remove these with buckle settings unset or from the shell or MCP config's env.`)
   return { config: loadConfig(process.env, process.platform, { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller }), logging }
 }
 

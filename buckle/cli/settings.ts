@@ -6,7 +6,8 @@ import { actionsPath, stateDirectoryOf } from '../common/runtime/config.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
 import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from '../common/adapters/environment-file.js'
-import { findMovedSetting, findNodeSetting, MOVED_SETTINGS, NODE_SETTINGS, normaliseSetting, type NodeSetting } from './node-settings.js'
+import { movedOntoWorkspaces } from '../common/services/workspaces/migration.js'
+import { findNodeSetting, NODE_SETTINGS, normaliseSetting, ROOT_SETTING, type NodeSetting } from './node-settings.js'
 
 export interface CliResult {
   exitCode: number
@@ -20,8 +21,10 @@ const USAGE = `Usage:
   buckle settings unset <key>          Remove it from the file, so the default applies
 
 Keys (either name): ${NODE_SETTINGS.map(setting => `${setting.alias} (${setting.key})`).join(', ')}.
-Lists are comma separated. A change takes effect when buckle serve restarts. Each workspace's own
-settings change with buckle workspace set and buckle policy.
+Lists are comma separated, command globs separated by ;;. A change takes effect when buckle serve
+restarts. From approval-wait on, each is a default every workspace takes where its own settings hold
+no value, which buckle workspace set and buckle policy change; the command deny and destructive lists
+apply to every workspace whatever its own say.
 `
 
 /**
@@ -66,18 +69,22 @@ function dispatch(context: SettingsContext): CliResult | Promise<CliResult> {
 function show(context: SettingsContext): CliResult {
   const fileValues = context.fileText === null ? {} : parseEnv(context.fileText)
   process.stdout.write(`Node settings, from ${describeSource(context)}\n\n`)
-  for (const setting of NODE_SETTINGS) {
+  const line = (setting: NodeSetting) => {
     const [value, source] = context.environment[setting.key] !== undefined
       ? [context.environment[setting.key]!, fileValues[setting.key] !== undefined ? 'process environment, over the file' : 'process environment']
       : fileValues[setting.key] !== undefined ? [fileValues[setting.key]!, 'environment file'] : [setting.fallback, 'default']
-    process.stdout.write(`  ${setting.alias.padEnd(16)} ${setting.key.padEnd(24)} ${(value || '(empty)').padEnd(40)} ${source}\n`)
+    process.stdout.write(`  ${setting.alias.padEnd(20)} ${setting.key.padEnd(28)} ${(value || '(empty)').padEnd(40)} ${source}\n`)
   }
-  const moved = MOVED_SETTINGS.filter(setting => fileValues[setting.key] !== undefined || context.environment[setting.key] !== undefined)
-  if (moved.length) {
-    process.stdout.write(`\nWorkspace settings since the workspace model, which the node ignores here (unset them):\n`)
-    for (const setting of moved) process.stdout.write(`  ${setting.key.padEnd(28)} ${setting.replacement}\n`)
+  for (const setting of NODE_SETTINGS.filter(item => !item.workspace)) line(setting)
+  // D85, Q3 and Q14: these are each workspace's defaults, and the deny lists a floor over every workspace.
+  process.stdout.write(`\nWorkspace defaults, which a workspace's own settings replace (buckle workspace show); the command deny and destructive lists apply to every workspace:\n`)
+  for (const setting of NODE_SETTINGS.filter(item => item.workspace)) line(setting)
+  if (fileValues[ROOT_SETTING.key] !== undefined || context.environment[ROOT_SETTING.key] !== undefined) {
+    process.stdout.write(movedOntoWorkspaces(stateDirectoryOf(context.merged))
+      ? `\n${ROOT_SETTING.key} was read once, when this node moved onto workspaces, as the folder of the workspace it made; the node no longer reads it (buckle settings unset root).\n`
+      : `\n${ROOT_SETTING.key} is read once, when this node moves onto workspaces at its next start, as the folder of the workspace it makes of it.\n`)
   }
-  const hidden = Object.keys(fileValues).filter(name => (!findNodeSetting(name) && !findMovedSetting(name)) || !name.startsWith('BUCKLE_'))
+  const hidden = Object.keys(fileValues).filter(name => (!findNodeSetting(name) && name !== ROOT_SETTING.key) || !name.startsWith('BUCKLE_'))
   if (hidden.length) {
     process.stdout.write(`\nAlso in the file, not shown here:\n`)
     for (const name of hidden) process.stdout.write(`  ${name} (set, hidden)\n`)
@@ -91,10 +98,10 @@ function describeSource(context: SettingsContext): string {
 }
 
 async function write(context: SettingsContext, name: string, raw: string | null): Promise<CliResult> {
-  const moved = findMovedSetting(name)
-  // Q14: a workspace's settings live in its workspace.json; a line migration copied is only removed here.
-  if (moved && raw !== null) return fail(`${moved.key} is a workspace setting since the workspace model, and the node ignores it in ${context.file}. Change it with ${moved.replacement}.`)
-  const setting: Pick<NodeSetting, 'key' | 'fallback'> | undefined = findNodeSetting(name) ?? (moved && { key: moved.key, fallback: `(a workspace setting now: ${moved.replacement})` })
+  const root = name === ROOT_SETTING.key || name === ROOT_SETTING.alias
+  // The 0.1 folder line is read once, when the node moves onto workspaces; `unset` removes it, as the move's notice asks.
+  if (root && raw !== null) return fail(`${ROOT_SETTING.key} is read only when a node set up before workspaces moves onto them. Serve a folder with ${ROOT_SETTING.replacement}.`)
+  const setting: Pick<NodeSetting, 'key' | 'fallback'> | undefined = findNodeSetting(name) ?? (root ? { key: ROOT_SETTING.key, fallback: '(no folder: buckle mcp serves the workspace holding the directory it starts in)' } : undefined)
   if (!setting) return fail(`${name} is not a node setting buckle settings writes. Edit ${context.file} by hand for it.\nSettings: ${NODE_SETTINGS.map(item => item.alias).join(', ')}`)
   if (context.fileText === null) return fail(`${context.file} does not exist. Run buckle init first, or point BUCKLE_ENV_FILE at the node's environment file.`)
 
@@ -119,12 +126,19 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   if (context.environment[setting.key] !== undefined) {
     process.stdout.write(`${setting.key} is also set in this shell's environment, which wins over the file until it is unset there.\n`)
   }
+  const workspace = findNodeSetting(name)?.workspace
+  if (workspace) process.stdout.write(FLOOR_KEYS.has(setting.key)
+    ? `It applies to every workspace, over each one's own ${workspace.key}.\n`
+    : `It is the default of every workspace whose own settings leave ${workspace.key} unset.\n`)
   process.stdout.write('Restart buckle serve for the change to take effect.\n')
   return { exitCode: 0, detail: next === null ? `${setting.key} unset` : `${setting.key}=${next}` }
 }
 
+/** The node's deny-type lists, a floor over every workspace's own (D85, Q14). */
+const FLOOR_KEYS = new Set(['BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE'])
+
 function normalise(setting: NodeSetting, raw: string, context: SettingsContext) {
-  return normaliseSetting({ setting, raw, cwd: context.cwd, isDirectory: path => existsSync(path) && statSync(path).isDirectory() })
+  return normaliseSetting({ setting, raw, cwd: context.cwd, isDirectory: path => existsSync(path) && statSync(path).isDirectory(), environment: context.merged })
 }
 
 /** The BUCKLE_* variables the node would read from the file, as `buckle serve` loads them. */

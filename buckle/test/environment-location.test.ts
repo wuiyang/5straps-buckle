@@ -184,7 +184,7 @@ describe('buckle settings on the state directory file', () => {
     expect((await settingsCommand({ ...context, argv: ['set', 'name', 'Relocated node'] })).exitCode).toBe(0)
     expect(parseEnv(readFileSync(stateFile(), 'utf8')).BUCKLE_SERVER_NAME).toBe('Relocated node')
     expect((await settingsCommand({ ...context, argv: ['set', 'root', join(base, 'relocated')] })).exitCode).toBe(1)
-    expect(printed).toContain('Change it with buckle workspace init --dir <folder>.')
+    expect(printed).toContain('Serve a folder with buckle workspace init --dir <folder>.')
   })
 })
 

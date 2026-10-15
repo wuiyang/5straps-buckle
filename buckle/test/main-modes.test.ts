@@ -105,24 +105,18 @@ describe('main', () => {
     expect(entry.configureOwnerOnlyCheck).toHaveBeenLastCalledWith({ skip: false })
   })
 
-  // Finding 42 of the Phase 1 review: the warning for workspace keys the environment still sets had no test.
-  it('warns at start, naming each workspace setting the environment still sets, which a node on the workspace model ignores', async () => {
+  // D85, Q3: a workspace key in the environment is the node's default for every workspace, read at each start, so the
+  // start no longer warns about it (finding 42's warning became the fallback, tested in workspace-settings.test.ts).
+  it('takes the workspace defaults the environment sets without a warning, as node settings', async () => {
     vi.stubEnv('BUCKLE_ALLOW_SHELL', 'false')
     vi.stubEnv('BUCKLE_PACKS', 'fs')
     try {
       expect(await main(['policy', 'show'])).toBe(5)
-      expect(entry.warnings).toContainEqual('Ignored: BUCKLE_PACKS, BUCKLE_ALLOW_SHELL are workspace settings, read only when a node moves to the workspace model. Change a workspace with buckle workspace set or buckle policy, and remove these with buckle settings unset or from the shell or MCP config\'s env.')
-      vi.unstubAllEnvs()
-      vi.stubEnv('BUCKLE_ALLOW_SHELL', 'false')
-      entry.warnings.length = 0
-      expect(await main(['policy', 'show'])).toBe(5)
-      expect(entry.warnings).toContainEqual(expect.stringMatching(/^Ignored: BUCKLE_ALLOW_SHELL is a workspace setting, read only when a node moves to the workspace model\./))
+      expect(entry.warnings.filter(message => message.includes('BUCKLE_ALLOW_SHELL') || message.includes('BUCKLE_PACKS'))).toEqual([])
+      expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['policy', 'show'], config })
     } finally {
       vi.unstubAllEnvs()
     }
-    entry.warnings.length = 0
-    expect(await main(['policy', 'show'])).toBe(5)
-    expect(entry.warnings.filter(message => message.startsWith('Ignored:'))).toEqual([])
   })
 
   it('runs init and settings before, and without, the environment file and the node config', async () => {

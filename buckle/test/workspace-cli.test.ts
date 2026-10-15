@@ -545,6 +545,12 @@ describe('buckle workspace set and unset', () => {
     [['browser.headed', 'on'], 'browser.headed does not take effect yet'],
     [['mounts', '/elsewhere'], 'mounts is no workspace setting'],
     [['mount', 'elsewhere'], 'mount is an absolute path with plain segments'],
+    // D85, Q3: a node setting is the node's, named with the command that changes it.
+    [['host', '0.0.0.0'], 'host is a node setting (BUCKLE_HOST), the same for every workspace, so no workspace sets it. buckle settings set does not write it'],
+    [['BUCKLE_ADMIN_TOKEN', 'x'], 'BUCKLE_ADMIN_TOKEN is a node setting (BUCKLE_ADMIN_TOKEN), the same for every workspace'],
+    [['experimental-admin-http', 'on'], 'experimental-admin-http is a node setting (BUCKLE_EXPERIMENTAL_ADMIN_HTTP), the same for every workspace, so no workspace sets it: buckle settings set experimental-admin-http <value> changes it.'],
+    [['BUCKLE_ALLOW_SHELL', 'off'], 'BUCKLE_ALLOW_SHELL is the node\'s default for every workspace (BUCKLE_ALLOW_SHELL); buckle settings set shell <value> changes it there. This workspace\'s own is packs.shell: buckle workspace set packs.shell on|off.'],
+    [['command-deny', 'curl *'], 'This workspace\'s own is policy.commands.deny: buckle policy deny-command <glob>, which adds to the node\'s.'],
     [['mount', '/usr/project'], 'Cannot mount the workspace under /usr'],
     [['packs.shell'], 'Usage: buckle workspace set <key> <value>'],
   ])('refuses %j, saying why, and writes nothing', async (words, reason) => {

@@ -7,6 +7,7 @@ import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { PolicyError } from '../common/domain/policy.js'
 import { WorkspaceError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { credentialLikeName, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError } from '../common/services/workspaces/workspace-settings.js'
+import { nodeSettingRefusal } from './node-settings.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
 
@@ -282,11 +283,12 @@ async function unset(context: Context): Promise<CliResult> {
 /**
  * The key `set` and `unset` change, or why none is. The browser block of workspace.json is stored, from migration, but
  * the browser runs on the node's own settings until it reads each workspace's (the workspace-model brief, Phase 2
- * item 6), so no command writes a value that would not take effect.
+ * item 6), so no command writes a value that would not take effect. A node setting is refused, naming the command that
+ * changes it (D85, Q3).
  */
 function settingKey(key: string): SettingKey | string {
   if (key.startsWith('browser.')) return `${key} does not take effect yet: the browser runs on the node's BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, and BUCKLE_BROWSER_HEADED until it reads each workspace's own, so buckle workspace set leaves it alone`
-  return SETTING_KEYS.find(item => item.key === key) ?? `${key} is no workspace setting; buckle workspace show lists them`
+  return SETTING_KEYS.find(item => item.key === key) ?? nodeSettingRefusal(key) ?? `${key} is no workspace setting; buckle workspace show lists them`
 }
 
 /**

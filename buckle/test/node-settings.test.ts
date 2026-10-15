@@ -10,9 +10,10 @@ import { runProcess } from '../common/adapters/process-runner.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { acquireFileLock } from '@5straps/runtime/sqlite'
 import { editEnvironmentVariable, environmentLockPath } from '../common/adapters/environment-file.js'
-import { findMovedSetting } from '../cli/node-settings.js'
+import { NODE_SETTINGS } from '../cli/node-settings.js'
 import { settingsCommand } from '../cli/settings.js'
-import { WORKSPACE_ENVIRONMENT_KEYS } from '../common/runtime/config.js'
+import { loadConfig } from '../common/runtime/config.js'
+import { defaultSettings, resolveSettings } from '../common/services/workspaces/workspace-settings.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 import { BUILTIN_PACKS, createBuiltinPacks, unmetPackPrerequisite } from '../common/services/packs/index.js'
 
@@ -42,7 +43,7 @@ beforeEach(() => {
     '#   an indented comment, spacing kept',
     'BUCKLE_EXPERIMENTAL_ADMIN_HTTP=false',
     '# BUCKLE_ALLOWED_HOSTS=db.internal',
-    // A workspace setting a 0.1 node kept here, which migration copied and the node now ignores.
+    // A workspace default (D85, Q3): every workspace whose own settings leave packs.shell unset takes it.
     'BUCKLE_ALLOW_SHELL=true',
     `OTHER_TOOL_TOKEN="quoted ${SECRET}"`,
     '',
@@ -91,8 +92,10 @@ describe('buckle settings show', () => {
     expect(result.out).toMatch(/experimental-admin-http\s+BUCKLE_EXPERIMENTAL_ADMIN_HTTP\s+false\s+environment file/)
     expect(result.out).toMatch(/allowed-hosts\s+BUCKLE_ALLOWED_HOSTS\s+db.internal\s+process environment\n/)
     expect(result.out).toMatch(/read-only-paths\s+BUCKLE_MOUNT_READ_ONLY\s+\(none\)\s+default/)
-    // Q14: a workspace setting the file still holds is named as ignored, with the command that changes it now.
-    expect(result.out).toMatch(/which the node ignores here \(unset them\):\n\s+BUCKLE_ALLOW_SHELL\s+buckle workspace set packs.shell on\|off\n/)
+    // D85, Q3: a workspace default the file holds is listed among the defaults, with where it came from.
+    expect(result.out).toContain('Workspace defaults, which a workspace\'s own settings replace (buckle workspace show); the command deny and destructive lists apply to every workspace:')
+    expect(result.out.slice(result.out.indexOf('Workspace defaults'))).toMatch(/shell\s+BUCKLE_ALLOW_SHELL\s+true\s+environment file/)
+    expect(result.out).not.toContain('ignores')
     expect(result.out).toContain('BUCKLE_AUTH_TOKEN (set, hidden)')
     expect(result.out).toContain('BUCKLE_ADMIN_TOKEN (set, hidden)')
     expect(result.out).toContain('OTHER_TOOL_TOKEN (set, hidden)')
@@ -129,44 +132,63 @@ describe('buckle settings set', () => {
     expect(statSync(file).mode & 0o7777).toBe(0o600)
   })
 
-  // Q14: each workspace holds these in its workspace.json now; the file's line is migration input alone.
+  // D85, Q3: buckle.env holds the defaults every workspace takes where its own settings hold no value.
   it.each([
-    ['shell', 'buckle workspace set packs.shell on|off'],
-    ['code', 'buckle workspace set packs.code on|off'],
-    ['packs', 'buckle workspace set packs.enabled <packs>'],
-    ['approval-wait', 'buckle workspace set approvalWaitMs <milliseconds>'],
-    ['network-allow', 'buckle policy allow-url <host>'],
-    ['allowed-interpreters', 'buckle policy allow-interpreter <name>'],
-    ['root', 'buckle workspace init --dir <folder>'],
-    ['mount', 'buckle policy mount <path>'],
-    ['BUCKLE_ALLOW_HOST_GIT', 'buckle workspace set packs.hostGit on|off'],
-  ])('refuses to set %s, a workspace setting now, naming the command that changes it', async (key, replacement) => {
-    const result = await settings(['set', key, 'x'])
+    ['shell', 'off', 'BUCKLE_ALLOW_SHELL', 'false'],
+    ['code', 'on', 'BUCKLE_ALLOW_CODE', 'true'],
+    ['host-git', 'yes', 'BUCKLE_ALLOW_HOST_GIT', 'true'],
+    ['BUCKLE_ALLOW_HOST_LSP', 'on', 'BUCKLE_ALLOW_HOST_LSP', 'true'],
+    ['packs', 'fs, web', 'BUCKLE_PACKS', 'fs,web'],
+    ['approval-wait', '0', 'BUCKLE_APPROVAL_TIMEOUT_MS', '0'],
+    ['mount', '/project', 'BUCKLE_WORKSPACE_MOUNT', '/project'],
+    ['network-allow', 'example.com, docs.test', 'BUCKLE_NETWORK_ALLOW', 'example.com,docs.test'],
+    ['allowed-interpreters', 'node,python3', 'BUCKLE_ALLOWED_INTERPRETERS', 'node,python3'],
+    ['command-allow', 'pnpm {build,test} * ;; git status', 'BUCKLE_COMMAND_ALLOW', 'pnpm {build,test} *;;git status'],
+    ['command-deny', 'curl *', 'BUCKLE_COMMAND_DENY', 'curl *'],
+    ['command-destructive', 'make deploy*', 'BUCKLE_COMMAND_DESTRUCTIVE', 'make deploy*'],
+  ])('takes %s as the node\'s default for every workspace, as the node reads it', async (key, value, variable, written) => {
+    const result = await settings(['set', key, value])
 
-    expect(result.exitCode).toBe(1)
-    expect(result.err).toContain(`is a workspace setting since the workspace model, and the node ignores it in ${file}. Change it with ${replacement}.`)
-    expect(readFileSync(file, 'utf8')).toBe(original)
+    expect(result.exitCode).toBe(0)
+    expect(parseEnv(readFileSync(file, 'utf8'))[variable]).toBe(written)
+    expect(result.out).toMatch(/It (is the default of every workspace whose own settings leave \S+ unset|applies to every workspace, over each one's own \S+)\./)
+    // A workspace that sets nothing of its own takes it, once the node starts again.
+    const inForce = resolveSettings(defaultSettings(), loadConfig({ ...parseEnv(readFileSync(file, 'utf8')), BUCKLE_STATE_DIR: state }).workspaceDefaults)
+    expect(Object.values(inForce.sources)).toContain('node')
   })
 
-  it('removes a workspace setting\'s line, which migration already copied', async () => {
+  it('removes a workspace default\'s line, so Buckle\'s own applies', async () => {
     const result = await settings(['unset', 'shell'])
 
     expect(result.exitCode).toBe(0)
     expect(readFileSync(file, 'utf8')).toBe(withLine('BUCKLE_ALLOW_SHELL=true\n', ''))
+    expect(result.out).toContain('the default applies: true')
   })
 
-  // Findings 37 and 39 of the Phase 1 review: migration's refusal, its notice, and the start warning send the owner
-  // to buckle settings unset for every workspace key the node ignores, so each one is a key it removes.
-  it('knows every workspace key the node ignores, lists each as ignored, and removes each line', async () => {
-    const keys = WORKSPACE_ENVIRONMENT_KEYS.filter(key => !findMovedSetting(key))
-    expect(keys).toEqual([])
-    const lines = WORKSPACE_ENVIRONMENT_KEYS.filter(key => !original.includes(`${key}=`)).map(key => `${key}=fixture *`).join('\n')
-    writeFileSync(file, `${original}${lines}\n`)
+  // Every workspace key a 0.1 node kept here is a node default now, listed with the others (D85, Q3).
+  it('lists every workspace key a 0.1 node kept here among the workspace defaults, and removes each line', async () => {
+    const keys = ['BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP', 'BUCKLE_APPROVAL_TIMEOUT_MS']
+    expect(NODE_SETTINGS.filter(setting => setting.workspace).map(setting => setting.key).sort()).toEqual([...keys].sort())
     const shown = await settings(['show'])
-    const ignored = shown.out.slice(shown.out.indexOf('which the node ignores here'))
-    for (const key of WORKSPACE_ENVIRONMENT_KEYS) expect(ignored).toContain(key)
-    for (const key of WORKSPACE_ENVIRONMENT_KEYS) expect((await settings(['unset', key])).exitCode).toBe(0)
+    const defaults = shown.out.slice(shown.out.indexOf('Workspace defaults'))
+    for (const key of keys) expect(defaults).toContain(key)
+    for (const key of keys) expect((await settings(['unset', key])).exitCode).toBe(0)
     expect(readFileSync(file, 'utf8')).toBe(withLine('BUCKLE_ALLOW_SHELL=true\n', ''))
+  })
+
+  // The 0.1 folder line is read once, when the node moves; the move's notice asks for it to be unset (fix brief 1, B).
+  it('refuses to set root, names it as read at the move on a node not moved yet, and removes its line', async () => {
+    writeFileSync(file, `${original}BUCKLE_WORKSPACE_ROOT=${workspace}\n`)
+    const set = await settings(['set', 'root', workspace])
+    expect(set.exitCode).toBe(1)
+    expect(set.err).toContain('BUCKLE_WORKSPACE_ROOT is read only when a node set up before workspaces moves onto them. Serve a folder with buckle workspace init --dir <folder>.')
+    // Recheck finding H3: before the move nothing says the node ignores it, as it is the move's input.
+    expect((await settings(['show'])).out).toContain('BUCKLE_WORKSPACE_ROOT is read once, when this node moves onto workspaces at its next start')
+    mkdirSync(state, { recursive: true })
+    writeFileSync(join(state, 'workspaces.json'), '{"version":2,"workspaces":[]}')
+    expect((await settings(['show'])).out).toContain('the node no longer reads it (buckle settings unset root)')
+    expect((await settings(['unset', 'root'])).exitCode).toBe(0)
+    expect(readFileSync(file, 'utf8')).toBe(original)
   })
 
   it('leaves no temporary file behind', async () => {
@@ -223,6 +245,14 @@ describe('buckle settings set', () => {
     [['set', 'allowed-hosts', '*.127.0.0.1'], 'Invalid BUCKLE_ALLOWED_HOSTS entry'],
     [['set', 'allowed-hosts', ','], 'needs at least one entry'],
     [['set', 'scratch-roots', `${workspace},nowhere`], 'is not an existing directory'],
+    [['set', 'command-deny', 'curl (('], 'Invalid command pattern'],
+    [['set', 'command-allow', ' ;; '], 'needs at least one glob'],
+    [['set', 'packs', 'fs,rocket'], 'Unknown pack rocket'],
+    [['set', 'packs', 'fs,environment'], 'environment (BUCKLE_ENV_VALIDATOR_COMMAND is not set)'],
+    [['set', 'mount', '/usr/project'], 'Cannot mount the workspace under /usr'],
+    [['set', 'network-allow', '*.127.0.0.1'], 'Invalid BUCKLE_NETWORK_ALLOW entry'],
+    [['set', 'allowed-interpreters', 'bash'], 'Invalid BUCKLE_ALLOWED_INTERPRETERS entry bash'],
+    [['set', 'approval-wait', 'forever'], 'Approval wait must be milliseconds'],
     [['set', 'name', 'two\nlines'], 'newline'],
     [['set', 'name', 'a "quoted" name'], 'double quote'],
     [['set', 'name'], 'Usage'],
