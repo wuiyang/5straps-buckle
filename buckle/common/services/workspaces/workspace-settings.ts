@@ -5,7 +5,7 @@ import { CommandPolicySchema, emptyWorkspacePolicy, MountPathSchema, NetworkPoli
 import { createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import { isSecretName } from '../../domain/environment.js'
 import { compilePolicy, PolicyError } from '../../domain/policy.js'
-import { DEFAULT_APPROVAL_WAIT_MS, parseApprovalTimeout, parseBrowserSettings, parseList, policyFromEnvironment, type WorkspaceScope } from '../../runtime/config.js'
+import { DEFAULT_APPROVAL_WAIT_MS, parseApprovalTimeout, parseBrowserSettings, parseList, policyFromEnvironment, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { BUILTIN_PACKS } from '../packs/index.js'
 
@@ -41,13 +41,17 @@ export function credentialLikeName(name: string): boolean {
 
 const PACK_IDS = BUILTIN_PACKS.map(pack => pack.id)
 
+/**
+ * A setting absent from workspace.json is unset, and the node's value stands for it, else Buckle's own (D85, Q3;
+ * resolveSettings); `buckle workspace unset` takes a key out.
+ */
 const PacksSchema = z.object({
   /** Null offers every built-in pack and plugins; a list offers those packs alone, and no plugins. */
-  enabled: z.array(z.string().refine(id => PACK_IDS.includes(id), { error: issue => `Unknown pack ${String(issue.input)}; packs: ${PACK_IDS.join(', ')}` })).min(1).nullable().default(null),
-  shell: z.boolean().default(true),
-  code: z.boolean().default(true),
-  hostGit: z.boolean().default(false),
-  hostLsp: z.boolean().default(false),
+  enabled: z.array(z.string().refine(id => PACK_IDS.includes(id), { error: issue => `Unknown pack ${String(issue.input)}; packs: ${PACK_IDS.join(', ')}` })).min(1).nullable().optional(),
+  shell: z.boolean().optional(),
+  code: z.boolean().optional(),
+  hostGit: z.boolean().optional(),
+  hostLsp: z.boolean().optional(),
 }).strict()
 
 /** Settings names in a refusal, in place of the environment variables the shared checks name (parseBrowserSettings). */
@@ -59,11 +63,11 @@ const BROWSER_KEYS: ReadonlyArray<[string, string]> = [['BUCKLE_BROWSER_CDP', 'b
  * browser settings drive it.
  */
 const BrowserSchema = z.object({
-  idleTimeoutMs: z.number().int().min(BROWSER_IDLE_BOUNDS.min).max(BROWSER_IDLE_BOUNDS.max).default(DEFAULT_BROWSER_IDLE_MS),
+  idleTimeoutMs: z.number().int().min(BROWSER_IDLE_BOUNDS.min).max(BROWSER_IDLE_BOUNDS.max).optional(),
   cdp: z.string().min(1).optional(),
   profile: z.string().min(1).optional(),
   args: z.string().min(1).optional(),
-  headed: z.boolean().default(false),
+  headed: z.boolean().optional(),
 }).strict()
 
 /**
@@ -71,7 +75,7 @@ const BrowserSchema = z.object({
  * browser beside a profile, arguments, or a window; a profile that is no absolute path; arguments Buckle refuses),
  * naming the settings and never a value.
  */
-export function browserSettingsRefusal(browser: WorkspaceSettings['browser'], platform: NodeJS.Platform = process.platform): string | null {
+export function browserSettingsRefusal(browser: Pick<ResolvedSettings['browser'], 'cdp' | 'profile' | 'args'> & { headed?: boolean }, platform: NodeJS.Platform = process.platform): string | null {
   try {
     parseBrowserSettings({ BUCKLE_BROWSER_CDP: browser.cdp, BUCKLE_BROWSER_PROFILE: browser.profile, BUCKLE_BROWSER_ARGS: browser.args, ...(browser.headed ? { BUCKLE_BROWSER_HEADED: 'true' } : {}) }, platform)
     return null
@@ -115,7 +119,8 @@ const SettingsPolicySchema = WorkspacePolicySchema.extend({
 /**
  * One workspace's settings (D83, the workspace-model brief item 2): written by the owner's CLI alone, through the
  * locked store, and read by a running node at each call (Q2). It holds no credential, so `buckle workspace show`
- * prints it whole.
+ * prints it whole. It holds what the workspace sets alone (D85, Q3): every other setting is the node's, else Buckle's
+ * own (resolveSettings).
  */
 export const WorkspaceSettingsSchema = z.object({
   version: z.literal(1),
@@ -123,18 +128,82 @@ export const WorkspaceSettingsSchema = z.object({
   revision: z.number().int().nonnegative().default(0),
   updatedAt: z.iso.datetime().nullable().default(null),
   policy: SettingsPolicySchema.default(emptyWorkspacePolicy),
-  mounts: z.array(MountSchema).max(1).default(() => [{ kind: 'workspace' as const, target: WORKSPACE_MOUNT_TARGET, access: 'write' as const }]),
+  /** Where the folder shows: one entry, or none for its real path. Absent, the node's BUCKLE_WORKSPACE_MOUNT says. */
+  mounts: z.array(MountSchema).max(1).optional(),
+  /** Its own variables, over the node's key by key. */
   env: EnvironmentSchema.default({}),
-  packs: PacksSchema.default(() => PacksSchema.parse({})),
-  browser: BrowserSchema.default(() => BrowserSchema.parse({})),
+  packs: PacksSchema.default({}),
+  browser: BrowserSchema.default({}),
   /** Milliseconds a gated call is held for an answer when its caller sends no wait of its own; 0 holds it until someone answers. */
-  approvalWaitMs: z.number().int().min(0).max(2_147_483_647).default(DEFAULT_APPROVAL_WAIT_MS),
+  approvalWaitMs: z.number().int().min(0).max(2_147_483_647).optional(),
 }).strict()
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettingsSchema>
 
-/** A new workspace's settings: every built-in pack, the shell and code mode on, host Git and language servers off, the folder at /workspace. */
+/** A new workspace's settings: the folder at /workspace (D84 (3)), and every other setting the node's, else Buckle's own. */
 export function defaultSettings(): WorkspaceSettings {
-  return WorkspaceSettingsSchema.parse({ version: 1 })
+  return WorkspaceSettingsSchema.parse({ version: 1, mounts: [{ kind: 'workspace', target: WORKSPACE_MOUNT_TARGET, access: 'write' }] })
+}
+
+/** Where a setting in force came from (D85, Q3): the workspace's own workspace.json, the node's buckle.env, or Buckle itself. */
+export type SettingSource = 'workspace' | 'node' | 'built-in'
+
+/** What Buckle holds where neither the workspace nor the node names a value. */
+export const BUILT_IN_SETTINGS = Object.freeze({
+  packs: Object.freeze({ enabled: null, shell: true, code: true, hostGit: false, hostLsp: false }),
+  approvalWaitMs: DEFAULT_APPROVAL_WAIT_MS,
+  browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
+})
+
+/** A workspace's settings in force, each with where it came from (resolveSettings). */
+export interface ResolvedSettings {
+  /** The policy in force, its lists resolved; where the folder shows is `mount`. */
+  policy: WorkspacePolicy
+  mount: string | null
+  packs: { enabled: string[] | null; shell: boolean; code: boolean; hostGit: boolean; hostLsp: boolean }
+  approvalWaitMs: number
+  browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
+  env: Readonly<Record<string, string>>
+  /** Each setting's source, by its key in workspace.json (`packs.shell`, `mount`, `policy.commands.allow`). */
+  sources: Readonly<Record<string, SettingSource>>
+}
+
+/**
+ * One workspace's settings in force (D85, Q3 and Q14): per key, the workspace's own value, else the node's, else
+ * Buckle's built-in default. Its variables are the node's with its own set over them, key by key.
+ */
+export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): ResolvedSettings {
+  const sources: Record<string, SettingSource> = {}
+  const pick = <T>(key: string, own: T | undefined, nodeValue: T | undefined, builtIn: T): T => {
+    sources[key] = own !== undefined ? 'workspace' : nodeValue !== undefined ? 'node' : 'built-in'
+    return own !== undefined ? own : nodeValue !== undefined ? nodeValue : builtIn
+  }
+  const packs = {
+    enabled: pick('packs.enabled', stored.packs.enabled, node.packs.enabled, BUILT_IN_SETTINGS.packs.enabled),
+    shell: pick('packs.shell', stored.packs.shell, node.packs.shell, BUILT_IN_SETTINGS.packs.shell),
+    code: pick('packs.code', stored.packs.code, node.packs.code, BUILT_IN_SETTINGS.packs.code),
+    hostGit: pick('packs.hostGit', stored.packs.hostGit, node.packs.hostGit, BUILT_IN_SETTINGS.packs.hostGit),
+    hostLsp: pick('packs.hostLsp', stored.packs.hostLsp, node.packs.hostLsp, BUILT_IN_SETTINGS.packs.hostLsp),
+  }
+  const browser = {
+    idleTimeoutMs: pick('browser.idleTimeoutMs', stored.browser.idleTimeoutMs, undefined, BUILT_IN_SETTINGS.browser.idleTimeoutMs),
+    ...defined('cdp', pick('browser.cdp', stored.browser.cdp, node.browser.cdp, undefined)),
+    ...defined('profile', pick('browser.profile', stored.browser.profile, node.browser.profile, undefined)),
+    ...defined('args', pick('browser.args', stored.browser.args, node.browser.args, undefined)),
+    headed: pick('browser.headed', stored.browser.headed, node.browser.headed, BUILT_IN_SETTINGS.browser.headed),
+  }
+  return {
+    policy: { ...stored.policy, mount: null },
+    mount: pick('mount', ownMount(stored), node.mount, null),
+    packs,
+    approvalWaitMs: pick('approvalWaitMs', stored.approvalWaitMs, node.approvalWaitMs, BUILT_IN_SETTINGS.approvalWaitMs),
+    browser,
+    env: { ...node.env, ...stored.env },
+    sources,
+  }
+}
+
+function defined<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
+  return value === undefined ? {} : { [key]: value } as Record<K, V>
 }
 
 /** `<state>/workspaces/<id>/workspace.json`, for every workspace, workspace default included. */
@@ -197,6 +266,8 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
         compilePolicy(next.policy)
         const refusal = browserSettingsRefusal(next.browser)
         if (refusal) throw new WorkspaceSettingsInvalidError(refusal)
+        // A key the change took out is unset now (D85, Q3), so it leaves the file rather than keep its old value.
+        for (const key of Object.keys(state)) if (!(key in next)) delete (state as Record<string, unknown>)[key]
         Object.assign(state, next)
         return next
       }).catch((error: unknown) => {
@@ -211,16 +282,27 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
   }
 }
 
-/** What a workspace's runtime takes from its settings (workspaceConfig). */
-export function scopeOf(settings: WorkspaceSettings): Pick<WorkspaceScope, 'mount' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'> {
-  const mount = settings.mounts.find(entry => entry.kind === 'workspace')
-  return { mount: mount?.target ?? null, policy: settings.policy, packs: settings.packs, approvalWaitMs: settings.approvalWaitMs, env: settings.env }
+/** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
+export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'> {
+  const resolved = resolveSettings(settings, node)
+  return { mount: resolved.mount, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, env: resolved.env }
 }
 
-/** The policy and the mount a runtime holds, back as settings: the mount moves to `mounts`, where it is stored. */
+/** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */
+export function ownMount(settings: WorkspaceSettings): string | null | undefined {
+  return settings.mounts === undefined ? undefined : settings.mounts.find(entry => entry.kind === 'workspace')?.target ?? null
+}
+
+/** A policy back as the workspace's own: its lists alone, as where the folder shows is `mounts`' to say (withMount). */
 export function withPolicy(settings: WorkspaceSettings, policy: WorkspacePolicy): WorkspaceSettings {
-  const mounts = policy.mount === null ? [] : [{ kind: 'workspace' as const, target: policy.mount, access: 'write' as const }]
-  return { ...settings, policy: { ...policy, mount: null }, mounts }
+  return { ...settings, policy: { ...policy, mount: null } }
+}
+
+/** Where the folder shows, as the workspace's own: a path, null for its real path, or undefined to take the node's again. */
+export function withMount(settings: WorkspaceSettings, mount: string | null | undefined): WorkspaceSettings {
+  const { mounts: _dropped, ...rest } = settings
+  if (mount === undefined) return rest
+  return { ...rest, mounts: mount === null ? [] : [{ kind: 'workspace' as const, target: mount, access: 'write' as const }] }
 }
 
 /**

@@ -7,6 +7,7 @@ import { browserArgumentsRefusal } from '../domain/browser-arguments.js'
 import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
 import { childPath, homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
+import { compilePolicy, PolicyError } from '../domain/policy.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -54,6 +55,8 @@ export interface NodeConfig {
   callerWorkspaceRoot?: string
   /** What a node set up before the workspace model kept for its folder, which migration reads once (MigrationInput). */
   migration: MigrationInput
+  /** The workspace settings buckle.env names, which every workspace takes where its own workspace.json holds none (D85, Q3). */
+  workspaceDefaults: NodeDefaults
   /** Directories writable without asking. Empty by default, so the first write anywhere asks. */
   scratchRoots: string[]
   strictWrites: boolean
@@ -188,6 +191,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     adminToken,
     ...(layers.caller.BUCKLE_WORKSPACE_ROOT ? { callerWorkspaceRoot: typedPath(layers.caller.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
     migration: migrationInput(environment, layers, platform),
+    workspaceDefaults: nodeDefaultsFrom(environment, platform),
     // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
     scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
@@ -291,6 +295,70 @@ export interface WorkspaceScope {
   approvalWaitMs: number
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
+}
+
+/**
+ * The workspace settings a node's buckle.env names (D85, Q3 and Q14): the defaults every workspace takes where its own
+ * workspace.json holds no value, as the workspace's, else these, else Buckle's built-in default (resolveSettings). An
+ * empty value names none. Its allow-type lists (command allow, interpreters, approved URLs) stand where a workspace has
+ * no list of its own; its deny-type lists (command deny, destructive) are a floor over every workspace's. buckle.env
+ * takes BUCKLE_ names alone, so it names no command variable, and `env` is empty: a workspace's own merge over it key by
+ * key. A change applies when the node restarts, as every node setting's does (BUCKLE-D19).
+ */
+export interface NodeDefaults {
+  /** The lists, empty where the environment names none; `mount` stays null, as `mount` below holds it. */
+  policy: WorkspacePolicy
+  mount?: string
+  packs: { enabled?: string[]; shell?: boolean; code?: boolean; hostGit?: boolean; hostLsp?: boolean }
+  /** 0 holds a gated call until someone answers. */
+  approvalWaitMs?: number
+  browser: { cdp?: string; profile?: string; args?: string; headed?: boolean }
+  env: Readonly<Record<string, string>>
+}
+
+/**
+ * The node's workspace defaults from its environment, each checked as a workspace's own is, so a pattern Buckle refuses
+ * stops the node, naming the variable, rather than covering nothing.
+ */
+export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): NodeDefaults {
+  const policy = policyFromEnvironment(environment)
+  for (const [key, patterns] of [['BUCKLE_COMMAND_ALLOW', policy.commands.allow], ['BUCKLE_COMMAND_DENY', policy.commands.deny], ['BUCKLE_COMMAND_DESTRUCTIVE', policy.commands.destructive ?? []]] as const) {
+    refusedAs(key, () => compilePolicy({ ...emptyWorkspacePolicy(), commands: { allow: [...patterns], deny: [] } }))
+  }
+  refusedAs('BUCKLE_NETWORK_ALLOW', () => compilePolicy({ ...emptyWorkspacePolicy(), network: { allow: policy.network.allow } }))
+  refusedAs('BUCKLE_WORKSPACE_MOUNT', () => compilePolicy({ ...emptyWorkspacePolicy(), mount: policy.mount }))
+  const browser = parseBrowserSettings(environment, platform)
+  const flag = (key: string, on: string): boolean | undefined => (environment[key] ? environment[key] === on : undefined)
+  const shell = environment.BUCKLE_ALLOW_SHELL ? environment.BUCKLE_ALLOW_SHELL !== 'false' : undefined
+  const code = environment.BUCKLE_ALLOW_CODE ? environment.BUCKLE_ALLOW_CODE !== 'false' : undefined
+  const packs = parseList(environment.BUCKLE_PACKS)
+  const approvalWait = environment.BUCKLE_APPROVAL_TIMEOUT_MS ? parseApprovalTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_WAIT_MS) ?? 0 : undefined
+  return {
+    policy: { ...policy, mount: null },
+    ...(policy.mount === null ? {} : { mount: policy.mount }),
+    packs: {
+      ...(packs.length > 0 ? { enabled: [...new Set(packs)] } : {}),
+      ...(shell === undefined ? {} : { shell }),
+      ...(code === undefined ? {} : { code }),
+      ...defined('hostGit', flag('BUCKLE_ALLOW_HOST_GIT', 'true')),
+      ...defined('hostLsp', flag('BUCKLE_ALLOW_HOST_LSP', 'true')),
+    },
+    ...(approvalWait === undefined ? {} : { approvalWaitMs: approvalWait }),
+    browser: { ...browser.browserCdp ? { cdp: browser.browserCdp } : {}, ...browser.browserProfile ? { profile: browser.browserProfile } : {}, ...browser.browserArgs ? { args: browser.browserArgs } : {}, ...defined('headed', flag('BUCKLE_BROWSER_HEADED', 'true')) },
+    env: {},
+  }
+}
+
+function defined<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
+  return value === undefined ? {} : { [key]: value } as Record<K, V>
+}
+
+/** A compile that refuses, said as the variable the value came from. */
+function refusedAs(key: string, compile: () => unknown): void {
+  try { compile() } catch (error) {
+    if (error instanceof PolicyError) throw new Error(`Invalid ${key}: ${error.message}`)
+    throw error
+  }
 }
 
 /**

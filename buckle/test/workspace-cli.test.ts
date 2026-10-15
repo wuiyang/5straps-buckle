@@ -211,7 +211,7 @@ describe('buckle workspace list and show', () => {
     expect(JSON.parse(json.out)).toMatchObject([{ id: workspaceIdOf(alpha), name: 'alpha', online: true, tokens: 1 }, { id: workspaceIdOf(beta), name: 'beta', online: false }])
 
     const shown = await buckle(['show', '--json'], { cwd: alpha })
-    expect(JSON.parse(shown.out)).toMatchObject({ id: workspaceIdOf(alpha), settings: { version: 1, packs: { shell: true } } })
+    expect(JSON.parse(shown.out)).toMatchObject({ id: workspaceIdOf(alpha), settings: { version: 1, packs: {} } })
     const text = await buckle(['show'], { cwd: alpha })
     expect(text.out).toContain('packs.shell')
     for (const printed of [listed.out, json.out, shown.out, text.out]) {
@@ -279,7 +279,7 @@ describe('buckle workspace enable, disable and remove', () => {
     const made = registry().workspaces[0]!
     expect(made.name).toBe('alpha fresh')
     expect(made.id).not.toBe(id)
-    expect(openSettingsFile({ filePath: settingsPath(state, made.id) }).read().packs.shell).toBe(true)
+    expect(openSettingsFile({ filePath: settingsPath(state, made.id) }).read().packs.shell).toBeUndefined()
     expect(existsSync(join(state, 'workspaces', id, 'removed.json'))).toBe(true)
   })
 
@@ -498,17 +498,37 @@ describe('buckle workspace set and unset', () => {
   beforeEach(async () => { await init(alpha) })
   const set = (...words: string[]) => buckle(['set', ...words], { cwd: alpha })
 
-  it('changes one setting in workspace.json, a revision at a time, and unset puts the default back', async () => {
+  it('changes one setting in workspace.json, a revision at a time, and unset takes it out', async () => {
     const before = settings(alpha).revision
     expect((await set('packs.shell', 'off')).exitCode).toBe(0)
     expect(settings(alpha)).toMatchObject({ revision: before + 1, packs: { shell: false } })
     expect((await set('approvalWaitMs', '0')).exitCode).toBe(0)
     expect((await set('packs.enabled', 'fs, web')).exitCode).toBe(0)
     expect((await set('packs.hostGit', 'on')).exitCode).toBe(0)
-    expect(settings(alpha)).toMatchObject({ approvalWaitMs: 0, packs: { enabled: ['fs', 'web'], hostGit: true } })
+    expect((await set('mount', '/alpha')).exitCode).toBe(0)
+    expect(settings(alpha)).toMatchObject({ approvalWaitMs: 0, packs: { enabled: ['fs', 'web'], hostGit: true }, mounts: [{ kind: 'workspace', target: '/alpha', access: 'write' }] })
 
-    for (const key of ['packs.shell', 'packs.enabled', 'approvalWaitMs']) expect((await buckle(['unset', key], { cwd: alpha })).exitCode).toBe(0)
-    expect(settings(alpha)).toMatchObject({ approvalWaitMs: 15_000, packs: { enabled: null, shell: true } })
+    for (const key of ['packs.shell', 'packs.enabled', 'approvalWaitMs', 'mount']) expect((await buckle(['unset', key], { cwd: alpha })).exitCode).toBe(0)
+    const left = settings(alpha)
+    expect(left.packs).toEqual({ hostGit: true })
+    for (const key of ['approvalWaitMs', 'mounts'] as const) expect(left).not.toHaveProperty(key)
+  })
+
+  // D85, Q3: a key the workspace leaves unset is the node's, else Buckle's, and set it is the workspace's own.
+  it('takes the node\'s value for a key it unsets, and its own over the node\'s', async () => {
+    const config = node({ BUCKLE_ALLOW_SHELL: 'false', BUCKLE_WORKSPACE_MOUNT: '/node-mount' })
+    const inForce = async () => {
+      const workspaces = await openWorkspaceManager({ config })
+      try { return (await byName(workspaces, 'alpha')).config } finally { await workspaces.close() }
+    }
+    expect((await buckle(['set', 'packs.shell', 'on'], { cwd: alpha, config })).exitCode).toBe(0)
+    expect(await inForce()).toMatchObject({ enableShell: true, policy: { mount: '/workspace' } })
+    for (const key of ['packs.shell', 'mount']) expect((await buckle(['unset', key], { cwd: alpha, config })).out).toContain(`${key} is unset, so the node's value applies`)
+    expect(await inForce()).toMatchObject({ enableShell: false, policy: { mount: '/node-mount' } })
+    // A policy write changes the lists alone, so where the folder shows stays the node's.
+    expect((await runCli({ argv: ['policy', 'deny-command', 'curl *'], config, confirm: null, cwd: alpha })).exitCode).toBe(0)
+    expect(settings(alpha)).not.toHaveProperty('mounts')
+    expect(await inForce()).toMatchObject({ policy: { mount: '/node-mount', commands: { deny: ['curl *'] } } })
   })
 
   it('renames the workspace', async () => {
@@ -524,6 +544,8 @@ describe('buckle workspace set and unset', () => {
     [['browser.idleTimeoutMs', '600000'], 'browser.idleTimeoutMs does not take effect yet: the browser runs on the node\'s BUCKLE_BROWSER_CDP'],
     [['browser.headed', 'on'], 'browser.headed does not take effect yet'],
     [['mounts', '/elsewhere'], 'mounts is no workspace setting'],
+    [['mount', 'elsewhere'], 'mount is an absolute path with plain segments'],
+    [['mount', '/usr/project'], 'Cannot mount the workspace under /usr'],
     [['packs.shell'], 'Usage: buckle workspace set <key> <value>'],
   ])('refuses %j, saying why, and writes nothing', async (words, reason) => {
     const before = settings(alpha)
@@ -536,7 +558,7 @@ describe('buckle workspace set and unset', () => {
   it('refuses the environment pack while the node has no BUCKLE_ENV_VALIDATOR_COMMAND, naming it', async () => {
     const result = await set('packs.enabled', 'fs,environment')
     expect(result.err).toContain('environment (BUCKLE_ENV_VALIDATOR_COMMAND is not set)')
-    expect(settings(alpha).packs.enabled).toBeNull()
+    expect(settings(alpha).packs.enabled).toBeUndefined()
   })
 
   it('sets a variable the workspace\'s commands see, never echoing or auditing its value, and unsets it', async () => {

@@ -24,7 +24,7 @@ import { openRegistry, sameName, touched, WorkspaceError, WorkspaceNameSchema, W
 import { assertNoHostExposure, canonicalDirectory, exposedRoots, overlaps } from './workspace-dirs.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
-import { defaultSettings, openSettingsFile, scopeOf, settingsPath, withPolicy, WORKSPACE_MOUNT_TARGET, type WorkspaceSettings } from './workspace-settings.js'
+import { defaultSettings, openSettingsFile, scopeOf, settingsPath, withPolicy, type WorkspaceSettings } from './workspace-settings.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
 
@@ -175,7 +175,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
           throw new WorkspaceError(`This folder's records from before it was removed stay in the state directory, and registering it takes them up, its settings among them, in place of the policy or settings named here. Register it without them, delete them with buckle workspace remove ${name} --purge, then register it again with them`, 409)
         }
         if (!existsSync(settingsPath(node.stateDirectory, id))) {
-          const defaults = value.policy ? withPolicy(defaultSettings(), { ...value.policy, mount: WORKSPACE_MOUNT_TARGET }) : defaultSettings()
+          // The folder shows at /workspace (D84 (3)); a policy names lists alone, and every other setting is the node's.
+          const defaults = value.policy ? withPolicy(defaultSettings(), value.policy) : defaultSettings()
           await settingsOf(id).update(() => (value.settings ? value.settings(defaults) : defaults))
         }
         const workspace: StoredWorkspace = { id, name, dir, online: true, revision: 0, updatedAt: minted.createdAt, createdAt: minted.createdAt,
@@ -370,7 +371,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
           const settings = settingsOf(id).read()
           // `reportUrl`, `reportToken` and `approvalWebhook` come with the node's settings on purpose: every action a
           // workspace reports carries its own workspaceId, and a notification names the workspace that answers it.
-          const config = workspaceConfig(node, { id, name: workspace.name, nodeFolder: workspace.nodeFolder === true, dir, ...scopeOf(settings) })
+          const config = workspaceConfig(node, { id, name: workspace.name, nodeFolder: workspace.nodeFolder === true, dir, ...scopeOf(settings, node.workspaceDefaults) })
           const opening: Promise<ManagedWorkspace> = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), ...(input.interaction ? { interaction: input.interaction } : {}) })
             .then((runtime) => {
               const managed = { config, runtime }
@@ -497,7 +498,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
   function workbenchesOf(id: string): string | null {
     const workspace = store.read().workspaces.find(item => item.id === id)
     if (!workspace) return null
-    const config = workspaceConfig(node, { id, name: workspace.name, nodeFolder: workspace.nodeFolder === true, dir: workspace.dir, ...scopeOf(defaultSettings()) })
+    const config = workspaceConfig(node, { id, name: workspace.name, nodeFolder: workspace.nodeFolder === true, dir: workspace.dir, ...scopeOf(defaultSettings(), node.workspaceDefaults) })
     return workbenchesDirectory({ stateDirectory: config.stateDirectory, root: workspace.dir })
   }
 

@@ -77,10 +77,13 @@ describe('buckle init asks for the workspace\'s settings after its folder', () =
     // Q3: the node's file holds the node's settings alone, and no agent token: the workspace's is in the registry, hashed.
     for (const key of ['BUCKLE_AUTH_TOKEN', 'BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_ALLOWED_HOSTS']) expect(env[key]).toBeUndefined()
     expect(result.written).toContain('# BUCKLE_ALLOWED_HOSTS=db.internal')
+    // D85, Q3: Enter leaves the setting unset, so the node's value applies, else Buckle's.
     const { settings } = served()
-    expect(settings.packs).toMatchObject({ enabled: null, shell: true, code: true, hostGit: false, hostLsp: false })
+    expect(settings.packs).toEqual({})
     expect(settings.policy.network).toEqual({ allow: [] })
     expect(settings.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
+    expect(result.printed).toMatch(/Packs\s+all, and plugins/)
+    expect(result.printed).toMatch(/Shell\s+on/)
   })
 
   it('writes the answers that move off a default', async () => {
@@ -104,7 +107,7 @@ describe('buckle init asks for the workspace\'s settings after its folder', () =
     expect(prompt.said).toContainEqual(expect.stringContaining('Invalid BUCKLE_ALLOWED_HOSTS entry'))
     expect(result.exitCode).toBe(0)
     const { settings } = served()
-    expect(settings.packs).toMatchObject({ enabled: ['fs'], shell: true })
+    expect(settings.packs).toEqual({ enabled: ['fs'] })
     expect(settings.policy.network).toEqual({ allow: [] })
   })
 
@@ -143,6 +146,18 @@ describe('buckle init on a node set up already', () => {
     expect(tokens[0]).not.toBe(tokens[1])
     expect(readFileSync(join(state, 'workspaces.json'), 'utf8')).not.toContain(tokens[1]!)
     expect(served(other).id).not.toBe(served().id)
+  })
+
+  // D85, Q3: an unanswered setting stays unset in the new workspace, so the node's value in buckle.env applies.
+  it('leaves an unanswered setting to the node, and prints the node\'s value for it', async () => {
+    await init(scripted([], false), ['--dir', workspace])
+    writeFileSync(out, `${readFileSync(out, 'utf8')}BUCKLE_ALLOW_SHELL=false\n`)
+    const other = join(workspace, '..', 'other')
+    mkdirSync(other)
+    const second = await init(scripted([], false), ['--dir', other])
+
+    expect(second.printed).toMatch(/Shell\s+off/)
+    expect(served(other).settings.packs).toEqual({})
   })
 
   it('adds nothing for a folder a workspace serves, and says how to mint a token for it', async () => {
@@ -223,7 +238,7 @@ describe('buckle init without questions', () => {
     expect(result.printed).toMatch(/Shell\s+on/)
     expect(result.printed).toMatch(/Host Git\s+off/)
     expect(result.printed).toContain('These are the defaults')
-    expect(served().settings.packs).toMatchObject({ enabled: null, shell: true, hostGit: false })
+    expect(served().settings.packs).toEqual({})
     expect(parseEnv(result.written).BUCKLE_ALLOW_SHELL).toBeUndefined()
   })
 })

@@ -275,7 +275,7 @@ async function unset(context: Context): Promise<CliResult> {
   const setting = settingKey(key)
   if (typeof setting === 'string') return fail(setting)
   await context.workspaces.updateSettings(workspace.id, settings => setting.unset(settings))
-  process.stdout.write(`Workspace ${workspace.name}: ${key} is back to its default.\n`)
+  process.stdout.write(`Workspace ${workspace.name}: ${key} is unset, so the node's value applies, else Buckle's default.\n`)
   return { exitCode: 0, detail: `unset ${workspace.name} ${key}` }
 }
 

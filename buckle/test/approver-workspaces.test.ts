@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { actionsPath, loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { withMount } from '../common/services/workspaces/workspace-settings.js'
 import { describeOnline, watchOnline } from '../server/roster.js'
 import { logger } from '../common/runtime/log.js'
 import { runCli } from './support/cli.js'
@@ -214,6 +215,15 @@ describe('the workspaces buckle serve lists', () => {
       await manager.update(idOf(manager, 'Site two'), { online: false })
       await vi.waitFor(async () => expect((await manager.opened()).map(runtime => runtime.workspaceId)).toEqual([idOf(manager, 'Site one')]))
     } finally { stop() }
+  })
+
+  // D85, Q3: the listing says what is in force, the node's value where the workspace sets none of its own.
+  it('names where a folder shows as in force, the node\'s mount where the workspace names none', async () => {
+    const other = await openWorkspaceManager({ config: loadConfig({ BUCKLE_STATE_DIR: join(base, 'state-node'), BUCKLE_ADMIN_TOKEN: 'approver-admin-fixture', BUCKLE_SANDBOX: 'none', BUCKLE_WORKSPACE_MOUNT: '/node-mount' }) })
+    try {
+      await other.create({ name: 'Site three', dir: join(base, 'outside'), settings: settings => withMount(settings, undefined) })
+      expect(await describeOnline(other)).toContain(`    folder  /node-mount from ${join(base, 'outside')}\n`)
+    } finally { await other.close() }
   })
 
   it('says how to serve one where none is online', async () => {

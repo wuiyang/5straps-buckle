@@ -7,7 +7,7 @@ import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dange
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { scopeOf, withPolicy } from '../common/services/workspaces/workspace-settings.js'
+import { ownMount, withPolicy } from '../common/services/workspaces/workspace-settings.js'
 import type { CommandTarget } from './target.js'
 
 export interface CliResult {
@@ -169,7 +169,7 @@ export function repairStoredPolicy(input: { workspaces: WorkspaceManager; target
 async function repairStoredPolicyAction(input: { workspaces: WorkspaceManager; id: string; argv: string[]; failure: StoredPolicyError }): Promise<CliResult> {
   const { workspaces, id, failure } = input
   const settings = workspaces.settings(id)
-  const stored: WorkspacePolicy = { ...settings.policy, mount: scopeOf(settings).mount }
+  const stored: WorkspacePolicy = { ...settings.policy, mount: ownMount(settings) ?? null }
   const [action, ...rest] = input.argv
   try {
     refuseUnknownFlags(action, rest)
@@ -183,7 +183,7 @@ async function repairStoredPolicyAction(input: { workspaces: WorkspaceManager; i
         return { exitCode: 0 }
       }
       case 'clear':
-        await workspaces.updateSettings(id, current => withPolicy(current, { ...emptyWorkspacePolicy(), mount: stored.mount, updatedAt: new Date().toISOString() }))
+        await workspaces.updateSettings(id, current => withPolicy(current, { ...emptyWorkspacePolicy(), updatedAt: new Date().toISOString() }))
         process.stdout.write(`Every list of workspace ${workspaces.lookup(id)?.name ?? id} is empty\n`)
         return { exitCode: 0 }
       case 'export':

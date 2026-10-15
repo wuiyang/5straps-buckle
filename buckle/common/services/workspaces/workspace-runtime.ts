@@ -60,7 +60,7 @@ import { logger } from '../../runtime/log.js'
 import { auditOperation } from '../audit/audit-operation.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
-import { openSettingsFile, settingsPath, scopeOf, withPolicy, WorkspaceSettingsSchema, type WorkspaceSettings } from './workspace-settings.js'
+import { openSettingsFile, ownMount, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 
@@ -354,7 +354,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       },
       async setMount(mount) {
         if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
-        await writePolicy(current => compilePolicy({ ...current, mount, updatedAt: new Date().toISOString() }).policy)
+        compilePolicy({ ...emptyWorkspacePolicy(), mount })
+        await settingsFile.update(current => withMount(current, mount))
         await runtime.reload()
         return compiled.policy
       },
@@ -464,16 +465,17 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
    * with them.
    */
   async function apply(input: { version: string; settings: WorkspaceSettings; rebuildPacks: boolean; waitForWork: boolean }): Promise<void> {
-    const fields = workspaceFields(scopeOf(input.settings))
+    const fields = workspaceFields(scopeOf(input.settings, config.workspaceDefaults))
     const nextConfig: BuckleConfig = { ...config, ...fields }
-    const nextCompiled = compilePolicy(storedPolicy(input.settings))
+    const nextCompiled = compilePolicy(fields.policy)
     const nextPaths = createPathView({ root: config.cwd, mount: nextCompiled.mount, scratchRoots: config.scratchRoots })
-    const rebuild = input.rebuildPacks || packInputs(input.settings) !== packInputs(applied)
+    const [resolved, before] = [resolveSettings(input.settings, config.workspaceDefaults), resolveSettings(applied, config.workspaceDefaults)]
+    const rebuild = input.rebuildPacks || packInputs(resolved) !== packInputs(before)
     const policyMoved = policyHash(nextCompiled) !== policyHash(compiled)
     if (input.waitForWork && (rebuild || policyMoved) && await runtime.hasActiveWork()) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowed })
     const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools }) : null
-    const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs(input.settings) === browserInputs(applied) }) : null
+    const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs(resolved) === browserInputs(before) }) : null
     if (policyMoved) await workbenches.policyChanged()
     Object.assign(config, fields)
     applied = input.settings
@@ -554,7 +556,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // A stored entry a later grammar refuses names the file and the repair (StoredPolicyError).
   function compileStartupPolicy(settings: WorkspaceSettings): CompiledPolicy {
     try {
-      return compilePolicy(storedPolicy(settings))
+      return compilePolicy(workspaceFields(scopeOf(settings, config.workspaceDefaults)).policy)
     } catch (error) {
       if (!(error instanceof PolicyError)) throw error
       throw new StoredPolicyError({ file: settingsFile.filePath, reason: error.message, stored: storedPolicy(settings) })
@@ -646,9 +648,9 @@ function policyHash(compiled: CompiledPolicy): string {
   return workbenchHash(JSON.stringify(compiled.policy))
 }
 
-/** What a workspace's packs are built from (fix brief 1, D): a change to none of it keeps the packs, and what they opened. */
-function packInputs(settings: WorkspaceSettings): string {
-  return JSON.stringify([settings.packs, settings.mounts, settings.policy, settings.browser, settings.env])
+/** What a workspace's packs are built from (fix brief 1, D), as in force: a change to none of it keeps the packs, and what they opened. */
+function packInputs(settings: ResolvedSettings): string {
+  return JSON.stringify([settings.packs, settings.mount, settings.policy, settings.browser, settings.env])
 }
 
 const BROWSER_PACK = 'browser'
@@ -658,8 +660,8 @@ const BROWSER_PACK = 'browser'
  * allowed domains, and the mounts its paths resolve against. A rebuild for anything else, the variables among it,
  * carries the pack over with the browsers it runs, so an agent's tabs and cookies survive it.
  */
-function browserInputs(settings: WorkspaceSettings): string {
-  return JSON.stringify([settings.browser, settings.policy.network, settings.mounts])
+function browserInputs(settings: ResolvedSettings): string {
+  return JSON.stringify([settings.browser, settings.policy.network, settings.mount])
 }
 
 /**
@@ -672,15 +674,15 @@ function carryPacks(input: { built: Pack[]; current: Pack[]; carried: (id: strin
   return { packs, replaced: input.current.filter(pack => !packs.includes(pack)) }
 }
 
-/** The policy a workspace.json holds, with its mount table's target as `mount`. */
+/** The policy a workspace.json holds, its own lists alone, with its own mount table's target as `mount` (null where it names none). */
 function storedPolicy(settings: WorkspaceSettings): WorkspacePolicy {
-  return { ...settings.policy, mount: scopeOf(settings).mount }
+  return { ...settings.policy, mount: ownMount(settings) ?? null }
 }
 
 /** The settings a runtime built without a workspace.json stands on: those its configuration was composed from. */
 function settingsOf(config: BuckleConfig): WorkspaceSettings {
   return WorkspaceSettingsSchema.parse({
-    ...withPolicy(WorkspaceSettingsSchema.parse({ version: 1 }), config.policy),
+    ...withMount(withPolicy(WorkspaceSettingsSchema.parse({ version: 1 }), config.policy), config.policy.mount),
     packs: { enabled: config.enabledPacks ?? null, shell: config.enableShell, code: config.allowCode, hostGit: config.allowHostGit, hostLsp: config.allowHostLsp },
     browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded },
     approvalWaitMs: config.approvalTimeoutMs ?? 0,

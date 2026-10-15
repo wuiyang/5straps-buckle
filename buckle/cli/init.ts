@@ -14,7 +14,7 @@ import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/i
 import { nodeRootsOf, openWorkspaceManager, WorkspaceError, type MintedToken, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { MigrationError, movedOntoWorkspaces } from '../common/services/workspaces/migration.js'
 import { workspaceUntrusted } from '../common/services/workspaces/node-roots.js'
-import type { WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { resolveSettings, withMount, type ResolvedSettings, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 import { writeEnvironmentFile } from '../common/adapters/environment-file.js'
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { findNodeSetting, normaliseSetting } from './node-settings.js'
@@ -55,17 +55,18 @@ export interface InitPrompt {
 
 /**
  * The workspace's settings `buckle init` asks for after its folder, each shown with the shipped default. Enter keeps
- * it: a default grants an agent nothing an unedited install would not.
+ * it: a default grants an agent nothing an unedited install would not. One left unanswered stays unset in the
+ * workspace's settings, so the node's value stands for it, else Buckle's (D85, Q3).
  */
 export interface WorkspaceChoices {
-  /** Null offers every built-in pack and plugins; a list names the packs, which drops plugins. */
-  packs: string[] | null
-  shell: boolean
-  hostGit: boolean
-  networkAllow: string[] | null
+  /** A list names the packs, which drops plugins. */
+  packs?: string[]
+  shell?: boolean
+  hostGit?: boolean
+  networkAllow?: string[]
 }
 
-const DEFAULT_CHOICES: WorkspaceChoices = { packs: null, shell: true, hostGit: false, networkAllow: null }
+const DEFAULT_CHOICES: WorkspaceChoices = {}
 
 /**
  * `buckle init` (D83 (2)): the node, when this machine has none yet, then the folder as a workspace of it.
@@ -141,7 +142,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
 ${served.token ? '' : `\n${folder} is already in workspace ${served.name}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${workspaceArgument(served.name)}.\n`}
   Workspace   ${served.name} at ${folder}
   Seen as     ${served.created ? (mount ?? folder) : '(as it was)'}
-${adminToken ? `  Node name   ${name}\n` : ''}${served.created ? describeChoices(choices) : ''}${served.created && !interactive ? 'These are the defaults, kept because nothing was asked. Change one with: buckle workspace set <key> <value>\n' : ''}
+${adminToken ? `  Node name   ${name}\n` : ''}${served.created ? describeChoices(resolveSettings(workspaces.settings(served.id), node.workspaceDefaults)) : ''}${served.created && !interactive ? 'These are the defaults, kept because nothing was asked. Change one with: buckle workspace set <key> <value>\n' : ''}
 ${describePrograms({ node, folder, platform, search: options.programSearch ?? {} })}
 
 Next:
@@ -204,13 +205,13 @@ async function serveFolder(input: { workspaces: WorkspaceManager; folder: string
   return { id: workspace.id, name: workspace.name, created: true, token }
 }
 
+/** The answers given as the workspace's own settings; an unanswered one stays unset. */
 function withChoices(settings: WorkspaceSettings, choices: WorkspaceChoices, mount: string | null): WorkspaceSettings {
-  return {
+  return withMount({
     ...settings,
-    packs: { ...settings.packs, enabled: choices.packs, shell: choices.shell, hostGit: choices.hostGit },
+    packs: { ...settings.packs, ...(choices.packs ? { enabled: choices.packs } : {}), ...(choices.shell === undefined ? {} : { shell: choices.shell }), ...(choices.hostGit === undefined ? {} : { hostGit: choices.hostGit }) },
     policy: { ...settings.policy, network: { allow: choices.networkAllow ?? [] } },
-    mounts: mount === null ? [] : [{ kind: 'workspace', target: mount, access: 'write' }],
-  }
+  }, mount)
 }
 
 /** Re-pairs or pairs the node, sending the workspace's token and its manifest (BUCKLE-D08). */
@@ -233,11 +234,11 @@ async function askWorkspaceChoices(prompt: InitPrompt): Promise<WorkspaceChoices
   prompt.say('\nPacks this workspace offers:')
   for (const pack of BUILTIN_PACKS) prompt.say(`  ${pack.id.padEnd(12)} ${pack.summary}`)
   const packs = await askValid(prompt, 'Packs to offer, comma separated; naming them turns plugins off [all]: ', packList)
-  const shell = await askYesNo(prompt, 'Shell tools on? [Y/n]: ', true)
+  const shell = await askYesNo(prompt, 'Shell tools on? [Y/n]: ')
   prompt.say('Host Git and forge tools read the repository outside the sandbox\'s per-file checks, so they start off.')
-  const hostGit = await askYesNo(prompt, 'Host Git and forge tools on? [y/N]: ', false)
+  const hostGit = await askYesNo(prompt, 'Host Git and forge tools on? [y/N]: ')
   const networkAllow = await askValid(prompt, 'Approved hosts and URLs, the only ones fetches and pages may reach, e.g. localhost:3000,*.example.com [none]: ', urlList)
-  return { packs: packs === null ? null : packs.split(','), shell, hostGit, networkAllow: networkAllow === null ? null : networkAllow.split(',') }
+  return { ...(packs === null ? {} : { packs: packs.split(',') }), ...(shell === undefined ? {} : { shell }), ...(hostGit === undefined ? {} : { hostGit }), ...(networkAllow === null ? {} : { networkAllow: networkAllow.split(',') }) }
 }
 
 /** The packs named, each one Buckle has and this node can build, as the workspace's packs.enabled will hold them. */
@@ -273,11 +274,12 @@ async function askValid(prompt: InitPrompt, text: string, check: (raw: string) =
   }
 }
 
-function describeChoices(choices: WorkspaceChoices): string {
-  return `  Packs       ${choices.packs?.join(', ') ?? 'all, and plugins'}
-  Shell       ${choices.shell ? 'on' : 'off'}
-  Host Git    ${choices.hostGit ? 'on' : 'off'}
-  Network     ${choices.networkAllow?.join(',') ?? 'no approved list'}
+/** The new workspace's settings in force: its answers, else the node's, else Buckle's. */
+function describeChoices(settings: ResolvedSettings): string {
+  return `  Packs       ${settings.packs.enabled?.join(', ') ?? 'all, and plugins'}
+  Shell       ${settings.packs.shell ? 'on' : 'off'}
+  Host Git    ${settings.packs.hostGit ? 'on' : 'off'}
+  Network     ${settings.policy.network.allow.join(',') || 'no approved list'}
 `
 }
 
@@ -367,10 +369,11 @@ function terminalPrompt(): InitPrompt {
   }
 }
 
-async function askYesNo(prompt: InitPrompt, text: string, fallback: boolean): Promise<boolean> {
+/** Yes or no; undefined where Enter keeps the default, which the workspace then leaves unset. */
+async function askYesNo(prompt: InitPrompt, text: string): Promise<boolean | undefined> {
   for (;;) {
     const answer = (await prompt.question(text)).trim().toLowerCase()
-    if (!answer) return fallback
+    if (!answer) return undefined
     if (['y', 'yes', 'on', 'true'].includes(answer)) return true
     if (['n', 'no', 'off', 'false'].includes(answer)) return false
     prompt.say('Answer y or n, or press Enter for the default.')

@@ -2,7 +2,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { printable } from '../common/domain/approval-instruction.js'
 import { logger } from '../common/runtime/log.js'
 import { WorkspaceError, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import type { WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import type { WorkspacePolicy } from '@5straps/protocol'
 
 /** How often `buckle serve` looks for a change to the workspaces it lists: a stat-cheap read, never a watcher (Q2). */
 export const ROSTER_POLL_MS = 2_000
@@ -23,7 +23,8 @@ export async function describeOnline(workspaces: WorkspaceManager): Promise<stri
 async function describeWorkspace(workspaces: WorkspaceManager, workspace: WorkspaceDescriptor): Promise<string[]> {
   const head = `  ${printable(workspace.name)}\n    id      ${workspace.id}`
   let packs: string
-  let settings: WorkspaceSettings
+  // In force: its own settings, else the node's (D85, Q3).
+  let effective: WorkspacePolicy
   let waiting: string | null = null
   try {
     const { runtime } = await workspaces.resolve(workspace.id)
@@ -32,15 +33,14 @@ async function describeWorkspace(workspaces: WorkspaceManager, workspace: Worksp
       waiting = error.message
     }
     packs = runtime.manifest().packs.filter(pack => pack.unavailableReason === null).map(pack => pack.id).join(', ') || 'none'
-    settings = workspaces.settings(workspace.id)
+    effective = runtime.policy.effective()
   } catch (error) {
     return [head, `    could not open, so it answers each call with the reason: ${error instanceof Error ? error.message : String(error)}`]
   }
-  const mount = settings.mounts.find(entry => entry.kind === 'workspace')
-  const urls = settings.policy.network.allow.length
+  const urls = effective.network.allow.length
   return [
     head,
-    `    folder  ${mount ? `${mount.target} from ${workspace.dir}` : `${workspace.dir}, at its real path`}`,
+    `    folder  ${effective.mount ? `${effective.mount} from ${workspace.dir}` : `${workspace.dir}, at its real path`}`,
     `    URLs    ${urls === 0 ? 'no approved list' : `an approved list of ${urls} entr${urls === 1 ? 'y' : 'ies'}`}`,
     `    packs   ${packs}`,
     ...(waiting === null ? [] : [`    note    ${waiting}`]),

@@ -217,7 +217,7 @@ async function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; re
   const own = kept({ policyFile: ownPolicyFile(node), stateDirectories: [node.stateDirectory, ownState] })
   const ownSpellings = [dir, ...node.migration.workspaceRoot === undefined ? [] : [node.migration.workspaceRoot], ownId]
   const ownPolicy = keyOf({ keys: Object.keys(own.policies), spellings: ownSpellings, platform, file: policyPath(node) })
-  const merged = mergePolicies({ ...environment.policy, mount: environment.mounts[0]?.target ?? null }, ownPolicy === null ? null : own.policies[ownPolicy]!)
+  const merged = mergePolicies({ ...environment.policy, mount: environment.mounts?.[0]?.target ?? null }, ownPolicy === null ? null : own.policies[ownPolicy]!)
   const ownSwitch = keyOf({ keys: own.switches, spellings: ownSpellings, platform, file: dangerouslyAllowPath(node) })
   // Named after its folder (D85, Q15), unless a registered workspace's 0.1 id, which is its name now, is the same word.
   const registeredNames = roots.map(({ workspace }) => workspace.id)

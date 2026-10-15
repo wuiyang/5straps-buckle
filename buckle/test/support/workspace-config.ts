@@ -21,5 +21,5 @@ export function configFromEnvironment(environment: NodeJS.ProcessEnv = {}, platf
   const node = loadConfig(environment, platform)
   const dir = legacyWorkspaceRoot({ node, platform })
   // Named and keyed after its folder, as migration names and keys the node's folder (D85, Q15), so a manager over the same state directory finds the same workspace.
-  return workspaceConfig(node, { id: workspaceIdFor(dir), name: basename(dir), dir, ...scopeOf(settingsFromEnvironment(environment, platform)) })
+  return workspaceConfig(node, { id: workspaceIdFor(dir), name: basename(dir), dir, ...scopeOf(settingsFromEnvironment(environment, platform), node.workspaceDefaults) })
 }
