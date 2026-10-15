@@ -272,6 +272,26 @@ describe('buckle init on a node set up before workspaces', () => {
     expect(readFileSync(out, 'utf8')).toBe(before)
     expect(existsSync(join(state, 'workspaces.json'))).toBe(false)
   })
+
+  // Findings 11 and 21: --force as the first command used to rewrite the file before migration read it.
+  it('with --force, moves the node from the file it replaces first, so workspace default keeps its folder, token, policy, and grants', async () => {
+    const root = join(workspace, '..')
+    vi.stubEnv('HOME', root)
+    writeFileSync(out, `BUCKLE_ADMIN_TOKEN=old-admin-fixture\nBUCKLE_AUTH_TOKEN=init-force-agent-fixture\nBUCKLE_WORKSPACE_ROOT=${workspace}\nBUCKLE_COMMAND_DENY=curl *\nBUCKLE_SANDBOX=none\n`, { mode: 0o600 })
+    mkdirSync(state, { mode: 0o700 })
+    const grant = { id: 'grant-1', workspace, rule: 'network_egress', subject: 'localhost:3000', scope: 'always', sessionId: null, createdAt: '2026-10-01T00:00:00.000Z', expiresAt: null }
+    writeFileSync(join(state, 'grants.json'), JSON.stringify({ version: 1, grants: [grant] }))
+    writeFileSync(join(state, 'policy.json'), JSON.stringify({ version: 1, workspaces: { [workspace]: { version: 1, commands: { allow: [], deny: ['rm -rf *'] }, network: { allow: [] }, mount: null, updatedAt: null } } }))
+
+    const result = await init(scripted([], false), ['--force', '--yes', '--name', 'Fixture', '--dir', workspace])
+    expect(result.exitCode).toBe(0)
+    expect(result.printed).toContain(`${workspace} is already in workspace default: nothing was added`)
+    const registry = JSON.parse(readFileSync(join(state, 'workspaces.json'), 'utf8')) as { workspaces: Array<{ id: string; dir: string; tokens: Array<{ id: string }> }> }
+    expect(registry.workspaces).toMatchObject([{ id: 'default', dir: workspace, tokens: [{ id: 'node' }] }])
+    expect(served().settings.policy.commands.deny).toEqual(['curl *', 'rm -rf *'])
+    expect(JSON.parse(readFileSync(join(state, 'grants.json'), 'utf8')).grants.map((item: { workspace: string }) => item.workspace)).toEqual(['default'])
+    expect(parseEnv(result.written).BUCKLE_ADMIN_TOKEN).not.toBe('old-admin-fixture')
+  })
 })
 
 // buckle init checks the programs Buckle runs, so a missing agent-browser shows at setup rather than as a withheld

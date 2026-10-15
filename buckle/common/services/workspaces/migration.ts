@@ -125,6 +125,11 @@ export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.P
   return [...notices({ node, plans: moved.plan.plans, hadRegistry: moved.hadRegistry, retired }), ...moved.plan.notes]
 }
 
+/** Whether the state directory's registry is version 2 already, read without the lock. */
+export function movedOntoWorkspaces(stateDirectory: string): boolean {
+  return versionOf(registryPath(stateDirectory)) === 2
+}
+
 /** A file read before the move writes anything: one that will not read refuses the move, which has changed nothing. */
 function beforeWriting<R>(read: () => R): R {
   try { return read() } catch (error) {

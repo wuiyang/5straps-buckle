@@ -12,7 +12,7 @@ import { refusedNetworkEntries } from '../common/domain/policy.js'
 import { BROWSER_INSTALL } from '../common/services/packs/browser/index.js'
 import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
 import { nodeRootsOf, openWorkspaceManager, WorkspaceError, type MintedToken, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { MigrationError } from '../common/services/workspaces/migration.js'
+import { MigrationError, movedOntoWorkspaces } from '../common/services/workspaces/migration.js'
 import { workspaceUntrusted } from '../common/services/workspaces/node-roots.js'
 import type { WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 import { writeEnvironmentFile } from '../common/adapters/environment-file.js'
@@ -114,6 +114,10 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   if (!/^\d+$/.test(port)) return fail(`Invalid port: ${port}`)
 
   const name = answers.name?.trim() || defaultNodeName(folder)
+  if (writesNode && existsSync(out)) {
+    const refused = await moveFromOwnFile(out, platform)
+    if (refused) return refused
+  }
   const adminToken = writesNode ? credential() : null
   if (adminToken) {
     // The state directory holds the node's credentials, so it is created owner-only (ruling 7).
@@ -160,6 +164,26 @@ switch it on: buckle settings set experimental-admin-http on
   } finally {
     await workspaces.close()
   }
+}
+
+/**
+ * `--force` on a node set up before workspaces moves it from the file it is about to replace (fix brief 1, A4, findings
+ * 11 and 21): workspace default keeps its 0.1 folder, token, policy, and grants, which the rewritten file no longer
+ * names. A file that will not load is left for --force to rewrite once the node has moved; before, it is refused.
+ */
+async function moveFromOwnFile(out: string, platform: NodeJS.Platform): Promise<CliResult | null> {
+  let node: NodeConfig
+  try { node = nodeConfig(out, readFileSync(out, 'utf8'), platform) } catch (error) {
+    if (movedOntoWorkspaces(stateDirectoryOf(process.env, platform))) return null
+    return fail(`buckle init --force moves this node onto workspaces from ${out} before it writes the file again, and ${out} will not load: ${error instanceof Error ? error.message : String(error)}. Repair that line, then run buckle init --force again.`)
+  }
+  if (movedOntoWorkspaces(node.stateDirectory)) return null
+  mkdirSync(node.stateDirectory, { recursive: true, mode: 0o700 })
+  try { await (await openWorkspaceManager({ config: node, platform })).close() } catch (error) {
+    if (error instanceof WorkspaceError || error instanceof MigrationError) return fail(error.message)
+    throw error
+  }
+  return null
 }
 
 /** The folder as a workspace: a new one with the choices as its settings, or the one already holding it, which keeps its own. */
