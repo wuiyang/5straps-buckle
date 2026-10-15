@@ -28,8 +28,9 @@ the one whose folder holds --dir <path>, or else the current directory. <name> i
 
   buckle workspace init [--dir <path>] [--name <name>] [--yes]
                                        Serve a folder as a workspace, and print its agent token once
-  buckle workspace add <dir> [--name <name>] [--yes]
-                                       The same, with the folder named first
+  buckle workspace add <dir> [--name <name>] [--yes] [--fresh]
+                                       The same, with the folder named first; --fresh leaves any removed records behind
+  buckle workspace prune [--yes]       The removed workspaces whose records are still kept; --yes deletes them
   buckle workspace list [--json]       Every workspace, online or not
   buckle workspace show [--json]       Its settings; no token is ever shown
   buckle workspace enable <name> | disable <name>
@@ -37,7 +38,7 @@ the one whose folder holds --dir <path>, or else the current directory. <name> i
   buckle workspace rename <name> <new-name>
                                        Give it another name; its id never changes
   buckle workspace remove <name> [--purge]
-                                       Forget it; its records stay unless --purge; its folder is never touched
+                                       Forget it; its records stay (adding the folder again takes them up) unless --purge
   buckle workspace set <key> <value> | unset <key>
                                        Change one setting: name, env.<NAME>, or a key buckle workspace show lists
   buckle workspace token create [--label <text>] | list | revoke <token-id>
@@ -73,6 +74,7 @@ export async function workspaceRegistryCommand(input: { config: NodeConfig; work
       case 'disable': return await online(context, false)
       case 'rename': return await rename(context)
       case 'remove': return await remove(context)
+      case 'prune': return prune(context)
       case 'set': return await set(context)
       case 'unset': return await unset(context)
       case 'token': return await token(context)
@@ -107,20 +109,21 @@ async function init(context: Context): Promise<CliResult> {
 /** `buckle workspace add <dir> [--name <name>]`: init with the folder named first (D85, Q15). */
 async function add(context: Context): Promise<CliResult> {
   const usage = 'Usage: buckle workspace add <dir> [--name <name>] [--yes]'
-  let parsed: ReturnType<typeof parseArgs<{ options: { name: { type: 'string' }; yes: { type: 'boolean' } }; allowPositionals: true }>>
+  const usageFresh = 'Usage: buckle workspace add <dir> [--name <name>] [--yes] [--fresh]'
+  let parsed: ReturnType<typeof parseArgs<{ options: { name: { type: 'string' }; yes: { type: 'boolean' }; fresh: { type: 'boolean' } }; allowPositionals: true }>>
   // The 0.1 spelling, `add <id> --root <dir>`, went with the typed id (D85, Q15): its flag is refused with the usage.
-  try { parsed = parseArgs({ args: context.rest, options: { name: { type: 'string' }, yes: { type: 'boolean' } }, allowPositionals: true }) } catch { return fail(usage) }
+  try { parsed = parseArgs({ args: context.rest, options: { name: { type: 'string' }, yes: { type: 'boolean' }, fresh: { type: 'boolean' } }, allowPositionals: true }) } catch { return fail(usageFresh) }
   const [dir] = parsed.positionals
-  if (!dir || parsed.positionals.length !== 1 || context.target.workspace !== undefined || context.target.dir !== undefined) return fail(usage)
-  return serve(context, { dir: resolve(context.cwd, dir), name: parsed.values.name, yes: parsed.values.yes === true })
+  if (!dir || parsed.positionals.length !== 1 || context.target.workspace !== undefined || context.target.dir !== undefined) return fail(usageFresh)
+  return serve(context, { dir: resolve(context.cwd, dir), name: parsed.values.name, yes: parsed.values.yes === true, fresh: parsed.values.fresh === true })
 }
 
 /**
  * Serves a folder as a new workspace, named as asked, or after its folder. A name another workspace holds is asked
  * about at a terminal until one is free; with --yes, or no terminal, it is refused, naming --name (D85, Q15).
  */
-async function serve(context: Context, input: { dir: string; name?: string; yes: boolean }): Promise<CliResult> {
-  const { workspace, token, takenUp } = await createNamed(context.prompt, { ...input, refusal: 'name it with --name <name>' }, name => context.workspaces.create({ dir: input.dir, ...(name === undefined ? {} : { name }) }))
+async function serve(context: Context, input: { dir: string; name?: string; yes: boolean; fresh?: boolean }): Promise<CliResult> {
+  const { workspace, token, takenUp } = await createNamed(context.prompt, { ...input, refusal: 'name it with --name <name>' }, name => context.workspaces.create({ dir: input.dir, ...(input.fresh ? { fresh: true } : {}), ...(name === undefined ? {} : { name }) }))
   printMinted(workspace, token, takenUp)
   return { exitCode: 0, detail: `init ${workspace.name}` }
 }
@@ -209,6 +212,24 @@ async function remove(context: Context): Promise<CliResult> {
     ? `Removed workspace ${removed.name} and deleted its records. Its folder ${removed.dir} is untouched.\n`
     : `Removed workspace ${removed.name}. Its folder ${removed.dir} is untouched, and its records stay in the state directory under workspaces/${removed.id}/: serving the folder again takes them up.\n`)
   return { exitCode: 0, detail: `remove ${removed.name}${values.purge ? ' --purge' : ''}` }
+}
+
+/** `buckle workspace prune [--yes]`: the removed workspaces whose records are still kept, and, with --yes, their deletion (addendum to D85, Q15). */
+function prune(context: Context): CliResult {
+  const { values } = parseArgs({ args: context.rest, options: { yes: { type: 'boolean' } }, allowPositionals: false })
+  const removed = context.workspaces.prune({ yes: values.yes === true })
+  if (removed.length === 0) {
+    process.stdout.write('No removed workspace has records left to prune.\n')
+    return { exitCode: 0 }
+  }
+  if (!values.yes) {
+    process.stdout.write('Removed workspaces whose records are still kept:\n')
+    for (const entry of removed) process.stdout.write(`  ${entry.name}  ${entry.dir}${entry.removedAt ? `  removed ${entry.removedAt}` : ''}  (workspaces/${entry.id}/)\n`)
+    process.stdout.write('Delete their records with buckle workspace prune --yes; adding a folder again takes its records up instead.\n')
+    return { exitCode: 0 }
+  }
+  for (const entry of removed) process.stdout.write(`Deleted the records of ${entry.name} (${entry.dir}).\n`)
+  return { exitCode: 0, detail: `prune ${removed.length}` }
 }
 
 /** One setting, validated whole with the rest before it is written (openSettingsFile). A variable's value is never echoed or audited. */

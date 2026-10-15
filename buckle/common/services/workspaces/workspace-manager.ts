@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto'
-import { existsSync, realpathSync, rmSync } from 'node:fs'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'pathe'
 import { z } from 'zod'
 import { WorkspacePolicySchema } from '@5straps/protocol'
@@ -46,6 +46,8 @@ export const WorkspaceRegistrationSchema = z.object({
   name: WorkspaceNameSchema.optional(),
   dir: z.string().min(1).max(4096),
   policy: WorkspacePolicySchema.optional(),
+  /** A folder whose removed records still exist starts a new id and leaves the old ones to prune, rather than taking them up (addendum to D85, Q15). */
+  fresh: z.boolean().optional(),
 }).strict()
 export type WorkspaceRegistration = z.infer<typeof WorkspaceRegistrationSchema>
 export const WorkspacePatchSchema = z.object({ name: WorkspaceNameSchema.optional(), online: z.boolean().optional(), expectedUpdatedAt: z.string().nullable().optional() }).strict()
@@ -70,6 +72,8 @@ export interface ManagedWorkspace {
 }
 /** What a registration took up from a workspace removed under its id: its records, and whether its dangerously-allow switch is on. */
 export interface TakenUp { dangerouslyAllow: boolean }
+/** A removed workspace whose records still sit in the state directory, as `buckle workspace prune` lists them. */
+export interface RemovedWorkspace { id: string; dir: string; name: string; removedAt: string }
 /** Who a bearer token is: the workspace it belongs to and its id there. */
 export interface TokenOwner { workspaceId: string; tokenId: string }
 
@@ -118,6 +122,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
   const settingsOf = (id: string) => openSettingsFile({ filePath: settingsPath(node.stateDirectory, id), lockDeadlineMs })
   /** Whether records of a workspace by this id are still on disk, from one removed without --purge (Q7). */
   const leftover = (id: string) => existsSync(join(node.stateDirectory, 'workspaces', id))
+  /** The marker a removal leaves beside the kept records: the folder, its name, and when (addendum to D85, Q15). */
+  const removedMarker = (id: string) => join(node.stateDirectory, 'workspaces', id, 'removed.json')
 
   /** Whether a workspace serves calls now. An unreadable registry counts it as serving, so a failure still shows. */
   function serving(id: string): boolean {
@@ -159,7 +165,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         if ([stateRoot, ...state.workspaces.map(workspace => workspace.dir)].some(existing => overlaps(existing, dir, platform))) {
           throw new WorkspaceError('A workspace folder must not hold, or sit inside, another workspace or Buckle state', 409)
         }
-        const id = workspaceIdFor(dir)
+        // A folder's id is derived from it, so re-registering takes up its removed records; --fresh starts a new id and leaves them (addendum to D85, Q15).
+        const id = value.fresh === true ? randomUUID() : workspaceIdFor(dir)
         if (state.workspaces.some(workspace => workspace.id === id)) throw new WorkspaceError('This folder is a workspace already', 409)
         const name = value.name ?? value.id ?? basename(dir)
         if (nameTaken(state, name)) throw new WorkspaceNameTakenError(name)
@@ -174,6 +181,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         const workspace: StoredWorkspace = { id, name, dir, online: true, revision: 0, updatedAt: minted.createdAt, createdAt: minted.createdAt,
           tokens: [{ id: minted.id, sha256: tokenDigest(minted.token), label: minted.label, createdAt: minted.createdAt }] }
         state.workspaces.push(workspace)
+        // The records are an active workspace's again: the removal marker goes, so prune no longer lists them.
+        if (takenUp) rmSync(removedMarker(id), { force: true })
         nodeRoots.take(state.workspaces.map(item => item.dir))
         return { workspace: describe(workspace), takenUp }
       })
@@ -297,6 +306,29 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       const pending = runtimes.get(id)
       if (opened && pending) await drop(id, pending, opened)
       if (options.purge) rmSync(join(node.stateDirectory, 'workspaces', id), { recursive: true, force: true })
+      // Its records stay, with a marker naming the folder, so `buckle workspace add` can take them up and `buckle workspace prune` can find them.
+      else if (existsSync(join(node.stateDirectory, 'workspaces', id))) writeFileSync(removedMarker(id), `${JSON.stringify({ version: 1, dir: removed.dir, name: removed.name, removedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 })
+      return removed
+    },
+
+    /**
+     * The removed workspaces whose records still sit in the state directory (addendum to D85, Q15): each folder that
+     * left a removal marker and holds no current registration. With `yes`, deletes those records. Never touches a
+     * folder, nor the records of a registered workspace.
+     */
+    prune(options: { yes?: boolean } = {}): RemovedWorkspace[] {
+      const base = join(node.stateDirectory, 'workspaces')
+      if (!existsSync(base)) return []
+      const registered = new Set(store.read().workspaces.map(workspace => workspace.id))
+      const removed: RemovedWorkspace[] = []
+      for (const id of readdirSync(base)) {
+        if (registered.has(id) || !existsSync(removedMarker(id))) continue
+        try {
+          const marker = JSON.parse(readFileSync(removedMarker(id), 'utf8')) as { dir?: string; name?: string; removedAt?: string }
+          removed.push({ id, dir: marker.dir ?? '', name: marker.name ?? id, removedAt: marker.removedAt ?? '' })
+        } catch { removed.push({ id, dir: '', name: id, removedAt: '' }) }
+      }
+      if (options.yes) for (const entry of removed) rmSync(join(base, entry.id), { recursive: true, force: true })
       return removed
     },
 

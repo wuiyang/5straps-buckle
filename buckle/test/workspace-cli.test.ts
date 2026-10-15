@@ -252,6 +252,54 @@ describe('buckle workspace enable, disable and remove', () => {
     expect(existsSync(alpha)).toBe(true)
   })
 
+  // Addendum to D85, Q15: a removal leaves a marker; adding the folder again takes the records up and clears it.
+  it('leaves a removal marker, takes the folder up when added again, and clears the marker', async () => {
+    const id = workspaceIdOf(alpha)
+    await buckle(['set', 'packs.shell', 'off'], { cwd: alpha })
+    expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
+    expect(existsSync(join(state, 'workspaces', id, 'removed.json'))).toBe(true)
+
+    const added = await buckle(['add', alpha])
+    expect(added.exitCode).toBe(0)
+    expect(added.out).toContain('takes up the records this folder left')
+    expect(registry().workspaces).toMatchObject([{ id, name: 'alpha' }])
+    expect(settings(alpha).packs.shell).toBe(false)
+    expect(existsSync(join(state, 'workspaces', id, 'removed.json'))).toBe(false)
+  })
+
+  // Addendum to D85, Q15: --fresh starts a new id and leaves the removed records for prune, rather than taking them up.
+  it('adds a removed folder fresh under a new id, leaving its old records behind', async () => {
+    const id = workspaceIdOf(alpha)
+    await buckle(['set', 'packs.shell', 'off'], { cwd: alpha })
+    expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
+
+    const fresh = await buckle(['add', alpha, '--fresh', '--name', 'alpha fresh'])
+    expect(fresh.exitCode).toBe(0)
+    expect(fresh.out).not.toContain('takes up the records')
+    const made = registry().workspaces[0]!
+    expect(made.name).toBe('alpha fresh')
+    expect(made.id).not.toBe(id)
+    expect(openSettingsFile({ filePath: settingsPath(state, made.id) }).read().packs.shell).toBe(true)
+    expect(existsSync(join(state, 'workspaces', id, 'removed.json'))).toBe(true)
+  })
+
+  // Addendum to D85, Q15: prune lists the removed workspaces whose records are kept, and --yes deletes them.
+  it('prunes the kept records of removed workspaces, and --yes deletes them', async () => {
+    const id = workspaceIdOf(alpha)
+    expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
+
+    const listed = await buckle(['prune'])
+    expect(listed.exitCode).toBe(0)
+    expect(listed.out).toContain('alpha')
+    expect(listed.out).toContain(`workspaces/${id}/`)
+    expect(existsSync(join(state, 'workspaces', id))).toBe(true)
+
+    const pruned = await buckle(['prune', '--yes'])
+    expect(pruned.out).toContain('Deleted the records of alpha')
+    expect(existsSync(join(state, 'workspaces', id))).toBe(false)
+    expect((await buckle(['prune'])).out).toContain('No removed workspace')
+  })
+
   // Findings 6 and 16 of the Phase 1 review, and D85, Q15: the node's own folder is a workspace like any other, removed like any other.
   it('removes the workspace made of the node\'s own folder like any other', async () => {
     const legacy = node({ BUCKLE_WORKSPACE_ROOT: beta, BUCKLE_AUTH_TOKEN: LEGACY_AGENT })
