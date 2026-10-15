@@ -94,6 +94,8 @@ export type ApprovalNotice = z.infer<typeof ApprovalNoticeSchema>
 export const ApprovalNoticesSchema = z.object({
   serverId: z.string().min(1),
   workspaceId: z.string().min(1),
+  /** The workspace's name, beside its id, so a person is told which project an ask is in; absent from an older node. */
+  workspaceName: z.string().min(1).optional(),
   notices: z.array(ApprovalNoticeSchema).min(1),
 })
 export type ApprovalNotices = z.infer<typeof ApprovalNoticesSchema>

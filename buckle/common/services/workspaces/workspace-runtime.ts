@@ -201,8 +201,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   const workspaceId = input.workspaceId ?? NODE_FOLDER_WORKSPACE
   // Keyed by the workspace's id, so they stay its own whatever its folder is called.
   const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: workspaceId, lockDeadlineMs })
-  // Every notification names its workspace, whose `buckle approve --workspace` answers it.
-  const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
+  // Every notification names its workspace, whose `buckle approve --workspace` answers it, by id and by its name as it
+  // stands at each post, so a rename shows.
+  const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, get workspaceName() { return config.serverName }, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
   let notices: ApprovalNotices | undefined
   const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, {
     lockDeadlineMs, durableNotices: webhook !== null,

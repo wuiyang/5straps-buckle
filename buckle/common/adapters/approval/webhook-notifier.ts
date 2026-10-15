@@ -2,7 +2,7 @@ import type { ApprovalNotice, ApprovalRequest } from '@5straps/protocol'
 import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { sealForRings } from '../../services/approvals/approval-envelope.js'
 import { shownCall, type AskedCall } from '../../services/approvals/approval-registry.js'
-import { approveCommand, reviewCommand } from '../../domain/approval-instruction.js'
+import { approveCommand, reviewCommand, workspaceLabel } from '../../domain/approval-instruction.js'
 import { logger } from '../../runtime/log.js'
 
 const NOTIFY_TIMEOUT_MS = 5_000
@@ -13,6 +13,11 @@ export interface WebhookNotifierOptions {
   serverId: string
   /** Which of the node's workspaces is waiting: a token resolves in its own workspace alone. */
   workspaceId: string
+  /**
+   * The workspace's name, read at each post, so a rename shows: an ask names `workspace <id> (<name>)` on every route
+   * (the workspace-model brief, item 6; finding 30 of the Phase 1 review).
+   */
+  readonly workspaceName?: string
   /** The node's outbound credential, sent as a bearer when set. Rings requires it. */
   token?: string
   /** `RINGS-D20`: with the key minted at pairing, the notification goes sealed for Rings. */
@@ -34,7 +39,7 @@ export function createWebhookNotifier(options: WebhookNotifierOptions) {
   return async (requests: ApprovalRequest[], recorded?: AskedCall): Promise<void> => {
     // Owner default D19: only the paired Rings key receives the whole call.
     const call = options.approvalKey ? shownCall(recorded) : undefined
-    const response = await postSealed(options, { approvals: requests.map(request => describe(request, options.workspaceId)), ...(recorded?.description === null || recorded?.description === undefined ? {} : { description: recorded.description }), ...(call ? { call } : {}) })
+    const response = await postSealed(options, { approvals: requests.map(request => describe(request, options)), ...(recorded?.description === null || recorded?.description === undefined ? {} : { description: recorded.description }), ...(call ? { call } : {}) })
     if (!response.ok) logger.warn('Approval webhook refused the notification', { status: response.status })
   }
 }
@@ -63,7 +68,7 @@ function postSealed(options: WebhookNotifierOptions, body: { approvals: unknown[
       'content-type': 'application/json',
       ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
     },
-    body: JSON.stringify(sealForRings(options.approvalKey, SEALED_REPORT_PATHS.approvals, { serverId: options.serverId, workspaceId: options.workspaceId, ...body })),
+    body: JSON.stringify(sealForRings(options.approvalKey, SEALED_REPORT_PATHS.approvals, { serverId: options.serverId, workspaceId: options.workspaceId, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), ...body })),
     signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
   })
 }
@@ -72,7 +77,8 @@ function postSealed(options: WebhookNotifierOptions, body: { approvals: unknown[
  * One ask as a relay is told of it. `reviewCommand` comes before `approveCommand`: a person reads the whole
  * action with `buckle approvals` first, and `buckle approve` shows it again before it decides (owner decision D17).
  */
-function describe(request: ApprovalRequest, workspaceId: string) {
+function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions, 'workspaceId' | 'workspaceName'>) {
+  const { workspaceId, workspaceName } = options
   return {
     token: request.token,
     tool: request.tool,
@@ -82,6 +88,8 @@ function describe(request: ApprovalRequest, workspaceId: string) {
     expiresAt: request.expiresAt,
     offeredScopes: request.offeredScopes,
     workspaceId,
+    ...(workspaceName ? { workspaceName } : {}),
+    workspace: workspaceLabel(workspaceId, workspaceName),
     reviewCommand: reviewCommand({ workspaceId }),
     approveCommand: approveCommand({ request, workspaceId }),
   }

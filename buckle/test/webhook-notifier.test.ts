@@ -1,9 +1,9 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { approvalKey, mintApprovalKey, open, SEALED_REPORT_PATHS } from '@5straps/protocol/envelope'
-import type { ApprovalRequest } from '@5straps/protocol'
+import { ApprovalNoticesSchema, type ApprovalRequest } from '@5straps/protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createWebhookNotifier } from '../common/adapters/approval/webhook-notifier.js'
+import { createApprovalNoticeSender, createWebhookNotifier } from '../common/adapters/approval/webhook-notifier.js'
 
 let server: Server
 let url: string
@@ -53,6 +53,18 @@ describe('what the approval webhook carries', () => {
     expect(last?.body.workspaceId).toBe('photos')
     const approvals = last?.body.approvals as Array<Record<string, unknown>>
     expect(approvals[0]).toMatchObject({ workspaceId: 'photos', approveCommand: 'buckle approve tok-1 --scope session --workspace photos' })
+  })
+
+  // Finding 30 of the Phase 1 review: every route names an ask's workspace by id and name, the webhook too.
+  it('names the workspace by its name beside its id, read at each post so a rename shows', async () => {
+    const options = { url, serverId: 'linux-dev', workspaceId: 'site-2', name: 'Client site', get workspaceName() { return this.name } }
+    await createWebhookNotifier(options)([request])
+    expect(received.at(-1)?.body).toMatchObject({ workspaceId: 'site-2', workspaceName: 'Client site' })
+    expect((received.at(-1)?.body.approvals as Array<Record<string, unknown>>)[0]).toMatchObject({ workspaceId: 'site-2', workspaceName: 'Client site', workspace: 'site-2 (Client site)' })
+    options.name = 'Renamed site'
+    await createApprovalNoticeSender(options)([{ token: 'tok-1', event: 'answered', at: new Date().toISOString(), scope: 'once' }])
+    expect(received.at(-1)?.body).toMatchObject({ workspaceId: 'site-2', workspaceName: 'Renamed site' })
+    expect(ApprovalNoticesSchema.parse(received.at(-1)?.body)).toMatchObject({ workspaceName: 'Renamed site' })
   })
 
   it('leads with buckle approvals, which shows the whole action, and names buckle approve after it (owner decision D17)', async () => {

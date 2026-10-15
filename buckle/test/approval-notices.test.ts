@@ -80,6 +80,26 @@ describe('the siblings of a denied ask', () => {
   })
 })
 
+// Finding 30 of the Phase 1 review: the runtime hands the webhook its workspace's name as it stands at each post.
+describe('the approval webhook of a workspace', () => {
+  it('names the workspace as it is named when each ask is posted', async () => {
+    const webhook = await captureWebhook()
+    try {
+      const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url, BUCKLE_SERVER_NAME: 'Client site' })
+      const runtime = await createRuntime({ config, workspaceId: 'site' })
+      await runtime.invoke({ sessionId: 's', request: write('one/a.md', { mode: 'none' }) })
+      await vi.waitFor(() => expect(webhook.bodies).toContainEqual(expect.objectContaining({ workspaceId: 'site', workspaceName: 'Client site', approvals: [expect.objectContaining({ workspace: 'site (Client site)' })] })))
+      config.serverName = 'Renamed site'
+      await runtime.invoke({ sessionId: 's', request: write('two/b.md', { mode: 'none' }) })
+      await vi.waitFor(() => expect(webhook.bodies).toContainEqual(expect.objectContaining({ workspaceName: 'Renamed site', approvals: [expect.objectContaining({ workspace: 'site (Renamed site)' })] })))
+      await runtime.approvalService.close()
+      await runtime.history.close()
+    } finally {
+      await webhook.close()
+    }
+  })
+})
+
 function service(input: { graceMs: number | null; interaction?: Interaction }) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-notice-service-'))
   const sent: ApprovalNotice[] = []

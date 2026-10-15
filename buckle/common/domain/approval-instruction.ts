@@ -58,8 +58,9 @@ export function reviewCommand(input: { workspaceId?: string }): string {
  * What a person is told about a request that is waiting: what it wants, where it is waiting, how
  * long it stays answerable, the command that shows its whole action, and only then the command that
  * answers it (owner decision D17: a relayed line never stands in for the action). One home, because the
- * same lines go to an MCP client's user, a terminal and an approval webhook, and an instruction that
- * named neither the node nor the workspace was not actionable on a node serving several.
+ * same lines go to an MCP client's user and a terminal, and an instruction that named neither the node
+ * nor the workspace was not actionable on a node serving several. The approval webhook names the same
+ * workspace in fields of its own (webhook-notifier.ts).
  */
 export function describeApprovalRequest(input: { request: ApprovalRequest; workspaceId?: string; workspaceName?: string; nodeName?: string }): string[] {
   const { request } = input
