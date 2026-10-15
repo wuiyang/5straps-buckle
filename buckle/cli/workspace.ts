@@ -51,7 +51,7 @@ A name that another workspace holds is asked about at a terminal; with --yes, or
 /**
  * The owner's workspace commands (D83 (2) to (6), the workspace-model brief, item 4). `BUCKLE-D12` names the admin
  * credential as the one authority that mints or revokes a workspace token, so every verb refuses on a node configured
- * without one, and `SELF_ADMINISTRATION` in the command policy keeps a tool from reaching them. A workspace is named
+ * without one, and `administersBuckle` in the command policy keeps a tool from reaching them. A workspace is named
  * by its name wherever a verb takes one (D85, Q15); its id is accepted too.
  */
 export async function workspaceRegistryCommand(input: { config: NodeConfig; workspaces: WorkspaceManager; argv: string[]; cwd: string; prompt?: NamePrompt }): Promise<CliResult> {

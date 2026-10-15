@@ -1861,6 +1861,20 @@ describe('what no pattern can change', () => {
     expect(reasonOf(evaluate(command, args, { allow: ['*', 'bash -c *'] }))).toContain('cannot administer')
   })
 
+  // Fix brief 4, finding 11: an option word may hold a `/`, so each `-x/buckle` word starts the name again, and the
+  // pattern that tried each start over the rest of the line took seconds on 100 KB, holding the node's one thread.
+  // About 100 KB, the most one shell_exec argument holds.
+  const optionRun = `buckle${' -x/buckle'.repeat(9_999)}`
+  it.each([
+    ['a shell_exec argument', () => evaluate('echo', [optionRun], { allow: ['*'] }), 'allow'],
+    ['a script_run body', () => evaluate('bash', ['-c', optionRun], { allow: ['bash -c *'] }), 'allow'],
+    ['a script_run body ending in a subcommand', () => evaluate('bash', ['-c', `${optionRun} policy`], { allow: ['bash -c *'] }), 'deny'],
+  ] as const)('reads %s of 9,999 option words naming the binary in well under a second', (_form, run, kind) => {
+    const { milliseconds, result } = leastProcessorTime(run)
+    expect(milliseconds).toBeLessThan(250)
+    expect(result.kind).toBe(kind)
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
+
   it('still lets a tool drive the node the ordinary way', () => {
     expect(evaluate('buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
     expect(evaluate('/usr/local/bin/buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')

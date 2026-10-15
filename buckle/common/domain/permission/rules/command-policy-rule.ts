@@ -24,8 +24,50 @@ import { deny } from '../decision.js'
  * It is matched once on the whole command line, a shell's separators counting as word boundaries, which meets
  * every statement and every piece of a script body the old per-statement match met, without splitting the body
  * again on each check (slice 7b review W7B-1).
+ *
+ * It is read by a scan, not one regular expression: an option word may hold a `/`, so a `-x/buckle` word starts
+ * the name again, and a pattern trying every start over the rest of the line took quadratic time, which one crafted
+ * call held the node's single thread with (fix brief 4, finding 11). The scan takes each word with a pattern that has
+ * no nested repetition, and a position whose words it already read to no subcommand is not read again, so each
+ * character is read a bounded number of times.
  */
-const SELF_ADMINISTRATION = /(^|[\s/\\'";&|()`])buckle(?:[/\\]dist[/\\]main\.js)?['"]?(?:\s+['"]?-[^\s'";&|()`]*['"]?)*\s+(approvals|approve|check-url|grants|policy|init|settings|plugin|serve|mcp|workspaces?|history|keys|client|service)(?=$|[\s'";&|()`])/
+const ADMINISTERED = 'buckle'
+/** What may stand before the binary's name: the line's start, a path separator, a quote, or a shell separator. */
+const NAME_BOUNDARY = /[\s/\\'";&|()`]/
+/** The rest of the name: the installed entry point's path, and a closing quote. */
+const NAME_TAIL = /(?:[/\\]dist[/\\]main\.js)?['"]?/y
+const SPACE = /\s+/y
+/** One option word before the subcommand, quoted or not, such as `--skip-owner-only-check`. */
+const OPTION_WORD = /['"]?-[^\s'";&|()`]*['"]?/y
+const ADMIN_VERB = /(?:approvals|approve|check-url|grants|policy|init|settings|plugin|serve|mcp|workspaces?|history|keys|client|service)(?=$|[\s'";&|()`])/y
+
+/** Where `pattern`, anchored at `at`, ends, or null where it does not match there. */
+function endOf(pattern: RegExp, line: string, at: number): number | null {
+  pattern.lastIndex = at
+  return pattern.test(line) ? pattern.lastIndex : null
+}
+
+/** Whether the line runs `buckle <subcommand>` for a subcommand that administers the node, read in linear time. */
+export function administersBuckle(line: string): boolean {
+  // Positions after the name from which the words were read to no subcommand: the same words read again end the same.
+  const readToNothing = new Set<number>()
+  for (let at = line.indexOf(ADMINISTERED); at !== -1; at = line.indexOf(ADMINISTERED, at + 1)) {
+    if (at > 0 && !NAME_BOUNDARY.test(line.charAt(at - 1))) continue
+    let position = endOf(NAME_TAIL, line, at + ADMINISTERED.length) ?? at + ADMINISTERED.length
+    const read: number[] = []
+    while (!readToNothing.has(position)) {
+      read.push(position)
+      const word = endOf(SPACE, line, position)
+      if (word === null) break
+      if (endOf(ADMIN_VERB, line, word) !== null) return true
+      const option = endOf(OPTION_WORD, line, word)
+      if (option === null) break
+      position = option
+    }
+    for (const position of read) readToNothing.add(position)
+  }
+  return false
+}
 
 /**
  * The owner's command globs, judged one shell word at a time on the parsed command line. Deny
@@ -60,7 +102,7 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       // Written only for a refusal, so a call the policy admits is not redacted on every check (slice 7b review W7B-1).
       const subject = () => shownCommand(effect.command, effect.args)
 
-      if (SELF_ADMINISTRATION.test(words.join(' '))) return deny('command_policy', subject(), 'A tool cannot administer the Buckle that runs it')
+      if (administersBuckle(words.join(' '))) return deny('command_policy', subject(), 'A tool cannot administer the Buckle that runs it')
 
       const denied = deniedBy(policy, forms)
       if (denied) return deny('command_policy', subject(), `Refused by the ${source} command policy: ${denied.source}`)
