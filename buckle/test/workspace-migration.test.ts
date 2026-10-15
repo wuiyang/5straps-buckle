@@ -4,6 +4,10 @@ import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
+import { generateSigningKey, signingKeyFromPem, signRequest } from '@5straps/protocol/signed-request'
+import { openFileNonceStore } from '../common/adapters/approval/file-nonce-store.js'
+import { createFileClientKeys } from '../common/adapters/keys/file-client-keys.js'
+import { createRequestVerifier } from '../common/services/access/signed-requests.js'
 import { StateFileError } from '../common/adapters/json-file-store.js'
 import { readStoredPolicies } from '../common/adapters/policy-store/file-policy-store.js'
 import { loadConfig } from '../common/runtime/config.js'
@@ -418,6 +422,62 @@ describe('moving a 0.1 node onto the workspace model', () => {
 
   // Findings 4, 14, 15, 20, and 22 of the Phase 1 review, fix brief A3: an older Buckle refuses the moved node, and
   // the v1 copies take the node back to 0.1 as it was.
+  // Fix brief 4, findings 4 and 36: 0.1 enrolled a device key for a workspace by its 0.1 id, `default` for the node's
+  // folder, which the move replaced with a UUID, so every such key stopped signing and could not be enrolled again.
+  describe('device keys enrolled for a workspace under 0.1', () => {
+    const nodeKey = generateSigningKey().keyId
+    /** Whether the key signs an approval decision the node takes for the workspace with this id. */
+    async function signsApproval(input: Scene, device: ReturnType<typeof generateSigningKey>, workspaceId: string): Promise<boolean> {
+      const keys = createFileClientKeys({ filePath: join(input.state, 'client-keys.json') })
+      const nonces = await openFileNonceStore({ filePath: join(input.root, `nonces-${workspaceId}.json`) })
+      const verifier = createRequestVerifier({ keys, nonces, serverId: 'node-1', nodeKeyId: nodeKey })
+      const path = `/workspaces/${workspaceId}/setup/approvals`
+      const body = JSON.stringify({ token: 'ask', approved: true, scope: 'once' })
+      const authorization = signRequest({ key: signingKeyFromPem(device.privateKeyPem), purpose: 'buckle-approval', node: 'node-1', nodeKey, workspace: workspaceId, method: 'POST', path, body, now: Date.now() })
+      return (await verifier.verify({ authorization, purpose: 'buckle-approval', workspaceId, registry: false, method: 'POST', path, body: Buffer.from(body) })).ok
+    }
+
+    it('sign an approval for the workspace\'s id after the move, a copy keeping them as 0.1 named them', async () => {
+      const input = scene()
+      version1(input)
+      const file = join(input.state, 'client-keys.json')
+      const [own, site, whole] = [generateSigningKey(), generateSigningKey(), generateSigningKey()]
+      const enrolled = createFileClientKeys({ filePath: file })
+      await enrolled.enroll({ publicKey: own.publicKey, label: 'phone', purpose: 'approval', workspace: 'default' })
+      await enrolled.enroll({ publicKey: site.publicKey, label: 'laptop', purpose: 'approval', workspace: 'site' })
+      await enrolled.enroll({ publicKey: whole.publicKey, label: 'desk', purpose: 'approval', workspace: 'node' })
+      const before = readFileSync(file, 'utf8')
+      const notices = vi.spyOn(logger, 'warn')
+      await open(input)
+
+      expect(await signsApproval(input, own, ownId(input))).toBe(true)
+      expect(await signsApproval(input, site, siteId(input))).toBe(true)
+      expect(await signsApproval(input, own, siteId(input))).toBe(false)
+      expect(createFileClientKeys({ filePath: file }).list().map(key => key.workspace)).toEqual([ownId(input), siteId(input), 'node'])
+      expect(readFileSync(join(input.state, 'client-keys.v1.json'), 'utf8')).toBe(before)
+      expect(statSync(join(input.state, 'client-keys.v1.json')).mode & 0o777).toBe(0o600)
+      expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('Each device key enrolled for a workspace now names the workspace\'s id, so it keeps signing for it; client-keys.v1.json in the state directory keeps the keys as 0.1 named them, for going back to 0.1.')
+    })
+
+    it('are left alone, with no copy, where every key is the whole node\'s', async () => {
+      const input = scene()
+      version1(input)
+      const whole = generateSigningKey()
+      await createFileClientKeys({ filePath: join(input.state, 'client-keys.json') }).enroll({ publicKey: whole.publicKey, label: 'desk', purpose: 'approval', workspace: 'node' })
+      await open(input)
+      expect(await signsApproval(input, whole, ownId(input))).toBe(true)
+      expect(existsSync(join(input.state, 'client-keys.v1.json'))).toBe(false)
+    })
+
+    it('refuse the move, changing nothing, where the list will not read', async () => {
+      const input = scene()
+      const text = version1(input)
+      writeFileSync(join(input.state, 'client-keys.json'), '{ not json')
+      await expect(open(input)).rejects.toThrow(MigrationError)
+      expect(registry(input)).toBe(text)
+    })
+  })
+
   describe('leaving an older Buckle nothing to start on, and copies to go back with', () => {
     function withFile(input: Scene, extra = '') {
       vi.stubEnv('HOME', input.root)

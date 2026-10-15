@@ -1,4 +1,5 @@
 import { KeyIdSchema, keyIdOf, publicKeyFrom, PublicKeyTextSchema, SmallOrderKeyError, type EnrolledKeyLookup } from '@5straps/protocol/signed-request'
+import { existsSync } from 'node:fs'
 import { z } from 'zod'
 import { NODE_SCOPE, type ClientKeys, type EnrolledKey, type KeyUse } from '../../types/ports/client-keys.js'
 import { createJsonFileStore } from '../json-file-store.js'
@@ -16,6 +17,27 @@ const fileSchema = z.object({
     revokedAt: z.iso.datetime().nullable(),
   }).strict()),
 })
+
+/** The workspace scopes the enrolled keys name, read whole; StateFileError where the file will not read (the workspace-model migration reads it before it writes anything). */
+export function clientKeyScopes(filePath: string): string[] {
+  return [...new Set(createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1 as const, keys: [] } }).read().keys.map(key => key.workspace))]
+}
+
+/**
+ * Moves each enrolled key's workspace scope from the handle 0.1 named the workspace by to its id now (the
+ * workspace-model migration; fix brief 4, findings 4 and 36), as its grants move. A node-scoped key, and one naming no
+ * workspace the move made, stays as it is.
+ */
+export async function rekeyClientKeys(input: { filePath: string; scopes: ReadonlyMap<string, string>; lockDeadlineMs?: number }): Promise<void> {
+  if (!existsSync(input.filePath)) return
+  const store = createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, keys: [] }, lockDeadlineMs: input.lockDeadlineMs })
+  await store.update((state) => {
+    for (const key of state.keys) {
+      const id = key.workspace === NODE_SCOPE ? undefined : input.scopes.get(key.workspace)
+      if (id !== undefined) key.workspace = id
+    }
+  })
+}
 
 /** A key the owner cannot enroll: malformed, or revoked before. The CLI prints the message. */
 export class ClientKeyError extends Error {}

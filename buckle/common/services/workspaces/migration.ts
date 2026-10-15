@@ -6,11 +6,13 @@ import { editEnvironmentVariable, updateEnvironmentFile } from '../../adapters/e
 import { setMode } from '../../adapters/file-modes.js'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import { grantKeys, rekeyGrants } from '../../adapters/grant-store/file-grant-store.js'
+import { clientKeyScopes, rekeyClientKeys } from '../../adapters/keys/file-client-keys.js'
 import { rekeySwitch, switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { readStoredPolicies } from '../../adapters/policy-store/file-policy-store.js'
 import { workspaceArgument } from '../../domain/approval-instruction.js'
 import { comparablePath, ignoresCase, nativePath } from '../../domain/paths.js'
-import { dangerouslyAllowPath, grantsPath, legacyWorkspaceRoot, policyPath, type MigrationInput, type NodeConfig } from '../../runtime/config.js'
+import { clientKeysPath, dangerouslyAllowPath, grantsPath, legacyWorkspaceRoot, policyPath, type MigrationInput, type NodeConfig } from '../../runtime/config.js'
+import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { tokenDigest } from '../access/tokens.js'
 import { openRegistry, registryPath, RegistrySchema, sameName, WorkspaceNameSchema, WorkspaceRegistryError, type StoredWorkspace } from './registry.js'
 import { exposedRoots, overlaps } from './workspace-dirs.js'
@@ -29,6 +31,9 @@ export const REGISTRY_BACKUP = 'workspaces.v1.json'
 export const POLICY_BACKUP = 'policy.v1.json'
 const GRANTS_BACKUP = 'grants.v1.json'
 const SWITCH_BACKUP = 'dangerously-allow.v1.json'
+const CLIENT_KEYS_BACKUP = 'client-keys.v1.json'
+/** What the node's own folder was in 0.1, which a key enrolled for it names as its scope. */
+const V1_NODE_WORKSPACE = 'default'
 /** What 0.1 reads as no registry and no stored policy, kept where the node had neither file, so going back is one step for every node. */
 const EMPTY_REGISTRY_V1 = '{"version":1,"workspaces":[]}\n'
 const EMPTY_POLICY_V1 = '{"version":1,"workspaces":{}}\n'
@@ -77,8 +82,11 @@ interface Planned {
   keepSwitch: boolean
 }
 
-/** What the move writes, and what the owner is told beside the notices: a name it had to change. */
-interface Plan { plans: Planned[]; notes: string[] }
+/**
+ * What the move writes, and what the owner is told beside the notices: a name it had to change. `keyScopes` maps each
+ * handle 0.1 named a workspace by in a device key's scope to its id now, and `movesKeys` says an enrolled key names one.
+ */
+interface Plan { plans: Planned[]; notes: string[]; keyScopes: ReadonlyMap<string, string>; movesKeys: boolean }
 
 /** What a 0.1 node's files kept for one workspace, read whole before anything is written. */
 interface Kept { policies: Record<string, WorkspacePolicy>; grants: string[]; switches: string[] }
@@ -126,8 +134,9 @@ export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.P
       const hadRegistry = raw.version === 1
       const registered = hadRegistry ? version1Workspaces(filePath, raw) : []
       const plan = await beforeWriting(() => planMove({ ...input, platform: input.platform ?? process.platform, registered, hadRegistry }))
-      if (plan.plans.length > 0) keepRollbackCopies({ node, plans: plan.plans, registryFile: filePath, hadRegistry })
+      if (plan.plans.length > 0) keepRollbackCopies({ node, plans: plan.plans, registryFile: filePath, hadRegistry, movesKeys: plan.movesKeys })
       for (const planned of plan.plans) await partway(() => apply(node, planned))
+      if (plan.movesKeys) await partway(() => rekeyClientKeys({ filePath: clientKeysPath(node), scopes: plan.keyScopes, lockDeadlineMs: node.stateLockDeadlineMs }))
       if (plan.plans.length > 0) await createJsonFileStore({ filePath: policyPath(node), schema: PolicyStubSchema, fallback: POLICY_STUB }).write(POLICY_STUB)
       raw.version = 2
       raw.workspaces = plan.plans.map(planned => planned.record)
@@ -142,7 +151,7 @@ export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.P
   if (moved.plan.plans.length === 0) return []
   // Once the registry holds its digest: a crash before this leaves the line, which the start warning then names.
   const retired = await retireAuthToken(node)
-  return [...notices({ node, plans: moved.plan.plans, hadRegistry: moved.hadRegistry, retired }), ...moved.plan.notes]
+  return [...notices({ node, plans: moved.plan.plans, hadRegistry: moved.hadRegistry, retired, movesKeys: moved.plan.movesKeys }), ...moved.plan.notes]
 }
 
 /** Whether the state directory's registry is version 2 already, read without the lock. */
@@ -199,7 +208,7 @@ function servedBefore(node: NodeConfig, hadRegistry: boolean): boolean {
 
 async function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; registered: z.infer<typeof V1WorkspaceSchema>[]; hadRegistry: boolean; askName?: AskName }): Promise<Plan> {
   const { node, platform } = input
-  if (!servedBefore(node, input.hadRegistry)) return { plans: [], notes: [] }
+  if (!servedBefore(node, input.hadRegistry)) return { plans: [], notes: [], keyScopes: new Map(), movesKeys: false }
   refuseCallerSettings(node.migration)
   const now = new Date().toISOString()
   const notes: string[] = []
@@ -263,7 +272,11 @@ async function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; re
   })
   const plans = [ownPlan, ...registered]
   refuseUnreadable(plans)
-  return { plans, notes }
+  // Device keys 0.1 enrolled for a workspace name it by its 0.1 id, `default` for the node's folder; each now names its id.
+  const keyScopes = new Map<string, string>([...roots.map(({ workspace }, index): [string, string] => [workspace.id, registered[index]!.record.id]), [V1_NODE_WORKSPACE, ownId]])
+  keyScopes.delete(NODE_SCOPE)
+  const movesKeys = clientKeyScopes(clientKeysPath(node)).some(scope => keyScopes.has(scope))
+  return { plans, notes, keyScopes, movesKeys }
 }
 
 /** A workspace's settings with nothing of its own set: every setting the node's, else Buckle's (D85, Q3). */
@@ -332,10 +345,11 @@ function ownPolicyFile(node: NodeConfig): string {
  * The registry is copied again on a second run, as it is still version 1 then; policy.json and a registry the node
  * never had are kept as the empty version 1 files 0.1 reads as none.
  */
-function keepRollbackCopies(input: { node: NodeConfig; plans: Planned[]; registryFile: string; hadRegistry: boolean }): void {
+function keepRollbackCopies(input: { node: NodeConfig; plans: Planned[]; registryFile: string; hadRegistry: boolean; movesKeys: boolean }): void {
   const state = input.node.stateDirectory
   if (input.hadRegistry) ownerOnlyCopy(input.registryFile, join(state, REGISTRY_BACKUP))
   else keepOnce(join(state, REGISTRY_BACKUP), EMPTY_REGISTRY_V1)
+  if (input.movesKeys) keepOnce(join(state, CLIENT_KEYS_BACKUP), readFileSync(clientKeysPath(input.node), 'utf8'))
   const policy = policyPath(input.node)
   if (versionOf(policy) !== 2) keepOnce(join(state, POLICY_BACKUP), existsSync(policy) ? readFileSync(policy, 'utf8') : EMPTY_POLICY_V1)
   for (const { oldStateDirectory } of input.plans) {
@@ -488,7 +502,7 @@ function listed(directory: string): string[] {
   }
 }
 
-function notices(input: { node: NodeConfig; plans: Planned[]; hadRegistry: boolean; retired: string[] }): string[] {
+function notices(input: { node: NodeConfig; plans: Planned[]; hadRegistry: boolean; retired: string[]; movesKeys: boolean }): string[] {
   const own = input.plans.find(planned => planned.nodeFolder)
   if (!own) return []
   const token = input.node.migration.authToken !== ''
@@ -498,6 +512,7 @@ function notices(input: { node: NodeConfig; plans: Planned[]; hadRegistry: boole
     `Buckle moved this node to the workspace model: workspaces.json is version 2, and the node's own folder ${own.record.dir} is workspace ${own.record.name} (id ${own.record.id}), with its records in workspaces/${own.record.id}/ in the state directory. The registry and policy files it changed are kept as ${REGISTRY_BACKUP} and ${POLICY_BACKUP} in the state directory, with ${GRANTS_BACKUP} and ${SWITCH_BACKUP} beside where each grants and switch file it moved was, for going back to 0.1 (docs/workspaces-02.md). An older Buckle sharing this state directory now refuses to start: policy.json is a version 2 file it cannot read.`,
     ...(token ? [`BUCKLE_AUTH_TOKEN is now token node of workspace ${own.record.name}, so agents configured with it keep working${file === null ? '; the node no longer reads the variable, so remove it from the environment Buckle starts with' : `, and it was taken out of ${file}, which the node no longer reads it from`}. Buckle keeps the token as its digest alone, with no copy of its value: to go back to 0.1, set BUCKLE_AUTH_TOKEN again from an agent's own configuration. To rotate it, run buckle workspace token create --workspace ${named}, give agents the new token, then buckle workspace token revoke node --workspace ${named}.`] : []),
     ...input.retired,
+    ...(input.movesKeys ? [`Each device key enrolled for a workspace now names the workspace's id, so it keeps signing for it; ${CLIENT_KEYS_BACKUP} in the state directory keeps the keys as 0.1 named them, for going back to 0.1.`] : []),
     ...(input.plans.length > 1 ? ['Each registered workspace\'s admin credential is retired: the node\'s admin token opens every workspace. Each keeps its 0.1 id as its name, the handle --workspace takes, and has an id of its own now; its records moved to workspaces/<id>/, and its 0.1 folder there keeps the copies for going back.'] : []),
     ...(input.hadRegistry ? [`${REGISTRY_BACKUP} holds the registered workspaces' agent tokens and admin credentials in clear text: once the node works as it should, delete every *.v1.json file in the state directory and in its workspaces folders.`] : []),
     ...rootLineNotice(input.node),

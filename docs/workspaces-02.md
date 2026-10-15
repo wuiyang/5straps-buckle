@@ -40,10 +40,10 @@ token, the Rings pairing key, or the approval webhook's URL) or a workspace's ag
 word of it. Keep real secrets in your own store: `buckle workspace show` prints the variables,
 and every command can read them. A call's own `env` is set over them.
 
-The policy lists change with `buckle policy`, which acts on one workspace as every command does
-([Policy](policy.md)). The browser settings (`browser.cdp`, `browser.profile`, `browser.args`,
-`browser.headed`, and `browser.idleTimeoutMs`) are kept in the file but not read: the browser runs
-on the node's `BUCKLE_BROWSER_*` settings until a later release reads each workspace's own.
+The policy lists change with `buckle policy` ([Policy](policy.md)). The browser settings
+(`browser.cdp`, `browser.profile`, `browser.args`, `browser.headed`, and `browser.idleTimeoutMs`)
+are kept in the file but not read: the browser runs on the node's `BUCKLE_BROWSER_*` settings
+until a later release reads each workspace's own.
 
 ## When a change applies
 
@@ -64,25 +64,26 @@ The first command of this release on a state directory 0.1 used moves the node o
 workspaces, once, under the registry's lock:
 
 - The folder the node served, `BUCKLE_WORKSPACE_ROOT` or the directory the command runs in,
-  becomes a workspace named after its folder, with a UUID id Buckle assigns and its records under
+  becomes a workspace named after its folder, with a UUID id and its records under
   `workspaces/<id>/`. `BUCKLE_AUTH_TOKEN` becomes its token `node`, so agents configured with it
   keep working; `buckle workspace token create --workspace <that name>`, then `token revoke
   node`, rotates it.
 - Each workspace registered with `buckle workspace add` keeps its 0.1 id as its name, gets a UUID
-  id, and keeps its folder, tokens, and `/workspace` mount. A disabled or retired one is kept
+  id, and keeps its folder, tokens, and `/workspace` mount. A disabled or retired one stays
   offline. Each workspace's own admin credential goes: the node's is the one.
-- The registry keeps every token as its SHA-256 digest alone.
+- The registry keeps each token's SHA-256 digest alone.
 - Each `workspace.json` holds what was the workspace's own: the lists `buckle policy` stored, and
-  for the node's folder a mount it stored. The settings `buckle.env` held stay there, copied into
-  no workspace, as every workspace's defaults. A workspace with an allow list of its own now uses
-  it alone, where the node's list was a ceiling over it, and the move says so.
+  for the node's folder a mount it stored. The settings `buckle.env` held stay there as every
+  workspace's defaults. A workspace with an allow list of its own now uses it alone, where the
+  node's list was a ceiling over it, and the move says so.
 - Grants, remembered denials, and the dangerously-allow switch move from the folder they were
-  kept under to the workspace's id.
+  kept under to the workspace's id; device keys enrolled for it, from its 0.1 id.
 
 A state directory that served nothing gets no workspace until `buckle init` makes one.
 
 The move keeps owner-only copies of what it changes: `workspaces.v1.json` and
-`policy.v1.json` in the state directory (empty where the node had no registry or policy), and
+`policy.v1.json` in the state directory (empty where the node had no registry or policy),
+`client-keys.v1.json` there where a device key moved, and
 `grants.v1.json` and `dangerously-allow.v1.json` beside each grants and switch file it moved: in
 the state directory for the node's folder, and in `workspaces/<0.1 id>/` for each workspace
 registered under 0.1 ([the files](install-02.md)). It makes `policy.json`
@@ -93,8 +94,8 @@ To go back to 0.1, stop Buckle and its MCP clients. Copy each `*.v1.json` file o
 set `BUCKLE_AUTH_TOKEN` in `buckle.env` to the token your agents use (Buckle kept only its
 digest), set `BUCKLE_WORKSPACE_ROOT` there to the node's folder (see `buckle workspace list`)
 if `buckle settings unset root` removed it, and install the older release. Going back loses
-every workspace registered, token created, grant, denial, and `workspace.json` written after the
-move.
+every workspace registered, token created, key enrolled, grant, denial, and `workspace.json`
+written after the move.
 
 `workspaces.v1.json` holds the registered workspaces' agent tokens and admin credentials in clear
 text. Once the node works, delete every `*.v1.json` file in the state directory and in each

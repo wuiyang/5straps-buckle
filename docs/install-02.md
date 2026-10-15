@@ -27,6 +27,7 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | `workspaces/<id>/` | the workspace's `workspace.json`, its settings and policy, and its records |
 | `workspaces.v1.json`, `policy.json` | on a node moved from 0.1 only: the 0.1 registry, and a stub an older Buckle cannot read, where `policy.v1.json` keeps the 0.1 policy |
 | `grants.v1.json`, `dangerously-allow.v1.json` | on a moved node only: the 0.1 grants and switch, kept where 0.1 read each, in the state directory and in the old `workspaces/<0.1 id>/` of each workspace registered then |
+| `client-keys.json`, `client-keys.v1.json` | the device keys enrolled with `buckle keys enroll`, each with the workspace it signs for; on a node moved from 0.1 where a key named a workspace, the copy keeps the keys as 0.1 named them |
 | `workspaces/<0.1 id>/policy.json` | a workspace registered under 0.1 keeps its old policy there, read once at the move and unread since |
 | `dangerously-allow.json` | the dangerously-allow switch, where it is on |
 | `grants.json` | session and always grants, and remembered denials |
