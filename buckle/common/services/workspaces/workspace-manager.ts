@@ -246,10 +246,11 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     /**
      * Removes the registration alone, as removing an MCP server removes its config (D83 addendum (6), Q7): the folder is
      * never touched, and the workspace's records (settings, grants, history, audit) stay unless `purge` deletes them.
-     * Workspace default's records share the node's directory, so they are never purged.
+     * Workspace default is refused: migration alone makes that id, so nothing could take its records up again (findings
+     * 6 and 16 of the Phase 1 review), and they share the node's own directory.
      */
     async remove(id: string, options: { purge?: boolean } = {}): Promise<WorkspaceDescriptor> {
-      if (options.purge && id === NODE_FOLDER_WORKSPACE) throw new WorkspaceError('Workspace default keeps its records in the node\'s own state directory, beside the node\'s; remove it without --purge', 409)
+      if (id === NODE_FOLDER_WORKSPACE) throw new WorkspaceError('Workspace default is the node\'s own folder from before workspaces: its id cannot be registered again, and its records share the node\'s state directory, so it is not removed. Stop serving it with buckle workspace disable default', 409)
       await assertIdle(id, { refusal: 'Resolve active tools and staged work before removing this workspace', deletes: options.purge === true })
       const opened = await openedRuntime(id)
       const removed = await store.update((state) => {

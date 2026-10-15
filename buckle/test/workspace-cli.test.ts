@@ -169,12 +169,14 @@ describe('buckle workspace enable, disable and remove', () => {
     expect(existsSync(alpha)).toBe(true)
   })
 
-  it('refuses --purge for workspace default, whose records are the node\'s own', async () => {
+  // Findings 6 and 16 of the Phase 1 review: migration alone makes the id default, so a removed default could never be
+  // taken up again, though the CLI said it could.
+  it.each([[[]], [['--purge']]])('refuses to remove workspace default, whose id nothing registers again, pointing to disable (%j)', async (purge) => {
     const legacy = node({ BUCKLE_WORKSPACE_ROOT: beta, BUCKLE_AUTH_TOKEN: LEGACY_AGENT })
     rmSync(state, { recursive: true, force: true })
-    const refused = await buckle(['remove', 'default', '--purge'], { config: legacy })
+    const refused = await buckle(['remove', 'default', ...purge], { config: legacy })
     expect(refused.exitCode).toBe(1)
-    expect(refused.err).toContain('remove it without --purge')
+    expect(refused.err).toContain('Stop serving it with buckle workspace disable default')
     expect(registry().workspaces.map(workspace => workspace.id)).toEqual(['default'])
   })
 
