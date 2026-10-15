@@ -409,6 +409,10 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(told).toContainEqual(expect.stringContaining(`BUCKLE_AUTH_TOKEN is now token node of workspace default, so agents configured with it keep working, and it was taken out of ${path}`))
       expect(told).toContainEqual(expect.stringContaining('buckle workspace token create --workspace default, give agents the new token, then buckle workspace token revoke node --workspace default'))
       expect(told).toContainEqual(expect.stringContaining('An older Buckle sharing this state directory now refuses to start'))
+      // What docs/workspaces-02.md says of going back: the four copies, the stub, the token out of the file, and its digest alone kept.
+      expect(told).toContainEqual(expect.stringContaining('The registry and policy files it changed are kept as workspaces.v1.json and policy.v1.json in the state directory, with grants.v1.json and dangerously-allow.v1.json beside each grants and switch file it moved, for going back to 0.1'))
+      expect(told).toContainEqual(expect.stringContaining('policy.json is a version 2 file it cannot read'))
+      expect(told).toContainEqual(expect.stringContaining('Buckle keeps the token as its digest alone, with no copy of its value: to go back to 0.1, set BUCKLE_AUTH_TOKEN again from an agent\'s own configuration'))
       expect(told.join('\n')).not.toContain(NODE_TOKEN)
     })
 
