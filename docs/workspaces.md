@@ -32,12 +32,15 @@ new workspace's settings; Enter keeps the default. [First run](first-run.md) wal
 `BUCKLE_ADMIN_TOKEN` in `buckle.env`, which `buckle init` writes.
 
 ```bash
-buckle workspace init [--dir <path>] [--name <name>] [--id <id>]
+buckle workspace init [--dir <path>] [--name <name>]
+buckle workspace add <dir> [--name <name>] [--fresh]
 buckle workspace list [--json]
 buckle workspace show [--json]
-buckle workspace enable <id>
-buckle workspace disable <id>
-buckle workspace remove <id> [--purge]
+buckle workspace enable <name>
+buckle workspace disable <name>
+buckle workspace rename <name> <new-name>
+buckle workspace remove <name> [--purge]
+buckle workspace prune [--yes]
 buckle workspace set <key> <value>
 buckle workspace unset <key>
 buckle workspace token create [--label <text>]
@@ -45,36 +48,42 @@ buckle workspace token list
 buckle workspace token revoke <token-id>
 ```
 
-- `init` serves a folder as a new workspace and prints its agent token once. Its id comes from
-  the folder's name unless `--id` gives one. A folder inside a workspace, or holding one or the
+- `init` serves a folder as a new workspace and prints its agent token once; `add <dir>` is the
+  same, with the folder named first. The id is a UUID Buckle derives from the folder, so the same
+  folder always has the same id; the name is the folder's basename unless `--name` gives one, and
+  is unique on the node, case insensitively. A folder inside a workspace, or holding one or the
   state directory, is refused.
 - `list` shows every workspace, online or not. `show`, the default verb, prints one workspace's
   settings as JSON; no token is ever shown again.
 - `disable` stops serving a workspace, as an MCP server is switched off: calls to it are refused,
-  and its files, records, and tokens stay. `enable` serves it again.
+  and its files, records, and tokens stay. `enable` serves it again. `rename` gives it another
+  name; its id never changes.
 - `remove` forgets a workspace and never touches its folder. Its records stay in the state
-  directory, and `buckle workspace init --dir <folder> --id <id>` takes them up again;
-  `--purge` deletes them.
+  directory under `workspaces/<id>/`, and adding the folder again takes them up; `--purge`
+  deletes them. `add <dir> --fresh` starts a new id and leaves the old records for
+  `buckle workspace prune`, which lists the removed workspaces whose records are kept and, with
+  `--yes`, deletes them.
 - `set` and `unset` change one setting; [the next page](workspaces-02.md#settings) lists them.
 - `token create` mints another agent token for the workspace, shown once. `token list` shows
   each token's id, label, and date, never the token. `token revoke` refuses one from the next call
   on; the last token of a workspace cannot be revoked.
 
-The 0.1 spellings, `buckle workspace add <id> --root <dir>` and `buckle workspace token add
-<id>`, still work for one release.
+The 0.1 spelling `buckle workspace add <id> --root <dir>` is gone: `add` now names the folder
+first and Buckle assigns the id. `buckle workspace token add <id>` still works for one release.
 
 ## Which workspace a command means
 
 A command that acts on one workspace, such as `buckle policy`, `buckle grants`, `buckle tools`,
 or a tool call, takes the workspace from:
 
-1. `--workspace <id>`;
+1. `--workspace <name>`, a workspace's name (its id is accepted too);
 2. else `--dir <path>`, the workspace whose folder holds that path;
 3. else the workspace whose folder holds the current directory.
 
-Where none does, the command is refused and lists the ids. `buckle approvals`, its `--watch`,
-and `buckle approve` are the exception: with neither flag they cover every online workspace, as
-[Approvals](approvals.md#where-to-answer) describes.
+Where none does, the command is refused and lists the names. `buckle approvals`, its `--watch`,
+`buckle approve`, and `buckle check-url` default the same way to the workspace holding the
+current directory; `--all` widens the first three to every online workspace, each ask prefixed
+with its workspace name, as [Approvals](approvals.md#where-to-answer) describes.
 
 ## Agents and tokens
 

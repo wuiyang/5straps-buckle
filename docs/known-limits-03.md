@@ -50,6 +50,13 @@ model or later.
 - `approvals.json` is keyed by the workspace's folder path, inside each workspace's own state
   directory. A workspace's folder is fixed once registered, so the key cannot drift; keying it by
   workspace id is left for a later release.
+- The settings and registry watchers are a latency improvement, not a guarantee: where `fs.watch`
+  cannot start (an unsupported platform, or too many open files), Buckle logs it once and falls
+  back to the per-call check and the `buckle serve` poll, so a change is taken up at the next call
+  or poll rather than at once.
+- [Rings](rings.md), the separate 5straps control plane for agents, keeps its own copy of a
+  node's workspace list; a workspace renamed, added, or removed here is not pushed to it, so Rings
+  re-reads the list to see the change.
 - The browser settings in `workspace.json` are stored and checked but not read. The browser runs
   on the node's `BUCKLE_BROWSER_*` settings, the same for every workspace, until Phase 2 reads
   each workspace's own and `buckle workspace set` accepts them.

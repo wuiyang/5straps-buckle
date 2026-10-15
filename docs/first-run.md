@@ -66,7 +66,7 @@ Choose the project directory, not your home directory. Buckle refuses a folder t
 state directory or the settings file, or one inside or around another workspace.
 
 A command run in a workspace's folder, or below it, acts on that workspace; elsewhere, name one
-with `--workspace <id>` ([Workspaces](workspaces.md#which-workspace-a-command-means)).
+with `--workspace <name>` ([Workspaces](workspaces.md#which-workspace-a-command-means)).
 
 ## Three ways to run
 

@@ -111,8 +111,8 @@ anything under `~/.5straps` or the state directory. Only a process sandbox hides
 commands: with `BUCKLE_SANDBOX=none`, a shell command can read and write them, and Buckle does
 not ask about them.
 
-Workspace `default`, a 0.1 node's folder, keeps its records here. Every other workspace keeps
-the files from `dangerously-allow.json` down in its own `workspaces/<id>/`.
+Each workspace keeps the files from `dangerously-allow.json` down in its own `workspaces/<id>/`,
+the workspace Buckle makes of a 0.1 node's own folder included.
 
 | Path | Holds |
 |---|---|
