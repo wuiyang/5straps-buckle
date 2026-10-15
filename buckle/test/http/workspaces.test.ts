@@ -167,10 +167,13 @@ it('checks policy revisions and applies read-denied paths to filesystem tools', 
   expect(listing.entries.find(entry => entry.name === 'hello.txt')?.read).toBe('deny')
 })
 
-it('keeps explicit credential mounts out of managed workspaces', async () => {
-  app = await node((config) => { config.sandboxMounts = [{ source: join(root, 'two', 'hello.txt'), target: '/srv/auth/config.json', readOnly: true }] })
+// Fix brief 1, F (finding 43 of the Phase 1 review): until the mount table holds them per workspace, BUCKLE_MOUNTS is the
+// node's for every workspace, as the docs say; a workspace still cannot hold a mount's source.
+it('refuses a workspace holding a mount\'s source, and gives every other the node\'s mounts', async () => {
+  const mounts = [{ source: join(root, 'two', 'hello.txt'), target: '/srv/auth/config.json', readOnly: true as const }]
+  app = await node((config) => { config.sandboxMounts = mounts })
   expect((await register('two')).status).toBe(409)
   expect((await register('one')).status).toBe(201)
   const child = await (await app.services.getWorkspaces()).resolve('one')
-  expect(child.config.sandboxMounts).toEqual([])
+  expect(child.config.sandboxMounts).toEqual(mounts)
 })

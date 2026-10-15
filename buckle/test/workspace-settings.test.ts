@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { PolicyError } from '../common/domain/policy.js'
 import { defaultSettings, openSettingsFile, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsError, WorkspaceSettingsInvalidError, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
+import { loadConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { registerWorkspace, workspacesOf } from './support/workspaces.js'
 
@@ -137,5 +138,23 @@ describe('a workspace\'s runtime on its settings', () => {
     expect(runtime.manifest().packs.find(pack => pack.id === 'shell')?.unavailableReason).toBe('Shell tools are turned off in this workspace: its setting packs.shell is off')
     expect(runtime.policy.effective()).toMatchObject({ commands: { deny: ['curl *'] }, mount: '/site' })
     expect(runtime.paths().displayRoot).toBe('/site')
+  })
+
+  // Finding 43 of the Phase 1 review: the node's path settings reached workspace default alone, which a node set up
+  // fresh does not have, though the docs give them to every workspace; until the mount table holds them, each has them.
+  it('takes the node\'s scratch roots, mounts, skill folders, and strict-writes setting, on a node with no workspace default', async () => {
+    const root = scratch()
+    const folder = join(root, 'site')
+    mkdirSync(join(folder, 'scratch'), { recursive: true })
+    mkdirSync(join(root, 'skills'))
+    const node = loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_SCRATCH_ROOTS: join(folder, 'scratch'), BUCKLE_SKILLS_DIRS: join(root, 'skills'), BUCKLE_STRICT_WRITES: 'true', BUCKLE_MOUNTS: '[{"source":"/etc/hostname","target":"/etc/hostname","readOnly":true}]' })
+    const manager = await workspacesOf(node)
+    await registerWorkspace(manager, { id: 'site', dir: folder })
+    const { config, runtime } = await manager.resolve('site')
+
+    expect(config).toMatchObject({ scratchRoots: node.scratchRoots, sandboxMounts: node.sandboxMounts, skillDirectories: node.skillDirectories, strictWrites: true })
+    const written = await runtime.invoke({ request: { requestId: 'scratch-write', tool: 'fs_write', args: { path: 'scratch/a.txt', content: 'x' }, approvalTokens: [] }, sessionId: 'site' })
+    expect(written).toMatchObject({ outcome: 'ok' })
+    await manager.close()
   })
 })

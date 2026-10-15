@@ -292,22 +292,18 @@ export interface WorkspaceScope {
 
 /**
  * One workspace's runtime configuration (D83): the node's settings, then the workspace's own. Workspace default, the
- * node's own folder, keeps its state in the node's directory and the folders BUCKLE_MOUNTS, BUCKLE_SCRATCH_ROOTS and
- * BUCKLE_SKILLS_DIRS name until the mount table takes them over; every other workspace has a state directory of its
- * own, nothing outside its folder written without asking, and writes asked once at a time.
+ * node's own folder, keeps its state in the node's directory; every other workspace has a state directory of its own.
+ * Each takes the node's BUCKLE_SCRATCH_ROOTS, BUCKLE_MOUNTS, BUCKLE_SKILLS_DIRS, and BUCKLE_STRICT_WRITES until the mount
+ * table holds them per workspace (fix brief 1, F; finding 43 of the Phase 1 review): they gave workspace default alone
+ * what the docs say every workspace gets, and a node set up fresh has no default.
  */
 export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): BuckleConfig {
-  const own = scope.id === NODE_FOLDER_WORKSPACE
   return {
     ...node,
     cwd: scope.dir,
     serverName: scope.name,
-    stateDirectory: own ? node.stateDirectory : join(node.stateDirectory, 'workspaces', scope.id),
+    stateDirectory: scope.id === NODE_FOLDER_WORKSPACE ? node.stateDirectory : join(node.stateDirectory, 'workspaces', scope.id),
     nodeStateDirectory: node.stateDirectory,
-    scratchRoots: own ? node.scratchRoots : [],
-    sandboxMounts: own ? node.sandboxMounts : [],
-    skillDirectories: own ? node.skillDirectories : [],
-    strictWrites: own ? node.strictWrites : true,
     ...workspaceFields(scope),
   }
 }
