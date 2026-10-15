@@ -64,8 +64,8 @@ import { openSettingsFile, settingsPath, scopeOf, withPolicy, WorkspaceSettingsS
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 
-/** Said where packs or the folder changed while work is active: no path, as an agent reads it (Q2). */
-const RESHAPE_WAITS = 'This workspace\'s packs or folder changed; the change takes effect once its active work is resolved, so call again then'
+/** Said where a change that rebuilds the tools waits for active work: no path, as an agent reads it (Q2). */
+const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds its tools; the change takes effect once its active work is resolved, so call again then'
 
 /**
  * The workspace's policy as the runtime holds it: one document, in its workspace.json, which `buckle policy` and the
@@ -237,6 +237,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   let applied = settingsFile.read()
   // A version that would not read, so it is reported once and the settings in force stay.
   let unreadVersion: string | undefined
+  // A version that read but would not apply, reported once; unlike one that would not read, it is tried again.
+  let failedVersion: string | undefined
   let pickingUp: Promise<void> | undefined
 
   let compiled = compileStartupPolicy(applied)
@@ -268,7 +270,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     sourceRoot: config.cwd, workspaceId, maxBytes: config.isolationMaxBytes,
     protectedRoots: protectedStateRoots(config), actions, history,
     ripgrep: () => programOrNull(resolveProgram('rg', untrusted())), environment: hostEnvironment(untrusted), spawnPty: spawnPtyProcess,
-    policyHash: () => workbenchHash(JSON.stringify(compiled.policy)),
+    policyHash: () => policyHash(compiled),
     authorizeTool: tool => toolDenial(tool) === null,
     authorizePath: (path, operation) => !['deny', 'ask'].includes(resolveFilesystemPermission({ path, operation, policy: compiled.policy })),
     async prepareTerminal(request) {
@@ -367,35 +369,21 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       await Promise.allSettled([...inFlight])
     },
 
-    async closeSessions() {
-      const results = await Promise.allSettled(packs.map(async pack => pack.close?.()))
-      for (const result of results) if (result.status === 'rejected') logger.warn('A pack could not close what it opened', { error: result.reason })
-    },
+    closeSessions: () => closePacks(packs),
 
+    /** The owner's own write (a policy, a plugin): every pack rebuilt from workspace.json as it stands, with no wait. */
     async reload() {
       const version = settingsFile.version()
-      const settings = settingsFile.read()
-      Object.assign(config, workspaceFields(scopeOf(settings)))
-      applied = settings
-      appliedVersion = version
-      unreadVersion = undefined
-      await workbenches.policyChanged()
-      compiled = compilePolicy(storedPolicy(settings))
-      paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
-      permissions = buildPermissionEngine({ config, compiled, paths, dangerouslyAllowed })
-      packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
-      registry = createToolRegistry(availableTools(packs))
-      for (const listener of listeners) listener()
+      await apply({ version, settings: settingsFile.read(), rebuildPacks: true, waitForWork: false })
     },
 
     onToolsChanged: listener => void listeners.push(listener),
   }
 
   /**
-   * Takes up a write to workspace.json at a call's start (Q2 of the workspace-model brief): lists, URLs, interpreters,
-   * variables and the approval wait apply from this call on, and a call already running keeps the rules and tools it
-   * started with. A change to the packs or to where the folder shows waits until no work is active, refusing the call
-   * until then. A file that will not read leaves the settings in force, said once in the owner's log.
+   * Takes up a write to workspace.json at a call's start (Q2 of the workspace-model brief): the change applies from
+   * this call on (apply), and a call already running keeps the rules and tools it started with. A file that will not
+   * read leaves the settings in force, said once in the owner's log.
    */
   function pickUp(): Promise<void> {
     if (settingsFile.version() === appliedVersion) return Promise.resolve()
@@ -412,9 +400,50 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       logger.error('Workspace settings changed but cannot be read; the ones in force stay', { workspaceId, error })
       return
     }
-    if (JSON.stringify([applied.packs, applied.mounts]) !== JSON.stringify([next.packs, next.mounts]) && await runtime.hasActiveWork()) throw new WorkspaceError(RESHAPE_WAITS, 409)
-    await runtime.reload()
+    try { await apply({ version, settings: next, rebuildPacks: false, waitForWork: true }) } catch (error) {
+      if (error instanceof WorkspaceError) throw error
+      // Nothing of it was applied (finding 28 of the Phase 1 review): the settings in force stay, and the next call tries again.
+      if (failedVersion !== version) logger.error('Workspace settings changed but cannot be applied; the ones in force stay', { workspaceId, error })
+      failedVersion = version
+      return
+    }
     logger.info('Workspace settings changed and took effect', { workspaceId, revision: applied.revision })
+  }
+
+  /**
+   * Applies settings whole or not at all (findings 7, 8, and 28 of the Phase 1 review, fix brief 1, D). The approval
+   * wait and the variables swap in at once. The packs are rebuilt only where what they are built from changed (the
+   * packs, the mounts, the policy, the browser settings, the variables), and workbenches told only where the compiled
+   * policy changed; with `waitForWork`, either waits until no work is active, refusing the call meanwhile. Everything
+   * is built before anything is assigned, so a failure leaves the settings in force, and packs replaced are closed, so
+   * their language servers and browser sessions end with them.
+   */
+  async function apply(input: { version: string; settings: WorkspaceSettings; rebuildPacks: boolean; waitForWork: boolean }): Promise<void> {
+    const fields = workspaceFields(scopeOf(input.settings))
+    const nextConfig: BuckleConfig = { ...config, ...fields }
+    const nextCompiled = compilePolicy(storedPolicy(input.settings))
+    const nextPaths = createPathView({ root: config.cwd, mount: nextCompiled.mount, scratchRoots: config.scratchRoots })
+    const rebuild = input.rebuildPacks || packInputs(input.settings) !== packInputs(applied)
+    const policyMoved = policyHash(nextCompiled) !== policyHash(compiled)
+    if (input.waitForWork && (rebuild || policyMoved) && await runtime.hasActiveWork()) throw new WorkspaceError(RESHAPE_WAITS, 409)
+    const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowed })
+    const nextPacks = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools }) : packs
+    if (policyMoved) await workbenches.policyChanged()
+    const replaced = packs
+    Object.assign(config, fields)
+    applied = input.settings
+    appliedVersion = input.version
+    unreadVersion = undefined
+    failedVersion = undefined
+    compiled = nextCompiled
+    paths = nextPaths
+    permissions = nextPermissions
+    if (rebuild) {
+      packs = nextPacks
+      registry = createToolRegistry(availableTools(packs))
+      await closePacks(replaced)
+    }
+    for (const listener of listeners) listener()
   }
 
   async function invokeNow(call: InvokeInput): Promise<InvokeResponse> {
@@ -448,6 +477,12 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     } finally {
       if (--activeInvocations === 0) activity.stop()
     }
+  }
+
+  /** Each pack closes what it opened; one that fails to is logged, and the rest still close. */
+  async function closePacks(closing: Pack[]): Promise<void> {
+    const results = await Promise.allSettled(closing.map(async pack => pack.close?.()))
+    for (const result of results) if (result.status === 'rejected') logger.warn('A pack could not close what it opened', { error: result.reason })
   }
 
   // A stored entry a later grammar refuses names the file and the repair (StoredPolicyError).
@@ -538,6 +573,16 @@ async function buildPacks(input: {
   }
   const filesystemRestricted = Boolean(input.compiled.policy.filesystem?.rules.length)
   return [...builtin, ...(filesystemRestricted ? [] : await input.plugins.load())]
+}
+
+/** The compiled policy as workbenches record it, so a change to it stops their terminals and nothing else does. */
+function policyHash(compiled: CompiledPolicy): string {
+  return workbenchHash(JSON.stringify(compiled.policy))
+}
+
+/** What a workspace's packs are built from (fix brief 1, D): a change to none of it keeps the packs, and what they opened. */
+function packInputs(settings: WorkspaceSettings): string {
+  return JSON.stringify([settings.packs, settings.mounts, settings.policy, settings.browser, settings.env])
 }
 
 /** The policy a workspace.json holds, with its mount table's target as `mount`. */

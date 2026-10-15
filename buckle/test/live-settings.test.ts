@@ -1,11 +1,13 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { settingsPath, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 
 // The workspace-model brief, item 7 and Q2: a running workspace takes up a write to its workspace.json at the next
 // call, found by a stat, with no watcher. Lists and the approval wait apply between calls; a change to the packs waits
@@ -74,7 +76,7 @@ describe('a write to workspace.json from another process', () => {
     const active = vi.spyOn(runtime, 'hasActiveWork').mockResolvedValue(true)
 
     const refused = await read().catch((error: unknown) => error)
-    expect(refused).toMatchObject({ status: 409, message: 'This workspace\'s packs or folder changed; the change takes effect once its active work is resolved, so call again then' })
+    expect(refused).toMatchObject({ status: 409, message: 'This workspace\'s settings changed in a way that rebuilds its tools; the change takes effect once its active work is resolved, so call again then' })
     expect(String((refused as Error).message)).not.toContain(base)
     expect(runtime.manifest().packs.map(pack => pack.id)).toEqual(['fs'])
 
@@ -101,5 +103,73 @@ describe('a write to workspace.json from another process', () => {
     await read()
     await owner.update('site', { online: false })
     await expect(read()).rejects.toMatchObject({ status: 409, message: 'Workspace is offline' })
+  })
+})
+
+// Findings 7, 8, and 28 of the Phase 1 review: a change rebuilds only what it reaches, waits for active work only where
+// it rebuilds, closes what it replaces, and applies whole or not at all.
+describe('what a change to workspace.json rebuilds', () => {
+  async function openWorkbench() {
+    const { runtime } = await serving.resolve('site')
+    await runtime.workbenches.provision({ id: randomUUID(), token: 'live-settings-workbench-fixture-token-0000', projectId: 'project', chatId: 'chat', allowShell: false })
+    return { runtime, statuses: async () => (await runtime.workbenches.list()).map(workbench => workbench.status) }
+  }
+
+  it('swaps the approval wait in while a workbench is open, and leaves the workbench and its terminals alone', async () => {
+    const { statuses } = await openWorkbench()
+    await owner.updateSettings('site', settings => ({ ...settings, approvalWaitMs: 60_000 }))
+    expect(await read()).toMatchObject({ outcome: 'ok' })
+    expect(await statuses()).toEqual(['open'])
+    expect((await serving.resolve('site')).config.approvalTimeoutMs).toBe(60_000)
+  })
+
+  it.each([
+    ['the variables', (settings: WorkspaceSettings) => ({ ...settings, env: { NODE_ENV: 'dev' } })],
+    ['a policy list', (settings: WorkspaceSettings) => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_list'] } } })],
+  ])('waits to apply %s while a workbench is open, which stays open', async (_change, change) => {
+    const { statuses } = await openWorkbench()
+    await owner.updateSettings('site', change)
+    await expect(read()).rejects.toMatchObject({ status: 409 })
+    expect(await statuses()).toEqual(['open'])
+  })
+
+  it('closes the packs a rebuild replaces, and keeps them where nothing they are built from changed', async () => {
+    const log = join(base, 'packs.log')
+    const plugin = join(base, 'probe-plugin.mjs')
+    writeFileSync(plugin, `import { appendFileSync } from 'node:fs'\nexport function createPack() { appendFileSync(${JSON.stringify(log)}, 'built\\n'); return { id: 'probe', version: '1.0.0', tools: [], skills: [], unavailableReason: null, close() { appendFileSync(${JSON.stringify(log)}, 'closed\\n') } } }\n`)
+    writeFileSync(join(base, 'state', 'workspaces', 'site', 'plugins.json'), JSON.stringify({ version: 1, plugins: [{ id: 'probe', specifier: pathToFileURL(plugin).href, enabled: true }] }))
+    await owner.updateSettings('site', settings => ({ ...settings, packs: { ...settings.packs, enabled: null } }))
+    await read()
+    expect(readFileSync(log, 'utf8')).toBe('built\n')
+
+    await owner.updateSettings('site', settings => ({ ...settings, approvalWaitMs: 30_000 }))
+    await read()
+    expect(readFileSync(log, 'utf8')).toBe('built\n')
+
+    await owner.updateSettings('site', settings => ({ ...settings, packs: { ...settings.packs, hostLsp: true } }))
+    await read()
+    expect(readFileSync(log, 'utf8')).toBe('built\nbuilt\nclosed\n')
+  })
+
+  it('applies nothing of a version that will not apply, says so once, keeps the settings in force, and tries it again at the next call', async () => {
+    const errors = vi.spyOn(logger, 'error')
+    await owner.updateSettings('site', settings => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_list'] } } }))
+    await read()
+    const file = settingsPath(join(base, 'state'), 'site')
+    const before = JSON.parse(readFileSync(file, 'utf8')) as WorkspaceSettings
+    // A hand edit the CLI would refuse: a pack this node cannot build, with the deny lifted and a new wait beside it.
+    writeFileSync(file, JSON.stringify({ ...before, revision: before.revision + 1, approvalWaitMs: 5_000, packs: { ...before.packs, enabled: ['fs', 'environment'] }, policy: { ...before.policy, tools: { deny: [] } } }))
+    const { runtime, config } = await serving.resolve('site')
+    const list = () => runtime.invoke({ request: { requestId: `list-${Math.random()}`, tool: 'fs_list', args: { path: '.' }, approvalTokens: [] }, sessionId: 'live' })
+
+    expect(await list()).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
+    expect(await list()).toMatchObject({ outcome: 'error' })
+    expect(config).toMatchObject({ approvalTimeoutMs: 15_000, enabledPacks: ['fs'] })
+    expect(errors.mock.calls.filter(([message]) => message === 'Workspace settings changed but cannot be applied; the ones in force stay')).toHaveLength(1)
+
+    // The same version, tried again once what it needs is there.
+    config.environmentValidator = process.execPath
+    expect(await list()).toMatchObject({ outcome: 'ok' })
+    expect(config).toMatchObject({ approvalTimeoutMs: 5_000, enabledPacks: ['fs', 'environment'] })
   })
 })
