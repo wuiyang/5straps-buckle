@@ -8,6 +8,8 @@ import { loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { settingsPath, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { workspaceStateKey } from '../common/domain/workspace-key.js'
+import { fixedInteraction } from './support/interaction.js'
 
 // The workspace-model brief, item 7 and Q2: a running workspace takes up a write to its workspace.json at the next
 // call, found by a stat, with no watcher. Lists and the approval wait apply between calls; a change to the packs waits
@@ -135,12 +137,18 @@ describe('what a change to workspace.json rebuilds', () => {
     expect((await serving.resolve(site)).config.approvalTimeoutMs).toBe(60_000)
   })
 
-  it.each([
-    ['the variables', (settings: WorkspaceSettings) => ({ ...settings, env: { NODE_ENV: 'dev' } })],
-    ['a policy list', (settings: WorkspaceSettings) => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_list'] } } })],
-  ])('waits to apply %s while a workbench is open, which stays open', async (_change, change) => {
+  it('applies the variables while a workbench is open, which stays open', async () => {
     const { statuses } = await openWorkbench()
-    await owner.updateSettings(site, change)
+    await owner.updateSettings(site, settings => ({ ...settings, env: { NODE_ENV: 'dev' } }))
+    expect(await read()).toMatchObject({ outcome: 'ok' })
+    expect(await statuses()).toEqual(['open'])
+    expect((await serving.resolve(site)).config.commandEnvironment).toEqual({ NODE_ENV: 'dev' })
+  })
+
+  // Taking a new policy up stops the terminals of every open workbench, so a list change alone waits for none to be open.
+  it('waits to apply a policy list while a workbench is open, which stays open', async () => {
+    const { statuses } = await openWorkbench()
+    await owner.updateSettings(site, settings => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_list'] } } }))
     await expect(read()).rejects.toMatchObject({ status: 409 })
     expect(await statuses()).toEqual(['open'])
   })
@@ -183,6 +191,59 @@ describe('what a change to workspace.json rebuilds', () => {
     config.environmentValidator = process.execPath
     expect(await list()).toMatchObject({ outcome: 'ok' })
     expect(config).toMatchObject({ approvalTimeoutMs: 5_000, enabledPacks: ['fs', 'environment'] })
+  })
+})
+
+// Fix brief 1, D, and its recheck: the policy lists and the variables are the light swap, taken up by the next call
+// with no 409 while work is active; only the packs and the mounts wait for none.
+describe('a policy list or a variable changed while work is active', () => {
+  /** A node serving with nobody at a terminal, so a gated write is held for the approval wait: a call in flight. */
+  async function holdingWrite() {
+    const holder = await openWorkspaceManager({ config: loadConfig({ BUCKLE_STATE_DIR: join(base, 'state'), BUCKLE_ADMIN_TOKEN: 'live-settings-admin-fixture', BUCKLE_SANDBOX: 'none' }), interaction: fixedInteraction() })
+    managers.push(holder)
+    await owner.updateSettings(site, settings => ({ ...settings, approvalWaitMs: 1_500 }))
+    const { runtime, config } = await holder.resolve(site)
+    const held = runtime.invoke({ request: { requestId: 'held-write', tool: 'fs_write', args: { path: 'new.txt', content: 'x' }, approvalTokens: [] }, sessionId: 'live' })
+    await vi.waitFor(() => expect(runtime.inspectActiveWork()).toBe(true))
+    return { runtime, config, held, call: (tool: string, args: Record<string, unknown>) => runtime.invoke({ request: { requestId: `${tool}-${Math.random()}`, tool, args: args as never, approvalTokens: [] }, sessionId: 'live' }) }
+  }
+
+  it('applies a policy list at the next call with no 409 while another call is in flight, which keeps the rules it started with', async () => {
+    const { held, call } = await holdingWrite()
+    await owner.updateSettings(site, settings => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_list'] } } }))
+
+    expect(await call('fs_list', { path: '.' })).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
+    expect(await call('fs_read', { path: 'note.md' })).toMatchObject({ outcome: 'ok' })
+    expect(await held).toMatchObject({ outcome: 'approval_required' })
+  })
+
+  it('applies a command list and the variables at the next call with no 409 while another call is in flight', async () => {
+    const { config, held, call } = await holdingWrite()
+    await owner.updateSettings(site, settings => ({ ...settings, env: { GREETING: 'hello' }, policy: { ...settings.policy, commands: { ...settings.policy.commands, allow: ['ls *'] } } }))
+
+    expect(await call('fs_read', { path: 'note.md' })).toMatchObject({ outcome: 'ok' })
+    expect(config.commandEnvironment).toEqual({ GREETING: 'hello' })
+    expect(config.policy.commands.allow).toEqual(['ls *'])
+    expect(await held).toMatchObject({ outcome: 'approval_required' })
+  })
+
+  // A shell copy awaiting review is work for the packs and the mounts, which rebuild the tools, and for nothing else.
+  it('applies them at the next call while a shell result waits for review, and still holds the packs back', async () => {
+    const { runtime, config } = await serving.resolve(site)
+    await read()
+    const id = `shell-${randomUUID()}`
+    const directory = join(base, 'state', 'workspaces', site, 'isolated-shell', workspaceStateKey(folder), id)
+    mkdirSync(join(directory, 'workspace'), { recursive: true })
+    writeFileSync(join(directory, 'run.json'), JSON.stringify({ id, sessionId: 's', stageId: 'st', tool: 'shell_exec', sourceRoot: folder, copyRoot: join(directory, 'workspace'), writableRoots: [folder], excluded: [], createdAt: new Date().toISOString(), status: 'needs_review' }))
+    expect(runtime.inspectActiveWork()).toBe(true)
+
+    await owner.updateSettings(site, settings => ({ ...settings, env: { GREETING: 'hello' }, policy: { ...settings.policy, commands: { ...settings.policy.commands, allow: ['ls *'] } } }))
+    expect(await read()).toMatchObject({ outcome: 'ok' })
+    expect(config).toMatchObject({ commandEnvironment: { GREETING: 'hello' }, policy: { commands: { allow: ['ls *'] } } })
+
+    await owner.updateSettings(site, settings => ({ ...settings, packs: { ...settings.packs, enabled: ['fs', 'web'] } }))
+    await expect(read()).rejects.toMatchObject({ status: 409 })
+    expect(runtime.manifest().packs.map(pack => pack.id)).toEqual(['fs'])
   })
 })
 

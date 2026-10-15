@@ -477,9 +477,14 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     const nextCompiled = compilePolicy(fields.policy)
     const nextPaths = createPathView({ root: config.cwd, mount: nextCompiled.mount, scratchRoots: config.scratchRoots })
     const [resolved, before] = [resolveSettings(input.settings, config.workspaceDefaults), resolveSettings(applied, config.workspaceDefaults)]
-    const rebuild = input.rebuildPacks || packInputs(resolved) !== packInputs(before)
+    // The packs, the mounts, or the browser settings changed: the tools themselves are reshaped, which waits until no
+    // work is active. A policy list or a variable changed alone is swapped in for the next call without waiting (fix
+    // brief 1, D, and its recheck): the packs holding a copy of it are rebuilt, and a call running keeps the ones it started on.
+    const reshaped = reshapeInputs(resolved) !== reshapeInputs(before)
+    const rebuild = input.rebuildPacks || reshaped || swapInputs(resolved) !== swapInputs(before)
     const policyMoved = policyHash(nextCompiled) !== policyHash(compiled)
-    if (input.waitForWork && (rebuild || policyMoved) && await runtime.hasActiveWork()) throw new WorkspaceError(RESHAPE_WAITS, 409)
+    // Taking a new policy up stops the terminals of every open workbench, so that alone waits for none to be open.
+    if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && workbenches.inspectActive())) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowed })
     const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools }) : null
     const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mount: resolved.mount }) === browserInputs({ config, compiled, mount: before.mount }) }) : null
@@ -655,15 +660,26 @@ function policyHash(compiled: CompiledPolicy): string {
   return workbenchHash(JSON.stringify(compiled.policy))
 }
 
-/** What a workspace's packs are built from (fix brief 1, D), as in force: a change to none of it keeps the packs, and what they opened. */
-function packInputs(settings: ResolvedSettings): string {
-  return JSON.stringify([settings.packs, settings.mount, settings.policy, settings.browser, settings.env])
+/**
+ * What reshapes a workspace's tools (fix brief 1, D), as in force: the packs offered, where the folder shows, and the
+ * browser settings. A change to any of it rebuilds the packs once no work is active, and refuses calls with a 409 until then.
+ */
+function reshapeInputs(settings: ResolvedSettings): string {
+  return JSON.stringify([settings.packs, settings.mount, settings.browser])
+}
+
+/**
+ * What the packs hold a copy of without reshaping: the policy lists and the variables. A change to either rebuilds the
+ * packs for the next call with no wait, as the approval wait swaps in, and a call already running keeps its own.
+ */
+function swapInputs(settings: ResolvedSettings): string {
+  return JSON.stringify([settings.policy, settings.env])
 }
 
 const BROWSER_PACK = 'browser'
 
 /**
- * What the browser pack alone is handed (fix brief 2, R2; recheck finding 13): the allowed domains its approved list
+ * What the browser pack alone is handed (fix brief 2, R2, and its recheck): the allowed domains its approved list
  * comes to as agent-browser reads them, the mode and window settings it launches under (the node's, until a later
  * release reads each workspace's own), and the mounts its paths resolve against. Not the stored list, nor the stored
  * browser block, which the pack does not read: a rebuild for anything else, the variables, or a list changed in

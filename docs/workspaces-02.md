@@ -48,9 +48,10 @@ on the node's `BUCKLE_BROWSER_*` settings until a later release reads each works
 ## When a change applies
 
 A running `buckle serve` or `buckle mcp` watches a workspace's state folder and takes a change up
-at once while the workspace is idle, with a check of `workspace.json` at the start of each call as
-the fallback. A change to the policy lists, the variables, or the approval wait applies then; a
-call already running keeps the rules it started with. A change to the packs or to where the
+at once while the workspace is idle, with a check at the start of each call as the fallback. A
+change to the policy lists, the variables, or the approval wait applies from the next call, even
+while another runs, which keeps its own rules; a list change alone waits while a
+workbench is open, as taking it up stops its terminals. A change to the packs or to where the
 folder shows waits until the workspace has no active work, such as a running call or a shell copy
 awaiting review, and calls are refused with a 409 until then. A file that will not read leaves
 the settings in force, and the owner's log says so once. `buckle serve` watches the registry
@@ -90,8 +91,8 @@ start.
 
 To go back to 0.1, stop Buckle and its MCP clients. Copy each `*.v1.json` file over its original,
 set `BUCKLE_AUTH_TOKEN` in `buckle.env` to the token your agents use (Buckle kept only its
-digest), set `BUCKLE_WORKSPACE_ROOT` there to the node's folder (`buckle workspace list` shows it)
-if `buckle settings unset root` removed the line, and install the older release. Going back loses
+digest), set `BUCKLE_WORKSPACE_ROOT` there to the node's folder (see `buckle workspace list`)
+if `buckle settings unset root` removed it, and install the older release. Going back loses
 every workspace registered, token created, grant, denial, and `workspace.json` written after the
 move.
 
