@@ -3,7 +3,7 @@
 More of what Buckle, the approval and sandbox runtime on this machine, does not yet handle: the
 programs it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents, and the
 files a browser command writes. [Known limits](known-limits.md) covers reading commands, credential
-hiding, and paths, and [part three](known-limits-03.md) code mode and the command line.
+hiding, and paths, and [part three](known-limits-03.md) code mode, the command line, and workspaces.
 
 ## Where programs come from
 
