@@ -376,6 +376,39 @@ describe('shutdown in an attached browser', () => {
   })
 })
 
+// Fix brief 2, R2: a pack replaced by one built from other settings ends its browsers and leaves each session's record,
+// so the pack that follows runs the session again, and shutdown alone forgets it.
+describe('a pack replaced by one built from other settings', () => {
+  it('closes each browser it started and keeps its session, which the pack that follows runs again and forgets at shutdown', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-retire-'))
+    const calls: ProcessRequest[] = []
+    const build = (approved: string[]) => createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [{ name: 'workspace', entries: approved }], browser: { mode: { kind: 'fresh' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
+    const context = { requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal }
+    const stored = () => JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')) as { sessions: Record<string, string>; allowedDomains: Record<string, string | null> }
+    const replaced = build(['example.com'])
+    await replaced.tools[0]!.prepare({ command: 'open', args: ['example.com'] }).execute(context)
+    const session = calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]!
+
+    await replaced.retire?.()
+    expect(calls[1]!.args).toEqual(['close', '--session', session, '--json'])
+    expect(Object.values(stored().sessions)).toEqual([session])
+    expect(Object.values(stored().allowedDomains)).toEqual(['example.com'])
+    // Nothing of the replaced pack is left to close: its close sends nothing and forgets nothing.
+    await replaced.close?.()
+    expect(calls).toHaveLength(2)
+    expect(Object.values(stored().sessions)).toEqual([session])
+
+    const successor = build(['example.com', 'docs.example.com'])
+    const answer = await successor.tools[0]!.prepare({ command: 'snapshot' }).execute(context) as { notice?: string }
+    expect(calls[2]!.args).toContain(session)
+    expect(answer.notice).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
+    await successor.close?.()
+    expect(calls[3]!.args).toEqual(['close', '--session', session, '--json'])
+    expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+    rmSync(directory, { recursive: true, force: true })
+  })
+})
+
 // Every Buckle process on the node shares the one browser on a profile folder, so no process's exit may close it.
 describe('shutdown with a profile folder', () => {
   it('sends nothing for the shared browser, which the close command and its idle timeout end', async () => {

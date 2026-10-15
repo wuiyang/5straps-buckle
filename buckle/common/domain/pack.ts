@@ -11,6 +11,12 @@ export interface Pack {
   unavailableReason: string | null
   /** Ends what the pack keeps running between calls (language servers, browser sessions), at shutdown. */
   close?(): void | Promise<void>
+  /**
+   * Ends what the pack keeps running when a pack rebuilt from other settings takes its place, keeping what the successor
+   * carries on: a browser session's key and the list it last ran under, so the session's next call says the browser was
+   * relaunched (fix brief 2, R2). `close` when absent.
+   */
+  retire?(): void | Promise<void>
 }
 
 export function packDescriptor(pack: Pack): PackDescriptor {

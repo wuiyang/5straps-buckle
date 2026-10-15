@@ -426,10 +426,11 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   /**
    * Applies settings whole or not at all (findings 7, 8, and 28 of the Phase 1 review, fix brief 1, D). The approval
    * wait and the variables swap in at once. The packs are rebuilt only where what they are built from changed (the
-   * packs, the mounts, the policy, the browser settings, the variables), and workbenches told only where the compiled
-   * policy changed; with `waitForWork`, either waits until no work is active, refusing the call meanwhile. Everything
-   * is built before anything is assigned, so a failure leaves the settings in force, and packs replaced are closed, so
-   * their language servers and browser sessions end with them.
+   * packs, the mounts, the policy, the browser settings, the variables), the browser pack only where its own inputs
+   * did (fix brief 2, R2), and workbenches told only where the compiled policy changed; with `waitForWork`, either
+   * waits until no work is active, refusing the call meanwhile. Everything is built before anything is assigned, so a
+   * failure leaves the settings in force, and packs replaced are retired, so their language servers and browsers end
+   * with them.
    */
   async function apply(input: { version: string; settings: WorkspaceSettings; rebuildPacks: boolean; waitForWork: boolean }): Promise<void> {
     const fields = workspaceFields(scopeOf(input.settings))
@@ -440,9 +441,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     const policyMoved = policyHash(nextCompiled) !== policyHash(compiled)
     if (input.waitForWork && (rebuild || policyMoved) && await runtime.hasActiveWork()) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowed })
-    const nextPacks = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools }) : packs
+    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools }) : null
+    const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs(input.settings) === browserInputs(applied) }) : null
     if (policyMoved) await workbenches.policyChanged()
-    const replaced = packs
     Object.assign(config, fields)
     applied = input.settings
     appliedVersion = input.version
@@ -451,10 +452,10 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     compiled = nextCompiled
     paths = nextPaths
     permissions = nextPermissions
-    if (rebuild) {
-      packs = nextPacks
+    if (next) {
+      packs = next.packs
       registry = createToolRegistry(availableTools(packs))
-      await retire(replaced)
+      await retire(next.replaced)
     }
     for (const listener of listeners) listener()
   }
@@ -499,20 +500,23 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     } finally {
       if (--activeInvocations === 0) {
         activity.stop()
-        if (retiring.length > 0) void closePacks(retiring.splice(0))
+        if (retiring.length > 0) void closePacks(retiring.splice(0), 'retire')
       }
     }
   }
 
-  /** Packs replaced close once no call still runs on them: a script started before keeps its own tools to its end. */
+  /** Packs replaced retire once no call still runs on them: a script started before keeps its own tools to its end. */
   async function retire(replaced: Pack[]): Promise<void> {
-    if (activeInvocations === 0) await closePacks(replaced)
+    if (activeInvocations === 0) await closePacks(replaced, 'retire')
     else retiring.push(...replaced)
   }
 
-  /** Each pack closes what it opened; one that fails to is logged, and the rest still close. */
-  async function closePacks(closing: Pack[]): Promise<void> {
-    const results = await Promise.allSettled(closing.map(async pack => pack.close?.()))
+  /**
+   * Each pack closes what it opened; one that fails to is logged, and the rest still close. A pack replaced by one
+   * built from other settings retires instead, where it tells the two apart: what its successor carries on stays.
+   */
+  async function closePacks(closing: Pack[], step: 'close' | 'retire' = 'close'): Promise<void> {
+    const results = await Promise.allSettled(closing.map(async pack => (step === 'retire' ? pack.retire ?? pack.close : pack.close)?.call(pack)))
     for (const result of results) if (result.status === 'rejected') logger.warn('A pack could not close what it opened', { error: result.reason })
   }
 
@@ -614,6 +618,27 @@ function policyHash(compiled: CompiledPolicy): string {
 /** What a workspace's packs are built from (fix brief 1, D): a change to none of it keeps the packs, and what they opened. */
 function packInputs(settings: WorkspaceSettings): string {
   return JSON.stringify([settings.packs, settings.mounts, settings.policy, settings.browser, settings.env])
+}
+
+const BROWSER_PACK = 'browser'
+
+/**
+ * What the browser pack alone is built from (fix brief 2, R2): the browser settings, the approved list it passes as
+ * allowed domains, and the mounts its paths resolve against. A rebuild for anything else, the variables among it,
+ * carries the pack over with the browsers it runs, so an agent's tabs and cookies survive it.
+ */
+function browserInputs(settings: WorkspaceSettings): string {
+  return JSON.stringify([settings.browser, settings.policy.network, settings.mounts])
+}
+
+/**
+ * The packs a rebuild ends with: those built anew, except where `carried` names a pack the current set holds, which
+ * keeps its place and what it runs; its twin built beside it ran nothing yet and is dropped. The rest of the current
+ * set is what the rebuild replaced.
+ */
+function carryPacks(input: { built: Pack[]; current: Pack[]; carried: (id: string) => boolean }): { packs: Pack[]; replaced: Pack[] } {
+  const packs = input.built.map(pack => (input.carried(pack.id) ? input.current.find(item => item.id === pack.id) : undefined) ?? pack)
+  return { packs, replaced: input.current.filter(pack => !packs.includes(pack)) }
 }
 
 /** The policy a workspace.json holds, with its mount table's target as `mount`. */

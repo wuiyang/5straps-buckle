@@ -7,8 +7,10 @@ import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { logger } from '../common/runtime/log.js'
+import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import { browserAllowedDomains, type ApprovedList } from '../common/services/packs/browser/allowed-domains.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 
 const node = (...entries: string[]): ApprovedList => ({ name: 'node', entries })
 const workspace = (...entries: string[]): ApprovedList => ({ name: 'workspace', entries })
@@ -97,7 +99,8 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const runtime = await createRuntime({ config })
     if (network.length) await runtime.policy.apply(policy(network))
     const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
-    return { runtime, calls }
+    const stored = () => JSON.parse(readFileSync(join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json'), 'utf8')) as { sessions: Record<string, string>; allowedDomains: Record<string, string | null> }
+    return { runtime, calls, config, stored }
   }
 
   function policy(network: string[]): WorkspacePolicy {
@@ -166,7 +169,8 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
       await runtime.policy.apply(policy(['*.example.test']))
       expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
       expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBeNull()
-      const [first, second] = calls()
+      // The pack the change replaced closed the browser between the two calls; the session's calls are the agent's.
+      const [first, second] = calls().filter(call => call[0] !== 'close')
       expect(sessionOf(second)).toBe(sessionOf(first))
       expect(flagOf(second)).toBe('*.example.test')
       expect(warn).toHaveBeenCalledWith('Browser relaunched because its allowed domains changed', { previous: '*.example.test,docs.test', current: '*.example.test' })
@@ -174,6 +178,43 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
       warn.mockRestore()
     }
   }, 20000) // three real agent-browser spawns in sequence; default 5000ms is tight under a loaded gate
+
+  // Fix brief 2, R2: the pack a policy change replaces is retired, not shut down, so the agent's session carries over.
+  it('ends the browsers of the pack a policy change replaces, keeps their sessions for the pack that follows, and forgets them at shutdown alone', async () => {
+    const { runtime, calls, stored } = await fixture(['*.example.test', 'docs.test'])
+    expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
+    const session = sessionOf(calls()[0])
+
+    await runtime.policy.apply(policy(['*.example.test']))
+
+    // Closed as shutdown would close it, with its record left for the pack that follows: the session and its last list.
+    expect(calls().at(-1)).toEqual(['close', '--session', session, '--json'])
+    expect(Object.values(stored().sessions)).toEqual([session])
+    expect(Object.values(stored().allowedDomains)).toEqual(['*.example.test,docs.test'])
+    expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
+    expect(sessionOf(calls().at(-1))).toBe(session)
+
+    await runtime.closeSessions()
+    // Two browsers were started under this session, one before the change and one after, and each was closed.
+    expect(calls().filter(call => call[0] === 'close')).toEqual([['close', '--session', session, '--json'], ['close', '--session', session, '--json']])
+    expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+  }, 20000)
+
+  it('keeps the browser and its session through a change to the workspace variables, which rebuilds the other packs alone', async () => {
+    const { runtime, calls, config } = await fixture(['*.example.test'])
+    expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
+    const session = sessionOf(calls()[0])
+
+    await openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, 'default') }).update(settings => ({ ...settings, env: { GREETING: 'hello' } }))
+    await runtime.takeUpSettings()
+
+    expect(config.commandEnvironment).toEqual({ GREETING: 'hello' })
+    expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBeNull()
+    expect(calls().map(call => call[0])).toEqual(['open', 'snapshot'])
+    expect(sessionOf(calls()[1])).toBe(session)
+    await runtime.closeSessions()
+    expect(calls().filter(call => call[0] === 'close')).toHaveLength(1)
+  })
 
   it('leaves the flag off when a grant is added mid-session, since grants only answer questions a list never asks', async () => {
     const { runtime, calls } = await fixture([])

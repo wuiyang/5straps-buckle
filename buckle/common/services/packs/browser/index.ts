@@ -75,10 +75,10 @@ export interface BrowserPackOptions {
   /** The environment it runs with (hostEnvironment); the workspace's own roots alone when absent. */
   environment?: HostEnvironment
   /**
-   * The workspace's approved list, when it has one, else nothing. Passed on every
-   * call as --allowed-domains, so clicks, redirects and page requests stay on their hosts too; the
-   * pack is rebuilt when the policy changes, and agent-browser relaunches the browser when a call
-   * brings a different list.
+   * The workspace's approved list, when it has one, else nothing. Passed on every call as --allowed-domains, so
+   * clicks, redirects and page requests stay on their hosts too. The pack is rebuilt when the list changes: the pack
+   * replaced ends its browsers and keeps each session's record (retire), so the session's next call starts its
+   * browser again under the new list and says so (RELAUNCH_NOTICE).
    */
   approvedLists: ApprovedList[]
   /** Buckle's protected roots: an upload of a hard-linked file on their device is refused. */
@@ -139,7 +139,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     skills: [loadPackSkill(PACK_ID)],
     // No path: the manifest carrying it is read with the agent token, and the configured path is the owner's.
     unavailableReason,
-    close: () => closeSessions({ options, sessions, opened }),
+    close: () => closeSessions({ options, sessions, opened, forget: true }),
+    retire: () => closeSessions({ options, sessions, opened, forget: false }),
     tools: [
       defineTool(PACK_ID, {
         name: 'browser_command',
@@ -297,19 +298,22 @@ function browserEnvironment(options: BrowserPackOptions): NodeJS.ProcessEnv {
 const CLOSE_TIMEOUT_MS = 5_000
 
 /**
- * At shutdown: closes each browser this pack started, as the close command would, and forgets its
- * session, so no daemon outlives the node by its idle timeout. They close in parallel under one bound,
- * so a few stuck daemons cannot outlast the close step before the store is updated (review L10 of
- * B18-B19). A daemon that will not close is left to that timeout, with a warning.
+ * Closes each browser this pack started, as the close command would, so no daemon outlives the pack by its idle
+ * timeout. They close in parallel under one bound, so a few stuck daemons cannot outlast the close step before the
+ * store is updated (review L10 of B18-B19). A daemon that will not close is left to that timeout, with a warning. At
+ * shutdown (`forget`) each session is forgotten too; a pack replaced by one built from other settings keeps the
+ * records instead (fix brief 2, R2): the successor finds each session's key and the list it last ran under, starts
+ * the browser again under the new list at the session's next call, and says it was relaunched.
  */
-async function closeSessions(input: { options: BrowserPackOptions; sessions: JsonFileStore<z.infer<typeof SessionsSchema>>; opened: Set<string> }): Promise<void> {
+async function closeSessions(input: { options: BrowserPackOptions; sessions: JsonFileStore<z.infer<typeof SessionsSchema>>; opened: Set<string>; forget: boolean }): Promise<void> {
   const closing = [...input.opened]
   input.opened.clear()
   if (closing.length === 0) return
   const bound = AbortSignal.timeout(CLOSE_TIMEOUT_MS)
   await Promise.all(closing.map(async (session) => {
-    if (!await closeSession(input.options, session, bound)) logger.warn('A browser session did not close at shutdown; its idle timeout ends it')
+    if (!await closeSession(input.options, session, bound)) logger.warn(input.forget ? 'A browser session did not close at shutdown; its idle timeout ends it' : 'A browser session did not close when its settings changed; its idle timeout ends it')
   }))
+  if (!input.forget) return
   await input.sessions.update((state) => {
     for (const [key, session] of Object.entries(state.sessions)) {
       if (!closing.includes(session)) continue
