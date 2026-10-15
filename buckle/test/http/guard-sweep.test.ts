@@ -26,11 +26,18 @@ type Credential = keyof typeof CREDENTIALS
 type Face = 'setup' | 'agent' | 'workbench'
 type Workspace = 'node' | 'child'
 
-/** The one credential each face accepts per workspace; the node's admin credential is every workspace's (D83); the workbench grant was minted on the node. */
-const ACCEPTS: Record<Face, Record<Workspace, Credential | undefined>> = {
-  setup: { node: 'node admin', child: 'node admin' },
-  agent: { node: 'node agent', child: 'child agent' },
-  workbench: { node: 'workbench grant', child: undefined },
+/**
+ * The credentials the answering face accepts: on every setup path the node's admin credential, every workspace's (D83);
+ * on a /workspaces/[id]/ agent path that workspace's token; on /mcp and /v1, which serve the workspace a token belongs
+ * to, either workspace's token (the workspace-model brief, item 3); on a workbench path its grant, minted on the node.
+ */
+function accepts(probe: Probe): Credential[] {
+  const face = faceOf(probe)
+  if (face === 'setup') return ['node admin']
+  if (face === 'workbench') return workspaceOf(probe.path) === 'node' ? ['workbench grant'] : []
+  if (probe.path.startsWith('/workspaces/child/')) return ['child agent']
+  if (probe.path.startsWith('/workspaces/')) return ['node agent']
+  return ['node agent', 'child agent']
 }
 
 interface Probe { path: string; method: string; credential: Credential; status: number; audited: boolean; served: boolean }
@@ -226,7 +233,7 @@ function faceOf(probe: Probe): Face {
   return probe.served && isWorkbench(probe.path) ? 'workbench' : 'agent'
 }
 
-const accepted = (probe: Probe) => ACCEPTS[faceOf(probe)][workspaceOf(probe.path)] === probe.credential
+const accepted = (probe: Probe) => accepts(probe).includes(probe.credential)
 const guarded = (probe: Probe) => !OPEN_PATHS.includes(probe.path)
 const succeeded = (probe: Probe) => probe.status >= 200 && probe.status < 300
 const describeProbe = (probe: Probe) => `${probe.method} ${probe.path} as ${probe.credential}: ${probe.status}`
@@ -249,15 +256,17 @@ describe('the guard sweep over every route, method and credential', () => {
     // The documented v1 catch-all 404: a wrong method on a workbench path with that workspace's agent credential.
     const workbench = caught.filter(probe => isWorkbench(probe.path))
     expect(workbench.length).toBeGreaterThan(100)
-    expect(workbench.every(probe => probe.credential === ACCEPTS.agent[workspaceOf(probe.path)])).toBe(true)
+    expect(workbench.every(probe => probe.credential.endsWith('agent'))).toBe(true)
   })
 
-  it('refuses each workspace\'s agent credential on the other\'s paths: the node agent on the child\'s, the child agent on the node\'s /v1 and /mcp', () => {
+  it('refuses each workspace\'s agent credential on the other\'s /workspaces/[id]/ paths, and serves each its own on /v1 and /mcp', () => {
     const nodeOnChild = probes.filter(probe => probe.credential === 'node agent' && workspaceOf(probe.path) === 'child')
-    const childOnNode = probes.filter(probe => probe.credential === 'child agent' && /^\/(?:v1\/|mcp$|workspaces\/default\/)/.test(probe.path))
+    const childOnDefault = probes.filter(probe => probe.credential === 'child agent' && probe.path.startsWith('/workspaces/default/'))
     expect(nodeOnChild.some(probe => probe.path.startsWith('/workspaces/child/v1/'))).toBe(true)
-    expect(childOnNode.some(probe => probe.path.startsWith('/v1/'))).toBe(true)
-    expect([...nodeOnChild, ...childOnNode].filter(probe => probe.status !== 401).map(describeProbe)).toEqual([])
+    expect(childOnDefault.some(probe => probe.path.startsWith('/workspaces/default/v1/'))).toBe(true)
+    expect([...nodeOnChild, ...childOnDefault].filter(probe => probe.status !== 401).map(describeProbe)).toEqual([])
+    const childManifest = probes.find(probe => probe.credential === 'child agent' && probe.path === '/v1/manifest' && probe.method === 'GET')
+    expect(childManifest?.status).toBe(200)
   })
 
   it('answers nothing below 400 without a credential but /health and /health/ready', () => {

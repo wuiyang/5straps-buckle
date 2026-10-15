@@ -50,15 +50,24 @@ export async function checkCredential<T>(event: H3Event, input: { verify: () => 
 }
 
 /**
- * The agent credential of the addressed workspace: one of its agent tokens, read per request so a
- * revoked token is refused at once. The actor is the token's id under its credential kind.
+ * An agent's token, read per request so a revoked token is refused at once (the workspace-model brief, item 3): on a
+ * /workspaces/[id]/ path one of that workspace's tokens; on /mcp and /v1 any workspace's, which then names the
+ * workspace the request runs on. Every token on the node is compared either way, so a token of no workspace and one of
+ * another are the same 401, in text and in the work done. The actor is the token's id under its credential kind.
  */
 export function requireAgent(refusal?: RefusalAudit): Guard {
   return async (event) => {
-    const workspaceId = targetId(event)
+    const named = getRouterParam(event, 'id')
     const workspaces = await useServices(event).getWorkspaces()
-    const tokenId = await checkCredential(event, { verify: () => workspaces.authenticateAgent(workspaceId, authorization(event)), ...(refusal ? { refusal } : {}) })
-    return { actor: `agent:${tokenId}`, workspaceId }
+    const owner = await checkCredential(event, {
+      verify: () => {
+        const found = workspaces.tokenOwner(authorization(event))
+        return found !== null && (named === undefined || found.workspaceId === named) ? found : null
+      },
+      ...(refusal ? { refusal } : {}),
+    })
+    if (named === undefined) event.context.tokenWorkspace = owner.workspaceId
+    return { actor: `agent:${owner.tokenId}`, workspaceId: owner.workspaceId }
   }
 }
 

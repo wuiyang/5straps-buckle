@@ -3,15 +3,17 @@ import type { ManagedWorkspace } from '../../../../common/services/workspaces/wo
 import { mapAgentFailures } from './errors.js'
 import { useServices } from './services.js'
 
-/** The node's own workspace: every path outside /workspaces/[id]/, and /workspaces/default/ as its alias. */
+/** Workspace default, the node's own folder (Q15): what the owner's node-level face and a node-level workbench address. */
 export const NODE_WORKSPACE = 'default'
 
 /**
- * The workspace a request addresses. Each operation has one handler, and its /workspaces/[id]/ twin
- * re-exports it, so this is how the one handler tells them apart (plan section B, route mapping).
+ * The workspace a request addresses: the one its /workspaces/[id]/ path names; else, on an agent's /mcp or /v1 path,
+ * the one its bearer token belongs to (the workspace-model brief, item 3); else workspace default. Each operation has
+ * one handler, and its /workspaces/[id]/ twin re-exports it, so this is how the one handler tells them apart (plan
+ * section B, route mapping).
  */
 export function targetId(event: H3Event): string {
-  return getRouterParam(event, 'id') ?? NODE_WORKSPACE
+  return getRouterParam(event, 'id') ?? event.context.tokenWorkspace ?? NODE_WORKSPACE
 }
 
 /** Whether the path named its workspace; a refusal there is audited under the workspace's own name. */

@@ -199,11 +199,6 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       digestMatches(presented, ABSENT_DIGEST)
       return owner
     },
-    /** The token id when the bearer token belongs to workspace `id`; null for a token of no workspace and of another alike. */
-    authenticateAgent(id: string, authorization: string | undefined): string | null {
-      const owner = manager.tokenOwner(authorization)
-      return owner?.workspaceId === id ? owner.tokenId : null
-    },
     /** The node's admin credential, the one admin credential of every workspace (D83), compared in constant time. */
     authenticateAdmin(authorization: string | undefined): boolean {
       const matches = tokenMatches(authorization, node.adminToken || mintToken())
