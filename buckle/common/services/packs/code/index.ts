@@ -564,7 +564,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
       try {
         const stubs = record.stubs()
         const written = (!record.overflowed && await write([], record.whole(), journal)) || (stubs !== null && await write([], stubs, journal))
-        if (!written) logger.warn('The replay record of a diverged script was kept without the calls this send ran, which pass its bound even as stubs; sent again after a restart, they may run again', { key, calls: record.count })
+        // Named by its parent request, or by the script's start, never by its key, which the logger redacts as a secret
+        // (recheck 5 of the final review of 0.1.4, finding code index.ts:565).
+        if (!written) logger.warn('The replay record of a diverged script was kept without the calls this send ran, which pass its bound even as stubs; sent again after a restart, they may run again', { record: parent ?? input.script.slice(0, 60), calls: record.count })
       } catch (error) {
         logger.warn('Could not add the calls a diverged script ran to its replay record; sent again after a restart, they may run again', { error: error instanceof Error ? error.message : 'Unknown error' })
       }

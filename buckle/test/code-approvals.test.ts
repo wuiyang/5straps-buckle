@@ -1258,16 +1258,22 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     await codeRun(directory, waitsForAPerson, { journalBytes: 8_192, timeoutMs: 1_000 })(script)
     expect(kept(directory).map(journal => journal.entries.map(entry => entry.id))).toEqual([[3, 4, 5, 6, 7, 8]])
 
-    const warned = vi.spyOn(logger, 'warn')
+    // The line as the owner's log renders it: the logger redacts a 64-character key, so the record is named otherwise
+    // (recheck 5 of the final review of 0.1.4, finding code index.ts:565).
+    let stderr = ''
+    const written = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { stderr += String(chunk); return true })
     const failsAtLength = async (call: NestedCall): Promise<InvokeResponse> => {
       if (call.tool !== 'waiter') return ok(call, 'ran again')
       call.onExecute?.()
       return { requestId: `code:${call.id}`, outcome: 'error', error: { code: 'TOOL_EXECUTION_FAILED', message: 'y'.repeat(3_000), retryable: false } }
     }
-    await expect(codeRun(directory, failsAtLength, { journalBytes: 8_192 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
-    expect(warned.mock.calls.find(([message]) => message.startsWith('The replay record of a diverged script was kept without the calls this send ran'))?.[1]).toEqual({ key: 'f'.repeat(64), calls: 2 })
+    try {
+      await expect(codeRun(directory, failsAtLength, { journalBytes: 8_192 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      const line = () => stderr.split('\n').filter(Boolean).map(text => JSON.parse(text) as { message: string; fields?: unknown }).find(event => event.message.startsWith('The replay record of a diverged script was kept without the calls this send ran'))
+      await vi.waitFor(() => expect(line()).toBeDefined())
+      expect(line()?.fields).toEqual({ record: script.slice(0, 60), calls: 2 })
+    } finally { written.mockRestore() }
     expect(kept(directory).map(journal => journal.entries.map(entry => entry.id))).toEqual([[3, 4, 5, 6, 7, 8]])
-    warned.mockRestore()
   }, 60_000)
 
   // Recheck 3 of the final review of 0.1.4, finding code index.ts:487: a stub record whose replay diverges before any
