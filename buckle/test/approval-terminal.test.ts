@@ -455,13 +455,23 @@ describe('what an agent chose, on the owner\'s terminal (review M3)', () => {
   })
 })
 
+describe('the text relayed for a waiting ask', () => {
+  // The workspace-model brief, item 6: the workspace by its id, which the commands take, and the name the owner knows.
+  it('says where it waits: the node, and the workspace by id and name, its name escaped as the agent\'s text is', () => {
+    const lines = describeApprovalRequest({ request: approval('t1'), workspaceId: 'site', workspaceName: 'The\u001b[2J site', nodeName: 'node-7' })
+    expect(lines).toContain('waiting on node node-7, workspace site (The\\u001b[2J site)')
+    expect(lines).toContain('see the whole action with: buckle approvals --workspace site')
+  })
+})
+
 // Owner decision D17: the node's own terminal is an approver too, so it shows the whole action a question
 // is about, as a person's device does: nothing cut, nothing paged.
 describe('a terminal question shows the whole action (owner decision D17)', () => {
+  // The workspace-model brief, item 6: the ask names its workspace by id and name, and every line is marked [<id>].
   it('prints the node, workspace, effects and every argument through the question\'s details, a size line first past 64 KiB', async () => {
     const script = Array.from({ length: 2_000 }, (_, index) => `echo line-${index} ${'z'.repeat(40)}`).join('\n')
     const call = { arguments: { args: ['-c', script], command: 'sh' }, cwd: '/workspace', description: 'Run "sh -c ..." in "/workspace"', effects: ['exec sh -c ...', 'write /workspace'], complete: true as const }
-    const request = questionFor({ approval: { ...approval('t-full'), rule: 'destructive_command', subject: 'sh -c ...  # argv sha256 00' }, workspaceId: 'default', node: 'node-1', context: { correlationId: 'c-full', sessionId: 's', call } })
+    const request = questionFor({ approval: { ...approval('t-full'), rule: 'destructive_command', subject: 'sh -c ...  # argv sha256 00' }, workspaceId: 'default', workspaceName: 'The site', node: 'node-1', context: { correlationId: 'c-full', sessionId: 's', call } })
     const terminal = silentTerminal()
     const stop = new AbortController()
     const asked = createTerminalConsumer({ input: terminal.input, output: terminal.output, onInterrupt: () => {} }).prompt(request, { signal: stop.signal })
@@ -469,10 +479,12 @@ describe('a terminal question shows the whole action (owner decision D17)', () =
     stop.abort()
     await asked.catch(() => undefined)
     const lines = terminal.shown().split('\n')
-    const size = lines.findIndex(line => /^ {2}size: {5}\d+ bytes of arguments, every one shown below$/.test(line))
+    const size = lines.findIndex(line => /^\[default\] {3}size: {5}\d+ bytes of arguments, every one shown below$/.test(line))
     expect(size).toBeGreaterThan(-1)
-    expect(size).toBeLessThan(lines.findIndex(line => line.startsWith('  node:')))
-    for (const expected of ['  node:     node-1', '  workspace: default', '  in:       /workspace', '  effects:  exec sh -c ...', '            write /workspace']) expect(lines).toContain(expected)
+    expect(size).toBeLessThan(lines.findIndex(line => line.startsWith('[default]   node:')))
+    expect(lines).toContain('[default] fs_read needs approval in workspace default (The site)')
+    for (const expected of ['  node:     node-1', '  workspace: default (The site)', '  in:       /workspace', '  effects:  exec sh -c ...', '            write /workspace']) expect(lines).toContain(`[default] ${expected}`)
+    expect(lines.filter(line => line.trim() !== '' && !line.startsWith('[default] '))).toEqual([])
     expect(terminal.shown()).toContain(JSON.stringify(script))
   })
 })

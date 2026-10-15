@@ -3,6 +3,7 @@ import type { Logger } from '@5straps/runtime'
 import type { NodeConfig } from '../common/runtime/config.js'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import type { WorkspaceDescriptor } from '../common/services/workspaces/workspace-manager.js'
+import { describeOnline, watchOnline } from './roster.js'
 import { createHttpServer, type BuckleServer } from './setup-server.js'
 
 /**
@@ -18,6 +19,10 @@ export async function serveHttp(input: { config: NodeConfig; common: BuckleCommo
   await common.start()
   const workspaces = await common.services.getWorkspaces()
   logListening({ logger: input.logger, config, workspaces: workspaces.list(), address })
+  // On the terminal the questions are asked on, the online workspaces, and again after each change (item 6).
+  const write = (text: string) => void process.stderr.write(text)
+  write(await describeOnline(workspaces))
+  common.owner.onClose('jobs', 'workspace list', watchOnline({ workspaces, write }))
   if (config.experimentalAdminHttp) input.logger.warn('The admin HTTP face is on, as an experiment (BUCKLE_EXPERIMENTAL_ADMIN_HTTP): /setup answers the admin credential and signed requests of enrolled keys', { adminCredential: config.adminToken ? 'set' : 'unset' })
 }
 

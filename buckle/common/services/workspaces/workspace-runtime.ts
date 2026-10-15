@@ -99,6 +99,10 @@ export interface PolicyHandle {
 
 export interface BuckleRuntime {
   readonly workspaceId: string
+  /** The workspace's name as the registry holds it now. */
+  workspaceName(): string
+  /** Takes up a write to workspace.json now, as the next call would (Q2); `buckle serve` calls it when the settings change. */
+  takeUpSettings(): Promise<void>
   workbenches: ReturnType<typeof createWorkbenchManager>
   hasActiveWork(): Promise<boolean>
   /** The same question for inspection, read without taking workbench ownership (review L4 of B15-B17). */
@@ -204,8 +208,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
   const approvalService = createApprovalService({
     registry: approvals, workspaceId, serverId: config.serverId,
-    // Read at each ask, so a change to approvalWaitMs applies from the next call (Q2).
+    // Read at each ask, so a change to approvalWaitMs applies from the next call (Q2), and a rename shows at once.
     get graceMs() { return config.approvalTimeoutMs },
+    get workspaceName() { return config.serverName },
     interaction: input.interaction ?? (async () => undefined),
     announce: webhook ? createWebhookNotifier(webhook) : undefined,
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
@@ -287,6 +292,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
 
   const runtime: BuckleRuntime = {
     workspaceId,
+    workspaceName: () => config.serverName,
+    takeUpSettings: () => pickUp(),
     workbenches,
     auditHealth,
     executionBudget,

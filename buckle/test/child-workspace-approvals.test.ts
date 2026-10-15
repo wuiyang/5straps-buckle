@@ -95,14 +95,19 @@ describe('answering a child workspace request from the terminal', () => {
     expect((await manager.resolve('child')).runtime.approvals.pending()).toEqual([])
   }, 30_000)
 
-  it('refuses the same token unnamed, because a token resolves in its own workspace alone', async () => {
+  // Q9 of the workspace-model brief: naming no workspace means every online one, and the token is answered where it waits.
+  it('answers the same token unnamed in the workspace whose queue holds it, and refuses it where --dir names another', async () => {
     const { config, manager } = await nodeWithChild()
     const token = await pendingIn((await manager.resolve('child')).runtime)
 
-    const approved = await capture({ argv: ['approve', token, '--scope', 'once'], config, cwd: config.cwd })
+    const elsewhere = await capture({ argv: ['approve', token, '--scope', 'once', '--dir', config.cwd], config, cwd: config.cwd })
+    expect(elsewhere.exitCode).toBe(1)
+    expect(elsewhere.stderr).toContain('in workspace default')
 
-    expect(approved.exitCode).toBe(1)
-    expect(approved.stderr).toContain('in workspace default')
+    const approved = await capture({ argv: ['approve', token, '--scope', 'once'], config, cwd: config.cwd })
+    expect(approved.exitCode).toBe(0)
+    expect(approved.stdout).toContain('in workspace child')
+    expect((await manager.resolve('child')).runtime.approvals.pending()).toEqual([])
   }, 30_000)
 
   it('lists the child queue with the command that answers it there', async () => {

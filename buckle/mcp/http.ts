@@ -19,7 +19,7 @@ export function createMcpHttpHandlers(): McpHttpHandlers {
     const existing = handlers.get(runtime)
     if (existing) return existing
     // A per-request server answers one request, so it does not follow tool changes itself.
-    const handler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, version: runtime.manifest().version, followToolChanges: false }))
+    const handler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, followToolChanges: false }))
     runtime.onToolsChanged(() => handler.notify.toolsChanged())
     handlers.set(runtime, handler)
     open.add(handler)

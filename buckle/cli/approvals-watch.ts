@@ -1,10 +1,10 @@
 import { createInterface, type Interface } from 'node:readline/promises'
 import type { Readable, Writable } from 'node:stream'
 import type { ApprovalDecision, ApprovalRequest, GrantScope } from '@5straps/protocol'
-import { describeQuestion } from './terminal-consumer.js'
+import { describeQuestion, marked } from './terminal-consumer.js'
 import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from './terminal-keys.js'
 import { remainingMs } from '../common/domain/approval-deadline.js'
-import { approveCommand, denyCommand, describeAskOfShownCall } from '../common/domain/approval-instruction.js'
+import { approveCommand, denyCommand, describeAskOfShownCall, workspaceLabel } from '../common/domain/approval-instruction.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
@@ -27,15 +27,22 @@ const SCOPE_KEYS: Array<{ key: string; scope: GrantScope; label: string }> = [
   { key: 'always', scope: 'always', label: 'always' },
 ]
 
-export interface ApprovalWatchOptions {
+/** One workspace's queue a watch asks from. */
+export interface WatchSource {
   /**
    * The asks waiting, each with the whole call it came from, the requests alone for the check a question on screen
    * makes while it waits, and the answer path `buckle approve` uses.
    */
   approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'answer'>
-  /** Each answer is audited on its own, as the `buckle approve` it stands in for. */
+  /** Each answer is audited on its own, in its workspace's log, as the `buckle approve` it stands in for. */
   actions: ActionLog
   workspaceId: string
+  workspaceName?: string
+}
+
+export interface ApprovalWatchOptions {
+  /** The workspaces it asks for: the one --workspace names, or every online one (Q9). */
+  sources: WatchSource[]
   input: Readable
   output: Writable
   errors: Writable
@@ -74,14 +81,15 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
     stopped.abort()
     keys.stop()
     readline.close()
-    options.output.write(`\nStopped watching workspace ${options.workspaceId}.\n`)
+    options.output.write(`\nStopped watching ${watched(options.sources)}.\n`)
   }
   // With a listener here readline no longer closes on Ctrl-C by itself, so it is closed in stop.
   readline.on('SIGINT', stop)
   readline.on('close', stop)
   options.signal?.addEventListener('abort', stop, { once: true })
 
-  options.output.write(`Watching workspace ${options.workspaceId} for approvals. Keys: o once, s session, the word always, d deny, n skip; Enter grants nothing. Ctrl-C stops.\n`)
+  options.output.write(`Watching ${watched(options.sources)} for approvals. Keys: o once, s session, the word always, d deny, n skip; Enter grants nothing. Ctrl-C stops.\n`)
+  // By workspace and token, as a token is issued within one workspace's queue.
   const seen = new Set<string>()
   // Each request group's whole action is shown with the first of its asks asked here; the others name that ask
   // (review M1 of the slice 5 re-review).
@@ -90,9 +98,9 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
   let afterDrop = false
   try {
     while (!stopped.signal.aborted) {
-      const pending = readPending(options)
-      if (!pending.ok) return unreachable(options, pending.message)
-      const next = pending.asks.find(ask => !seen.has(ask.request.token))
+      const pending = readPending(options.sources)
+      if (!pending.ok) return unreachable(options, pending.source, pending.message)
+      const next = pending.asks.find(({ source, ask }) => !seen.has(askKey(source, ask.request.token)))
       if (!next) {
         await pause(wait, stopped.signal)
         wait = Math.min(wait * 2, poll.idle)
@@ -105,10 +113,12 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
         if (await awaitEnter(readline, options.output, stopped.signal)) continue
         break
       }
-      seen.add(next.request.token)
-      const earlier = next.callRef === undefined ? undefined : shownWith.get(next.callRef)
-      if (next.callRef !== undefined && earlier === undefined && next.call?.complete) shownWith.set(next.callRef, next.request.token)
-      afterDrop = await askOne({ ...options, readline, keys, request: next.request, call: next.call, shownWith: earlier, stopped: stopped.signal, recheckMs: poll.first }) === 'dropped'
+      const { source, ask } = next
+      seen.add(askKey(source, ask.request.token))
+      const group = ask.callRef === undefined ? undefined : askKey(source, ask.callRef)
+      const earlier = group === undefined ? undefined : shownWith.get(group)
+      if (group !== undefined && earlier === undefined && ask.call?.complete) shownWith.set(group, ask.request.token)
+      afterDrop = await askOne({ ...options, ...source, readline, keys, request: ask.request, call: ask.call, shownWith: earlier, stopped: stopped.signal, recheckMs: poll.first }) === 'dropped'
     }
     return { exitCode: 0 }
   } finally {
@@ -135,16 +145,18 @@ async function awaitEnter(readline: Interface, output: Writable, stopped: AbortS
 
 type Ending = 'answered' | 'skipped' | 'dropped' | 'stopped'
 
-async function askOne(context: ApprovalWatchOptions & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; call: PendingAsk['call']; shownWith: string | undefined; stopped: AbortSignal; recheckMs: number }): Promise<Ending> {
+type AskContext = ApprovalWatchOptions & WatchSource & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; call: PendingAsk['call']; shownWith: string | undefined; stopped: AbortSignal; recheckMs: number }
+
+async function askOne(context: AskContext): Promise<Ending> {
   const { request, call, output } = context
   // The whole action (owner decision D17), or, for a later ask of a group, the ask and the one its action was shown
   // with above. An ask recorded before this build shows its request and the note, and offers denials only: nobody
   // approves an action they were not shown whole (review L9).
   const shown = call?.complete ? call : undefined
   const offered = shown ? SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope)) : []
-  const prompt = `  ${[...offered.map(entry => `${entry.key}) ${request.rule === 'sensitive_path' && entry.scope === 'once' ? 'allow once' : entry.label}`), 'd) deny', ...(request.rule === 'sensitive_path' ? ['ds) deny this session', 'da) always deny'] : []), 'n) skip'].join('  ')} > `
-  const question = { ...request, workspaceId: context.workspaceId, ...(shown ? { call: shown } : {}) }
-  output.write(`${shown && context.shownWith !== undefined ? `\n${describeAskOfShownCall(question, context.shownWith).join('\n')}\n` : describeQuestion(question)}  token: ${request.token}\n`)
+  const prompt = `${marked(context, [''])[0]}  ${[...offered.map(entry => `${entry.key}) ${request.rule === 'sensitive_path' && entry.scope === 'once' ? 'allow once' : entry.label}`), 'd) deny', ...(request.rule === 'sensitive_path' ? ['ds) deny this session', 'da) always deny'] : []), 'n) skip'].join('  ')} > `
+  const question = { ...request, workspaceId: context.workspaceId, ...(context.workspaceName === undefined ? {} : { workspaceName: context.workspaceName }), ...(shown ? { call: shown } : {}) }
+  output.write(`${shown && context.shownWith !== undefined ? `\n${marked(question, describeAskOfShownCall(question, context.shownWith)).join('\n')}\n` : describeQuestion(question)}${marked(question, [`  token: ${request.token}`])[0]}\n`)
 
   // The requests alone: a question on screen checks every poll that its ask still waits, and reads no call to do it.
   const dropped = new AbortController()
@@ -203,7 +215,7 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
  * the owner's authority. It is audited the same way too, one entry per answer, so a session that
  * grants several leaves several.
  */
-async function record(context: ApprovalWatchOptions, decision: ApprovalDecision): Promise<void> {
+async function record(context: AskContext, decision: ApprovalDecision): Promise<void> {
   const result = await auditOperation({ actions: context.actions, workspaceId: context.workspaceId, tool: 'cli_approve', sessionId: 'local-owner',
     isSuccessful: outcome => outcome.ok, operation: () => context.approvals.answer({ decision, authority: 'admin' }) })
   if (!result.ok) {
@@ -213,15 +225,29 @@ async function record(context: ApprovalWatchOptions, decision: ApprovalDecision)
   context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token} in workspace ${context.workspaceId} (scope: ${decision.scope}).\n`)
 }
 
-function readPending(options: Pick<ApprovalWatchOptions, 'approvals'>): { ok: true; asks: PendingAsk[] } | { ok: false; message: string } {
-  try {
-    return { ok: true, asks: options.approvals.waiting() }
-  } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : 'Unknown error' }
+function readPending(sources: WatchSource[]): { ok: true; asks: Array<{ source: WatchSource; ask: PendingAsk }> } | { ok: false; source: WatchSource; message: string } {
+  const asks: Array<{ source: WatchSource; ask: PendingAsk }> = []
+  for (const source of sources) {
+    try {
+      asks.push(...source.approvals.waiting().map(ask => ({ source, ask })))
+    } catch (error) {
+      return { ok: false, source, message: error instanceof Error ? error.message : 'Unknown error' }
+    }
   }
+  return { ok: true, asks }
 }
 
-function unreachable(options: ApprovalWatchOptions, message: string): Outcome {
-  options.errors.write(`Cannot read the approvals waiting in workspace ${options.workspaceId}: ${message}. Check that BUCKLE_STATE_DIR names the state directory of the running node.\n`)
+function askKey(source: WatchSource, key: string): string {
+  return JSON.stringify([source.workspaceId, key])
+}
+
+/** The workspaces a watch asks for, as its first and last lines name them. */
+function watched(sources: WatchSource[]): string {
+  const labels = sources.map(source => workspaceLabel(source.workspaceId, source.workspaceName))
+  return labels.length === 1 ? `workspace ${labels[0]}` : `workspaces ${labels.join(', ')}`
+}
+
+function unreachable(options: ApprovalWatchOptions, source: WatchSource, message: string): Outcome {
+  options.errors.write(`Cannot read the approvals waiting in workspace ${source.workspaceId}: ${message}. Check that BUCKLE_STATE_DIR names the state directory of the running node.\n`)
   return { exitCode: 1 }
 }

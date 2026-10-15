@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util'
 import { z } from 'zod'
 import { terminalConfirm, type Confirm } from './terminal-consumer.js'
 import { OwnerOnlyError, requireOwnerOnly, setMode, type OwnerOnlyCheck } from '../common/adapters/file-modes.js'
-import { describeAction, printable, sameCallNote } from '../common/domain/approval-instruction.js'
+import { describeAction, printable, sameCallNote, workspaceLabel } from '../common/domain/approval-instruction.js'
 import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 import { homeDirectory, isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
 import { realPathOf } from '../common/runtime/config.js'
@@ -303,7 +303,7 @@ function describeChallenge(item: VerifiedChallenge, shownWith?: string): string 
   const { challenge } = item
   return [
     `${printable(challenge.token)}  ${printable(challenge.tool)} asks ${printable(challenge.rule)}`,
-    ...(shownWith === undefined ? describeAction({ ...challenge, node: challenge.node, workspace: challenge.workspace, effects: challenge.effects ?? null }) : [
+    ...(shownWith === undefined ? describeAction({ ...challenge, node: challenge.node, workspace: workspaceLabel(challenge.workspace), effects: challenge.effects ?? null }) : [
       `  node:     ${printable(challenge.node)}`,
       `  workspace: ${printable(challenge.workspace)}`,
       `  rule:     ${printable(challenge.rule)}`,

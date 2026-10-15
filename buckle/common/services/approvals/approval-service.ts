@@ -167,6 +167,8 @@ export interface CallWithdrawal extends GroupWithdrawal {
 export interface ApprovalServiceOptions {
   registry: ApprovalRegistry
   workspaceId: string
+  /** The workspace's name, which each question names beside its id; read at each ask, so a rename shows at once. */
+  workspaceName?: string
   /** The node's serverId, which each challenge names. */
   serverId: string
   /**
@@ -484,7 +486,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       ask.questions.set(approval.token, question)
       let outcome: CliOutcome
       try {
-        outcome = await input.interaction.requestCli(questionFor({ approval, workspaceId: options.workspaceId, node: options.serverId, context: input.context }), { signal: AbortSignal.any([ask.stop.signal, question.signal]) })
+        outcome = await input.interaction.requestCli(questionFor({ approval, workspaceId: options.workspaceId, ...(options.workspaceName === undefined ? {} : { workspaceName: options.workspaceName }), node: options.serverId, context: input.context }), { signal: AbortSignal.any([ask.stop.signal, question.signal]) })
       } finally {
         ask.questions.delete(approval.token)
       }
@@ -674,7 +676,7 @@ async function announce(notify: ApprovalServiceOptions['announce'], requests: Ap
  * The question the terminal shows: what the call wants, the whole call it came from (owner decision D17)
  * and the command that answers it elsewhere.
  */
-export function questionFor(input: { approval: ApprovalRequest; workspaceId: string; node?: string; context: QuestionContext }): CliRequest {
+export function questionFor(input: { approval: ApprovalRequest; workspaceId: string; workspaceName?: string; node?: string; context: QuestionContext }): CliRequest {
   const { approval, workspaceId, context } = input
   const { call } = context
   return {
@@ -689,6 +691,7 @@ export function questionFor(input: { approval: ApprovalRequest; workspaceId: str
       details: {
         tool: approval.tool, rule: approval.rule, subject: approval.subject, reason: approval.reason,
         scopes: approval.offeredScopes.join(','), expiresAt: approval.expiresAt, workspace: workspaceId,
+        ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
         approve: approveCommand({ request: approval, workspaceId }),
         ...(input.node === undefined ? {} : { node: input.node }),
         ...(call === undefined ? {} : { arguments: JSON.stringify(call.arguments), cwd: call.cwd, ...(call.description === null ? {} : { description: call.description }), ...(call.effects === undefined ? {} : { effects: JSON.stringify(call.effects) }) }),

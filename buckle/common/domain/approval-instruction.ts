@@ -61,13 +61,14 @@ export function reviewCommand(input: { workspaceId?: string }): string {
  * same lines go to an MCP client's user, a terminal and an approval webhook, and an instruction that
  * named neither the node nor the workspace was not actionable on a node serving several.
  */
-export function describeApprovalRequest(input: { request: ApprovalRequest; workspaceId?: string; nodeName?: string }): string[] {
+export function describeApprovalRequest(input: { request: ApprovalRequest; workspaceId?: string; workspaceName?: string; nodeName?: string }): string[] {
   const { request } = input
+  const workspace = input.workspaceId ? `workspace ${workspaceLabel(input.workspaceId, input.workspaceName)}` : null
   return [
     printable(request.reason),
     `subject: ${printable(request.subject)}`,
     `${describeExpiry(request.expiresAt)}`,
-    ...(input.nodeName || input.workspaceId ? [`waiting on ${[input.nodeName ? `node ${input.nodeName}` : null, input.workspaceId ? `workspace ${input.workspaceId}` : null].filter(Boolean).join(', ')}`] : []),
+    ...(input.nodeName || workspace ? [`waiting on ${[input.nodeName ? `node ${printable(input.nodeName)}` : null, workspace].filter(Boolean).join(', ')}`] : []),
     `see the whole action with: ${reviewCommand(input)}`,
     `then approve with: ${approveCommand(input)} (it shows the action again and asks to confirm)`,
   ]
@@ -80,12 +81,21 @@ export function describeApprovalRequest(input: { request: ApprovalRequest; works
  */
 export const RECORDED_BEFORE_NOTE = 'recorded before this build, or its kept call is missing or damaged: its whole call cannot be shown, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
 
+/**
+ * A workspace as every approver names it (the workspace-model brief, item 6): its id, which the commands take, and its
+ * name, which the owner chose and knows it by.
+ */
+export function workspaceLabel(id: string, name?: string): string {
+  return name === undefined ? printable(id) : `${printable(id)} (${printable(name)})`
+}
+
 /** Arguments past this size get a line naming their size before anything else, so a person knows how much follows. */
 export const LARGE_ACTION_BYTES = 64 * 1_024
 
 /** An action as a person decides on it: the whole call and where it runs (owner decision D17). */
 export interface ShownAction {
   node?: string
+  /** As workspaceLabel prints it. */
   workspace?: string
   rule: string
   subject: string
@@ -111,8 +121,9 @@ export interface ShownAsk {
   subject: string
   reason: string
   expiresAt: string
-  /** Named only when the ask comes from a registered workspace. */
+  /** The workspace the ask waits in, which every approver names with its name (the workspace-model brief, item 6). */
   workspaceId?: string
+  workspaceName?: string
   node?: string
   /** Absent for an ask recorded before this build: it is shown with RECORDED_BEFORE_NOTE and never approved. */
   call?: ShownCall
@@ -127,7 +138,7 @@ export function describeAsk(ask: ShownAsk): string[] {
   const { call } = ask
   if (!call) return [...head, `  ${RECORDED_BEFORE_NOTE}`]
   return [...head, ...describeAction({
-    ...(ask.node === undefined ? {} : { node: ask.node }), workspace: ask.workspaceId ?? DEFAULT_WORKSPACE, rule: ask.rule, subject: ask.subject, reason: ask.reason,
+    ...(ask.node === undefined ? {} : { node: ask.node }), workspace: workspaceLabel(ask.workspaceId ?? DEFAULT_WORKSPACE, ask.workspaceName), rule: ask.rule, subject: ask.subject, reason: ask.reason,
     description: call.description, cwd: call.cwd, effects: call.effects ?? null, arguments: call.arguments,
   })]
 }
@@ -152,10 +163,9 @@ export function describeCallAsks(requests: ReadonlyArray<{ token: string; rule: 
 
 function askHead(ask: ShownAsk): string[] {
   return [
-    `${printable(ask.tool)} needs approval`,
+    `${printable(ask.tool)} needs approval${ask.workspaceId === undefined ? '' : ` in workspace ${workspaceLabel(ask.workspaceId, ask.workspaceName)}`}`,
     `  ${printable(ask.reason)}`,
     `  subject: ${printable(ask.subject)}`,
-    ...(ask.workspaceId && ask.workspaceId !== DEFAULT_WORKSPACE ? [`  workspace: ${printable(ask.workspaceId)}`] : []),
     `  ${describeExpiry(ask.expiresAt)}`,
   ]
 }
@@ -172,7 +182,7 @@ export function describeAction(action: ShownAction): string[] {
   return [
     ...(bytes > LARGE_ACTION_BYTES ? [`  size:     ${bytes} bytes of arguments, every one shown below`] : []),
     ...(action.node === undefined ? [] : [`  node:     ${printable(action.node)}`]),
-    ...(action.workspace === undefined ? [] : [`  workspace: ${printable(action.workspace)}`]),
+    ...(action.workspace === undefined ? [] : [`  workspace: ${action.workspace}`]),
     `  does:     ${action.description === null ? 'not described' : printable(action.description)}`,
     `  rule:     ${printable(action.rule)}`,
     `  subject:  ${printable(action.subject)}`,

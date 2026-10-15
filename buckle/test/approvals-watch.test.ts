@@ -60,7 +60,7 @@ function keyboardTerminal() {
 const scratchLog = () => createFileActionLog(join(mkdtempSync(join(tmpdir(), 'buckle-watch-log-')), 'actions.jsonl'))
 
 function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'answer'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
-  const done = watchApprovals({ approvals, actions, workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
+  const done = watchApprovals({ sources: [{ approvals, actions, workspaceId: 'default' }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
   return { terminal, done }
 }
 
@@ -82,6 +82,37 @@ async function issuePrivate(registry: ApprovalRegistry, subject: string): Promis
 }
 
 const grantsOf = (config: BuckleConfig) => createFileGrantStore({ filePath: grantsPath(config), workspace: 'default' }).list()
+
+// Q9 of the workspace-model brief: one watch asks for every online workspace, each question marked with its own.
+describe('buckle approvals --watch over several workspaces', () => {
+  it('asks about each workspace\'s asks, marked with it, and records each answer in that workspace alone', async () => {
+    const [first, second] = [node(), node()]
+    const [firstLog, secondLog] = [scratchLog(), scratchLog()]
+    const token = await issue(registryOf(second))
+    const sources = [
+      { approvals: serviceOf(first), actions: firstLog, workspaceId: 'one', workspaceName: 'Site one' },
+      { approvals: serviceOf(second), actions: secondLog, workspaceId: 'two', workspaceName: 'Site two' },
+    ]
+    const terminal = keyboardTerminal()
+    const done = watchApprovals({ sources, input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
+    try {
+      await prompted(terminal)
+      expect(terminal.shown()).toContain('Watching workspaces one (Site one), two (Site two) for approvals.')
+      expect(terminal.shown()).toContain('[two] fs_write needs approval in workspace two (Site two)')
+      expect(terminal.shown()).toContain(`[two]   token: ${token}`)
+      terminal.type('o\r')
+      await vi.waitFor(() => expect(terminal.shown()).toContain(`Approved (once) ${token} in workspace two`))
+      expect(registryOf(second).pending()).toEqual([])
+      expect(secondLog.read(10).map(entry => entry.tool)).toContain('cli_approve')
+      expect(firstLog.read(10)).toEqual([])
+    } finally {
+      terminal.type('\x03')
+      await done
+      for (const source of sources) await source.approvals.close()
+    }
+    expect(terminal.shown()).toContain('Stopped watching workspaces one (Site one), two (Site two).')
+  })
+})
 
 describe('buckle approvals --watch', () => {
   it('shows a group call once while skipped asks remain individually visible and waiting', async () => {
@@ -260,7 +291,7 @@ describe('buckle approvals --watch', () => {
   it('stops on an interrupt signal while nothing is waiting', async () => {
     const terminal = keyboardTerminal()
     const interrupted = new AbortController()
-    const done = watchApprovals({ approvals: serviceOf(node()), actions: scratchLog(), workspaceId: 'default', input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL, signal: interrupted.signal })
+    const done = watchApprovals({ sources: [{ approvals: serviceOf(node()), actions: scratchLog(), workspaceId: 'default' }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL, signal: interrupted.signal })
 
     interrupted.abort()
 

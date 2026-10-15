@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { CLOSE_STAGES } from '@5straps/runtime'
 import { generateSigningKey, keyIdOf, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest } from '@5straps/protocol/signed-request'
-import { afterAll, describe, expect, inject, it } from 'vitest'
+import { afterAll, describe, expect, inject, it, vi } from 'vitest'
 import { firstResponse, freePort, spawnBuckle, waitForStatus, type BuckleProcess, type LogLine } from '../support/buckle-process.js'
 
 // The package as installed: dist/main.js, and .output beside it, found from the package root.
@@ -156,6 +156,8 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     expect(await ready.json()).toEqual({ status: 'ready' })
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
     expect(readFileSync(builds, 'utf8')).toBe('x')
+    // The workspace-model brief, item 6: the online workspaces, on the terminal questions are asked on.
+    await vi.waitFor(() => expect(buckle.stderr()).toMatch(/Serving 1 workspace:\n {2}default \(.+\)\n {4}folder {2}/))
 
     buckle.child.kill('SIGTERM')
     expect(await buckle.exited).toEqual({ code: 0, signal: null })
@@ -166,6 +168,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
       { stage: 'waiters', name: 'approval waits' },
       // B19: running tool calls, PTY terminals, language servers, browser sessions and action reports.
       { stage: 'jobs', name: 'tool calls' },
+      { stage: 'jobs', name: 'workspace list' },
       { stage: 'streams', name: 'workbench terminals' },
       { stage: 'streams', name: 'language servers and browser sessions' },
       { stage: 'streams', name: 'http server connections' },

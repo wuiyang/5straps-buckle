@@ -54,6 +54,7 @@ function gatedServer(answer: BuckleRuntime['approvalService']['answer'] = async 
     invoke: async () => ({ ...gatedResponse, approvals: waiting.map(ask => ask.request) }),
     approvalService: { answer, waiting: () => waiting },
     workspaceId: 'default',
+    workspaceName: () => 'Fixture workspace',
   } as unknown as BuckleRuntime
 
   return createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', trustedApprovalResponses: true })
@@ -153,7 +154,8 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
     expect(form.message).toContain('gated_tool needs approval')
     expect(form.message).toContain('subject: /etc/hostname')
     expect(form.message).toContain('  node:     node-7')
-    expect(form.message).toContain('  workspace: default')
+    expect(form.message).toContain('gated_tool needs approval in workspace default (Fixture workspace)')
+    expect(form.message).toContain('  workspace: default (Fixture workspace)')
     expect(form.message).toContain('  in:       /workspace')
     expect(form.message).toContain('  effects:  write /workspace/one/deploy.sh')
     expect(form.message).toContain('            read /etc/hostname')

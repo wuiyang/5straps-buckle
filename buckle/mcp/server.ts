@@ -97,8 +97,8 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
 
           if (response.outcome === 'approval_required') {
             return elicits
-              ? askForApproval({ approvals: response.approvals, waiting: runtime.approvalService.waiting(), workspaceId: runtime.workspaceId, ...(options.serverId === undefined ? {} : { node: options.serverId }) })
-              : relayApproval({ approvals: response.approvals, workspaceId: runtime.workspaceId, nodeName: serverName })
+              ? askForApproval({ approvals: response.approvals, waiting: runtime.approvalService.waiting(), workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), ...(options.serverId === undefined ? {} : { node: options.serverId }) })
+              : relayApproval({ approvals: response.approvals, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), ...(options.serverId === undefined ? {} : { nodeName: options.serverId }) })
           }
           return toCallToolResult(response)
         } catch (error) {
@@ -116,9 +116,9 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
  * which is why it names the node and the workspace: the person may hold several, and the command
  * only answers the workspace it names.
  */
-function relayApproval(input: { approvals: ApprovalRequest[]; workspaceId: string; nodeName: string }) {
+function relayApproval(input: { approvals: ApprovalRequest[]; workspaceId: string; workspaceName: string; nodeName?: string }) {
   const lines = input.approvals.map(request => {
-    const [first, ...rest] = describeApprovalRequest({ request, workspaceId: input.workspaceId, nodeName: input.nodeName })
+    const [first, ...rest] = describeApprovalRequest({ request, workspaceId: input.workspaceId, workspaceName: input.workspaceName, ...(input.nodeName === undefined ? {} : { nodeName: input.nodeName }) })
     return [`- ${first}`, ...rest.map(line => `  ${line}`)].join('\n')
   })
   const review = reviewCommand({ workspaceId: input.workspaceId })
@@ -179,14 +179,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * A call that made several asks is shown whole once, in the form of its first ask, which lists the others;
  * each other form names that ask (review M1 of the slice 5 re-review).
  */
-function askForApproval(input: { approvals: ApprovalRequest[]; waiting: PendingAsk[]; workspaceId: string; node?: string }) {
+function askForApproval(input: { approvals: ApprovalRequest[]; waiting: PendingAsk[]; workspaceId: string; workspaceName: string; node?: string }) {
   const refOf = new Map(input.waiting.map(ask => [ask.request.token, ask.callRef]))
   const group = (ref: string | undefined) => ref === undefined ? [] : input.approvals.filter(approval => refOf.get(approval.token) === ref)
   const shownWith = new Map<string, string>()
   const inputRequests = Object.fromEntries(input.approvals.map((approval) => {
     const call = recordedCall(input.waiting, approval.token)
     const ref = refOf.get(approval.token)
-    const shown = { ...approval, workspaceId: input.workspaceId, ...(input.node === undefined ? {} : { node: input.node }), ...(call ? { call } : {}) }
+    const shown = { ...approval, workspaceId: input.workspaceId, workspaceName: input.workspaceName, ...(input.node === undefined ? {} : { node: input.node }), ...(call ? { call } : {}) }
     const earlier = ref === undefined ? undefined : shownWith.get(ref)
     if (call && ref !== undefined && earlier === undefined) shownWith.set(ref, approval.token)
     const asks = group(ref)

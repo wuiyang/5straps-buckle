@@ -4,7 +4,7 @@ import type { CliConsumer, CliRequest } from '@5straps/runtime'
 import { JsonValueSchema, PermissionRuleIdSchema, GrantScopeSchema, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
 import { z } from 'zod'
 import { remainingMs } from '../common/domain/approval-deadline.js'
-import { describeAsk, type ShownAsk } from '../common/domain/approval-instruction.js'
+import { describeAsk, printable, type ShownAsk } from '../common/domain/approval-instruction.js'
 import type { ApprovalChoice } from '../common/services/approvals/approval-service.js'
 import { APPROVAL_REQUEST_KIND } from '../common/services/approvals/interaction.js'
 import { QUIET_MS, discardTypedLine, watchKeys } from './terminal-keys.js'
@@ -66,7 +66,7 @@ const jsonText = <T extends z.ZodType>(schema: T) => z.string().transform((value
 const QuestionDetailsSchema = z.object({
   tool: z.string(), rule: PermissionRuleIdSchema, subject: z.string(), reason: z.string(),
   scopes: z.string().transform(value => value.split(',')).pipe(z.array(GrantScopeSchema).min(1)),
-  expiresAt: z.string(), workspace: z.string().optional(), node: z.string().optional(),
+  expiresAt: z.string(), workspace: z.string().optional(), workspaceName: z.string().optional(), node: z.string().optional(),
   arguments: jsonText(JsonValueSchema).optional(), cwd: z.string().optional(), description: z.string().optional(), effects: jsonText(z.array(z.string())).optional(),
 })
 
@@ -119,7 +119,7 @@ export function createTerminalConsumer(options: TerminalOptions = {}): CliConsum
         await keys.quiet(QUIET_MS, cancelled)
         cancelled.throwIfAborted()
         discardTypedLine(readline)
-        const answer = (await readline.question(`  ${question.call ? `${scopeChoices(question)}  ` : ''}${denyChoices(question)} > `, { signal: cancelled })).trim().toLowerCase()
+        const answer = (await readline.question(`${marked(question, [''])[0]}  ${question.call ? `${scopeChoices(question)}  ` : ''}${denyChoices(question)} > `, { signal: cancelled })).trim().toLowerCase()
         return { status: 'answered', answer: { choice: choiceFor(question, answer) } }
       } finally {
         keys.stop()
@@ -135,7 +135,15 @@ export function createTerminalConsumer(options: TerminalOptions = {}): CliConsum
  * recorded before this build. The agent chose the tool call, so its text is shown with control characters escaped.
  */
 export function describeQuestion(question: ApprovalQuestion): string {
-  return `\n${describeAsk(question).join('\n')}\n`
+  return `\n${marked(question, describeAsk(question)).join('\n')}\n`
+}
+
+/**
+ * Each line marked `[<id>]` with the workspace it waits in (the workspace-model brief, item 6): a terminal serving
+ * several workspaces, and logging beside them, shows which one a question is from on every line of it.
+ */
+export function marked(question: Pick<ApprovalQuestion, 'workspaceId'>, lines: string[]): string[] {
+  return question.workspaceId === undefined ? lines : lines.map(line => `[${printable(question.workspaceId!)}] ${line}`)
 }
 
 function approvalQuestion(request: CliRequest): ApprovalQuestion {
@@ -144,7 +152,7 @@ function approvalQuestion(request: CliRequest): ApprovalQuestion {
   const call = details.arguments === undefined || details.cwd === undefined ? undefined : { arguments: details.arguments, cwd: details.cwd, description: details.description ?? null, ...(details.effects === undefined ? {} : { effects: details.effects }) }
   return {
     tool: details.tool, rule: details.rule, subject: details.subject, reason: details.reason, offeredScopes: details.scopes, expiresAt: details.expiresAt,
-    ...(details.workspace ? { workspaceId: details.workspace } : {}), ...(details.node ? { node: details.node } : {}), ...(call ? { call } : {}),
+    ...(details.workspace ? { workspaceId: details.workspace } : {}), ...(details.workspaceName ? { workspaceName: details.workspaceName } : {}), ...(details.node ? { node: details.node } : {}), ...(call ? { call } : {}),
   }
 }
 
