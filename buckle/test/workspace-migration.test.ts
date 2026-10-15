@@ -276,6 +276,24 @@ describe('moving a 0.1 node onto the workspace model', () => {
       await expect(open(input)).resolves.toBeDefined()
     })
 
+    // Recheck finding 4: LONG above ends its 120th character on a space, so a plain 120-character cut passes it too.
+    it.each([
+      ['a name whose 120th character falls inside a word, cut at the word before', `${'alpha beta gamma '.repeat(7)}deltaepsilonzeta`, 'alpha beta gamma '.repeat(7).trim()],
+      ['a name with no separator at all, cut at 120 characters', 'x'.repeat(130), 'x'.repeat(120)],
+      ['a name whose only separator is in its first half, cut at 120 characters', `ab ${'x'.repeat(130)}`, `ab ${'x'.repeat(117)}`],
+    ])('cuts %s', async (_label, folderName, expected) => {
+      const input = scene()
+      const folder = join(input.root, folderName)
+      mkdirSync(folder)
+      input.environment.BUCKLE_WORKSPACE_ROOT = folder
+      version1(input)
+      const notices = vi.spyOn(logger, 'warn')
+      const manager = await open(input)
+      const name = manager.list().find(workspace => workspace.id === workspaceIdOf(folder))!.name
+      expect(name).toBe(expected)
+      expect(notices.mock.calls.some(([message]) => String(message).includes(`was ${folderName.length} characters, more than the 120 a workspace name holds, so it is named ${expected}`))).toBe(true)
+    })
+
     it('refuses a record the registry would not read, naming its field, and changes nothing', async () => {
       const input = scene()
       const text = version1(input).replace('"label": "Registered"', `"label": "${'x'.repeat(121)}"`)
