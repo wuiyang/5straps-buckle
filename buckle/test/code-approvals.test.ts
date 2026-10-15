@@ -1157,6 +1157,18 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(third).not.toHaveBeenCalled()
   })
 
+  // Recheck 5 of the final review of 0.1.4, finding code index.ts:466: a script that posts calls without awaiting them
+  // past its cap, a call still in flight so its VM runs on, leaves an unanswered list no longer than the cap.
+  it(`holds the unanswered calls a spinning script leaves to ${MAX_NESTED_CALLS}`, async () => {
+    const directory = scratch()
+    const script = 'tools.gate({}); tools.waiter({}); let i = 0; for (;;) { tools.echo({ i: i++ }) }'
+    const invoked = async (call: NestedCall) => call.tool === 'gate' ? ask(call) : call.tool === 'waiter' ? await new Promise<InvokeResponse>(resolve => call.signal?.addEventListener('abort', () => resolve(cut(call)))) : ok(call, 'echoed')
+    await codeRun(directory, invoked, { timeoutMs: 2_000 })(script).catch((error: unknown) => error)
+    const [record] = kept(directory)
+    expect(record).toBeDefined()
+    expect(record!.unanswered!.length).toBeLessThanOrEqual(MAX_NESTED_CALLS)
+  }, 60_000)
+
   // Recheck 3 of the final review of 0.1.4, finding code index.ts:483: a call the first run cut before it ran is made
   // live by the next send, which then diverges on a stub the script handled. The record it keeps gains that call and
   // keeps its expiry, so the send after a restart replays it rather than running it a second time.

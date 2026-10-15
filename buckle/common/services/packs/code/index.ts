@@ -463,7 +463,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
         }
         return answerGlobal(call, recordedGlobal, fingerprint, bytes !== null ? tooLarge() : global(call.name, call.args))
       }
-      toolCallsMade.set(call.id, { id: call.id, tool: call.name, args: fingerprint })
+      // Within the call cap alone: a call past it is refused or never made, and the cap ends the script, so the list is
+      // as bounded as the calls (recheck 5 of the final review of 0.1.4, finding code index.ts:466).
+      if (toolCalls <= MAX_NESTED_CALLS) toolCallsMade.set(call.id, { id: call.id, tool: call.name, args: fingerprint })
       if (halted()) {
         skipped.add(call.id)
         return
