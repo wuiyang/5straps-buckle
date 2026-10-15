@@ -16,7 +16,7 @@ import { deny } from '../decision.js'
  * `./node_modules/.bin/buckle`, or one handed to `node`), the installed entry point handed to `node`
  * (`.../@5straps/buckle/dist/main.js`), and a quoted one in a script body are refused the same way,
  * with any option words before the subcommand, quoted or not, as `--skip-owner-only-check` may stand there
- * (findings 35 of the workspace-model Phase 1 review and 16 of its recheck). The subcommand must end the word, so
+ * (finding 35 of the workspace-model Phase 1 review, and its recheck). The subcommand must end the word, so
  * `mcp-probe` or `policy.json` after a directory named `buckle` is not taken for one. This is a speed
  * bump: the real guard is the hidden state directory and the sandbox. A quoted subcommand word
  * (`buckle 'keys'`) passes it, a limit that needs an owner allow of the shell wrapper first.

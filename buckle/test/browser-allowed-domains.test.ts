@@ -216,7 +216,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     expect(calls().filter(call => call[0] === 'close')).toHaveLength(1)
   })
 
-  // Recheck finding 13: what the browser is handed decides whether its pack is replaced, not the stored list it comes from.
+  // Recheck of the workspace-model fix round 1 (the browser pack): what the browser is handed decides whether its pack is replaced, not the stored list it comes from.
   it.each([
     ['the same hosts in another order', ['*.example.test', 'docs.test'], ['docs.test', '*.example.test']],
     ['a host listed twice', ['*.example.test', 'docs.test'], ['*.example.test', 'docs.test', 'docs.test']],

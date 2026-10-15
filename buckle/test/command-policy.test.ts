@@ -1853,7 +1853,7 @@ describe('what no pattern can change', () => {
     ['bash', ['-c', 'buckle --skip-owner-only-check keys enroll ed25519:AAAA --purpose approval --workspace node']],
     ['node', ['/usr/lib/node_modules/@5straps/buckle/dist/main.js', 'keys', 'enroll', 'ed25519:AAAA']],
     ['node', ['./node_modules/@5straps/buckle/dist/main.js', '--skip-owner-only-check', 'policy', 'dangerously-allow', 'on']],
-    // Recheck finding 16: bash strips the quotes round an option word, so the quoted spelling runs the same command.
+    // Recheck of the workspace-model fix round 1 (finding 35 left): bash strips the quotes round an option word, so the quoted spelling runs the same command.
     ['bash', ['-c', 'buckle "--skip-owner-only-check" keys enroll ed25519:AAAA --purpose approval --workspace node']],
     ['bash', ['-c', `buckle '--skip-owner-only-check' keys enroll ed25519:AAAA --purpose approval --workspace node`]],
     ['bash', ['-c', `buckle "--skip-owner-only-check" '--other' "--more" policy dangerously-allow on`]],

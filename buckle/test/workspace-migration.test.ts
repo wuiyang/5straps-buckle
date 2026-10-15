@@ -276,7 +276,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       await expect(open(input)).resolves.toBeDefined()
     })
 
-    // Recheck finding 4: LONG above ends its 120th character on a space, so a plain 120-character cut passes it too.
+    // Recheck of the workspace-model fix round 1 (the name cut): LONG above ends its 120th character on a space, so a plain 120-character cut passes it too.
     it.each([
       ['a name whose 120th character falls inside a word, cut at the word before', `${'alpha beta gamma '.repeat(7)}deltaepsilonzeta`, 'alpha beta gamma '.repeat(7).trim()],
       ['a name with no separator at all, cut at 120 characters', 'x'.repeat(130), 'x'.repeat(120)],
@@ -481,7 +481,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       await openWorkspaceManager({ config })
       const said = notices.mock.calls.map(([message]) => String(message)).filter(message => message.startsWith(`${path} sets BUCKLE_WORKSPACE_ROOT`))
       expect(said).toHaveLength(2)
-      // Recheck finding 6: unsetting the line drops the folder the way back to 0.1 needs, so the notice says when to.
+      // Recheck of the workspace-model fix round 1 (the way back): unsetting the line drops the folder the way back to 0.1 needs, so the notice says when to.
       expect(said[0]).toContain('Add --workspace <name> to your MCP configs, then, once you no longer need the way back to 0.1, run buckle settings unset root.')
       expect(config.callerWorkspaceRoot).toBeUndefined()
       expect(loadConfig({}, process.platform, { file: { path, values: { BUCKLE_WORKSPACE_ROOT: input.folder } }, caller: { BUCKLE_WORKSPACE_ROOT: input.site } }).callerWorkspaceRoot).toBe(input.site)
