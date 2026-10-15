@@ -1105,6 +1105,36 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
       expect([pushes(first.mock.calls.map(([call]) => call)), second.mock.calls.length]).toEqual([1, 0])
     })
 
+    // Recheck 5 of the final review of 0.1.4, finding code-approvals.test.ts:1082: a shift between two calls of the same
+    // tool is refused by the fingerprint, not only by the tool's name.
+    it('refuses a write a handled stub moves onto an asked call of the same tool, before it runs', async () => {
+      const directory = scratch()
+      const script = 'const r = await tools.echo({ big: true }).catch(() => null); await Promise.all([r ? tools.echo({ gated: true }) : null, tools.echo({ push: true })]); return "end"'
+      const first = vi.fn(async (call: NestedCall) => (call.args as { gated?: boolean }).gated ? ask(call) : ok(call, 'x'.repeat(5_000)))
+      await expect(codeRun(directory, first, { journalBytes: 4_096 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE })
+      const second = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
+      await expect(codeRun(directory, second, { journalBytes: 4_096 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      expect([pushes(first.mock.calls.map(([call]) => call)), second.mock.calls.length]).toEqual([1, 0])
+    })
+
+    // Recheck 5 of the final review of 0.1.4, finding code index.ts:526: a send stopped before it reaches the asked
+    // number keeps that number in the record it rewrites, so the next send is still refused before the write runs.
+    it('keeps the first run\'s unanswered numbers in the record a later send rewrites before reaching them', async () => {
+      const directory = scratch()
+      const script = 'const r = await tools.echo({ big: true }).catch(() => null); await Promise.all([r ? tools.gate({}) : null, tools.echo({ push: true })]); return "end"'
+      const first = vi.fn(async (call: NestedCall) => call.tool === 'gate' ? ask(call) : ok(call, 'x'.repeat(5_000)))
+      await expect(codeRun(directory, first, { journalBytes: 4_096 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE })
+      // A send whose deadline passes before its VM makes any call, which rewrites the record as a stop does.
+      const real = createPiCodemodeVm()
+      const outOfTime: ScriptVm = { ...real, start: () => ({ deliver() {}, finished: true, result: Promise.resolve({ ok: false, output: [], outputTruncated: false, calls: [], error: { kind: 'timeout', message: 'The script ran past its deadline' } }) }) }
+      expect(await codeRun(directory, async call => ok(call, 'ran again'), { journalBytes: 4_096, vm: outOfTime })(script)).toMatchObject({ ok: false, error: { kind: 'timeout' } })
+      expect(kept(directory).map(journal => journal.unanswered?.map(entry => entry.id))).toEqual([[2]])
+
+      const third = vi.fn(async (call: NestedCall) => ok(call, 'ran again'))
+      await expect(codeRun(directory, third, { journalBytes: 4_096 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_DIVERGED })
+      expect([pushes(first.mock.calls.map(([call]) => call)), third.mock.calls.length]).toEqual([1, 0])
+    })
+
     it('runs the asked call once when the same call is made again on its number', async () => {
       const directory = scratch()
       const script = 'await tools.echo({}); await tools.gate({}); return "end"'
@@ -1218,6 +1248,34 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(await store.write(record(older, 2_000), { expiresAt })).toBe(true)
     expect(store.read(older)).toMatchObject({ expiresAt })
     expect(store.read(newer)).toBeNull()
+  })
+
+  // Recheck 5 of the final review of 0.1.4, finding journal.ts:243: a record that alone passes the workspace's budget is
+  // refused, and its stubs are written instead.
+  it('refuses a record that alone passes the workspace budget, and keeps its stubs instead', async () => {
+    const record = { key: 'a'.repeat(64), startedAt: 1, seed: 1, script: 's', tools: [], entries: [{ seq: 1, now: 1, id: 1, tool: 'echo', args: 'h', outcome: { ok: true as const, value: 'v'.repeat(3_000) } }] }
+    const directory = scratch()
+    expect(await createJournalStore({ directory, workspaceBytes: 2_000 }).write(record)).toBe(false)
+    expect(readdirSync(directory)).toEqual([])
+
+    const packDirectory = scratch()
+    const script = 'await tools.echo({}); await tools.gate({}); return "end"'
+    await expect(codeRun(packDirectory, async call => call.tool === 'gate' ? ask(call) : ok(call, 'x'.repeat(8_000)), { workspaceBytes: 6_000 })(script)).rejects.toMatchObject({ code: CODE_REPLAY_TOO_LARGE })
+    expect(kept(packDirectory).map(journal => journal.entries.map(entry => [entry.id, entry.outcome.ok ? 'ok' : entry.outcome.properties?.code]))).toEqual([[[1, 'REQUEST_ALREADY_EXECUTED']]])
+  })
+
+  // Recheck 5 of the final review of 0.1.4, finding journal.ts:222: a record the store cannot read whose own expiry, or
+  // whose file time, is past is simply gone, never refused.
+  it('reads an expired record it cannot parse as gone, by its own expiry or by its file time', async () => {
+    const directory = scratch()
+    const store = createJournalStore({ directory })
+    const [byField, byTime] = ['c'.repeat(64), 'd'.repeat(64)]
+    writeFileSync(join(directory, `${byField}.json`), JSON.stringify({ version: 1, key: byField, expiresAt: Date.now() - 1_000 }))
+    writeFileSync(join(directory, `${byTime}.json`), JSON.stringify({ version: 1, key: byTime }))
+    const aged = (Date.now() - JOURNAL_TTL_MS - 1_000) / 1_000
+    utimesSync(join(directory, `${byTime}.json`), aged, aged)
+    expect([store.read(byField), store.read(byTime)]).toEqual([null, null])
+    expect(readdirSync(directory)).toEqual([])
   })
 
   // Recheck 5 of the final review of 0.1.4, finding journal.ts:199: the sweep spares the record just written only while
