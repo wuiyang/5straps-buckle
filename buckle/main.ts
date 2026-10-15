@@ -97,7 +97,7 @@ function configureProcess(): { config: NodeConfig; logging: LoggerRoot } {
 const SERVICE_USAGE: Record<ServiceKind, string> = {
   serve: `Usage: buckle serve
 
-Serves every online workspace over HTTP, native RPC and MCP, at BUCKLE_HOST and BUCKLE_PORT (127.0.0.1:4320 by
+Serves every online workspace over HTTP, native RPC, and MCP, at BUCKLE_HOST and BUCKLE_PORT (127.0.0.1:4320 by
 default). An agent's token chooses its workspace. In a terminal it lists the workspaces it serves and asks each
 approval there. Ctrl-C stops it.
 `,

@@ -202,6 +202,13 @@ describe('main', () => {
     expect(entry.initializeCommon).not.toHaveBeenCalled()
   })
 
+  // House rule: the Oxford comma in a list of three, in the text an owner reads first.
+  it('writes the three faces buckle serve offers with the Oxford comma', async () => {
+    const printed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    expect(await main(['serve', '--help'])).toBe(0)
+    expect(String(printed.mock.calls[0]![0])).toContain('over HTTP, native RPC, and MCP, at')
+  })
+
   it('hands every other argument list to the CLI with the loaded config', async () => {
     expect(await main(['fs', 'read', 'notes.txt'])).toBe(5)
     expect(entry.runCli).toHaveBeenCalledWith({ argv: ['fs', 'read', 'notes.txt'], config })
