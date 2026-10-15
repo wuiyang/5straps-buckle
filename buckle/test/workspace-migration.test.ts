@@ -126,6 +126,24 @@ describe('moving a 0.1 node onto the workspace model', () => {
     expect(settings(input, 'site').policy.commands).toMatchObject(commands)
   })
 
+  // Finding 38: under the node's deny list alone, an interpreter only the node allowed was asked about; one list refuses it.
+  it('refuses where one list would refuse an interpreter that was asked about, naming it, and changes nothing', async () => {
+    const input = scene({ BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_ALLOWED_INTERPRETERS: 'python3,node' })
+    const before = version1(input, { policy: policy(value => { value.commands.allowedInterpreters = ['node'] }) })
+    const failure = await open(input).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(MigrationError)
+    expect((failure as Error).message).toContain('workspace site: the interpreter lists (python3 asked before, and one list would refuse it)')
+    expect(registry(input)).toBe(before)
+  })
+
+  it('keeps the shared interpreters where the workspace had a deny list of its own, which refused the others already', async () => {
+    const input = scene({ BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_ALLOWED_INTERPRETERS: 'python3,node' })
+    version1(input, { policy: policy(value => { value.commands.deny = ['rm *']; value.commands.allowedInterpreters = ['node'] }) })
+    await open(input)
+    expect(settings(input, 'site').policy.commands).toMatchObject({ deny: ['curl *', 'rm *'], allowedInterpreters: ['node'] })
+  })
+
   it('refuses where no one list admits exactly what both did, naming the workspace and the lists, and changes nothing', async () => {
     const input = scene({ BUCKLE_NETWORK_ALLOW: 'a.example', BUCKLE_COMMAND_ALLOW: 'pnpm *' })
     const before = version1(input, { policy: policy(value => { value.network.allow = ['b.example']; value.commands.allow = ['git *'] }) })

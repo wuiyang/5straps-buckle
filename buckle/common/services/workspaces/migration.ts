@@ -372,9 +372,17 @@ function refuseCallerSettings(input: MigrationInput): void {
  * A registered workspace's policy within the node's environment lists, as one policy that admits exactly what both
  * admitted (Q14): denials and the destructive lists joined, interpreters the two share, and for each allow list the
  * one that is the other's subset; where neither is, there is no one list, and the conflict is named.
+ *
+ * An interpreter the node allowed and the workspace did not was asked about where only the node had a deny list: the
+ * node's rule let it through, and the workspace's, with no deny list, never read it. One policy with the joined deny
+ * list refuses it instead, so that is a conflict too (fix brief 1, A6, finding 38).
  */
 function withinLists(ceiling: WorkspacePolicy, own: WorkspacePolicy): { policy: WorkspacePolicy } | { conflicts: string[] } {
   const conflicts: string[] = []
+  const refusedNow = ceiling.commands.deny.length > 0 && own.commands.deny.length === 0
+    ? allowedInterpreters(ceiling).filter(name => !allowedInterpreters(own).includes(name))
+    : []
+  if (refusedNow.length > 0) conflicts.push(`the interpreter lists (${refusedNow.join(', ')} asked before, and one list would refuse ${refusedNow.length === 1 ? 'it' : 'them'})`)
   const narrower = (name: string, top: string[], mine: string[]): string[] => {
     if (top.length === 0) return mine
     if (mine.length === 0 || top.every(entry => mine.includes(entry))) return top
