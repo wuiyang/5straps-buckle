@@ -8,10 +8,12 @@ and Buckle does not ask about them.
 
 ## Where it lives
 
-Each [workspace](workspaces.md) has one policy, in its `workspace.json`, which `buckle policy`
+Each [workspace](workspaces.md) has its own policy, in its `workspace.json`, which `buckle policy`
 writes: its command lists, its approved list, its [allowed interpreters](policy-02.md#interpreters),
-its tool lists, its filesystem rules, and where the agent sees its folder. No node policy sits
-over it, and no other workspace's applies. `buckle policy` acts on the workspace `--workspace
+its tool lists, its filesystem rules, and where the agent sees its folder. The node's lists in
+`buckle.env` are every workspace's defaults: an allow list a workspace has none of is the node's,
+and the node's deny and destructive lists apply to every workspace ([Node
+defaults](workspaces-03.md)). No other workspace's applies. `buckle policy` acts on the workspace `--workspace
 <id>` or `--dir <path>` names, or else on the one whose folder holds the current directory.
 
 ## Commands

@@ -2,9 +2,11 @@
 
 Buckle, the approval and sandbox runtime that runs an AI agent's tool calls, runs as one node per
 machine. The node serves workspaces: each one is a folder an agent works in, with its own agent
-tokens, policy, settings, grants, approvals, and history. The node shares only its admin
-credential, its host, and its port. This page covers making and changing workspaces;
-[the next one](workspaces-02.md) covers their settings and moving a node set up before them.
+tokens, policy, settings, grants, approvals, and history. The node's admin credential, host,
+port, and other node settings are its alone; its other settings in `buckle.env` are each
+workspace's defaults. This page covers making and changing workspaces; [the next
+one](workspaces-02.md) covers their settings and moving a node set up before them, and [Node
+defaults](workspaces-03.md) how the node's settings apply to each.
 
 ## buckle init
 
@@ -19,12 +21,12 @@ settings, in the state directory (`~/.5straps/buckle`, or the absolute path in
 current directory, or the folder `--dir` names, as a workspace, and prints that workspace's agent
 token once. Each later `buckle init`, in another project, keeps the node's file and adds that
 folder as a workspace with a token of its own. `--force` writes the node's file again, with a new
-admin credential, and keeps every workspace. In a folder a workspace already serves, it adds
+admin credential, and keeps every workspace and the node's workspace defaults. In a folder a workspace already serves, it adds
 nothing and says how to mint a token there.
 
 In a terminal it asks where the agent sees the folder (`/workspace`), which packs to offer,
 whether shell tools and host Git are on, and the approved hosts and URLs. Each answer goes to the
-new workspace's settings; Enter keeps the default. [First run](first-run.md) walks through it.
+new workspace's settings; Enter leaves the setting to the node's default. [First run](first-run.md) walks through it.
 
 ## buckle workspace
 
@@ -54,7 +56,7 @@ buckle workspace token revoke <token-id>
   is unique on the node, case insensitively. A folder inside a workspace, or holding one or the
   state directory, is refused.
 - `list` shows every workspace, online or not. `show`, the default verb, prints one workspace's
-  settings as JSON; no token is ever shown again.
+  settings in force, each with where it comes from; no token is ever shown again.
 - `disable` stops serving a workspace, as an MCP server is switched off: calls to it are refused,
   and its files, records, and tokens stay. `enable` serves it again. `rename` gives it another
   name; its id never changes.
@@ -106,8 +108,9 @@ before workspaces), else the one holding the client's working directory:
 }
 ```
 
-A workspace's settings never come from an MCP client's `env`: a node set up with workspaces
-ignores the old settings variables there, and says so in its log.
+Neither a workspace's settings nor the defaults it takes from the node come from an MCP client's
+`env`: the node reads them from `workspace.json` and `buckle.env` alone, and says so in its log
+where that `env` sets one otherwise.
 
 ## buckle serve
 

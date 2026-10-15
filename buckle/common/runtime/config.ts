@@ -90,7 +90,7 @@ export interface NodeConfig {
   browserArgs?: string
   /** Where to announce a pending approval, so a person can be reached away from the machine. */
   approvalWebhook?: string
-  /** Owner-authorized read-only file and folder aliases, scoped to the node's own folder (workspace default). */
+  /** Owner-authorized read-only file and folder aliases, every workspace's until the mount table holds them per workspace (Phase 2). */
   sandboxMounts?: SandboxMount[]
   /** Host directories still readable inside a mounted sandbox, for toolchains outside /usr. */
   mountReadOnlyPaths: string[]

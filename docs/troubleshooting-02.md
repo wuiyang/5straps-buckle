@@ -58,6 +58,6 @@ variable after an option that takes one (`nice -n "$n" make`), or hand a shell i
 
 `buckle policy` acts on the workspace `--workspace <id>` or `--dir <path>` names, or else on the
 one whose folder holds the current directory, and `buckle policy show` names it on its first
-line. Each workspace's policy is its own, with no node policy over it, so a rule added in one
-folder does nothing in another. `buckle workspace list` shows each workspace's id and folder
+line. A rule `buckle policy` adds is that workspace's own, so it does nothing in another; only the
+node's lists in `buckle.env` reach every workspace ([Node defaults](workspaces-03.md)). `buckle workspace list` shows each workspace's id and folder
 ([Workspaces](workspaces.md#which-workspace-a-command-means)).

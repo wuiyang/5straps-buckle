@@ -64,6 +64,13 @@ model or later.
   setting that chose the mode. [Rings](rings.md), a separate 5straps control plane for agents,
   reads that field, so the name stays until Phase 2, and renaming it then means Rings has to
   follow.
+- [Node defaults](workspaces-03.md) cover the settings a 0.1 node kept in `buckle.env`. The node
+  names no command variables and no tool lists there, as `buckle.env` takes `BUCKLE_` settings
+  alone: a workspace's variables and tool lists are its own, and each resolves over an empty node
+  set.
+- An empty list is no list of a workspace's own, so a workspace cannot hold an empty command
+  allow list, approved list, or interpreter list over the node's. To free one workspace from a
+  node list, unset the node's and give each other workspace its own.
 - A command in the sandbox can read `/proc/self/mountinfo`, which lists the host folder behind
   each bind. Phase 2, which builds the sandbox from each workspace's mount table, covers this in
   these limits.

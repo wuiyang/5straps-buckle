@@ -1,21 +1,26 @@
 # Workspace settings, and moving from 0.1
 
 Each [workspace](workspaces.md) of a node of Buckle, the approval and sandbox runtime on this
-machine, keeps its settings in its own file, `workspaces/<id>/workspace.json` in the state
-directory. The node keeps its own in `buckle.env`. This page lists both, says when a change
-applies, and covers the move from 0.1.
+machine, keeps its own settings in `workspaces/<id>/workspace.json` in the state directory. The
+node keeps its own in `buckle.env`, and those are every workspace's defaults: a setting a
+workspace leaves unset is the node's, else Buckle's built-in one. This page lists the settings,
+says when a change applies, and covers the move from 0.1. [Node defaults](workspaces-03.md)
+covers how each setting resolves, the deny lists every workspace is held to, and the node's own
+settings.
 
 ## Settings
 
-`buckle workspace show` prints a workspace's `workspace.json`: its policy, where the agent sees
-its folder, its variables, packs, browser settings, and approval wait, and a revision counted
-at each write. `buckle workspace set <key> <value>` and `unset <key>` change one
-setting, checked whole with the rest before anything is written:
+`buckle workspace show` lists each setting in force and where it comes from: `workspace`, its
+own `workspace.json`; `node default`, the node's `buckle.env`; or `built-in`. `--json` adds the
+file as stored. `buckle workspace set <key> <value>` gives the workspace a value of its own,
+checked whole with the rest before anything is written; `unset <key>` takes it out, so the
+node's applies again:
 
-| Key | Takes | Default |
+| Key | Takes | Built-in |
 |---|---|---|
 | `name` | the workspace's name, shown beside its id | the folder's name |
 | `env.<NAME>` | a variable its shell commands see | none |
+| `mount` | where the agent sees the folder, such as `/workspace` | its real path |
 | `approvalWaitMs` | milliseconds a gated call waits for an answer; `0` waits until someone answers | `15000` |
 | `packs.enabled` | the packs offered, comma separated, which leaves plugins out | every built-in pack, and plugins |
 | `packs.shell` | `on` or `off`: the shell pack | on |
@@ -23,44 +28,34 @@ setting, checked whole with the rest before anything is written:
 | `packs.hostGit` | `on` or `off`: the `git` and `forge` packs, which read the repository outside per-file checks | off |
 | `packs.hostLsp` | `on` or `off`: language servers in the `dev` pack | off |
 
+A new workspace sets its mount, `/workspace`, and nothing else. `buckle workspace set` refuses a
+node setting, such as `host` or `BUCKLE_PORT`, naming `buckle settings set`.
+
 A variable name that looks like a credential (holding token, secret, password, or key) is taken,
 with a warning that its value is plain text in `workspace.json` and reaches every command. A name
 starting `BUCKLE_`, and the names Buckle sets for every command (`PATH`, `HOME`, `USER`,
-`LOGNAME`, `SHELL`, and `TMPDIR`), are refused. So is a value that, after trimming, contains a
-secret the node holds (the admin token, `BUCKLE_AUTH_TOKEN`, the forge token, the Brave search
-key, the report token, the Rings pairing key, or the approval webhook's URL) or a workspace's
-agent token as a word of it. Keep real secrets in your own store: `buckle workspace show` prints the file whole, and every
-command in the workspace can read it. A call's own `env` is set over the workspace's variables.
+`LOGNAME`, `SHELL`, and `TMPDIR`), are refused. So is a value that contains a secret the node
+holds (the admin token, `BUCKLE_AUTH_TOKEN`, the forge token, the Brave search key, the report
+token, the Rings pairing key, or the approval webhook's URL) or a workspace's agent token as a
+word of it. Keep real secrets in your own store: `buckle workspace show` prints the variables,
+and every command in the workspace can read them. A call's own `env` is set over them.
 
-The policy, its command, URL, interpreter, and tool lists, changes with `buckle policy`, which
-acts on one workspace as every command does ([Policy](policy.md)). Where the agent sees the
-folder changes with `buckle policy mount <path>` and `unmount`.
-
-The browser settings (`browser.cdp`, `browser.profile`, `browser.args`, `browser.headed`, and
-`browser.idleTimeoutMs`) are kept in the file but not read: the browser runs on the node's
-`BUCKLE_BROWSER_*` settings until a later release reads each workspace's own; `buckle workspace
-set` refuses them.
+The policy lists change with `buckle policy`, which acts on one workspace as every command does
+([Policy](policy.md)). The browser settings (`browser.cdp`, `browser.profile`, `browser.args`,
+`browser.headed`, and `browser.idleTimeoutMs`) are kept in the file but not read: the browser runs
+on the node's `BUCKLE_BROWSER_*` settings until a later release reads each workspace's own.
 
 ## When a change applies
 
 A running `buckle serve` or `buckle mcp` watches a workspace's state folder and takes a change up
 at once while the workspace is idle, with a check of `workspace.json` at the start of each call as
 the fallback. A change to the policy lists, the variables, or the approval wait applies then; a
-call already running keeps the rules it started with. A change to the packs or to where the folder shows waits until the workspace has no active
-work, such as a running call or a shell copy awaiting review, and calls are refused with a 409
-until then. A file that will not read leaves the settings in force, and the owner's log says so
-once. `buckle serve` watches the registry folder the same way, with its poll as the fallback.
-
-## Node settings
-
-`buckle.env` holds what every workspace shares: the node's name and id, host and port, the admin
-credential, the sandbox mode, logging, request and timeout limits, history and isolation budgets,
-the experimental admin face, where programs such as `agent-browser` are, the browser settings,
-`BUCKLE_ALLOWED_HOSTS`, and the [Rings](rings.md) pairing. `buckle settings show` lists
-them; a change applies when the node restarts. `buckle settings set` refuses a
-setting that belongs to a workspace now, naming the command that changes it, and `buckle
-settings unset` removes its line. `BUCKLE_SHELL_NETWORK` and `BUCKLE_SHELL_ISOLATION` stay
-node-level until Phase 2 of the workspace model moves them into each `workspace.json`.
+call already running keeps the rules it started with. A change to the packs or to where the
+folder shows waits until the workspace has no active work, such as a running call or a shell copy
+awaiting review, and calls are refused with a 409 until then. A file that will not read leaves
+the settings in force, and the owner's log says so once. `buckle serve` watches the registry
+folder the same way, with its poll as the fallback. A change to `buckle.env` applies when the
+node restarts.
 
 ## Moving a node from 0.1
 
@@ -73,16 +68,13 @@ workspaces, once, under the registry's lock:
   keep working; `buckle workspace token create --workspace <that name>`, then `token revoke
   node`, rotates it.
 - Each workspace registered with `buckle workspace add` keeps its 0.1 id as its name, gets a UUID
-  id, and keeps its folder and tokens. A disabled or retired one is kept offline. Each
-  workspace's own admin credential goes: the node's is the one.
+  id, and keeps its folder, tokens, and `/workspace` mount. A disabled or retired one is kept
+  offline. Each workspace's own admin credential goes: the node's is the one.
 - The registry keeps every token as its SHA-256 digest alone.
-- The settings the environment held (the command, URL, and interpreter lists, the mount, the
-  packs and their switches, the approval wait, and the browser settings) are copied into each
-  workspace's `workspace.json`. The node's own folder's workspace also keeps the policy
-  `buckle policy` stored.
-  A registered workspace keeps exactly what the node enforced on it, its own lists within the
-  node's; where no single list can say that, nothing changes, and the start is refused, naming
-  the workspace and the lists to settle.
+- Each `workspace.json` holds what was the workspace's own: the lists `buckle policy` stored, and
+  for the node's folder a mount it stored. The settings `buckle.env` held stay there, copied into
+  no workspace, as every workspace's defaults. A workspace with an allow list of its own now uses
+  it alone, where the node's list was a ceiling over it, and the move says so.
 - Grants, remembered denials, and the dangerously-allow switch move from the folder they were
   kept under to the workspace's id.
 

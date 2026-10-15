@@ -116,7 +116,7 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 
 | Path | Holds |
 |---|---|
-| `buckle.env` | the node's settings and its admin credential, written by `buckle init` |
+| `buckle.env` | the node's settings, every workspace's defaults among them, and its admin credential |
 | `workspaces.json` | each workspace's id, name, folder, whether it is online, and its agent tokens' SHA-256 digests |
 | `workspaces/<id>/` | the workspace's `workspace.json`, its settings and policy, and its records |
 | `workspaces.v1.json` | the 0.1 registry, kept when the node moved |

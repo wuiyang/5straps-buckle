@@ -22,7 +22,8 @@ then name that file with `BUCKLE_ENV_FILE` whenever you start Buckle. A node set
 its file unless you pass `--force`, and `buckle init` in another project adds it as another
 workspace.
 
-In a terminal it asks, each question with a default that Enter keeps:
+In a terminal it asks each question with a default. Enter keeps it, leaving a workspace
+setting to the node's default in `buckle.env`, else the one shown:
 
 | Question | Default | Kept as |
 |---|---|---|
@@ -35,7 +36,7 @@ In a terminal it asks, each question with a default that Enter keeps:
 | Approved hosts and URLs | none | the workspace's approved list |
 | Private-address hosts `web_fetch` may reach, first run only | none | `BUCKLE_ALLOWED_HOSTS` |
 
-`--yes`, or running without a terminal, takes every default and says so. Its summary checks
+`--yes`, or no terminal, takes every default and says so. Its summary checks
 `bwrap` on Linux, `rg`, `git`, and `agent-browser`: where each was found, or why not and what it
 unlocks. The node's file also sets `BUCKLE_HOST=127.0.0.1`, `BUCKLE_PORT=4320`, and
 `BUCKLE_SANDBOX=auto`. Change the workspace's answers later with `buckle workspace set` and
