@@ -139,7 +139,8 @@ async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config
   } catch (error) {
     if (command === 'check-url') return checkUrlUnreadable(error)
     if (command === 'policy' && error instanceof StoredPolicyError) return repairStoredPolicy({ workspaces, target: input.target, cwd: input.cwd, argv: input.rest, failure: error })
-    if (error instanceof WorkspaceError) return fail(error.message)
+    // An owner's command the log keeps is refused before any workspace's log is known: the node's records it (finding 31).
+    if (error instanceof WorkspaceError) return AUDITED_COMMANDS.includes(command) ? nodeAudited(input, () => fail(error.message)) : fail(error.message)
     throw error
   }
   return runOnWorkspace({ ...input, runtime })
@@ -159,12 +160,17 @@ async function runApproverCommand(input: { workspaces: WorkspaceManager; config:
   const token = input.command === 'approve' ? approveArguments(input.rest).positionals[0] : approvalsArguments(input.rest).positionals[1]
   if (token !== undefined) {
     const holder = holderOfAsk(runtimes, token)
-    return typeof holder === 'string' ? fail(holder) : runOnWorkspace({ ...input, runtime: holder })
+    if (typeof holder !== 'string') return runOnWorkspace({ ...input, runtime: holder })
+    // Refused before any workspace is chosen: recorded in the node's log, as the list across them is (finding 31).
+    return nodeAudited(input, () => fail(holder))
   }
-  if (input.command === 'approve') return fail(APPROVE_USAGE)
-  return auditOperation({ actions: input.workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: 'cli_approvals', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0,
-    operation: () => approvalsAcross({ runtimes, workspaces: input.workspaces, config: input.config, argv: input.rest }),
-  })
+  if (input.command === 'approve') return nodeAudited(input, () => fail(APPROVE_USAGE))
+  return nodeAudited(input, () => approvalsAcross({ runtimes, workspaces: input.workspaces, config: input.config, argv: input.rest }))
+}
+
+/** An owner's command that no one workspace answers, audited in the node's log: an attempt, and its result. */
+function nodeAudited(input: { workspaces: WorkspaceManager; command: string }, operation: () => CliResult | Promise<CliResult>): Promise<CliResult> {
+  return auditOperation({ actions: input.workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: `cli_${input.command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation })
 }
 
 /**

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { actionsPath, loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { describeOnline, watchOnline } from '../server/roster.js'
@@ -119,6 +120,20 @@ describe('buckle approve naming no workspace', () => {
     const refused = await buckle(['approve', 'no-such-token', '--deny'])
     expect(refused.exitCode).toBe(1)
     expect(refused.err).toContain('Nothing named no-such-token is waiting in any online workspace (one, two); to repeat a decision already recorded, name its workspace with --workspace <id>')
+  })
+})
+
+// Finding 31 of the Phase 1 review: a refusal over several workspaces, or before any is chosen, was audited nowhere.
+describe('an approver\'s command refused before any workspace answers it', () => {
+  it.each([
+    [['approve', 'bogus-token', '--deny'], 'cli_approve'],
+    [['approve'], 'cli_approve'],
+    [['approvals', 'show', 'bogus-token'], 'cli_approvals'],
+    [['approve', 'bogus-token', '--workspace', 'nosuch'], 'cli_approve'],
+  ])('%j is recorded in the node\'s log, an attempt and a failed result', async (argv, tool) => {
+    expect((await buckle(argv)).exitCode).toBe(1)
+    const entries = createFileActionLog(actionsPath(node)).read(20).filter(entry => entry.tool === tool)
+    expect(entries.map(entry => [entry.event, entry.outcome])).toEqual([['attempt', 'started'], ['result', 'error']])
   })
 })
 
