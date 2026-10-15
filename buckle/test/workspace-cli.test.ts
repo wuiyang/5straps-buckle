@@ -421,6 +421,21 @@ describe('buckle workspace token', () => {
     expect((await buckle(['token', 'revoke', 'no-such-token'], { cwd: alpha })).err).toContain('holds no token no-such-token')
   })
 
+  // Finding 32 of the Phase 1 review: the 0.1 id beside a flag was dropped, and the token minted in the flag's workspace.
+  it.each([
+    [['token', 'add', 'alpha', '--label', 'for-alpha', '--workspace', 'beta']],
+    [['token', 'add', 'alpha', '--dir', 'beta']],
+    [['token', 'list', 'alpha', '--workspace', 'beta']],
+    [['token', 'revoke', 'alpha', 'initial', '--workspace', 'beta']],
+  ])('refuses %j, which names the workspace twice, and mints or revokes nothing', async (argv) => {
+    await init(beta)
+    const before = registryText()
+    const refused = await buckle(argv, { cwd: base })
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('Name the workspace once')
+    expect(registryText()).toBe(before)
+  })
+
   it('keeps the 0.1 spellings, which name the workspace first, for one release', async () => {
     const added = await buckle(['token', 'add', 'alpha', '--label', 'legacy'])
     expect(added.exitCode).toBe(0)

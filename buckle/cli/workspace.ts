@@ -213,11 +213,17 @@ function credentialValueRefusal(context: Context, value: string): string | null 
   return held ? 'That value is one of this node\'s credentials, and no secret reaches a command Buckle runs' : null
 }
 
+/** How many words a 0.1 `token` spelling takes, its workspace's id first. */
+const LEGACY_POSITIONALS: Readonly<Record<string, number>> = { add: 1, list: 1, revoke: 2 }
+
 /** `token create|list|revoke` on the target workspace, and the 0.1 spellings that name the workspace first, for one release. */
 async function token(context: Context): Promise<CliResult> {
   const [action, ...words] = context.rest
   const { positionals, values } = parseArgs({ args: words, options: { label: { type: 'string' } }, allowPositionals: true })
-  const legacy = (count: number) => positionals.length === count && context.target.workspace === undefined && context.target.dir === undefined
+  const flagged = context.target.workspace !== undefined || context.target.dir !== undefined
+  const legacy = (count: number) => positionals.length === count && !flagged
+  // A 0.1 spelling's id beside --workspace or --dir names two workspaces; minting for one of them would be a guess (finding 32).
+  if (flagged && action !== undefined && positionals.length === LEGACY_POSITIONALS[action]) return fail(`Name the workspace once: buckle workspace token ${action} <id>${action === 'revoke' ? ' <token-id>' : ''}, the 0.1 spelling, or buckle workspace token ${action === 'add' ? 'create' : action}${action === 'revoke' ? ' <token-id>' : ''} --workspace <id>`)
   if (action === 'create' || action === 'add') {
     if (positionals.length > (action === 'add' ? 1 : 0)) return fail('Usage: buckle workspace token create [--label <text>]')
     const id = action === 'add' && legacy(1) ? positionals[0]! : context.workspaces.target({ ...context.target, cwd: context.cwd })
