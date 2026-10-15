@@ -54,6 +54,9 @@ describe('buckle client: the device side', () => {
     expect(output.stdout).toContain(key.publicKey)
     expect(output.stdout).toContain(key.keyId)
     expect(output.stdout).not.toContain('PRIVATE KEY')
+    // D15: one purpose per key, so the enrollment hint names the two purposes and not the dropped third.
+    expect(output.stdout).toContain('--purpose setup|approval --workspace')
+    expect(output.stdout).not.toContain('|both')
     const pem = readFileSync(file, 'utf8')
     expect(output.stdout).not.toContain(pem.split('\n')[1]!)
 
@@ -66,6 +69,8 @@ describe('buckle client: the device side', () => {
     output.stdout = ''
     expect((await clientCommand(['key'], environment)).exitCode).toBe(0)
     expect(output.stdout).toContain(loadClientKey(environment).keyId)
+    expect(output.stdout).toContain('--purpose setup|approval --workspace')
+    expect(output.stdout).not.toContain('|both')
   })
 
   it('refuses a key other users can read, a missing key, and a relative directory', async () => {

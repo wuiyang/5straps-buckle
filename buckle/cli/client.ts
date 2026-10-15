@@ -111,7 +111,7 @@ function showKey(environment: NodeJS.ProcessEnv): CliResult {
 }
 
 function describe(key: { publicKey: string; keyId: string }): string {
-  return `Public key:  ${key.publicKey}\nFingerprint: ${key.keyId}\nOn the node: buckle keys enroll ${key.publicKey} --purpose setup|approval|both --workspace <id>|node --label <this device>\n`
+  return `Public key:  ${key.publicKey}\nFingerprint: ${key.keyId}\nOn the node: buckle keys enroll ${key.publicKey} --purpose setup|approval --workspace <id>|node --label <this device>\n`
 }
 
 async function request(argv: string[], environment: NodeJS.ProcessEnv): Promise<CliResult> {
