@@ -60,7 +60,7 @@ import { logger } from '../../runtime/log.js'
 import { auditOperation } from '../audit/audit-operation.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
-import { openSettingsFile, ownMount, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
+import { openSettingsFile, ownMount, policySources, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type PolicySources, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 
@@ -88,6 +88,8 @@ export interface PolicyHandle {
   stored(): WorkspacePolicy
   /** The policy in force: its own lists, else the node's, with the node's deny-type lists over them. */
   effective(): WorkspacePolicy
+  /** Where each part of the policy in force comes from: the workspace's own, the node's default, or Buckle's (D85, Q3). */
+  sources(): PolicySources
   /** A fresh egress rule and approved list, built by the same construction the engine and packs use, for `buckle check-url`. */
   network(): { rule: PermissionRule; approved: UrlMatcher | null }
   revision(): string
@@ -345,6 +347,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     policy: {
       stored: () => storedPolicy(settingsFile.read()),
       effective: () => compiled.policy,
+      sources: () => policySources(applied, config.workspaceDefaults),
       network: () => ({ rule: networkEgressRule(compiled), approved: compiled.network }),
       revision: () => policyRevision(storedPolicy(settingsFile.read())),
       async apply(policy, expectedRevision) {

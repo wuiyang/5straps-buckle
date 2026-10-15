@@ -23,7 +23,7 @@ type Query = Record<string, string>
 export interface SetupViews {
   /** How the node is set up for this workspace: identity, root and mount, sandbox, packs, policy state. */
   status(workspace: ManagedWorkspace): Promise<Record<string, unknown>>
-  /** The policy as the setup face shows it: effective, revision and stored. */
+  /** The policy as the setup face shows it: effective, revision, stored, and where each part in force comes from. */
   policy(workspace: ManagedWorkspace): Record<string, unknown>
   /** One page of the workspace's files with the read and write access each has. */
   files(workspace: ManagedWorkspace, query: Query): Promise<Record<string, unknown>>
@@ -84,6 +84,8 @@ export function createSetupViews(): SetupViews {
       dangerouslyAllow: runtime.policy.dangerouslyAllow(),
       revision: runtime.policy.revision(),
       stored: runtime.policy.stored(),
+      // D85, Q3 and Q14: the workspace's own, the node's default, or Buckle's; the node's deny entries are its floor.
+      sources: runtime.policy.sources(),
     }),
 
     // The policy in force is the one source: a file's base access is the empty policy's, and only a protected file is

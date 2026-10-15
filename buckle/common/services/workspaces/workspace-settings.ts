@@ -177,6 +177,40 @@ export interface ResolvedSettings {
   sources: Readonly<Record<string, SettingSource>>
 }
 
+/** A deny-type list in force, entry by entry: the node's floor, and the workspace's own beside it. */
+export interface FloorEntries { node: string[]; workspace: string[] }
+
+/**
+ * Where each part of the policy in force comes from (D85, Q3 and Q14), as `buckle policy show` and the setup face name
+ * it: each allow-type list and the mount whole, and each deny-type list entry by entry, the node's entries its floor.
+ */
+export interface PolicySources {
+  mount: SettingSource
+  'commands.allow': SettingSource
+  'commands.allowedInterpreters': SettingSource
+  'network.allow': SettingSource
+  'tools.allow': SettingSource
+  'commands.deny': FloorEntries
+  'commands.destructive': FloorEntries
+  'tools.deny': FloorEntries
+}
+
+/** The policy's sources, from the workspace's own settings and the node's defaults, as resolveSettings reads them. */
+export function policySources(stored: WorkspaceSettings, node: NodeDefaults): PolicySources {
+  const { sources } = resolveSettings(stored, node)
+  const floor = (nodes: readonly string[], mine: readonly string[]): FloorEntries => ({ node: [...new Set(nodes)], workspace: [...new Set(mine)].filter(entry => !nodes.includes(entry)) })
+  return {
+    mount: sources.mount!,
+    'commands.allow': sources['policy.commands.allow']!,
+    'commands.allowedInterpreters': sources['policy.commands.allowedInterpreters']!,
+    'network.allow': sources['policy.network.allow']!,
+    'tools.allow': sources['policy.tools.allow']!,
+    'commands.deny': floor(node.policy.commands.deny, stored.policy.commands.deny),
+    'commands.destructive': floor(destructivePatterns(node.policy), destructivePatterns(stored.policy)),
+    'tools.deny': floor(node.policy.tools?.deny ?? [], stored.policy.tools?.deny ?? []),
+  }
+}
+
 /**
  * One workspace's settings in force (D85, Q3 and Q14): per key, the workspace's own value, else the node's, else
  * Buckle's built-in default. Its variables are the node's with its own set over them, key by key, and its lists are

@@ -6,7 +6,7 @@ import type { NodeConfig } from '../common/runtime/config.js'
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { PolicyError } from '../common/domain/policy.js'
 import { WorkspaceError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { credentialLikeName, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError } from '../common/services/workspaces/workspace-settings.js'
+import { credentialLikeName, resolveSettings, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import { nodeSettingRefusal } from './node-settings.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
@@ -168,25 +168,45 @@ function list(context: Context): CliResult {
   return { exitCode: 0 }
 }
 
-/** The workspace and its settings, whole: workspace.json holds no credential, and the registry's token digests are left out. */
+/**
+ * The workspace and its settings in force, each with where it comes from (D85, Q3): its own workspace.json, the node's
+ * buckle.env, or Buckle's default. workspace.json holds no credential, and the registry's token digests are left out;
+ * `--json` adds the file as stored.
+ */
 function show(context: Context): CliResult {
   const { values } = parseArgs({ args: context.rest, options: { json: { type: 'boolean' } }, allowPositionals: false })
   const workspace = targeted(context)
   const settings = context.workspaces.settings(workspace.id)
-  if (values.json) return print({ ...workspace, settings })
+  const inForce = resolveSettings(settings, context.config.workspaceDefaults)
+  if (values.json) return print({ ...workspace, settings, inForce })
   const named = workspaceArgument(workspace.name)
+  const onOff = (on: boolean) => (on ? 'on' : 'off')
+  const rows: Array<[string, string, SettingSource]> = [
+    ['mount', inForce.mount ?? '(none: its real path)', inForce.sources.mount!],
+    ['approvalWaitMs', inForce.approvalWaitMs === 0 ? '0 (until someone answers)' : String(inForce.approvalWaitMs), inForce.sources.approvalWaitMs!],
+    ['packs.enabled', inForce.packs.enabled?.join(', ') ?? '(every built-in pack, and plugins)', inForce.sources['packs.enabled']!],
+    ...(['shell', 'code', 'hostGit', 'hostLsp'] as const).map((pack): [string, string, SettingSource] => [`packs.${pack}`, onOff(inForce.packs[pack]), inForce.sources[`packs.${pack}`]!]),
+    ...Object.entries(inForce.env).map(([name, value]): [string, string, SettingSource] => [`env.${name}`, value, settings.env[name] !== undefined ? 'workspace' : 'node']),
+  ]
   process.stdout.write(`Workspace ${workspace.name} (id ${workspace.id}), ${workspace.online ? 'online' : 'offline'}, ${workspace.tokens} agent token${workspace.tokens === 1 ? '' : 's'}
 Folder    ${workspace.dir}
-${JSON.stringify(settings, null, 2)}
 
-Change a setting with buckle workspace set <key> <value> --workspace ${named}; the keys:
+Settings in force, each from the workspace's own workspace.json, the node's default in buckle.env, or Buckle's:
+${rows.map(([key, value, source]) => `  ${key.padEnd(24)}${value.padEnd(36)} ${SOURCE_LABELS[source]}`).join('\n')}
+Its policy lists, each with where it comes from: buckle policy show --workspace ${named}.
+
+Change a setting with buckle workspace set <key> <value> --workspace ${named}, or take the workspace's own out with
+buckle workspace unset <key>, so the node's applies; the keys:
   name                    the workspace's name
-  env.<NAME>              a variable its commands see; a credential's name is refused
+  env.<NAME>              a variable its commands see; a credential-like name is taken with a warning
 ${SETTING_KEYS.map(key => `  ${key.key.padEnd(24)}${key.takes}`).join('\n')}
 Its policy lists change with buckle policy --workspace ${named}.
 `)
   return { exitCode: 0 }
 }
+
+/** Where a setting in force comes from, as `buckle workspace show` says it. */
+const SOURCE_LABELS: Readonly<Record<SettingSource, string>> = { 'workspace': 'workspace', 'node': 'node default', 'built-in': 'built-in' }
 
 async function online(context: Context, on: boolean): Promise<CliResult> {
   const named = handle(context, onlyHandle(context.rest, on ? 'enable' : 'disable'))

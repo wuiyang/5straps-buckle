@@ -89,7 +89,10 @@ describe('pushing a policy', () => {
     })
     expect(put.status).toBe(200)
     // Writes return the same policy view as reads.
-    expect(Object.keys(await put.json() as object).sort()).toEqual(['dangerouslyAllow', 'effective', 'revision', 'stored'])
+    const view = await put.json() as { sources: object }
+    expect(Object.keys(view).sort()).toEqual(['dangerouslyAllow', 'effective', 'revision', 'sources', 'stored'])
+    // D85, Q3 and Q14: where each part in force comes from, the node's deny entries its floor.
+    expect(view.sources).toMatchObject({ 'network.allow': 'workspace', 'commands.allow': 'built-in', 'commands.deny': { node: ['wget *'], workspace: ['curl *'] } })
 
     const body = await (await app.request(app.setup('policy'), { headers: bearer(SETUP) })).json() as {
       stored: { commands: { deny: string[] }; updatedAt: string | null }

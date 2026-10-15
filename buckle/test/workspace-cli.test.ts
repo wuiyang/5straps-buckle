@@ -220,6 +220,41 @@ describe('buckle workspace list and show', () => {
     }
   })
 
+  // D85, Q3: each setting in force says where it comes from: the workspace's own, the node's default, or Buckle's.
+  it('shows each setting in force with where it comes from, the file as stored under --json', async () => {
+    const config = node({ BUCKLE_ALLOW_SHELL: 'false' })
+    await init(alpha)
+    expect((await buckle(['set', 'packs.hostGit', 'on'], { cwd: alpha, config })).exitCode).toBe(0)
+    const text = await buckle(['show'], { cwd: alpha, config })
+    expect(text.out).toMatch(/\n {2}mount {19}\/workspace +workspace\n/)
+    expect(text.out).toMatch(/\n {2}packs\.shell {13}off +node default\n/)
+    expect(text.out).toMatch(/\n {2}packs\.hostGit {11}on +workspace\n/)
+    expect(text.out).toMatch(/\n {2}approvalWaitMs {10}15000 +built-in\n/)
+    expect(text.out).toContain('Its policy lists, each with where it comes from: buckle policy show --workspace alpha.')
+    const json = JSON.parse((await buckle(['show', '--json'], { cwd: alpha, config })).out) as { settings: { packs: object }; inForce: { packs: { shell: boolean }; sources: Record<string, string> } }
+    expect(json.settings.packs).toEqual({ hostGit: true })
+    expect(json.inForce).toMatchObject({ packs: { shell: false }, sources: { 'packs.shell': 'node', 'packs.hostGit': 'workspace', 'approvalWaitMs': 'built-in' } })
+  })
+
+  // D85, Q3 and Q14: buckle policy show names each list's source, and each deny entry's, the node's being its floor.
+  it('shows the policy in force with where each list comes from, and the node\'s deny entries as its floor', async () => {
+    const config = node({ BUCKLE_COMMAND_ALLOW: 'pnpm *', BUCKLE_COMMAND_DENY: 'curl *' })
+    await init(alpha)
+    const policy = (...words: string[]) => runCli({ argv: ['policy', ...words], config, confirm: null, cwd: alpha })
+    expect((await policy('deny-command', 'rm *')).exitCode).toBe(0)
+    expect((await policy('allow-url', 'docs.test')).exitCode).toBe(0)
+    out = ''
+    expect((await policy('show')).exitCode).toBe(0)
+    expect(out).toContain('Mount     /workspace, the workspace\'s own\n')
+    expect(out).toContain('Command allow list (only these may run), the node\'s default, from buckle.env\n  pnpm *\n')
+    expect(out).toContain('Command deny list (refused outright)\n  curl *  the node\'s, for every workspace\n  rm *    the workspace\'s own\n')
+    expect(out).toContain('Approved hosts and URLs (only these may be reached), the workspace\'s own\n  docs.test\n')
+    expect(out).toContain('Allowed interpreters (read as ordinary commands; any other runs unknown code), Buckle\'s default\n  (none)\n')
+    out = ''
+    expect((await policy('show', '--json')).exitCode).toBe(0)
+    expect(JSON.parse(out)).toMatchObject({ sources: { 'mount': 'workspace', 'commands.allow': 'node', 'network.allow': 'workspace', 'commands.deny': { node: ['curl *'], workspace: ['rm *'] } } })
+  })
+
   it('says how to start where the node has none', async () => {
     expect((await buckle(['list'])).out).toContain('No workspace yet: run buckle workspace init in the folder to serve.')
   })

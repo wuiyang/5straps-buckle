@@ -78,7 +78,7 @@ describe('buckle policy deny-tool and allow-tool', () => {
 
     const shown = await cli(config, ['policy', 'show'])
 
-    expect(shown.out).toMatch(/Denied tools[^\n]*\n\s+web_fetch\n/)
+    expect(shown.out).toMatch(/Denied tools[^\n]*\n\s+web_fetch  the workspace's own\n/)
   })
 
   it('leaves a tool in a withheld pack unavailable whatever allow-tool says, and says why', async () => {

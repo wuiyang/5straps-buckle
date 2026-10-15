@@ -7,7 +7,7 @@ import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dange
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { ownMount, withPolicy } from '../common/services/workspaces/workspace-settings.js'
+import { ownMount, withPolicy, type FloorEntries, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import type { CommandTarget } from './target.js'
 
 export interface CliResult {
@@ -325,29 +325,35 @@ async function save(runtime: BuckleRuntime, policy: WorkspacePolicy): Promise<Cl
   return show(runtime, [])
 }
 
+/** Where a part of the policy in force comes from, as `buckle policy show` says it (D85, Q3). */
+const SOURCE_WORDS: Readonly<Record<SettingSource, string>> = { 'workspace': 'the workspace\'s own', 'node': 'the node\'s default, from buckle.env', 'built-in': 'Buckle\'s default' }
+
 function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   const { values } = parseArgs({ args: argv, options: { json: { type: 'boolean' } }, allowPositionals: false })
   const effective = runtime.policy.effective()
+  const sources = runtime.policy.sources()
   const dangerously = runtime.policy.dangerouslyAllow()
-  if (values.json) return print({ workspaceId: runtime.workspaceId, effective, dangerouslyAllow: dangerously })
+  if (values.json) return print({ workspaceId: runtime.workspaceId, effective, sources, dangerouslyAllow: dangerously })
 
-  const section = (title: string, items: string[]): void => {
-    process.stdout.write(`${title}\n`)
+  // An allow-type list is one source whole; a deny-type list names each entry's, the node's being its floor (Q14).
+  const section = (title: string, items: string[], source: SettingSource | FloorEntries): void => {
+    process.stdout.write(typeof source === 'string' ? `${title}, ${SOURCE_WORDS[source]}\n` : `${title}\n`)
     if (items.length === 0) process.stdout.write('  (none)\n')
-    for (const item of items) process.stdout.write(`  ${item}\n`)
+    const width = Math.max(0, ...items.map(item => item.length))
+    for (const item of items) process.stdout.write(typeof source === 'string' ? `  ${item}\n` : `  ${item.padEnd(width)}  ${source.node.includes(item) ? 'the node\'s, for every workspace' : 'the workspace\'s own'}\n`)
   }
 
   process.stdout.write(`Workspace ${runtime.workspaceName()} at ${runtime.paths().root}\n`)
-  process.stdout.write(`Mount     ${effective.mount ?? '(none: the real path shows through)'}\n`)
+  process.stdout.write(`Mount     ${effective.mount ?? '(none: the real path shows through)'}, ${SOURCE_WORDS[sources.mount]}\n`)
   process.stdout.write(`Dangerously allow  ${describeDangerously(dangerously)}\n\n`)
-  section('Command allow list (only these may run)', effective.commands.allow)
-  section('Command deny list (refused outright)', effective.commands.deny)
-  section('Destructive additions (these ask, on top of the built-in floor)', destructivePatterns(effective))
-  section('Allowed interpreters (read as ordinary commands; any other runs unknown code)', allowedInterpreters(effective))
-  section('Approved hosts and URLs (only these may be reached)', effective.network.allow)
-  section('Denied tools (refused outright, whatever the pack allows)', effective.tools?.deny ?? [])
-  if (effective.tools?.allow !== undefined) section('Tool allow list (only these tools may run)', effective.tools.allow)
-  process.stdout.write(`\nStored ${effective.updatedAt ? `at ${effective.updatedAt}` : 'nothing yet'} in the workspace's settings.\n`)
+  section('Command allow list (only these may run)', effective.commands.allow, sources['commands.allow'])
+  section('Command deny list (refused outright)', effective.commands.deny, sources['commands.deny'])
+  section('Destructive additions (these ask, on top of the built-in floor)', destructivePatterns(effective), sources['commands.destructive'])
+  section('Allowed interpreters (read as ordinary commands; any other runs unknown code)', allowedInterpreters(effective), sources['commands.allowedInterpreters'])
+  section('Approved hosts and URLs (only these may be reached)', effective.network.allow, sources['network.allow'])
+  section('Denied tools (refused outright, whatever the pack allows)', effective.tools?.deny ?? [], sources['tools.deny'])
+  if (effective.tools?.allow !== undefined) section('Tool allow list (only these tools may run)', effective.tools.allow, sources['tools.allow'])
+  process.stdout.write(`\n${effective.updatedAt ? `The workspace's own lists were stored at ${effective.updatedAt}` : 'The workspace has stored no list of its own yet'}. A list of its own replaces the node's, and the node's deny lists apply to every workspace.\n`)
   return { exitCode: 0 }
 }
 
