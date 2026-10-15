@@ -6,11 +6,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { runCli } from './support/cli.js'
-import { byName } from './support/workspaces.js'
+import { byName, idOf } from './support/workspaces.js'
 
 // `buckle approvals --watch --all` through the CLI itself, at a terminal: the watch re-reads the online workspaces at
-// each poll (finding 10 of the Phase 1 review, and its recheck). The unit tests of watchApprovals hand it a list of
-// their own, so a watch that resolved the workspaces once passed them; this goes through runCli and the manager.
+// each poll, and closes what a workspace taken offline left open in its process (finding 10 of the Phase 1 review, and
+// its recheck). The unit tests of watchApprovals hand it a list of their own; these go through runCli and the manager.
+
+/** Every runtime this file's managers open, with the phase it was opened in and how often it was closed. */
+const opened = vi.hoisted(() => ({ phase: 'owner', records: [] as Array<{ phase: string; workspaceId: string; closes: number }> }))
+vi.mock('../common/services/workspaces/workspace-runtime.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../common/services/workspaces/workspace-runtime.js')>()
+  return {
+    ...actual,
+    createRuntime: async (input: Parameters<typeof actual.createRuntime>[0]) => {
+      const runtime = await actual.createRuntime(input)
+      const record = { phase: opened.phase, workspaceId: runtime.workspaceId, closes: 0 }
+      opened.records.push(record)
+      const close = runtime.closeSessions
+      Object.assign(runtime, { closeSessions: async () => { record.closes++; await close() } })
+      return runtime
+    },
+  }
+})
 
 let base: string
 let node: NodeConfig
@@ -24,6 +41,8 @@ beforeEach(async () => {
   manager = await openWorkspaceManager({ config: node })
   await manager.create({ name: 'Site one', dir: join(base, 'one') })
   await manager.create({ name: 'Site two', dir: join(base, 'two') })
+  opened.records.length = 0
+  opened.phase = 'owner'
   out = ''
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true })
   vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
@@ -56,6 +75,7 @@ async function ask(name: string, path: string): Promise<string> {
 /** Starts the watch the way an owner types it, and answers once it has said which workspaces it watches. */
 async function startWatch(): Promise<() => Promise<number>> {
   terminal()
+  opened.phase = 'watch'
   const running = runCli({ argv: ['approvals', '--watch', '--all'], config: node, confirm: null, cwd: join(base, 'outside') })
   await vi.waitFor(() => expect(out).toContain('Watching workspaces Site one, Site two for approvals.'), { timeout: 10_000, interval: 25 })
   return async () => {
@@ -72,6 +92,20 @@ describe('buckle approvals --watch --all', () => {
 
     await vi.waitFor(() => expect(out).toContain('Now also watching workspace Site three.'), { timeout: 10_000, interval: 25 })
     await vi.waitFor(() => expect(out).toContain(`token: ${token}`), { timeout: 10_000, interval: 25 })
+    expect(await stop()).toBe(0)
+  }, 30_000)
+
+  it('says so when a workspace goes offline while it watches, and closes that workspace\'s runtime in its own process', async () => {
+    await byName(manager, 'Site two')
+    const stop = await startWatch()
+    const watching = (name: string) => opened.records.filter(record => record.phase === 'watch' && record.workspaceId === idOf(manager, name))
+    expect(watching('Site two')).toHaveLength(1)
+
+    await manager.update(idOf(manager, 'Site two'), { online: false })
+    await vi.waitFor(() => expect(out).toContain('Stopped watching workspace Site two, which is no longer online.'), { timeout: 10_000, interval: 25 })
+    // The watch's own runtime for it is closed at a poll, not held until the watch exits.
+    await vi.waitFor(() => expect(watching('Site two')[0]!.closes).toBe(1), { timeout: 10_000, interval: 25 })
+    expect(watching('Site one')[0]!.closes).toBe(0)
     expect(await stop()).toBe(0)
   }, 30_000)
 })

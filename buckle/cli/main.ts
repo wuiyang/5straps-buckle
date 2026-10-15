@@ -416,7 +416,13 @@ async function approvalsAcross(input: { runtimes: BuckleRuntime[]; workspaces: W
   if (refusal) return fail(refusal)
   if (parsed.values.watch) {
     const told = new Set<string>()
-    return watch({ runtimes: () => onlineRuntimes(input.workspaces, told) })
+    // Each poll reads the online workspaces again, and closes the runtime this process opened for one taken offline or
+    // removed since, once it has no work, as `buckle serve` does at each look at the registry (closeUnserved).
+    return watch({ runtimes: async () => {
+      const online = await onlineRuntimes(input.workspaces, told)
+      await input.workspaces.closeUnserved().catch((error: unknown) => { logger.error('Could not close a workspace this watch no longer follows', { error }) })
+      return online
+    } })
   }
   if (parsed.values.json) return print(input.runtimes.flatMap(listingOf))
   let any = false
