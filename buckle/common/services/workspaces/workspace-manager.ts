@@ -286,7 +286,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       if (opened && pending) {
         opened.config.serverName = described.name
         // An offline workspace serves no call: its runtime closes, and its log no longer holds the node's readiness (review L5 of B20-B22).
-        if (!described.online) await drop(id, pending, opened)
+        if (!described.online) await dropUnlessBusy(id, pending, opened, 'taken offline')
       }
       return described
     },
@@ -306,10 +306,15 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         return describe(workspace)
       })
       const pending = runtimes.get(id)
-      if (opened && pending) await drop(id, pending, opened)
+      const stays = opened && pending ? !await dropUnlessBusy(id, pending, opened, 'removed') : false
+      if (options.purge && stays) {
+        // A call began while the registry changed: its records are not deleted under it. They are marked as any removal's are, and prune deletes them.
+        writeRemovedMarker(id, removed)
+        throw new WorkspaceError(`Workspace ${removed.name} is removed, but a call began in it meanwhile, so its records are kept; run buckle workspace prune once the call ends to delete them`, 409)
+      }
       if (options.purge) rmSync(join(node.stateDirectory, 'workspaces', id), { recursive: true, force: true })
       // Its records stay, with a marker naming the folder, so `buckle workspace add` can take them up and `buckle workspace prune` can find them.
-      else if (existsSync(join(node.stateDirectory, 'workspaces', id))) writeFileSync(removedMarker(id), `${JSON.stringify({ version: 1, dir: removed.dir, name: removed.name, removedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 })
+      else if (existsSync(join(node.stateDirectory, 'workspaces', id))) writeRemovedMarker(id, removed)
       return removed
     },
 
@@ -480,6 +485,24 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       throw new WorkspaceError(input.refusal, 409)
     }
     return { openedForCheck }
+  }
+
+  function writeRemovedMarker(id: string, removed: WorkspaceDescriptor): void {
+    writeFileSync(removedMarker(id), `${JSON.stringify({ version: 1, dir: removed.dir, name: removed.name, removedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 })
+  }
+
+  /**
+   * Drops a runtime once the registry no longer serves its workspace, unless a call began in it since the check that
+   * allowed the change: that call runs to its end on the runtime, which stays for closeUnserved to close once it has
+   * no work, and the log says so. Answers whether it was dropped.
+   */
+  async function dropUnlessBusy(id: string, pending: Promise<ManagedWorkspace>, opened: ManagedWorkspace, change: string): Promise<boolean> {
+    if (await holdsWork(opened.runtime)) {
+      logger.warn(`A call began in a workspace while it was ${change}; its runtime stays open until the call ends, then closes`, { workspaceId: id })
+      return false
+    }
+    await drop(id, pending, opened)
+    return true
   }
 
   /** Forgets and closes a runtime, where it is still the one this process holds for the id. */

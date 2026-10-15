@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { loadConfig, type NodeConfig } from '../common/runtime/config.js'
+import { logger } from '../common/runtime/log.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import { ACTIVE_WORK_FRESH_MS, activeElsewhere, activeWorkDirectory } from '../common/services/workspaces/active-work.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -515,6 +516,49 @@ describe('the runtime of a workspace taken offline', () => {
     await expect(manager.update(idOf(manager, 'alpha'), { online: false })).rejects.toMatchObject({ status: 409, message: 'Resolve active tools and staged work before taking this workspace offline' })
     expect(await opened()).toEqual([])
     expect(registry().workspaces[0]).toMatchObject({ id: workspaceIdOf(alpha), online: true })
+  })
+})
+
+// Recheck of findings 5 and 9: a call can begin between the check that allows the change and the registry write.
+describe('the runtime of a workspace a call began in after the check allowed the change', () => {
+  let manager: WorkspaceManager
+  let runtime: BuckleRuntime
+  beforeEach(async () => {
+    await init(alpha)
+    manager = await openWorkspaceManager({ config: node() })
+    runtime = (await byName(manager, 'alpha')).runtime
+    // The check sees no work; the call has begun by the time the registry has changed.
+    vi.spyOn(runtime, 'hasActiveWork').mockResolvedValueOnce(false).mockResolvedValue(true)
+  })
+  afterEach(async () => { await manager.close() })
+  const opened = async () => (await manager.opened()).map(open => open.workspaceId)
+
+  it('stays open when the workspace is taken offline, the log saying so, and closes once the call ends', async () => {
+    const closed = vi.spyOn(runtime, 'closeSessions')
+    const warn = vi.spyOn(logger, 'warn')
+    await manager.update(idOf(manager, 'alpha'), { online: false })
+
+    expect(registry().workspaces[0]).toMatchObject({ id: workspaceIdOf(alpha), online: false })
+    expect(closed).not.toHaveBeenCalled()
+    expect(await opened()).toEqual([workspaceIdOf(alpha)])
+    expect(warn.mock.calls.some(([message]) => String(message).includes('A call began in a workspace while it was taken offline'))).toBe(true)
+
+    await manager.closeUnserved()
+    expect(closed).not.toHaveBeenCalled()
+    vi.mocked(runtime.hasActiveWork).mockResolvedValue(false)
+    await manager.closeUnserved()
+    expect(closed).toHaveBeenCalledTimes(1)
+    expect(await opened()).toEqual([])
+  })
+
+  it('stays open when the workspace is removed, and its records are kept, not purged, under that call', async () => {
+    const closed = vi.spyOn(runtime, 'closeSessions')
+    await expect(manager.remove(idOf(manager, 'alpha'), { purge: true })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('its records are kept; run buckle workspace prune') })
+
+    expect(registry().workspaces).toEqual([])
+    expect(closed).not.toHaveBeenCalled()
+    expect(existsSync(settingsPath(state, workspaceIdOf(alpha)))).toBe(true)
+    expect(manager.prune().map(removed => removed.id)).toEqual([workspaceIdOf(alpha)])
   })
 })
 
