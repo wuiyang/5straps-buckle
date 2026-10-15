@@ -656,7 +656,7 @@ describe('a whole drive as a Buckle root on Windows, imitated', () => {
     expect(() => configFromEnvironment({ BUCKLE_STATE_DIR: state }, 'win32')).toThrow(`The working directory, the workspace root while BUCKLE_WORKSPACE_ROOT is unset, is D:/: ${refused}`)
   })
 
-  it('is refused as the client directory, and by init as the workspace root', async () => {
+  it('is refused as the client directory, and by init as the workspace folder', async () => {
     expect(() => clientDirectory({ BUCKLE_CLIENT_DIR: 'D:\\' }, 'win32')).toThrow(`BUCKLE_CLIENT_DIR is D:/: ${refused}`)
     let printed = ''
     vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
@@ -664,7 +664,7 @@ describe('a whole drive as a Buckle root on Windows, imitated', () => {
     const prompt = { interactive: false, question: async () => '', say: () => {}, close: () => {} }
     const out = join(scratch(), 'buckle.env')
     expect((await runInit(['--root', 'D:\\', '--out', out, '--yes'], prompt, { platform: 'win32' })).exitCode).toBe(1)
-    expect(printed).toBe(`The workspace root is D:/: ${refused}.\n`)
+    expect(printed).toBe(`The workspace folder is D:/: ${refused}.\n`)
     expect(existsSync(out)).toBe(false)
   })
 

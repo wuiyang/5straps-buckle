@@ -3,11 +3,10 @@ import { resolve } from 'pathe'
 import { parseEnv } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { actionsPath, stateDirectoryOf } from '../common/runtime/config.js'
-import { defaultEnvironmentFile } from '../common/runtime/environment.js'
-import { isInside } from '../common/domain/paths.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
+import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
 import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from './environment-file.js'
-import { findNodeSetting, NODE_SETTINGS, normaliseSetting, type NodeSetting } from './node-settings.js'
+import { findMovedSetting, findNodeSetting, MOVED_SETTINGS, NODE_SETTINGS, normaliseSetting, type NodeSetting } from './node-settings.js'
 
 export interface CliResult {
   exitCode: number
@@ -21,7 +20,8 @@ const USAGE = `Usage:
   buckle settings unset <key>          Remove it from the file, so the default applies
 
 Keys (either name): ${NODE_SETTINGS.map(setting => `${setting.alias} (${setting.key})`).join(', ')}.
-Lists are comma separated. A change takes effect when buckle serve restarts.
+Lists are comma separated. A change takes effect when buckle serve restarts. Each workspace's own
+settings change with buckle workspace set and buckle policy.
 `
 
 /**
@@ -38,7 +38,7 @@ export async function settingsCommand(input: { argv: string[]; environment: Node
   const merged = { ...buckleVariables(fileText), ...input.environment }
   return auditOperation({
     actions: createFileActionLog(actionsPath({ stateDirectory: stateDirectoryOf(merged) })),
-    workspaceId: 'default', tool: 'cli_settings', sessionId: 'local-owner',
+    workspaceId: NODE_SCOPE, tool: 'cli_settings', sessionId: 'local-owner',
     isSuccessful: result => result.exitCode === 0, describe: result => result.detail,
     operation: () => dispatch({ ...input, file, fileText, merged }),
   })
@@ -72,7 +72,12 @@ function show(context: SettingsContext): CliResult {
       : fileValues[setting.key] !== undefined ? [fileValues[setting.key]!, 'environment file'] : [setting.fallback, 'default']
     process.stdout.write(`  ${setting.alias.padEnd(16)} ${setting.key.padEnd(24)} ${(value || '(empty)').padEnd(40)} ${source}\n`)
   }
-  const hidden = Object.keys(fileValues).filter(name => !findNodeSetting(name) || !name.startsWith('BUCKLE_'))
+  const moved = MOVED_SETTINGS.filter(setting => fileValues[setting.key] !== undefined || context.environment[setting.key] !== undefined)
+  if (moved.length) {
+    process.stdout.write(`\nWorkspace settings since the workspace model, which the node ignores here (unset them):\n`)
+    for (const setting of moved) process.stdout.write(`  ${setting.key.padEnd(28)} ${setting.replacement}\n`)
+  }
+  const hidden = Object.keys(fileValues).filter(name => (!findNodeSetting(name) && !findMovedSetting(name)) || !name.startsWith('BUCKLE_'))
   if (hidden.length) {
     process.stdout.write(`\nAlso in the file, not shown here:\n`)
     for (const name of hidden) process.stdout.write(`  ${name} (set, hidden)\n`)
@@ -86,21 +91,19 @@ function describeSource(context: SettingsContext): string {
 }
 
 async function write(context: SettingsContext, name: string, raw: string | null): Promise<CliResult> {
-  const setting = findNodeSetting(name)
+  const moved = findMovedSetting(name)
+  // Q14: a workspace's settings live in its workspace.json; a line migration copied is only removed here.
+  if (moved && raw !== null) return fail(`${moved.key} is a workspace setting since the workspace model, and the node ignores it in ${context.file}. Change it with ${moved.replacement}.`)
+  const setting: Pick<NodeSetting, 'key' | 'fallback'> | undefined = findNodeSetting(name) ?? (moved && { key: moved.key, fallback: `(a workspace setting now: ${moved.replacement})` })
   if (!setting) return fail(`${name} is not a node setting buckle settings writes. Edit ${context.file} by hand for it.\nSettings: ${NODE_SETTINGS.map(item => item.alias).join(', ')}`)
   if (context.fileText === null) return fail(`${context.file} does not exist. Run buckle init first, or point BUCKLE_ENV_FILE at the node's environment file.`)
 
-  const value = raw === null ? null : normalise(setting, raw, context)
+  const value = raw === null ? null : normalise(setting as NodeSetting, raw, context)
   if (value !== null && !value.ok) return fail(value.reason)
   const next = value === null ? null : value.value
   if (next === null && parseEnv(context.fileText)[setting.key] === undefined) {
     process.stdout.write(`${setting.key} is not set in ${context.file}; nothing to remove.\n`)
     return { exitCode: 0 }
-  }
-  // The state directory's own file names its workspace: unset, the node would serve whatever
-  // directory it happens to start in.
-  if (setting.key === 'BUCKLE_WORKSPACE_ROOT' && next === null && context.file === defaultEnvironmentFile(context.environment)) {
-    return fail('The node\'s environment file must name its workspace root; set a new root instead of unsetting it')
   }
   let edit: EnvironmentEdit
   try {
@@ -120,13 +123,8 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   return { exitCode: 0, detail: next === null ? `${setting.key} unset` : `${setting.key}=${next}` }
 }
 
-/** A workspace root holding the state directory is refused here, as the node would refuse it at start. */
 function normalise(setting: NodeSetting, raw: string, context: SettingsContext) {
-  const value = normaliseSetting({ setting, raw, cwd: context.cwd, isDirectory: path => existsSync(path) && statSync(path).isDirectory(), environment: context.merged })
-  if (value.ok && setting.key === 'BUCKLE_WORKSPACE_ROOT' && isInside(value.value, stateDirectoryOf(context.merged))) {
-    return { ok: false as const, reason: `${value.value} holds the state directory ${stateDirectoryOf(context.merged)}; an agent writes anywhere in the workspace, so Buckle refuses to start with it as the root` }
-  }
-  return value
+  return normaliseSetting({ setting, raw, cwd: context.cwd, isDirectory: path => existsSync(path) && statSync(path).isDirectory() })
 }
 
 /** The BUCKLE_* variables the node would read from the file, as `buckle serve` loads them. */

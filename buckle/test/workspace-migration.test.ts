@@ -173,9 +173,22 @@ describe('moving a 0.1 node onto the workspace model', () => {
     expect(registry(input)).toBe(before)
   })
 
-  it('gives a state directory that never served a folder no workspace at all', async () => {
+  it.each([
+    ['a list that is no list', '{"version": 1, "workspaces": "not a list"}'],
+    ['an entry missing its fields', '{"version": 1, "workspaces": [{"id": "site"}]}'],
+  ])('refuses a version 1 registry holding %s as a registry that will not read, and changes nothing', async (_label, text) => {
+    const input = scene()
+    writeFileSync(join(input.state, 'workspaces.json'), text)
+    await expect(open(input)).rejects.toMatchObject({ code: 'WORKSPACE_REGISTRY_UNREADABLE', status: 409 })
+    expect(registry(input)).toBe(text)
+    expect(existsSync(join(input.state, REGISTRY_BACKUP))).toBe(false)
+  })
+
+  it('gives a state directory that never served a folder no workspace at all, though a node command wrote the audit log', async () => {
     const input = scene()
     const fresh = { BUCKLE_STATE_DIR: input.state }
+    // `buckle init` audits itself before it opens the registry, so the log alone must not make the cwd a workspace.
+    writeFileSync(join(input.state, 'actions.jsonl'), '')
     const manager = await openWorkspaceManager({ config: loadConfig(fresh) })
     expect(manager.list()).toEqual([])
     expect(JSON.parse(registry(input))).toEqual({ version: 2, workspaces: [] })

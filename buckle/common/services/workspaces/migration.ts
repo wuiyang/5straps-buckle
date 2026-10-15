@@ -2,14 +2,14 @@ import { copyFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'pathe'
 import { z, ZodError } from 'zod'
 import { WorkspacePolicySchema, allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
-import { createJsonFileStore } from '../../adapters/json-file-store.js'
+import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import { rekeyGrants } from '../../adapters/grant-store/file-grant-store.js'
 import { rekeySwitch, switchIsOn } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { readStoredPolicy } from '../../adapters/policy-store/file-policy-store.js'
 import { mergePolicies } from '../../domain/policy.js'
-import { actionsPath, dangerouslyAllowPath, environmentWorkspaceKeys, grantsPath, legacyWorkspaceRoot, NODE_FOLDER_WORKSPACE, policyPath, type NodeConfig } from '../../runtime/config.js'
+import { dangerouslyAllowPath, environmentWorkspaceKeys, grantsPath, legacyWorkspaceRoot, NODE_FOLDER_WORKSPACE, policyPath, type NodeConfig } from '../../runtime/config.js'
 import { tokenDigest } from '../access/tokens.js'
-import { registryPath, type StoredWorkspace } from './registry.js'
+import { registryPath, WorkspaceRegistryError, type StoredWorkspace } from './registry.js'
 import { overlaps } from './workspace-dirs.js'
 import { openSettingsFile, settingsFromEnvironment, settingsPath, WORKSPACE_MOUNT_TARGET, type WorkspaceSettings } from './workspace-settings.js'
 
@@ -50,25 +50,37 @@ interface Planned {
  * environment's settings, and its policy (default: the environment's with what `buckle policy` stored; a registered
  * one: its own within the environment's lists, exactly, or the migration refuses). Grants and switches move from the
  * folder to the id. Version 1 is kept in workspaces.v1.json. Returns what the owner is told; nothing when the node is
- * on version 2 already. Throws MigrationError, having changed nothing, where the node's lists cannot be kept exactly.
+ * on version 2 already. Throws MigrationError, having changed nothing, where the node's lists cannot be kept exactly,
+ * and WorkspaceRegistryError, as a version 2 registry that will not parse does, where version 1 will not.
  */
 export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.Platform }): Promise<string[]> {
   const { node } = input
   const filePath = registryPath(node.stateDirectory)
   if (registryVersion(filePath) === 2) return []
   const store = createJsonFileStore({ filePath, schema: AnyRegistrySchema, fallback: { version: 0, workspaces: [] }, lockDeadlineMs: node.stateLockDeadlineMs })
-  return store.update(async (raw) => {
-    if (raw.version === 2) return []
-    if (raw.version !== 0 && raw.version !== 1) throw new MigrationError(`${filePath} is version ${raw.version}, which this Buckle does not read; it was written by another release`)
-    const hadRegistry = raw.version === 1
-    const registered = hadRegistry ? V1RegistrySchema.parse(raw).workspaces : []
-    const plans = plan({ ...input, platform: input.platform ?? process.platform, registered, hadRegistry })
-    if (hadRegistry) copyFileSync(filePath, join(node.stateDirectory, REGISTRY_BACKUP))
-    for (const planned of plans) await apply(node, planned)
-    raw.version = 2
-    raw.workspaces = plans.map(planned => planned.record)
-    return notices({ environment: node.legacySettings, plans, hadRegistry })
-  })
+  try {
+    return await store.update(async (raw) => {
+      if (raw.version === 2) return []
+      if (raw.version !== 0 && raw.version !== 1) throw new MigrationError(`${filePath} is version ${raw.version}, which this Buckle does not read; it was written by another release`)
+      const hadRegistry = raw.version === 1
+      const registered = hadRegistry ? version1Workspaces(filePath, raw) : []
+      const plans = plan({ ...input, platform: input.platform ?? process.platform, registered, hadRegistry })
+      if (hadRegistry) copyFileSync(filePath, join(node.stateDirectory, REGISTRY_BACKUP))
+      for (const planned of plans) await apply(node, planned)
+      raw.version = 2
+      raw.workspaces = plans.map(planned => planned.record)
+      return notices({ environment: node.legacySettings, plans, hadRegistry })
+    })
+  } catch (error) {
+    if (error instanceof StateFileError) throw new WorkspaceRegistryError(error.message, 409)
+    throw error
+  }
+}
+
+function version1Workspaces(filePath: string, raw: unknown): z.infer<typeof V1WorkspaceSchema>[] {
+  const parsed = V1RegistrySchema.safeParse(raw)
+  if (parsed.success) return parsed.data.workspaces
+  throw new WorkspaceRegistryError(`${filePath} is version 1 but will not read: ${parsed.error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ')}; owner repair is required`, 409)
 }
 
 /** The version workspaces.json says it is, read without the lock: 0 where there is none, -1 where it cannot be read. */
@@ -83,12 +95,13 @@ function registryVersion(filePath: string): number {
 
 /**
  * Whether this state directory served a folder before: a version 1 registry, the agent token or root setting of a node
- * set up then, or the audit log, policy or grants a command left. A machine with none of these has no workspace until
- * `buckle init` makes one: the directory a first command happens to run in is no workspace of the owner's.
+ * set up then, or the policy or grants a command left. A machine with none of these has no workspace until `buckle
+ * init` makes one: the directory a first command happens to run in is no workspace of the owner's. The audit log is no
+ * evidence, since every node command, `buckle init` among them, writes it before the registry opens.
  */
 function servedBefore(node: NodeConfig, hadRegistry: boolean): boolean {
   return hadRegistry || node.authToken !== '' || node.workspaceRootSetting !== undefined
-    || [actionsPath(node), policyPath(node), grantsPath(node)].some(path => existsSync(path))
+    || [policyPath(node), grantsPath(node)].some(path => existsSync(path))
 }
 
 function plan(input: { node: NodeConfig; platform: NodeJS.Platform; registered: z.infer<typeof V1WorkspaceSchema>[]; hadRegistry: boolean }): Planned[] {

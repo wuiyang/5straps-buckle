@@ -15,6 +15,7 @@ import { bearerDigest, digestMatches, mintToken, tokenDigest, tokenMatches } fro
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
 import { createAuditHealth } from '../audit/audit-health.js'
 import { createExecutionBudget } from '../invocation/executions.js'
+import { unmetPackPrerequisite } from '../packs/index.js'
 import type { ActionLog } from '../../types/ports/action-log.js'
 import { migrateNode } from './migration.js'
 import { openRegistry, touched, WorkspaceError, WorkspaceIdSchema, WorkspaceNameSchema, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
@@ -266,10 +267,18 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       requireStored(store.read(), id)
       return settingsOf(id).read()
     },
-    /** Validates the next settings whole and writes them; refused where they changed since `expectedRevision`. */
+    /**
+     * Validates the next settings whole and writes them; refused where they changed since `expectedRevision`, or name
+     * a pack this node cannot build (the environment pack without BUCKLE_ENV_VALIDATOR_COMMAND).
+     */
     async updateSettings(id: string, change: (current: WorkspaceSettings) => WorkspaceSettings, expectedRevision?: number): Promise<WorkspaceSettings> {
       requireStored(store.read(), id)
-      return settingsOf(id).update(change, expectedRevision)
+      return settingsOf(id).update((current) => {
+        const next = change(current)
+        const unmet = (next.packs.enabled ?? []).flatMap((pack) => { const reason = unmetPackPrerequisite(pack, node); return reason ? [`${pack} (${reason})`] : [] })
+        if (unmet.length > 0) throw new WorkspaceError(`This node cannot build pack ${unmet.join(', ')}; set the prerequisite first, or leave the pack out`)
+        return next
+      }, expectedRevision)
     },
 
     async resolve(id: string, options: { setup?: boolean } = {}): Promise<ManagedWorkspace> {
@@ -324,6 +333,11 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     async opened(): Promise<BuckleRuntime[]> {
       const settled = await Promise.allSettled([...runtimes.values()])
       return settled.flatMap(result => result.status === 'fulfilled' ? [result.value.runtime] : [])
+    },
+    /** Closes every workspace opened, for a command that opened them outside the services' close steps (`buckle init`). */
+    async close(): Promise<void> {
+      for (const runtime of await manager.opened()) await closeRuntime(runtime)
+      runtimes.clear()
     },
   }
 

@@ -1,9 +1,6 @@
-import { parseEnv } from 'node:util'
+import type { HarnessManifest } from '@5straps/protocol'
 import { APPROVAL_KEY_PATTERN } from '@5straps/protocol/envelope'
-import { legacyWorkspaceRoot, loadConfig, NODE_FOLDER_WORKSPACE, workspaceConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
-import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { scopeOf, settingsFromEnvironment } from '../common/services/workspaces/workspace-settings.js'
 import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from './environment-file.js'
 
 /** Where Rings takes a node's action log and its pending approvals. */
@@ -23,9 +20,16 @@ export interface PairingRequest {
   ringsUrl: string
   /** Where Rings will reach this node. The default only works when Rings runs on this host. */
   baseUrl: string
-  /** The environment file just written or reused: the credentials never leave it in argv. */
+  /** The environment file just written or reused: the credentials Rings mints are written there, never to argv. */
   environmentFile: string
-  environmentText: string
+  /** The node's name, which Rings shows. */
+  name: string
+  /** The workspace's agent token Rings calls /mcp and /v1 with, which serve that workspace (D83). */
+  authToken: string
+  /** The node's admin credential, for Rings' setup face; absent where the node has none. */
+  adminToken?: string
+  /** What that workspace serves, as Rings shows it. */
+  manifest: HarnessManifest
   /** Where the environment-file lock lives (~/.5straps/locks); the owner's home by default. */
   home?: string
 }
@@ -42,21 +46,16 @@ export interface PairingResult {
  * a node that moved sends the same manifest from a new URL, which updates its record.
  */
 export async function redeemPairingCode(input: PairingRequest): Promise<PairingResult> {
-  const environment = { ...process.env, ...parseEnv(input.environmentText) }
-  const node = loadConfig(environment)
-  const config = workspaceConfig(node, { id: NODE_FOLDER_WORKSPACE, name: node.serverName, dir: legacyWorkspaceRoot({ node }), ...scopeOf(settingsFromEnvironment(environment)) })
-  const runtime = await createRuntime({ config })
-
   const response = await fetch(new URL('/api/v1/harness-servers/pairing/redeem', input.ringsUrl), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       code: input.code,
-      name: config.serverName,
+      name: input.name,
       baseUrl: input.baseUrl,
-      authToken: config.authToken,
-      adminToken: config.adminToken || undefined,
-      manifest: runtime.manifest(),
+      authToken: input.authToken,
+      adminToken: input.adminToken || undefined,
+      manifest: input.manifest,
       approvalEnvelope: 1,
     }),
   }).catch((error: unknown) => {
@@ -68,7 +67,7 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
   if (!response.ok) return { ok: false, message: `Rings refused the pairing code (HTTP ${response.status}): ${await errorText(response)}` }
 
   const body = await response.json().catch(() => null) as { server?: { id?: string; name?: string }; reportToken?: unknown; approvalKey?: unknown } | null
-  const paired = `Paired with Rings as ${body?.server?.name ?? config.serverName} (${body?.server?.id ?? config.serverId}).`
+  const paired = `Paired with Rings as ${body?.server?.name ?? input.name} (${body?.server?.id ?? input.manifest.serverId}).`
   if (!body?.reportToken) {
     // A Rings built before per-node report credentials answers without one; its installation-wide
     // token stays configured by hand, so the node is paired either way.

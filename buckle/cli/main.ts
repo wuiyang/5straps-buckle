@@ -115,10 +115,10 @@ const AUDITED_COMMANDS: readonly string[] = Object.freeze(['approve', 'approvals
 const OWNER_COMMANDS: readonly string[] = Object.freeze(['tools', 'manifest', 'skills', 'log', ...AUDITED_COMMANDS])
 
 /** A command on the node, audited in the node's own log. */
-async function runNodeCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[] }): Promise<CliResult> {
+async function runNodeCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; cwd: string }): Promise<CliResult> {
   const { workspaces, command, rest } = input
   return auditOperation({ actions: workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, describe: result => result.detail,
-    operation: () => (command === 'keys' ? keysCommand({ config: input.config, argv: rest }) : workspaceRegistryCommand({ config: input.config, workspaces, argv: rest })),
+    operation: () => (command === 'keys' ? keysCommand({ config: input.config, argv: rest }) : workspaceRegistryCommand({ config: input.config, workspaces, argv: rest, cwd: input.cwd })),
   })
 }
 
@@ -181,10 +181,15 @@ function printVersion(): CliResult {
 function printUsage(): CliResult {
   process.stdout.write(`buckle ${BUCKLE_VERSION}, the 5straps execution node
 
-  buckle init                        Write an environment file for a workspace, with fresh tokens
+  buckle init                        Set this machine's node up once, and serve the current folder as a
+                                     workspace; prints its agent token once
   buckle init --pair <code> --rings <url>   Redeem a Rings pairing code and register this node
-  buckle serve                       Serve the native RPC and MCP HTTP faces
-  buckle mcp                         Serve MCP over stdio
+  buckle serve                       Serve every online workspace over HTTP: native RPC and MCP
+  buckle mcp [--workspace <id> | --dir <path>]   Serve one workspace's MCP over stdio
+
+  A command acts on the workspace --workspace <id> or --dir <path> names, else on the one whose
+  folder holds the current directory.
+
   buckle tools                       List available tools
   buckle manifest                    Print the full manifest
   buckle skills [name]               List skills, or print one
@@ -200,15 +205,16 @@ function printUsage(): CliResult {
                                    Shows the whole action, then approves only once you confirm at a terminal
   buckle check-url <url|host> [--session <id>] [--workspace <id>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
   buckle grants list | revoke <id>
-  buckle workspace list | add <id> --root <dir>
-  buckle workspace token list | add <workspace> | revoke <workspace> <token-id>
+  buckle workspace init [--dir <path>] [--name <name>] | list | show [--json]
+  buckle workspace enable <id> | disable <id> | remove <id> [--purge] | set <key> <value> | unset <key>
+  buckle workspace token create [--label <text>] | list | revoke <token-id>
   buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune
   buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune
   buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
   buckle policy show | allow-command | deny-command | allow-url | mount | ...
   buckle policy deny-tool <tool> | allow-tool <tool>   Refuse a tool outright, or lift that
-  buckle policy dangerously-allow on|off [--workspace <id>]
+  buckle policy dangerously-allow on|off
                                    DANGEROUS: allow every ask in the workspace without a person,
                                    sensitive files and file writes included; each use is audited,
                                    and deny rules still refuse. See buckle policy --help

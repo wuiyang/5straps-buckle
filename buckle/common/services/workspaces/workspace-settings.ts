@@ -48,8 +48,9 @@ const PacksSchema = z.object({
 const BROWSER_KEYS: ReadonlyArray<[string, string]> = [['BUCKLE_BROWSER_CDP', 'browser.cdp'], ['BUCKLE_BROWSER_PROFILE', 'browser.profile'], ['BUCKLE_BROWSER_ARGS', 'browser.args'], ['BUCKLE_BROWSER_HEADED', 'browser.headed']]
 
 /**
- * Stored and checked at each write (browserSettingsRefusal); the browser pack reads them per workspace in the mount and
- * browser phase (Q10); until then the node's own browser settings drive it.
+ * Stored, from migration, and checked at each write (browserSettingsRefusal); the browser pack reads them per workspace
+ * in the mount and browser phase (Q10), and `buckle workspace set` changes them from then; until then the node's own
+ * browser settings drive it.
  */
 const BrowserSchema = z.object({
   idleTimeoutMs: z.number().int().min(BROWSER_IDLE_BOUNDS.min).max(BROWSER_IDLE_BOUNDS.max).default(DEFAULT_BROWSER_IDLE_MS),

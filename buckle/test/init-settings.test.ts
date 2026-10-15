@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseEnv } from 'node:util'
@@ -7,17 +7,31 @@ import { runInit, serveCommand, type InitPrompt } from '../cli/init.js'
 import type { ProgramSearch } from '../common/domain/executable.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { defaultEnvironmentFile } from '../common/runtime/environment.js'
+import { openSettingsFile, settingsPath, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 
 let workspace: string
 let out: string
+let state: string
 
 beforeEach(() => {
   // A real path: the paths a program resolves to are real, and on macOS the temp folder is reached through a link.
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-init-settings-')))
   workspace = join(root, 'workspace')
   out = join(root, 'node.env')
+  // The node's state, and so its registry, beside the workspace rather than in the machine's own.
+  state = join(root, 'state')
   mkdirSync(workspace)
+  vi.stubEnv('BUCKLE_STATE_DIR', state)
 })
+afterEach(() => { vi.unstubAllEnvs() })
+
+/** The registry entry and workspace.json of the workspace serving `dir` (D83 (2)): init writes its choices there. */
+function served(dir = workspace): { id: string; name: string; dir: string; settings: WorkspaceSettings } {
+  const registry = JSON.parse(readFileSync(join(state, 'workspaces.json'), 'utf8')) as { workspaces: { id: string; name: string; dir: string }[] }
+  const entry = registry.workspaces.find(item => item.dir === dir)
+  if (!entry) throw new Error(`No workspace serves ${dir}`)
+  return { ...entry, settings: openSettingsFile({ filePath: settingsPath(state, entry.id) }).read() }
+}
 
 /** Answers the questions in order; the workspace root, mount and name come first. */
 function scripted(answers: string[], interactive = true): InitPrompt & { asked: string[]; said: string[] } {
@@ -41,7 +55,7 @@ async function init(prompt: InitPrompt, extra: string[] = [], platform?: NodeJS.
   } finally { stdout.mockRestore() }
 }
 
-describe('buckle init asks for node settings after the workspace', () => {
+describe('buckle init asks for the workspace\'s settings after its folder', () => {
   it('shows each default, and Enter keeps the shipped ones', async () => {
     const prompt = scripted([workspace, '', 'Fixture'])
     const result = await init(prompt)
@@ -59,23 +73,22 @@ describe('buckle init asks for node settings after the workspace', () => {
     const env = parseEnv(result.written)
     expect(env.BUCKLE_SETUP_TOKEN).toBeUndefined()
     expect(env.BUCKLE_ADMIN_TOKEN).toBeTruthy()
-    expect(env.BUCKLE_ALLOW_SHELL).toBe('true')
-    for (const key of ['BUCKLE_PACKS', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_ALLOWED_HOSTS']) expect(env[key]).toBeUndefined()
-    expect(result.written).toContain('# BUCKLE_ALLOW_HOST_GIT=true')
-    expect(result.written).toContain('# Host Git and forge tools read the repository outside per-file checks.\n')
+    // Q3: the node's file holds the node's settings alone, and no agent token: the workspace's is in the registry, hashed.
+    for (const key of ['BUCKLE_AUTH_TOKEN', 'BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_ALLOWED_HOSTS']) expect(env[key]).toBeUndefined()
+    expect(result.written).toContain('# BUCKLE_ALLOWED_HOSTS=db.internal')
+    const { settings } = served()
+    expect(settings.packs).toMatchObject({ enabled: null, shell: true, code: true, hostGit: false, hostLsp: false })
+    expect(settings.policy.network).toEqual({ allow: [] })
+    expect(settings.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
   })
 
   it('writes the answers that move off a default', async () => {
     const result = await init(scripted([workspace, '', 'Fixture', 'fs, shell', 'n', 'y', 'localhost:3000,*.example.com', 'db.internal']))
 
-    const env = parseEnv(result.written)
-    expect(env).toMatchObject({
-      BUCKLE_PACKS: 'fs,shell',
-      BUCKLE_ALLOW_SHELL: 'false',
-      BUCKLE_ALLOW_HOST_GIT: 'true',
-      BUCKLE_NETWORK_ALLOW: 'localhost:3000,*.example.com',
-      BUCKLE_ALLOWED_HOSTS: 'db.internal',
-    })
+    expect(parseEnv(result.written)).toMatchObject({ BUCKLE_ALLOWED_HOSTS: 'db.internal' })
+    const { settings } = served()
+    expect(settings.packs).toMatchObject({ enabled: ['fs', 'shell'], shell: false, hostGit: true })
+    expect(settings.policy.network).toEqual({ allow: ['localhost:3000', '*.example.com'] })
     expect(result.printed).toMatch(/Packs\s+fs, shell/)
     expect(result.printed).toMatch(/Host Git\s+on/)
   })
@@ -86,22 +99,69 @@ describe('buckle init asks for node settings after the workspace', () => {
 
     expect(prompt.said).toContainEqual(expect.stringContaining('Unknown pack rocket'))
     expect(prompt.said).toContainEqual('Answer y or n, or press Enter for the default.')
-    expect(prompt.said).toContainEqual(expect.stringContaining('Invalid BUCKLE_NETWORK_ALLOW entry'))
+    expect(prompt.said).toContainEqual(expect.stringContaining('Invalid approved list entry *'))
     expect(prompt.said).toContainEqual(expect.stringContaining('Invalid BUCKLE_ALLOWED_HOSTS entry'))
-    expect(parseEnv(result.written)).toMatchObject({ BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'true' })
-    expect(parseEnv(result.written).BUCKLE_NETWORK_ALLOW).toBeUndefined()
+    expect(result.exitCode).toBe(0)
+    const { settings } = served()
+    expect(settings.packs).toMatchObject({ enabled: ['fs'], shell: true })
+    expect(settings.policy.network).toEqual({ allow: [] })
   })
 
   it('asks again for the environment pack while BUCKLE_ENV_VALIDATOR_COMMAND is unset, naming it, and takes it once set', async () => {
     vi.stubEnv('BUCKLE_ENV_VALIDATOR_COMMAND', '')
     const refused = scripted([workspace, '', 'Fixture', 'fs,environment', 'fs'])
-    expect(parseEnv((await init(refused)).written).BUCKLE_PACKS).toBe('fs')
+    await init(refused)
+    expect(served().settings.packs.enabled).toEqual(['fs'])
     expect(refused.said).toContainEqual(expect.stringContaining('environment (BUCKLE_ENV_VALIDATOR_COMMAND is not set)'))
 
     vi.stubEnv('BUCKLE_ENV_VALIDATOR_COMMAND', 'varlock load')
-    const accepted = scripted([workspace, '', 'Fixture', 'fs,environment'])
-    expect(parseEnv((await init(accepted, ['--force'])).written).BUCKLE_PACKS).toBe('fs,environment')
-    vi.unstubAllEnvs()
+    const other = join(workspace, '..', 'other')
+    mkdirSync(other)
+    // The node is set up already, so its name is not asked again.
+    const accepted = scripted([other, '', 'fs,environment'])
+    await init(accepted)
+    expect(served(other).settings.packs.enabled).toEqual(['fs', 'environment'])
+  })
+})
+
+// D83 (2): the node is set up once; each later init in another folder adds a workspace to it, and init in a folder a
+// workspace serves already adds nothing and mints nothing.
+describe('buckle init on a node set up already', () => {
+  it('keeps the node\'s file, adds the new folder as a workspace with a token of its own, shown once', async () => {
+    const first = await init(scripted([], false), ['--dir', workspace])
+    const other = join(workspace, '..', 'other')
+    mkdirSync(other)
+    const second = await init(scripted([], false), ['--dir', other])
+
+    expect(second.written).toBe(first.written)
+    expect(second.printed).toContain(`The node is already set up in ${out}; its settings are unchanged.`)
+    expect(second.printed).not.toContain('admin credential   ')
+    const tokens = [first.printed, second.printed].map(printed => /agent token {8}(\S+)/.exec(printed)?.[1])
+    expect(tokens[0]).toBeTruthy()
+    expect(tokens[1]).toBeTruthy()
+    expect(tokens[0]).not.toBe(tokens[1])
+    expect(readFileSync(join(state, 'workspaces.json'), 'utf8')).not.toContain(tokens[1]!)
+    expect(served(other).id).not.toBe(served().id)
+  })
+
+  it('adds nothing for a folder a workspace serves, and says how to mint a token for it', async () => {
+    await init(scripted([], false), ['--dir', workspace])
+    const before = readFileSync(join(state, 'workspaces.json'), 'utf8')
+    const again = await init(scripted([], false), ['--dir', join(workspace, 'sub', '..')])
+
+    expect(again.exitCode).toBe(0)
+    expect(again.printed).toContain(`is already in workspace ${served().id}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${served().id}.`)
+    expect(again.printed).not.toMatch(/agent token {8}/)
+    expect(readFileSync(join(state, 'workspaces.json'), 'utf8')).toBe(before)
+  })
+
+  it('writes the node\'s file again under --force, with a new admin credential, keeping the workspaces', async () => {
+    const first = await init(scripted([], false), ['--dir', workspace])
+    const again = await init(scripted([], false), ['--dir', workspace, '--force'])
+
+    expect(parseEnv(again.written).BUCKLE_ADMIN_TOKEN).not.toBe(parseEnv(first.written).BUCKLE_ADMIN_TOKEN)
+    expect(again.printed).toContain(`Wrote ${out}`)
+    expect(existsSync(settingsPath(state, served().id))).toBe(true)
   })
 })
 
@@ -162,10 +222,8 @@ describe('buckle init without questions', () => {
     expect(result.printed).toMatch(/Shell\s+on/)
     expect(result.printed).toMatch(/Host Git\s+off/)
     expect(result.printed).toContain('These are the defaults')
-    const env = parseEnv(result.written)
-    expect(env.BUCKLE_ALLOW_SHELL).toBe('true')
-    expect(env.BUCKLE_ALLOW_HOST_GIT).toBeUndefined()
-    expect(env.BUCKLE_PACKS).toBeUndefined()
+    expect(served().settings.packs).toMatchObject({ enabled: null, shell: true, hostGit: false })
+    expect(parseEnv(result.written).BUCKLE_ALLOW_SHELL).toBeUndefined()
   })
 })
 
@@ -179,23 +237,22 @@ describe.skipIf(process.platform === 'win32')('buckle init writes the environmen
 })
 
 describe('workspace-first initialization defaults', () => {
-  it.each([true, false])('uses the current root, /workspace and the full path name (interactive=%s)', async interactive => {
+  it.each([true, false])('uses the current folder, /workspace and the full path name (interactive=%s)', async interactive => {
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace)
     try {
       const env = parseEnv((await init(scripted([], interactive))).written)
-      expect(env.BUCKLE_WORKSPACE_ROOT).toBe(workspace)
-      expect(env.BUCKLE_WORKSPACE_MOUNT).toBe('/workspace')
+      expect(served().settings.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
       expect(env.BUCKLE_SERVER_NAME).toBe(workspace.replace(/[\\/]/g, '-'))
     } finally { cwd.mockRestore() }
   })
-  it('derives the name from an explicit root when accepting defaults with --yes', async () => {
+  it('derives the name from an explicit folder when accepting defaults with --yes, and takes --root as --dir', async () => {
     const env = parseEnv((await init(scripted([]), ['--root', workspace, '--yes'])).written)
-    expect(env.BUCKLE_WORKSPACE_MOUNT).toBe('/workspace')
+    expect(served()).toMatchObject({ id: 'workspace', name: 'workspace' })
     expect(env.BUCKLE_SERVER_NAME).toBe(workspace.replace(/[\\/]/g, '-'))
   })
   it('preserves explicit mount and name overrides', async () => {
-    const env = parseEnv((await init(scripted([]), ['--root', workspace, '--mount', '/project', '--name', 'Demo node', '--yes'])).written)
-    expect(env.BUCKLE_WORKSPACE_MOUNT).toBe('/project')
+    const env = parseEnv((await init(scripted([]), ['--dir', workspace, '--mount', '/project', '--name', 'Demo node', '--yes'])).written)
+    expect(served().settings.mounts).toEqual([{ kind: 'workspace', target: '/project', access: 'write' }])
     expect(env.BUCKLE_SERVER_NAME).toBe('Demo node')
   })
 })
@@ -206,16 +263,16 @@ describe('workspace-first initialization defaults', () => {
 // registry, beside its workspace rather than in the machine's own.
 describe('buckle init checks the programs Buckle runs', () => {
   beforeEach(() => {
-    vi.stubEnv('BUCKLE_STATE_DIR', join(workspace, '..', 'state'))
     vi.stubEnv('BUCKLE_AGENT_BROWSER_COMMAND', undefined)
     vi.stubEnv('BUCKLE_SCRATCH_ROOTS', undefined)
   })
-  afterEach(() => { vi.unstubAllEnvs() })
 
   async function programs(input: { platform: NodeJS.Platform; programSearch: ProgramSearch; interactive?: boolean; root?: string }): Promise<string> {
     let printed = ''
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
     const root = input.root ?? workspace
+    // A node of its own each time, so each run sets the folder up anew.
+    vi.stubEnv('BUCKLE_STATE_DIR', mkdtempSync(join(workspace, '..', 'state-')))
     try {
       const prompt = scripted(input.interactive ? [root, '', 'Fixture'] : [], input.interactive ?? false)
       const result = await runInit(['--root', root, '--out', out, '--port', '4399', '--force', ...input.interactive ? [] : ['--yes']], prompt, { platform: input.platform, programSearch: input.programSearch })
@@ -257,7 +314,7 @@ describe('buckle init checks the programs Buckle runs', () => {
   })
 
   // Review of 2026-10-14: init checked the root as typed alone, and read an empty setting otherwise than serve did.
-  it('refuses as the node does: through the root\'s link, in a scratch root, or while the registry cannot be read', async () => {
+  it('refuses as the node does: through the folder\'s link, or in a scratch root', async () => {
     const base = join(workspace, '..')
     const real = join(base, 'data', 'proj')
     mkdirSync(real, { recursive: true })
@@ -269,15 +326,26 @@ describe('buckle init checks the programs Buckle runs', () => {
     const printed = await programs({ platform: 'linux', root: join(base, 'proj'), programSearch: search })
     expect(printed).toContain(`  agent-browser   found at ${join(real, 'node_modules', '.bin', 'agent-browser')}, not run: agent-browser is found in or through a workspace of this node, where an agent can write, so Buckle does not run it\n`)
     expect(printed).toContain(`  rg              found at ${join(base, 'scratch', 'rg')}, not run: rg is found in or through a scratch root of this node, where an agent can write, so Buckle does not run it\n`)
-    mkdirSync(join(base, 'state'), { recursive: true })
-    writeFileSync(join(base, 'state', 'workspaces.json'), '{"version": 1, "workspaces": "not a list"}\n')
-    expect(await programs({ platform: 'linux', root: join(base, 'proj'), programSearch: search })).toContain('not run: rg is not run while the workspace registry cannot be read')
+  })
+
+  it('refuses, changing nothing, while the registry cannot be read', async () => {
+    mkdirSync(state)
+    const broken = '{"version": 1, "workspaces": "not a list"}\n'
+    writeFileSync(join(state, 'workspaces.json'), broken)
+    let failed = ''
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { failed += String(chunk); return true })
+    try {
+      const result = await init(scripted([], false), ['--dir', workspace])
+      expect(result.exitCode).toBe(1)
+    } finally { stderr.mockRestore() }
+    expect(failed).toContain('workspaces.json')
+    expect(readFileSync(join(state, 'workspaces.json'), 'utf8')).toBe(broken)
   })
 
   it('reads an empty BUCKLE_AGENT_BROWSER_COMMAND as unset, as the node reads it', async () => {
     vi.stubEnv('BUCKLE_AGENT_BROWSER_COMMAND', '')
     expect(await programs({ platform: 'linux', programSearch: { environment: { PATH: '' }, places: [] } })).toContain('  agent-browser   not found on PATH (0 directories); it unlocks the browser pack;')
-    expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(workspace, '..', 'state'), BUCKLE_AGENT_BROWSER_COMMAND: '' }).agentBrowserCommand).toBe('agent-browser')
+    expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_AGENT_BROWSER_COMMAND: '' }).agentBrowserCommand).toBe('agent-browser')
   })
 
   it('on Windows, imitated, names a script a shim starts, the native program behind one, and a shim it cannot read, leaving bwrap out', async () => {

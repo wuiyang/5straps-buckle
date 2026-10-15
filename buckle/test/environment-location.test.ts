@@ -134,8 +134,12 @@ describe('buckle init', () => {
     writeFileSync(join(root, '.env'), 'APPLICATION_FIXTURE=true\n')
     expect((await runInit(['--root', root, '--yes'], prompt)).exitCode).toBe(0)
 
-    expect(parseEnv(readFileSync(stateFile(), 'utf8'))).toMatchObject({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_WORKSPACE_MOUNT: '/workspace' })
-    expect(parseEnv(readFileSync(stateFile(), 'utf8')).BUCKLE_STATE_DIR).toBeUndefined()
+    const written = parseEnv(readFileSync(stateFile(), 'utf8'))
+    for (const key of ['BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_STATE_DIR']) expect(written[key]).toBeUndefined()
+    // D83 (2): the folder is a workspace in the registry beside the file, with its settings in its own workspace.json.
+    const registry = JSON.parse(readFileSync(join(home, '.5straps', 'buckle', 'workspaces.json'), 'utf8')) as { workspaces: { id: string; dir: string }[] }
+    expect(registry.workspaces.map(workspace => workspace.dir)).toEqual([root])
+    expect(existsSync(join(home, '.5straps', 'buckle', 'workspaces', registry.workspaces[0]!.id, 'workspace.json'))).toBe(true)
     expect(readFileSync(join(root, '.env'), 'utf8')).toBe('APPLICATION_FIXTURE=true\n')
     expect(existsSync(join(home, '.5straps', 'workspaces'))).toBe(false)
     if (process.platform !== 'win32') {
@@ -146,11 +150,12 @@ describe('buckle init', () => {
     expect(printed).toMatch(/Start the node:\s+buckle serve\n/)
   })
 
-  it('refuses to replace the file without --force, and replaces it with --force', async () => {
+  it('keeps the file on a second run, and replaces it with --force', async () => {
     expect((await runInit(['--root', root, '--yes'], prompt)).exitCode).toBe(0)
     const original = readFileSync(stateFile(), 'utf8')
-    expect((await runInit(['--root', root, '--yes'], prompt)).exitCode).toBe(1)
+    expect((await runInit(['--root', root, '--yes'], prompt)).exitCode).toBe(0)
     expect(readFileSync(stateFile(), 'utf8')).toBe(original)
+    expect(printed).toContain(`The node is already set up in ${stateFile()}; its settings are unchanged.`)
     expect((await runInit(['--root', root, '--yes', '--force'], prompt)).exitCode).toBe(0)
     expect(readFileSync(stateFile(), 'utf8')).not.toBe(original)
   })
@@ -165,7 +170,7 @@ describe('buckle init', () => {
     if (process.platform !== 'win32') expect(statSync(join(base, 'custom.env')).mode & 0o777).toBe(0o600)
   })
 
-  it('refuses a workspace root that holds the state directory', async () => {
+  it('refuses a workspace folder that holds the state directory', async () => {
     expect((await runInit(['--root', home, '--yes'], prompt)).exitCode).toBe(1)
     expect(printed).toContain('holds the state directory')
     expect(existsSync(stateFile())).toBe(false)
@@ -173,14 +178,13 @@ describe('buckle init', () => {
 })
 
 describe('buckle settings on the state directory file', () => {
-  it('writes the file serve reads, and refuses to unset its workspace root', async () => {
+  it('writes the file serve reads, and refuses the workspace folder, a workspace\'s own now', async () => {
     expect((await runInit(['--root', root, '--yes'], prompt)).exitCode).toBe(0)
-    const next = join(base, 'relocated'); mkdirSync(next)
     const context = { environment: {}, environmentFile: environmentFilePath(), cwd: root, home }
-    expect((await settingsCommand({ ...context, argv: ['set', 'root', next] })).exitCode).toBe(0)
-    expect(parseEnv(readFileSync(stateFile(), 'utf8')).BUCKLE_WORKSPACE_ROOT).toBe(next)
-    expect((await settingsCommand({ ...context, argv: ['unset', 'root'] })).exitCode).toBe(1)
-    expect(printed).toContain('must name its workspace root')
+    expect((await settingsCommand({ ...context, argv: ['set', 'name', 'Relocated node'] })).exitCode).toBe(0)
+    expect(parseEnv(readFileSync(stateFile(), 'utf8')).BUCKLE_SERVER_NAME).toBe('Relocated node')
+    expect((await settingsCommand({ ...context, argv: ['set', 'root', join(base, 'relocated')] })).exitCode).toBe(1)
+    expect(printed).toContain('Change it with buckle workspace init --dir <folder>.')
   })
 })
 

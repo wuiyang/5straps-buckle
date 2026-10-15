@@ -5,6 +5,7 @@ import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mintApprovalKey } from '@5straps/protocol/envelope'
 import { runInit } from '../cli/init.js'
+import { tokenDigest } from '../common/services/access/tokens.js'
 
 let root: string
 let workspace: string
@@ -38,6 +39,16 @@ function ringsMinting(reportToken: string, approvalKey?: string) {
   }))
 }
 
+/** The workspace and token label holding `token`, from the registry, which keeps its digest alone (D83). */
+function holderOf(token: unknown): { workspace: string; label: string } | null {
+  const registry = JSON.parse(readFileSync(join(root, 'state', 'workspaces.json'), 'utf8')) as { workspaces: { id: string; dir: string; tokens: { sha256: string; label: string }[] }[] }
+  for (const workspace of registry.workspaces) {
+    const held = workspace.tokens.find(item => typeof token === 'string' && item.sha256 === tokenDigest(token))
+    if (held) return { workspace: workspace.dir, label: held.label }
+  }
+  return null
+}
+
 async function initSilently(extra: string[]): Promise<{ exitCode: number; printed: string }> {
   let printed = ''
   const out = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { printed += String(chunk); return true })
@@ -48,8 +59,8 @@ async function initSilently(extra: string[]): Promise<{ exitCode: number; printe
 }
 
 describe('buckle init --pair', () => {
-  it('sends the node URL, both credentials and the manifest in one body, never in argv', async () => {
-    expect((await init(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001', '--url', 'http://node.test:4399'])).exitCode).toBe(0)
+  it('sends the node URL, the workspace\'s token, the admin credential and the manifest in one body, never in argv', async () => {
+    expect((await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001', '--url', 'http://node.test:4399'])).exitCode).toBe(0)
 
     expect(requests).toHaveLength(1)
     expect(requests[0]!.url).toBe('http://rings.test:3001/api/v1/harness-servers/pairing/redeem')
@@ -58,11 +69,14 @@ describe('buckle init --pair', () => {
       code: 'ABCD-EFGH-JKMN',
       name: 'Paired',
       baseUrl: 'http://node.test:4399',
-      authToken: written.BUCKLE_AUTH_TOKEN,
       adminToken: written.BUCKLE_ADMIN_TOKEN,
     })
+    // D83: Rings calls /mcp and /v1 with the token of the workspace init just set up, which serve that workspace.
+    const authToken = requests[0]!.body.authToken as string
+    expect(holderOf(authToken)).toEqual({ workspace, label: 'buckle init' })
+    expect(written.BUCKLE_AUTH_TOKEN).toBeUndefined()
     expect((requests[0]!.body.manifest as { serverId: string }).serverId).toBe(written.BUCKLE_SERVER_ID)
-    expect(process.argv.join(' ')).not.toContain(written.BUCKLE_AUTH_TOKEN)
+    expect(process.argv.join(' ')).not.toContain(authToken)
   })
 
   it('defaults the node URL to this host and refuses a code with no Rings to redeem it at', async () => {
@@ -73,13 +87,15 @@ describe('buckle init --pair', () => {
     expect(requests[0]!.body.baseUrl).toBe('http://127.0.0.1:4399')
   })
 
-  it('re-pairs a configured node with its existing credentials and the URL it moved to', async () => {
-    await init()
+  it('re-pairs a configured node with its admin credential, a token minted for Rings, and the URL it moved to', async () => {
+    await initSilently([])
     const before = readFileSync(out, 'utf8')
 
-    expect((await init(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001', '--url', 'http://moved.test:4399'])).exitCode).toBe(0)
+    expect((await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001', '--url', 'http://moved.test:4399'])).exitCode).toBe(0)
     expect(readFileSync(out, 'utf8')).toBe(before)
-    expect(requests[0]!.body).toMatchObject({ baseUrl: 'http://moved.test:4399', authToken: parseEnv(before).BUCKLE_AUTH_TOKEN })
+    expect(requests[0]!.body).toMatchObject({ baseUrl: 'http://moved.test:4399', adminToken: parseEnv(before).BUCKLE_ADMIN_TOKEN })
+    // The workspace's first token was shown once and is kept as its digest alone, so Rings gets one of its own.
+    expect(holderOf(requests[0]!.body.authToken)).toEqual({ workspace, label: 'Rings' })
   })
 
   it('writes the report credential Rings minted into the environment file, and never prints it', async () => {
@@ -108,8 +124,9 @@ describe('buckle init --pair', () => {
 
     const second = parseEnv(readFileSync(out, 'utf8'))
     expect(second.BUCKLE_REPORT_TOKEN).toBe('rotated-report-token-fixture-value')
-    expect(second.BUCKLE_AUTH_TOKEN).toBe(first.BUCKLE_AUTH_TOKEN)
     expect(second.BUCKLE_ADMIN_TOKEN).toBe(first.BUCKLE_ADMIN_TOKEN)
+    expect(holderOf(requests[0]!.body.authToken)).toEqual({ workspace, label: 'buckle init' })
+    expect(holderOf(requests[1]!.body.authToken)).toEqual({ workspace, label: 'Rings' })
   })
 
   it.each([
@@ -240,8 +257,7 @@ describe('buckle init --pair', () => {
     await init()
     const approvalKey = mintApprovalKey()
     ringsMinting('rings-minted-report-token-fixture', approvalKey)
-    // The state directory is made first, so only the directory holding the environment file refuses writes.
-    mkdirSync(join(root, 'state'))
+    // The first init made the state directory, so only the directory holding the environment file refuses writes.
     chmodSync(root, 0o500)
     try {
       const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])

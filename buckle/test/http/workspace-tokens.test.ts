@@ -92,19 +92,19 @@ describe('several agent tokens per workspace', () => {
 describe('buckle workspace, the owner-side registry command', () => {
   it('refuses to mint on a node with no admin credential', async () => {
     const bare = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: NODE_AGENT, BUCKLE_ALLOW_SHELL: 'false' })
-    expect((await workspaceRegistryCommand({ config: bare, workspaces, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(1)
+    expect((await workspaceRegistryCommand({ config: bare, workspaces, cwd: root, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(1)
   })
 
   it('adds a workspace, mints a second token and revokes it', async () => {
-    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(0)
-    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['token', 'add', 'one', '--label', 'laptop'] })).exitCode).toBe(0)
-    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['token', 'list', 'one'] })).exitCode).toBe(0)
-    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(0)
-    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(1)
+    expect((await workspaceRegistryCommand({ config, workspaces, cwd: root, argv: ['add', 'one', '--root', join(root, 'one')] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, workspaces, cwd: root, argv: ['token', 'add', 'one', '--label', 'laptop'] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, workspaces, cwd: root, argv: ['token', 'list', 'one'] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, workspaces, cwd: root, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(0)
+    expect((await workspaceRegistryCommand({ config, workspaces, cwd: root, argv: ['token', 'revoke', 'one', 'initial'] })).exitCode).toBe(1)
   })
 
   it('refuses a workspace root that overlaps the node state directory', async () => {
-    expect((await workspaceRegistryCommand({ config, workspaces, argv: ['add', 'one', '--root', join(root, 'state')] })).exitCode).toBe(1)
+    expect((await workspaceRegistryCommand({ config, workspaces, cwd: root, argv: ['add', 'one', '--root', join(root, 'state')] })).exitCode).toBe(1)
   })
 })
 
@@ -162,7 +162,7 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
     let stderr = ''
     const err = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true })
     try {
-      expect((await workspaceRegistryCommand({ config, workspaces, argv: ['list'] })).exitCode).toBe(1)
+      expect((await workspaceRegistryCommand({ config, workspaces, cwd: root, argv: ['list'] })).exitCode).toBe(1)
     } finally {
       err.mockRestore()
     }

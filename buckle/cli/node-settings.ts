@@ -1,9 +1,4 @@
-import { parseApprovalTimeout } from '../common/runtime/config.js'
 import { isAbsolute, resolve } from 'pathe'
-import { emptyWorkspacePolicy } from '@5straps/protocol'
-import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
-import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
-import { compilePolicy, PolicyError, refusedNetworkEntries } from '../common/domain/policy.js'
 import { compileHostPattern, UrlPatternError } from '../common/domain/url-pattern.js'
 
 /**
@@ -15,31 +10,41 @@ export interface NodeSetting {
   key: string
   /** The short name `buckle settings set` also accepts. */
   alias: string
-  kind: 'approval-wait' | 'boolean' | 'packs' | 'host-list' | 'url-list' | 'interpreter-list' | 'directory' | 'directory-list' | 'mount' | 'name'
+  kind: 'boolean' | 'host-list' | 'directory-list' | 'name'
   /** What the node does when the key is unset, as `buckle settings show` prints it. */
   fallback: string
 }
 
+/** The node's own settings (Q3 of the workspace-model brief); every workspace's are in its workspace.json. */
 export const NODE_SETTINGS: readonly NodeSetting[] = [
-  { key: 'BUCKLE_APPROVAL_TIMEOUT_MS', alias: 'approval-wait', kind: 'approval-wait', fallback: '15000' },
   { key: 'BUCKLE_SERVER_NAME', alias: 'name', kind: 'name', fallback: 'Local Buckle' },
-  { key: 'BUCKLE_WORKSPACE_ROOT', alias: 'root', kind: 'directory', fallback: '(the directory buckle serve starts in)' },
-  { key: 'BUCKLE_WORKSPACE_MOUNT', alias: 'mount', kind: 'mount', fallback: '(none: the real path shows through)' },
   { key: 'BUCKLE_SCRATCH_ROOTS', alias: 'scratch-roots', kind: 'directory-list', fallback: '(none)' },
   { key: 'BUCKLE_MOUNT_READ_ONLY', alias: 'read-only-paths', kind: 'directory-list', fallback: '(none)' },
-  { key: 'BUCKLE_PACKS', alias: 'packs', kind: 'packs', fallback: '(every built-in pack, and plugins)' },
-  { key: 'BUCKLE_ALLOW_SHELL', alias: 'shell', kind: 'boolean', fallback: 'true' },
-  // Code mode (owner decision D82): false withholds code_run and code_api.
-  { key: 'BUCKLE_ALLOW_CODE', alias: 'code', kind: 'boolean', fallback: 'true' },
-  { key: 'BUCKLE_ALLOW_HOST_GIT', alias: 'host-git', kind: 'boolean', fallback: 'false' },
-  { key: 'BUCKLE_NETWORK_ALLOW', alias: 'network-allow', kind: 'url-list', fallback: '(none: the default egress rules)' },
   { key: 'BUCKLE_ALLOWED_HOSTS', alias: 'allowed-hosts', kind: 'host-list', fallback: '(none)' },
-  // The interpreters the environment policy, the node ceiling over registered workspaces, reads as ordinary
-  // (docs/dev/architecture.md, Interpreters).
-  { key: 'BUCKLE_ALLOWED_INTERPRETERS', alias: 'allowed-interpreters', kind: 'interpreter-list', fallback: '(none: every interpreter runs unknown code)' },
   // Owner decision D8: the admin HTTP layer is experimental, off until this is on (and an admin credential is set).
   { key: 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP', alias: 'experimental-admin-http', kind: 'boolean', fallback: 'false' },
 ]
+
+/**
+ * What a node set up before the workspace model kept in buckle.env and each workspace now holds in its own settings
+ * (Q14), with the command that changes it there. `buckle settings set` refuses them, naming that command; `unset`
+ * still removes a line migration already copied.
+ */
+export const MOVED_SETTINGS: ReadonlyArray<{ key: string; alias: string; replacement: string }> = [
+  { key: 'BUCKLE_APPROVAL_TIMEOUT_MS', alias: 'approval-wait', replacement: 'buckle workspace set approvalWaitMs <milliseconds>' },
+  { key: 'BUCKLE_WORKSPACE_ROOT', alias: 'root', replacement: 'buckle workspace init --dir <folder>' },
+  { key: 'BUCKLE_WORKSPACE_MOUNT', alias: 'mount', replacement: 'buckle policy mount <path>' },
+  { key: 'BUCKLE_PACKS', alias: 'packs', replacement: 'buckle workspace set packs.enabled <packs>' },
+  { key: 'BUCKLE_ALLOW_SHELL', alias: 'shell', replacement: 'buckle workspace set packs.shell on|off' },
+  { key: 'BUCKLE_ALLOW_CODE', alias: 'code', replacement: 'buckle workspace set packs.code on|off' },
+  { key: 'BUCKLE_ALLOW_HOST_GIT', alias: 'host-git', replacement: 'buckle workspace set packs.hostGit on|off' },
+  { key: 'BUCKLE_NETWORK_ALLOW', alias: 'network-allow', replacement: 'buckle policy allow-url <host>' },
+  { key: 'BUCKLE_ALLOWED_INTERPRETERS', alias: 'allowed-interpreters', replacement: 'buckle policy allow-interpreter <name>' },
+]
+
+export function findMovedSetting(name: string): (typeof MOVED_SETTINGS)[number] | undefined {
+  return MOVED_SETTINGS.find(setting => setting.key === name || setting.alias === name)
+}
 
 const TRUE_WORDS = new Set(['true', 'on', 'yes', '1'])
 const FALSE_WORDS = new Set(['false', 'off', 'no', '0'])
@@ -53,11 +58,9 @@ export type SettingValue = { ok: true; value: string } | { ok: false; reason: st
 
 /**
  * The value as the environment file will hold it, or why it is refused. Lists are written comma
- * separated with no spaces, booleans as `true` or `false`, directories as absolute paths. A pack
- * whose prerequisite `environment` (the file and process environment the node will start with)
- * does not meet is refused, naming it.
+ * separated with no spaces, booleans as `true` or `false`, directories as absolute paths.
  */
-export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd: string; isDirectory: (path: string) => boolean; environment: NodeJS.ProcessEnv }): SettingValue {
+export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd: string; isDirectory: (path: string) => boolean }): SettingValue {
   const raw = input.raw.trim()
   if (/[\r\n\0"]/.test(raw)) return refuse(`${input.setting.key} cannot hold a newline or a double quote`)
   switch (input.setting.kind) {
@@ -66,22 +69,6 @@ export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd
       if (TRUE_WORDS.has(word)) return { ok: true, value: 'true' }
       if (FALSE_WORDS.has(word)) return { ok: true, value: 'false' }
       return refuse(`${input.setting.key} is on or off: true, false, on, off, yes or no`)
-    }
-    case 'approval-wait': {
-      try {
-        const parsed = parseApprovalTimeout(raw, 15_000)
-        return { ok: true, value: String(parsed ?? 0) }
-      } catch { return refuse('Approval wait must be milliseconds, 1 to 2147483647, or 0 to wait until someone answers') }
-    }
-    case 'packs': {
-      const ids = list(raw)
-      if (ids.length === 0) return refuse(`${input.setting.key} needs at least one pack; unset it to enable every pack`)
-      const unknown = ids.filter(id => !BUILTIN_PACKS.some(pack => pack.id === id))
-      if (unknown.length) return refuse(`Unknown pack ${unknown.join(', ')}. Packs: ${BUILTIN_PACKS.map(pack => pack.id).join(', ')}`)
-      const packOptions = { environmentValidator: input.environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined }
-      const unmet = ids.flatMap(id => { const reason = unmetPackPrerequisite(id, packOptions); return reason ? [`${id} (${reason})`] : [] })
-      if (unmet.length) return refuse(`The node would not start with pack ${unmet.join(', ')}. Set the prerequisite first, or leave the pack out`)
-      return { ok: true, value: ids.join(',') }
     }
     case 'host-list': {
       const entries = list(raw)
@@ -95,30 +82,8 @@ export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd
       }
       return listValue(input.setting, entries)
     }
-    case 'interpreter-list': {
-      const names = list(raw)
-      const unknown = names.find(name => !isInterpreter(name))
-      if (unknown !== undefined) return refuse(`Invalid ${input.setting.key} entry ${unknown}: not an interpreter Buckle reads as unknown: ${INTERPRETER_NAMES}`)
-      return listValue(input.setting, names)
-    }
-    case 'url-list': {
-      const entries = list(raw)
-      const refused = refusedNetworkEntries(entries)
-      if (refused.length) return refuse(`Invalid ${input.setting.key} entry ${refused[0]!.entry}: ${refused[0]!.reason}`)
-      return listValue(input.setting, entries)
-    }
-    case 'directory':
-      return directories(input, [raw], paths => paths[0]!)
     case 'directory-list':
       return directories(input, list(raw), paths => paths.join(','))
-    case 'mount':
-      try {
-        compilePolicy({ ...emptyWorkspacePolicy(), mount: raw })
-        return { ok: true, value: raw }
-      } catch (error) {
-        if (error instanceof PolicyError) return refuse(error.message)
-        throw error
-      }
     case 'name':
       if (!raw) return refuse(`${input.setting.key} cannot be empty; unset it for the default`)
       if (raw.length > MAX_NAME_LENGTH) return refuse(`${input.setting.key} is at most ${MAX_NAME_LENGTH} characters`)
