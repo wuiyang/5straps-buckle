@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { loadConfig } from '../common/runtime/config.js'
 import { tokenDigest } from '../common/services/access/tokens.js'
-import { MigrationError, REGISTRY_BACKUP } from '../common/services/workspaces/migration.js'
+import { logger } from '../common/runtime/log.js'
+import { migrateNode, MigrationError, REGISTRY_BACKUP } from '../common/services/workspaces/migration.js'
 import { openWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 
@@ -25,7 +26,8 @@ const NODE_ADMIN = 'node-admin-token-fixture-for-migration'
 interface Scene { root: string; state: string; folder: string; site: string; environment: Record<string, string> }
 
 function scene(environment: Record<string, string> = {}): Scene {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-migration-'))
+  // A real path: the move names each folder as the disk does, and on macOS the temp folder is reached through a link.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-migration-')))
   roots.push(root)
   const state = join(root, 'state')
   const folder = join(root, 'project')
@@ -230,6 +232,114 @@ describe('moving a 0.1 node onto the workspace model', () => {
       const caller = { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'false' }
       const manager = await openWorkspaceManager({ config: loadConfig({ ...values, ...caller }, process.platform, { file: { path, values }, caller }) })
       expect(manager.list()).toEqual([])
+    })
+  })
+
+  // Findings 3, 17, 18, and 19 of the Phase 1 review: the move reads and checks everything before it writes anything.
+  describe('checking everything before it writes', () => {
+    const LONG = `${'project folder '.repeat(8)}with a long name`.trim()
+
+    it('cuts a name the registry would refuse at a word\'s end, and names an empty one, saying so, so the registry it writes reads', async () => {
+      const input = scene({ BUCKLE_SERVER_NAME: LONG })
+      version1(input)
+      const notices = vi.spyOn(logger, 'warn')
+      const manager = await open(input)
+      const name = manager.list().find(workspace => workspace.id === 'default')!.name
+      expect(name).toBe('project folder '.repeat(8).trim())
+      expect(notices.mock.calls.some(([message]) => String(message).includes(`Workspace default's name was ${LONG.length} characters, more than the 120 a workspace name holds, so it is named ${name}`))).toBe(true)
+      await expect(open(input)).resolves.toBeDefined()
+
+      const empty = scene({ BUCKLE_SERVER_NAME: '  ' })
+      expect((await open(empty)).list()[0]!.name).toBe('Local Buckle')
+    })
+
+    it('refuses a record the registry would not read, naming its field, and changes nothing', async () => {
+      const input = scene()
+      const text = version1(input).replace('"label": "Registered"', `"label": "${'x'.repeat(121)}"`)
+      writeFileSync(join(input.state, 'workspaces.json'), text)
+      const failure = await open(input).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(MigrationError)
+      expect((failure as Error).message).toContain('workspaces.1.tokens.0.label')
+      expect(registry(input)).toBe(text)
+      for (const id of ['default', 'site']) expect(existsSync(settingsPath(input.state, id))).toBe(false)
+    })
+
+    it('refuses a records file that will not read before it moves anything, naming it, as a refusal to move rather than an unreadable registry', async () => {
+      const input = scene()
+      const before = version1(input)
+      const grant = { id: 'grant-1', workspace: input.folder, rule: 'network_egress', subject: 'localhost:3000', scope: 'always', sessionId: null, createdAt: '2026-10-01T00:00:00.000Z', expiresAt: null }
+      const grants = JSON.stringify({ version: 1, grants: [grant] })
+      writeFileSync(join(input.state, 'grants.json'), grants)
+      mkdirSync(join(input.state, 'workspaces', 'site'), { recursive: true })
+      writeFileSync(join(input.state, 'workspaces', 'site', 'grants.json'), '{ not json')
+
+      const failure = await open(input).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(MigrationError)
+      expect((failure as Error).message).toContain(join(input.state, 'workspaces', 'site', 'grants.json'))
+      expect((failure as Error).message).toContain('Nothing was changed')
+      expect(registry(input)).toBe(before)
+      expect(readFileSync(join(input.state, 'grants.json'), 'utf8')).toBe(grants)
+      expect(existsSync(settingsPath(input.state, 'default'))).toBe(false)
+    })
+
+    it('runs again to the same end after a move a crash stopped partway, reading the node\'s switch under either key', async () => {
+      const input = scene()
+      version1(input)
+      const on = { on: true, changedAt: '2026-10-01T00:00:00.000Z' }
+      // Workspace default's part was written; the registry is still version 1, and site's switch still under its folder.
+      writeFileSync(join(input.state, 'dangerously-allow.json'), JSON.stringify({ version: 1, workspaces: { default: on } }))
+      mkdirSync(join(input.state, 'workspaces', 'site'), { recursive: true })
+      writeFileSync(join(input.state, 'workspaces', 'site', 'dangerously-allow.json'), JSON.stringify({ version: 1, workspaces: { [input.site]: on } }))
+      const manager = await open(input)
+
+      expect((await manager.resolve('site')).runtime.policy.dangerouslyAllow().on).toBe(true)
+      expect((await manager.resolve('default')).runtime.policy.dangerouslyAllow().on).toBe(true)
+    })
+
+    it('finds a registered workspace\'s records under its folder as the disk names it, through a link', async () => {
+      const input = scene()
+      const link = join(input.root, 'site-link')
+      symlinkSync(input.site, link)
+      version1(input)
+      writeFileSync(join(input.state, 'workspaces.json'), registry(input).replace(JSON.stringify(input.site), JSON.stringify(link)))
+      mkdirSync(join(input.state, 'workspaces', 'site'), { recursive: true })
+      writeFileSync(join(input.state, 'workspaces', 'site', 'policy.json'), JSON.stringify({ version: 1, workspaces: { [input.site]: policy(value => { value.commands.deny = ['curl *'] }) } }))
+      const manager = await open(input)
+
+      expect(manager.list().find(workspace => workspace.id === 'site')!.dir).toBe(input.site)
+      expect(settings(input, 'site').policy.commands.deny).toEqual(['curl *'])
+    })
+
+    it.each([
+      ['darwin', ['curl *']],
+      ['linux', []],
+    ] as const)('on %s, finds records kept under another case of the folder only where the volume ignores case', async (platform, deny) => {
+      const input = scene()
+      version1(input)
+      const renamed = join(input.root, 'SITE')
+      writeFileSync(join(input.state, 'workspaces.json'), registry(input).replace(JSON.stringify(input.site), JSON.stringify(renamed)))
+      mkdirSync(join(input.state, 'workspaces', 'site'), { recursive: true })
+      writeFileSync(join(input.state, 'workspaces', 'site', 'policy.json'), JSON.stringify({ version: 1, workspaces: { [input.site]: policy(value => { value.commands.deny = ['curl *'] }) } }))
+      await migrateNode({ node: loadConfig(input.environment), platform })
+      expect(settings(input, 'site').policy.commands.deny).toEqual(deny)
+    })
+
+    it('refuses two keys naming the one folder where the volume ignores case, and changes nothing', async () => {
+      const input = scene()
+      const before = version1(input)
+      mkdirSync(join(input.state, 'workspaces', 'site'), { recursive: true })
+      writeFileSync(join(input.state, 'workspaces', 'site', 'policy.json'), JSON.stringify({ version: 1, workspaces: { [input.site]: policy(), [input.site.toUpperCase()]: policy() } }))
+      await expect(migrateNode({ node: loadConfig(input.environment), platform: 'darwin' })).rejects.toThrow('keeps records under 2 spellings of one folder')
+      expect(registry(input)).toBe(before)
+    })
+
+    it('refuses a folder inside the state directory as workspace default\'s, as buckle workspace init does, and changes nothing', async () => {
+      const input = scene()
+      const inside = join(input.state, 'history')
+      mkdirSync(inside)
+      input.environment.BUCKLE_WORKSPACE_ROOT = inside
+      await expect(open(input)).rejects.toThrow(`which overlaps the state directory ${input.state}`)
+      expect(existsSync(join(input.state, 'workspaces.json'))).toBe(false)
     })
   })
 

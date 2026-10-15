@@ -71,6 +71,12 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
   }
 }
 
+/** The keys a grants file holds grants under, read before migration writes anything; none where no file is. Throws StateFileError where it cannot be read. */
+export function grantKeys(filePath: string): string[] {
+  const grants = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1 as const, grants: [] } }).read().grants
+  return [...new Set(grants.map(grant => grant.workspace))]
+}
+
 /**
  * Moves the grants a file keeps under a workspace's folder to its id (the workspace-model migration): a node set up
  * before it keyed them by the folder, so a moved folder lost them.

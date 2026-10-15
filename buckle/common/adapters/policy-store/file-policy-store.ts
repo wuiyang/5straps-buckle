@@ -8,10 +8,10 @@ const fileSchema = z.object({
 })
 
 /**
- * The policy `buckle policy` stored for one workspace folder before the workspace model, in policy.json keyed by
- * folder: migration input only, as each workspace's policy now lives in its workspace.json. Null where none was
- * stored. Throws StateFileError where the file cannot be read.
+ * The policies `buckle policy` stored before the workspace model, in policy.json keyed by folder: migration input
+ * only, as each workspace's policy now lives in its workspace.json. Empty where no file is. Throws StateFileError where
+ * the file cannot be read.
  */
-export function readStoredPolicy(input: { filePath: string; workspace: string }): WorkspacePolicy | null {
-  return createJsonFileStore({ filePath: input.filePath, schema: fileSchema, fallback: { version: 1 as const, workspaces: {} } }).read().workspaces[input.workspace] ?? null
+export function readStoredPolicies(filePath: string): Record<string, WorkspacePolicy> {
+  return createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1 as const, workspaces: {} } }).read().workspaces
 }

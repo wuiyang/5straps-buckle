@@ -42,9 +42,7 @@ export async function rekeySwitch(input: { filePath: string; from: string; to: s
   })
 }
 
-/** Whether a switch file holds the switch on under `key`; false where the file is absent or unreadable. */
-export function switchIsOn(filePath: string, key: string): boolean {
-  try {
-    return createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1 as const, workspaces: {} } }).read().workspaces[key] !== undefined
-  } catch { return false }
+/** The keys a switch file holds the switch on under; none where no file is. Throws StateFileError where it cannot be read. */
+export function switchKeys(filePath: string): string[] {
+  return Object.keys(createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1 as const, workspaces: {} } }).read().workspaces)
 }
