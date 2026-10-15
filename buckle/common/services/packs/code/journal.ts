@@ -174,9 +174,9 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
    * Expired journals go, and temporary files a crashed write left, then the oldest until the workspace's journals fit
    * their bound. Run when the store opens and at every write, so a journal nobody resumes, which holds tool results,
    * is not kept past its ten minutes for want of a later ask (review of the code-mode slice, findings sandbox-boundary
-   * journal.ts:134 and :121). `written`, the record a write just made, is never removed by the sweep that follows it:
-   * older ones go first, so a rewrite that keeps its first write's age does not evict itself (recheck 4 of the final
-   * review of 0.1.4, finding journal.ts:224).
+   * journal.ts:134 and :121). `written`, the record a write just made, is not removed by the sweep that follows it for
+   * the budget while it is unexpired: older ones go first, so a rewrite that keeps its first write's age does not evict
+   * itself (recheck 4 of the final review of 0.1.4, finding journal.ts:224).
    */
   function prune(written?: string): void {
     let names: string[]
@@ -195,8 +195,11 @@ export function createJournalStore(input: { directory: string; now?: () => numbe
     }).sort((left, right) => left.at - right.at)
     let total = files.reduce((sum, file) => sum + file.bytes, 0)
     for (const file of files) {
-      if (file.at + file.lifetime > now() && total <= workspaceBytes) continue
-      if (written !== undefined && file.path === pathOf(written)) continue
+      const live = file.at + file.lifetime > now()
+      if (live && total <= workspaceBytes) continue
+      // Only while it is unexpired: a rewrite that lands past its record's expiry is swept as any other expired record,
+      // so no tool result outlives its ten minutes (recheck 5 of the final review of 0.1.4, finding journal.ts:199).
+      if (live && written !== undefined && file.path === pathOf(written)) continue
       rmSync(file.path, { force: true })
       total -= file.bytes
     }

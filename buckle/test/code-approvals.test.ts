@@ -1198,6 +1198,16 @@ describe('the journal of a script stopped at an ask, made by the pack', () => {
     expect(store.read(newer)).toBeNull()
   })
 
+  // Recheck 5 of the final review of 0.1.4, finding journal.ts:199: the sweep spares the record just written only while
+  // it is unexpired; a rewrite that lands past its expiry leaves no file, so no tool result outlives its ten minutes.
+  it('sweeps away a record rewritten with an expiry already past, though it was just written', async () => {
+    const directory = scratch()
+    const store = createJournalStore({ directory })
+    const record = { key: 'a'.repeat(64), startedAt: 1, seed: 1, script: 's', tools: [], entries: [{ seq: 1, now: 1, id: 1, tool: 'echo', args: 'h', outcome: { ok: true as const, value: 'tool result' } }] }
+    expect(await store.write(record, { expiresAt: Date.now() - 1_000 })).toBe(true)
+    expect(readdirSync(directory)).toEqual([])
+  })
+
   // Recheck 4 of the final review of 0.1.4, finding journal.ts:224: the divergence rewrite keeps its first write's age, so
   // the oldest-first sweep after it took that very record once its added call pushed the workspace past its budget.
   // The sweep spares the record just written and removes the older ones instead.
