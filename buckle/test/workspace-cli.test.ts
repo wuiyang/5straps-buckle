@@ -8,6 +8,7 @@ import { loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import { ACTIVE_WORK_FRESH_MS, activeElsewhere, activeWorkDirectory } from '../common/services/workspaces/active-work.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { workspaceRegistryCommand, type NamePrompt } from '../cli/workspace.js'
 import { runCli } from './support/cli.js'
@@ -421,6 +422,55 @@ describe('buckle workspace disable and remove, while the workspace has work', ()
   })
 })
 
+// Recheck of the workspace-model fix round 1 (findings 5 and 9 left): buckle serve holds the workbench lock from its first look at the workbenches, which is no work.
+describe('buckle workspace disable and remove, while buckle serve holds the workbench lock', () => {
+  let serving: WorkspaceManager
+  let runtime: BuckleRuntime
+  beforeEach(async () => {
+    await init(alpha)
+    serving = await openWorkspaceManager({ config: node(), interaction: fixedInteraction() })
+    runtime = (await byName(serving, 'alpha')).runtime
+  })
+  afterEach(async () => { await serving.close() })
+
+  /** A workbench record serve owns, so the lock is held; closed by discarding it when `closed`. */
+  async function holdLock(closed: boolean): Promise<void> {
+    const id = randomUUID()
+    await runtime.workbenches.provision({ id, token: 'workspace-cli-workbench-fixture-token-0000', projectId: 'project', chatId: 'chat', allowShell: false })
+    if (closed) await runtime.workbenches.discard(id, 'owner')
+    await expect(runtime.workbenches.hasActiveWork()).resolves.toBe(!closed)
+  }
+
+  it.each([[['disable', 'alpha']], [['remove', 'alpha']], [['remove', 'alpha', '--purge']]])('go ahead with %j when serve runs no call and every workbench is closed', async (verb) => {
+    await holdLock(true)
+    expect((await buckle(verb)).exitCode).toBe(0)
+    expect(registry().workspaces.find(workspace => workspace.id === workspaceIdOf(alpha))?.online ?? false).toBe(false)
+  })
+
+  it('refuse while serve holds an open workbench, which is work whoever owns it', async () => {
+    await holdLock(false)
+    const refused = await buckle(['disable', 'alpha'])
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('Resolve active tools and staged work before taking this workspace offline')
+    expect(registry().workspaces[0]).toMatchObject({ id: workspaceIdOf(alpha), online: true })
+  })
+
+  // The mark is what tells serve's calls apart; this test process stands in for the CLI, so serve's mark is another pid's.
+  it('refuse while serve runs a call, which its mark tells, and go ahead once the mark stops being refreshed', async () => {
+    await holdLock(true)
+    const marks = activeWorkDirectory(state, workspaceIdOf(alpha))
+    mkdirSync(marks, { recursive: true })
+    const mark = join(marks, String(process.pid + 1))
+    writeFileSync(mark, '')
+    const refused = await buckle(['disable', 'alpha'])
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('Resolve active tools and staged work before taking this workspace offline')
+    const stale = new Date(Date.now() - ACTIVE_WORK_FRESH_MS - 1_000)
+    utimesSync(mark, stale, stale)
+    expect((await buckle(['disable', 'alpha'])).exitCode).toBe(0)
+  })
+})
+
 /** A shell result of workspace alpha waiting for review on disk, as an isolated shell leaves it; its folder. */
 function stageShellResult(): string {
   const id = `shell-${randomUUID()}`
@@ -501,7 +551,7 @@ describe('a workspace removed and registered again while buckle serve runs', () 
     expect((await byName(serving, 'site')).config.cwd).toBe(newer)
   })
 
-  // Recheck finding 12: the stamp is what tells this registration from the earlier one when the folder, and so the id, is the same.
+  // Recheck of the workspace-model fix round 1 (finding 2 left): the stamp is what tells this registration from the earlier one when the folder, and so the id, is the same.
   it('serves a new registration of the same folder from records of its own, after the earlier ones were purged', async () => {
     const earlier = (await byName(serving, 'site')).runtime
     const closed = vi.spyOn(earlier, 'closeSessions')

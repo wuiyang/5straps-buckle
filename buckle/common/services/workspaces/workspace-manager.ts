@@ -544,10 +544,15 @@ function holderOf(state: Registry, path: string, platform: NodeJS.Platform): Sto
     .sort((left, right) => right.dir.length - left.dir.length)[0]
 }
 
-/** Whether a workspace's runtime has work; its workbenches owned by another Buckle process are that process's work. */
+/**
+ * Whether a workspace's runtime has work. Another process's calls are signalled by its active-work mark alone, read
+ * before this (assertIdle); a workbench lock that process holds is not evidence of work (recheck of findings 5 and 9 of the Phase 1 review), since
+ * `buckle serve` keeps it from its first look at the workbenches until it stops. So where the lock is held, the
+ * workbench records are read from disk without it: an open workbench still counts, a closed one does not.
+ */
 async function holdsWork(runtime: BuckleRuntime): Promise<boolean> {
   try { return await runtime.hasActiveWork() } catch (error) {
-    if (error instanceof WorkbenchError) return true
+    if (error instanceof WorkbenchError) return runtime.inspectActiveWork()
     throw error
   }
 }
