@@ -40,6 +40,12 @@ export const MOVED_SETTINGS: ReadonlyArray<{ key: string; alias: string; replace
   { key: 'BUCKLE_ALLOW_HOST_GIT', alias: 'host-git', replacement: 'buckle workspace set packs.hostGit on|off' },
   { key: 'BUCKLE_NETWORK_ALLOW', alias: 'network-allow', replacement: 'buckle policy allow-url <host>' },
   { key: 'BUCKLE_ALLOWED_INTERPRETERS', alias: 'allowed-interpreters', replacement: 'buckle policy allow-interpreter <name>' },
+  // Never `buckle settings` keys in 0.1, but migration reads them, and its refusal, its notice, and the start warning
+  // send the owner here to unset them (findings 37 and 39 of the Phase 1 review).
+  { key: 'BUCKLE_COMMAND_ALLOW', alias: 'command-allow', replacement: 'buckle policy allow-command <glob>' },
+  { key: 'BUCKLE_COMMAND_DENY', alias: 'command-deny', replacement: 'buckle policy deny-command <glob>' },
+  { key: 'BUCKLE_COMMAND_DESTRUCTIVE', alias: 'command-destructive', replacement: 'buckle policy destructive-command <glob>' },
+  { key: 'BUCKLE_ALLOW_HOST_LSP', alias: 'host-lsp', replacement: 'buckle workspace set packs.hostLsp on|off' },
 ]
 
 export function findMovedSetting(name: string): (typeof MOVED_SETTINGS)[number] | undefined {

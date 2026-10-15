@@ -10,7 +10,9 @@ import { runProcess } from '../common/adapters/process-runner.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { acquireFileLock } from '@5straps/runtime/sqlite'
 import { editEnvironmentVariable, environmentLockPath } from '../common/adapters/environment-file.js'
+import { findMovedSetting } from '../cli/node-settings.js'
 import { settingsCommand } from '../cli/settings.js'
+import { WORKSPACE_ENVIRONMENT_KEYS } from '../common/runtime/config.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 import { BUILTIN_PACKS, createBuiltinPacks, unmetPackPrerequisite } from '../common/services/packs/index.js'
 
@@ -150,6 +152,20 @@ describe('buckle settings set', () => {
     const result = await settings(['unset', 'shell'])
 
     expect(result.exitCode).toBe(0)
+    expect(readFileSync(file, 'utf8')).toBe(withLine('BUCKLE_ALLOW_SHELL=true\n', ''))
+  })
+
+  // Findings 37 and 39 of the Phase 1 review: migration's refusal, its notice, and the start warning send the owner
+  // to buckle settings unset for every workspace key the node ignores, so each one is a key it removes.
+  it('knows every workspace key the node ignores, lists each as ignored, and removes each line', async () => {
+    const keys = WORKSPACE_ENVIRONMENT_KEYS.filter(key => !findMovedSetting(key))
+    expect(keys).toEqual([])
+    const lines = WORKSPACE_ENVIRONMENT_KEYS.filter(key => !original.includes(`${key}=`)).map(key => `${key}=fixture *`).join('\n')
+    writeFileSync(file, `${original}${lines}\n`)
+    const shown = await settings(['show'])
+    const ignored = shown.out.slice(shown.out.indexOf('which the node ignores here'))
+    for (const key of WORKSPACE_ENVIRONMENT_KEYS) expect(ignored).toContain(key)
+    for (const key of WORKSPACE_ENVIRONMENT_KEYS) expect((await settings(['unset', key])).exitCode).toBe(0)
     expect(readFileSync(file, 'utf8')).toBe(withLine('BUCKLE_ALLOW_SHELL=true\n', ''))
   })
 
