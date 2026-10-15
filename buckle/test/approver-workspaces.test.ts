@@ -161,6 +161,60 @@ describe('an approver\'s command refused before any workspace answers it', () =>
   })
 })
 
+// Recheck of finding 31: three more refusals of an owner's command that the audit log kept nowhere. The node's log holds
+// each as an attempt and a failed result, as docs/audit-log.md says of every refusal.
+describe('an owner\'s command refused before it names a workspace, under the node scope', () => {
+  const nodeEntries = (tool: string) => createFileActionLog(actionsPath(node)).read(40).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.outcome])
+  const recorded = [['attempt', 'started'], ['result', 'error']]
+
+  it('records a command naming no online workspace', async () => {
+    await manager.update(idOf(manager, 'Site one'), { online: false })
+    await manager.update(idOf(manager, 'Site two'), { online: false })
+    for (const argv of [['approve', 'bogus-token', '--deny', '--all'], ['approvals', '--all']]) {
+      const refused = await buckle(argv)
+      expect(refused.exitCode).toBe(1)
+      expect(refused.err).toContain('No workspace is online')
+    }
+    expect(nodeEntries('cli_approve')).toEqual(recorded)
+    expect(nodeEntries('cli_approvals')).toEqual(recorded)
+  })
+
+  it.each([
+    [['approve', 'bogus-token', '--workspace', 'Site one', '--dir', 'two'], 'cli_approve', 'Name the workspace with --workspace or --dir, not both'],
+    [['approvals', '--workspace'], 'cli_approvals', '--workspace needs a value'],
+    [['approve', 'bogus-token', '--workspace', 'Site one', '--workspace', 'Site two'], 'cli_approve', '--workspace is given twice'],
+    [['policy', 'show', '--dir'], 'cli_policy', '--dir needs a value'],
+  ])('records a target flag the command cannot use: %j', async (argv, tool, why) => {
+    const refused = await buckle(argv)
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain(why)
+    expect(nodeEntries(tool)).toEqual(recorded)
+  })
+
+  it.each([
+    [['approve', 'bogus-token', '--bogus', '--all'], 'Usage: buckle approve'],
+    [['approvals', '--bogus', '--all'], 'Usage: buckle approvals'],
+  ])('answers an unknown option over several workspaces with the usage, and records it: %j', async (argv, usage) => {
+    const refused = await buckle(argv)
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain("Unknown option '--bogus'")
+    expect(refused.err).toContain(usage)
+    expect(nodeEntries(argv[0] === 'approve' ? 'cli_approve' : 'cli_approvals')).toEqual(recorded)
+  })
+
+  it.each([
+    [['approve', 'bogus-token', '--bogus'], 'cli_approve', 'Usage: buckle approve'],
+    [['approvals', '--bogus'], 'cli_approvals', 'Usage: buckle approvals'],
+  ])('answers an unknown option in one workspace the same way, recorded in that workspace\'s log: %j', async (argv, tool, usage) => {
+    const refused = await buckle(argv, join(base, 'one'))
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain("Unknown option '--bogus'")
+    expect(refused.err).toContain(usage)
+    const { runtime } = await byName(manager, 'Site one')
+    expect(runtime.actions.read(20).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.outcome])).toEqual(recorded)
+  })
+})
+
 // Finding 10 of the Phase 1 review: a watch begun with one online workspace took the one-workspace path, and never asked
 // in a workspace that came online later; it follows the online workspaces however many there are at its start.
 describe('buckle approvals --watch naming no workspace', () => {

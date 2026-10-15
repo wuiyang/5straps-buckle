@@ -102,7 +102,8 @@ async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; 
     if (NODE_COMMANDS.includes(command)) return runNodeCommand({ ...input, workspaces })
     let taken: ReturnType<typeof takeTarget>
     try { taken = takeTarget(input.rest) } catch (error) {
-      if (error instanceof TargetError) return fail(error.message)
+      // An owner's command the log keeps is refused before any workspace's log is known: the node's records it.
+      if (error instanceof TargetError) return AUDITED_COMMANDS.includes(command) ? nodeAudited({ workspaces, command }, () => fail(error.message)) : fail(error.message)
       throw error
     }
     // Q9 (Phase 1b item 4): an approver's command defaults to the workspace holding the current directory; --all widens to every online one.
@@ -165,10 +166,13 @@ async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config
  */
 async function runApproverCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; confirm: Confirm | null }): Promise<CliResult> {
   const runtimes = await onlineRuntimes(input.workspaces)
-  if (runtimes.length === 0) return fail('No workspace is online, so none has asks waiting. Name one with --workspace <name>, or serve one again with buckle workspace enable <name>.')
+  if (runtimes.length === 0) return nodeAudited(input, () => fail('No workspace is online, so none has asks waiting. Name one with --workspace <name>, or serve one again with buckle workspace enable <name>.'))
   // A watch follows the online workspaces as they change, however many there are at its start (finding 10).
   const watching = input.command === 'approvals' && input.rest.includes('--watch')
   if (runtimes.length === 1 && !watching) return runOnWorkspace({ ...input, runtime: runtimes[0]! })
+  // An option the command does not take is refused with its usage, in the node's log, before any workspace is chosen.
+  const unusable = refusedArguments(input.command, input.rest)
+  if (unusable) return nodeAudited(input, () => fail(unusable))
   const token = input.command === 'approve' ? approveArguments(input.rest).positionals[0] : approvalsArguments(input.rest).positionals[1]
   if (token !== undefined) {
     const holder = holderOfAsk(runtimes, token)
@@ -386,6 +390,21 @@ function approvalsArguments(argv: string[]) {
   return parseArgs({ args: argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, all: { type: 'boolean' } }, allowPositionals: true })
 }
 
+/**
+ * Why an approver command's words are refused before it runs: the option parseArgs does not know, then the command's
+ * usage, so the person reads a refusal and not a stack; null where they parse.
+ */
+function refusedArguments(command: string, argv: string[]): string | null {
+  try {
+    if (command === 'approve') approveArguments(argv)
+    else approvalsArguments(argv)
+    return null
+  } catch (error) {
+    if (!(error instanceof TypeError) || !String((error as { code?: unknown }).code).startsWith('ERR_PARSE_ARGS')) throw error
+    return `${error.message.split('. ')[0]}\n${command === 'approve' ? APPROVE_USAGE : APPROVALS_USAGE}`
+  }
+}
+
 /** Why the arguments name no listing, no watch and no single ask, or null. */
 function approvalsRefusal({ values, positionals }: ReturnType<typeof approvalsArguments>): string | null {
   const [action, token, ...extra] = positionals
@@ -395,6 +414,8 @@ function approvalsRefusal({ values, positionals }: ReturnType<typeof approvalsAr
 }
 
 async function approvals(input: CommandInput): Promise<CliResult> {
+  const unusable = refusedArguments('approvals', input.argv)
+  if (unusable) return fail(unusable)
   const parsed = approvalsArguments(input.argv)
   const refusal = approvalsRefusal(parsed)
   if (refusal) return fail(refusal)
@@ -527,6 +548,8 @@ function approveArguments(argv: string[]) {
 }
 
 async function approve(input: CommandInput & { confirm: Confirm | null }): Promise<CliResult> {
+  const unusable = refusedArguments('approve', input.argv)
+  if (unusable) return fail(unusable)
   const { positionals, values } = approveArguments(input.argv)
   const token = positionals[0]
   if (!token) return fail(APPROVE_USAGE)
