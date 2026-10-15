@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { ApprovalDecisionSchema } from '@5straps/protocol'
 import { runsNativeTerminal } from './support/native-terminal.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
@@ -113,10 +113,11 @@ describe('buckle approvals, the queue a person answers from', () => {
   })
 
   it('says so plainly when nothing is waiting', async () => {
-    const listed = await capture({ argv: ['approvals'], config: node() })
+    const config = node()
+    const listed = await capture({ argv: ['approvals'], config })
 
     expect(listed.exitCode).toBe(0)
-    expect(listed.stdout).toContain('Nothing is waiting for a decision in workspace default.')
+    expect(listed.stdout).toContain(`Nothing is waiting for a decision in workspace ${basename(config.cwd)}.`)
   })
 
   it('answers --json with the requests themselves, for a relay to render', async () => {
@@ -170,7 +171,7 @@ describe('buckle approvals, the queue a person answers from', () => {
 
     expect((await capture({ argv: ['approve', token, '--scope', 'once'], config })).exitCode).toBe(0)
 
-    expect((await capture({ argv: ['approvals'], config })).stdout).toContain('Nothing is waiting for a decision in workspace default.')
+    expect((await capture({ argv: ['approvals'], config })).stdout).toContain(`Nothing is waiting for a decision in workspace ${basename(config.cwd)}.`)
   })
 })
 
@@ -211,7 +212,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     const approved = await captureAll({ argv: ['approve', token, '--scope', 'always', '--host', '*.localhost'], config })
 
     expect(approved.exitCode).toBe(0)
-    expect(approved.stdout).toContain(`Approved ${token} (always) for *.localhost, asked by app.localhost:3000, in workspace default`)
+    expect(approved.stdout).toContain(`Approved ${token} (always) for *.localhost, asked by app.localhost:3000, in workspace ${basename(config.cwd)}`)
     expect(networkSubjects(config)).toEqual(['*.localhost'])
     expect(grantStore(config).list()[0]).toMatchObject({ subject: '*.localhost', pattern: true })
     expect((await capture({ argv: ['grants', 'list'], config })).stdout).toMatch(/always\s+network_egress\s+\*\.localhost {2}\(host pattern\)/)
@@ -387,7 +388,7 @@ describe('buckle approve shows the whole action before it decides (owner decisio
       expect(shownBeforeConfirm).toContain(line)
     }
     expect(prompt).toContain(`Approve ${token} (session)`)
-    expect(stdout).toContain(`Approved ${token} in workspace default`)
+    expect(stdout).toContain(`Approved ${token} in workspace ${basename(config.cwd)}`)
     expect(pendingTokens(config)).toEqual([])
     expect(grantStore(config).list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: '/outside/report.md', scope: 'session' })])
   })
@@ -459,7 +460,7 @@ describe('buckle approve shows the whole action before it decides (owner decisio
     const config = node()
     const token = await preBuildRequest(config)
     const json = JSON.parse((await capture({ argv: ['approvals', '--json'], config })).stdout)
-    expect(json).toEqual([expect.objectContaining({ token, denyCommand: `buckle approve ${token} --deny` })])
+    expect(json).toEqual([expect.objectContaining({ token, denyCommand: `buckle approve ${token} --deny --workspace ${basename(config.cwd)}` })])
     expect(json[0]).not.toHaveProperty('approveCommand')
     expect(json[0]).not.toHaveProperty('callRef')
   })

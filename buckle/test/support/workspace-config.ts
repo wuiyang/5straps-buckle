@@ -1,3 +1,4 @@
+import { basename } from 'pathe'
 import { legacyWorkspaceRoot, loadConfig, NODE_FOLDER_WORKSPACE, workspaceConfig, type BuckleConfig } from '../../common/runtime/config.js'
 import { scopeOf, settingsFromEnvironment } from '../../common/services/workspaces/workspace-settings.js'
 
@@ -9,5 +10,7 @@ import { scopeOf, settingsFromEnvironment } from '../../common/services/workspac
  */
 export function configFromEnvironment(environment: NodeJS.ProcessEnv = {}, platform: NodeJS.Platform = process.platform): BuckleConfig {
   const node = loadConfig(environment, platform)
-  return workspaceConfig(node, { id: NODE_FOLDER_WORKSPACE, name: node.serverName, dir: legacyWorkspaceRoot({ node, platform }), ...scopeOf(settingsFromEnvironment(environment, platform)) })
+  const dir = legacyWorkspaceRoot({ node, platform })
+  // Named after its folder, as migration names the node's folder (D85, Q15).
+  return workspaceConfig(node, { id: NODE_FOLDER_WORKSPACE, name: basename(dir), dir, ...scopeOf(settingsFromEnvironment(environment, platform)) })
 }

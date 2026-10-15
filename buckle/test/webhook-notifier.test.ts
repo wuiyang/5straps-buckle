@@ -44,7 +44,7 @@ describe('what the approval webhook carries', () => {
     expect(last?.body.serverId).toBe('linux-dev')
     const approvals = last?.body.approvals as Array<Record<string, unknown>>
     expect(approvals[0]).toMatchObject({ token: 'tok-1', tool: 'fs_read', rule: 'read_scope', subject: '/etc' })
-    expect(approvals[0]?.approveCommand).toBe('buckle approve tok-1 --scope session')
+    expect(approvals[0]?.approveCommand).toBe('buckle approve tok-1 --scope session --workspace default')
   })
 
   it('names the workspace a child runtime is waiting in, and the command that answers it there', async () => {
@@ -55,12 +55,12 @@ describe('what the approval webhook carries', () => {
     expect(approvals[0]).toMatchObject({ workspaceId: 'photos', approveCommand: 'buckle approve tok-1 --scope session --workspace photos' })
   })
 
-  // Finding 30 of the Phase 1 review: every route names an ask's workspace by id and name, the webhook too.
-  it('names the workspace by its name beside its id, read at each post so a rename shows', async () => {
+  // Finding 30 of the Phase 1 review, and D85, Q15: every route names an ask's workspace by its name, the webhook too, and its commands take the name.
+  it('names the workspace by its name beside its id, read at each post so a rename shows, and names it in the commands', async () => {
     const options = { url, serverId: 'linux-dev', workspaceId: 'site-2', name: 'Client site', get workspaceName() { return this.name } }
     await createWebhookNotifier(options)([request])
     expect(received.at(-1)?.body).toMatchObject({ workspaceId: 'site-2', workspaceName: 'Client site' })
-    expect((received.at(-1)?.body.approvals as Array<Record<string, unknown>>)[0]).toMatchObject({ workspaceId: 'site-2', workspaceName: 'Client site', workspace: 'site-2 (Client site)' })
+    expect((received.at(-1)?.body.approvals as Array<Record<string, unknown>>)[0]).toMatchObject({ workspaceId: 'site-2', workspaceName: 'Client site', workspace: 'Client site', reviewCommand: "buckle approvals --workspace 'Client site'", approveCommand: "buckle approve tok-1 --scope session --workspace 'Client site'" })
     options.name = 'Renamed site'
     await createApprovalNoticeSender(options)([{ token: 'tok-1', event: 'answered', at: new Date().toISOString(), scope: 'once' }])
     expect(received.at(-1)?.body).toMatchObject({ workspaceId: 'site-2', workspaceName: 'Renamed site' })
@@ -83,7 +83,7 @@ describe('what the approval webhook carries', () => {
     expect(body).not.toHaveProperty('call')
     expect(JSON.stringify(body)).not.toContain('private file contents')
     expect(JSON.stringify(body)).not.toContain('"effects"')
-    expect(body.approvals).toEqual([expect.objectContaining({ subject: request.subject, reason: request.reason, rule: request.rule, expiresAt: request.expiresAt, offeredScopes: request.offeredScopes, workspaceId: 'default', reviewCommand: 'buckle approvals', approveCommand: 'buckle approve tok-1 --scope session' })])
+    expect(body.approvals).toEqual([expect.objectContaining({ subject: request.subject, reason: request.reason, rule: request.rule, expiresAt: request.expiresAt, offeredScopes: request.offeredScopes, workspaceId: 'default', reviewCommand: 'buckle approvals --workspace default', approveCommand: 'buckle approve tok-1 --scope session --workspace default' })])
   })
 
   it('carries the whole call once only inside the envelope sealed to the paired Rings key', async () => {

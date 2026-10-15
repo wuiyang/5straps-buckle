@@ -114,7 +114,7 @@ describe('a withdraw of a call already answered (review L1 of B23-B25)', () => {
     expect(buckle.runtime.approvals.unspent('rings-chat')).toEqual([])
     const owner = generateSigningKey()
     const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    try { expect((await keysCommand({ config: buckle.config, argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0) }
+    try { expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0) }
     finally { output.mockRestore() }
     const identity = await buckle.services.getNodeSigner()
     const authorization = (method: string, path: string, body: string) => signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: buckle.config.serverId, nodeKey: identity.keyId, workspace: 'default', method, path, body })

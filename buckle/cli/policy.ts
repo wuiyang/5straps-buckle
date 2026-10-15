@@ -16,7 +16,7 @@ export interface CliResult {
   detail?: string
 }
 
-const USAGE = `Usage: buckle policy <action> [--workspace <id> | --dir <path>]
+const USAGE = `Usage: buckle policy <action> [--workspace <name> | --dir <path>]
 Acts on the workspace named, or else on the one whose folder holds the current directory.
 
   buckle policy show [--json]                 The workspace's policy
@@ -105,7 +105,7 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
         return print(runtime.policy.stored())
       case 'clear':
         await runtime.policy.clear()
-        process.stdout.write(`Every list of workspace ${runtime.workspaceId} is empty\n`)
+        process.stdout.write(`Every list of workspace ${runtime.workspaceName()} is empty\n`)
         if (runtime.policy.dangerouslyAllow().on) process.stdout.write('The dangerously-allow switch is apart from the policy and stays on: only `buckle policy dangerously-allow off` turns it off.\n')
         return { exitCode: 0 }
       case 'dangerously-allow':
@@ -145,9 +145,9 @@ async function dangerouslyAllow(input: { runtime: BuckleRuntime; argv: string[] 
   const target = input.runtime
   await target.policy.setDangerouslyAllow(state === 'on')
   const now = target.policy.dangerouslyAllow()
-  if (!now.on) process.stdout.write(`Dangerously allow is off for workspace ${target.workspaceId}: asks wait for a person again.\n`)
-  else process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceId}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited as policy_dangerously_allowed; deny rules still refuse.\n`)
-  return { exitCode: 0, detail: `dangerously-allow ${state} ${target.workspaceId}` }
+  if (!now.on) process.stdout.write(`Dangerously allow is off for workspace ${target.workspaceName()}: asks wait for a person again.\n`)
+  else process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceName()}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited as policy_dangerously_allowed; deny rules still refuse.\n`)
+  return { exitCode: 0, detail: `dangerously-allow ${state} ${target.workspaceName()}` }
 }
 
 /**
@@ -184,7 +184,7 @@ async function repairStoredPolicyAction(input: { workspaces: WorkspaceManager; i
       }
       case 'clear':
         await workspaces.updateSettings(id, current => withPolicy(current, { ...emptyWorkspacePolicy(), mount: stored.mount, updatedAt: new Date().toISOString() }))
-        process.stdout.write(`Every list of workspace ${id} is empty\n`)
+        process.stdout.write(`Every list of workspace ${workspaces.lookup(id)?.name ?? id} is empty\n`)
         return { exitCode: 0 }
       case 'export':
         return print(stored)
@@ -334,7 +334,7 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
     for (const item of items) process.stdout.write(`  ${item}\n`)
   }
 
-  process.stdout.write(`Workspace ${runtime.workspaceId} at ${runtime.paths().root}\n`)
+  process.stdout.write(`Workspace ${runtime.workspaceName()} at ${runtime.paths().root}\n`)
   process.stdout.write(`Mount     ${effective.mount ?? '(none: the real path shows through)'}\n`)
   process.stdout.write(`Dangerously allow  ${describeDangerously(dangerously)}\n\n`)
   section('Command allow list (only these may run)', effective.commands.allow)

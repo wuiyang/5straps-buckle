@@ -157,7 +157,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     await buckle.waitForLine(line => line.message === '5straps Buckle listening')
     expect(readFileSync(builds, 'utf8')).toBe('x')
     // The workspace-model brief, item 6: the online workspaces, on the terminal questions are asked on.
-    await vi.waitFor(() => expect(buckle.stderr()).toMatch(/Serving 1 workspace:\n {2}default \(.+\)\n {4}folder {2}/))
+    await vi.waitFor(() => expect(buckle.stderr()).toMatch(/Serving 1 workspace:\n {2}workspace\n {4}id {6}\S+\n {4}folder {2}/))
 
     buckle.child.kill('SIGTERM')
     expect(await buckle.exited).toEqual({ code: 0, signal: null })
@@ -432,11 +432,11 @@ describe('a project outside every workspace\'s folder', () => {
       const refused = spawnBuckle({ entry, args, env, cwd: elsewhere })
       running.push(refused)
       expect(await refused.exited).toEqual({ code: 1, signal: null })
-      expect(refused.stderr()).toContain('No workspace holds the current directory. Name one with --workspace <id> (default)')
+      expect(refused.stderr()).toContain('No workspace holds the current directory. Name one with --workspace <name> (workspace)')
       expect(refused.stderr()).not.toContain(node.workspace)
       expect(refused.stderr()).not.toContain('outside-root-agent-token')
     }
-    const named = spawnBuckle({ entry, args: ['fs', 'list', '--workspace', 'default'], env, cwd: elsewhere })
+    const named = spawnBuckle({ entry, args: ['fs', 'list', '--workspace', 'workspace'], env, cwd: elsewhere })
     running.push(named)
     expect(await named.exited).toEqual({ code: 0, signal: null })
   }, 60_000)

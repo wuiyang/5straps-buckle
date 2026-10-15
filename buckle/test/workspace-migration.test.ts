@@ -69,8 +69,9 @@ describe('moving a 0.1 node onto the workspace model', () => {
     const manager = await open(input)
 
     expect(JSON.parse(registry(input))).toMatchObject({ version: 2, workspaces: [
-      { id: 'default', dir: input.folder, online: true, tokens: [{ id: 'node', sha256: tokenDigest(NODE_TOKEN) }] },
-      { id: 'site', name: 'Site', dir: input.site, online: true, tokens: [{ id: 'initial', sha256: tokenDigest(SITE_TOKEN), label: 'Registered' }] },
+      { id: 'default', name: 'project', dir: input.folder, online: true, tokens: [{ id: 'node', sha256: tokenDigest(NODE_TOKEN) }] },
+      // D85, Q15: the node's folder is named after it, and a registered workspace after its 0.1 id, the handle its MCP configs name.
+      { id: 'site', name: 'site', dir: input.site, online: true, tokens: [{ id: 'initial', sha256: tokenDigest(SITE_TOKEN), label: 'Registered' }] },
     ] })
     for (const secret of [NODE_TOKEN, SITE_TOKEN, SITE_ADMIN]) expect(registry(input)).not.toContain(secret)
     expect(registry(input)).not.toContain('adminToken')
@@ -80,6 +81,14 @@ describe('moving a 0.1 node onto the workspace model', () => {
     // The admin credential is the node's alone (D83): a workspace's old one opens nothing.
     expect(manager.authenticateAdmin(`Bearer ${SITE_ADMIN}`)).toBe(false)
     expect(manager.authenticateAdmin(`Bearer ${NODE_ADMIN}`)).toBe(true)
+  })
+
+  it('says what a registered workspace was shown as before, where that was not its id, and how to rename it', async () => {
+    const input = scene()
+    version1(input)
+    const notices = vi.spyOn(logger, 'warn')
+    await open(input)
+    expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('Workspace site was shown as Site before; its name is now site, the handle --workspace takes, and buckle workspace rename site <name> gives it another.')
   })
 
   it('reads a retired workspace as offline', async () => {
@@ -275,8 +284,11 @@ describe('moving a 0.1 node onto the workspace model', () => {
   describe('checking everything before it writes', () => {
     const LONG = `${'project folder '.repeat(8)}with a long name`.trim()
 
-    it('cuts a name the registry would refuse at a word\'s end, and names an empty one, saying so, so the registry it writes reads', async () => {
-      const input = scene({ BUCKLE_SERVER_NAME: LONG })
+    it('cuts a folder name the registry would refuse at a word\'s end, saying so, so the registry it writes reads', async () => {
+      const input = scene()
+      const folder = join(input.root, LONG)
+      mkdirSync(folder)
+      input.environment.BUCKLE_WORKSPACE_ROOT = folder
       version1(input)
       const notices = vi.spyOn(logger, 'warn')
       const manager = await open(input)
@@ -284,9 +296,6 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(name).toBe('project folder '.repeat(8).trim())
       expect(notices.mock.calls.some(([message]) => String(message).includes(`Workspace default's name was ${LONG.length} characters, more than the 120 a workspace name holds, so it is named ${name}`))).toBe(true)
       await expect(open(input)).resolves.toBeDefined()
-
-      const empty = scene({ BUCKLE_SERVER_NAME: '  ' })
-      expect((await open(empty)).list()[0]!.name).toBe('Local Buckle')
     })
 
     it('refuses a record the registry would not read, naming its field, and changes nothing', async () => {

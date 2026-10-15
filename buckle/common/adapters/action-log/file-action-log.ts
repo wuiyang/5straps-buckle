@@ -32,11 +32,17 @@ export class AuditUnavailableError extends Error implements ServiceFailure {
   }
 }
 
-export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string; serving?: () => boolean } = {}): ActionLog {
+/**
+ * `workspaceName`: the name of the log's own workspace, read at each write so a rename shows: every entry of that
+ * workspace carries it beside its UUID (D85, Q15). An entry of another workspace, or one naming its own, is left as it is.
+ */
+export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string; workspaceName?: () => string; serving?: () => boolean } = {}): ActionLog {
   const pending = createPendingAudit({ filePath, processInstanceId: PROCESS_INSTANCE_ID, record: entry => log.record(entry), lockDeadlineMs: options.lockDeadlineMs })
+  const named = (entry: ActionLogEntry): ActionLogEntry => (options.workspaceName && entry.workspaceId === options.workspaceId && entry.workspaceName === undefined ? { ...entry, workspaceName: options.workspaceName() } : entry)
   const log: ActionLog = {
     recoverInterrupted: () => pending.recover(),
-    async record(entry) {
+    async record(written) {
+      const entry = named(written)
       try {
         const offset = appendSynced(filePath, (size, tail) => {
           const prefix = size > 0 && tail !== 10 ? '\n' : ''

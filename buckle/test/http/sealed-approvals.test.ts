@@ -48,7 +48,7 @@ function sealedDecision(key: ApprovalKey, token: string, now?: number, approved 
 async function deviceApproval(app: BuckleHttp, token: string): Promise<Response> {
   const owner = generateSigningKey()
   const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-  try { expect((await keysCommand({ config: app.config, argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0) }
+  try { expect((await keysCommand({ config: app.config, workspaces: await app.services.getWorkspaces(), argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0) }
   finally { output.mockRestore() }
   const challenge = app.runtime.approvalService.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
   const body = JSON.stringify({ token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest })

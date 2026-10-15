@@ -69,7 +69,7 @@ describe('the approval service, the single answerer', () => {
     const outcome = await cli.requestCli(questionFor({ approval: approval!, workspaceId: 'default', context: { correlationId: 'c1', sessionId: 'chat-1' } }))
 
     expect(outcome).toEqual({ status: 'unavailable', requestId: `approval:default:${approval!.token}`, reason: 'no_consumer',
-      pending: { id: `approval:default:${approval!.token}`, instructions: `buckle approve ${approval!.token} --scope session` } })
+      pending: { id: `approval:default:${approval!.token}`, instructions: `buckle approve ${approval!.token} --scope session --workspace default` } })
     expect(registry.pending()).toHaveLength(1)
   })
 

@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit, serveCommand, type InitPrompt } from '../cli/init.js'
@@ -285,7 +285,7 @@ describe('buckle init on a node set up before workspaces', () => {
 
     const result = await init(scripted([], false), ['--force', '--yes', '--name', 'Fixture', '--dir', workspace])
     expect(result.exitCode).toBe(0)
-    expect(result.printed).toContain(`${workspace} is already in workspace default: nothing was added`)
+    expect(result.printed).toContain(`${workspace} is already in workspace ${basename(workspace)}: nothing was added`)
     const registry = JSON.parse(readFileSync(join(state, 'workspaces.json'), 'utf8')) as { workspaces: Array<{ id: string; dir: string; tokens: Array<{ id: string }> }> }
     expect(registry.workspaces).toMatchObject([{ id: 'default', dir: workspace, tokens: [{ id: 'node' }] }])
     expect(served().settings.policy.commands.deny).toEqual(['curl *', 'rm -rf *'])

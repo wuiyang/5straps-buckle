@@ -12,6 +12,8 @@ export interface ActionLogEntry {
   auditId?: string
   event?: 'attempt' | 'result'
   workspaceId?: string
+  /** The workspace's name when the entry was written (D85, Q15): the id is a UUID, so a reader sees the handle the owner knows. */
+  workspaceName?: string
   runId?: string
   stageId?: string
   chatId?: string

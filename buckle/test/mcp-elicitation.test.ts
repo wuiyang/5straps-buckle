@@ -98,7 +98,7 @@ describe('MCP elicitation detection', () => {
     }))
     expect(result).toMatchObject({ isError: true })
     expect(JSON.stringify(result)).toContain('buckle approve token-1 --scope session')
-    expect(JSON.stringify(result)).toContain('buckle approvals --watch')
+    expect(JSON.stringify(result)).toContain("buckle approvals --workspace 'Fixture workspace' --watch")
   })
 
   it('leads the relayed text with buckle approvals, which shows the whole action, and names buckle approve after it (owner decision D17)', async () => {
@@ -154,8 +154,8 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
     expect(form.message).toContain('gated_tool needs approval')
     expect(form.message).toContain('subject: /etc/hostname')
     expect(form.message).toContain('  node:     node-7')
-    expect(form.message).toContain('gated_tool needs approval in workspace default (Fixture workspace)')
-    expect(form.message).toContain('  workspace: default (Fixture workspace)')
+    expect(form.message).toContain('gated_tool needs approval in workspace Fixture workspace')
+    expect(form.message).toContain('  workspace: Fixture workspace')
     expect(form.message).toContain('  in:       /workspace')
     expect(form.message).toContain('  effects:  write /workspace/one/deploy.sh')
     expect(form.message).toContain('            read /etc/hostname')

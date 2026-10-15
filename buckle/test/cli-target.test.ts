@@ -42,7 +42,10 @@ describe('the workspace a command runs on', () => {
     roots.push(root)
     for (const directory of ['default', join('site', 'src'), 'elsewhere']) mkdirSync(join(root, directory), { recursive: true })
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'default'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
-    await registerWorkspace(await workspacesOf(config), { id: 'site', dir: join(root, 'site') })
+    const workspaces = await workspacesOf(config)
+    await registerWorkspace(workspaces, { id: 'site', dir: join(root, 'site') })
+    mkdirSync(join(root, 'the-site'))
+    await workspaces.create({ id: 'the-site', dir: join(root, 'the-site'), name: 'The site' })
     return { root, config }
   }
 
@@ -61,27 +64,29 @@ describe('the workspace a command runs on', () => {
   it('is the one whose folder holds the directory it runs in, the deepest folder in it included', async () => {
     const { root, config } = await node()
     expect(workspaceOf((await run({ argv: ['manifest'], config, cwd: join(root, 'site', 'src') })).stdout)).toBe('site')
-    expect(workspaceOf((await run({ argv: ['manifest'], config, cwd: join(root, 'default') })).stdout)).toBe('Local Buckle')
+    expect(workspaceOf((await run({ argv: ['manifest'], config, cwd: join(root, 'default') })).stdout)).toBe('default')
   })
 
-  it('is the one --workspace names, or whose folder holds --dir, read from where it runs', async () => {
+  it('is the one --workspace names, by name in any case or by id, or whose folder holds --dir, read from where it runs', async () => {
     const { root, config } = await node()
     expect(workspaceOf((await run({ argv: ['manifest', '--workspace', 'site'], config, cwd: join(root, 'elsewhere') })).stdout)).toBe('site')
+    expect(workspaceOf((await run({ argv: ['manifest', '--workspace', 'The Site'], config, cwd: join(root, 'elsewhere') })).stdout)).toBe('The site')
+    expect(workspaceOf((await run({ argv: ['manifest', '--workspace', 'the-site'], config, cwd: join(root, 'elsewhere') })).stdout)).toBe('The site')
     expect(workspaceOf((await run({ argv: ['manifest', '--dir', '../site/src'], config, cwd: join(root, 'elsewhere') })).stdout)).toBe('site')
   })
 
-  it('is refused outside every workspace\'s folder, naming the ids and no folder', async () => {
+  it('is refused outside every workspace\'s folder, naming the names and no folder', async () => {
     const { root, config } = await node()
     const refused = await run({ argv: ['tools'], config, cwd: join(root, 'elsewhere') })
     expect(refused.exitCode).toBe(1)
-    expect(refused.stderr).toContain('No workspace holds the current directory. Name one with --workspace <id> (default, site)')
+    expect(refused.stderr).toContain('No workspace holds the current directory. Name one with --workspace <name> (default, site, The site)')
     expect(refused.stderr).not.toContain(root)
   })
 
-  it('is refused for an id the node does not hold', async () => {
+  it('is refused for a name the node does not hold, naming the ones it does', async () => {
     const { root, config } = await node()
     const refused = await run({ argv: ['tools', '--workspace', 'nowhere'], config, cwd: join(root, 'default') })
     expect(refused.exitCode).toBe(1)
-    expect(refused.stderr).toContain('No workspace has the id nowhere')
+    expect(refused.stderr).toContain('No workspace is named nowhere. The workspaces: default, site, The site')
   })
 })

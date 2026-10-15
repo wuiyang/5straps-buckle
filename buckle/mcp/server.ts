@@ -121,7 +121,7 @@ function relayApproval(input: { approvals: ApprovalRequest[]; workspaceId: strin
     const [first, ...rest] = describeApprovalRequest({ request, workspaceId: input.workspaceId, workspaceName: input.workspaceName, ...(input.nodeName === undefined ? {} : { nodeName: input.nodeName }) })
     return [`- ${first}`, ...rest.map(line => `  ${line}`)].join('\n')
   })
-  const review = reviewCommand({ workspaceId: input.workspaceId })
+  const review = reviewCommand({ workspaceId: input.workspaceId, workspaceName: input.workspaceName })
   return {
     isError: true,
     content: [{

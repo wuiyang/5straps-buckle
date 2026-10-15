@@ -692,7 +692,7 @@ export function questionFor(input: { approval: ApprovalRequest; workspaceId: str
         tool: approval.tool, rule: approval.rule, subject: approval.subject, reason: approval.reason,
         scopes: approval.offeredScopes.join(','), expiresAt: approval.expiresAt, workspace: workspaceId,
         ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
-        approve: approveCommand({ request: approval, workspaceId }),
+        approve: approveCommand({ request: approval, workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }) }),
         ...(input.node === undefined ? {} : { node: input.node }),
         ...(call === undefined ? {} : { arguments: JSON.stringify(call.arguments), cwd: call.cwd, ...(call.description === null ? {} : { description: call.description }), ...(call.effects === undefined ? {} : { effects: JSON.stringify(call.effects) }) }),
       },

@@ -214,7 +214,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   const noticeOwner = notices
   input.onApprovalCleanup(() => noticeOwner.settle())
   const auditHealth = input.auditHealth ?? createAuditHealth()
-  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId, ...(input.serving ? { serving: input.serving } : {}) })
+  // Each entry carries the workspace's name as it stands, beside its id (D85, Q15).
+  const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId, workspaceName: () => config.serverName, ...(input.serving ? { serving: input.serving } : {}) })
   await actions.recoverInterrupted()
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()

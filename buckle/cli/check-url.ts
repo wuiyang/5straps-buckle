@@ -16,7 +16,7 @@ const EXIT_CODES: Record<UrlVerdictKind, number> = { approved: 0, denied: 1, ask
 /** Anything that stops a verdict being reached. Never 1, which would read as a denial. */
 export const CHECK_URL_BAD_INPUT = 2
 
-const USAGE = `Usage: buckle check-url <url|host> [--session <id>] [--workspace <id> | --dir <path>]
+const USAGE = `Usage: buckle check-url <url|host> [--session <id>] [--workspace <name> | --dir <path>]
 Exits 0 approved, 1 denied, 3 asks, 4 not listed, 2 when no verdict could be reached.`
 
 /**
@@ -55,7 +55,7 @@ export async function checkUrlCommand(input: {
     approvals = approvalsInEffect(runtime, parsed.session)
   } catch (error) {
     // Exit 1 would read as a denial, so state that cannot be read takes the bad-input code.
-    return badInput(`Cannot read the approvals in workspace ${runtime.workspaceId}: ${messageOf(error)}`)
+    return badInput(`Cannot read the approvals in workspace ${runtime.workspaceName()}: ${messageOf(error)}`)
   }
   const result = judgeUrl({
     url,

@@ -85,13 +85,14 @@ describe('the approval webhook of a workspace', () => {
   it('names the workspace as it is named when each ask is posted', async () => {
     const webhook = await captureWebhook()
     try {
-      const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url, BUCKLE_SERVER_NAME: 'Client site' })
+      // The workspace's name is the registry's, not the node's (D85, Q15): a runtime built from a configuration takes it from serverName.
+      const config = { ...node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url }), serverName: 'Client site' }
       const runtime = await createRuntime({ config, workspaceId: 'site' })
       await runtime.invoke({ sessionId: 's', request: write('one/a.md', { mode: 'none' }) })
-      await vi.waitFor(() => expect(webhook.bodies).toContainEqual(expect.objectContaining({ workspaceId: 'site', workspaceName: 'Client site', approvals: [expect.objectContaining({ workspace: 'site (Client site)' })] })))
+      await vi.waitFor(() => expect(webhook.bodies).toContainEqual(expect.objectContaining({ workspaceId: 'site', workspaceName: 'Client site', approvals: [expect.objectContaining({ workspace: 'Client site' })] })))
       config.serverName = 'Renamed site'
       await runtime.invoke({ sessionId: 's', request: write('two/b.md', { mode: 'none' }) })
-      await vi.waitFor(() => expect(webhook.bodies).toContainEqual(expect.objectContaining({ workspaceName: 'Renamed site', approvals: [expect.objectContaining({ workspace: 'site (Renamed site)' })] })))
+      await vi.waitFor(() => expect(webhook.bodies).toContainEqual(expect.objectContaining({ workspaceName: 'Renamed site', approvals: [expect.objectContaining({ workspace: 'Renamed site' })] })))
       await runtime.approvalService.close()
       await runtime.history.close()
     } finally {

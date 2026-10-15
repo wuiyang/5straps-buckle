@@ -36,7 +36,7 @@ async function node(): Promise<Node> {
   const started = await createBuckleHttp({ environment })
   nodes.push(started)
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-  expect((await keysCommand({ config: started.config, argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0)
+  expect((await keysCommand({ config: started.config, workspaces: await started.services.getWorkspaces(), argv: ['enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'default'] })).exitCode).toBe(0)
   vi.mocked(process.stdout.write).mockRestore()
   return Object.assign(started, { root, nodeKey: (await started.services.getNodeSigner()).keyId })
 }
@@ -190,7 +190,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     expect((await denial.send()).status).toBe(200)
     expect((await denial.send()).status).toBe(401)
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    await keysCommand({ config: buckle.config, argv: ['revoke', owner.keyId] })
+    await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['revoke', owner.keyId] })
     expect((await decide(buckle, { token: second, approved: true, scope: 'once', challenge: digestOf(second) }).send()).status).toBe(401)
     expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual([second])
     expect(buckle.runtime.actions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)).toEqual(['expired', 'replayed', 'unknown_key'])
@@ -241,7 +241,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     expect(output.stderr).toContain('The node answered HTTP 401')
 
     output.stdout = ''
-    await keysCommand({ config: buckle.config, argv: ['node'] })
+    await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['node'] })
     const nodeKey = /Public key: +(ed25519:\S+)/.exec(output.stdout)![1]!
     expect((await clientCommand(['trust', url, buckle.config.serverId, nodeKey], environment)).exitCode).toBe(0)
     output.stdout = ''
@@ -634,7 +634,7 @@ async function pinnedDevice(buckle: Node, url: string): Promise<{ BUCKLE_CLIENT_
   expect((await clientCommand(['keygen'], environment)).exitCode).toBe(0)
   writeFileSync(join(environment.BUCKLE_CLIENT_DIR, CLIENT_KEY_FILE), owner.privateKeyPem, { mode: 0o600 })
   output.stdout = ''
-  await keysCommand({ config: buckle.config, argv: ['node'] })
+  await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['node'] })
   const nodeKey = /Public key: +(ed25519:\S+)/.exec(output.stdout)![1]!
   expect((await clientCommand(['trust', url, buckle.config.serverId, nodeKey], environment)).exitCode).toBe(0)
   vi.restoreAllMocks()

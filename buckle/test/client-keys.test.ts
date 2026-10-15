@@ -18,6 +18,8 @@ import { loadNodeKey } from '../common/adapters/keys/file-node-key.js'
 // owner-only (`buckle client`); the owner enrolls the public half on the node (`buckle keys`), locally.
 
 const SETUP_ON_DEFAULT = { purpose: 'buckle-setup', workspace: 'default', registry: false } as const
+/** A node with no workspace to look a name up in: `--workspace node` needs none, and any other name is unknown. */
+const noWorkspaces = { lookup: () => null }
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -98,8 +100,8 @@ describe('buckle keys: the node side, local only', () => {
     expect(statSync(clientKeysPath(config)).mode & 0o777).toBe(0o600)
     expect(createFileClientKeys({ filePath: clientKeysPath(config) }).publicKeyFor(device.keyId, SETUP_ON_DEFAULT)).toHaveProperty('key')
     // Enrolling it again with the same scope changes nothing; with another scope it is refused.
-    expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(0)
-    expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'approval', '--workspace', 'node'] })).exitCode).toBe(1)
+    expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(0)
+    expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', device.publicKey, '--purpose', 'approval', '--workspace', 'node'] })).exitCode).toBe(1)
     expect(output.stderr).toContain('a scope is fixed at enrollment')
     expect(createFileClientKeys({ filePath: clientKeysPath(config) }).list()).toHaveLength(1)
 
@@ -122,18 +124,18 @@ describe('buckle keys: the node side, local only', () => {
   it('refuses what is not an Ed25519 public key, and a key revoked before', async () => {
     const config = node()
     const output = capture()
-    expect((await keysCommand({ config, argv: ['enroll', 'ssh-rsa AAAAB3Nza', '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
+    expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', 'ssh-rsa AAAAB3Nza', '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
     expect(output.stderr).toContain('Not an Ed25519 public key')
     const device = generateSigningKey()
     // Both parts of the scope are named at enrollment (owner decision D10).
-    expect((await keysCommand({ config, argv: ['enroll', device.publicKey] })).exitCode).toBe(1)
+    expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', device.publicKey] })).exitCode).toBe(1)
     expect(output.stderr).toContain('--purpose takes setup or approval')
-    expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'setup'] })).exitCode).toBe(1)
-    expect(output.stderr).toContain('--workspace takes a workspace id, or node')
-    expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'Not A Workspace'] })).exitCode).toBe(1)
-    await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'node'] })
-    await keysCommand({ config, argv: ['revoke', device.keyId] })
-    expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
+    expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', device.publicKey, '--purpose', 'setup'] })).exitCode).toBe(1)
+    expect(output.stderr).toContain('--workspace takes a workspace\'s name, or node')
+    expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'Not A Workspace'] })).exitCode).toBe(1)
+    await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'node'] })
+    await keysCommand({ config, workspaces: noWorkspaces, argv: ['revoke', device.keyId] })
+    expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
     expect(output.stderr).toContain('generate a new key')
     expect(existsSync(clientKeysPath(config))).toBe(true)
   })
@@ -185,13 +187,35 @@ describe('a key\'s scope (owner decision D10)', () => {
 // so a workspace named node would let a key meant for it change every workspace and the registry.
 describe('the workspace id node', () => {
   it('is reserved, as default is: registration refuses it by name', () => {
-    const registration = { name: 'Node', dir: '/srv/node' }
+    const registration = { name: 'The node', dir: '/srv/node' }
     for (const id of ['node', 'default']) {
       const parsed = WorkspaceRegistrationSchema.safeParse({ ...registration, id })
       expect(parsed.success).toBe(false)
       expect(JSON.stringify(parsed.error?.issues)).toContain(`${id} is reserved`)
     }
     expect(WorkspaceRegistrationSchema.safeParse({ ...registration, id: 'nodes' }).success).toBe(true)
+  })
+
+  // D85, Q15: --workspace takes a workspace's name, and the scope keeps the id a rename never changes.
+  it('is enrolled by the workspace\'s name, which the scope keeps as its id', async () => {
+    const config = node()
+    const device = generateSigningKey()
+    const output = capture()
+    const workspaces = { lookup: (handle: string) => (handle.toLowerCase() === 'the site' ? { id: 'site-id', name: 'The site', dir: '/srv/site', online: true, tokens: 1, revision: 0, updatedAt: '' } : null) }
+    expect((await keysCommand({ config, workspaces, argv: ['enroll', device.publicKey, '--purpose', 'setup', '--workspace', 'The Site'] })).exitCode).toBe(0)
+    expect(output.stdout).toContain('for setup on workspace site-id')
+    expect((await keysCommand({ config, workspaces, argv: ['enroll', generateSigningKey().publicKey, '--purpose', 'setup', '--workspace', 'The other site'] })).exitCode).toBe(1)
+    expect(output.stderr).toContain('No workspace is named The other site')
+  })
+
+  // D85, Q15: a name is a handle `--workspace` takes, so none may read as the node's scope, in any case.
+  it('is reserved as a name too, in any case', () => {
+    for (const name of ['node', 'Node', 'NODE']) {
+      const parsed = WorkspaceRegistrationSchema.safeParse({ name, dir: '/srv/node' })
+      expect(parsed.success).toBe(false)
+      expect(JSON.stringify(parsed.error?.issues)).toContain('node is reserved')
+    }
+    expect(WorkspaceRegistrationSchema.safeParse({ name: 'nodes', dir: '/srv/node' }).success).toBe(true)
   })
 })
 
@@ -201,7 +225,7 @@ describe('a key for both purposes', () => {
     const config = node()
     const output = capture()
     const device = generateSigningKey()
-    expect((await keysCommand({ config, argv: ['enroll', device.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(1)
+    expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', device.publicKey, '--purpose', 'both', '--workspace', 'node'] })).exitCode).toBe(1)
     expect(output.stderr).toContain('--purpose both is no longer enrolled: a key signs setup changes or approval decisions, not both')
     expect(output.stderr).not.toContain('setup|approval|both')
     expect(createFileClientKeys({ filePath: clientKeysPath(config) }).list()).toEqual([])
@@ -214,7 +238,7 @@ describe('a key for both purposes', () => {
     const keys = createFileClientKeys({ filePath: clientKeysPath(config) })
     await keys.enroll({ publicKey: device.publicKey, label: '', purpose: 'both', workspace: 'node' })
     expect(keys.publicKeyFor(device.keyId, SETUP_ON_DEFAULT)).toMatchObject({ covers: true })
-    expect((await keysCommand({ config, argv: ['list'] })).exitCode).toBe(0)
+    expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['list'] })).exitCode).toBe(0)
     expect(output.stdout).toContain(`${device.keyId}  setup and approval on the whole node  enrolled`)
   })
 })
@@ -227,7 +251,7 @@ describe('a small-order key (review L3 of B23-B25)', () => {
     const config = node()
     const output = capture()
     for (const key of [identity, orderEight]) {
-      expect((await keysCommand({ config, argv: ['enroll', key, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
+      expect((await keysCommand({ config, workspaces: noWorkspaces, argv: ['enroll', key, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
       expect(output.stderr).toContain('A small-order Ed25519 public key proves nothing')
       expect((await clientCommand(['trust', 'http://127.0.0.1:4320', 'node-1', key], { BUCKLE_CLIENT_DIR: join(scratch(), 'device') })).exitCode).toBe(1)
       expect(output.stderr).toContain('Not pinned: A small-order Ed25519 public key proves nothing')

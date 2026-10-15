@@ -1,9 +1,11 @@
+import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import { resolve } from 'pathe'
 import { ZodError } from 'zod'
 import type { NodeConfig } from '../common/runtime/config.js'
+import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { PolicyError } from '../common/domain/policy.js'
-import { WorkspaceError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { WorkspaceError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError } from '../common/services/workspaces/workspace-settings.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
@@ -14,29 +16,43 @@ export interface CliResult {
   detail?: string
 }
 
-const USAGE = `Usage: buckle workspace <verb>. A verb that takes no id acts on the workspace --workspace <id> names, or
-the one whose folder holds --dir <path>, or else the current directory.
+/** Where `init` and `add` ask for another name when the one they would use is taken (D85, Q15): a terminal, unless a test scripts the answers. */
+export interface NamePrompt {
+  interactive: boolean
+  question(text: string): Promise<string>
+  close(): void
+}
 
-  buckle workspace init [--dir <path>] [--name <name>] [--id <id>]
+const USAGE = `Usage: buckle workspace <verb>. A verb that takes no name acts on the workspace --workspace <name> names, or
+the one whose folder holds --dir <path>, or else the current directory. <name> is a workspace's name, or its id.
+
+  buckle workspace init [--dir <path>] [--name <name>] [--id <id>] [--yes]
                                        Serve a folder as a workspace, and print its agent token once
+  buckle workspace add <dir> [--name <name>] [--yes]
+                                       The same, with the folder named first
   buckle workspace list [--json]       Every workspace, online or not
   buckle workspace show [--json]       Its settings; no token is ever shown
-  buckle workspace enable <id> | disable <id>
+  buckle workspace enable <name> | disable <name>
                                        Serve it, or stop serving it, as an MCP server is switched
-  buckle workspace remove <id> [--purge]
+  buckle workspace rename <name> <new-name>
+                                       Give it another name; its id never changes
+  buckle workspace remove <name> [--purge]
                                        Forget it; its records stay unless --purge; its folder is never touched
   buckle workspace set <key> <value> | unset <key>
                                        Change one setting: name, env.<NAME>, or a key buckle workspace show lists
   buckle workspace token create [--label <text>] | list | revoke <token-id>
                                        Mint an agent token, shown once; list them; refuse one from now on
+
+A name that another workspace holds is asked about at a terminal; with --yes, or none, the command is refused.
 `
 
 /**
  * The owner's workspace commands (D83 (2) to (6), the workspace-model brief, item 4). `BUCKLE-D12` names the admin
  * credential as the one authority that mints or revokes a workspace token, so every verb refuses on a node configured
- * without one, and `SELF_ADMINISTRATION` in the command policy keeps a tool from reaching them.
+ * without one, and `SELF_ADMINISTRATION` in the command policy keeps a tool from reaching them. A workspace is named
+ * by its name wherever a verb takes one (D85, Q15); its id is accepted too.
  */
-export async function workspaceRegistryCommand(input: { config: NodeConfig; workspaces: WorkspaceManager; argv: string[]; cwd: string }): Promise<CliResult> {
+export async function workspaceRegistryCommand(input: { config: NodeConfig; workspaces: WorkspaceManager; argv: string[]; cwd: string; prompt?: NamePrompt }): Promise<CliResult> {
   if (!input.config.adminToken) return fail('This node has no admin credential. Set BUCKLE_ADMIN_TOKEN, or run buckle init, before minting workspace credentials.')
   let target: CommandTarget
   let argv: string[]
@@ -45,16 +61,17 @@ export async function workspaceRegistryCommand(input: { config: NodeConfig; work
     throw error
   }
   const [verb = 'show', ...rest] = argv
-  const context = { ...input, target, rest }
+  const prompt = input.prompt ?? terminalPrompt()
+  const context = { ...input, target, rest, prompt }
   try {
     switch (verb) {
       case 'init': return await init(context)
-      // Kept for one release beside `init`, which takes its folder from --dir or the current directory.
       case 'add': return await add(context)
       case 'list': return list(context)
       case 'show': return show(context)
       case 'enable': return await online(context, true)
       case 'disable': return await online(context, false)
+      case 'rename': return await rename(context)
       case 'remove': return await remove(context)
       case 'set': return await set(context)
       case 'unset': return await unset(context)
@@ -68,38 +85,66 @@ export async function workspaceRegistryCommand(input: { config: NodeConfig; work
     if (error instanceof WorkspaceError || error instanceof SettingValueError || error instanceof WorkspaceSettingsInvalidError || error instanceof WorkspaceSettingsConflictError || error instanceof PolicyError) return fail(error.message)
     if (error instanceof ZodError) return fail(error.issues.map(issue => `${issue.path.join('.') || 'value'}: ${issue.message}`).join('; '))
     throw error
+  } finally {
+    prompt.close()
   }
 }
 
-interface Context { config: NodeConfig; workspaces: WorkspaceManager; target: CommandTarget; rest: string[]; cwd: string }
+interface Context { config: NodeConfig; workspaces: WorkspaceManager; target: CommandTarget; rest: string[]; cwd: string; prompt: NamePrompt }
 
 /** `buckle workspace init`: the folder --dir names, relative to where it runs, or that directory; the token printed once. */
 async function init(context: Context): Promise<CliResult> {
-  const { values } = parseArgs({ args: context.rest, options: { name: { type: 'string' }, id: { type: 'string' } }, allowPositionals: false })
-  if (context.target.workspace !== undefined) return fail('buckle workspace init makes a workspace: name its folder with --dir, and its id with --id')
+  const { values } = parseArgs({ args: context.rest, options: { name: { type: 'string' }, id: { type: 'string' }, yes: { type: 'boolean' } }, allowPositionals: false })
+  if (context.target.workspace !== undefined) return fail('buckle workspace init makes a workspace: name its folder with --dir, and its name with --name')
   const dir = resolve(context.cwd, context.target.dir ?? '.')
-  const { workspace, token, takenUp } = await context.workspaces.create({ dir, ...(values.name ? { name: values.name } : {}), ...(values.id ? { id: values.id } : {}) })
-  printMinted(workspace, token, takenUp)
-  return { exitCode: 0, detail: `init ${workspace.id}` }
+  return serve(context, { dir, name: values.name, id: values.id, yes: values.yes === true })
 }
 
-/** `buckle workspace add <id> --root <dir>`, the 0.1 spelling of init. */
+/** `buckle workspace add <dir> [--name <name>]`: init with the folder named first (D85, Q15). */
 async function add(context: Context): Promise<CliResult> {
-  const { positionals, values } = parseArgs({ args: context.rest, options: { root: { type: 'string' }, name: { type: 'string' } }, allowPositionals: true })
-  const [id] = positionals
-  if (!id || !values.root || positionals.length !== 1) return fail('Usage: buckle workspace add <id> --root <dir> [--name <name>], kept for one release: buckle workspace init --dir <dir> --id <id>')
-  const { workspace, token, takenUp } = await context.workspaces.create({ id, dir: resolve(context.cwd, values.root), name: values.name ?? id })
+  const usage = 'Usage: buckle workspace add <dir> [--name <name>] [--yes]'
+  let parsed: ReturnType<typeof parseArgs<{ options: { name: { type: 'string' }; yes: { type: 'boolean' } }; allowPositionals: true }>>
+  // The 0.1 spelling, `add <id> --root <dir>`, went with the typed id (D85, Q15): its flag is refused with the usage.
+  try { parsed = parseArgs({ args: context.rest, options: { name: { type: 'string' }, yes: { type: 'boolean' } }, allowPositionals: true }) } catch { return fail(usage) }
+  const [dir] = parsed.positionals
+  if (!dir || parsed.positionals.length !== 1 || context.target.workspace !== undefined || context.target.dir !== undefined) return fail(usage)
+  return serve(context, { dir: resolve(context.cwd, dir), name: parsed.values.name, yes: parsed.values.yes === true })
+}
+
+/**
+ * Serves a folder as a new workspace, named as asked, or after its folder. A name another workspace holds is asked
+ * about at a terminal until one is free; with --yes, or no terminal, it is refused, naming --name (D85, Q15).
+ */
+async function serve(context: Context, input: { dir: string; name?: string; id?: string; yes: boolean }): Promise<CliResult> {
+  const { workspace, token, takenUp } = await createNamed(context.prompt, { ...input, refusal: 'name it with --name <name>' }, name => context.workspaces.create({ dir: input.dir, ...(name === undefined ? {} : { name }), ...(input.id === undefined ? {} : { id: input.id }) }))
   printMinted(workspace, token, takenUp)
-  return { exitCode: 0, detail: `init ${workspace.id}` }
+  return { exitCode: 0, detail: `init ${workspace.name}` }
+}
+
+/**
+ * Runs `create` with the name given, then with each name the owner types in place of one that is taken; `refusal`
+ * says how to name it where nobody can be asked (--yes, or no terminal).
+ */
+export async function createNamed<T>(prompt: NamePrompt, input: { name?: string; yes: boolean; refusal: string }, create: (name: string | undefined) => Promise<T>): Promise<T> {
+  let name = input.name
+  for (;;) {
+    try { return await create(name) } catch (error) {
+      if (!(error instanceof WorkspaceNameTakenError)) throw error
+      if (input.yes || !prompt.interactive) throw new WorkspaceError(`${error.message}: ${input.refusal}`, 409)
+      const answer = (await prompt.question(`${error.message}. Another name, or Enter to stop: `)).trim()
+      if (answer === '') throw new WorkspaceError(`No name given, so nothing was added; ${input.refusal}`, 409)
+      name = answer
+    }
+  }
 }
 
 function printMinted(workspace: WorkspaceDescriptor, token: MintedToken, takenUp: TakenUp | null): void {
-  process.stdout.write(`Workspace ${workspace.id} serves ${workspace.dir}, online.${takenUp ? ` It takes up the records workspace ${workspace.id} left when it was removed: its settings, grants, and history${takenUp.dangerouslyAllow ? ', and its dangerously-allow switch, which is ON' : ''}.` : ''}
+  process.stdout.write(`Workspace ${workspace.name} serves ${workspace.dir}, online.${takenUp ? ` It takes up the records workspace ${workspace.id} left when it was removed: its settings, grants, and history${takenUp.dangerouslyAllow ? ', and its dangerously-allow switch, which is ON' : ''}.` : ''}
 
   agent token   ${token.token}
 
 Shown once. An agent sends it to /mcp or /v1 on this node, which serve this workspace for it; mint more with
-buckle workspace token create --workspace ${workspace.id}.
+buckle workspace token create --workspace ${workspaceArgument(workspace.name)}.
 `)
 }
 
@@ -111,90 +156,100 @@ function list(context: Context): CliResult {
     process.stdout.write('No workspace yet: run buckle workspace init in the folder to serve.\n')
     return { exitCode: 0 }
   }
-  for (const workspace of workspaces) process.stdout.write(`${workspace.id.padEnd(20)} ${(workspace.online ? 'online' : 'offline').padEnd(8)} ${workspace.name}  ${workspace.dir}\n`)
+  for (const workspace of workspaces) process.stdout.write(`${workspace.name.padEnd(24)} ${(workspace.online ? 'online' : 'offline').padEnd(8)} ${workspace.id}  ${workspace.dir}\n`)
   return { exitCode: 0 }
 }
 
 /** The workspace and its settings, whole: workspace.json holds no credential, and the registry's token digests are left out. */
 function show(context: Context): CliResult {
   const { values } = parseArgs({ args: context.rest, options: { json: { type: 'boolean' } }, allowPositionals: false })
-  const id = context.workspaces.target({ ...context.target, cwd: context.cwd })
-  const workspace = context.workspaces.list().find(item => item.id === id)!
-  const settings = context.workspaces.settings(id)
+  const workspace = targeted(context)
+  const settings = context.workspaces.settings(workspace.id)
   if (values.json) return print({ ...workspace, settings })
-  process.stdout.write(`Workspace ${workspace.id} (${workspace.name}), ${workspace.online ? 'online' : 'offline'}, ${workspace.tokens} agent token${workspace.tokens === 1 ? '' : 's'}
+  const named = workspaceArgument(workspace.name)
+  process.stdout.write(`Workspace ${workspace.name} (id ${workspace.id}), ${workspace.online ? 'online' : 'offline'}, ${workspace.tokens} agent token${workspace.tokens === 1 ? '' : 's'}
 Folder    ${workspace.dir}
 ${JSON.stringify(settings, null, 2)}
 
-Change a setting with buckle workspace set <key> <value> --workspace ${workspace.id}; the keys:
+Change a setting with buckle workspace set <key> <value> --workspace ${named}; the keys:
   name                    the workspace's name
   env.<NAME>              a variable its commands see; a credential's name is refused
 ${SETTING_KEYS.map(key => `  ${key.key.padEnd(24)}${key.takes}`).join('\n')}
-Its policy lists change with buckle policy --workspace ${workspace.id}.
+Its policy lists change with buckle policy --workspace ${named}.
 `)
   return { exitCode: 0 }
 }
 
 async function online(context: Context, on: boolean): Promise<CliResult> {
-  const id = onlyId(context.rest, on ? 'enable' : 'disable')
-  const workspace = await context.workspaces.update(id, { online: on })
-  process.stdout.write(`Workspace ${workspace.id} is ${on ? 'online: buckle serve serves it at its next call' : 'offline: calls to it are refused, and its files, records and tokens stay'}.\n`)
-  return { exitCode: 0, detail: `${on ? 'enable' : 'disable'} ${id}` }
+  const named = handle(context, onlyHandle(context.rest, on ? 'enable' : 'disable'))
+  const workspace = await context.workspaces.update(named.id, { online: on })
+  process.stdout.write(`Workspace ${workspace.name} is ${on ? 'online: buckle serve serves it at its next call' : 'offline: calls to it are refused, and its files, records and tokens stay'}.\n`)
+  return { exitCode: 0, detail: `${on ? 'enable' : 'disable'} ${workspace.name}` }
+}
+
+/** `buckle workspace rename <name> <new-name>`: the name changes, the id never does (D85, Q15). */
+async function rename(context: Context): Promise<CliResult> {
+  const [from, to, ...extra] = context.rest
+  if (!from || !to || extra.length > 0) return fail('Usage: buckle workspace rename <name> <new-name>')
+  const named = handle(context, from)
+  const workspace = await context.workspaces.update(named.id, { name: to })
+  process.stdout.write(`Workspace ${named.name} is now named ${workspace.name}; its id ${workspace.id} is unchanged.\n`)
+  return { exitCode: 0, detail: `rename ${named.name} ${workspace.name}` }
 }
 
 async function remove(context: Context): Promise<CliResult> {
   const { positionals, values } = parseArgs({ args: context.rest, options: { purge: { type: 'boolean' } }, allowPositionals: true })
-  const id = onlyId(positionals, 'remove')
-  const removed = await context.workspaces.remove(id, { purge: values.purge === true })
+  const named = handle(context, onlyHandle(positionals, 'remove'))
+  const removed = await context.workspaces.remove(named.id, { purge: values.purge === true })
   process.stdout.write(values.purge
-    ? `Removed workspace ${removed.id} and deleted its records. Its folder ${removed.dir} is untouched.\n`
-    : `Removed workspace ${removed.id}. Its folder ${removed.dir} is untouched, and its records stay in the state directory: buckle workspace init --dir <folder> --id ${removed.id} takes them up again.\n`)
-  return { exitCode: 0, detail: `remove ${id}${values.purge ? ' --purge' : ''}` }
+    ? `Removed workspace ${removed.name} and deleted its records. Its folder ${removed.dir} is untouched.\n`
+    : `Removed workspace ${removed.name}. Its folder ${removed.dir} is untouched, and its records stay in the state directory: buckle workspace init --dir <folder> --id ${removed.id} takes them up again.\n`)
+  return { exitCode: 0, detail: `remove ${removed.name}${values.purge ? ' --purge' : ''}` }
 }
 
 /** One setting, validated whole with the rest before it is written (openSettingsFile). A variable's value is never echoed or audited. */
 async function set(context: Context): Promise<CliResult> {
   const [key, value, ...extra] = context.rest
   if (!key || value === undefined || extra.length > 0) return fail('Usage: buckle workspace set <key> <value>; quote a value of several words as one')
-  const id = context.workspaces.target({ ...context.target, cwd: context.cwd })
+  const workspace = targeted(context)
   if (key === 'name') {
-    await context.workspaces.update(id, { name: value })
-    process.stdout.write(`Workspace ${id} is named ${value}.\n`)
-    return { exitCode: 0, detail: `set ${id} name` }
+    const renamed = await context.workspaces.update(workspace.id, { name: value })
+    process.stdout.write(`Workspace ${workspace.name} is now named ${renamed.name}.\n`)
+    return { exitCode: 0, detail: `set ${workspace.name} name` }
   }
   if (key.startsWith('env.')) {
     const name = key.slice('env.'.length)
     const refusal = variableNameRefusal(name) ?? credentialValueRefusal(context, value)
     if (refusal) return fail(refusal)
-    await context.workspaces.updateSettings(id, settings => ({ ...settings, env: { ...settings.env, [name]: value } }))
-    process.stdout.write(`Workspace ${id}'s commands see ${name}.\n`)
-    return { exitCode: 0, detail: `set ${id} env.${name}` }
+    await context.workspaces.updateSettings(workspace.id, settings => ({ ...settings, env: { ...settings.env, [name]: value } }))
+    process.stdout.write(`Workspace ${workspace.name}'s commands see ${name}.\n`)
+    return { exitCode: 0, detail: `set ${workspace.name} env.${name}` }
   }
   const setting = settingKey(key)
   if (typeof setting === 'string') return fail(setting)
-  await context.workspaces.updateSettings(id, settings => setting.set(settings, value))
-  process.stdout.write(`Workspace ${id}: ${key} is set.\n`)
-  return { exitCode: 0, detail: `set ${id} ${key} ${value}` }
+  await context.workspaces.updateSettings(workspace.id, settings => setting.set(settings, value))
+  process.stdout.write(`Workspace ${workspace.name}: ${key} is set.\n`)
+  return { exitCode: 0, detail: `set ${workspace.name} ${key} ${value}` }
 }
 
 async function unset(context: Context): Promise<CliResult> {
   const [key, ...extra] = context.rest
   if (!key || extra.length > 0) return fail('Usage: buckle workspace unset <key>')
-  const id = context.workspaces.target({ ...context.target, cwd: context.cwd })
+  const workspace = targeted(context)
   if (key.startsWith('env.')) {
     const name = key.slice('env.'.length)
-    await context.workspaces.updateSettings(id, (settings) => {
+    await context.workspaces.updateSettings(workspace.id, (settings) => {
       const { [name]: _dropped, ...env } = settings.env
       return { ...settings, env }
     })
-    process.stdout.write(`Workspace ${id}'s commands no longer see ${name}.\n`)
-    return { exitCode: 0, detail: `unset ${id} env.${name}` }
+    process.stdout.write(`Workspace ${workspace.name}'s commands no longer see ${name}.\n`)
+    return { exitCode: 0, detail: `unset ${workspace.name} env.${name}` }
   }
   const setting = settingKey(key)
   if (typeof setting === 'string') return fail(setting)
-  await context.workspaces.updateSettings(id, settings => setting.unset(settings))
-  process.stdout.write(`Workspace ${id}: ${key} is back to its default.\n`)
-  return { exitCode: 0, detail: `unset ${id} ${key}` }
+  await context.workspaces.updateSettings(workspace.id, settings => setting.unset(settings))
+  process.stdout.write(`Workspace ${workspace.name}: ${key} is back to its default.\n`)
+  return { exitCode: 0, detail: `unset ${workspace.name} ${key}` }
 }
 
 /**
@@ -222,7 +277,7 @@ function credentialValueRefusal(context: Context, value: string): string | null 
   return held ? 'That value holds one of this node\'s credentials, and no secret reaches a command Buckle runs' : null
 }
 
-/** How many words a 0.1 `token` spelling takes, its workspace's id first. */
+/** How many words a 0.1 `token` spelling takes, its workspace's name first. */
 const LEGACY_POSITIONALS: Readonly<Record<string, number>> = { add: 1, list: 1, revoke: 2 }
 
 /** `token create|list|revoke` on the target workspace, and the 0.1 spellings that name the workspace first, for one release. */
@@ -231,40 +286,60 @@ async function token(context: Context): Promise<CliResult> {
   const { positionals, values } = parseArgs({ args: words, options: { label: { type: 'string' } }, allowPositionals: true })
   const flagged = context.target.workspace !== undefined || context.target.dir !== undefined
   const legacy = (count: number) => positionals.length === count && !flagged
-  // A 0.1 spelling's id beside --workspace or --dir names two workspaces; minting for one of them would be a guess (finding 32).
-  if (flagged && action !== undefined && positionals.length === LEGACY_POSITIONALS[action]) return fail(`Name the workspace once: buckle workspace token ${action} <id>${action === 'revoke' ? ' <token-id>' : ''}, the 0.1 spelling, or buckle workspace token ${action === 'add' ? 'create' : action}${action === 'revoke' ? ' <token-id>' : ''} --workspace <id>`)
+  // A 0.1 spelling's name beside --workspace or --dir names two workspaces; minting for one of them would be a guess (finding 32).
+  if (flagged && action !== undefined && positionals.length === LEGACY_POSITIONALS[action]) return fail(`Name the workspace once: buckle workspace token ${action} <name>${action === 'revoke' ? ' <token-id>' : ''}, the 0.1 spelling, or buckle workspace token ${action === 'add' ? 'create' : action}${action === 'revoke' ? ' <token-id>' : ''} --workspace <name>`)
   if (action === 'create' || action === 'add') {
     if (positionals.length > (action === 'add' ? 1 : 0)) return fail('Usage: buckle workspace token create [--label <text>]')
-    const id = action === 'add' && legacy(1) ? positionals[0]! : context.workspaces.target({ ...context.target, cwd: context.cwd })
-    const minted = await context.workspaces.addToken(id, { label: values.label })
-    process.stdout.write(`Minted ${minted.id} for workspace ${id}
+    const workspace = action === 'add' && legacy(1) ? handle(context, positionals[0]!) : targeted(context)
+    const minted = await context.workspaces.addToken(workspace.id, { label: values.label })
+    process.stdout.write(`Minted ${minted.id} for workspace ${workspace.name}
 
   agent token   ${minted.token}
 
-Shown once. Revoke it with buckle workspace token revoke ${minted.id} --workspace ${id}.
+Shown once. Revoke it with buckle workspace token revoke ${minted.id} --workspace ${workspaceArgument(workspace.name)}.
 `)
-    return { exitCode: 0, detail: `token create ${id} ${minted.id}` }
+    return { exitCode: 0, detail: `token create ${workspace.name} ${minted.id}` }
   }
   if (action === 'list') {
     if (positionals.length > 1) return fail('Usage: buckle workspace token list')
-    const id = legacy(1) ? positionals[0]! : context.workspaces.target({ ...context.target, cwd: context.cwd })
-    return print(context.workspaces.listTokens(id))
+    const workspace = legacy(1) ? handle(context, positionals[0]!) : targeted(context)
+    return print(context.workspaces.listTokens(workspace.id))
   }
   if (action === 'revoke') {
     if (positionals.length < 1 || positionals.length > 2) return fail('Usage: buckle workspace token revoke <token-id>')
-    const [id, tokenId] = legacy(2) ? [positionals[0]!, positionals[1]!] : [context.workspaces.target({ ...context.target, cwd: context.cwd }), positionals[0]!]
-    if (!await context.workspaces.revokeToken(id, tokenId)) return fail(`Workspace ${id} holds no token ${tokenId}`)
+    const [workspace, tokenId] = legacy(2) ? [handle(context, positionals[0]!), positionals[1]!] : [targeted(context), positionals[0]!]
+    if (!await context.workspaces.revokeToken(workspace.id, tokenId)) return fail(`Workspace ${workspace.name} holds no token ${tokenId}`)
     process.stdout.write(`Revoked ${tokenId}. Calls presenting it are refused from now on.\n`)
-    return { exitCode: 0, detail: `token revoke ${id} ${tokenId}` }
+    return { exitCode: 0, detail: `token revoke ${workspace.name} ${tokenId}` }
   }
   return fail(USAGE)
 }
 
-/** The one id a verb names. */
-function onlyId(words: readonly string[], verb: string): string {
-  const [id, ...extra] = words
-  if (!id || extra.length > 0) throw new WorkspaceError(`Usage: buckle workspace ${verb} <id>`)
-  return id
+/** The workspace the command targets (D83 (4)): --workspace, --dir, or the folder holding the current directory. */
+function targeted(context: Context): WorkspaceDescriptor {
+  return handle(context, context.workspaces.target({ ...context.target, cwd: context.cwd }))
+}
+
+/** The workspace a name or id names, refused with the names where none does. */
+function handle(context: Context, named: string): WorkspaceDescriptor {
+  return context.workspaces.lookup(context.workspaces.target({ workspace: named, cwd: context.cwd }))!
+}
+
+/** The one name a verb names. */
+function onlyHandle(words: readonly string[], verb: string): string {
+  const [name, ...extra] = words
+  if (!name || extra.length > 0) throw new WorkspaceError(`Usage: buckle workspace ${verb} <name>`)
+  return name
+}
+
+/** Questions on stderr, so stdout stays the answer; asked only where both ends are a terminal. */
+function terminalPrompt(): NamePrompt {
+  let readline: ReturnType<typeof createInterface> | null = null
+  return {
+    interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+    question: text => (readline ??= createInterface({ input: process.stdin, output: process.stderr })).question(text),
+    close: () => readline?.close(),
+  }
 }
 
 function print(value: unknown): CliResult {

@@ -1,4 +1,4 @@
-import { workspaceLabel } from '../common/domain/approval-instruction.js'
+import { printable } from '../common/domain/approval-instruction.js'
 import { logger } from '../common/runtime/log.js'
 import { WorkspaceError, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
@@ -8,7 +8,7 @@ export const ROSTER_POLL_MS = 2_000
 
 /**
  * The online workspaces as `buckle serve` lists them, at start and after each change (the workspace-model brief, item
- * 6): each one's id and name, where the agent sees its folder and from where, its URL mode, and the packs it offers. A
+ * 6): each one's name and id, where the agent sees its folder and from where, its URL mode, and the packs it offers. A
  * workspace that will not open is listed with its reason, and the rest are served. The owner's terminal, so paths show.
  */
 export async function describeOnline(workspaces: WorkspaceManager): Promise<string> {
@@ -20,7 +20,7 @@ export async function describeOnline(workspaces: WorkspaceManager): Promise<stri
 }
 
 async function describeWorkspace(workspaces: WorkspaceManager, workspace: WorkspaceDescriptor): Promise<string[]> {
-  const head = `  ${workspaceLabel(workspace.id, workspace.name)}`
+  const head = `  ${printable(workspace.name)}\n    id      ${workspace.id}`
   let packs: string
   let settings: WorkspaceSettings
   let waiting: string | null = null

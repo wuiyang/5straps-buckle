@@ -9,7 +9,7 @@ import { createAuditedStdioTransport } from './audited-stdio-transport.js'
 import { createMcpServer, type ToolCallScope } from './server.js'
 import { createStdioWire } from './stdio-wire.js'
 
-/** The workspace `buckle mcp` was asked for: `--workspace <id>`, or `--dir <path>`, relative to where it starts. */
+/** The workspace `buckle mcp` was asked for: `--workspace <name>` (its name, or its id), or `--dir <path>`, relative to where it starts. */
 export interface McpTarget { workspace?: string; dir?: string }
 
 export function mcpTarget(options: readonly string[]): McpTarget {
@@ -38,7 +38,7 @@ export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleC
   const callScope = stdioCallScope(common)
   const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel }), { transport })
   common.owner.onClose('accept', 'mcp stdio', () => stdio.close())
-  input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, workspaceId: runtime.workspaceId, tools: runtime.registry().capabilities().length })
+  input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), tools: runtime.registry().capabilities().length })
 }
 
 /**

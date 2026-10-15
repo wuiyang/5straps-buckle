@@ -139,11 +139,12 @@ export function describeQuestion(question: ApprovalQuestion): string {
 }
 
 /**
- * Each line marked `[<id>]` with the workspace it waits in (the workspace-model brief, item 6): a terminal serving
- * several workspaces, and logging beside them, shows which one a question is from on every line of it.
+ * Each line marked `[<name>]` with the workspace it waits in (the workspace-model brief, item 6; D85, Q15): a terminal
+ * serving several workspaces, and logging beside them, shows which one a question is from on every line of it.
  */
-export function marked(question: Pick<ApprovalQuestion, 'workspaceId'>, lines: string[]): string[] {
-  return question.workspaceId === undefined ? lines : lines.map(line => `[${printable(question.workspaceId!)}] ${line}`)
+export function marked(question: Pick<ApprovalQuestion, 'workspaceId' | 'workspaceName'>, lines: string[]): string[] {
+  const handle = question.workspaceName ?? question.workspaceId
+  return handle === undefined ? lines : lines.map(line => `[${printable(handle)}] ${line}`)
 }
 
 function approvalQuestion(request: CliRequest): ApprovalQuestion {

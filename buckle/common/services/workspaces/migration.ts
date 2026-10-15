@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { join } from 'pathe'
+import { basename, join } from 'pathe'
 import { z, ZodError } from 'zod'
 import { WorkspacePolicySchema, allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { editEnvironmentVariable, updateEnvironmentFile } from '../../adapters/environment-file.js'
@@ -70,8 +70,8 @@ interface Plan { plans: Planned[]; notes: string[] }
 /** What a 0.1 node's files kept for one state directory, read whole before anything is written. */
 interface Kept { policies: Record<string, WorkspacePolicy>; grants: string[]; switches: string[] }
 
-/** The name a workspace takes where its own is empty: the node's default name. */
-const UNNAMED = 'Local Buckle'
+/** The name a workspace takes where its own is empty: a folder's name never is, but a 0.1 id read from a hand-edited registry could be. */
+const UNNAMED = 'workspace'
 /** The longest name the registry reads (WorkspaceNameSchema). */
 const NAME_LIMIT = 120
 
@@ -200,7 +200,8 @@ function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; register
   const merged = mergePolicies({ ...environment.policy, mount: environment.mounts[0]?.target ?? null }, ownPolicy === null ? null : own.policies[ownPolicy]!)
   const ownSwitch = keyOf({ keys: own.switches, spellings: ownSpellings, platform, file: dangerouslyAllowPath(node) })
   const ownPlan: Planned = {
-    record: { id: NODE_FOLDER_WORKSPACE, name: named(NODE_FOLDER_WORKSPACE, node.serverName), dir, online: true, revision: 0, updatedAt: now, createdAt: now,
+    // Named after its folder (D85, Q15): the node's name stays the node's.
+    record: { id: NODE_FOLDER_WORKSPACE, name: named(NODE_FOLDER_WORKSPACE, basename(dir)), dir, online: true, revision: 0, updatedAt: now, createdAt: now,
       tokens: node.migration.authToken ? [{ id: NODE_TOKEN_ID, sha256: tokenDigest(node.migration.authToken), label: 'BUCKLE_AUTH_TOKEN', createdAt: now }] : [] },
     settings: { ...environment, policy: { ...merged, mount: null }, mounts: merged.mount === null ? [] : [{ kind: 'workspace', target: merged.mount, access: 'write' }] },
     stateDirectory: node.stateDirectory,
@@ -219,8 +220,10 @@ function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; register
     const policyKey = keyOf({ keys: Object.keys(records.policies), spellings, platform, file: policyPath({ stateDirectory }) })
     const keptLists = withinLists(environment.policy, policyKey === null ? workspace.policy : records.policies[policyKey]!)
     if ('conflicts' in keptLists) conflicts.push(`workspace ${workspace.id}: ${keptLists.conflicts.join(' and ')}`)
+    if (workspace.name.trim() !== '' && workspace.name.trim() !== workspace.id) notes.push(`Workspace ${workspace.id} was shown as ${workspace.name.trim()} before; its name is now ${workspace.id}, the handle --workspace takes, and buckle workspace rename ${workspace.id} <name> gives it another.`)
     return {
-      record: { id: workspace.id, name: named(workspace.id, workspace.name), dir: root, online: workspace.enabled && !workspace.retiredAt, revision: 0, updatedAt: workspace.updatedAt ?? now, createdAt: now,
+      // Its 0.1 id is the handle its MCP configs name, so that is its name (D85, Q15); its 0.1 display name is said in a note.
+      record: { id: workspace.id, name: named(workspace.id, workspace.id), dir: root, online: workspace.enabled && !workspace.retiredAt, revision: 0, updatedAt: workspace.updatedAt ?? now, createdAt: now,
         tokens: workspace.tokens.map(token => ({ id: token.id, sha256: tokenDigest(token.token), label: token.label, createdAt: token.createdAt })) },
       settings: { ...environment, policy: 'policy' in keptLists ? keptLists.policy : environment.policy, mounts: [{ kind: 'workspace', target: WORKSPACE_MOUNT_TARGET, access: 'write' }] },
       stateDirectory,

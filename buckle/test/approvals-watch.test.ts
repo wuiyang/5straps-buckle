@@ -97,11 +97,11 @@ describe('buckle approvals --watch over several workspaces', () => {
     const done = watchApprovals({ sources: async () => sources, input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
     try {
       await prompted(terminal)
-      expect(terminal.shown()).toContain('Watching workspaces one (Site one), two (Site two) for approvals.')
-      expect(terminal.shown()).toContain('[two] fs_write needs approval in workspace two (Site two)')
-      expect(terminal.shown()).toContain(`[two]   token: ${token}`)
+      expect(terminal.shown()).toContain('Watching workspaces Site one, Site two for approvals.')
+      expect(terminal.shown()).toContain('[Site two] fs_write needs approval in workspace Site two')
+      expect(terminal.shown()).toContain(`[Site two]   token: ${token}`)
       terminal.type('o\r')
-      await vi.waitFor(() => expect(terminal.shown()).toContain(`Approved (once) ${token} in workspace two`))
+      await vi.waitFor(() => expect(terminal.shown()).toContain(`Approved (once) ${token} in workspace Site two`))
       expect(registryOf(second).pending()).toEqual([])
       expect(secondLog.read(10).map(entry => entry.tool)).toContain('cli_approve')
       expect(firstLog.read(10)).toEqual([])
@@ -110,7 +110,7 @@ describe('buckle approvals --watch over several workspaces', () => {
       await done
       for (const source of sources) await source.approvals.close()
     }
-    expect(terminal.shown()).toContain('Stopped watching workspaces one (Site one), two (Site two).')
+    expect(terminal.shown()).toContain('Stopped watching workspaces Site one, Site two.')
   })
   // Finding 10 of the Phase 1 review: the watch fixed its workspaces when it started.
   it('asks in a workspace that comes online after it starts, and says when it starts and stops watching one', async () => {
@@ -123,21 +123,21 @@ describe('buckle approvals --watch over several workspaces', () => {
     const terminal = keyboardTerminal()
     const done = watchApprovals({ sources: async () => online, input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
     try {
-      await vi.waitFor(() => expect(terminal.shown()).toContain('Watching workspace one (Site one) for approvals.'))
+      await vi.waitFor(() => expect(terminal.shown()).toContain('Watching workspace Site one for approvals.'))
       online = [...sources]
       const token = await issue(registryOf(second))
       await prompted(terminal)
-      expect(terminal.shown()).toContain('Now also watching workspace two (Site two).')
-      expect(terminal.shown()).toContain(`[two]   token: ${token}`)
+      expect(terminal.shown()).toContain('Now also watching workspace Site two.')
+      expect(terminal.shown()).toContain(`[Site two]   token: ${token}`)
       terminal.type('n\r')
       online = [sources[1]!]
-      await vi.waitFor(() => expect(terminal.shown()).toContain('Stopped watching workspace one (Site one), which is no longer online.'))
+      await vi.waitFor(() => expect(terminal.shown()).toContain('Stopped watching workspace Site one, which is no longer online.'))
     } finally {
       terminal.type('\x03')
       await done
       for (const source of sources) await source.approvals.close()
     }
-    expect(terminal.shown()).toContain('Stopped watching workspace two (Site two).')
+    expect(terminal.shown()).toContain('Stopped watching workspace Site two.')
   })
 })
 
@@ -187,7 +187,7 @@ describe('buckle approvals --watch', () => {
       terminal.type('n\r')
       await vi.waitFor(() => expect(terminal.shown()).toContain(`Answer later with: buckle approve ${request!.token} --deny`))
       const later = terminal.shown().split('Answer later with: ')[1]!.split('\n')[0]!.trimEnd()
-      expect(later).toBe(`buckle approve ${request!.token} --deny`)
+      expect(later).toBe(`buckle approve ${request!.token} --deny --workspace default`)
       expect(registry.pending().map(pending => pending.token)).toEqual([request!.token])
       expect(grantsOf(config)).toEqual([])
     } finally {

@@ -1,9 +1,6 @@
 import type { ApprovalRequest, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
 import { describeExpiry } from './approval-deadline.js'
 
-/** The node's own workspace, whose requests the plain command already answers. */
-const DEFAULT_WORKSPACE = 'default'
-
 /**
  * Controls (C0, DEL, C1), format characters (bidirectional marks and overrides, zero-width
  * characters, the soft hyphen, tag characters) and the Unicode line and paragraph separators:
@@ -29,29 +26,48 @@ export function preferredScope(offered: GrantScope[]): GrantScope {
   return offered.includes('session') ? 'session' : offered[0] ?? 'once'
 }
 
+/** A handle that needs no quoting on a command line: letters, digits, and the punctuation a folder's name usually has. */
+const PLAIN_ARGUMENT = /^[A-Za-z0-9._@+:,=/-]+$/
+
 /**
- * The exact command that answers one request. A token is issued and resolved inside one
- * workspace's own state, so `buckle approve <token>` run against the node reaches a request from
- * the node's workspace and no other: a registered child workspace has to be named. The flag is
- * left off where it would say `default`, which is what every instruction printed before this.
+ * A workspace's name as a printed command's argument (D85, Q15): bare where every character is plain, single-quoted
+ * otherwise, with a quote inside it closed, escaped, and reopened, as a POSIX shell reads one word. Every character a
+ * terminal would act on is shown as its escape first, as every rendering of agent-reachable text is.
  */
-export function approveCommand(input: { request: ApprovalRequest; workspaceId?: string }): string {
-  const workspace = input.workspaceId && input.workspaceId !== DEFAULT_WORKSPACE ? ` --workspace ${input.workspaceId}` : ''
-  return `buckle approve ${input.request.token} --scope ${preferredScope(input.request.offeredScopes)}${workspace}`
+export function workspaceArgument(name: string): string {
+  const shown = printable(name)
+  return PLAIN_ARGUMENT.test(shown) ? shown : `'${shown.replaceAll('\'', '\'\\\'\'')}'`
+}
+
+/** Where a command names the workspace an ask waits in: its name, which `--workspace` takes (D85, Q15). */
+interface NamedWorkspace { workspaceId?: string; workspaceName?: string }
+
+/** The `--workspace` flag a printed command carries: the name where it is known, else the id, and nothing where neither is. */
+function workspaceFlag(input: NamedWorkspace): string {
+  const handle = input.workspaceName ?? input.workspaceId
+  return handle === undefined ? '' : ` --workspace ${workspaceArgument(handle)}`
+}
+
+/**
+ * The exact command that answers one request. A token is issued and resolved inside one workspace's own state, so
+ * `buckle approve <token>` names the workspace it waits in, by its name (D85, Q15): the approver's commands default to
+ * the workspace holding their directory, which is not always this one.
+ */
+export function approveCommand(input: NamedWorkspace & { request: ApprovalRequest }): string {
+  return `buckle approve ${input.request.token} --scope ${preferredScope(input.request.offeredScopes)}${workspaceFlag(input)}`
 }
 
 /** The command that denies one request: the only decision an ask recorded before this build takes (owner decision D17). */
-export function denyCommand(input: { request: ApprovalRequest; workspaceId?: string }): string {
-  const workspace = input.workspaceId && input.workspaceId !== DEFAULT_WORKSPACE ? ` --workspace ${input.workspaceId}` : ''
-  return `buckle approve ${input.request.token} --deny${workspace}`
+export function denyCommand(input: NamedWorkspace & { request: ApprovalRequest }): string {
+  return `buckle approve ${input.request.token} --deny${workspaceFlag(input)}`
 }
 
 /**
  * The command that shows every waiting ask's whole action (owner decision D17): what a relayed instruction
  * sends a person to first, before any command that decides.
  */
-export function reviewCommand(input: { workspaceId?: string }): string {
-  return `buckle approvals${input.workspaceId && input.workspaceId !== DEFAULT_WORKSPACE ? ` --workspace ${input.workspaceId}` : ''}`
+export function reviewCommand(input: NamedWorkspace): string {
+  return `buckle approvals${workspaceFlag(input)}`
 }
 
 /**
@@ -62,7 +78,7 @@ export function reviewCommand(input: { workspaceId?: string }): string {
  * nor the workspace was not actionable on a node serving several. The approval webhook names the same
  * workspace in fields of its own (webhook-notifier.ts).
  */
-export function describeApprovalRequest(input: { request: ApprovalRequest; workspaceId?: string; workspaceName?: string; nodeName?: string }): string[] {
+export function describeApprovalRequest(input: NamedWorkspace & { request: ApprovalRequest; nodeName?: string }): string[] {
   const { request } = input
   const workspace = input.workspaceId ? `workspace ${workspaceLabel(input.workspaceId, input.workspaceName)}` : null
   return [
@@ -83,11 +99,11 @@ export function describeApprovalRequest(input: { request: ApprovalRequest; works
 export const RECORDED_BEFORE_NOTE = 'recorded before this build, or its kept call is missing or damaged: its whole call cannot be shown, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
 
 /**
- * A workspace as every approver names it (the workspace-model brief, item 6): its id, which the commands take, and its
- * name, which the owner chose and knows it by.
+ * A workspace as every approver names it (D85, Q15): its name, which the owner chose, knows it by, and types after
+ * `--workspace`; its id, a UUID nobody types, only where no name is known.
  */
 export function workspaceLabel(id: string, name?: string): string {
-  return name === undefined ? printable(id) : `${printable(id)} (${printable(name)})`
+  return printable(name ?? id)
 }
 
 /** Arguments past this size get a line naming their size before anything else, so a person knows how much follows. */
@@ -138,8 +154,9 @@ export function describeAsk(ask: ShownAsk): string[] {
   const head = askHead(ask)
   const { call } = ask
   if (!call) return [...head, `  ${RECORDED_BEFORE_NOTE}`]
+  const workspace = ask.workspaceId === undefined && ask.workspaceName === undefined ? undefined : workspaceLabel(ask.workspaceId ?? '', ask.workspaceName)
   return [...head, ...describeAction({
-    ...(ask.node === undefined ? {} : { node: ask.node }), workspace: workspaceLabel(ask.workspaceId ?? DEFAULT_WORKSPACE, ask.workspaceName), rule: ask.rule, subject: ask.subject, reason: ask.reason,
+    ...(ask.node === undefined ? {} : { node: ask.node }), ...(workspace === undefined ? {} : { workspace }), rule: ask.rule, subject: ask.subject, reason: ask.reason,
     description: call.description, cwd: call.cwd, effects: call.effects ?? null, arguments: call.arguments,
   })]
 }

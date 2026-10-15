@@ -146,10 +146,10 @@ describe('a request the enrolled key signed (B23)', () => {
     expect((await send(buckle, sign(buckle, { session }))).status).toBe(200)
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
-    expect((await keysCommand({ config: buckle.config, argv: ['revoke', owner.keyId] })).exitCode).toBe(0)
+    expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['revoke', owner.keyId] })).exitCode).toBe(0)
     expect((await send(buckle, sign(buckle, { session }))).status).toBe(401)
     // Enrolling the same key again does not undo the revocation.
-    expect((await keysCommand({ config: buckle.config, argv: ['enroll', owner.publicKey, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
+    expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['enroll', owner.publicKey, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
     expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('was revoked')
     expect((await send(buckle, sign(buckle, { session }))).status).toBe(401)
     expect(refusals(buckle)).toEqual(['unknown_key', 'unknown_key'])
@@ -171,12 +171,12 @@ describe('a request the enrolled key signed (B23)', () => {
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     expect((await clientCommand(['keygen'], environment)).exitCode).toBe(0)
     const publicKey = /Public key: +(ed25519:\S+)/.exec(printed)![1]!
-    expect((await keysCommand({ config: buckle.config, argv: ['enroll', publicKey, '--label', 'device', '--purpose', 'setup', '--workspace', 'default'] })).exitCode).toBe(0)
+    expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['enroll', publicKey, '--label', 'device', '--purpose', 'setup', '--workspace', 'default'] })).exitCode).toBe(0)
     const body = JSON.stringify({ version: 1, network: { allow: ['example.com'] } })
     // Nothing is signed for a node this device has not pinned under the URL typed (owner decision D11).
     expect((await clientCommand(['session', 'open', url], environment)).exitCode).toBe(1)
     printed = ''
-    await keysCommand({ config: buckle.config, argv: ['node'] })
+    await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['node'] })
     const nodeKey = /Public key: +(ed25519:\S+)/.exec(printed)![1]!
     expect((await clientCommand(['trust', url, buckle.config.serverId, nodeKey], environment)).exitCode).toBe(0)
     printed = ''
@@ -210,7 +210,7 @@ describe('a key\'s scope over three children (owner decision D10)', () => {
     const setupOnA = generateSigningKey(), approvalOnB = generateSigningKey(), setupOnDefault = generateSigningKey(), setupOnNode = generateSigningKey()
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     for (const [key, purpose, workspace] of [[setupOnA, 'setup', 'child-a'], [approvalOnB, 'approval', 'child-b'], [setupOnDefault, 'setup', 'default'], [setupOnNode, 'setup', 'node']] as const) {
-      expect((await keysCommand({ config: buckle.config, argv: ['enroll', key.publicKey, '--purpose', purpose, '--workspace', workspace] })).exitCode).toBe(0)
+      expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['enroll', key.publicKey, '--purpose', purpose, '--workspace', workspace] })).exitCode).toBe(0)
     }
     expect(typeof await sessionOn(buckle, setupOnA, 'child-a')).toBe('string')
     expect(await sessionOn(buckle, setupOnA, 'child-b')).toBe(401)

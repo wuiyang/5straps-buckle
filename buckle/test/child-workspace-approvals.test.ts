@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import type { BuckleConfig } from '../common/runtime/config.js'
@@ -91,7 +91,7 @@ describe('answering a child workspace request from the terminal', () => {
     const approved = await capture({ argv: ['approve', token, '--scope', 'once', '--workspace', 'child'], config })
 
     expect(approved.exitCode).toBe(0)
-    expect(approved.stdout).toContain('in workspace child')
+    expect(approved.stdout).toContain('in workspace Child')
     expect((await manager.resolve('child')).runtime.approvals.pending()).toEqual([])
   }, 30_000)
 
@@ -102,11 +102,11 @@ describe('answering a child workspace request from the terminal', () => {
 
     const elsewhere = await capture({ argv: ['approve', token, '--scope', 'once', '--dir', config.cwd], config, cwd: config.cwd })
     expect(elsewhere.exitCode).toBe(1)
-    expect(elsewhere.stderr).toContain('in workspace default')
+    expect(elsewhere.stderr).toContain(`in workspace ${basename(config.cwd)}`)
 
     const approved = await capture({ argv: ['approve', token, '--scope', 'once'], config, cwd: config.cwd })
     expect(approved.exitCode).toBe(0)
-    expect(approved.stdout).toContain('in workspace child')
+    expect(approved.stdout).toContain('in workspace Child')
     expect((await manager.resolve('child')).runtime.approvals.pending()).toEqual([])
   }, 30_000)
 
@@ -117,7 +117,7 @@ describe('answering a child workspace request from the terminal', () => {
     const listed = await capture({ argv: ['approvals', '--workspace', 'child'], config })
 
     expect(listed.stdout).toContain(token)
-    expect(listed.stdout).toContain(`buckle approve ${token} --scope session --workspace child`)
+    expect(listed.stdout).toContain(`buckle approve ${token} --scope session --workspace Child`)
   }, 30_000)
 
   it('names the workspace it could not find rather than reporting an empty queue', async () => {
@@ -126,6 +126,6 @@ describe('answering a child workspace request from the terminal', () => {
     const listed = await capture({ argv: ['approvals', '--workspace', 'nowhere'], config })
 
     expect(listed.exitCode).toBe(1)
-    expect(listed.stderr).toContain('No workspace has the id nowhere')
+    expect(listed.stderr).toContain(`No workspace is named nowhere. The workspaces: ${basename(config.cwd)}, Child`)
   }, 30_000)
 })

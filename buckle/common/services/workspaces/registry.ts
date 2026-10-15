@@ -21,7 +21,17 @@ export class WorkspaceRegistryError extends WorkspaceError {
 export const WorkspaceIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'A workspace id is a lower-case letter, then up to 63 lower-case letters, digits or hyphens')
   .refine(value => value !== NODE_SCOPE, 'node is reserved: it names the whole node in a key\'s scope')
 
+/**
+ * A workspace's name: the handle the owner types after `--workspace` and keeps in MCP configs (D85, Q15), unique on
+ * the node without regard to case (sameName). `node` is reserved, as it names the whole node in a key's scope.
+ */
 export const WorkspaceNameSchema = z.string().trim().min(1).max(120)
+  .refine(value => !sameName(value, NODE_SCOPE), 'node is reserved: it names the whole node in a key\'s scope')
+
+/** Whether two names are one workspace's: compared without regard to case, stored as typed. */
+export function sameName(left: string, right: string): boolean {
+  return left.toLocaleLowerCase() === right.toLocaleLowerCase()
+}
 
 /** One agent token, kept as its sha256 only: the token itself is shown once, when it is minted (the workspace-model brief, item 1). */
 const StoredTokenSchema = z.object({

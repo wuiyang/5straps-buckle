@@ -20,11 +20,17 @@ import { unmetPackPrerequisite } from '../packs/index.js'
 import type { ActionLog } from '../../types/ports/action-log.js'
 import { activeElsewhere, activeWorkDirectory } from './active-work.js'
 import { migrateNode } from './migration.js'
-import { openRegistry, touched, WorkspaceError, WorkspaceIdSchema, WorkspaceNameSchema, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
+import { openRegistry, sameName, touched, WorkspaceError, WorkspaceIdSchema, WorkspaceNameSchema, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
 import { assertNoHostExposure, canonicalDirectory, exposedRoots, overlaps } from './workspace-dirs.js'
 import { defaultSettings, openSettingsFile, scopeOf, settingsPath, withPolicy, WORKSPACE_MOUNT_TARGET, type WorkspaceSettings } from './workspace-settings.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
+
+/** A name another workspace holds already (D85, Q15): the owner is asked for another at a terminal, and refused without one. */
+export class WorkspaceNameTakenError extends WorkspaceError {
+  override readonly code = 'WORKSPACE_NAME_TAKEN'
+  constructor(name: string) { super(`A workspace is already named ${name}; choose another name`, 409) }
+}
 
 /** Said where a workspace was registered again while its earlier registration's runtime has work: no path, as an agent reads it. */
 const REGISTERED_AGAIN = 'This workspace was registered again while work under its earlier registration is active; it serves its new registration once that work is resolved, or after buckle serve restarts, so call again then'
@@ -153,6 +159,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         }
         const id = value.id ?? idFor(dir, state, leftover)
         if (state.workspaces.some(workspace => workspace.id === id)) throw new WorkspaceError(`Workspace ${id} already exists`, 409)
+        const name = value.name ?? basename(dir)
+        if (nameTaken(state, name)) throw new WorkspaceNameTakenError(name)
         const takenUp = leftover(id) ? { dangerouslyAllow: switchKeys(dangerouslyAllowPath({ stateDirectory: join(node.stateDirectory, 'workspaces', id) })).includes(id) } : null
         if (takenUp && (value.policy || value.settings)) {
           throw new WorkspaceError(`Workspace ${id}'s records from before it was removed stay in the state directory, and registering it takes them up, its settings among them, in place of the policy or settings named here. Register it without them, or take the records up and delete them first with buckle workspace remove ${id} --purge`, 409)
@@ -161,7 +169,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
           const defaults = value.policy ? withPolicy(defaultSettings(), { ...value.policy, mount: WORKSPACE_MOUNT_TARGET }) : defaultSettings()
           await settingsOf(id).update(() => (value.settings ? value.settings(defaults) : defaults))
         }
-        const workspace: StoredWorkspace = { id, name: value.name ?? basename(dir), dir, online: true, revision: 0, updatedAt: minted.createdAt, createdAt: minted.createdAt,
+        const workspace: StoredWorkspace = { id, name, dir, online: true, revision: 0, updatedAt: minted.createdAt, createdAt: minted.createdAt,
           tokens: [{ id: minted.id, sha256: tokenDigest(minted.token), label: minted.label, createdAt: minted.createdAt }] }
         state.workspaces.push(workspace)
         nodeRoots.take(state.workspaces.map(item => item.dir))
@@ -247,6 +255,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         described = await store.update((state) => {
           const workspace = requireStored(state, id)
           if (patch.expectedUpdatedAt !== undefined && workspace.updatedAt !== patch.expectedUpdatedAt) throw new WorkspaceError('Workspace changed; reload before saving', 409)
+          if (patch.name !== undefined && nameTaken(state, patch.name, id)) throw new WorkspaceNameTakenError(patch.name)
           if (patch.name !== undefined) workspace.name = patch.name
           if (patch.online !== undefined) workspace.online = patch.online
           touched(workspace)
@@ -369,23 +378,29 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       }
     },
 
+    /** The workspace a handle names (D85, Q15): its id, or its name compared without regard to case; null where none does. */
+    lookup(handle: string): WorkspaceDescriptor | null {
+      const found = lookupStored(store.read(), handle)
+      return found ? describe(found) : null
+    },
+
     /**
-     * The workspace a command means (D83 (4)): `workspace` by id, else the one whose folder holds `dir`, else the one
-     * whose folder holds `cwd`. Refused with the ids, never a folder, where none does.
+     * The workspace a command means (D83 (4)): `workspace` by name or id, else the one whose folder holds `dir`, else
+     * the one whose folder holds `cwd`. Refused with the names, never a folder, where none does.
      */
     target(where: { workspace?: string; dir?: string; cwd: string }): string {
-      if (where.workspace !== undefined) {
-        requireStored(store.read(), where.workspace)
-        return where.workspace
-      }
       const state = store.read()
+      if (where.workspace !== undefined) {
+        const found = lookupStored(state, where.workspace)
+        if (!found) throw new WorkspaceError(`No workspace is named ${where.workspace}${state.workspaces.length === 0 ? ', and this node has none yet: run buckle init, or buckle workspace init in the folder to serve' : `. The workspaces: ${names(state)}`}`, 404)
+        return found.id
+      }
       const holding = holderOf(state, where.dir === undefined ? where.cwd : resolve(where.cwd, where.dir), platform)
       if (holding) return holding.id
-      const ids = state.workspaces.map(workspace => workspace.id)
       const named = where.dir === undefined ? 'the current directory' : 'that directory'
-      throw new WorkspaceError(ids.length === 0
+      throw new WorkspaceError(state.workspaces.length === 0
         ? `No workspace holds ${named}, and this node has none yet: run buckle init, or buckle workspace init in the folder to serve`
-        : `No workspace holds ${named}. Name one with --workspace <id> (${ids.join(', ')}), or run buckle workspace init in the folder to serve`, 404)
+        : `No workspace holds ${named}. Name one with --workspace <name> (${names(state)}), or run buckle workspace init in the folder to serve`, 404)
     },
 
     /** The workspaces opened so far, so their owner can close them. */
@@ -458,6 +473,21 @@ function requireStored(state: Registry, id: string): StoredWorkspace {
   const workspace = state.workspaces.find(item => item.id === id)
   if (!workspace) throw new WorkspaceError(`No workspace has the id ${id}`, 404)
   return workspace
+}
+
+/** The workspace `handle` names: by id first, then by name without regard to case (D85, Q15). */
+function lookupStored(state: Registry, handle: string): StoredWorkspace | undefined {
+  return state.workspaces.find(item => item.id === handle) ?? state.workspaces.find(item => sameName(item.name, handle))
+}
+
+/** Whether another workspace than `exceptId` holds `name`, compared without regard to case. */
+function nameTaken(state: Registry, name: string, exceptId?: string): boolean {
+  return state.workspaces.some(item => item.id !== exceptId && sameName(item.name, name))
+}
+
+/** The workspaces' names as a refusal lists them, so the owner can name one. */
+function names(state: Registry): string {
+  return state.workspaces.map(workspace => workspace.name).join(', ')
 }
 
 function describe(workspace: StoredWorkspace): WorkspaceDescriptor {

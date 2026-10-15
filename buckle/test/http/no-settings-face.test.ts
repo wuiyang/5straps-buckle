@@ -88,13 +88,13 @@ describe('no face exposes node settings', () => {
       ...values, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'false',
       BUCKLE_AUTH_TOKEN: 'agent-token-fixture', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'admin-token-fixture',
     })
-    // Effects a route reports: what the node is called, the root and paths the agent addresses, and
-    // the policy base. `/setup/policy` returning BUCKLE_NETWORK_ALLOW entries awaits the maintainer's
-    // ruling under BUCKLE-D19; any other value reaching a body fails here.
+    // Effects a route reports: the root and paths the agent addresses, and the policy base. The workspace is named after
+    // its folder (D85, Q15), so no route echoes BUCKLE_SERVER_NAME. `/setup/policy` returning BUCKLE_NETWORK_ALLOW
+    // entries awaits the maintainer's ruling under BUCKLE-D19; any other value reaching a body fails here.
     const reported: Record<string, string[]> = {
-      '/v1/manifest': ['BUCKLE_SERVER_NAME', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_SCRATCH_ROOTS'],
-      '/setup/status': ['BUCKLE_SERVER_NAME', 'BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT'],
-      '/setup/workspaces': ['BUCKLE_SERVER_NAME', 'BUCKLE_WORKSPACE_ROOT'],
+      '/v1/manifest': ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_SCRATCH_ROOTS'],
+      '/setup/status': ['BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT'],
+      '/setup/workspaces': ['BUCKLE_WORKSPACE_ROOT'],
       '/setup/policy': ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_NETWORK_ALLOW'],
     }
     const paths = [...new Set(app.routes().filter(route => route.method === 'GET' && !/[:*]/.test(route.path)).map(route => route.path))]

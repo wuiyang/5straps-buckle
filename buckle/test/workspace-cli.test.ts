@@ -9,6 +9,7 @@ import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import { ACTIVE_WORK_FRESH_MS, activeElsewhere, activeWorkDirectory } from '../common/services/workspaces/active-work.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { workspaceRegistryCommand, type NamePrompt } from '../cli/workspace.js'
 import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
 
@@ -86,11 +87,14 @@ describe('buckle workspace init', () => {
     expect(registry().workspaces.map(workspace => workspace.id)).toEqual(['beta'])
   })
 
-  it('keeps add <id> --root <dir>, the 0.1 spelling, for one release', async () => {
-    const result = await buckle(['add', 'old', '--root', alpha])
+  // D85, Q15: `add <dir> [--name <name>]` names the folder first; the 0.1 `add <id> --root <dir>` is gone with the typed id.
+  it('takes add <dir> [--name <name>], the folder relative to where it runs', async () => {
+    const result = await buckle(['add', 'alpha', '--name', 'The alpha site'], { cwd: base })
     expect(result.exitCode).toBe(0)
     expect(result.out).toMatch(/agent token {3}\S+/)
-    expect(registry().workspaces).toMatchObject([{ id: 'old', name: 'old', dir: alpha }])
+    expect(result.out).toContain("buckle workspace token create --workspace 'The alpha site'")
+    expect(registry().workspaces).toMatchObject([{ id: 'alpha', name: 'The alpha site', dir: alpha }])
+    expect((await buckle(['add', 'old', '--root', alpha])).err).toContain('Usage: buckle workspace add <dir> [--name <name>]')
   })
 
   it('refuses every verb on a node with no admin credential', async () => {
@@ -100,28 +104,93 @@ describe('buckle workspace init', () => {
   })
 })
 
+// D85, Q15: a workspace's name is the handle the owner types; it is unique on the node, without regard to case, and
+// a taken one is asked about at a terminal, or refused naming --name.
+describe('a workspace\'s name', () => {
+  /** Answers the name questions in order; the prompt is interactive unless told otherwise. */
+  function scripted(answers: string[], interactive = true): NamePrompt & { asked: string[] } {
+    const queue = [...answers]
+    const asked: string[] = []
+    return { interactive, asked, question: async text => { asked.push(text); return queue.shift() ?? '' }, close: () => {} }
+  }
+  async function command(argv: string[], prompt: NamePrompt, cwd = outside) {
+    out = ''
+    err = ''
+    const workspaces = await openWorkspaceManager({ config: node() })
+    try { return { ...await workspaceRegistryCommand({ config: node(), workspaces, argv, cwd, prompt }), out, err } } finally { await workspaces.close() }
+  }
+
+  it('is the folder\'s by default, unique without regard to case, and a taken one is refused naming --name where nobody can be asked', async () => {
+    await init(alpha)
+    const taken = await buckle(['init', '--name', 'ALPHA'], { cwd: beta })
+    expect(taken.exitCode).toBe(1)
+    expect(taken.err).toContain('A workspace is already named ALPHA; choose another name: name it with --name <name>')
+    mkdirSync(join(base, 'other', 'alpha'), { recursive: true })
+    const unasked = await buckle(['init', '--yes'], { cwd: join(base, 'other', 'alpha') })
+    expect(unasked.exitCode).toBe(1)
+    expect(unasked.err).toContain('A workspace is already named alpha; choose another name: name it with --name <name>')
+    expect(registry().workspaces.map(workspace => workspace.name)).toEqual(['alpha'])
+    expect((await buckle(['init', '--name', 'Beta site'], { cwd: beta })).exitCode).toBe(0)
+    expect((await buckle(['set', 'name', 'beta SITE'], { cwd: alpha })).err).toContain('A workspace is already named beta SITE')
+    expect(registry().workspaces.map(workspace => workspace.name)).toEqual(['alpha', 'Beta site'])
+  })
+
+  it('is asked for at a terminal until one is free, and Enter stops with nothing added', async () => {
+    await init(alpha)
+    mkdirSync(join(base, 'other', 'alpha'), { recursive: true })
+    const prompt = scripted(['Alpha', 'The other alpha'])
+    const added = await command(['add', join(base, 'other', 'alpha')], prompt)
+    expect(added).toMatchObject({ exitCode: 0 })
+    expect(prompt.asked).toEqual(['A workspace is already named alpha; choose another name. Another name, or Enter to stop: ', 'A workspace is already named Alpha; choose another name. Another name, or Enter to stop: '])
+    expect(registry().workspaces.map(workspace => workspace.name)).toEqual(['alpha', 'The other alpha'])
+
+    mkdirSync(join(base, 'third', 'alpha'), { recursive: true })
+    const stopped = await command(['add', join(base, 'third', 'alpha')], scripted(['']))
+    expect(stopped.exitCode).toBe(1)
+    expect(stopped.err).toContain('No name given, so nothing was added; name it with --name <name>')
+    const refused = await command(['add', join(base, 'third', 'alpha'), '--yes'], scripted(['never asked']))
+    expect(refused.err).toContain('name it with --name <name>')
+    expect(registry().workspaces).toHaveLength(2)
+  })
+
+  it('is what every verb and --workspace take, in any case, beside the id, and rename changes it with the id kept', async () => {
+    await init(alpha, ['--name', 'The alpha site'])
+    expect((await buckle(['show', '--workspace', 'the ALPHA site'])).out).toContain('Workspace The alpha site (id alpha)')
+    expect((await buckle(['show', '--workspace', 'alpha'])).out).toContain('Workspace The alpha site (id alpha)')
+    expect((await buckle(['disable', 'The alpha site'])).out).toContain('Workspace The alpha site is offline')
+    const renamed = await buckle(['rename', 'the alpha site', 'Alpha, renamed'])
+    expect(renamed.exitCode).toBe(0)
+    expect(renamed.out).toContain('Workspace The alpha site is now named Alpha, renamed; its id alpha is unchanged.')
+    expect(registry().workspaces).toMatchObject([{ id: 'alpha', name: 'Alpha, renamed', online: false }])
+    expect((await buckle(['enable', 'Alpha, renamed'])).exitCode).toBe(0)
+    expect((await buckle(['rename', 'nothing', 'x'])).err).toContain('No workspace is named nothing')
+    expect((await buckle(['rename', 'Alpha, renamed', 'node'])).err).toContain('node is reserved')
+    expect(audit()).toContain('"detail":"rename The alpha site Alpha, renamed"')
+  })
+})
+
 describe('the workspace a command means', () => {
   beforeEach(async () => { await init(alpha); await init(beta) })
 
   it('is the one --workspace names, else the one holding --dir, else the one holding the current directory', async () => {
-    expect((await buckle(['show', '--workspace', 'beta'], { cwd: alpha })).out).toContain('Workspace beta (beta)')
-    expect((await buckle(['show', '--dir', join(beta, 'sub')], { cwd: alpha })).out).toContain('Workspace beta (beta)')
-    expect((await buckle(['show'], { cwd: join(beta, 'sub') })).out).toContain('Workspace beta (beta)')
-    expect((await buckle([], { cwd: alpha })).out).toContain('Workspace alpha (alpha)')
+    expect((await buckle(['show', '--workspace', 'beta'], { cwd: alpha })).out).toContain('Workspace beta (id beta)')
+    expect((await buckle(['show', '--dir', join(beta, 'sub')], { cwd: alpha })).out).toContain('Workspace beta (id beta)')
+    expect((await buckle(['show'], { cwd: join(beta, 'sub') })).out).toContain('Workspace beta (id beta)')
+    expect((await buckle([], { cwd: alpha })).out).toContain('Workspace alpha (id alpha)')
   })
 
   // Finding 33 of the Phase 1 review: a --dir that does not exist yet was compared as typed, links unfollowed.
   it('is the one holding a --dir that does not exist yet, spelled through a link as without it', async () => {
     symlinkSync(beta, join(base, 'link-to-beta'))
     for (const dir of [join('link-to-beta', 'sub', 'not-yet'), join('beta', 'sub', 'not-yet')]) {
-      expect((await buckle(['show', '--dir', dir], { cwd: base })).out).toContain('Workspace beta (beta)')
+      expect((await buckle(['show', '--dir', dir], { cwd: base })).out).toContain('Workspace beta (id beta)')
     }
   })
 
   it('is refused, listing the ids, where nothing holds the directory, and where both flags are given', async () => {
     const nowhere = await buckle(['show'], { cwd: outside })
     expect(nowhere.exitCode).toBe(1)
-    expect(nowhere.err).toContain('No workspace holds the current directory. Name one with --workspace <id> (alpha, beta)')
+    expect(nowhere.err).toContain('No workspace holds the current directory. Name one with --workspace <name> (alpha, beta)')
     expect((await buckle(['show', '--workspace', 'alpha', '--dir', beta])).err).toContain('not both')
   })
 })
@@ -206,10 +275,10 @@ describe('buckle workspace enable, disable and remove', () => {
     expect(taken.out).toContain('It takes up the records workspace alpha left when it was removed: its settings, grants, and history, and its dangerously-allow switch, which is ON.')
   })
 
-  it('names the one id a verb takes', async () => {
-    expect((await buckle(['enable'])).err).toContain('Usage: buckle workspace enable <id>')
-    expect((await buckle(['remove', 'alpha', 'beta'])).err).toContain('Usage: buckle workspace remove <id>')
-    expect((await buckle(['disable', 'nothing'])).exitCode).toBe(1)
+  it('names the one name a verb takes', async () => {
+    expect((await buckle(['enable'])).err).toContain('Usage: buckle workspace enable <name>')
+    expect((await buckle(['remove', 'alpha', 'beta'])).err).toContain('Usage: buckle workspace remove <name>')
+    expect((await buckle(['disable', 'nothing'])).err).toContain('No workspace is named nothing. The workspaces: alpha')
   })
 })
 

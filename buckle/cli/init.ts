@@ -16,8 +16,10 @@ import { MigrationError, movedOntoWorkspaces } from '../common/services/workspac
 import { workspaceUntrusted } from '../common/services/workspaces/node-roots.js'
 import type { WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 import { writeEnvironmentFile } from '../common/adapters/environment-file.js'
+import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { findNodeSetting, normaliseSetting } from './node-settings.js'
 import { redeemPairingCode } from './pairing.js'
+import { createNamed } from './workspace.js'
 
 export interface CliResult {
   exitCode: number
@@ -133,11 +135,11 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
     throw error
   }
   try {
-    const served = await serveFolder({ workspaces, folder, mount, choices })
+    const served = await serveFolder({ workspaces, folder, mount, choices, prompt: { ...prompt, interactive } })
     const nodePort = /^BUCKLE_PORT=(\d+)$/m.exec(contents)?.[1] ?? port
     process.stdout.write(`${adminToken ? `Wrote ${out}` : `The node is already set up in ${out}; its settings are unchanged.`}
-${served.token ? '' : `\n${folder} is already in workspace ${served.id}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${served.id}.\n`}
-  Workspace   ${served.id} at ${folder}
+${served.token ? '' : `\n${folder} is already in workspace ${served.name}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${workspaceArgument(served.name)}.\n`}
+  Workspace   ${served.name} at ${folder}
   Seen as     ${served.created ? (mount ?? folder) : '(as it was)'}
 ${adminToken ? `  Node name   ${name}\n` : ''}${served.created ? describeChoices(choices) : ''}${served.created && !interactive ? 'These are the defaults, kept because nothing was asked. Change one with: buckle workspace set <key> <value>\n' : ''}
 ${describePrograms({ node, folder, platform, search: options.programSearch ?? {} })}
@@ -163,6 +165,7 @@ switch it on: buckle settings set experimental-admin-http on
     throw error
   } finally {
     await workspaces.close()
+    prompt.close()
   }
 }
 
@@ -186,15 +189,19 @@ async function moveFromOwnFile(out: string, platform: NodeJS.Platform): Promise<
   return null
 }
 
-/** The folder as a workspace: a new one with the choices as its settings, or the one already holding it, which keeps its own. */
-async function serveFolder(input: { workspaces: WorkspaceManager; folder: string; mount: string | null; choices: WorkspaceChoices }): Promise<{ id: string; created: boolean; token: MintedToken | null }> {
+/**
+ * The folder as a workspace: a new one, named after the folder, with the choices as its settings, or the one already
+ * holding it, which keeps its own. A name another workspace holds is asked about at a terminal (D85, Q15); with --yes,
+ * or none, init is refused, naming the command that takes --name.
+ */
+async function serveFolder(input: { workspaces: WorkspaceManager; folder: string; mount: string | null; choices: WorkspaceChoices; prompt: InitPrompt }): Promise<{ id: string; name: string; created: boolean; token: MintedToken | null }> {
   let holder: string | null = null
   try { holder = input.workspaces.target({ cwd: input.folder }) } catch (error) {
     if (!(error instanceof WorkspaceError)) throw error
   }
-  if (holder !== null) return { id: holder, created: false, token: null }
-  const { workspace, token } = await input.workspaces.create({ dir: input.folder, label: 'buckle init', settings: settings => withChoices(settings, input.choices, input.mount) })
-  return { id: workspace.id, created: true, token }
+  if (holder !== null) return { id: holder, name: input.workspaces.lookup(holder)!.name, created: false, token: null }
+  const { workspace, token } = await createNamed(input.prompt, { yes: !input.prompt.interactive, refusal: 'name it with buckle workspace init --dir <folder> --name <name>' }, name => input.workspaces.create({ dir: input.folder, ...(name === undefined ? {} : { name }), label: 'buckle init', settings: settings => withChoices(settings, input.choices, input.mount) }))
+  return { id: workspace.id, name: workspace.name, created: true, token }
 }
 
 function withChoices(settings: WorkspaceSettings, choices: WorkspaceChoices, mount: string | null): WorkspaceSettings {
@@ -349,14 +356,14 @@ function hintStep(label: string, forms: ShellForm[], layout: { column: number; i
   return [label, ...labelled].join('\n')
 }
 
-/** Questions on stderr, so stdout stays the summary; the readline is opened only when one is asked. */
+/** Questions on stderr, so stdout stays the summary; the readline is opened when one is asked, and again after a close. */
 function terminalPrompt(): InitPrompt {
   let readline: ReturnType<typeof createInterface> | null = null
   return {
     interactive: Boolean(process.stdin.isTTY),
     question: text => (readline ??= createInterface({ input: process.stdin, output: process.stderr })).question(text),
     say: text => void process.stderr.write(`${text}\n`),
-    close: () => readline?.close(),
+    close: () => { readline?.close(); readline = null },
   }
 }
 

@@ -13,6 +13,8 @@ function logPath(): string {
   return join(mkdtempSync(join(tmpdir(), 'buckle-log-')), 'actions.jsonl')
 }
 
+const log = (path: string) => createFileActionLog(path)
+
 function entry(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
   return {
     event: 'result',
@@ -27,6 +29,28 @@ function entry(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
     ...overrides,
   }
 }
+
+// D85, Q15: a workspace's id is a UUID, so each entry of its log also carries the name the owner knows it by, as it stands when the entry is written.
+describe('the workspace name on each entry', () => {
+  it('is stamped on the log\'s own workspace\'s entries as it stands at each write, and left alone on another workspace\'s or where the entry names one', async () => {
+    const path = logPath()
+    let name = 'Site one'
+    const log = createFileActionLog(path, { workspaceId: 'a3f0c2e4-1111-4222-8333-444455556666', workspaceName: () => name })
+    await log.record(entry({ requestId: 'own', workspaceId: 'a3f0c2e4-1111-4222-8333-444455556666' }))
+    name = 'Site renamed'
+    await log.record(entry({ requestId: 'renamed', workspaceId: 'a3f0c2e4-1111-4222-8333-444455556666' }))
+    await log.record(entry({ requestId: 'other', workspaceId: 'node' }))
+    await log.record(entry({ requestId: 'named', workspaceId: 'a3f0c2e4-1111-4222-8333-444455556666', workspaceName: 'As recorded' }))
+
+    expect(log.read(10).map(item => [item.requestId, item.workspaceName])).toEqual([['own', 'Site one'], ['renamed', 'Site renamed'], ['other', undefined], ['named', 'As recorded']])
+  })
+
+  it('is absent where the log knows no name', async () => {
+    const path = logPath()
+    await createFileActionLog(path, { workspaceId: 'node' }).record(entry({ workspaceId: 'node' }))
+    expect(log(path).read(1)[0]).not.toHaveProperty('workspaceName')
+  })
+})
 
 describe('the file action log', () => {
   it('creates the directory it needs and appends one line per action', async () => {

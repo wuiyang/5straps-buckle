@@ -199,7 +199,7 @@ async function askOne(context: AskContext): Promise<Ending> {
       }
       if (answer === 'n') {
         // An ask recorded before this build is denied, never approved (review L6 of the slice 5 re-review).
-        output.write(`  Skipped; still waiting. Answer later with: ${shown ? approveCommand({ request, workspaceId: context.workspaceId }) : denyCommand({ request, workspaceId: context.workspaceId })}\n`)
+        output.write(`  Skipped; still waiting. Answer later with: ${shown ? approveCommand({ request, ...named(context) }) : denyCommand({ request, ...named(context) })}\n`)
         return 'skipped'
       }
       const decision = decide(request, answer, offered)
@@ -233,7 +233,12 @@ async function record(context: AskContext, decision: ApprovalDecision): Promise<
     context.output.write(`  Not recorded: ${result.reason}.\n`)
     return
   }
-  context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token} in workspace ${context.workspaceId} (scope: ${decision.scope}).\n`)
+  context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope}).\n`)
+}
+
+/** The workspace a source's commands name: its name where the source carries one, else its id. */
+function named(source: Pick<WatchSource, 'workspaceId' | 'workspaceName'>): { workspaceId: string; workspaceName?: string } {
+  return { workspaceId: source.workspaceId, ...(source.workspaceName === undefined ? {} : { workspaceName: source.workspaceName }) }
 }
 
 function readPending(sources: WatchSource[]): { ok: true; asks: Array<{ source: WatchSource; ask: PendingAsk }> } | { ok: false; source: WatchSource; message: string } {
@@ -271,6 +276,6 @@ function watched(sources: WatchSource[]): string {
 }
 
 function unreachable(options: ApprovalWatchOptions, source: WatchSource, message: string): Outcome {
-  options.errors.write(`Cannot read the approvals waiting in workspace ${source.workspaceId}: ${message}. Check that BUCKLE_STATE_DIR names the state directory of the running node.\n`)
+  options.errors.write(`Cannot read the approvals waiting in workspace ${workspaceLabel(source.workspaceId, source.workspaceName)}: ${message}. Check that BUCKLE_STATE_DIR names the state directory of the running node.\n`)
   return { exitCode: 1 }
 }

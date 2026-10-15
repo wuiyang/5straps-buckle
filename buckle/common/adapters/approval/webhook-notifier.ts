@@ -90,7 +90,7 @@ function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions
     workspaceId,
     ...(workspaceName ? { workspaceName } : {}),
     workspace: workspaceLabel(workspaceId, workspaceName),
-    reviewCommand: reviewCommand({ workspaceId }),
-    approveCommand: approveCommand({ request, workspaceId }),
+    reviewCommand: reviewCommand({ workspaceId, ...(workspaceName ? { workspaceName } : {}) }),
+    approveCommand: approveCommand({ request, workspaceId, ...(workspaceName ? { workspaceName } : {}) }),
   }
 }

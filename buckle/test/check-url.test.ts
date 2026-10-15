@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
@@ -143,7 +143,7 @@ describe('buckle check-url', () => {
     await workspacesOf(config)
     writeFileSync(grantsPath(config), '{ not json')
 
-    expect(await check(config, 'localhost:3000')).toMatchObject({ exitCode: 2, stdout: '', stderr: expect.stringContaining('Cannot read the approvals in workspace default') })
+    expect(await check(config, 'localhost:3000')).toMatchObject({ exitCode: 2, stdout: '', stderr: expect.stringContaining(`Cannot read the approvals in workspace ${basename(config.cwd)}`) })
   })
 
   // Q14 of the workspace-model brief: no node list sits over a workspace's, so each judges by its own alone.

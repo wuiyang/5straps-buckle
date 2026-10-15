@@ -4,6 +4,7 @@ import { loadNodeKey } from '../common/adapters/keys/file-node-key.js'
 import { clientKeysPath, nodeKeyPath, setupSessionsPath, type NodeConfig } from '../common/runtime/config.js'
 import { createSetupSessions } from '../common/services/access/setup-sessions.js'
 import { NODE_SCOPE, type KeyPurpose } from '../common/types/ports/client-keys.js'
+import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 
 export interface CliResult {
   exitCode: number
@@ -12,7 +13,7 @@ export interface CliResult {
 }
 
 const USAGE = `Usage:
-  buckle keys enroll <public-key> --purpose setup|approval --workspace <id>|node [--label <text>]
+  buckle keys enroll <public-key> --purpose setup|approval --workspace <name>|node [--label <text>]
                                                      Trust a person's client key for signed setup changes
                                                      or approval decisions, on one workspace or the whole
                                                      node (the registry needs node); one key, one purpose
@@ -26,7 +27,7 @@ const USAGE = `Usage:
  * client keeps its private key and the owner enrolls the public half here. Local only: no HTTP route
  * enrolls, lists or revokes a key.
  */
-export async function keysCommand(input: { config: NodeConfig; argv: string[] }): Promise<CliResult> {
+export async function keysCommand(input: { config: NodeConfig; workspaces: Pick<WorkspaceManager, 'lookup'>; argv: string[] }): Promise<CliResult> {
   const keys = createFileClientKeys({ filePath: clientKeysPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs })
   const sessions = () => createSetupSessions({ filePath: setupSessionsPath(input.config), lockDeadlineMs: input.config.stateLockDeadlineMs })
   const [verb, ...rest] = input.argv
@@ -34,7 +35,7 @@ export async function keysCommand(input: { config: NodeConfig; argv: string[] })
     if (verb === 'enroll') {
       const { values, positionals } = parseArgs({ args: rest, options: { label: { type: 'string' }, purpose: { type: 'string' }, workspace: { type: 'string' } }, allowPositionals: true })
       if (positionals.length !== 1) return fail(USAGE)
-      const scope = enrollScope(values)
+      const scope = enrollScope(values, input.workspaces)
       if (typeof scope === 'string') return fail(scope)
       const enrolled = await keys.enroll({ publicKey: positionals[0]!, label: values.label ?? '', ...scope })
       process.stdout.write(`Enrolled ${enrolled.keyId}${enrolled.label ? ` (${enrolled.label})` : ''} for ${describeScope(enrolled)}.\nCheck this fingerprint against the one \`buckle client key\` prints on the person's own device before relying on it.\n`)
@@ -74,18 +75,20 @@ export async function keysCommand(input: { config: NodeConfig; argv: string[] })
   return fail(USAGE)
 }
 
-const WORKSPACE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
-
 /**
  * The scope an enrollment names, both parts required (owner decision D10), or why it cannot be used. A key signs for
- * one purpose (D15, D84): `both` is refused, and a key enrolled for both before keeps both.
+ * one purpose (D15, D84): `both` is refused, and a key enrolled for both before keeps both. The workspace is named by
+ * its name, or its id (D85, Q15), and the scope keeps the id, which a rename never changes.
  */
-function enrollScope(values: { purpose?: string; workspace?: string }): { purpose: KeyPurpose; workspace: string } | string {
+function enrollScope(values: { purpose?: string; workspace?: string }, workspaces: Pick<WorkspaceManager, 'lookup'>): { purpose: KeyPurpose; workspace: string } | string {
   const { purpose, workspace } = values
   if (purpose === 'both') return `--purpose both is no longer enrolled: a key signs setup changes or approval decisions, not both. Enroll one key for each\n${USAGE}`
   if (purpose !== 'setup' && purpose !== 'approval') return `--purpose takes setup or approval: what this key may sign\n${USAGE}`
-  if (workspace === undefined || (workspace !== NODE_SCOPE && !WORKSPACE_ID.test(workspace))) return `--workspace takes a workspace id, or node for every workspace and the registry\n${USAGE}`
-  return { purpose, workspace }
+  if (workspace === undefined) return `--workspace takes a workspace's name, or node for every workspace and the registry\n${USAGE}`
+  if (workspace === NODE_SCOPE) return { purpose, workspace }
+  const found = workspaces.lookup(workspace)
+  if (!found) return `No workspace is named ${workspace}; --workspace takes a workspace's name, or node for every workspace and the registry\n${USAGE}`
+  return { purpose, workspace: found.id }
 }
 
 function fail(message: string): CliResult {

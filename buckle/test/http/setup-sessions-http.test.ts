@@ -114,7 +114,7 @@ describe('a setup session (B24)', () => {
     const session = await open(buckle)
     const captured = signed(buckle, { session })
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    expect((await keysCommand({ config: buckle.config, argv: ['revoke', owner.keyId] })).exitCode).toBe(0)
+    expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['revoke', owner.keyId] })).exitCode).toBe(0)
     expect((await buckle.services.getSetupSessions()).list()).toEqual([])
     expect((await send(buckle, captured)).status).toBe(401)
     expect(refusals(buckle)).toEqual(['unknown_key'])
