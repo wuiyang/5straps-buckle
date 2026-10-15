@@ -22,7 +22,7 @@ export async function serveHttp(input: { config: NodeConfig; common: BuckleCommo
   // On the terminal the questions are asked on, the online workspaces, and again after each change (item 6).
   const write = (text: string) => void process.stderr.write(text)
   write(await describeOnline(workspaces))
-  common.owner.onClose('jobs', 'workspace list', watchOnline({ workspaces, write }))
+  common.owner.onClose('jobs', 'workspace list', watchOnline({ workspaces, write, watchPath: config.stateDirectory }))
   if (config.experimentalAdminHttp) input.logger.warn('The admin HTTP face is on, as an experiment (BUCKLE_EXPERIMENTAL_ADMIN_HTTP): /setup answers the admin credential and signed requests of enrolled keys', { adminCredential: config.adminToken ? 'set' : 'unset' })
 }
 

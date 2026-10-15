@@ -9,8 +9,8 @@ import { isInside, nativePath, parentDirectory } from '../../domain/paths.js'
 import { collectShellHiddenPaths } from '../shell/shell-filesystem.js'
 import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
 import { createShellWorkspaceRecovery } from '../shell/isolated-shell.js'
-import { join } from 'pathe'
-import { existsSync, realpathSync } from 'node:fs'
+import { dirname, join } from 'pathe'
+import { existsSync, realpathSync, watch, type FSWatcher } from 'node:fs'
 import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
@@ -148,6 +148,8 @@ export interface BuckleRuntime {
   /** Shutdown's language servers and browser sessions step: each pack closes what it opened. */
   closeSessions(): Promise<void>
   reload(): Promise<void>
+  /** Shutdown's watcher step: closes the settings-folder watcher (Q2). Idempotent. */
+  closeWatchers(): void
   onToolsChanged(listener: () => void): void
 }
 
@@ -167,6 +169,9 @@ interface RuntimeInput {
   /** Every root the node knows, where no program run here may come from (NodeRoots); this workspace's own alone when absent. */
   nodeRoots?: NodeRoots
 }
+
+/** The settings watcher's debounce (Q2): a change is taken up this long after the last write, within the 100 to 250 ms the brief allows. */
+export const SETTINGS_WATCH_DEBOUNCE_MS = 150
 
 export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime> {
   const { config } = input
@@ -392,6 +397,31 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     },
 
     onToolsChanged: listener => void listeners.push(listener),
+    closeWatchers: () => { watcherClosed = true; if (watcherPending) clearTimeout(watcherPending); watcherPending = undefined; settingsWatcher?.close(); settingsWatcher = undefined },
+  }
+
+  // Q2: a watcher on the settings folder takes a change up at once when the workspace is idle; the per-call pickUp is the
+  // fallback, so a watcher that cannot start (unsupported, EMFILE) is logged once and nothing else changes.
+  let settingsWatcher: FSWatcher | undefined
+  let watcherPending: ReturnType<typeof setTimeout> | undefined
+  let watcherClosed = false
+  try {
+    settingsWatcher = watch(dirname(settingsFile.filePath), { persistent: false }, () => {
+      if (watcherPending || watcherClosed) return
+      watcherPending = setTimeout(() => {
+        watcherPending = undefined
+        // The runtime may have closed (its state folder gone) between the write and this timer, so the read is guarded.
+        try {
+          if (!watcherClosed && settingsFile.version() !== appliedVersion && !runtime.inspectActiveWork()) void pickUp().catch((error: unknown) => logger.error('A settings change could not be taken up; the per-call check will retry it', { workspaceId, error }))
+        } catch (error) {
+          logger.warn('The workspace settings watcher could not read the change; the per-call check carries on', { workspaceId, error })
+        }
+      }, SETTINGS_WATCH_DEBOUNCE_MS)
+      watcherPending.unref?.()
+    })
+    settingsWatcher.on('error', (error: unknown) => logger.warn('The workspace settings watcher stopped; the per-call check carries on', { workspaceId, error }))
+  } catch (error) {
+    logger.warn('The workspace settings watcher could not start; the per-call check carries on', { workspaceId, error })
   }
 
   /**

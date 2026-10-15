@@ -44,6 +44,16 @@ async function read(path = 'note.md') {
   return runtime.invoke({ request: { requestId: `read-${Math.random()}`, tool: 'fs_read', args: { path }, approvalTokens: [] }, sessionId: 'live' })
 }
 
+describe('the settings watcher takes a change up with no call (Q2, item 3)', () => {
+  it('applies a change while the workspace is idle, before any call', async () => {
+    const { config } = await serving.resolve(site)
+    expect(config.approvalTimeoutMs).toBe(15_000)
+    await owner.updateSettings(site, settings => ({ ...settings, approvalWaitMs: 4_321 }))
+    // No call is made: the folder watcher takes the change up on its own, within its debounce.
+    await vi.waitFor(() => expect(config.approvalTimeoutMs).toBe(4_321), { timeout: 5_000, interval: 50 })
+  })
+})
+
 describe('a write to workspace.json from another process', () => {
   it('applies a policy list at the next call, with no restart', async () => {
     expect(await read()).toMatchObject({ outcome: 'ok' })

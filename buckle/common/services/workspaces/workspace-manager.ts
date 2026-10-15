@@ -564,6 +564,7 @@ async function earlierHasWork(runtime: BuckleRuntime): Promise<boolean> {
 
 /** Shutdown's steps for one workspace removed while the node runs. */
 async function closeRuntime(runtime: BuckleRuntime): Promise<void> {
+  runtime.closeWatchers()
   await runtime.approvalService.close()
   await runtime.cancelInvocations()
   await runtime.workbenches.stopTerminals()

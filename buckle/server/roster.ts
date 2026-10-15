@@ -1,3 +1,4 @@
+import { watch, type FSWatcher } from 'node:fs'
 import { printable } from '../common/domain/approval-instruction.js'
 import { logger } from '../common/runtime/log.js'
 import { WorkspaceError, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -51,7 +52,7 @@ async function describeWorkspace(workspaces: WorkspaceManager, workspace: Worksp
  * on a timer that never holds the process open, and at each look closes what a workspace removed or taken offline left
  * open, its browser, terminals, and language servers among it (finding 2 of the Phase 1 review). Returns what stops it.
  */
-export function watchOnline(input: { workspaces: WorkspaceManager; write: (text: string) => void; intervalMs?: number }): () => void {
+export function watchOnline(input: { workspaces: WorkspaceManager; write: (text: string) => void; intervalMs?: number; watchPath?: string }): () => void {
   let last = fingerprint(input.workspaces)
   let running = false
   const look = async () => {
@@ -63,14 +64,34 @@ export function watchOnline(input: { workspaces: WorkspaceManager; write: (text:
       .then(text => input.write(`Workspaces changed.\n${text}`))
       .catch((error: unknown) => { logger.error('Could not list the online workspaces after a change', { error }) })
   }
-  const timer = setInterval(() => {
+  const run = () => {
     if (running) return
     running = true
     void look().finally(() => { running = false })
-  }, input.intervalMs ?? ROSTER_POLL_MS)
+  }
+  const timer = setInterval(run, input.intervalMs ?? ROSTER_POLL_MS)
   timer.unref()
-  return () => clearInterval(timer)
+  // Q2 (Phase 1b item 3): a watcher on the registry folder re-lists at once when workspaces.json changes; the poll
+  // stays as the fallback, and catches each workspace's own settings too. A watcher that cannot start is logged once.
+  let watcher: FSWatcher | undefined
+  let pending: ReturnType<typeof setTimeout> | undefined
+  if (input.watchPath !== undefined) {
+    try {
+      watcher = watch(input.watchPath, { persistent: false }, () => {
+        if (pending) return
+        pending = setTimeout(() => { pending = undefined; run() }, ROSTER_WATCH_DEBOUNCE_MS)
+        pending.unref?.()
+      })
+      watcher.on('error', (error: unknown) => logger.warn('The workspace registry watcher stopped; the poll carries on', { error }))
+    } catch (error) {
+      logger.warn('The workspace registry watcher could not start; the poll carries on', { error })
+    }
+  }
+  return () => { clearInterval(timer); if (pending) clearTimeout(pending); watcher?.close() }
 }
+
+/** The registry watcher's debounce (Q2): a change is re-listed this long after the last write, within the 100 to 250 ms the brief allows. */
+export const ROSTER_WATCH_DEBOUNCE_MS = 150
 
 /** What the list depends on: the registry, and each online workspace's settings revision, or that they will not read. */
 function fingerprint(workspaces: WorkspaceManager): string {

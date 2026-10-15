@@ -6,6 +6,7 @@ import { createFileActionLog } from '../common/adapters/action-log/file-action-l
 import { actionsPath, loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { describeOnline, watchOnline } from '../server/roster.js'
+import { logger } from '../common/runtime/log.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf } from './support/workspaces.js'
 
@@ -219,5 +220,31 @@ describe('the workspaces buckle serve lists', () => {
     for (const name of ['Site one', 'Site two']) await manager.update(idOf(manager, name), { online: false })
     expect(await describeOnline(manager)).toBe('No workspace is online: buckle workspace init serves a folder, and buckle workspace enable <id> serves one again.\n')
     expect(existsSync(join(base, 'state', 'workspaces.json'))).toBe(true)
+  })
+})
+
+// Phase 1b item 3 (Q2): a watcher on the registry folder re-lists at once; the poll is the fallback.
+describe('the registry watcher buckle serve runs', () => {
+  it('re-lists on a registry change before the poll would, and stops when asked', async () => {
+    const written: string[] = []
+    // A poll far longer than the wait, so only the folder watcher can re-list within it.
+    const stop = watchOnline({ workspaces: manager, write: text => void written.push(text), intervalMs: 60_000, watchPath: join(base, 'state') })
+    try {
+      await manager.update(idOf(manager, 'Site two'), { online: false })
+      await vi.waitFor(() => expect(written.join('')).toContain('Workspaces changed.'), { timeout: 5_000, interval: 50 })
+      expect(written.join('')).not.toContain('Site two')
+    } finally { stop() }
+  })
+
+  it('logs once and keeps polling when the registry watcher cannot start', async () => {
+    const warn = vi.spyOn(logger, 'warn')
+    const written: string[] = []
+    const stop = watchOnline({ workspaces: manager, write: text => void written.push(text), intervalMs: 20, watchPath: join(base, 'no-such-directory') })
+    try {
+      expect(warn.mock.calls.some(([message]) => String(message).includes('registry watcher could not start'))).toBe(true)
+      await manager.update(idOf(manager, 'Site two'), { online: false })
+      // The poll still re-lists the change.
+      await vi.waitFor(() => expect(written.join('')).toContain('Workspaces changed.'), { timeout: 5_000, interval: 50 })
+    } finally { stop() }
   })
 })
