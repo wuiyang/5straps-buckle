@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { PolicyError } from '../common/domain/policy.js'
-import { defaultSettings, openSettingsFile, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsError, WorkspaceSettingsInvalidError, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
+import { credentialLikeName, defaultSettings, openSettingsFile, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsError, WorkspaceSettingsInvalidError, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
@@ -42,7 +42,6 @@ describe('a workspace\'s settings', () => {
     ['an idle timeout over a day', { version: 1, browser: { idleTimeoutMs: 86_400_001 } }],
     ['a second mount, before the mount phase', { version: 1, mounts: [{ kind: 'workspace', target: '/workspace', access: 'write' }, { kind: 'workspace', target: '/other', access: 'write' }] }],
     ['a mount under a folder the sandbox needs', { version: 1, mounts: [{ kind: 'workspace', target: '/usr/project', access: 'write' }] }],
-    ['a variable that looks like a credential', { version: 1, env: { GITHUB_TOKEN: 'x' } }],
     // Finding 25 of the Phase 1 review: a misspelled list used to be dropped, loosening the policy.
     ['a misspelled policy key', { version: 1, policy: { ...emptyWorkspacePolicy(), comands: { deny: ['git push*'] } } }],
     ['a misspelled command list', { version: 1, policy: { ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], Deny: ['git push*'] } } }],
@@ -58,8 +57,10 @@ describe('a workspace\'s settings', () => {
 
 // Q13: a workspace's variables are plain settings for its commands; no secret reaches a command Buckle runs.
 describe('a workspace variable\'s name', () => {
-  it.each(['GITHUB_TOKEN', 'NPM_AUTH_TOKEN', 'API_KEY', 'OPENAI_API_KEY', 'SSH_KEY', 'DB_PASSWORD', 'CLIENT_SECRET', 'AWS_SECRET_ACCESS_KEY', 'KEYS'])('is refused as a credential: %s', (name) => {
-    expect(variableNameRefusal(name)).toContain('looks like a credential')
+  // Q13: a credential-like name is taken but flagged (credentialLikeName), not refused.
+  it.each(['GITHUB_TOKEN', 'NPM_AUTH_TOKEN', 'API_KEY', 'OPENAI_API_KEY', 'SSH_KEY', 'DB_PASSWORD', 'CLIENT_SECRET', 'AWS_SECRET_ACCESS_KEY', 'KEYS'])('is taken but flagged as credential-like: %s', (name) => {
+    expect(variableNameRefusal(name)).toBeNull()
+    expect(credentialLikeName(name)).toBe(true)
   })
 
   it.each(['BUCKLE_ALLOW_SHELL', 'buckle_packs'])('is refused as a Buckle setting: %s', (name) => {

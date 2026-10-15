@@ -22,15 +22,21 @@ const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 const KEY_WORD = /(?:^|_)KEYS?(?:_|$)/i
 
 /**
- * Why a workspace variable may not have this name, or null (Q13): a name that looks like a credential is refused, as no
- * secret reaches a command Buckle runs; credentials stay in the owner's own secret handling.
+ * Why a workspace variable may not have this name, or null (Q13): a Buckle setting, or a name Buckle sets for every
+ * command, is refused; a credential-like name is taken but warned about (credentialLikeName), since its value is plain
+ * text in workspace.json and reaches every command. The refusal of a value that holds one of the node's own secrets
+ * stays, in the CLI (credentialValueRefusal).
  */
 export function variableNameRefusal(name: string): string | null {
   if (!VARIABLE_NAME.test(name)) return `${name} is not a variable name: letters, digits and underscores, not starting with a digit`
-  if (isSecretName(name) || KEY_WORD.test(name)) return `${name} looks like a credential (a token, secret, password, or key), and no secret reaches a command Buckle runs: keep it in your own secret store, not in workspace settings`
   if (name.toUpperCase().startsWith('BUCKLE_')) return `${name} names a Buckle setting, which a workspace variable cannot set`
   if (RESERVED_VARIABLES.has(name.toUpperCase())) return `${name} is set by Buckle for every command, not by a workspace`
   return null
+}
+
+/** Whether a variable's name reads like a credential (a token, secret, password, or key): taken, but warned about (Q13). */
+export function credentialLikeName(name: string): boolean {
+  return isSecretName(name) || KEY_WORD.test(name)
 }
 
 const PACK_IDS = BUILTIN_PACKS.map(pack => pack.id)

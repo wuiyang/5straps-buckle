@@ -6,7 +6,7 @@ import type { NodeConfig } from '../common/runtime/config.js'
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { PolicyError } from '../common/domain/policy.js'
 import { WorkspaceError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError } from '../common/services/workspaces/workspace-settings.js'
+import { credentialLikeName, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError } from '../common/services/workspaces/workspace-settings.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
 
@@ -247,6 +247,8 @@ async function set(context: Context): Promise<CliResult> {
     const refusal = variableNameRefusal(name) ?? credentialValueRefusal(context, value)
     if (refusal) return fail(refusal)
     await context.workspaces.updateSettings(workspace.id, settings => ({ ...settings, env: { ...settings.env, [name]: value } }))
+    // Q13: a credential-like name is taken, with a warning, since the value is plain text in workspace.json and reaches every command.
+    if (credentialLikeName(name)) process.stdout.write(`${name} looks like a credential (a token, secret, password, or key): its value is stored in plain text in workspace.json and is passed to every command this workspace runs. Keep real secrets in your own secret store.\n`)
     process.stdout.write(`Workspace ${workspace.name}'s commands see ${name}.\n`)
     return { exitCode: 0, detail: `set ${workspace.name} env.${name}` }
   }

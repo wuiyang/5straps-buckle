@@ -555,10 +555,19 @@ describe('buckle workspace set and unset', () => {
     expect(settings(alpha).env).toEqual({})
   })
 
-  it.each(['API_KEY', 'GITHUB_TOKEN', 'DB_PASSWORD', 'BUCKLE_ADMIN_TOKEN', 'PATH', 'HOME', 'lower case'])('refuses the variable %s, which a credential or Buckle itself owns', async (name) => {
+  it.each(['BUCKLE_ADMIN_TOKEN', 'PATH', 'HOME', 'lower case'])('refuses the variable %s, which Buckle itself owns or is no variable name', async (name) => {
     const result = await set(`env.${name}`, 'value')
     expect(result.exitCode).toBe(1)
     expect(settings(alpha).env).toEqual({})
+  })
+
+  // Q13: a credential-like name is taken, with a one-time warning, and the value is stored.
+  it.each(['API_KEY', 'GITHUB_TOKEN', 'DB_PASSWORD'])('takes the credential-like variable %s and warns about it', async (name) => {
+    const result = await set(`env.${name}`, 'an-ordinary-value')
+    expect(result.exitCode).toBe(0)
+    expect(result.out).toContain('looks like a credential')
+    expect(result.out).toContain('plain text in workspace.json')
+    expect(settings(alpha).env).toEqual({ [name]: 'an-ordinary-value' })
   })
 
   // Finding 26 of the Phase 1 review: only an exact admin or workspace token was refused; the node holds more secrets.
