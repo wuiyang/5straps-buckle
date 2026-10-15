@@ -1,6 +1,6 @@
 {
   "name": "@5straps/runtime",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "The runtime primitives Buckle is built on: service lifetimes, async scopes, lifecycle, CLI interaction, logging, SQLite ownership, and Nitro adapters.",
   "license": "Apache-2.0",
   "keywords": [
