@@ -141,6 +141,17 @@ describe('main', () => {
     expect(entry.serveMcpStdio).toHaveBeenLastCalledWith(expect.objectContaining({ target: { dir: join(process.cwd(), 'project') } }))
   })
 
+  // Migration reads the file alone (finding 34 of the workspace-model Phase 1 review): the config keeps the file's own
+  // values apart from the environment the process was started with.
+  it('loads the config with the environment file\'s own values and the caller\'s environment kept apart', async () => {
+    entry.loadEnvironmentFile.mockReturnValueOnce({ file: '/state/buckle.env', openToOthers: false, values: { BUCKLE_ALLOW_SHELL: 'false' } } as never)
+    vi.stubEnv('BUCKLE_ALLOW_SHELL', 'true')
+    try {
+      await main(['fs', 'read', 'notes.txt'])
+      expect(entry.loadConfig).toHaveBeenCalledWith(process.env, process.platform, { file: { path: '/state/buckle.env', values: { BUCKLE_ALLOW_SHELL: 'false' } }, caller: expect.objectContaining({ BUCKLE_ALLOW_SHELL: 'true' }) })
+    } finally { vi.unstubAllEnvs() }
+  })
+
   it('hands every other argument list to the CLI with the loaded config', async () => {
     expect(await main(['fs', 'read', 'notes.txt'])).toBe(5)
     expect(entry.runCli).toHaveBeenCalledWith({ argv: ['fs', 'read', 'notes.txt'], config })

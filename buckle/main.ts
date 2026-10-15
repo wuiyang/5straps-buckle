@@ -79,6 +79,8 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<numb
 }
 
 function configureProcess(): { config: NodeConfig; logging: LoggerRoot } {
+  // What the process was started with, before the file fills in the rest: migration reads the file alone (MigrationInput).
+  const caller = { ...process.env }
   const environment = loadEnvironmentFile()
   const logging = configureRootLogger(loggerConfigFrom(process.env))
   // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
@@ -86,7 +88,7 @@ function configureProcess(): { config: NodeConfig; logging: LoggerRoot } {
   // Read once, when a node moves to the workspace model; from then on an MCP config's env cannot widen a workspace (Q14).
   const ignored = environmentWorkspaceKeys(process.env)
   if (ignored.length > 0) logging.logger.warn(`Ignored: ${ignored.join(', ')} ${ignored.length === 1 ? 'is a workspace setting' : 'are workspace settings'}, read only when a node moves to the workspace model. Change a workspace with buckle workspace set or buckle policy, and remove these with buckle settings unset or from the shell or MCP config's env.`)
-  return { config: loadConfig(), logging }
+  return { config: loadConfig(process.env, process.platform, { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller }), logging }
 }
 
 // A one-shot command answers a person at a terminal: the reason on one line, the detail at debug level.

@@ -7,7 +7,7 @@ import { rekeyGrants } from '../../adapters/grant-store/file-grant-store.js'
 import { rekeySwitch, switchIsOn } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { readStoredPolicy } from '../../adapters/policy-store/file-policy-store.js'
 import { mergePolicies } from '../../domain/policy.js'
-import { dangerouslyAllowPath, environmentWorkspaceKeys, grantsPath, legacyWorkspaceRoot, NODE_FOLDER_WORKSPACE, policyPath, type NodeConfig } from '../../runtime/config.js'
+import { dangerouslyAllowPath, environmentWorkspaceKeys, grantsPath, legacyWorkspaceRoot, NODE_FOLDER_WORKSPACE, policyPath, type MigrationInput, type NodeConfig } from '../../runtime/config.js'
 import { tokenDigest } from '../access/tokens.js'
 import { registryPath, WorkspaceRegistryError, type StoredWorkspace } from './registry.js'
 import { overlaps } from './workspace-dirs.js'
@@ -46,10 +46,10 @@ interface Planned {
  * workspace-model brief, item 1, Q14, Q15). workspaces.json becomes version 2: tokens kept as their sha256, each
  * workspace's admin credential dropped (the node's admin token is the one), `retiredAt` read as offline, and the node's
  * own folder stored as workspace `default`, its folder BUCKLE_WORKSPACE_ROOT or the directory this command runs in,
- * its agent token BUCKLE_AUTH_TOKEN. Each workspace gets a workspace.json holding what the node enforced on it: the
- * environment's settings, and its policy (default: the environment's with what `buckle policy` stored; a registered
- * one: its own within the environment's lists, exactly, or the migration refuses). Grants and switches move from the
- * folder to the id. Version 1 is kept in workspaces.v1.json. Returns what the owner is told; nothing when the node is
+ * its agent token BUCKLE_AUTH_TOKEN, each read from the environment file (MigrationInput). Each workspace gets a
+ * workspace.json holding what the node enforced on it: the file's settings, and its policy (default: the file's with
+ * what `buckle policy` stored; a registered one: its own within the file's lists, exactly, or the migration refuses).
+ * Grants and switches move from the folder to the id. Version 1 is kept in workspaces.v1.json. Returns what the owner is told; nothing when the node is
  * on version 2 already. Throws MigrationError, having changed nothing, where the node's lists cannot be kept exactly,
  * and WorkspaceRegistryError, as a version 2 registry that will not parse does, where version 1 will not.
  */
@@ -69,7 +69,7 @@ export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.P
       for (const planned of plans) await apply(node, planned)
       raw.version = 2
       raw.workspaces = plans.map(planned => planned.record)
-      return notices({ environment: node.legacySettings, plans, hadRegistry })
+      return notices({ environment: node.migration.settings, plans, hadRegistry })
     })
   } catch (error) {
     if (error instanceof StateFileError) throw new WorkspaceRegistryError(error.message, 409)
@@ -100,15 +100,20 @@ function registryVersion(filePath: string): number {
  * evidence, since every node command, `buckle init` among them, writes it before the registry opens.
  */
 function servedBefore(node: NodeConfig, hadRegistry: boolean): boolean {
-  return hadRegistry || node.authToken !== '' || node.workspaceRootSetting !== undefined
+  const input = node.migration
+  return hadRegistry || input.authToken !== '' || input.workspaceRoot !== undefined
+    // A caller naming a 0.1 token or folder its file does not hold set the node up outside the file: the move refuses,
+    // naming them, rather than leave the node with no workspace.
+    || input.conflicts.some(key => key === 'BUCKLE_AUTH_TOKEN' || key === 'BUCKLE_WORKSPACE_ROOT')
     || [policyPath(node), grantsPath(node)].some(path => existsSync(path))
 }
 
 function plan(input: { node: NodeConfig; platform: NodeJS.Platform; registered: z.infer<typeof V1WorkspaceSchema>[]; hadRegistry: boolean }): Planned[] {
   const { node } = input
   if (!servedBefore(node, input.hadRegistry)) return []
+  refuseCallerSettings(node.migration)
   let environment: WorkspaceSettings
-  try { environment = settingsFromEnvironment(node.legacySettings) } catch (error) {
+  try { environment = settingsFromEnvironment(node.migration.settings) } catch (error) {
     const reason = error instanceof ZodError ? error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ') : error instanceof Error ? error.message : String(error)
     throw new MigrationError(`The node's settings cannot become workspace settings, so Buckle cannot move it to the workspace model: ${reason}. Change them with buckle settings, then start Buckle again.`)
   }
@@ -124,7 +129,7 @@ function plan(input: { node: NodeConfig; platform: NodeJS.Platform; registered: 
   const merged = mergePolicies({ ...environment.policy, mount: environment.mounts[0]?.target ?? null }, readStoredPolicy({ filePath: policyPath(node), workspace: dir }))
   const own: Planned = {
     record: { id: NODE_FOLDER_WORKSPACE, name: node.serverName, dir, online: true, revision: 0, updatedAt: now,
-      tokens: node.authToken ? [{ id: NODE_TOKEN_ID, sha256: tokenDigest(node.authToken), label: 'BUCKLE_AUTH_TOKEN', createdAt: now }] : [] },
+      tokens: node.migration.authToken ? [{ id: NODE_TOKEN_ID, sha256: tokenDigest(node.migration.authToken), label: 'BUCKLE_AUTH_TOKEN', createdAt: now }] : [] },
     settings: { ...environment, policy: { ...merged, mount: null }, mounts: merged.mount === null ? [] : [{ kind: 'workspace', target: merged.mount, access: 'write' }] },
     stateDirectory: node.stateDirectory,
     keepSwitch: true,
@@ -148,6 +153,17 @@ function plan(input: { node: NodeConfig; platform: NodeJS.Platform; registered: 
     throw new MigrationError(`The node's environment lists are a ceiling over each registered workspace, and that ceiling goes with the workspace model; these cannot be kept as one list: ${conflicts.join('; ')}. Make one list hold the other's entries, or unset the node's list with buckle settings unset, then start Buckle again. Nothing was changed.`)
   }
   return [own, ...registered]
+}
+
+/**
+ * The move reads the node's settings from its environment file alone; a shell's or an MCP config's env that says
+ * otherwise would become every workspace's settings for good (finding 34), so it refuses, naming the keys, never a value.
+ */
+function refuseCallerSettings(input: MigrationInput): void {
+  if (input.conflicts.length === 0) return
+  const keys = input.conflicts.join(', ')
+  const one = input.conflicts.length === 1
+  throw new MigrationError(`${keys} ${one ? 'is' : 'are'} set in this command's environment to another value than ${input.file} holds. Buckle moves the node onto workspaces from that file alone, so a shell's or an MCP config's env never becomes a workspace's settings: remove ${one ? 'it' : 'them'} from the environment this command runs in, or give the file the same value, then start Buckle again. Nothing was changed.`)
 }
 
 /**

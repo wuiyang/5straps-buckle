@@ -83,7 +83,7 @@ describe('loading it', () => {
     const example = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '.env.example')
     mkdirSync(join(home, '.5straps', 'buckle'), { recursive: true })
     copyFileSync(example, stateFile())
-    expect(loadEnvironmentFile()).toEqual({ file: stateFile(), openToOthers: expect.any(Boolean) })
+    expect(loadEnvironmentFile()).toMatchObject({ file: stateFile(), openToOthers: expect.any(Boolean) })
     const set = parseEnv(readFileSync(example, 'utf8'))
     expect(set.BUCKLE_ENV_FILE).toBeUndefined()
     expect(set.BUCKLE_STATE_DIR).toBeUndefined()
@@ -93,7 +93,7 @@ describe('loading it', () => {
     expect((await runInit(['--root', root, '--name', 'State node', '--yes'], prompt)).exitCode).toBe(0)
     writeFileSync(join(root, 'buckle.env'), 'BUCKLE_SERVER_NAME=from-the-project\n')
     vi.stubEnv('BUCKLE_SERVER_NAME', undefined)
-    expect(loadEnvironmentFile()).toEqual({ file: stateFile(), openToOthers: false })
+    expect(loadEnvironmentFile()).toMatchObject({ file: stateFile(), openToOthers: false })
     expect(process.env.BUCKLE_SERVER_NAME).toBe('State node')
   })
 
@@ -102,12 +102,12 @@ describe('loading it', () => {
     expect(() => loadEnvironmentFile()).toThrow(`${join(root, '.env')} sets BUCKLE_ variables, but Buckle never reads the working directory: its settings live in ${stateFile()}, or in the file BUCKLE_ENV_FILE names.`)
     // Named explicitly, the owner has chosen: the project file is not a question any more.
     vi.stubEnv('BUCKLE_ENV_FILE', join(base, 'absent.env'))
-    expect(loadEnvironmentFile()).toEqual({ file: null, openToOthers: false })
+    expect(loadEnvironmentFile()).toMatchObject({ file: null, openToOthers: false })
   })
 
   it('leaves a .env without BUCKLE_ variables alone', () => {
     writeFileSync(join(root, '.env'), 'APPLICATION_FIXTURE=true\n')
-    expect(loadEnvironmentFile()).toEqual({ file: null, openToOthers: false })
+    expect(loadEnvironmentFile()).toMatchObject({ file: null, openToOthers: false })
   })
 
   it('refuses an environment file that names another one, so settings and serve read the same file (review L9 of B18-B19)', async () => {

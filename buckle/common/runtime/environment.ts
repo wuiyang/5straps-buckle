@@ -34,6 +34,8 @@ export interface LoadedEnvironmentFile {
   file: string | null
   /** Group or other permission bits are set on a file that holds the node's credentials; never on Windows, which keeps no modes. */
   openToOthers: boolean
+  /** The file's own BUCKLE_ values, before the process environment was laid over them: what migration reads. */
+  values: Readonly<Record<string, string>>
 }
 
 /**
@@ -45,15 +47,20 @@ export function loadEnvironmentFile(): LoadedEnvironmentFile {
   const explicit = Boolean(process.env.BUCKLE_ENV_FILE)
   if (!existsSync(path)) {
     if (!explicit) refuseUnreadDotEnv({ cwd: process.cwd(), expected: path })
-    return { file: null, openToOthers: false }
+    return { file: null, openToOthers: false, values: {} }
   }
-  const variables = Object.entries(parseEnv(readFileSync(path, 'utf8'))).filter(([name]) => name.startsWith('BUCKLE_'))
-  refuseNamedEnvironmentFile({ file: path, variables: Object.fromEntries(variables) })
-  if (!explicit) refuseMovedStateDirectory({ file: path, variables: Object.fromEntries(variables) })
-  for (const [name, value] of variables) {
+  const values = Object.freeze(Object.fromEntries(buckleVariables(readFileSync(path, 'utf8'))))
+  refuseNamedEnvironmentFile({ file: path, variables: values })
+  if (!explicit) refuseMovedStateDirectory({ file: path, variables: values })
+  for (const [name, value] of Object.entries(values)) {
     if (process.env[name] === undefined) process.env[name] = value
   }
-  return { file: path, openToOthers: isOpenToOthers(path) }
+  return { file: path, openToOthers: isOpenToOthers(path), values }
+}
+
+/** An environment file's BUCKLE_ settings, the only names Buckle takes from one. */
+export function buckleVariables(text: string): Array<[string, string]> {
+  return Object.entries(parseEnv(text)).filter((entry): entry is [string, string] => entry[0].startsWith('BUCKLE_') && entry[1] !== undefined)
 }
 
 // Buckle never reads <cwd>/.env; starting on defaults beside one that configures it would silently

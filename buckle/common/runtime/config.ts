@@ -48,13 +48,10 @@ export interface NodeConfig {
    * answers the router's 404, admin credential or not. The local CLI never needs it.
    */
   experimentalAdminHttp: boolean
-  /** BUCKLE_WORKSPACE_ROOT as typed, from a node set up before the workspace model: migration input, and `buckle mcp`'s legacy pick. */
+  /** BUCKLE_WORKSPACE_ROOT as typed, from a node set up before the workspace model: `buckle mcp`'s legacy pick. */
   workspaceRootSetting?: string
-  /**
-   * The workspace settings the environment names (WORKSPACE_ENVIRONMENT_KEYS and the browser's), as a node set up
-   * before the workspace model kept them: read once, when migration copies them into each workspace (Q14).
-   */
-  legacySettings: Readonly<Record<string, string>>
+  /** What a node set up before the workspace model kept for its folder, which migration reads once (MigrationInput). */
+  migration: MigrationInput
   /** Directories writable without asking. Empty by default, so the first write anywhere asks. */
   scratchRoots: string[]
   strictWrites: boolean
@@ -131,8 +128,38 @@ export interface BuckleConfig extends NodeConfig {
   nodeStateDirectory?: string
 }
 
-/** `platform`: the host's unless a test imitates another. */
-export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeConfig {
+/**
+ * Where a node's settings came from: its environment file, and the environment the process was started with, which
+ * wins over the file for a node setting. Migration tells the two apart (MigrationInput).
+ */
+export interface EnvironmentLayers {
+  /** buckle.env, or the file BUCKLE_ENV_FILE names, with its own BUCKLE_ values; null where the node has none. */
+  file: { path: string; values: Readonly<Record<string, string>> } | null
+  /** The environment the process was started with, before the file filled in what it left unset. */
+  caller: NodeJS.ProcessEnv
+}
+
+/**
+ * What migration reads, once (Q14, Q15): the environment file's own values, never what a shell or an MCP config's env
+ * set over them, so the first command after an upgrade cannot write its caller's settings into every workspace for
+ * good (finding 34 of the Phase 1 review). A node with no file was configured by the environment it starts with, and
+ * that is what migration reads there.
+ */
+export interface MigrationInput {
+  /** The environment file read, which migration takes BUCKLE_AUTH_TOKEN out of once it is hashed; null where none was. */
+  file: string | null
+  /** The workspace settings it names (WORKSPACE_ENVIRONMENT_KEYS and the browser's). */
+  settings: Readonly<Record<string, string>>
+  /** BUCKLE_AUTH_TOKEN, which becomes workspace default's token `node`. */
+  authToken: string
+  /** BUCKLE_WORKSPACE_ROOT as typed: workspace default's folder. */
+  workspaceRoot?: string
+  /** The keys the caller's own environment sets to another value than the file holds, which refuse the move. */
+  conflicts: readonly string[]
+}
+
+/** `platform`: the host's unless a test imitates another. `layers`: the file and the caller apart; one environment stands for both by default. */
+export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, layers: EnvironmentLayers = { file: null, caller: environment }): NodeConfig {
   const stateDirectory = stateDirectoryOf(environment, platform)
   const sandboxMode = parseSandboxMode(environment.BUCKLE_SANDBOX)
   const authToken = environment.BUCKLE_AUTH_TOKEN ?? ''
@@ -154,7 +181,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     authToken,
     adminToken,
     ...(environment.BUCKLE_WORKSPACE_ROOT ? { workspaceRootSetting: typedPath(environment.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
-    legacySettings: Object.freeze(Object.fromEntries([...WORKSPACE_ENVIRONMENT_KEYS, ...BROWSER_KEYS].flatMap(key => environment[key] === undefined ? [] : [[key, environment[key]]]))),
+    migration: migrationInput(environment, layers, platform),
     // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
     scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
@@ -202,6 +229,25 @@ export const WORKSPACE_ENVIRONMENT_KEYS: readonly string[] = Object.freeze([
 
 const BROWSER_KEYS = ['BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED']
 
+/**
+ * The keys whose caller value, where it differs from the file's, refuses the move. The browser's are left out: they
+ * still drive the browser from the node's environment, where a caller's value is an ordinary override, and migration
+ * copies the file's into each workspace.json, which nothing reads yet.
+ */
+const MIGRATION_KEYS: readonly string[] = Object.freeze([...WORKSPACE_ENVIRONMENT_KEYS, 'BUCKLE_AUTH_TOKEN', 'BUCKLE_WORKSPACE_ROOT'])
+
+function migrationInput(environment: NodeJS.ProcessEnv, layers: EnvironmentLayers, platform: NodeJS.Platform): MigrationInput {
+  const source: NodeJS.ProcessEnv = layers.file?.values ?? environment
+  const file = layers.file
+  return {
+    file: file?.path ?? null,
+    settings: Object.freeze(Object.fromEntries([...WORKSPACE_ENVIRONMENT_KEYS, ...BROWSER_KEYS].flatMap(key => source[key] === undefined ? [] : [[key, source[key]]]))),
+    authToken: source.BUCKLE_AUTH_TOKEN ?? '',
+    ...(source.BUCKLE_WORKSPACE_ROOT ? { workspaceRoot: typedPath(source.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
+    conflicts: file === null ? [] : MIGRATION_KEYS.filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file.values[key]),
+  }
+}
+
 /** The workspace settings the environment still names, which a node on the workspace model ignores. */
 export function environmentWorkspaceKeys(environment: NodeJS.ProcessEnv = process.env): string[] {
   return WORKSPACE_ENVIRONMENT_KEYS.filter(key => environment[key] !== undefined)
@@ -212,10 +258,10 @@ export function environmentWorkspaceKeys(environment: NodeJS.ProcessEnv = proces
  * directory the command runs in. Refused where it is a whole drive, or where it holds the state directory, which an
  * agent writing anywhere in its workspace could then rewrite. Migration takes it as workspace default's folder (Q15).
  */
-export function legacyWorkspaceRoot(input: { node: Pick<NodeConfig, 'workspaceRootSetting' | 'stateDirectory'>; platform?: NodeJS.Platform }): string {
+export function legacyWorkspaceRoot(input: { node: Pick<NodeConfig, 'migration' | 'stateDirectory'>; platform?: NodeJS.Platform }): string {
   const platform = input.platform ?? process.platform
-  const setting = input.node.workspaceRootSetting ? 'BUCKLE_WORKSPACE_ROOT' : 'The working directory, the workspace root while BUCKLE_WORKSPACE_ROOT is unset,'
-  const typedRoot = input.node.workspaceRootSetting ?? workingDirectory(platform)
+  const setting = input.node.migration.workspaceRoot ? 'BUCKLE_WORKSPACE_ROOT' : 'The working directory, the workspace root while BUCKLE_WORKSPACE_ROOT is unset,'
+  const typedRoot = input.node.migration.workspaceRoot ?? workingDirectory(platform)
   const root = realFolder(typedRoot, setting, platform)
   if (workspaceHolds(typedRoot, input.node.stateDirectory, platform)) {
     throw new Error(`BUCKLE_STATE_DIR is ${input.node.stateDirectory}, inside the BUCKLE_WORKSPACE_ROOT at ${root}: an agent writes anywhere in the workspace, and the state directory holds the recorded grants, the approvals and the empty hooks directory the forge tools run git with`)

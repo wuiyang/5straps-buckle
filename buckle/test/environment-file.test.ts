@@ -114,8 +114,21 @@ describe('loading the environment file', () => {
     chmodSync(path, 0o644)
     vi.stubEnv('BUCKLE_ENV_FILE', path)
     vi.stubEnv('BUCKLE_SERVER_NAME', undefined)
-    expect(loadEnvironmentFile()).toEqual({ file: path, openToOthers: true })
+    expect(loadEnvironmentFile()).toMatchObject({ file: path, openToOthers: true })
     chmodSync(path, 0o600)
-    expect(loadEnvironmentFile()).toEqual({ file: path, openToOthers: false })
+    expect(loadEnvironmentFile()).toMatchObject({ file: path, openToOthers: false })
+  })
+
+  // Migration reads the file's own values, never what the process environment set over them (finding 34 of the
+  // workspace-model Phase 1 review).
+  it('hands back the file\'s own values beside the process environment, which still wins for the node', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'buckle-env-values-'))
+    const path = join(directory, 'node.env')
+    writeFileSync(path, 'BUCKLE_SERVER_NAME=from-the-file\nBUCKLE_COMMAND_DENY=curl *\nOTHER_SETTING=left-out\n', { mode: 0o600 })
+    vi.stubEnv('BUCKLE_ENV_FILE', path)
+    vi.stubEnv('BUCKLE_SERVER_NAME', 'from-the-shell')
+    vi.stubEnv('BUCKLE_COMMAND_DENY', undefined)
+    expect(loadEnvironmentFile().values).toEqual({ BUCKLE_SERVER_NAME: 'from-the-file', BUCKLE_COMMAND_DENY: 'curl *' })
+    expect(process.env.BUCKLE_SERVER_NAME).toBe('from-the-shell')
   })
 })

@@ -257,6 +257,23 @@ describe('workspace-first initialization defaults', () => {
   })
 })
 
+// Finding 34 of the workspace-model Phase 1 review: buckle init on a 0.1 node moves it from the file's own values.
+describe('buckle init on a node set up before workspaces', () => {
+  it('moves the node from its file alone, refusing a shell that sets a workspace key otherwise, and writes nothing', async () => {
+    const before = `BUCKLE_ADMIN_TOKEN=init-move-admin-fixture\nBUCKLE_AUTH_TOKEN=init-move-agent-fixture\nBUCKLE_WORKSPACE_ROOT=${workspace}\nBUCKLE_COMMAND_DENY=curl *\n`
+    writeFileSync(out, before, { mode: 0o600 })
+    vi.stubEnv('BUCKLE_COMMAND_DENY', '')
+    let failed = ''
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { failed += String(chunk); return true })
+    try {
+      expect((await runInit(['--out', out, '--yes'], scripted([], false))).exitCode).toBe(1)
+    } finally { stderr.mockRestore() }
+    expect(failed).toContain(`BUCKLE_COMMAND_DENY is set in this command's environment to another value than ${out} holds`)
+    expect(readFileSync(out, 'utf8')).toBe(before)
+    expect(existsSync(join(state, 'workspaces.json'))).toBe(false)
+  })
+})
+
 // buckle init checks the programs Buckle runs, so a missing agent-browser shows at setup rather than as a withheld
 // pack later. The owner's terminal, unlike a pack's reason, shows the paths. Each program is resolved as the node that
 // reads the file resolves it (review of 2026-10-14), so each test keeps the node's state, and so its workspace

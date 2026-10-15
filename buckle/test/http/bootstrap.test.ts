@@ -360,9 +360,11 @@ describe('an environment file other users can read (review M4, warn only)', () =
   it('runs, and warns once naming chmod 600 and the file, without printing a value', async () => {
     const node = await prepareNode()
     const file = join(node.root, 'loose.env')
-    writeFileSync(file, 'BUCKLE_SERVER_NAME=loose-value-fixture\n', { mode: 0o644 })
+    // The node's own settings, as a 0.1 file held them: migration reads them from the file alone (finding 34).
+    const { BUCKLE_WORKSPACE_ROOT: root, BUCKLE_AUTH_TOKEN: token, BUCKLE_ALLOW_SHELL: shell, ...env } = node.env
+    writeFileSync(file, `BUCKLE_SERVER_NAME=loose-value-fixture\nBUCKLE_WORKSPACE_ROOT=${root}\nBUCKLE_AUTH_TOKEN=${token}\nBUCKLE_ALLOW_SHELL=${shell}\n`, { mode: 0o644 })
     chmodSync(file, 0o644)
-    const run = spawnBuckle({ entry, args: ['tools'], env: { ...node.env, BUCKLE_ENV_FILE: file }, cwd: node.workspace })
+    const run = spawnBuckle({ entry, args: ['tools'], env: { ...env, BUCKLE_ENV_FILE: file }, cwd: node.workspace })
     running.push(run)
     expect(await run.exited).toEqual({ code: 0, signal: null })
     const warnings = run.lines().filter(line => line.level === 'warn' && line.message.includes(`chmod 600 ${file}`))
@@ -412,9 +414,10 @@ describe('a state directory other users can reach (ruling 7)', () => {
 describe('a project outside every workspace\'s folder', () => {
   // The state directory's own file names the root and token, as 0.1's `buckle init` wrote them; the first command migrates.
   async function nodeFromFile(): Promise<{ node: Node; env: NodeJS.ProcessEnv; elsewhere: string }> {
-    const node = await prepareNode({ BUCKLE_PACKS: 'fs' })
-    writeFileSync(join(node.state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${node.workspace}\nBUCKLE_AUTH_TOKEN=outside-root-agent-token\n`, { mode: 0o600 })
-    const { BUCKLE_ENV_FILE: _file, BUCKLE_WORKSPACE_ROOT: _root, BUCKLE_AUTH_TOKEN: _token, ...env } = node.env
+    const node = await prepareNode()
+    // Migration reads the file alone, so the workspace keys are the file's too (finding 34 of the Phase 1 review).
+    writeFileSync(join(node.state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${node.workspace}\nBUCKLE_AUTH_TOKEN=outside-root-agent-token\nBUCKLE_PACKS=fs\nBUCKLE_ALLOW_SHELL=false\n`, { mode: 0o600 })
+    const { BUCKLE_ENV_FILE: _file, BUCKLE_WORKSPACE_ROOT: _root, BUCKLE_AUTH_TOKEN: _token, BUCKLE_ALLOW_SHELL: _shell, ...env } = node.env
     const elsewhere = join(node.root, 'another-project')
     mkdirSync(elsewhere)
     const migrate = spawnBuckle({ entry, args: ['tools'], env, cwd: node.workspace })

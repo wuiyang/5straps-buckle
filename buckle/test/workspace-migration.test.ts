@@ -184,6 +184,55 @@ describe('moving a 0.1 node onto the workspace model', () => {
     expect(existsSync(join(input.state, REGISTRY_BACKUP))).toBe(false)
   })
 
+  // Finding 34 of the Phase 1 review: the first command after an upgrade may be an agent client's `buckle mcp`, whose
+  // MCP config env would otherwise become every workspace's settings for good.
+  describe('reading the node\'s environment file alone', () => {
+    const FILE = { BUCKLE_ALLOW_SHELL: 'false', BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_NETWORK_ALLOW: 'api.example.com' }
+    function fromFile(input: Scene, caller: Record<string, string>) {
+      const values = { ...input.environment, ...FILE }
+      const path = join(input.root, 'buckle.env')
+      return openWorkspaceManager({ config: loadConfig({ ...values, ...caller }, process.platform, { file: { path, values }, caller }) })
+    }
+
+    it('copies the file\'s settings, whatever else the process environment holds', async () => {
+      const input = scene()
+      version1(input)
+      await fromFile(input, { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_LOG_LEVEL: 'warn' })
+      expect(settings(input, 'site')).toMatchObject({ packs: { shell: false }, policy: { commands: { deny: ['curl *'] }, network: { allow: ['api.example.com'] } } })
+    })
+
+    it('refuses a caller whose environment sets a workspace key otherwise, naming the keys and no value, and changes nothing', async () => {
+      const input = scene()
+      const before = version1(input)
+      const failure = await fromFile(input, { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'true', BUCKLE_COMMAND_DENY: '', BUCKLE_NETWORK_ALLOW: '', BUCKLE_PACKS: 'fs' }).catch((error: unknown) => error)
+
+      expect(failure).toBeInstanceOf(MigrationError)
+      expect((failure as Error).message).toContain(`BUCKLE_COMMAND_DENY, BUCKLE_NETWORK_ALLOW, BUCKLE_PACKS, BUCKLE_ALLOW_SHELL are set in this command's environment to another value than ${join(input.root, 'buckle.env')} holds`)
+      expect((failure as Error).message).not.toContain('curl')
+      expect(registry(input)).toBe(before)
+      for (const id of ['default', 'site']) expect(existsSync(settingsPath(input.state, id))).toBe(false)
+    })
+
+    it('refuses a 0.1 node whose token and folder its caller names but its file does not, rather than leave it no workspace', async () => {
+      const input = scene()
+      const path = join(input.root, 'buckle.env')
+      const values = { BUCKLE_SERVER_NAME: 'Set up in the shell' }
+      const caller = { BUCKLE_STATE_DIR: input.state, BUCKLE_AUTH_TOKEN: NODE_TOKEN, BUCKLE_WORKSPACE_ROOT: input.folder }
+      await expect(openWorkspaceManager({ config: loadConfig({ ...values, ...caller }, process.platform, { file: { path, values }, caller }) }))
+        .rejects.toThrow('BUCKLE_AUTH_TOKEN, BUCKLE_WORKSPACE_ROOT are set in this command\'s environment to another value than')
+      expect(existsSync(join(input.state, 'workspaces.json'))).toBe(false)
+    })
+
+    it('leaves a node that served nothing as it is, whatever workspace key its caller sets', async () => {
+      const input = scene()
+      const path = join(input.root, 'buckle.env')
+      const values = { BUCKLE_SERVER_NAME: 'Fresh node' }
+      const caller = { BUCKLE_STATE_DIR: input.state, BUCKLE_ALLOW_SHELL: 'false' }
+      const manager = await openWorkspaceManager({ config: loadConfig({ ...values, ...caller }, process.platform, { file: { path, values }, caller }) })
+      expect(manager.list()).toEqual([])
+    })
+  })
+
   it('gives a state directory that never served a folder no workspace at all, though a node command wrote the audit log', async () => {
     const input = scene()
     const fresh = { BUCKLE_STATE_DIR: input.state }

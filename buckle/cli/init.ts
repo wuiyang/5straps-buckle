@@ -2,10 +2,10 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { dirname, resolve } from 'pathe'
-import { parseArgs, parseEnv } from 'node:util'
+import { parseArgs } from 'node:util'
 import { MountPathSchema, type HarnessManifest } from '@5straps/protocol'
 import { loadConfig, realPathOf, stateDirectoryOf, workspaceHolds, type NodeConfig } from '../common/runtime/config.js'
-import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/environment.js'
+import { buckleVariables, defaultEnvironmentFile, environmentFilePath } from '../common/runtime/environment.js'
 import { AS_NAMED, findProgram, ON_PATH, type ProgramSearch, type UntrustedRoots } from '../common/domain/executable.js'
 import { isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
 import { refusedNetworkEntries } from '../common/domain/policy.js'
@@ -121,7 +121,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
     writeEnvironmentFile(out, renderNode({ name, port, adminToken, allowedHosts: answers.allowedHosts }))
   }
   const contents = readFileSync(out, 'utf8')
-  const node = loadConfig(nodeEnvironment(contents), platform)
+  const node = nodeConfig(out, contents, platform)
   mkdirSync(node.stateDirectory, { recursive: true, mode: 0o700 })
   let workspaces: WorkspaceManager
   try { workspaces = await openWorkspaceManager({ config: node, platform }) } catch (error) {
@@ -376,10 +376,13 @@ function describePrograms(input: { node: NodeConfig; folder: string; platform: N
   return `Programs\n${lines.join('\n')}`
 }
 
-/** The environment serve reads the file into: its BUCKLE_ settings, each under a variable the shell sets (loadEnvironmentFile). */
-function nodeEnvironment(contents: string): NodeJS.ProcessEnv {
-  const file = Object.entries(parseEnv(contents)).filter(([name]) => name.startsWith('BUCKLE_'))
-  return { ...Object.fromEntries(file), ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)) }
+/**
+ * The node as serve reads the file: its BUCKLE_ settings, each under a variable the shell sets (loadEnvironmentFile),
+ * with the file's own values kept apart for migration (MigrationInput).
+ */
+function nodeConfig(file: string, contents: string, platform: NodeJS.Platform): NodeConfig {
+  const values = Object.freeze(Object.fromEntries(buckleVariables(contents)))
+  return loadConfig({ ...values, ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)) }, platform, { file: { path: file, values }, caller: process.env })
 }
 
 /** One program's line: the path it runs, or the path of what was found and why it is not run, or where it was looked for. */
