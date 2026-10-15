@@ -84,7 +84,7 @@ buckle --version
 
 Then restart any running `buckle serve`, and any MCP client that started `buckle mcp`. Grants,
 policies, and the audit log carry over. The first command after an upgrade from 0.1 moves the
-node onto workspaces once, and an older Buckle then refuses to start;
+node onto workspaces once, and an older Buckle then fails closed;
 [Moving a node from 0.1](workspaces-02.md#moving-a-node-from-01) says what changes, and how to go
 back.
 

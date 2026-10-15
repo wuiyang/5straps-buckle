@@ -85,5 +85,5 @@ From then on, the node ignores those settings in `buckle.env`, the shell, and an
 that served nothing gets no workspace until `buckle init` makes one.
 
 The version 1 registry is kept as `workspaces.v1.json`. An older Buckle meeting the new registry
-refuses to start rather than guess. To go back to 0.1, stop Buckle, copy `workspaces.v1.json`
+fails closed: it refuses to run programs and to open registered workspaces. To go back to 0.1, stop Buckle, copy `workspaces.v1.json`
 over `workspaces.json`, and install the older release; changes made since are not carried back.
