@@ -7,7 +7,7 @@ otherwise it runs.
 
 ## What runs, asks, or is refused
 
-Runs: reads inside the workspace root, writes inside `BUCKLE_SCRATCH_ROOTS`, http and https to
+Runs: reads inside the workspace, writes inside `BUCKLE_SCRATCH_ROOTS`, http and https to
 public addresses when no approved list is set, and anything a standing grant covers.
 
 Asks:
@@ -34,6 +34,9 @@ whatever the [policy](policy.md) denies.
   `cli`; MCP uses the client's session id, or `mcp`; HTTP uses `context.sessionId`, or `rpc`.
 - `always` lasts until revoked, for every session in the workspace.
 
+Only the owner's authority records a `session` or `always` grant: every local route below,
+`buckle mcp` elicitation included, and over HTTP only the admin face.
+
 A path grant covers its directory and everything below it. A network grant covers one host and
 port; `buckle approve <token> --scope session --host '*.localhost:3000'` widens one to a pattern
 covering the asking host. `buckle grants list` shows grants and remembered denials, and
@@ -56,9 +59,9 @@ arguments, so approving `rm -rf build` does not approve `rm -rf /`.
 
 ## What the approver sees
 
-Every deciding route shows the ask, then the whole action: node, workspace, a summary,
-rule, subject, reason, working directory, every effect, and every argument as JSON. Nothing is
-cut or paged. Scripts and free text show as written; a plain value under a key naming password,
+Every deciding route shows the ask, naming its workspace's id and name, then the whole action:
+node, workspace, a summary, rule, subject, reason, working directory, every effect, and every
+argument as JSON. Nothing is cut or paged. Scripts and free text show as written; a plain value under a key naming password,
 secret, or token, and a URL's password and credential query values, read `[redacted]`, with
 [known limits](known-limits.md#credential-hiding). Control and invisible characters show as escapes. Hiding is display only; the decision binds the exact arguments. An
 ask whose whole call was not recorded can be denied, never approved.
@@ -73,31 +76,28 @@ ask whose whole call was not recorded can be denied, never approved.
 | `buckle approvals`, then `buckle approve <token>` | shows the whole action and approves only after you type `yes` at a terminal; `--deny` works anywhere |
 | MCP elicitation | `buckle mcp` sends a form per ask when the client declares form elicitation; other clients, and `/mcp` over HTTP, get text pointing to `buckle approvals` |
 
-A question ignores keys until the keyboard has rested half a second. Add
-`--workspace <id>` for a [registered workspace](policy.md#workspace-and-node-ceiling).
+A question ignores keys until the keyboard has rested half a second; at the `buckle serve`
+terminal each line of it starts `[<id>]`. With no `--workspace` or `--dir`, `buckle approvals`,
+`--watch`, and `buckle approve` cover every online [workspace](workspaces.md).
 
 Nothing the agent token reaches can decide. With the experimental
 `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, `POST /setup/approvals` takes a denial under the admin
 credential, and an approval only when a device key enrolled with `buckle keys enroll` signed it,
 as `buckle client approve <node-url> <token>` does.
 
-`BUCKLE_APPROVAL_WEBHOOK` names a URL Buckle posts each new ask to. It announces and never
+`BUCKLE_APPROVAL_WEBHOOK` names a URL Buckle posts each new ask to. It announces, never
 decides; [Rings](rings.md#approval-webhook) describes what it sends.
 
 ## Timeouts
 
-`buckle serve` and `buckle mcp` hold a gated call for `BUCKLE_APPROVAL_TIMEOUT_MS`, 15000 by
+`buckle serve` and `buckle mcp` hold a gated call for the workspace's `approvalWaitMs`, 15000 by
 default, and an answer inside that window lets it run. `0` holds until someone answers. When a
 hold ends unanswered, the call returns `approval_required`, its asks stay answerable ten more
-minutes, and the agent retries the same call once answered. An HTTP caller's `context.approvalWait` overrides the node:
+minutes, and the agent retries the same call once answered. An HTTP caller's
+`context.approvalWait` overrides it:
 `{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute. A one-shot CLI
-command waits only while its terminal question is open. Change the node's wait with
-`buckle settings set approval-wait 60000`, then restart.
-
-## Persisted grants and the admin credential
-
-Only the owner's authority records a `session` or `always` grant. Every local route above carries
-it, `buckle mcp` elicitation included; over HTTP only the admin face does.
+command waits only while its terminal question is open. `buckle workspace set approvalWaitMs
+60000` changes a workspace's wait from its next call.
 
 ## Dangerously allow
 
@@ -106,14 +106,12 @@ buckle policy dangerously-allow on [--workspace <id>]
 buckle policy dangerously-allow off
 ```
 
-Warning: this removes the person. While it is on, every ask about a path inside the workspace
-root, and every command, host, and process ask, is allowed without asking anyone, sensitive
-files, writes, and destructive commands included. Paths outside the root keep their normal
-outcome, and deny rules, the node's policy over a registered workspace, the mount, and the state
-directory still refuse.
+Warning: this removes the person. While it is on, every ask about a path inside the workspace,
+and every command, host, and process ask, is allowed without asking anyone, sensitive files,
+writes, and destructive commands included. Paths outside it keep their normal outcome, and
+deny rules, the mount, and the state directory still refuse.
 
 Only the local CLI sets it; `buckle policy import` refuses a file that names it. A running node
 reads it on every call, so `off` applies at once. Each use is logged as
-`policy_dangerously_allowed`. `buckle policy clear` leaves it on, and a registered workspace's
-switch works only while the node's is on. `buckle --help` and `buckle policy --help`
-list it.
+`policy_dangerously_allowed`. Each workspace has its own switch, with no node switch over it, and
+`buckle policy clear` leaves it on.

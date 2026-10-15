@@ -1,13 +1,15 @@
 # The audit log
 
 Buckle, the approval and sandbox runtime on your machine, records what it was asked to do in
-`actions.jsonl` in the state directory, `~/.5straps/buckle` by default. A workspace registered
-with `buckle workspace add` keeps its own log in its own state directory. The log shows what an
-agent tried as well as what ran: a refusal is recorded as fully as a success.
+`actions.jsonl` in the state directory, `~/.5straps/buckle` by default, beside the node's own
+commands and workspace `default`'s calls. Every other [workspace](workspaces.md) keeps its log in
+`workspaces/<id>/actions.jsonl`. The log shows what an agent tried as well as what ran: a refusal
+is recorded as fully as a success.
 
 ## Reading it
 
-`buckle log` reads the log of the node's own workspace.
+`buckle log` reads the log of the workspace a command means
+([Workspaces](workspaces.md#which-workspace-a-command-means)), `--workspace <id>` naming another.
 
 ```bash
 buckle log                 # the last 50 entries

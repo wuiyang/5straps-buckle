@@ -27,11 +27,10 @@ the detail, which may name paths on the host.
 
 ## The setting
 
-`BUCKLE_ALLOW_CODE=true` is the default. `false` withholds the code pack, and `buckle manifest`
-gives the reason; `buckle settings set code off` writes it. Restart every Buckle process after a
-change. The setting covers the node; to turn code mode off for one workspace alone, deny `code_run`
-in that workspace's tool policy, with `buckle policy deny-tool code_run` on the node's own
-workspace.
+Code mode is on by default in each workspace. `buckle workspace set packs.code off` withholds the
+code pack there, and `buckle manifest` gives the reason; it applies once no work is active in the
+workspace. `buckle policy deny-tool code_run` refuses the tool instead, through the workspace's
+tool policy.
 
 ## Reading a script in the audit log
 

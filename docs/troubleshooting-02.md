@@ -24,7 +24,7 @@ With a deny glob in the policy, a call that runs code with `python3`, `node`, or
 [interpreter](policy-02.md#interpreters) is refused:
 
 ```
-PERMISSION_DENIED: Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): python3 (allow it with buckle policy allow-interpreter python3, or BUCKLE_ALLOWED_INTERPRETERS for the node ceiling), so the workspace command policy's deny list cannot meet all of it; refused rather than asked
+PERMISSION_DENIED: Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): python3 (allow it with buckle policy allow-interpreter python3), so the workspace command policy's deny list cannot meet all of it; refused rather than asked
 ```
 
 With none, the destructive floor asks with the same reason. Buckle cannot read the code, so no
@@ -35,10 +35,8 @@ judged by its own words, allow it by its exact name:
 buckle policy allow-interpreter python3
 ```
 
-Or add it to `BUCKLE_ALLOWED_INTERPRETERS` in `buckle.env`, comma separated, which a registered
-workspace also needs, since the [node ceiling](policy.md#workspace-and-node-ceiling) must allow
-it too. `python3` and `python3.12` are separate names. Restart `buckle serve` or `buckle mcp`
-afterwards. A version or help call, such as `python3 --version`, never needs it.
+It applies to that workspace alone, from its next call. `python3` and `python3.12` are separate
+names. A version or help call, such as `python3 --version`, never needs it.
 
 ## A call Buckle cannot read whole is refused
 
@@ -56,13 +54,10 @@ variable after an option that takes one (`nice -n "$n" make`), or hand a shell i
 `-c`. [What stays unread](policy-03.md) shows the forms an expansion leaves read, and
 [Known limits](known-limits.md) what Buckle does not read at all.
 
-## A rule for a registered workspace changes nothing
+## A rule changes another workspace than you meant
 
-`buckle policy` edits the node's own workspace only. It refuses a flag it does not know, such as
-`--workspace`; only `show --json` and `dangerously-allow --workspace <id>` take one. A
-[registered workspace](policy.md#workspace-and-node-ceiling) keeps a stored policy of its own,
-which `GET` and `PUT /workspaces/<id>/setup/policy` read and replace on the experimental setup
-face, with `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, under the admin credential
-`buckle workspace add` printed for it. The node's environment settings, such as
-`BUCKLE_COMMAND_DENY` and `BUCKLE_ALLOWED_INTERPRETERS`, are a ceiling over it, so a call must
-pass both.
+`buckle policy` acts on the workspace `--workspace <id>` or `--dir <path>` names, or else on the
+one whose folder holds the current directory, and `buckle policy show` names it on its first
+line. Each workspace's policy is its own, with no node policy over it, so a rule added in one
+folder does nothing in another. `buckle workspace list` shows each workspace's id and folder
+([Workspaces](workspaces.md#which-workspace-a-command-means)).

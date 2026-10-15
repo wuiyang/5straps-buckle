@@ -29,9 +29,9 @@ in. A gated call returns `approval_required` and exits with code 3:
 Approval required: Writing to /workspace is not yet approved
   subject: /home/you/code/my-project
   expires in 9m 59s (...)
-  waiting on workspace default
-  see the whole action with: buckle approvals
-  then approve with: buckle approve 21bff0bf-... --scope session (it shows the action again and asks to confirm)
+  waiting on workspace my-project (my-project)
+  see the whole action with: buckle approvals --workspace my-project
+  then approve with: buckle approve 21bff0bf-... --scope session --workspace my-project (it shows the action again and asks to confirm)
 ```
 
 When you see this, relay it to the person you are working with. Tell them what you were trying
@@ -130,4 +130,5 @@ buckle serve    # HTTP: native RPC on /v1, MCP on /mcp
 buckle mcp      # MCP over stdio
 ```
 
-`serve` requires `BUCKLE_AUTH_TOKEN`. Bind to localhost unless the network is trusted.
+`serve` answers each request for the workspace whose agent token it carries. Bind to localhost
+unless the network is trusted.

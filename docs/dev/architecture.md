@@ -27,14 +27,14 @@ the pieces that decide it. Paths are inside `buckle/` unless they start with `pa
   `common/types/ports/` holds the interfaces adapters implement.
 - `cli/` is the one-shot commands: `main.ts` dispatches, and `init.ts`, `settings.ts`,
   `policy.ts`, `approvals-watch.ts`, `terminal-consumer.ts`, `keys.ts`, `client.ts`,
-  `workspace.ts`, and `pairing.ts` implement them.
+  `workspace.ts`, `workspace-keys.ts`, `target.ts`, and `pairing.ts` implement them.
 - `mcp/` is the MCP face. `server.ts` registers each available tool and each skill and turns an
   ask into elicitation forms or relay text; `stdio.ts`, `stdio-wire.ts`, and
   `audited-stdio-transport.ts` serve it on stdio; `http.ts` keeps one stateless handler per
   workspace runtime for `/mcp`.
 - `server/` is the HTTP face. `setup-server.ts` imports the built Nitro app from
   `.output/server/index.mjs` and binds it to the process's common runtime; `serve.ts` listens on
-  `node:http`.
+  `node:http`, and `roster.ts` lists the online workspaces at start and after each change.
 - `layers/` holds the Nitro layers that `scripts/build-server.mjs` builds into `.output`:
   `common` (`/health`, `/v1/*`, and their `/workspaces/<id>/` twins), `mcp` (`/mcp`), and `admin`
   (`/setup`, which answers 404 unless `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`; `--no-admin` builds
@@ -42,8 +42,9 @@ the pieces that decide it. Paths are inside `buckle/` unless they start with `pa
 
 ## A tool call, end to end
 
-Every face calls `invoke` on a workspace runtime (`common/services/workspaces/workspace-runtime.ts`),
-which hands the call to the invoker (`common/services/invocation/invoker.ts`):
+Every face calls `invoke` on a workspace runtime (`common/services/workspaces/workspace-runtime.ts`).
+It refuses a call to an offline workspace, takes up a change to the workspace's `workspace.json`
+(a stat per call), and hands the call to the invoker (`common/services/invocation/invoker.ts`):
 
 1. The attempt is written to `actions.jsonl`. If that write fails, nothing runs.
 2. A re-send of a call already running or finished is answered with that call's outcome.
@@ -62,10 +63,9 @@ which hands the call to the invoker (`common/services/invocation/invoker.ts`):
 `common/domain/permission/engine.ts` runs a list of rules over every effect. The first deny
 returns at once; asks are collected; with neither, the call is allowed. Rules see effects only,
 never tool names. `buildPermissionEngine` in `workspace-runtime.ts` fixes the order, which is the
-security model: `sensitive_path`, the node ceiling's `command_policy` for a registered
-workspace, the workspace's `command_policy`, `destructive_command`, `network_egress`,
-`process_probe`, `filesystem_policy`, `read_scope`, and `write_scope`. Floor rules run before
-scope rules, so a granted directory never unlocks a credential file inside it.
+security model: `sensitive_path`, the workspace's `command_policy`, `destructive_command`,
+`network_egress`, `process_probe`, `filesystem_policy`, `read_scope`, and `write_scope`. Floor
+rules run before scope rules, so a granted directory never unlocks a credential file inside it.
 `rules/dangerously-allow.ts` wraps the engine and turns covered asks into allows while the
 switch is on; it never touches a deny. Each rule lives in `common/domain/permission/rules/`.
 
@@ -90,11 +90,9 @@ no glob can meet what that code runs. A version or help call runs no code and st
 so does a bare interpreter as the call itself, whose input is empty.
 
 The owner decides which interpreters are ordinary commands, judged by their own words like any
-other: `allowedInterpreters` in the stored policy (`buckle policy allow-interpreter <name>`) and
-`BUCKLE_ALLOWED_INTERPRETERS` in the environment. A name is matched exactly, so `python3` allows
-neither `python` nor `python3.12`. Each policy judges by its own list, and a workspace never
-exceeds the node ceiling: over a registered workspace the ceiling's list, empty by default, is the
-environment's, and the workspace's own allowance counts only within it.
+other: `allowedInterpreters` in each workspace's policy (`buckle policy allow-interpreter
+<name>`), empty by default. A name is matched exactly, so `python3` allows neither `python` nor
+`python3.12`.
 
 The list (`INTERPRETERS` in `common/domain/command-forms.ts`) holds the Python and PyPy builds,
 node, deno, bun, perl, ruby, php, the awk family, lua, PowerShell, the TypeScript runners, the C

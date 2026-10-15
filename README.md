@@ -32,14 +32,14 @@ cd ~/some/project
 buckle init
 ```
 
-`buckle init` writes `buckle.env`, readable by its owner only, in the state directory:
-`~/.5straps/buckle` by default, or the absolute path in `BUCKLE_STATE_DIR`. The file holds two
-fresh credentials, `BUCKLE_AUTH_TOKEN` for agents and `BUCKLE_ADMIN_TOKEN` for setup, and the
-workspace settings. The current directory becomes the workspace root, shown to the agent as
-`/workspace`. In a terminal it asks which packs to enable and about the shell, host Git, and the
-network lists; `--yes` takes the defaults. `buckle settings set` changes any of them later.
+`buckle init` sets the machine's node up once, writing its settings and admin credential to
+`buckle.env`, owner-only, in the state directory: `~/.5straps/buckle`, or the absolute path in
+`BUCKLE_STATE_DIR`. It serves the current directory as a workspace, shown to the agent as
+`/workspace`, and prints its agent token once. It asks about packs, the shell, host Git, and
+network lists; `--yes` takes the defaults. `buckle workspace set` and `buckle policy` change them
+later; `buckle init` in another project adds another workspace.
 
-The state directory also holds grants, the policy, pending approvals, and the action log.
+The state directory also holds each workspace's settings, grants, approvals, and action log.
 Buckle's file tools refuse to read it. Only a process sandbox, bubblewrap on Linux or Seatbelt on
 macOS, hides it from shell commands: with `BUCKLE_SANDBOX=none`, a shell command can read
 `buckle.env` without an ask.
@@ -63,7 +63,7 @@ claude mcp add buckle -- buckle mcp
 ```
 
 **HTTP**: `buckle serve` listens on `127.0.0.1:4320`, with native RPC under `/v1` and MCP on
-`/mcp`, each behind the agent token as a bearer credential. No TLS is built in; put a
+`/mcp`, each serving the bearer token's workspace. No TLS is built in; put a
 proxy in front for anything beyond the local host.
 
 ## Approvals
@@ -83,8 +83,8 @@ The answer can come from anywhere: a prompt in the terminal running `buckle
 serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
 `buckle approve <token>` from another terminal. Buckle can also post each pending approval to
 the relay `BUCKLE_APPROVAL_WEBHOOK` names, so a person can be reached away from the machine. A
-call waits 15 seconds by default (`BUCKLE_APPROVAL_TIMEOUT_MS`) before handing the agent a token
-to retry with.
+call waits 15 seconds by default (`approvalWaitMs`) before handing the agent a token to retry
+with.
 
 ```bash
 buckle approvals --watch
@@ -103,8 +103,8 @@ buckle policy mount /workspace
 ```
 
 `buckle policy dangerously-allow on` removes the person: every ask in that workspace becomes an
-allow, destructive commands included. Explicit deny rules, the node's policy over a registered
-workspace, and the mount boundary still refuse, and a path outside the workspace root still asks.
+allow, destructive commands included. Explicit deny rules and the mount boundary still refuse,
+and a path outside the workspace still asks.
 It is off by default;
 [Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md#dangerously-allow)
 documents it.
@@ -120,9 +120,8 @@ documents it.
 
 On Linux, shell tools work on private copies of the workspace by default and publish
 changes through conflict-checked checkpoints; `BUCKLE_SHELL_ISOLATION=false` selects
-shared-workspace execution. Host Git and forge tools (`BUCKLE_ALLOW_HOST_GIT`) and host
-language servers (`BUCKLE_ALLOW_HOST_LSP`) are off by default, because they run outside the
-sandbox. Without `rg`, `fs_search_content` is absent, unexplained.
+shared-workspace execution. Host Git and forge tools (`packs.hostGit`) and host language
+servers (`packs.hostLsp`) are off by default, because they run outside the sandbox. Without `rg`, `fs_search_content` is absent, unexplained.
 
 ## Audit log
 
@@ -151,11 +150,13 @@ For users:
   state directory.
 - [First run](https://github.com/wuiyang/5straps-buckle/blob/main/docs/first-run.md): `buckle init`, the two credentials, and the CLI, MCP, and
   HTTP faces.
+- [Workspaces](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces.md) ([settings, and moving from 0.1](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces-02.md)):
+  one node, many folders, and their tokens.
 - [Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md): what asks, the scopes, the destructive floor, where to
   answer, and the dangerously-allow switch.
 - [Policy](https://github.com/wuiyang/5straps-buckle/blob/main/docs/policy.md) ([what Buckle reads](https://github.com/wuiyang/5straps-buckle/blob/main/docs/policy-02.md),
   [what stays unread](https://github.com/wuiyang/5straps-buckle/blob/main/docs/policy-03.md)): command globs, network lists, files, and
-  when a restart is needed.
+  when a change applies.
 - [Sandbox and tools](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, shell isolation,
   and [scripts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/code-mode.md).
 - [Using your own browser](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login.md): profile folders, your own Chrome, and

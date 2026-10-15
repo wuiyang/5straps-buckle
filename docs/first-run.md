@@ -13,67 +13,60 @@ cd ~/code/my-project
 buckle init
 ```
 
-`buckle init` writes one file, `buckle.env`, in the state directory: `~/.5straps/buckle`, or
-the absolute path in `BUCKLE_STATE_DIR`. On Linux and macOS it creates that directory with mode
-700 and the file with mode 600, readable by you alone. It never writes into the project. `--out <file>`, or
-`BUCKLE_ENV_FILE`, puts the file elsewhere; then name that file with `BUCKLE_ENV_FILE` whenever
-you start Buckle. An existing file is kept unless you pass `--force`.
+The first run sets this machine's node up, then serves the current directory as a
+[workspace](workspaces.md). It writes the node's settings to one file, `buckle.env`, in the
+state directory: `~/.5straps/buckle`, or the absolute path in `BUCKLE_STATE_DIR`. On Linux and
+macOS it creates that directory with mode 700 and the file with mode 600, readable by you alone.
+It never writes into the project. `--out <file>`, or `BUCKLE_ENV_FILE`, puts the file elsewhere;
+then name that file with `BUCKLE_ENV_FILE` whenever you start Buckle. A node set up already keeps
+its file unless you pass `--force`, and `buckle init` in another project adds it as another
+workspace.
 
 In a terminal it asks, each question with a default that Enter keeps:
 
-| Question | Default | Written as |
+| Question | Default | Kept as |
 |---|---|---|
-| Workspace root | the current directory | `BUCKLE_WORKSPACE_ROOT` |
-| Virtual workspace path | `/workspace` | `BUCKLE_WORKSPACE_MOUNT` |
-| Name for this node | the root path with each `/` replaced by `-` | `BUCKLE_SERVER_NAME` |
-| Packs to enable | every built-in pack, and plugins | `BUCKLE_PACKS` |
-| Shell tools on? | on | `BUCKLE_ALLOW_SHELL` |
-| Host Git and forge tools on? | off | `BUCKLE_ALLOW_HOST_GIT` |
-| Approved hosts and URLs | none | `BUCKLE_NETWORK_ALLOW` |
-| Private-address hosts `web_fetch` may reach | none | `BUCKLE_ALLOWED_HOSTS` |
+| Folder to serve | the current directory | the workspace's folder |
+| Where the agent sees it | `/workspace` | the workspace's mount |
+| Name for this node, first run only | the folder's path with each `/` replaced by `-` | `BUCKLE_SERVER_NAME` |
+| Packs to offer | every built-in pack, and plugins | `packs.enabled` |
+| Shell tools on? | on | `packs.shell` |
+| Host Git and forge tools on? | off | `packs.hostGit` |
+| Approved hosts and URLs | none | the workspace's approved list |
+| Private-address hosts `web_fetch` may reach, first run only | none | `BUCKLE_ALLOWED_HOSTS` |
 
 `--yes`, or running without a terminal, takes every default and says so. Its summary checks
 `bwrap` on Linux, `rg`, `git`, and `agent-browser`: where each was found, or why not and what it
-unlocks. The file also sets
-`BUCKLE_HOST=127.0.0.1`, `BUCKLE_PORT=4320`, and `BUCKLE_SANDBOX=auto`, and lists the other
-settings as comments. Change any of the questions' answers later with
-`buckle settings set <key> <value>`, and see them with `buckle settings show`.
+unlocks. The node's file also sets `BUCKLE_HOST=127.0.0.1`, `BUCKLE_PORT=4320`, and
+`BUCKLE_SANDBOX=auto`. Change the workspace's answers later with `buckle workspace set` and
+`buckle policy`, and the node's with `buckle settings set`.
 
 ### The two credentials
 
-`buckle init` generates two random credentials and writes them into the file:
+- The agent token belongs to the workspace. An HTTP client presents it as a bearer token to call
+  tools through `buckle serve`, which serves that workspace for it. Buckle keeps only its digest,
+  so `buckle init` prints it once; `buckle workspace token create` mints another.
+- `BUCKLE_ADMIN_TOKEN`, the admin credential, is the node's, in `buckle.env`. It opens the
+  experimental `/setup` face, which is off until `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, and
+  `buckle workspace` needs it before it changes workspaces or mints tokens.
 
-- `BUCKLE_AUTH_TOKEN`, the agent token. An HTTP client presents it as a bearer token to call
-  tools through `buckle serve`. `buckle serve` refuses to start without it.
-- `BUCKLE_ADMIN_TOKEN`, the admin credential. It opens the experimental `/setup` face, which is
-  off until `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, and `buckle workspace` needs it before it
-  mints credentials for a registered workspace.
+Running tools and answering approvals from the local CLI needs neither. `buckle init` prints both
+once in its summary, so treat that terminal output like the file.
 
-Buckle refuses to start when the two are the same value. Running tools and answering
-approvals from the local CLI needs neither. `buckle init` prints both once in its summary, so
-treat that terminal output like the file.
+## Choosing the folder
 
-## Choosing the workspace root
+The folder decides what an agent reaches without asking:
 
-The root decides what an agent reaches without asking:
+- Reads inside the folder run. With the default `/workspace` mount, a read outside it is
+  refused; without a mount, it asks.
+- The first write to each directory asks, inside the folder too.
+- Tools show the folder to the agent as `/workspace`.
 
-- Reads inside the root run. With the default `/workspace` mount, a read outside it is refused;
-  without a mount, it asks.
-- The first write to each directory asks, inside the root too.
-- Tools show the root to the agent as `/workspace`.
+Choose the project directory, not your home directory. Buckle refuses a folder that contains the
+state directory or the settings file, or one inside or around another workspace.
 
-Choose the project directory, not your home directory. Buckle refuses a root that contains the
-state directory or the settings file.
-
-One settings file serves one root. `buckle mcp`, or a command that runs a tool, started in a
-directory outside that root still serves the root, and warns on stderr:
-
-```
-Warning: Buckle serves /home/you/code/my-project, the workspace root /home/you/.5straps/buckle/buckle.env sets, but started in /home/you/other, outside it: this project gets that root's files, grants and history. ...
-```
-
-To give another project its own node, set `BUCKLE_ENV_FILE` to a settings file of its own, or
-set `BUCKLE_WORKSPACE_ROOT` and `BUCKLE_STATE_DIR`, in the shell or in the MCP client's `env`.
+A command run in a workspace's folder, or below it, acts on that workspace; elsewhere, name one
+with `--workspace <id>` ([Workspaces](workspaces.md#which-workspace-a-command-means)).
 
 ## Three ways to run
 
@@ -104,17 +97,13 @@ For a client configured in JSON, the usual entry is:
 ```json
 {
   "mcpServers": {
-    "buckle": {
-      "command": "buckle",
-      "args": ["mcp"],
-      "env": { "BUCKLE_ENV_FILE": "/home/you/.5straps/buckle/buckle.env" }
-    }
+    "buckle": { "command": "buckle", "args": ["mcp", "--workspace", "my-project"] }
   }
 }
 ```
 
-The `env` entry is optional; it pins the node, so the client's working directory does not
-matter. Each available tool registers with its schema, and each skill is a resource at
+`--workspace` pins the workspace, so the client's working directory does not matter; without
+it, `buckle mcp` serves the workspace holding that directory. Each available tool registers with its schema, and each skill is a resource at
 `buckle://skills/<id>`. Logs go to stderr, because stdout carries the protocol.
 
 ### HTTP
@@ -125,19 +114,19 @@ buckle serve
 
 It listens on `127.0.0.1:4320`, or `BUCKLE_HOST` and `BUCKLE_PORT`. There is no TLS; put a
 proxy in front before exposing it beyond the machine. Every route but `/health` and
-`/health/ready` wants the agent token:
+`/health/ready` wants an agent token, and serves that token's workspace:
 
 | Route | What it does |
 |---|---|
 | `GET /health` | liveness |
 | `GET /health/ready` | 503 while starting, or while the audit log refuses writes |
-| `GET /v1/manifest` | the node, its packs and tools, and its limits |
+| `GET /v1/manifest` | the workspace, its packs and tools, and its limits |
 | `GET /v1/skills` | the skills, with their text |
 | `POST /v1/invoke` | runs one tool call |
 | `POST /mcp` | MCP over HTTP |
 
 ```bash
-TOKEN=$(sed -n 's/^BUCKLE_AUTH_TOKEN=//p' ~/.5straps/buckle/buckle.env)
+TOKEN=<the agent token buckle init printed>
 curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4320/v1/manifest
 curl -s -X POST http://127.0.0.1:4320/v1/invoke \
   -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -162,9 +151,9 @@ Without a terminal, the call stops and exits 3:
 Approval required: Writing to /workspace is not yet approved
   subject: /home/you/code/my-project
   expires in 10m 15s (2026-10-02T11:16:29.838Z)
-  waiting on workspace default
-  see the whole action with: buckle approvals
-  then approve with: buckle approve 3f6c...-... --scope session (it shows the action again and asks to confirm)
+  waiting on workspace my-project (my-project)
+  see the whole action with: buckle approvals --workspace my-project
+  then approve with: buckle approve 3f6c...-... --scope session --workspace my-project (it shows the action again and asks to confirm)
 ```
 
 At a terminal, the same command shows the whole action and asks in place:

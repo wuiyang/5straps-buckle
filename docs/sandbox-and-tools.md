@@ -11,15 +11,16 @@ is the exception: `fs_search_content` is left out without `rg`, and no reason is
 |---|---|---|
 | `fs` | `fs_read`, `fs_read_batch`, `fs_write`, `fs_write_batch`, `fs_patch`, `fs_list`, `fs_find_names`, `fs_search_content` | nothing; `fs_search_content` needs `rg` |
 | `web` | `web_fetch`, `web_search` | `web_search` needs `BUCKLE_BRAVE_SEARCH_API_KEY` |
-| `shell` | `shell_exec`, `script_run` | a process sandbox, below; on unless `BUCKLE_ALLOW_SHELL=false` |
-| `git` | `git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch` | `git` and `BUCKLE_ALLOW_HOST_GIT=true` |
+| `shell` | `shell_exec`, `script_run` | a process sandbox, below; on unless the workspace sets `packs.shell` off |
+| `git` | `git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch` | `git`, and `packs.hostGit` on |
 | `forge` | `git_commit`, `git_push`, `pr_open`, `pr_read` | the same, and `BUCKLE_FORGE_GITHUB_TOKEN` |
-| `dev` | `lsp_discover`, `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_rename`, `lsp_diagnostics` | `BUCKLE_ALLOW_HOST_LSP=true` and a language server |
+| `dev` | `lsp_discover`, `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_rename`, `lsp_diagnostics` | `packs.hostLsp` on, and a language server |
 | `browser` | `browser_command` | `agent-browser`, a browser for agents, or the command `BUCKLE_AGENT_BROWSER_COMMAND` names |
-| `code` | `code_run`, `code_api`: a script that calls the other tools, each call judged as a direct one ([Code mode](code-mode.md)) | nothing, not even a sandbox; on unless `BUCKLE_ALLOW_CODE=false` |
+| `code` | `code_run`, `code_api`: a script that calls the other tools, each call judged as a direct one ([Code mode](code-mode.md)) | nothing, not even a sandbox; on unless the workspace sets `packs.code` off |
 | `environment` | `env_validate` | `BUCKLE_ENV_VALIDATOR_COMMAND` |
 
-`BUCKLE_PACKS=fs,web,shell` loads only the named packs, and naming any turns plugins off.
+`buckle workspace set packs.enabled fs,web,shell` offers only the named
+[packs](workspaces-02.md#settings), and naming any turns plugins off.
 `buckle plugin add <id> <module>` adds a plugin, a module that exports `createPack(options)`; one
 that fails to load shows as an unavailable pack. Each built-in pack ships a skill, a short guide
 for the agent: `buckle skills` lists them and `buckle skills buckle-shell` prints one.
@@ -87,12 +88,12 @@ These run on the host, outside the sandbox and without Buckle's per-file checks,
 off. Turn them on for a repository you trust:
 
 ```bash
-buckle settings set host-git on    # BUCKLE_ALLOW_HOST_GIT=true: the git and forge packs
+buckle workspace set packs.hostGit on    # the git and forge packs
+buckle workspace set packs.hostLsp on    # language servers in the dev pack
 ```
 
-`BUCKLE_ALLOW_HOST_LSP=true`, for the `dev` pack, has no `buckle settings` key: add the line to
-`buckle.env` by hand. Restart `buckle serve` or `buckle mcp` after either change. A policy with
-a filesystem `deny` or `ask` rule withholds all three packs again.
+Each applies to that workspace alone. A filesystem `deny` or `ask` rule in its policy withholds
+all three packs again.
 
 Every `git` and `forge` call hides the system and global git configs, points `core.hooksPath` at
 an empty directory Buckle owns, and overrides the repository's program settings, so no hook or

@@ -1,9 +1,19 @@
 # Architecture: state and packs
 
 The second part of the map of Buckle, the approval and sandbox runtime that lets an AI agent work
-on one machine: where approvals live on disk, how packs bring tools, and how code mode runs scripts.
+on one machine: how workspaces are kept, where approvals live on disk, how packs bring tools, and
+how code mode runs scripts.
 [Architecture](architecture.md) covers the packages, the layers, the path of a tool call, and the
 pieces that decide it. Paths are inside `buckle/` unless they start with `packages/`.
+
+## Workspaces
+
+`common/services/workspaces/registry.ts` keeps `workspaces.json`, version 2: each workspace's id,
+name, folder, whether it is online, and its agent tokens as SHA-256 digests, compared in constant
+time across every workspace (`workspace-manager.ts`, `tokenOwner`). `workspace-settings.ts` keeps
+each one's `workspace.json`; `config.ts` composes a runtime's configuration from the node's
+settings and the workspace's (`workspaceConfig`). `migration.ts` moves a 0.1 node onto them once.
+`/mcp` and `/v1/*` take the workspace from the bearer token (`layers/common/server/utils/guards.ts`).
 
 ## The approval registry and its state files
 
@@ -56,8 +66,8 @@ runs an agent's script that calls the other tools. Four pieces:
   the registry: `ToolDefinition.reachesTools` makes the invoker hand it `invokeNested`, and the
   invoker builds each nested request itself, with the outer call's session, actor, approval tokens,
   wait, signal, and context, its stage unchanged so a script reaches the caller's browser sessions,
-  the outer requestId as the audited `parentRequestId`, and a requestId of `code:<key>:<call number>`. A nested call goes through the workspace runtime's own `invoke`, so
-  it is judged, audited, counted, and cancelled at shutdown like any other. Its approval wait ends
+  the outer requestId as the audited `parentRequestId`, and a requestId of `code:<key>:<call number>`. A nested call goes through the workspace runtime's invoker, under the
+  settings its script started with, so it is judged, audited, counted, and cancelled at shutdown like any other. Its approval wait ends
   a second before the script's deadline. Buckle's own aborts leave its asks pending; the outer
   caller's own cancel withdraws them, and so do `CODE_REPLAY_TOO_LARGE` and `CODE_REPLAY_DIVERGED`.
   A call that asks makes the pack throw `NestedApprovalRequired`, which the invoker answers as

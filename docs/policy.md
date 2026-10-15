@@ -6,16 +6,13 @@ Buckle's file tools cannot read or change it. Only a process sandbox hides it fr
 commands: with `BUCKLE_SANDBOX=none`, a shell command can read and change the files that hold it,
 and Buckle does not ask about them.
 
-## Where it comes from
+## Where it lives
 
-Two sources, unioned: every allow and deny from either, and the last mount named. Deny wins.
-
-- The environment: `BUCKLE_COMMAND_ALLOW`, `BUCKLE_COMMAND_DENY`, and
-  `BUCKLE_COMMAND_DESTRUCTIVE`, with patterns one per line or separated by `;;`; the approved list
-  `BUCKLE_NETWORK_ALLOW` and the [allowed interpreters](policy-02.md#interpreters)
-  `BUCKLE_ALLOWED_INTERPRETERS`, each comma separated; and `BUCKLE_WORKSPACE_MOUNT`.
-- The stored policy: `policy.json` in the state directory, keyed by workspace root, which
-  `buckle policy` writes.
+Each [workspace](workspaces.md) has one policy, in its `workspace.json`, which `buckle policy`
+writes: its command lists, its approved list, its [allowed interpreters](policy-02.md#interpreters),
+its tool lists, its filesystem rules, and where the agent sees its folder. No node policy sits
+over it, and no other workspace's applies. `buckle policy` acts on the workspace `--workspace
+<id>` or `--dir <path>` names, or else on the one whose folder holds the current directory.
 
 ## Commands
 
@@ -94,30 +91,21 @@ approved, 1 denied, 3 asks, 4 not listed, or 2 on bad input.
   deny wins, otherwise the longest path decides. Any rule stops plugins loading, and a deny or
   ask rule withholds the `git`, `forge`, and `dev` packs.
 
-## Workspace and node ceiling
-
-`buckle workspace add <id> --root <dir>` registers another workspace, served under
-`/workspaces/<id>/v1` and `/workspaces/<id>/mcp` with its own tokens and state, always mounted
-at `/workspace`, its writes offering only `once`. The node's environment policy, the
-`BUCKLE_COMMAND_*`, `BUCKLE_NETWORK_ALLOW`, and `BUCKLE_ALLOWED_INTERPRETERS` settings, is a
-ceiling over it: both command policies apply, an interpreter must be allowed in both, a URL must
-pass both approved lists, a tool must pass both tool lists, and a filesystem deny in either wins.
-What `buckle policy` stores governs the node's own workspace.
-
 ## Inspecting and changing it
 
 ```bash
-buckle policy show          # each entry and its source: env, stored, or env+stored
+buckle policy show          # every list, the mount, and the dangerously-allow switch
 buckle policy export > policy.json
 buckle policy import policy.json
 buckle policy remove 'pnpm {build,test} *'
-buckle policy clear         # drops the stored part, keeps the environment's
+buckle policy clear         # empties every list, keeping the mount
 ```
 
 `buckle policy` exits 0 when done, 1 on a refused change, and 2 on a conflict: work in progress,
 such as a shell copy awaiting review, or an imported file naming the dangerously-allow switch.
 
-CLI commands read the policy fresh; `buckle serve` and `buckle mcp` read it at start, so restart
-them after a `buckle policy` or `buckle settings` change. A running node reads the dangerously-allow
-switch on every call. If the stored policy stops loading, the node refuses to start and names the
-file; `buckle policy show`, `export`, `remove`, and `clear` still run to repair it.
+A running `buckle serve` or `buckle mcp` takes a change up at the workspace's next call
+([When a change applies](workspaces-02.md#when-a-change-applies)), and reads the
+dangerously-allow switch on every call. If the stored policy stops loading, the workspace refuses
+to open and names the file; `buckle policy show`, `export`, `remove`, and `clear` still run to
+repair it.

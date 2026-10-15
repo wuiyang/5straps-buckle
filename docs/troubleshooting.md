@@ -34,12 +34,12 @@ In a clone, `pnpm rebuild node-pty`. Terminals also need bubblewrap.
 |---|---|
 | `Isolated shell execution requires bubblewrap; BUCKLE_SHELL_ISOLATION=false opts into shared-workspace checkpoints` | on Linux, install bubblewrap; on macOS, add `BUCKLE_SHELL_ISOLATION=false` to `buckle.env` |
 | `No process sandbox is available here, so shell tools are withheld. Install bubblewrap (Linux) or set BUCKLE_SANDBOX=none to run commands unsandboxed on purpose.` | install bubblewrap, or accept unsandboxed commands with `BUCKLE_SANDBOX=none` |
-| `The workspace is mounted at /workspace, which needs bubblewrap; shell tools are withheld under the seatbelt sandbox rather than shown a different view` | on macOS, `buckle settings unset mount` |
-| `Shell tools are turned off by BUCKLE_ALLOW_SHELL=false` | `buckle settings set shell on` |
+| `The workspace is mounted at /workspace, which needs bubblewrap; shell tools are withheld under the seatbelt sandbox rather than shown a different view` | on macOS, `buckle policy unmount` |
+| `Shell tools are turned off in this workspace: its setting packs.shell is off` | `buckle workspace set packs.shell on` |
 | `BUCKLE_SANDBOX=bubblewrap was requested but bwrap is not installed` | install bubblewrap, or set `BUCKLE_SANDBOX=auto` |
 
-Restart `buckle serve` or `buckle mcp` after the change. [Sandbox and tools](sandbox-and-tools.md)
-explains each mode.
+A `buckle.env` change applies when `buckle serve` or `buckle mcp` restarts, and a workspace
+setting at the workspace's next call. [Sandbox and tools](sandbox-and-tools.md) explains each mode.
 
 ## The port is in use
 
@@ -90,8 +90,10 @@ chmod -R go-rwx ~/.5straps
 ```
 
 The same message names a file whose JSON is damaged; restore it from a backup or remove it, which
-loses what it held. A state directory inside the workspace root is refused at start with
-`BUCKLE_STATE_DIR is ..., inside the BUCKLE_WORKSPACE_ROOT at ...`; move one of them.
+loses what it held. A workspace folder holding the state directory is refused, with `A workspace
+folder must not hold, or sit inside, another workspace or Buckle state`, or, for a 0.1 node
+moving onto workspaces, `BUCKLE_STATE_DIR is ..., inside the BUCKLE_WORKSPACE_ROOT at ...`; move
+one of them.
 
 ## A push is refused by the receive guard
 

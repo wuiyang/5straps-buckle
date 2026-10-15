@@ -71,5 +71,5 @@ decision binds the whole call, whatever the display hides.
 - On Windows, a workspace or state directory on a network share, such as
   `\\server\share\project`, or on a mapped drive, is refused: use a folder on a local drive.
 - On Windows, a whole drive such as `D:\`, or a link to one, cannot be the workspace root, a
-  scratch root, the state directory, or the client directory. Buckle started in `D:\` without
-  `BUCKLE_WORKSPACE_ROOT` refuses to start.
+  scratch root, the state directory, or the client directory: `buckle init` run in `D:\`
+  refuses.

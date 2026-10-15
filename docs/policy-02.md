@@ -60,6 +60,6 @@ stay ordinary, such as `python3 --version`, `python3 -VV`, `perl -V`, `ruby -v`,
 Static grading of such code (safe, warn, danger, unknown) comes after the first release. The
 package runners `npx`, `pnpx`, and `bunx` stay ordinary commands for now, judged by their own words.
 
-`BUCKLE_ALLOWED_INTERPRETERS`, comma separated, allows interpreters from the environment, for the
-node's own workspace and as the [node ceiling](policy.md#workspace-and-node-ceiling): a registered
-workspace can allow an interpreter only within the ceiling's list, which is empty by default.
+Each workspace's list is its own, empty by default. A node moving from 0.1 copies its
+`BUCKLE_ALLOWED_INTERPRETERS` into each workspace's list
+([Moving a node from 0.1](workspaces-02.md#moving-a-node-from-01)).

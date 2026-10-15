@@ -23,7 +23,7 @@ hiding, and paths, and [part three](known-limits-03.md) code mode and the comman
   beside the Node.js it runs on, and on Windows in `%APPDATA%\npm`. A program another installer
   put elsewhere is found only on `PATH`.
 - A running workspace keeps the programs it found: a workspace registered later counts for them
-  from the running one's next policy change, or for the sandbox program, its next start.
+  from the running one's next settings change, or for the sandbox program, its next start.
 - A program outside every root that hard-links a file inside one runs, as Buckle cannot see a
   file's other names: keep such links off `PATH`.
 - On Windows, Buckle judges each program, `PATH` entry, and browser profile folder by the real

@@ -12,12 +12,12 @@ buckle init --pair <code> --rings https://rings.example.com --url http://my-node
 ```
 
 `--pair` redeems a single-use code issued in Rings. Buckle posts the code to Rings with the
-node's name, its manifest, the URL Rings should call it at, and both credentials,
-`BUCKLE_AUTH_TOKEN` and `BUCKLE_ADMIN_TOKEN`, so Rings can call tools and reach the setup face.
+node's name, the workspace's manifest, the URL Rings should call it at, the workspace's agent
+token, and the node's `BUCKLE_ADMIN_TOKEN`, so Rings can call tools there and reach the setup face.
 `--url` defaults to `http://127.0.0.1:<port>`, which only a Rings on the same machine can reach.
 Rings answers with a report credential, and possibly an approval key, which Buckle writes into
-`buckle.env` without printing them. Run on a node that already has a settings file, `--pair`
-keeps its credentials and updates the URL. Restart a running `buckle serve` afterwards.
+`buckle.env` without printing them. On a node set up already, `--pair` keeps its settings, mints
+the workspace a token for Rings, and updates the URL. Restart a running `buckle serve` afterwards.
 
 ## Settings
 

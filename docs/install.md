@@ -10,11 +10,9 @@ page covers installing, checking, upgrading, and removing it, and what it keeps 
 - Linux with bubblewrap for every feature. macOS has a narrower shell sandbox and Windows has
   none. CI runs on Linux only, x64 and arm64; the macOS column below comes from the code.
 
-On Windows, Buckle starts, its file tools work in the workspace, and Ctrl-C, Ctrl-Break, or
-closing its console stops it after its close steps. Windows is experimental: it rests on reading
-the code and on Linux tests that imitate Windows paths, signals, and file locks, not on a run on
-Windows. [Known limits](known-limits.md#paths-and-windows)
-lists the differences.
+Windows is experimental: Buckle starts there, its file tools work, and Ctrl-C, Ctrl-Break, or
+closing its console stops it, as read from the code and Linux tests that imitate Windows.
+[Known limits](known-limits.md#paths-and-windows) lists the differences.
 
 Buckle looks for these programs on `PATH`, then beside its `buckle` command and Node.js, and on
 Windows in `%APPDATA%\npm`. Without one, the matching pack or tool is withheld; a missing
@@ -73,18 +71,9 @@ buckle tools        # each tool this machine offers, with its risk level
 buckle manifest     # packs, the sandbox mode, and why any pack is withheld
 ```
 
-`buckle tools` and `buckle manifest` work before `buckle init`. Without a settings file they
-serve the current directory with the defaults and create the state directory.
-
-A withheld pack reads like this in the manifest:
-
-```json
-{
-  "id": "git",
-  "toolNames": ["git_status", "git_diff", "git_log", "git_blame", "git_branch"],
-  "unavailableReason": "Host Git can read repository data outside per-file approval checks; BUCKLE_ALLOW_HOST_GIT=true explicitly trusts repository access outside the shell sandbox"
-}
-```
+`buckle tools` and `buckle manifest` act on a [workspace](workspaces.md), so run them after
+`buckle init`, in its folder. In the manifest, a withheld pack's `unavailableReason` says why:
+the `git` pack's names the workspace setting `packs.hostGit`, off until you turn it on.
 
 ## Upgrade
 
@@ -93,9 +82,11 @@ npm i -g @5straps/buckle@latest
 buckle --version
 ```
 
-Then restart any running `buckle serve`, and any MCP client that started `buckle mcp`. A
-running process keeps the code, settings, and policy it started with. The upgrade leaves the
-state directory alone, so grants, the policy, and the audit log carry over.
+Then restart any running `buckle serve`, and any MCP client that started `buckle mcp`. Grants,
+policies, and the audit log carry over. The first command after an upgrade from 0.1 moves the
+node onto workspaces once, and an older Buckle then refuses to start;
+[Moving a node from 0.1](workspaces-02.md#moving-a-node-from-01) says what changes, and how to go
+back.
 
 ## Uninstall
 
@@ -115,17 +106,22 @@ relative path is refused. On Linux and macOS, Buckle creates it owner-only (mode
 its state files owner-only (mode 600), and refuses to start when other users can reach the
 directory, unless you pass `--skip-owner-only-check`. On Windows, Buckle leaves file permissions
 alone: Windows protects the default one under your profile, and one moved elsewhere is yours to
-protect. It refuses to start when the state directory sits inside the
-workspace root, where an agent writes anywhere. Buckle's file tools refuse to read or write
+protect. It refuses a workspace folder that holds the state directory, where an agent writes
+anywhere. Buckle's file tools refuse to read or write
 anything under `~/.5straps` or the state directory. Only a process sandbox hides both from shell
 commands: with `BUCKLE_SANDBOX=none`, a shell command can read and write them, and Buckle does
 not ask about them.
 
+Workspace `default`, a 0.1 node's folder, keeps its records here; any other keeps the rows from
+`dangerously-allow.json` down in its `workspaces/<id>/`.
+
 | Path | Holds |
 |---|---|
-| `buckle.env` | the node's settings and its two credentials, written by `buckle init` |
-| `policy.json` | the policy `buckle policy` stores, per workspace root |
-| `dangerously-allow.json` | the dangerously-allow switch, for each workspace where it is on |
+| `buckle.env` | the node's settings and its admin credential, written by `buckle init` |
+| `workspaces.json` | each workspace's id, name, folder, whether it is online, and its agent tokens' SHA-256 digests |
+| `workspaces/<id>/` | the workspace's `workspace.json`, its settings and policy, and its records |
+| `workspaces.v1.json` | the 0.1 registry, kept when the node moved onto workspaces |
+| `dangerously-allow.json` | the dangerously-allow switch, where it is on |
 | `grants.json` | session and always grants, and remembered denials |
 | `approvals.json`, `approval-calls/` | asks waiting for a person, recent decisions, unspent once approvals, and the whole call behind each ask |
 | `actions.jsonl` | the [audit log](audit-log.md) |
@@ -134,7 +130,6 @@ not ask about them.
 | `code-journal/` | stopped scripts' text and calls' results, kept ten minutes |
 | `isolated-shell/` | the private workspace copies shell commands run in |
 | `browser-sessions/`, `workbenches/`, `receive-git-hooks/` | browser session state, workbench files, and the guard hook local pushes run |
-| `workspaces.json`, `workspaces/<id>/` | workspaces registered with `buckle workspace add`, each with a state directory of its own |
 | `*.lock.sqlite` | locks that let several Buckle processes share these files |
 
 Next: [First run](first-run.md).
