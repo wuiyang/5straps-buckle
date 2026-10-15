@@ -28,10 +28,9 @@ checks the first four; `buckle manifest` says why a pack is withheld, and withou
 | `agent-browser`, a browser for agents | the `browser` pack |
 | `typescript-language-server`, `rust-analyzer`, `gopls`, `pyright-langserver`, or `pylsp` | language support in the `dev` pack, once host language servers are turned on |
 
-On Linux, install bubblewrap from your distribution, for example `sudo apt install bubblewrap`
-or `sudo dnf install bubblewrap`. On Windows, Buckle reads, never runs, npm's `.cmd` shim, and
-runs the `.exe` or Node.js script it names; for a refused shim, point
-`BUCKLE_AGENT_BROWSER_COMMAND` at the package's `.exe` or script.
+On Linux, install bubblewrap from your distribution, such as `sudo apt install bubblewrap`. On
+Windows, Buckle reads, never runs, npm's `.cmd` shim, and runs the `.exe` or Node.js script it
+names; for a refused shim, point `BUCKLE_AGENT_BROWSER_COMMAND` at the package's `.exe` or script.
 
 ## Platform status by feature
 
@@ -44,8 +43,8 @@ runs the `.exe` or Node.js script it names; for a refused shim, point
 | Shell isolation in private copies | yes | no | no |
 | `node-pty` binary | built from source at install | prebuilt | prebuilt |
 
-The shell rows follow from two checks: isolated shell execution needs bubblewrap, and so does a
-workspace mount, such as `buckle init`'s `/workspace`.
+The shell rows follow from two checks: isolated shell execution and a workspace mount, such as
+`buckle init`'s `/workspace`, both need bubblewrap.
 [Sandbox and tools](sandbox-and-tools.md) explains both.
 
 ## Install
@@ -54,10 +53,10 @@ workspace mount, such as `buckle init`'s `/workspace`.
 npm i -g @5straps/buckle
 ```
 
-This puts one command, `buckle`, on your `PATH`. npm installs its two companion packages,
-`@5straps/protocol` and `@5straps/runtime`, with it. `node-pty` is an optional dependency that
+This puts one command, `buckle`, on your `PATH`. npm installs its companion packages
+`@5straps/protocol` and `@5straps/runtime` with it. `node-pty` is an optional dependency that
 only the interactive terminal feature uses; on Linux it compiles during install, so an npm
-configured to skip install scripts leaves it unbuilt. Everything else still works:
+configured to skip install scripts leaves it unbuilt. The rest works:
 [Troubleshooting](troubleshooting.md#node-pty-was-not-built) has the fix.
 
 To build from a clone, follow [Building and testing](dev/building-and-testing.md).
@@ -72,8 +71,8 @@ buckle manifest     # packs, the sandbox mode, and why any pack is withheld
 ```
 
 `buckle tools` and `buckle manifest` act on a [workspace](workspaces.md), so run them after
-`buckle init`, in its folder. In the manifest, a withheld pack's `unavailableReason` says why:
-the `git` pack's names the workspace setting `packs.hostGit`, off until you turn it on.
+`buckle init`, in its folder. In the manifest, a withheld pack's `unavailableReason` says why;
+the `git` pack's names `packs.hostGit`, off until you turn it on.
 
 ## Upgrade
 
@@ -97,7 +96,7 @@ npm uninstall -g @5straps/buckle
 This removes the program, not its state. Buckle keeps everything under `~/.5straps`: the state
 directory `~/.5straps/buckle`, settings-file locks in `~/.5straps/locks`, and the device key of
 `buckle client` in `~/.5straps/client`. Deleting `~/.5straps/buckle` deletes the audit log, so
-copy `actions.jsonl` first to keep the record.
+copy `actions.jsonl` first.
 
 ## What the state directory holds
 
@@ -112,15 +111,16 @@ anything under `~/.5straps` or the state directory. Only a process sandbox hides
 commands: with `BUCKLE_SANDBOX=none`, a shell command can read and write them, and Buckle does
 not ask about them.
 
-Workspace `default`, a 0.1 node's folder, keeps its records here; any other keeps the rows from
-`dangerously-allow.json` down in its `workspaces/<id>/`.
+Workspace `default`, a 0.1 node's folder, keeps its records here. Every other workspace keeps
+the files from `dangerously-allow.json` down in its own `workspaces/<id>/`.
 
 | Path | Holds |
 |---|---|
 | `buckle.env` | the node's settings and its admin credential, written by `buckle init` |
 | `workspaces.json` | each workspace's id, name, folder, whether it is online, and its agent tokens' SHA-256 digests |
 | `workspaces/<id>/` | the workspace's `workspace.json`, its settings and policy, and its records |
-| `workspaces.v1.json` | the 0.1 registry, kept when the node moved onto workspaces |
+| `workspaces.v1.json` | the 0.1 registry, kept when the node moved |
+| `policy.json` | a stub an older Buckle cannot read; `policy.v1.json` keeps the 0.1 policy |
 | `dangerously-allow.json` | the dangerously-allow switch, where it is on |
 | `grants.json` | session and always grants, and remembered denials |
 | `approvals.json`, `approval-calls/` | asks waiting for a person, recent decisions, unspent once approvals, and the whole call behind each ask |
