@@ -79,6 +79,12 @@ interface InForce {
 /** Said where a change that rebuilds the tools waits for active work: no path, as an agent reads it (Q2). */
 const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds its tools; the change takes effect once its active work is resolved, so call again then'
 
+/** Said where a change read but would not apply: the call is refused, never answered under the old settings (fix brief 4, finding 1). No path. */
+const SETTINGS_RETRY = 'This workspace\'s settings changed and could not be taken up yet; retry the call, and if it keeps failing, the owner\'s log says why'
+
+/** Said where the owner's policy write meets work in progress, wherever it runs. */
+const POLICY_WAITS = 'Resolve active work and staged changes before changing workspace policy'
+
 /**
  * The workspace's policy as the runtime holds it: its own lists, in its workspace.json, which `buckle policy` and the
  * setup face write (D83 addendum (7)), and the policy in force, where the node's allow-type lists stand for a list it
@@ -121,8 +127,12 @@ export interface BuckleRuntime {
   /** Takes up a write to workspace.json now, as the next call would (Q2); `buckle serve` calls it when the settings change. */
   takeUpSettings(): Promise<void>
   workbenches: ReturnType<typeof createWorkbenchManager>
+  /** Work this process would disrupt: its calls running, the workbenches it holds still open, and shell work staged for review. */
   hasActiveWork(): Promise<boolean>
-  /** The same question for inspection, read without taking workbench ownership (review L4 of B15-B17). */
+  /**
+   * Work wherever it runs, read without taking workbench ownership (review L4 of B15-B17): an open workbench another
+   * process holds counts here too.
+   */
   inspectActiveWork(): boolean
   manifest(): HarnessManifest
   toolCatalog(): { tools: ToolCapability[]; unavailable: Array<{ name: string; reason: string }> }
@@ -353,21 +363,21 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       network: () => ({ rule: networkEgressRule(compiled), approved: compiled.network }),
       revision: () => policyRevision(storedPolicy(settingsFile.read())),
       async apply(policy, expectedRevision) {
-        if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
+        refuseWhileWorking()
         compilePolicy(policy)
         await writePolicy(current => ({ ...policy, mount: current.mount, updatedAt: new Date().toISOString() }), expectedRevision)
         await runtime.reload()
         return compiled.policy
       },
       async setMount(mount) {
-        if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
+        refuseWhileWorking()
         compilePolicy({ ...emptyWorkspacePolicy(), mount })
         await settingsFile.update(current => withMount(current, mount))
         await runtime.reload()
         return compiled.policy
       },
       async clear(expectedRevision) {
-        if (await runtime.hasActiveWork()) throw new PolicyConflictError('Resolve active work and staged changes before changing workspace policy')
+        refuseWhileWorking()
         await writePolicy(current => ({ ...emptyWorkspacePolicy(), mount: current.mount, updatedAt: new Date().toISOString() }), expectedRevision)
         await runtime.reload()
         return compiled.policy
@@ -420,7 +430,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         watcherPending = undefined
         // The runtime may have closed (its state folder gone) between the write and this timer, so the read is guarded.
         try {
-          if (!watcherClosed && settingsFile.version() !== appliedVersion && !runtime.inspectActiveWork()) void pickUp().catch((error: unknown) => logger.error('A settings change could not be taken up; the per-call check will retry it', { workspaceId, error }))
+          // A refusal (a change waiting for work, or one that will not apply) is the next call's to answer, and takeUp logs the latter.
+          if (!watcherClosed && settingsFile.version() !== appliedVersion && !runtime.inspectActiveWork()) void pickUp().catch((error: unknown) => { if (!(error instanceof WorkspaceError)) logger.error('A settings change could not be taken up; the per-call check will retry it', { workspaceId, error }) })
         } catch (error) {
           logger.warn('The workspace settings watcher could not read the change; the per-call check carries on', { workspaceId, error })
         }
@@ -435,7 +446,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   /**
    * Takes up a write to workspace.json at a call's start (Q2 of the workspace-model brief): the change applies from
    * this call on (apply), and a call already running keeps the rules and tools it started with. A file that will not
-   * read leaves the settings in force, said once in the owner's log.
+   * read leaves the settings in force, said once in the owner's log. One that reads but will not apply refuses the
+   * call until it does, so no call is answered under settings the owner has replaced (fix brief 4, finding 1).
    */
   function pickUp(): Promise<void> {
     if (settingsFile.version() === appliedVersion) return Promise.resolve()
@@ -454,10 +466,11 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     }
     try { await apply({ version, settings: next, rebuildPacks: false, waitForWork: true }) } catch (error) {
       if (error instanceof WorkspaceError) throw error
-      // Nothing of it was applied (finding 28 of the Phase 1 review): the settings in force stay, and the next call tries again.
-      if (failedVersion !== version) logger.error('Workspace settings changed but cannot be applied; the ones in force stay', { workspaceId, error })
+      // Nothing of it was applied (finding 28 of the Phase 1 review), and the next call tries again; until then a call
+      // is refused, never answered under the settings the change replaced.
+      if (failedVersion !== version) logger.error('Workspace settings changed but cannot be applied; calls are refused until they can be', { workspaceId, error })
       failedVersion = version
-      return
+      throw new WorkspaceError(SETTINGS_RETRY, 409)
     }
     logger.info('Workspace settings changed and took effect', { workspaceId, revision: applied.revision })
   }
@@ -483,8 +496,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     const reshaped = reshapeInputs(resolved) !== reshapeInputs(before)
     const rebuild = input.rebuildPacks || reshaped || swapInputs(resolved) !== swapInputs(before)
     const policyMoved = policyHash(nextCompiled) !== policyHash(compiled)
-    // Taking a new policy up stops the terminals of every open workbench, so that alone waits for none to be open.
-    if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && workbenches.inspectActive())) throw new WorkspaceError(RESHAPE_WAITS, 409)
+    // Taking a new policy up stops the terminals of every open workbench this process holds, so that alone waits for
+    // none of them to be open. A process holding no workbenches (another runs them) has none to wait for or stop.
+    if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && await workbenches.hasActiveWork())) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowed })
     const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools }) : null
     const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mount: resolved.mount }) === browserInputs({ config, compiled, mount: before.mount }) }) : null
@@ -573,6 +587,14 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       if (!(error instanceof PolicyError)) throw error
       throw new StoredPolicyError({ file: settingsFile.filePath, reason: error.message, stored: storedPolicy(settings) })
     }
+  }
+
+  /**
+   * The owner's policy write meets work in progress wherever it runs, read without taking the workbenches up: an open
+   * workbench another process holds still counts, a closed one does not (fix brief 3, H8; fix brief 4, finding 1).
+   */
+  function refuseWhileWorking(): void {
+    if (runtime.inspectActiveWork()) throw new PolicyConflictError(POLICY_WAITS)
   }
 
   /** The policy write path: through workspace.json, refused when the policy changed since `expectedRevision`. */

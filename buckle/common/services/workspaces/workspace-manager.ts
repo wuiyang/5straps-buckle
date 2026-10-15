@@ -13,7 +13,7 @@ import { logger } from '../../runtime/log.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
 import { createNodeRoots, type NodeRoots } from './node-roots.js'
 import { bearerDigest, digestMatches, mintToken, tokenDigest, tokenMatches } from '../access/tokens.js'
-import { storedGrantMatches, WorkbenchError, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
+import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
 import { createAuditHealth } from '../audit/audit-health.js'
 import { createExecutionBudget } from '../invocation/executions.js'
 import { unmetPackPrerequisite } from '../packs/index.js'
@@ -570,14 +570,12 @@ function holderOf(state: Registry, path: string, platform: NodeJS.Platform): Sto
 /**
  * Whether a workspace's runtime has work. Another process's calls are signalled by its active-work mark alone, read
  * before this (assertIdle); a workbench lock that process holds is not evidence of work (recheck of findings 5 and 9 of the Phase 1 review), since
- * `buckle serve` keeps it from its first look at the workbenches until it stops. So where the lock is held, the
- * workbench records are read from disk without it: an open workbench still counts, a closed one does not.
+ * `buckle serve` keeps it from its first look at the workbenches until it stops. So the workbench records are read
+ * from disk without the lock as well as this process's own work: an open workbench counts whoever holds it, a closed
+ * one does not.
  */
 async function holdsWork(runtime: BuckleRuntime): Promise<boolean> {
-  try { return await runtime.hasActiveWork() } catch (error) {
-    if (error instanceof WorkbenchError) return runtime.inspectActiveWork()
-    throw error
-  }
+  return await runtime.hasActiveWork() || runtime.inspectActiveWork()
 }
 
 /**

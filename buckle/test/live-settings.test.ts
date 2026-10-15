@@ -171,7 +171,7 @@ describe('what a change to workspace.json rebuilds', () => {
     expect(readFileSync(log, 'utf8')).toBe('built\nbuilt\nclosed\n')
   })
 
-  it('applies nothing of a version that will not apply, says so once, keeps the settings in force, and tries it again at the next call', async () => {
+  it('applies nothing of a version that will not apply, says so once, refuses each call meanwhile naming no path, and tries it again at the next call', async () => {
     const errors = vi.spyOn(logger, 'error')
     await owner.updateSettings(site, settings => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_list'] } } }))
     await read()
@@ -182,10 +182,12 @@ describe('what a change to workspace.json rebuilds', () => {
     const { runtime, config } = await serving.resolve(site)
     const list = () => runtime.invoke({ request: { requestId: `list-${Math.random()}`, tool: 'fs_list', args: { path: '.' }, approvalTokens: [] }, sessionId: 'live' })
 
-    expect(await list()).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
-    expect(await list()).toMatchObject({ outcome: 'error' })
+    // Never answered under the settings the change replaced (fix brief 4, finding 1): refused until it applies.
+    const retry = { status: 409, message: 'This workspace\'s settings changed and could not be taken up yet; retry the call, and if it keeps failing, the owner\'s log says why' }
+    await expect(list()).rejects.toMatchObject(retry)
+    await expect(list()).rejects.toMatchObject(retry)
     expect(config).toMatchObject({ approvalTimeoutMs: 15_000, enabledPacks: ['fs'] })
-    expect(errors.mock.calls.filter(([message]) => message === 'Workspace settings changed but cannot be applied; the ones in force stay')).toHaveLength(1)
+    expect(errors.mock.calls.filter(([message]) => message === 'Workspace settings changed but cannot be applied; calls are refused until they can be')).toHaveLength(1)
 
     // The same version, tried again once what it needs is there.
     config.environmentValidator = process.execPath

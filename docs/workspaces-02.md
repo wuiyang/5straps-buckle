@@ -38,7 +38,7 @@ starting `BUCKLE_`, and the names Buckle sets for every command (`PATH`, `HOME`,
 holds (the admin token, `BUCKLE_AUTH_TOKEN`, the forge token, the Brave search key, the report
 token, the Rings pairing key, or the approval webhook's URL) or a workspace's agent token as a
 word of it. Keep real secrets in your own store: `buckle workspace show` prints the variables,
-and every command in the workspace can read them. A call's own `env` is set over them.
+and every command can read them. A call's own `env` is set over them.
 
 The policy lists change with `buckle policy`, which acts on one workspace as every command does
 ([Policy](policy.md)). The browser settings (`browser.cdp`, `browser.profile`, `browser.args`,
@@ -48,15 +48,15 @@ on the node's `BUCKLE_BROWSER_*` settings until a later release reads each works
 ## When a change applies
 
 A running `buckle serve` or `buckle mcp` watches a workspace's state folder and takes a change up
-at once while the workspace is idle, with a check at the start of each call as the fallback. A
-change to the policy lists, the variables, or the approval wait applies from the next call, even
-while another runs, which keeps its own rules; a list change alone waits while a
-workbench is open, as taking it up stops its terminals. A change to the packs or to where the
-folder shows waits until the workspace has no active work, such as a running call or a shell copy
-awaiting review, and calls are refused with a 409 until then. A file that will not read leaves
-the settings in force, and the owner's log says so once. `buckle serve` watches the registry
-folder the same way, with its poll as the fallback. A change to `buckle.env` applies when the
-node restarts.
+while the workspace is idle, with a check at each call's start as the fallback. A change to the
+policy lists, the variables, or the approval wait applies from the next call, even while another
+runs, which keeps its own rules; a list change alone waits while a workbench that process runs is
+open, as taking it up stops its terminals. A change to the packs or to where the folder shows
+waits until the workspace has no active work, such as a running call or a shell copy awaiting
+review. A waiting change, or one that will not apply, refuses calls with a 409 until it applies.
+A file that will not read leaves the settings in force, and the owner's log says so once.
+`buckle serve` watches the registry folder too, its poll the fallback. A change to `buckle.env`
+applies when the node restarts.
 
 ## Moving a node from 0.1
 

@@ -129,7 +129,12 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
     inspect(): WorkbenchRecord[] { return storage.list().map(publicWorkbench) },
     /** Whether inspection shows any workbench still open, read as inspect() reads. */
     inspectActive(): boolean { return storage.list().some(record => !CLOSED.has(record.status)) },
-    async hasActiveWork() { await own(); return [...records.values()].some(record => !CLOSED.has(record.status)) },
+    /**
+     * Whether a workbench this process holds is still open. A process that has not taken the workbenches up (another
+     * holds them, or none was used here) holds none, so it has none to count, and it takes nothing up to answer: the
+     * lock stays with whoever runs the terminals (fix brief 4, finding 1).
+     */
+    async hasActiveWork() { return [...records.values()].some(record => !CLOSED.has(record.status)) },
     async provision(input: WorkbenchProvision) {
       const parsed = WorkbenchProvisionSchema.parse(input)
       await own(true)
@@ -264,8 +269,12 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
         return { workbench: publicWorkbench(record) }
       })
     },
+    /**
+     * Stops the terminals of the workbenches this process holds and interrupts the open ones. Only the process holding
+     * them runs terminals, so one that holds none has nothing to stop and takes nothing up; the holder does this when it
+     * takes the change up itself, and a terminal opened later checks the policy anyway (fix brief 4, finding 1).
+     */
     async policyChanged() {
-      await own()
       for (const record of records.values()) {
         await terminals.stopAll(record)
         if (!CLOSED.has(record.status) && record.status !== 'apply_uncertain') { record.status = 'interrupted'; record.reviewId = null; record.revision++; save(record) }
