@@ -51,6 +51,11 @@ denial, and `workspace.json` written after the move. Records left in `workspaces
 to 0.1, which would start with no plugins, no history to undo from, and no pending approvals or
 shell copies awaiting review.
 
+Moving again later starts from what 0.1 holds then. The copies are made again from those files,
+the move says so, and records the first move left in `workspaces/<id>/` are kept beside the new
+ones with `.earlier-move` ending their names, never read. Grants and the switch from after the
+first move do not come back.
+
 `workspaces.v1.json` holds the registered workspaces' agent tokens and admin credentials in clear
 text. Once the node works, delete every `*.v1.json` file in the state directory and in each
 `workspaces/<0.1 id>/` folder; the way back goes with them.
