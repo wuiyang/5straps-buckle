@@ -46,6 +46,9 @@ workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its b
   `BUCKLE_NETWORK_ALLOW` turns the list on for every workspace that has none of its own: an
   unlisted public host is refused, where 0.1 reached it. A wildcard entry no longer lets
   `web_fetch` reach a private address.
+- Browser navigation and forge pushes judge a host by its name and never resolve it: a host a
+  wildcard entry covers is reached wherever it resolves, a private address included, where
+  `web_fetch` refuses it.
 - With a list, no grant decides: an unlisted host is refused, never asked, so the browser's
   `--allowed-domains` is the list's entries alone; grants join it once a mode that asks about
   an unlisted host exists.
