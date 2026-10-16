@@ -50,10 +50,10 @@ Some settings belong to the node alone, the same for every workspace, and no wor
 them: the host and port, the admin credential, the state directory, the server's id and name, the
 sandbox mode, logging, request and timeout caps, history and isolation budgets, the experimental
 admin face, where programs such as `agent-browser` are, the browser settings for now, the pairing
-with [Rings](rings.md), the 5straps control plane for agents, and `BUCKLE_ALLOWED_HOSTS`. Each workspace also takes the node's
-scratch roots, `BUCKLE_MOUNTS`, skill folders, and `BUCKLE_STRICT_WRITES` until Phase 2 of the
-workspace model gives each workspace a mount table of its own. `BUCKLE_SHELL_NETWORK` and
-`BUCKLE_SHELL_ISOLATION` stay the node's until then too.
+with [Rings](rings.md) (the 5straps control plane for agents), and `BUCKLE_ALLOWED_HOSTS`. Each
+workspace also takes the node's scratch roots, `BUCKLE_MOUNTS`, skill folders, and
+`BUCKLE_STRICT_WRITES` until a later release gives each workspace a mount table of its own.
+`BUCKLE_SHELL_NETWORK` and `BUCKLE_SHELL_ISOLATION` stay the node's until then too.
 
 `buckle settings show` lists the node's settings, then the workspace defaults, each with its
 value and where it comes from. `buckle settings set <key> <value>` and `unset <key>` change one,

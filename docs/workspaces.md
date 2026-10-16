@@ -34,8 +34,8 @@ new workspace's settings; Enter leaves the setting to the node's default. [First
 `BUCKLE_ADMIN_TOKEN` in `buckle.env`, which `buckle init` writes.
 
 ```bash
-buckle workspace init [--dir <path>] [--name <name>]
-buckle workspace add <dir> [--name <name>] [--fresh]
+buckle workspace init [--dir <path>] [--name <name>] [--yes]
+buckle workspace add <dir> [--name <name>] [--yes] [--fresh]
 buckle workspace list [--json]
 buckle workspace show [--json]
 buckle workspace enable <name>

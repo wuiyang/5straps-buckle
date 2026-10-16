@@ -25,6 +25,8 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | `buckle.env` | the node's settings, every workspace's defaults among them, and its admin credential |
 | `workspaces.json` | each workspace's id, name, folder, whether it is online, and its agent tokens' SHA-256 digests |
 | `workspaces/<id>/` | the workspace's `workspace.json`, its settings and policy, and its records |
+| `workspaces/<id>/removed.json` | what `buckle workspace remove` leaves beside a removed workspace's kept records: its folder, name, and removal time, read by `buckle workspace prune` and cleared when the folder is added again |
+| `workspaces/<id>/active-work/` | one empty file for each process with calls running, so `disable`, `remove`, and `prune` in another process can see them |
 | `workspaces.v1.json`, `policy.json` | on a node moved from 0.1 only: the 0.1 registry, and a stub an older Buckle cannot read, where `policy.v1.json` keeps the 0.1 policy |
 | `grants.v1.json`, `dangerously-allow.v1.json` | on a moved node only: the 0.1 grants and switch, kept where 0.1 read each, in the state directory and in the old `workspaces/<0.1 id>/` of each workspace registered then |
 | `client-keys.json`, `client-keys.v1.json` | the device keys enrolled with `buckle keys enroll`, each with the workspace it signs for; on a node moved from 0.1 where a key named a workspace, the copy keeps the keys as 0.1 named them |

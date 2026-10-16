@@ -54,6 +54,6 @@ runs, which keeps its own rules; a list change alone waits while a workbench tha
 open, as taking it up stops its terminals. A change to the packs or to where the folder shows
 waits until the workspace has no active work, such as a running call or a shell copy awaiting
 review. A waiting change, or one that will not apply, refuses calls with a 409 until it applies.
-A file that will not read leaves the settings in force, and the owner's log says so once.
+A file that will not read leaves the settings in force, and the owner's log says so.
 `buckle serve` watches the registry folder too, its poll the fallback. A change to `buckle.env`
 applies when the node restarts.

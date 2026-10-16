@@ -40,7 +40,7 @@ dangerously-allow switch (`policy_dangerously_allowed`), and each change of it
 | Field | Holds |
 |---|---|
 | `at`, `durationMs` | when, and how long |
-| `requestId`, `sessionId`, `workspaceId` | which call, session, and workspace |
+| `requestId`, `sessionId`, `workspaceId`, `workspaceName` | which call, session, and workspace, the workspace by its id and by the name it had when the entry was written |
 | `tool`, `outcome`, `event` | the tool, the outcome, and `attempt` or `result` |
 | `effects` | the kinds of effect the call declared: `read_path`, `write_path`, `exec`, `network`, `process_probe` |
 | `asked`, `approvedBy` | the rules that stopped the call, and the rules whose grants let it through |

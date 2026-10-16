@@ -44,8 +44,7 @@ paths, and [part two](known-limits-02.md) the programs Buckle starts itself.
 
 ## Workspaces
 
-The first release of [workspaces](workspaces.md) leaves these open for Phase 2 of the workspace
-model or later.
+The first release of [workspaces](workspaces.md) leaves these open for a later release.
 
 - `approvals.json` is keyed by the workspace's folder path, inside each workspace's own state
   directory. A workspace's folder is fixed once registered, and its id comes from the folder, so a
@@ -68,14 +67,16 @@ model or later.
   address `/workspaces/<name>/setup/`.
 - [Rings](rings.md), the separate 5straps control plane for agents, keeps its own copy of a
   node's workspace list; a workspace renamed, added, or removed here is not pushed to it, so Rings
-  re-reads the list to see the change.
+  re-reads the list to see the change. Upgrading from 0.1 gives every workspace a new UUID id, and
+  the node's folder loses the id `default`, so a Rings holding the old ids has to re-read the list;
+  a registered workspace's old id stays as its name.
 - The browser settings in `workspace.json` are stored and checked but not read. The browser runs
-  on the node's `BUCKLE_BROWSER_*` settings, the same for every workspace, until Phase 2 reads
-  each workspace's own and `buckle workspace set` accepts them.
+  on the node's `BUCKLE_BROWSER_*` settings, the same for every workspace, until a later release
+  reads each workspace's own and `buckle workspace set` accepts them.
 - The setup face's `/workspaces/<name>/setup/status` reports `browser.setting` as the node's `BUCKLE_BROWSER_*`
   setting that chose the mode. [Rings](rings.md), a separate 5straps control plane for agents,
-  reads that field, so the name stays until Phase 2, and renaming it then means Rings has to
-  follow.
+  reads that field, so the name stays until a later release, and renaming it then means Rings has
+  to follow.
 - [Node defaults](workspaces-03.md) cover the settings a 0.1 node kept in `buckle.env`. The node
   names no command variables and no tool lists there, as `buckle.env` takes `BUCKLE_` settings
   alone: a workspace's variables and tool lists are its own, and each resolves over an empty node
@@ -84,5 +85,5 @@ model or later.
   allow list, approved list, or interpreter list over the node's. To free one workspace from a
   node list, unset the node's and give each other workspace its own.
 - A command in the sandbox can read `/proc/self/mountinfo`, which lists the host folder behind
-  each bind. Phase 2, which builds the sandbox from each workspace's mount table, covers this in
-  these limits.
+  each bind. A later release, which builds the sandbox from each workspace's mount table, takes
+  this off these limits.
