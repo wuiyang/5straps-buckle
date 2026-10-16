@@ -13,6 +13,11 @@ export interface SettingKey {
   key: string
   /** What `buckle workspace show` says it takes. */
   takes: string
+  /**
+   * False when the value is kept out of the node's audit log, as a variable's is (a DevTools URL can carry a token, an
+   * argument a proxy password, a profile path the owner's folders): the log then records the key alone.
+   */
+  logsValue?: false
   set(settings: WorkspaceSettings, raw: string): WorkspaceSettings
   unset(settings: WorkspaceSettings): WorkspaceSettings
 }
@@ -64,9 +69,10 @@ function withoutBrowser(settings: WorkspaceSettings, name: BrowserKey): Workspac
  * with the rest before anything is written (browserSettingsRefusal), naming the key and never the value, and a profile
  * folder or an attached Chrome another workspace names as its own is refused, naming that workspace.
  */
-const browser = (name: BrowserKey, takes: string, read: (raw: string) => WorkspaceSettings['browser'][BrowserKey]): SettingKey => ({
+const browser = (name: BrowserKey, takes: string, read: (raw: string) => WorkspaceSettings['browser'][BrowserKey], logsValue?: false): SettingKey => ({
   key: `browser.${name}`,
   takes,
+  ...(logsValue === false ? { logsValue } : {}),
   set: (settings, raw) => ({ ...settings, browser: { ...settings.browser, [name]: read(raw) } }),
   unset: settings => withoutBrowser(settings, name),
 })
@@ -107,9 +113,9 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   shell('network', 'whether shell commands may reach the network while no approved URL list is set'),
   shell('isolation', 'whether each shell command runs on a private copy of the folder, published once it ends'),
   browser('idleTimeoutMs', `milliseconds an idle browser lives, ${BROWSER_IDLE_BOUNDS.min} to ${BROWSER_IDLE_BOUNDS.max} (Buckle's ${BUILT_IN_SETTINGS.browser.idleTimeoutMs})`, idleTimeout),
-  browser('cdp', 'the DevTools port or URL of the owner\'s own Chrome to attach to (the node\'s BUCKLE_BROWSER_CDP, else none)', raw => raw.trim()),
-  browser('profile', 'an absolute path to a profile folder kept across launches (the node\'s BUCKLE_BROWSER_PROFILE, else a fresh browser)', raw => (isAbsolute(raw.trim()) ? typedPath(raw.trim()) : raw.trim())),
-  browser('args', 'Chromium arguments for a browser Buckle launches (the node\'s BUCKLE_BROWSER_ARGS, else none)', raw => raw.trim()),
+  browser('cdp', 'the DevTools port or URL of the owner\'s own Chrome to attach to (the node\'s BUCKLE_BROWSER_CDP, else none)', raw => raw.trim(), false),
+  browser('profile', 'an absolute path to a profile folder kept across launches (the node\'s BUCKLE_BROWSER_PROFILE, else a fresh browser)', raw => (isAbsolute(raw.trim()) ? typedPath(raw.trim()) : raw.trim()), false),
+  browser('args', 'Chromium arguments for a browser Buckle launches (the node\'s BUCKLE_BROWSER_ARGS, else none)', raw => raw.trim(), false),
   browser('headed', 'on or off: a visible window (the node\'s BUCKLE_BROWSER_HEADED, else off)', raw => onOff('browser.headed', raw)),
   {
     key: 'mount',

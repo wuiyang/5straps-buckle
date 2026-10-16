@@ -267,7 +267,10 @@ async function prune(context: Context): Promise<CliResult> {
   return { exitCode: 0, detail: `prune ${removed.length}` }
 }
 
-/** One setting, validated whole with the rest before it is written (openSettingsFile). A variable's value is never echoed or audited. */
+/**
+ * One setting, validated whole with the rest before it is written (openSettingsFile). A variable's value is never
+ * echoed or audited, and neither is a browser setting's that can hold a credential (`logsValue: false`).
+ */
 async function set(context: Context): Promise<CliResult> {
   const [key, value, ...extra] = context.rest
   if (!key || value === undefined || extra.length > 0) return fail('Usage: buckle workspace set <key> <value>; quote a value of several words as one')
@@ -291,7 +294,7 @@ async function set(context: Context): Promise<CliResult> {
   if (typeof setting === 'string') return fail(setting)
   await context.workspaces.updateSettings(workspace.id, settings => setting.set(settings, value))
   process.stdout.write(`Workspace ${workspace.name}: ${key} is set.\n`)
-  return { exitCode: 0, detail: `set ${workspace.name} ${key} ${value}` }
+  return { exitCode: 0, detail: setting.logsValue === false ? `set ${workspace.name} ${key}` : `set ${workspace.name} ${key} ${value}` }
 }
 
 async function unset(context: Context): Promise<CliResult> {

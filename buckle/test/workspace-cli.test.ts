@@ -892,6 +892,23 @@ describe('buckle workspace set and unset', () => {
     expect(settings(alpha).env).toEqual({})
   })
 
+  // A DevTools URL can carry a token and Chromium arguments a proxy password: the node's audit log keeps the key alone, as for a variable.
+  it('audits a browser setting by its key, never its value', async () => {
+    const cdp = 'wss://chrome.example.com/devtools/browser/abc?token=workspace-cli-devtools-token'
+    expect((await set('browser.cdp', cdp)).exitCode).toBe(0)
+    expect((await buckle(['unset', 'browser.cdp'], { cwd: alpha })).exitCode).toBe(0)
+    const args = '--proxy-server=http://user:workspace-cli-proxy-pass@proxy.example:8080'
+    expect((await set('browser.args', args)).exitCode).toBe(0)
+    const profile = join(base, 'workspace-cli-profile-folder')
+    expect((await set('browser.profile', profile)).exitCode).toBe(0)
+    expect(settings(alpha).browser).toMatchObject({ args, profile })
+    for (const secret of ['workspace-cli-devtools-token', 'workspace-cli-proxy-pass', 'workspace-cli-profile-folder']) expect(audit()).not.toContain(secret)
+    for (const entry of ['set alpha browser.cdp', 'unset alpha browser.cdp', 'set alpha browser.args', 'set alpha browser.profile']) expect(audit()).toContain(entry)
+    // A setting that holds no credential still records what it was set to.
+    expect((await set('browser.headed', 'on')).exitCode).toBe(0)
+    expect(audit()).toContain('set alpha browser.headed on')
+  })
+
   it.each(['BUCKLE_ADMIN_TOKEN', 'PATH', 'HOME', 'lower case'])('refuses the variable %s, which Buckle itself owns or is no variable name', async (name) => {
     const result = await set(`env.${name}`, 'value')
     expect(result.exitCode).toBe(1)
