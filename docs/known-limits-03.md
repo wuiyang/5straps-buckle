@@ -54,7 +54,8 @@ model or later.
 - `disable` and `remove` check for running calls, then change the registry: a call that begins in
   another process between the two runs on, and `remove --purge` can delete its records under it.
   A call that begins in the process making the change keeps its runtime open until it ends, and
-  `remove --purge` then keeps the records for `buckle workspace prune`.
+  `remove --purge` then keeps the records for `buckle workspace prune`, which refuses to delete
+  them while a call still runs in that workspace.
 - The settings and registry watchers are a latency improvement, not a guarantee: where `fs.watch`
   cannot start (an unsupported platform, or too many open files), Buckle logs it once and falls
   back to the per-call check and the `buckle serve` poll, so a change is taken up at the next call

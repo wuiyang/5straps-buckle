@@ -75,7 +75,7 @@ export async function workspaceRegistryCommand(input: { config: NodeConfig; work
       case 'disable': return await online(context, false)
       case 'rename': return await rename(context)
       case 'remove': return await remove(context)
-      case 'prune': return prune(context)
+      case 'prune': return await prune(context)
       case 'set': return await set(context)
       case 'unset': return await unset(context)
       case 'token': return await token(context)
@@ -236,9 +236,9 @@ async function remove(context: Context): Promise<CliResult> {
 }
 
 /** `buckle workspace prune [--yes]`: the removed workspaces whose records are still kept, and, with --yes, their deletion (addendum to D85, Q15). */
-function prune(context: Context): CliResult {
+async function prune(context: Context): Promise<CliResult> {
   const { values } = parseArgs({ args: context.rest, options: { yes: { type: 'boolean' } }, allowPositionals: false })
-  const removed = context.workspaces.prune({ yes: values.yes === true })
+  const removed = await context.workspaces.prune({ yes: values.yes === true })
   if (removed.length === 0) {
     process.stdout.write('No removed workspace has records left to prune.\n')
     return { exitCode: 0 }

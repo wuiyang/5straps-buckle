@@ -338,13 +338,21 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
 
     /**
      * The removed workspaces whose records still sit in the state directory (addendum to D85, Q15): each folder that
-     * left a removal marker and holds no current registration. With `yes`, deletes those records. Never touches a
-     * folder, nor the records of a registered workspace.
+     * left a removal marker and holds no current registration. With `yes`, deletes those records, unless a call is
+     * running in one of them (another process's mark, or a runtime of this one), which refuses with a 409 naming it and
+     * deletes nothing. Never touches a folder, nor the records of a registered workspace.
      */
-    prune(options: { yes?: boolean } = {}): RemovedWorkspace[] {
-      const removed = removedWorkspaces(store.read())
-      if (options.yes) for (const entry of removed) rmSync(join(node.stateDirectory, 'workspaces', entry.id), { recursive: true, force: true })
-      return removed
+    async prune(options: { yes?: boolean } = {}): Promise<RemovedWorkspace[]> {
+      if (!options.yes) return removedWorkspaces(store.read())
+      // Under the registry's lock, so a folder added again meanwhile takes its records up first and is not deleted from under it.
+      return store.update(async (state) => {
+        const removed = removedWorkspaces(state)
+        const running: string[] = []
+        for (const entry of removed) if (await callRunningIn(entry.id)) running.push(entry.name)
+        if (running.length > 0) throw new WorkspaceError(`${running.length === 1 ? `Workspace ${running[0]} has` : `Workspaces ${running.join(', ')} have`} a call running, so no records were deleted; prune again once the call ends`, 409)
+        for (const entry of removed) rmSync(join(node.stateDirectory, 'workspaces', entry.id), { recursive: true, force: true })
+        return removed
+      })
     },
 
     /** The workspace's settings as stored; the defaults where it has none yet. */
@@ -497,6 +505,13 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       throw new WorkspaceError(input.refusal, 409)
     }
     return { openedForCheck }
+  }
+
+  /** Whether a call is running in a removed workspace: another process marks one, or this process's runtime for it has work. */
+  async function callRunningIn(id: string): Promise<boolean> {
+    if (activeElsewhere({ directory: activeWorkDirectory(node.stateDirectory, id) })) return true
+    const opened = await openedRuntime(id)
+    return opened !== null && await earlierHasWork(opened.runtime)
   }
 
   /** Every removed workspace whose records are kept and that no current registration holds, from its marker. */

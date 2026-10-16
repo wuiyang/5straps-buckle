@@ -451,6 +451,30 @@ describe('buckle workspace enable, disable and remove', () => {
     expect((await buckle(['prune'])).out).toContain('No removed workspace')
   })
 
+  // Fix brief 4, findings 21 and 29: prune --yes deleted a removed workspace's records under a call another process marked
+  // running in it, the case a purge that met a call tells the owner to prune for once the call ends.
+  it('refuses prune --yes, naming the workspace, while another process marks a call running in it, and deletes once the mark stops being refreshed', async () => {
+    const id = workspaceIdOf(alpha)
+    expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
+    const marks = activeWorkDirectory(state, id)
+    mkdirSync(marks, { recursive: true })
+    const mark = join(marks, String(process.pid + 1))
+    writeFileSync(mark, '')
+
+    const refused = await buckle(['prune', '--yes'])
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('Workspace alpha has a call running, so no records were deleted; prune again once the call ends')
+    expect(refused.err).not.toContain(base)
+    expect(existsSync(join(state, 'workspaces', id, 'removed.json'))).toBe(true)
+    // Listing is no deletion, and goes on.
+    expect((await buckle(['prune'])).out).toContain('alpha')
+
+    const stale = new Date(Date.now() - ACTIVE_WORK_FRESH_MS - 1_000)
+    utimesSync(mark, stale, stale)
+    expect((await buckle(['prune', '--yes'])).out).toContain('Deleted the records of alpha')
+    expect(existsSync(join(state, 'workspaces', id))).toBe(false)
+  })
+
   // Findings 6 and 16 of the Phase 1 review, and D85, Q15: the node's own folder is a workspace like any other, removed like any other.
   it('removes the workspace made of the node\'s own folder like any other', async () => {
     const legacy = node({ BUCKLE_WORKSPACE_ROOT: beta, BUCKLE_AUTH_TOKEN: LEGACY_AGENT })
@@ -672,7 +696,7 @@ describe('the runtime of a workspace a call began in after the check allowed the
     expect(registry().workspaces).toEqual([])
     expect(closed).not.toHaveBeenCalled()
     expect(existsSync(settingsPath(state, workspaceIdOf(alpha)))).toBe(true)
-    expect(manager.prune().map(removed => removed.id)).toEqual([workspaceIdOf(alpha)])
+    expect((await manager.prune()).map(removed => removed.id)).toEqual([workspaceIdOf(alpha)])
   })
 })
 
