@@ -9,6 +9,8 @@ import { settingsPath } from '../common/services/workspaces/workspace-settings.j
 import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { fixedInteraction, headlessGrace } from './support/interaction.js'
+import type { WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 
 // Phase 2 item 6 of the workspace-model brief (Q10, D84 (2)): the browser's idle timeout and the owner's modes (an
 // attached Chrome, a profile folder, arguments, a window) are each workspace's; a profile folder or an attached Chrome
@@ -23,7 +25,7 @@ function scratch(): string {
 }
 
 /** Two workspaces, alpha registered before beta, on a node with a fake agent-browser that records its arguments. */
-async function node(environment: Record<string, string> = {}) {
+async function node(environment: Record<string, string> = {}, options: { interaction?: boolean } = {}) {
   const root = scratch()
   for (const folder of ['alpha', 'beta', 'profile', 'other-profile']) mkdirSync(join(root, folder))
   const log = join(root, 'calls.jsonl')
@@ -31,7 +33,7 @@ async function node(environment: Record<string, string> = {}) {
   writeFileSync(binary, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nprocess.stdout.write('{"success":true}')\n`)
   chmodSync(binary, 0o755)
   const config = loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ADMIN_TOKEN: 'browser-workspaces-admin-credential', BUCKLE_PACKS: 'browser', BUCKLE_AGENT_BROWSER_COMMAND: binary, ...environment })
-  const manager = await workspacesOf(config)
+  const manager = await workspacesOf(config, options.interaction ? { interaction: fixedInteraction(headlessGrace) } : {})
   for (const name of ['alpha', 'beta']) await registerWorkspace(manager, { id: name, dir: join(root, name) })
   const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
   return { root, config, manager, calls }
@@ -224,6 +226,48 @@ describe('the holder of the node\'s browser', { timeout: 20_000 }, () => {
     expect((await set(config, 'beta', 'packs.enabled', 'fs,browser')).exitCode).toBe(0)
     expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'error', error: { code: 'TOOL_NOT_FOUND' } })
     expect(await open(manager, 'beta')).toMatchObject({ outcome: 'ok' })
+    await manager.close()
+  })
+})
+
+// Finding 25 of the fourth recheck: a workspace whose tool policy turns browser_command off can never use the folder or the
+// Chrome, and still held it, so every other workspace on the node's setting was refused, naming it.
+describe('the holder of the node\'s browser and the tool policy', { timeout: 20_000 }, () => {
+  const withTools = (tools: { allow?: string[]; deny: string[] }) => (settings: WorkspaceSettings): WorkspaceSettings => ({ ...settings, policy: { ...settings.policy, tools } })
+
+  it.each([
+    ['profile', (root: string) => ({ BUCKLE_BROWSER_PROFILE: join(root, 'shared-profile') })],
+    ['attached', () => ({ BUCKLE_BROWSER_CDP: '9222' })],
+  ])('is not a workspace whose tool policy denies browser_command, or allows other tools alone, on the %s browser: the next one takes it', async (_, setting) => {
+    for (const tools of [{ deny: ['browser_command'] }, { allow: ['fs_read'], deny: [] }]) {
+      const root = scratch()
+      mkdirSync(join(root, 'shared-profile'))
+      const { manager, calls } = await node(setting(root))
+      await manager.updateSettings(idOf(manager, 'alpha'), withTools(tools))
+      expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
+      expect(await open(manager, 'beta')).toMatchObject({ outcome: 'ok' })
+      expect(calls()).toHaveLength(1)
+      expect(manager.browserHeldBy(idOf(manager, 'beta'))).toBeNull()
+      expect((await browserStatus(manager, 'beta')).withheld).toBeNull()
+      await manager.close()
+    }
+  })
+
+  it('is read from the policy buckle policy deny-tool wrote, and follows it when the tool is allowed again', async () => {
+    const root = scratch()
+    mkdirSync(join(root, 'shared-profile'))
+    const { config, manager } = await node({ BUCKLE_BROWSER_PROFILE: join(root, 'shared-profile') })
+    let err = ''
+    vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { err += String(chunk); return true })
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const denied = await runCli({ argv: ['policy', 'deny-tool', 'browser_command', '--workspace', 'alpha'], config, confirm: null, cwd: '/' })
+    vi.restoreAllMocks()
+    expect({ exitCode: denied.exitCode, err }).toEqual({ exitCode: 0, err: '' })
+    expect(manager.browserHeldBy(idOf(manager, 'beta'))).toBeNull()
+    expect(await open(manager, 'beta')).toMatchObject({ outcome: 'ok' })
+    // Allowed again, alpha is first in the registry and holds it once more.
+    await manager.updateSettings(idOf(manager, 'alpha'), withTools({ deny: [] }))
+    expect(manager.browserHeldBy(idOf(manager, 'beta'))).toBe('alpha')
     await manager.close()
   })
 })

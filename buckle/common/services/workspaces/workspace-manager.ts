@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'pathe'
 import { z } from 'zod'
-import { WorkspacePolicySchema } from '@5straps/protocol'
+import { isWorkspaceToolAllowed, WorkspacePolicySchema } from '@5straps/protocol'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
@@ -405,8 +405,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     /**
      * The name of the workspace that holds `id`'s profile folder or attached Chrome, where that is another one (Q10:
      * one workspace at a time), else null: a workspace naming it as its own setting first, then one taking the node's,
-     * each in the registry's order, among the online workspaces whose packs offer the browser (one that leaves it out
-     * uses no folder or Chrome, so it holds none). Read at each browser call, so a change shows at once.
+     * each in the registry's order, among the online workspaces whose packs and tool policy offer the browser (one that
+     * leaves it out uses no folder or Chrome, so it holds none). Read at each browser call, so a change shows at once.
      */
     browserHeldBy(id: string): string | null {
       const online = store.read().workspaces.filter(workspace => workspace.online && offersBrowser(readable(workspace.id)))
@@ -617,10 +617,13 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     }
   }
 
-  /** Whether the packs in force (the workspace's own, else the node's) offer the browser pack. */
+  /**
+   * Whether the packs and the tool policy in force (the workspace's own, else the node's) both offer `browser_command`: a
+   * workspace whose policy turns the tool off can never use the profile folder or the Chrome, so it holds neither.
+   */
   function offersBrowser(settings: WorkspaceSettings): boolean {
-    const { enabled } = resolveSettings(settings, node.workspaceDefaults).packs
-    return enabled === null || enabled.includes('browser')
+    const { packs: { enabled }, policy } = resolveSettings(settings, node.workspaceDefaults)
+    return (enabled === null || enabled.includes('browser')) && isWorkspaceToolAllowed(policy, 'browser_command')
   }
 
   /**
