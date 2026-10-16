@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
@@ -96,9 +96,9 @@ export function createGitPack(options: GitPackOptions): Pack {
     const config = [...isolation, ...filterProgramOverrides(keys)]
     const args = typeof input.args === 'function' ? input.args(cwd) : input.args
     const readOnly = input.refreshesIndex === true && options.paths.mountOf(cwd)?.access === 'ro'
-    const index = readOnly ? privateIndex({ gitDirectory: found.stdout.split('\n')[1]!, stateDirectory: options.stateDirectory, shown: options.paths.display(cwd) }) : null
+    const index = readOnly ? privateIndex({ found: found.stdout.split('\n'), stateDirectory: options.stateDirectory, shown: options.paths.display(cwd) }) : null
     try {
-      const result = await spawnHere(args, index ? [...config, ...PRIVATE_INDEX_CONFIG] : config, index ? { GIT_INDEX_FILE: index.path } : undefined)
+      const result = await spawnHere(args, index ? [...config, ...PRIVATE_INDEX_CONFIG] : config, index?.environment)
       if (result.exitCode !== 0) {
         throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
       }
@@ -196,18 +196,36 @@ const PRIVATE_INDEX_CONFIG: GitConfig[] = [{ key: 'core.splitIndex', value: 'fal
  * of the one in a mount the owner shares read-only (Q6): git writes `.git/index` and takes `.git/index.lock` when it
  * refreshes, and the read-only bind holds the shell alone. A repository with no index yet has none to copy, which
  * git reads as the empty index it is. Refused, plainly, where the copy cannot be made.
+ *
+ * A split index (core.splitIndex) names a `sharedindex.<sha>` file that git reads beside the git directory, not beside
+ * the index it is handed, and sets the time of on every read (fix brief 6, item 6). There the copy is a private git
+ * directory instead: HEAD, the index, and each shared index copied, and a `commondir` naming the repository's common
+ * directory, whose refs, objects, and config git reads in place and status and diff write none of. git runs with it as
+ * GIT_DIR and the work tree named, so nothing in the owner's `.git` is touched. What is copied is bounded by the index.
  */
-function privateIndex(input: { gitDirectory: string; stateDirectory: string; shown: string }): { path: string; remove: () => void } {
+function privateIndex(input: { found: string[]; stateDirectory: string; shown: string }): { environment: Record<string, string>; remove: () => void } {
   const directory = join(input.stateDirectory, 'git-index')
-  const path = join(directory, `${randomUUID()}.index`)
+  const [workTree, gitDirectory, commonDirectory] = input.found.map(line => nativePath(line.trim()))
+  const copy = join(directory, randomUUID())
   try {
     mkdirSync(directory, { recursive: true, mode: 0o700 })
-    const index = join(nativePath(input.gitDirectory.trim()), 'index')
-    if (existsSync(index)) copyFileSync(index, path)
+    const shared = readdirSync(gitDirectory!).filter(name => name.startsWith('sharedindex.'))
+    if (shared.length === 0) {
+      const path = `${copy}.index`
+      const index = join(gitDirectory!, 'index')
+      if (existsSync(index)) copyFileSync(index, path)
+      return { environment: { GIT_INDEX_FILE: path }, remove: () => { for (const file of [path, `${path}.lock`]) rmSync(file, { force: true }) } }
+    }
+    mkdirSync(copy, { mode: 0o700 })
+    const remove = () => rmSync(copy, { recursive: true, force: true })
+    try {
+      for (const name of ['HEAD', 'index', ...shared]) if (existsSync(join(gitDirectory!, name))) copyFileSync(join(gitDirectory!, name), join(copy, name))
+      writeFileSync(join(copy, 'commondir'), `${commonDirectory}\n`, { mode: 0o600 })
+    } catch (error) { remove(); throw error }
+    return { environment: { GIT_DIR: copy, GIT_WORK_TREE: workTree! }, remove }
   } catch {
     throw new ToolInputError(`The repository at ${input.shown} is in a mount the owner shares read-only, and Buckle could not copy its index to read it without writing there, so git is not run`, { code: 'PERMISSION_DENIED' })
   }
-  return { path, remove: () => { for (const file of [path, `${path}.lock`]) rmSync(file, { force: true }) } }
 }
 
 /** The file git_blame reads, as its effect names it: where git finds it, under the repository. */

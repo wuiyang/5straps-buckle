@@ -260,6 +260,40 @@ describe.runIf(spawnSync('git', ['--version']).status === 0)('the git tools in a
     await manager.close()
   }, 30_000)
 
+  // Fix brief 6, item 6 (finding 21 of recheck 4): with core.splitIndex, git reads the shared index file the index
+  // names beside the git directory, not beside the copy it was handed, and set its time on every read. The copy is now a
+  // private git directory, so nothing in the repository's .git changes, bytes or times.
+  it('answer git_status and git_diff on a split index, leaving every file of the repository\'s .git as it was', async () => {
+    const root = scratch()
+    const docs = join(root, 'docs')
+    mkdirSync(docs)
+    mkdirSync(join(root, 'site'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', docs, '-c', 'user.name=t', '-c', 'user.email=t@e.com', ...args], { encoding: 'utf8' })
+    git('init', '-q', '-b', 'main')
+    git('config', 'core.splitIndex', 'true')
+    writeFileSync(join(docs, 'a.txt'), 'shared\n')
+    git('add', 'a.txt')
+    git('commit', '-q', '-m', 'first')
+    writeFileSync(join(docs, 'a.txt'), 'changed in the work tree\n')
+    expect(readdirSync(join(docs, '.git')).some(name => name.startsWith('sharedindex.'))).toBe(true)
+    // Past the clock's resolution, so a time git sets shows.
+    await new Promise(resolve => setTimeout(resolve, 1_100))
+    const before = gitDirectoryState(join(docs, '.git'))
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs,git', BUCKLE_ALLOW_HOST_GIT: 'true' }))
+    await registerWorkspace(manager, { id: 'site', dir: join(root, 'site') })
+    await manager.updateSettings(idOf(manager, 'site'), settings => withOwnerMounts(settings, [{ source: docs, target: '/docs', access: 'ro' }], '/workspace'))
+    const { runtime } = await byName(manager, 'site')
+    const call = (tool: string) => runtime.invoke({ request: { requestId: `${tool}-${Math.random()}`, tool, args: { repo: '/docs' }, approvalTokens: [] }, sessionId: 'site' })
+    const status = await call('git_status')
+    expect(status).toMatchObject({ outcome: 'ok' })
+    expect(JSON.stringify(status)).toContain('a.txt')
+    expect(await call('git_diff')).toMatchObject({ outcome: 'ok', output: { diff: expect.stringContaining('+changed in the work tree') } })
+    expect(gitDirectoryState(join(docs, '.git'))).toEqual(before)
+    const copies = join(root, 'state', 'workspaces', idOf(manager, 'site'), 'git-index')
+    expect(existsSync(copies) ? readdirSync(copies) : []).toEqual([])
+    await manager.close()
+  }, 30_000)
+
   // Fix brief 6, item 5 (finding 20 of recheck 4): git_push declared only a read of its repository, then moved the
   // remote-tracking ref and, with setUpstream, wrote two branch settings into it. In a read-only mount it now writes
   // nothing there, and its result says what it left.
