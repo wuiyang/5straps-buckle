@@ -75,7 +75,7 @@ export function validateSandboxMounts<T extends { source: string; target: string
     const source = nativePath(mount.source)
     const info = statSync(source)
     if (!info.isFile() && !info.isDirectory()) throw new Error('Explicit mounts support regular files and directories only')
-    if (forbiddenSources.some(path => overlaps(source, path))) throw new Error('Mount source overlaps a workspace or protected Buckle state')
+    if (forbiddenSources.some(path => overlaps(source, path))) throw new ToolInputError(`The mount at ${mount.target} overlaps the workspace's folder or Buckle's protected state, so Buckle binds nothing there; the owner narrows it`, { code: 'PERMISSION_DENIED' })
     if (mount.target === '/' || reserved.slice(1).some(path => overlaps(mount.target, path)) || mount.target === '/tmp' || mount.target === SANDBOX_HOME) throw new Error('Mount target overlaps a reserved sandbox path')
     if (result.some(entry => overlaps(entry.target, mount.target))) throw new Error('Mount targets must not overlap')
     result.push({ ...mount, source })

@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { validateSandboxMounts } from '../../../domain/sandbox-mounts.js'
 import { projectFilesystemSandbox } from '../../../domain/filesystem-policy.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
@@ -126,8 +126,11 @@ export function createShellPack(options: ShellPackOptions): Pack {
     const isolated = Boolean(options.isolation)
     const outsideScratch = isolated ? options.paths.scratchRoots.filter(root => !isInsideAny([options.paths.root], root)) : []
     const callWritable = writableRoots.filter(root => !outsideScratch.includes(root))
-    const callMounts = isolated ? [...mounts.map(mount => ({ ...mount, readOnly: true })), ...outsideScratch.map(root => ({ source: root, target: root, readOnly: true }))] : mounts
-    const heldReadOnly = isolated ? [...mounts.filter(mount => !mount.readOnly).map(mount => mount.target), ...outsideScratch] : []
+    // Bound as mounts are, so each is checked as one is: a root that moved, or that holds or sits inside Buckle's
+    // state, is refused; one not made yet holds nothing to show. Hidden state inside one is masked where it shows.
+    const scratchMounts = validateSandboxMounts(outsideScratch.filter(root => existsSync(root)).map(root => ({ source: root, target: root, readOnly: true })), { protectedRoots: options.hiddenPaths, workspaceRoots: [options.paths.root], workspaceTarget: options.paths.displayRoot })
+    const callMounts = isolated ? [...mounts.map(mount => ({ ...mount, readOnly: true })), ...scratchMounts] : mounts
+    const heldReadOnly = isolated ? [...mounts.filter(mount => !mount.readOnly).map(mount => mount.target), ...scratchMounts.map(mount => mount.target)] : []
     const run = (copyRoot?: string) => {
       const mapped = (path: string) => copyRoot ? resolve(copyRoot, relative(options.paths.root, path)) : path
       const wrapped = options.sandbox.wrap({
@@ -142,7 +145,8 @@ export function createShellPack(options: ShellPackOptions): Pack {
         hiddenPaths: copyRoot ? hidden.directories.filter(path => !isInsideAny([options.paths.root], path)) : hidden.directories,
         hiddenFiles: copyRoot ? hidden.files.filter(path => !isInsideAny([options.paths.root], path)) : hidden.files,
         readOnlyPaths: options.readOnlyPaths,
-        mounts: [...callMounts, ...sensitiveFiles.map(source => ({ source, target: options.paths.toVirtual(source), readOnly: true }))],
+        mounts: callMounts,
+        overlays: sensitiveFiles.map(source => ({ source, target: options.paths.toVirtual(source), readOnly: true })),
         readOnlyWorkspacePaths: restrictions.readOnlyWorkspacePaths.map(mapped),
       })
       return options.runProcess({

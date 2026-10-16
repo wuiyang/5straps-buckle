@@ -167,6 +167,50 @@ describe('the shell under isolation', () => {
     await history.close()
   })
 
+  /** An isolated shell whose node names a scratch root outside the folder, and the arguments its one call ran. */
+  async function isolatedBeside(input: { scratchRoot: string; hidden: string[] }) {
+    const root = scratch()
+    const sourceRoot = join(root, 'source')
+    mkdirSync(sourceRoot)
+    const state = join(root, 'state')
+    const history = await openChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30 })
+    const calls: ProcessRequest[] = []
+    const pack = createShellPack({
+      paths: createPathView({ root: sourceRoot, mount: '/workspace', scratchRoots: [input.scratchRoot] }), isolation: { directory: join(state, 'shell'), maxBytes: 1_000_000, history },
+      sandbox: createBubblewrapSandbox('/usr/bin/bwrap'), writableRoots: [sourceRoot, input.scratchRoot], hiddenPaths: [state, ...input.hidden], readOnlyPaths: [], unavailableReason: null,
+      runProcess: async (request) => { calls.push(request); return { exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false } },
+    })
+    try {
+      const output = await pack.tools[0]!.prepare({ command: 'cat', args: ['.env'] }).execute({ requestId: 'isolated', sessionId: 'caller', stageId: 'message', timeoutMs: 1000, signal: new AbortController().signal })
+      return { output, args: calls[0]?.args ?? [] }
+    } finally { await history.close() }
+  }
+
+  it('masks the credential files of a scratch root outside the folder, which it binds read-only', async () => {
+    const outside = join(scratch(), 'scratch')
+    mkdirSync(join(outside, '.ssh'), { recursive: true })
+    writeFileSync(join(outside, '.env'), 'SCRATCH_SECRET=hunter2')
+    writeFileSync(join(outside, '.ssh', 'id_ed25519'), 'PRIVATE KEY')
+    const { output, args } = await isolatedBeside({ scratchRoot: outside, hidden: [] })
+    const bound = args.findIndex((argument, index) => argument === '--ro-bind' && args[index + 1] === outside && args[index + 2] === outside)
+    expect(bound).toBeGreaterThan(-1)
+    for (const file of ['.env', '.ssh/id_ed25519']) {
+      const mask = args.findIndex((argument, index) => argument === '--ro-bind' && args[index + 1] === '/dev/null' && args[index + 2] === join(outside, file))
+      expect(mask).toBeGreaterThan(bound)
+    }
+    expect(output).toMatchObject({ readOnlyMounts: [outside] })
+  })
+
+  it('refuses a scratch root outside the folder that holds Buckle\'s state, or sits inside it, and runs nothing', async () => {
+    const home = join(scratch(), 'home')
+    const state = join(home, '.5straps', 'buckle')
+    mkdirSync(state, { recursive: true })
+    writeFileSync(join(state, 'buckle.env'), 'BUCKLE_ADMIN_TOKEN=admin-secret')
+    for (const scratchRoot of [home, state]) {
+      await expect(isolatedBeside({ scratchRoot, hidden: [join(home, '.5straps')] })).rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: `The mount at ${scratchRoot} overlaps the workspace's folder or Buckle's protected state, so Buckle binds nothing there; the owner narrows it` })
+    }
+  })
+
   it('binds a writable mount writable where the shell shares the folder', async () => {
     const root = scratch()
     const calls: ProcessRequest[] = []

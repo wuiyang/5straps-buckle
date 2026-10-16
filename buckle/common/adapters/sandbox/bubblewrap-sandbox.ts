@@ -56,22 +56,30 @@ function buildArgs(command: SandboxCommand, nodePrefix: string, identity: Identi
   args.push('--ro-bind', root, sandboxPath(root, command))
   for (const path of command.writableRoots) args.push('--bind', path, sandboxPath(path, command))
   for (const path of command.readOnlyWorkspacePaths ?? []) args.push('--ro-bind', path, sandboxPath(path, command))
+  // Every mount before the masks, so hidden state inside one is masked where it shows, over the mount.
+  for (const mount of command.mounts ?? []) args.push(mount.readOnly ? '--ro-bind' : '--bind', mount.source, mount.target)
   const shown = (path: string): string | null => shownAt(path, { command, root, fixed })
   for (const path of command.hiddenPaths) { const at = shown(path); if (at !== null) args.push('--tmpfs', at) }
   for (const path of command.hiddenFiles ?? []) { const at = shown(path); if (at !== null) args.push('--ro-bind', '/dev/null', at) }
   // After the masks: an approved sensitive file is bound over its own mask.
-  for (const mount of command.mounts ?? []) args.push(mount.readOnly ? '--ro-bind' : '--bind', mount.source, mount.target)
+  for (const overlay of command.overlays ?? []) args.push('--ro-bind', overlay.source, overlay.target)
   args.push('--chdir', sandboxPath(command.cwd, command), '--', command.command, ...command.args)
   return args
 }
 
 /**
  * Where a hidden host path shows inside the sandbox, or null where nothing bound holds it: inside the workspace's
- * folder or a writable root, at its sandbox path; inside a folder bound at its own path, there.
+ * folder or a writable root, at its sandbox path; inside a mount's source, at the mount's target with the rest; inside
+ * a folder bound at its own path, there.
  */
 function shownAt(path: string, input: { command: SandboxCommand; root: string; fixed: readonly string[] }): string | null {
   const { command } = input
   if ([input.root, ...command.writableRoots].some(place => isInside(place, path, 'linux'))) return sandboxPath(path, command)
+  const mount = (command.mounts ?? []).find(entry => isInside(entry.source, path, 'linux'))
+  if (mount) {
+    const rest = relative(mount.source, path)
+    return rest === '' ? mount.target : `${mount.target}/${rest}`
+  }
   if (input.fixed.some(place => isInside(place, path, 'linux'))) return path
   return null
 }

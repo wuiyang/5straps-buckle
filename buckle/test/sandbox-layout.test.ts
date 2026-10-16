@@ -76,8 +76,23 @@ describe('the bubblewrap layout', () => {
   })
 
   it('binds an approved sensitive file over its own mask', () => {
-    const { args: approved } = sandbox.wrap(command({ hiddenFiles: ['/work/project/.env'], mounts: [{ source: '/work/project/.env', target: '/workspace/.env', readOnly: true }] }))
+    const { args: approved } = sandbox.wrap(command({ hiddenFiles: ['/work/project/.env'], overlays: [{ source: '/work/project/.env', target: '/workspace/.env', readOnly: true }] }))
     expect(approved.lastIndexOf('/workspace/.env')).toBeGreaterThan(approved.indexOf('/dev/null'))
+    expect(pairs(approved, '--ro-bind').at(-1)).toEqual(['/work/project/.env', '/workspace/.env'])
+  })
+
+  it('masks hidden state inside a mount where the mount shows it, after binding the mount', () => {
+    const { args: masked } = sandbox.wrap(command({
+      mounts: [{ source: '/home/me/data', target: '/data', readOnly: false }, { source: '/home/me/scratch', target: '/home/me/scratch', readOnly: true }],
+      hiddenPaths: [STATE, '/home/me/scratch/node-state'], hiddenFiles: ['/home/me/scratch/.env', '/home/me/scratch/.ssh/id_ed25519', '/home/me/data/.env'],
+    }))
+    const at = (flag: string, pair: string[]) => masked.findIndex((argument, index) => argument === flag && masked[index + 1] === pair[0] && masked[index + 2] === pair[1])
+    const scratchBind = at('--ro-bind', ['/home/me/scratch', '/home/me/scratch'])
+    expect(scratchBind).toBeGreaterThan(-1)
+    expect(at('--tmpfs', ['/home/me/scratch/node-state', '--ro-bind'])).toBeGreaterThan(scratchBind)
+    for (const file of ['/home/me/scratch/.env', '/home/me/scratch/.ssh/id_ed25519']) expect(at('--ro-bind', ['/dev/null', file])).toBeGreaterThan(scratchBind)
+    expect(at('--ro-bind', ['/dev/null', '/data/.env'])).toBeGreaterThan(at('--bind', ['/home/me/data', '/data']))
+    expect(masked).not.toContain('/home/me/data/.env')
   })
 
   it('gives every command its PATH, user, shell, and TMPDIR, none of them the node\'s', () => {

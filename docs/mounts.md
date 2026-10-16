@@ -72,7 +72,8 @@ before reading one.
 
 [Shell isolation](sandbox-and-tools.md#shell-isolation) copies the workspace's folder alone. Under
 it, each read-write mount, and a scratch root outside the folder, is read-only to the command,
-and the result's `readOnlyMounts` and `note` name them.
+and the result's `readOnlyMounts` and `note` name them. Credential files in such a scratch root
+stay hidden from the command, and one that holds, or sits inside, Buckle's state is refused.
 
 A change to the table applies once the workspace has no active work, such as a running call or
 a shell copy awaiting review; until then calls are refused with a 409.

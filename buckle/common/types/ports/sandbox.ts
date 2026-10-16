@@ -8,8 +8,10 @@ export interface SandboxBind {
 }
 
 export interface SandboxCommand {
-  /** The mounts: each bound at its target after the workspace. */
+  /** The mounts: each bound at its target after the workspace, and before the masks over hidden state inside it. */
   mounts?: SandboxBind[]
+  /** Approved sensitive files, each bound read-only at its target after the masks, so it shows over its own mask. */
+  overlays?: SandboxBind[]
   command: string
   args: string[]
   /** The real working directory. A mounted sandbox translates it to the virtual one. */
