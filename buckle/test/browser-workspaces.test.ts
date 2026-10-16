@@ -272,6 +272,37 @@ describe('the holder of the node\'s browser and the tool policy', { timeout: 20_
   })
 })
 
+// Finding 26 of the fourth recheck: nothing failed when the holder check in run() was deleted. A call that waits on an
+// approver is judged once, in effects(), before the wait; only run() sees a hold that changes during it. A re-send judges
+// the call again, so it cannot test this: the call must be held open across the change.
+describe('a browser call held open across a change of holder', { timeout: 30_000 }, () => {
+  it.each([
+    ['profile folder', (root: string) => ({ BUCKLE_BROWSER_PROFILE: join(root, 'shared-profile') })],
+    ['attached Chrome', () => ({ BUCKLE_BROWSER_CDP: '9222' })],
+  ])('is refused when it runs if another workspace took the %s while the approver decided, and drives nothing', async (_, setting) => {
+    const root = scratch()
+    mkdirSync(join(root, 'shared-profile'))
+    const { manager, calls } = await node(setting(root), { interaction: true })
+    // alpha is offline, so beta holds the browser when the call is judged.
+    await manager.update(idOf(manager, 'alpha'), { online: false })
+    const { runtime } = await byName(manager, 'beta')
+    const pending = runtime.invoke({ request: { requestId: `held-${randomUUID()}`, tool: 'browser_command', args: { command: 'open', args: ['http://10.1.2.3/'] }, approvalTokens: [] }, sessionId: 'beta', approvalWait: { mode: 'finite', ms: 20_000 } })
+    await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
+    expect(manager.browserHeldBy(idOf(manager, 'beta'))).toBeNull()
+
+    // alpha comes online first in the registry and takes it; then the approver says yes.
+    await manager.update(idOf(manager, 'alpha'), { online: true })
+    expect(manager.browserHeldBy(idOf(manager, 'beta'))).toBe('alpha')
+    expect((await runtime.approvalService.answer({ decision: { token: runtime.approvalService.pending()[0]!.token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+
+    const result = await pending
+    expect(result).toMatchObject({ outcome: 'error', error: { code: 'BROWSER_COMMAND_FAILED' } })
+    expect(JSON.stringify(result)).toContain('belongs to workspace alpha')
+    expect(calls().filter(call => call[0] === 'open')).toEqual([])
+    await manager.close()
+  })
+})
+
 // The refusal comes before the question: an approver is never asked about a call the holder rule then refuses, and an
 // answer of always stores no grant for it.
 describe('a call the holder rule refuses', { timeout: 20_000 }, () => {
