@@ -51,7 +51,7 @@ async function node(options: { admin?: boolean; adminHttp?: boolean } = {}) {
     expect((await request(buckle.setup('workbenches'), { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify(grant) })).status).toBe(200)
     return grant
   }
-  return { root, config, runtime, request, registerOne, provisionWorkbench, setup: buckle.setup, nodeActions: buckle.nodeActions, idOf: buckle.idOf }
+  return { root, config, runtime, request, registerOne, provisionWorkbench, setup: buckle.setup, nodeActions: buckle.nodeActions, idOf: buckle.idOf, services: buckle.services }
 }
 
 function json(token?: string): Record<string, string> {
@@ -381,6 +381,21 @@ describe('other methods on /v1/invoke', () => {
     expect((await buckle.request('/v1/invoke', { method: 'PUT', headers: bearer(NODE_AGENT) })).status).toBe(404)
     expect((await buckle.request('/workspaces/one/v1/invoke', { method: 'DELETE' })).status).toBe(401)
     const entries = audited(buckle).filter(entry => entry.tool.endsWith('invoke_rejected')).map(entry => `${entry.tool}:${entry.workspaceId}:${entry.detail}`)
-    expect(entries).toEqual(expect.arrayContaining(['rpc_invoke_rejected:node:HTTP 401', 'rpc_invoke_rejected:node:HTTP 404', `workspace_invoke_rejected:${await buckle.idOf('one')}:HTTP 401`]))
+    expect(entries).toEqual(expect.arrayContaining(['rpc_invoke_rejected:node:HTTP 401', `rpc_invoke_rejected:${buckle.runtime.workspaceId}:HTTP 404`, `workspace_invoke_rejected:${await buckle.idOf('one')}:HTTP 401`]))
+  })
+
+  // Fix brief 4, finding 39: a token's own refused call was filed under the node, while its /workspaces/ twin filed it in the
+  // workspace's log, so one refusal landed in two places by route.
+  it('files a token\'s refused call in the log of its own workspace, on /v1 and on the /workspaces/ route alike', async () => {
+    const buckle = await node()
+    await buckle.registerOne()
+    expect((await buckle.request('/v1/invoke', { method: 'PUT', headers: bearer(ONE_AGENT) })).status).toBe(404)
+    expect((await buckle.request('/workspaces/one/v1/invoke', { method: 'PUT', headers: bearer(ONE_AGENT) })).status).toBe(404)
+
+    const id = await buckle.idOf('one')
+    const refusals = (log: ActionLog) => log.read(100).filter(entry => entry.tool === 'rpc_invoke_rejected' && entry.detail === 'HTTP 404').map(entry => entry.workspaceId)
+    expect(refusals(buckle.nodeActions)).toEqual([])
+    const twin = (await (await buckle.services.getWorkspaces()).resolve(id)).runtime
+    expect(refusals(twin.actions)).toEqual([id, id])
   })
 })
