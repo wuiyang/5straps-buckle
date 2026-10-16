@@ -79,5 +79,6 @@ Lists are comma separated; command globs, which hold commas, are separated by `;
 `buckle settings set command-deny 'curl *;;wget *'`; `mounts` takes the JSON list. The browser
 keys are checked as the node reads them together: an attached Chrome (`browser-cdp`) stands
 alone, so one beside a profile, arguments, or a window is refused, naming the variables. The
-audit log records a browser setting's key, never its value. `buckle init --force`, which writes
+audit log records the key alone for `browser-cdp`, `browser-profile`, and `browser-args` (a DevTools URL,
+a profile folder, Chromium arguments), and the value of `browser-headed`. `buckle init --force`, which writes
 `buckle.env` again, keeps these defaults from the file it replaces, every one of them.

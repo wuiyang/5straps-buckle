@@ -46,7 +46,7 @@ dangerously-allow switch (`policy_dangerously_allowed`), and each change of it
 | `tool`, `outcome`, `event` | the tool, the outcome, and `attempt` or `result` |
 | `effects` | the kinds of effect the call declared: `read_path`, `write_path`, `exec`, `network`, `process_probe` |
 | `asked`, `approvedBy` | the rules that stopped the call, and the rules whose grants let it through |
-| `detail` | an error code, or what an owner command changed; a workspace variable's value and a browser setting's value (a DevTools URL, Chromium arguments, a profile folder) are never in it, only the key |
+| `detail` | an error code, or what an owner command changed; a workspace variable's value and the value of `browser.cdp`, `browser.profile`, or `browser.args` (a DevTools URL, a profile folder, Chromium arguments) are never in it, only the key; `browser.headed`'s value is |
 | `args` | the arguments' shape, trimmed as below |
 | `actorId` | who the transport authenticated, such as `local-owner` for the CLI or `agent:<token id>` over HTTP |
 | `parentRequestId` | on a call a [code mode](code-mode.md) script made, the `requestId` of the `code_run` call that sent the script; `buckle log` prints it as `parent request` |
