@@ -36,9 +36,11 @@ async function node(environment: Record<string, string> = {}) {
   return { root, config, manager, calls }
 }
 
-function open(manager: WorkspaceManager, name: string) {
-  return byName(manager, name).then(({ runtime }) => runtime.invoke({ request: { requestId: `open-${randomUUID()}`, tool: 'browser_command', args: { command: 'snapshot', args: [] }, approvalTokens: [] }, sessionId: name }))
+function open(manager: WorkspaceManager, name: string, call: { command: string; args: string[] } = { command: 'snapshot', args: [] }) {
+  return byName(manager, name).then(({ runtime }) => runtime.invoke({ request: { requestId: `open-${randomUUID()}`, tool: 'browser_command', args: call, approvalTokens: [] }, sessionId: name }))
 }
+
+const HELD = (holder: string, what = 'The profile folder this browser keeps its logins in') => `${what} belongs to workspace ${holder}, and serves one workspace at a time; the owner chooses which with buckle workspace set browser.profile or browser.cdp`
 
 async function set(config: NodeConfig, name: string, key: string, value: string) {
   let err = ''
@@ -163,6 +165,31 @@ describe('an attached Chrome', () => {
     expect(refused.err).toContain('That Chrome belongs to workspace alpha')
     expect(refused.err).not.toContain('9222')
     expect((await set(config, 'beta', 'browser.cdp', '9333')).exitCode).toBe(0)
+    await manager.close()
+  })
+})
+
+// The per-call rule for the owner's Chrome, as for a profile folder: the node's setting alone reaches two workspaces,
+// and neither names it as its own, so the set-time refusal never fires.
+describe('an attached Chrome two workspaces reach', { timeout: 20_000 }, () => {
+  it('is used by the first online workspace taking the node\'s, and the second is refused naming it, never the endpoint', async () => {
+    const { manager, calls } = await node({ BUCKLE_BROWSER_CDP: '9222' })
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'ok' })
+    const refused = await open(manager, 'beta')
+    expect(refused).toMatchObject({ outcome: 'error', error: { message: HELD('alpha', 'The owner\'s Chrome this browser attaches to') } })
+    expect(JSON.stringify(refused)).not.toContain('9222')
+    expect(calls()).toHaveLength(1)
+    await manager.close()
+  })
+
+  it('belongs to the one naming it as its own, over the node\'s, and to the other again once that one is offline', async () => {
+    const { config, manager, calls } = await node({ BUCKLE_BROWSER_CDP: '9222' })
+    expect((await set(config, 'beta', 'browser.cdp', '9222')).exitCode).toBe(0)
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('The owner\'s Chrome this browser attaches to belongs to workspace beta') } })
+    expect(await open(manager, 'beta')).toMatchObject({ outcome: 'ok' })
+    await manager.update(idOf(manager, 'beta'), { online: false })
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'ok' })
+    expect(calls().filter(call => call[0] === 'snapshot')).toHaveLength(2)
     await manager.close()
   })
 })
