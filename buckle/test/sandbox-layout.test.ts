@@ -267,6 +267,15 @@ describe.runIf(runsNativeTerminal)('a workbench terminal\'s layout', () => {
     }
   })
 
+  // Finding 27 of the fourth recheck: the filter that leaves a scratch root inside the folder to the workbench's copy
+  // had no test, and without it the terminal of the workspace whose folder holds the root was refused as an overlap.
+  it('opens where a scratch root sits inside the folder, which the workbench\'s copy holds, and binds it nowhere on its own', async () => {
+    let inside = ''
+    const args = await terminalArguments({ scratchRoot: (root) => { inside = join(root, 'site', 'tmp'); mkdirSync(inside); return inside } })
+    expect(args).toContain('--chdir')
+    for (const flag of ['--bind', '--ro-bind', '--ro-bind-try']) expect(pairs(args, flag).filter(([source, target]) => source === inside || target === inside)).toEqual([])
+  })
+
   // Finding 28: the credential scan took every outside scratch root, so one not made yet, or removed since the node
   // started, failed every terminal start with a raw ENOENT naming the owner's path, while the binds skipped it.
   it.each([
