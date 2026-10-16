@@ -20,7 +20,10 @@ import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { findNodeSetting, NODE_SETTINGS, normaliseSetting } from './node-settings.js'
 import { redeemPairingCode } from './pairing.js'
 import { createNamed } from './workspace.js'
-import { restartRoute, type RestartRoute } from '../common/services/node-service/installed.js'
+import { restartRoute, serviceInstalled, type RestartRoute } from '../common/services/node-service/installed.js'
+import { attachCommand } from '../common/services/node-service/attach.js'
+import { runningNode, type RunningNode } from '../common/services/node-service/serve-record.js'
+import { homeDirectory } from '../common/domain/paths.js'
 import { wordList } from '../common/domain/word-list.js'
 
 export interface CliResult {
@@ -146,6 +149,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   try {
     const served = await serveFolder({ workspaces, folder, mount, choices, prompt: { ...prompt, interactive } })
     const nodePort = /^BUCKLE_PORT=(\d+)$/m.exec(contents)?.[1] ?? port
+    const start = await startOf(node.stateDirectory, platform, options.home)
     process.stdout.write(`${adminToken ? `Wrote ${out}` : `The node is already set up in ${out}; its settings are unchanged.`}
 ${served.token ? '' : `\n${folder} is already in workspace ${served.name}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${workspaceArgument(served.name)}.\n`}
   Workspace   ${served.name} at ${folder}
@@ -154,8 +158,8 @@ ${adminToken ? `  Node name   ${name}\n` : ''}${carried.keys.length > 0 ? `  Kep
 ${describePrograms({ node, folder, platform, search: options.programSearch ?? {} })}
 
 Next:
-${hintStep('  1. Start the node:', serveCommand(out, process.env, platform))}
-${platform === 'linux' || platform === 'win32' ? `${hintStep('     Or at every login:', serveCommand(out, process.env, platform, 'buckle service install --now'))}\n` : ''}${served.token ? `  2. Give an agent this workspace's token, shown once; it reaches /mcp and /v1 at http://127.0.0.1:${nodePort}:
+${startSteps(start, { out, platform, stateDirectory: node.stateDirectory })}
+${served.token ? `  2. Give an agent this workspace's token, shown once; it reaches /mcp and /v1 at http://127.0.0.1:${nodePort}:
        agent token        ${served.token.token}
 ` : ''}${adminToken ? `     The node's admin credential, for Rings and the experimental /setup face:
        admin credential   ${adminToken}
@@ -168,7 +172,7 @@ switch it on: buckle settings set experimental-admin-http on
     if (!values.pair) return { exitCode: 0 }
     const token = served.token ?? await workspaces.addToken(served.id, { label: 'Rings' })
     const { runtime } = await workspaces.resolve(served.id)
-    return await pair({ out, code: values.pair, rings: values.rings!, url: values.url, port: nodePort, home: options.home, platform, authToken: token.token, adminToken: node.adminToken, manifest: runtime.manifest(), name: node.serverName, restart: await restartRoute(node.stateDirectory) })
+    return await pair({ out, code: values.pair, rings: values.rings!, url: values.url, port: nodePort, home: options.home, platform, authToken: token.token, adminToken: node.adminToken, manifest: runtime.manifest(), name: node.serverName, restart: await restartRoute(node.stateDirectory), start })
   } catch (error) {
     if (error instanceof WorkspaceError) return fail(error.message)
     throw error
@@ -176,6 +180,40 @@ switch it on: buckle settings set experimental-admin-http on
     await workspaces.close()
     prompt.close()
   }
+}
+
+/**
+ * What starts the node, read where init prints a hint (fix brief 6, item 11): a node running now already serves a workspace
+ * added to its registry (Q2), and `buckle serve` beside one is refused (Q5), so the hint says so; an installed service is
+ * started with `buckle service start`; with neither, `buckle serve`, and the install offer where the platform has a service.
+ */
+type NodeStart = { kind: 'running'; running: RunningNode } | { kind: 'service' } | { kind: 'serve' }
+
+async function startOf(stateDirectory: string, platform: NodeJS.Platform, home: string | undefined): Promise<NodeStart> {
+  const running = await runningNode(stateDirectory).catch(() => null)
+  if (running !== null) return { kind: 'running', running }
+  return serviceInstalled(stateDirectory, process.env, platform, home ?? homeDirectory(platform)) ? { kind: 'service' } : { kind: 'serve' }
+}
+
+/** The first step of Next, and the install offer where it still applies. */
+function startSteps(start: NodeStart, input: { out: string; platform: NodeJS.Platform; stateDirectory: string }): string {
+  if (start.kind === 'running') {
+    const { record } = start.running
+    const pid = record === null ? '' : ` (pid ${record.pid})`
+    return record?.manager === 'terminal'
+      ? `  1. The node runs at a terminal${pid} and serves this workspace now; no restart is needed.\n     Its approvals are answered there.`
+      : `  1. The node runs in service mode${pid} and serves this workspace now; no restart is needed.\n     Answer its approvals here with: ${attachCommand(input.stateDirectory, process.cwd(), input.platform)}`
+  }
+  if (start.kind === 'service') return hintStep('  1. Start the node:', serveCommand(input.out, process.env, input.platform, 'buckle service start'))
+  const offer = input.platform === 'linux' || input.platform === 'win32' ? `\n${hintStep('     Or at every login:', serveCommand(input.out, process.env, input.platform, 'buckle service install --now'))}` : ''
+  return `${hintStep('  1. Start the node:', serveCommand(input.out, process.env, input.platform))}${offer}`
+}
+
+/** The pairing's last line: how to start the node, unless one runs, whose restart the credential's own line names. */
+function pairingStart(input: { out: string; platform: NodeJS.Platform; start: NodeStart }): string {
+  if (input.start.kind === 'running') return ''
+  const command = input.start.kind === 'service' ? 'buckle service start' : 'buckle serve'
+  return ` ${hintStep('Start it with:', serveCommand(input.out, process.env, input.platform, command), { column: 'Start it with: '.length, indent: '  ' })}`
 }
 
 /**
@@ -279,11 +317,11 @@ function withChoices(settings: WorkspaceSettings, choices: WorkspaceChoices, mou
 }
 
 /** Re-pairs or pairs the node, sending the workspace's token and its manifest (BUCKLE-D08). */
-async function pair(input: { out: string; code: string; rings: string; url?: string; port: string; home?: string; platform: NodeJS.Platform; authToken: string; adminToken: string; manifest: HarnessManifest; name: string; restart: RestartRoute }): Promise<CliResult> {
+async function pair(input: { out: string; code: string; rings: string; url?: string; port: string; home?: string; platform: NodeJS.Platform; authToken: string; adminToken: string; manifest: HarnessManifest; name: string; restart: RestartRoute; start: NodeStart }): Promise<CliResult> {
   const baseUrl = input.url?.trim() || `http://127.0.0.1:${input.port}`
   const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, authToken: input.authToken, adminToken: input.adminToken, manifest: input.manifest, name: input.name, restart: input.restart, ...(input.home ? { home: input.home } : {}) })
   process.stdout.write(`\n${result.message}\n`)
-  if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}. ${hintStep('Start it with:', serveCommand(input.out, process.env, input.platform), { column: 'Start it with: '.length, indent: '  ' })}\n`)
+  if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}.${pairingStart(input)}\n`)
   return { exitCode: result.ok ? 0 : 1 }
 }
 

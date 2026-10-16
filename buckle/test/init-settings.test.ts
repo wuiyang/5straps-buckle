@@ -5,7 +5,9 @@ import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit, serveCommand, type InitPrompt } from '../cli/init.js'
 import type { ProgramSearch } from '../common/domain/executable.js'
+import { createRuntimeOwner } from '@5straps/runtime'
 import { loadConfig } from '../common/runtime/config.js'
+import { holdServe, serviceDirectory, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { workspaceIdOf } from './support/workspaces.js'
 import { defaultEnvironmentFile } from '../common/runtime/environment.js'
@@ -242,6 +244,76 @@ describe('the command init prints to start the node', () => {
     // Phase 3, item 7: init offers the service on Linux and Windows.
     expect(printed).toContain(`     Or at every login:         BUCKLE_ENV_FILE=${out} buckle service install --now\n`)
     expect(printed).toContain("  3. Restrict it:               buckle policy allow-command 'pnpm {build,test} *'\n                                buckle policy allow-url localhost:3000\n")
+  })
+})
+
+// Finding 33 of the fourth recheck: Next always said `buckle serve`, which the guard beside a running node refuses, and
+// offered `service install --now` beside a node it would refuse or an installed service it would write again.
+describe('the Next step beside a node that runs or a service that is installed', () => {
+  const second = () => { const folder = join(workspace, '..', 'second'); mkdirSync(folder); return folder }
+
+  /** A node serving the state directory in this process, as service-command.test.ts imitates one. */
+  async function serving(manager: ServeManagerKind, pid: number): Promise<{ close(): Promise<void> }> {
+    const owner = createRuntimeOwner({ name: 'fake-node', services: [] })
+    await holdServe({ stateDirectory: state, owner })
+    writeFileSync(join(serviceDirectory(state), 'serve.json'), JSON.stringify({ pid, manager, version: '0.1.4', host: '127.0.0.1', port: 4399, startedAt: '2026-10-16T00:00:00.000Z' }))
+    return { close: () => owner.close() }
+  }
+
+  it('says a node running in service mode serves the new workspace now, names the command that answers it, and offers neither serve nor install', async () => {
+    await init(scripted([], false), ['--dir', workspace])
+    const running = await serving('background', 424_242)
+    try {
+      const { printed, exitCode } = await init(scripted([], false), ['--dir', second()], 'linux')
+      expect(exitCode).toBe(0)
+      expect(printed).toContain('  1. The node runs in service mode (pid 424242) and serves this workspace now; no restart is needed.\n     Answer its approvals here with: buckle approvals --watch --all\n')
+      expect(printed).not.toContain('Start the node')
+      expect(printed).not.toContain('buckle serve')
+      expect(printed).not.toContain('service install')
+      expect(printed).toContain('  3. Restrict it:')
+    } finally { await running.close() }
+  })
+
+  it('says a serve at a terminal serves it now and is answered there', async () => {
+    await init(scripted([], false), ['--dir', workspace])
+    const running = await serving('terminal', 424_243)
+    try {
+      const { printed } = await init(scripted([], false), ['--dir', second()], 'linux')
+      expect(printed).toContain('  1. The node runs at a terminal (pid 424243) and serves this workspace now; no restart is needed.\n     Its approvals are answered there.\n')
+      expect(printed).not.toContain('Answer its approvals here')
+      expect(printed).not.toContain('service install')
+    } finally { await running.close() }
+  })
+
+  it('offers buckle service start, and not the install line, where a unit for this node is installed and nothing runs', async () => {
+    await init(scripted([], false), ['--dir', workspace])
+    const config = join(workspace, '..', 'config')
+    vi.stubEnv('XDG_CONFIG_HOME', config)
+    mkdirSync(join(config, 'systemd', 'user'), { recursive: true })
+    writeFileSync(join(config, 'systemd', 'user', 'buckle.service'), `[Service]\nExecStart="/usr/bin/node" "/opt/buckle/dist/main.js" serve --service systemd --state-dir "${state}"\n`)
+    const { printed } = await init(scripted([], false), ['--dir', second()], 'linux')
+    expect(printed).toContain(`  1. Start the node:            BUCKLE_ENV_FILE=${out} buckle service start\n`)
+    expect(printed).not.toContain('buckle serve')
+    expect(printed).not.toContain('service install')
+  })
+
+  it('offers it on Windows, where the task keeps its copy in the state directory, in each shell\'s form', async () => {
+    await init(scripted([], false), ['--dir', workspace], 'win32')
+    mkdirSync(serviceDirectory(state), { recursive: true })
+    writeFileSync(join(serviceDirectory(state), 'task.xml'), '<Task/>')
+    const { printed } = await init(scripted([], false), ['--dir', second()], 'win32')
+    expect(printed).toContain([
+      '  1. Start the node:',
+      `       PowerShell   $env:BUCKLE_ENV_FILE = '${out}'; buckle service start`,
+      `       cmd          set "BUCKLE_ENV_FILE=${out}" && buckle service start`,
+    ].join('\n'))
+    expect(printed).not.toContain('service install')
+  })
+
+  it('keeps today\'s two lines where nothing runs and no unit is installed', async () => {
+    await init(scripted([], false), ['--dir', workspace])
+    const { printed } = await init(scripted([], false), ['--dir', second()], 'linux')
+    expect(printed).toContain(`  1. Start the node:            BUCKLE_ENV_FILE=${out} buckle serve\n     Or at every login:         BUCKLE_ENV_FILE=${out} buckle service install --now\n`)
   })
 })
 

@@ -4,8 +4,10 @@ import { join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mintApprovalKey } from '@5straps/protocol/envelope'
+import { createRuntimeOwner } from '@5straps/runtime'
 import { runInit } from '../cli/init.js'
 import { tokenDigest } from '../common/services/access/tokens.js'
+import { holdServe, serviceDirectory } from '../common/services/node-service/serve-record.js'
 
 let root: string
 let workspace: string
@@ -224,6 +226,30 @@ describe('buckle init --pair', () => {
 
     expect(result.exitCode).toBe(0)
     expect(result.printed).toContain(`Start it with: BUCKLE_ENV_FILE=${out} buckle serve`)
+  })
+
+  // Fix brief 6, item 11 (finding 33 of recheck 4): the last line named `buckle serve`, which is refused beside a running node.
+  it('ends with buckle service start where a unit for the node is installed, and says nothing to start where a node runs', async () => {
+    await init()
+    const state = join(root, 'state')
+    vi.stubEnv('XDG_CONFIG_HOME', join(root, 'config'))
+    mkdirSync(join(root, 'config', 'systemd', 'user'), { recursive: true })
+    writeFileSync(join(root, 'config', 'systemd', 'user', 'buckle.service'), `[Service]\nExecStart="/usr/bin/node" "/opt/buckle/dist/main.js" serve --service systemd --state-dir "${state}"\n`)
+
+    const installed = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+    expect(installed.exitCode).toBe(0)
+    expect(installed.printed).toContain(`Start it with: BUCKLE_ENV_FILE=${out} buckle service start`)
+    expect(installed.printed).not.toContain('buckle serve')
+
+    const owner = createRuntimeOwner({ name: 'fake-node', services: [] })
+    await holdServe({ stateDirectory: state, owner })
+    writeFileSync(join(serviceDirectory(state), 'serve.json'), JSON.stringify({ pid: 424_244, manager: 'systemd', version: '0.1.4', host: '127.0.0.1', port: 4399, startedAt: '2026-10-16T00:00:00.000Z' }))
+    try {
+      const running = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+      expect(running.exitCode).toBe(0)
+      expect(running.printed).toContain('Rings will reach it at http://127.0.0.1:4399.')
+      expect(running.printed).not.toContain('Start it with')
+    } finally { await owner.close() }
   })
 
   it('pairs a node whose file is buckle.env in its state directory: written there owner-only, and named in the messages', async () => {
