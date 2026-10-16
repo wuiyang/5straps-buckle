@@ -1,4 +1,13 @@
 /**
+ * Where a node lives, as paths alone: its state directory, and the environment file BUCKLE_ENV_FILE names, if any. Read
+ * by the CLI before buckle.env is loaded (nodeLocation); a service manager adapter takes it, never the file's values.
+ */
+export interface NodeLocation {
+  stateDirectory: string
+  environmentFile: string | null
+}
+
+/**
  * What a service definition runs (Phase 3 of the workspace-model slice): the absolute Node binary and the absolute
  * dist/main.js with `serve`, and where the node lives, as paths alone. No definition ever holds a setting's value.
  */

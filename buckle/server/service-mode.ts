@@ -3,9 +3,9 @@ import { existsSync } from 'node:fs'
 import { isAbsolute } from 'pathe'
 import { parseArgs } from 'node:util'
 import { SKIP_OWNER_ONLY_FLAG } from '../common/adapters/file-modes.js'
-import { nodeLocation, type NodeLocation } from '../common/runtime/environment.js'
 import { addressOf, attachCommand, besideService } from '../common/services/node-service/attach.js'
 import { runningNode, SERVICE_MANAGERS, waitForRecord, type ServiceManagerKind } from '../common/services/node-service/serve-record.js'
+import type { NodeLocation } from '../common/types/ports/service-manager.js'
 
 /** How `buckle serve` was asked to run (Phase 3, item 1). */
 export interface ServeOptions {
@@ -79,10 +79,10 @@ export function useServiceLocation(location: Partial<NodeLocation>, environment:
  * (item 5). The child reads buckle.env itself, as any serve does; this process passes it only the environment it was
  * started with, and the node's location as paths.
  */
-export async function startInBackground(input: { options: ServeOptions; mainScript: string; skipOwnerOnlyCheck: boolean; environment?: NodeJS.ProcessEnv; cwd?: string; platform?: NodeJS.Platform }): Promise<{ exitCode: number; message: string }> {
+export async function startInBackground(input: { options: ServeOptions; location: NodeLocation; mainScript: string; skipOwnerOnlyCheck: boolean; environment?: NodeJS.ProcessEnv; cwd?: string; platform?: NodeJS.Platform }): Promise<{ exitCode: number; message: string }> {
   const environment = input.environment ?? process.env
   const cwd = input.cwd ?? process.cwd()
-  const location = input.options.location.stateDirectory === undefined ? nodeLocation(environment, input.platform) : { stateDirectory: input.options.location.stateDirectory, environmentFile: input.options.location.environmentFile ?? null }
+  const { location } = input
   const running = await runningNode(location.stateDirectory)
   if (running !== null) return { exitCode: 1, message: besideService({ running, command: 'buckle serve --background', stateDirectory: location.stateDirectory, cwd, platform: input.platform }) }
   if (!existsSync(input.mainScript)) return { exitCode: 1, message: 'buckle serve --background runs the built Buckle, and this copy has no dist/main.js: build it first with pnpm build.' }

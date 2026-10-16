@@ -4,6 +4,7 @@ import { parseEnv } from 'node:util'
 import { isOpenToOthers } from '../adapters/file-modes.js'
 import { isInside, typedPath } from '../domain/paths.js'
 import { realPathOf, stateDirectoryOf } from './config.js'
+import type { NodeLocation } from '../types/ports/service-manager.js'
 
 /** The node's environment file in its state directory, which `buckle init` and pairing write. */
 export const ENVIRONMENT_FILE_NAME = 'buckle.env'
@@ -49,12 +50,6 @@ function ownEnvironmentFile(named: string, environment: NodeJS.ProcessEnv): bool
   if (path === typedPath(defaultEnvironmentFile(environment))) return true
   if (!existsSync(path) || !statSync(path).isFile()) return false
   return isInside(realPathOf(stateDirectoryOf(environment)), realPathOf(path))
-}
-
-/** Where a node lives, as paths alone: its state directory, and the environment file BUCKLE_ENV_FILE names, if any. */
-export interface NodeLocation {
-  stateDirectory: string
-  environmentFile: string | null
 }
 
 /**

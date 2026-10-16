@@ -4,13 +4,13 @@ import { parseArgs } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { ignoresCase, isInsideComparable } from '../common/domain/paths.js'
 import { actionsPath, realPathOf } from '../common/runtime/config.js'
-import { defaultEnvironmentFile, nodeLocation, type NodeLocation } from '../common/runtime/environment.js'
+import { defaultEnvironmentFile, nodeLocation } from '../common/runtime/environment.js'
 import { addressOf } from '../common/services/node-service/attach.js'
 import { requestStop, runningNode, serviceLogPath, waitForStop, type RunningNode, type ServeRecord } from '../common/services/node-service/serve-record.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
 import type { ProcessRunner } from '../common/types/ports/process-runner.js'
-import { ServiceManagerError, type InstalledService, type ServiceDefinition, type ServiceManager } from '../common/types/ports/service-manager.js'
+import { ServiceManagerError, type InstalledService, type NodeLocation, type ServiceDefinition, type ServiceManager } from '../common/types/ports/service-manager.js'
 
 export interface CliResult {
   exitCode: number

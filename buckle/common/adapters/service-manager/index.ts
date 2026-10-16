@@ -1,6 +1,5 @@
-import type { NodeLocation } from '../../runtime/environment.js'
 import type { ProcessRunner } from '../../types/ports/process-runner.js'
-import type { ServiceManager } from '../../types/ports/service-manager.js'
+import type { NodeLocation, ServiceManager } from '../../types/ports/service-manager.js'
 import { createSystemdManager } from './systemd.js'
 
 /** What a service manager adapter is built from: the platform, the process environment, a runner, and the node's location. */

@@ -9,7 +9,7 @@ import { clientCommand } from './cli/client.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
 import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
-import { loadEnvironmentFile, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
+import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom, type LogOutput } from './common/runtime/log.js'
 import { BUCKLE_VERSION } from './common/runtime/version.js'
@@ -86,7 +86,10 @@ async function serve(options: string[], skipOwnerOnlyCheck: boolean): Promise<nu
   if (parsed.help) return printServiceUsage('serve')
   // Before buckle.env is read: the node it starts reads the file itself, and this process holds no credential.
   if (parsed.background) {
-    const started = await startInBackground({ options: parsed, mainScript: builtMainPath(), skipOwnerOnlyCheck })
+    // Where the node lives, as a definition names it, else as this shell's environment does (paths alone).
+    const named = parsed.location.stateDirectory
+    const location = named === undefined ? nodeLocation(process.env) : { stateDirectory: named, environmentFile: parsed.location.environmentFile ?? null }
+    const started = await startInBackground({ options: parsed, location, mainScript: builtMainPath(), skipOwnerOnlyCheck })
     ;(started.exitCode === 0 ? process.stdout : process.stderr).write(`${started.message}\n`)
     return started.exitCode
   }
