@@ -66,4 +66,4 @@ to where the folder shows, to the mounts, or to the shell settings waits until t
 no active work, such as a running call or a shell copy awaiting review. A waiting change, or one that will not apply, refuses calls with a 409 until it applies.
 A file that will not read leaves the settings in force, and the owner's log says so.
 `buckle serve` watches the registry folder too, its poll the fallback. A change to `buckle.env`
-applies when the node restarts.
+applies when the node restarts: `buckle service restart` where a service runs it.

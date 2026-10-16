@@ -14,9 +14,9 @@ the pieces that decide it. Paths are inside `buckle/` unless they start with `pa
 
 ## Layers inside buckle/
 
-- `main.ts` is the entry. `selectMode` sends `init`, `settings`, and `client` to commands that
-  need no node, `serve` and `mcp` to long-lived services, and everything else to the one-shot
-  CLI. Before a node starts, it loads `buckle.env` (`common/runtime/environment.ts`) and builds
+- `main.ts` is the entry. `selectMode` sends `init`, `settings`, `client`, and `service` to
+  commands that need no node, `serve` and `mcp` to long-lived services, and everything else to
+  the one-shot CLI; `serve --background` and `buckle service` run before `buckle.env` is read. Before a node starts, it loads `buckle.env` (`common/runtime/environment.ts`) and builds
   the configuration (`common/runtime/config.ts`).
 - `common/` holds what every face shares. `common/runtime/` starts one common runtime per
   process (`initialize.ts`, `services.ts`). `common/domain/` is pure logic: permission rules,
@@ -27,7 +27,7 @@ the pieces that decide it. Paths are inside `buckle/` unless they start with `pa
   `common/types/ports/` holds the interfaces adapters implement.
 - `cli/` is the one-shot commands: `main.ts` dispatches, and `init.ts`, `settings.ts`,
   `policy.ts`, `approvals-watch.ts`, `terminal-consumer.ts`, `keys.ts`, `client.ts`,
-  `workspace.ts`, `workspace-keys.ts`, `target.ts`, and `pairing.ts` implement them.
+  `workspace.ts`, `workspace-keys.ts`, `target.ts`, `pairing.ts`, and `service.ts` implement them.
 - `mcp/` is the MCP face. `server.ts` registers each available tool and each skill and turns an
   ask into elicitation forms or relay text; `stdio.ts`, `stdio-wire.ts`, and
   `audited-stdio-transport.ts` serve it on stdio; `http.ts` keeps one stateless handler per

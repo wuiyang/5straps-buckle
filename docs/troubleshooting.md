@@ -38,8 +38,8 @@ In a clone, `pnpm rebuild node-pty`. Terminals also need bubblewrap.
 | `Shell tools are turned off in this workspace: its setting packs.shell is off` | `buckle workspace set packs.shell on` |
 | `BUCKLE_SANDBOX=bubblewrap was requested but bwrap is not installed` | install bubblewrap, or set `BUCKLE_SANDBOX=auto` |
 
-A `buckle.env` change applies when `buckle serve` or `buckle mcp` restarts, and a workspace
-setting at the workspace's next call. [Sandbox and tools](sandbox-and-tools.md) explains each mode.
+A `buckle.env` change applies when `buckle serve` (or, under a service, `buckle service restart`)
+or `buckle mcp` restarts, and a workspace setting at the workspace's next call. [Sandbox and tools](sandbox-and-tools.md) explains each mode.
 
 ## The port is in use
 
@@ -52,6 +52,13 @@ setting at the workspace's next call. [Sandbox and tools](sandbox-and-tools.md) 
 Another process holds port 4320, often an earlier `buckle serve`. Stop it, or pick another port
 for this start with `BUCKLE_PORT=4321 buckle serve`, or edit the `BUCKLE_PORT` line in
 `buckle.env`. The shell's value wins over the file's.
+
+## Buckle is already running in service mode
+
+`buckle serve` prints this, starts nothing, and exits 1 where a node already serves the state
+directory with no terminal, as the [service](service.md) or `buckle serve --background` runs it.
+Answer its approvals with the command it names, `buckle approvals --watch`; `buckle service status`
+shows it, and `buckle service stop` stops it, after which `buckle serve` runs at the terminal.
 
 ## The state directory has the wrong modes
 

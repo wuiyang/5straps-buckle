@@ -17,7 +17,8 @@ token, and the node's `BUCKLE_ADMIN_TOKEN`, so Rings can call tools there and re
 `--url` defaults to `http://127.0.0.1:<port>`, which only a Rings on the same machine can reach.
 Rings answers with a report credential, and possibly an approval key, which Buckle writes into
 `buckle.env` without printing them. On a node set up already, `--pair` keeps its settings, mints
-the workspace a token for Rings, and updates the URL. Restart a running `buckle serve` afterwards.
+the workspace a token for Rings, and updates the URL. Restart a running `buckle serve` afterwards,
+or run `buckle service restart` where a service runs it.
 
 ## Settings
 
@@ -31,7 +32,8 @@ Pairing fills these in. You can also set them by hand, to Rings or to any endpoi
 | `BUCKLE_RINGS_APPROVAL_KEY` | the key Rings minted at pairing; with it, posts to Rings are sealed, and decisions from Rings must arrive sealed |
 
 These URLs are the owner's configuration, so the egress rules that judge an agent's network
-access do not apply to them. Change one, then restart `buckle serve` or `buckle mcp`.
+access do not apply to them. Change one, then restart `buckle serve` (`buckle service restart`
+where a service runs it) or `buckle mcp`.
 
 ### The action log report
 

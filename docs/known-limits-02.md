@@ -17,7 +17,7 @@ hiding, and paths, [part three](known-limits-03.md) code mode, the command line,
   first on `PATH`, so an `rg` there leaves content search out of every workspace, and a `bwrap`
   there leaves no sandbox: the shell tools are withheld rather than run without one. A node
   started while its workspace registry cannot be read runs no program: repair the registry, then
-  restart the node.
+  restart the node (`buckle service restart` where a service runs it).
 - Each program Buckle runs gets a `PATH` with those places taken out, so a script it runs that
   starts `#!/usr/bin/env node` never finds a `node` an agent planted. Under bubblewrap, a shell
   command gets Buckle's own `PATH` instead ([what the agent sees](mounts.md#what-the-agent-sees)).

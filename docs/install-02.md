@@ -41,6 +41,8 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | `code-journal/` | stopped scripts' text and calls' results, kept ten minutes |
 | `isolated-shell/` | the private workspace copies shell commands run in |
 | `browser-sessions/`, `workbenches/`, `receive-git-hooks/` | browser session state, workbench files, and the guard hook local pushes run |
+| `service/` | for a node running with no terminal ([service](service.md)): `serve.json` (its pid, version, and address), the lock it holds while it serves, a stop request `buckle service stop` writes, and on Windows `task.xml`, the task as installed |
+| `logs/` | `buckle.log`, the log of a node running with no terminal, and its five earlier files |
 | `*.lock.sqlite` | locks that let several Buckle processes share these files |
 
 Next: [First run](first-run.md).

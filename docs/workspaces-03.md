@@ -23,7 +23,7 @@ instead where the command deny or destructive list is set otherwise in its envir
 applied that list, and on a node with no `buckle.env` where either is set there at all: put it in
 `buckle.env` with `buckle settings set`, after `buckle init` where there is no file, or remove it
 from that environment. `buckle settings show` names a default a shell sets as not read. A change
-to `buckle.env` applies when the node restarts.
+to `buckle.env` applies when the node restarts: `buckle service restart` where a service runs it.
 
 ## The policy lists
 

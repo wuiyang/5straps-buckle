@@ -5,7 +5,7 @@ harness can drive over CLI, MCP, or HTTP, which runs what its owner allows, asks
 before anything else runs, and refuses the rest.
 
 It gives an agent files, a shell, Git, web fetch, a browser (once agent-browser is installed),
-and language tools inside one workspace, and keeps a log of what it did.
+and language tools inside one workspace, and logs what it did.
 
 ## Install
 
@@ -23,7 +23,7 @@ pnpm build
 cd buckle && npm link
 ```
 
-Shell tools need a sandbox: bubblewrap on Linux, Seatbelt on macOS (see [Sandbox](#sandbox)).
+Shell tools need a sandbox: bubblewrap on Linux, Seatbelt on macOS ([Sandbox](#sandbox)).
 
 ## First run
 
@@ -56,7 +56,7 @@ buckle fs read src/index.ts   # run a tool
 buckle manifest               # loaded packs, and why others did not load
 ```
 
-**MCP** over stdio, for any MCP host:
+**MCP** over stdio, for MCP hosts:
 
 ```bash
 claude mcp add buckle -- buckle mcp
@@ -64,7 +64,8 @@ claude mcp add buckle -- buckle mcp
 
 **HTTP**: `buckle serve` listens on `127.0.0.1:4320`, with native RPC under `/v1` and MCP on
 `/mcp`, each serving the bearer token's workspace. No TLS is built in; put a
-proxy in front for anything beyond the local host.
+proxy in front for anything beyond this host. `buckle service install --now` runs it at every
+login ([service](https://github.com/wuiyang/5straps-buckle/blob/main/docs/service.md)).
 
 ## Approvals
 
@@ -82,9 +83,8 @@ and the decision binds the whole call.
 The answer can come from anywhere: a prompt in the terminal running `buckle
 serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
 `buckle approve <token>` from another terminal. Buckle can also post each pending approval to
-the relay `BUCKLE_APPROVAL_WEBHOOK` names, to reach a person away from the machine. A
-call waits 15 seconds by default (`approvalWaitMs`) before handing the agent a token to retry
-with.
+the relay `BUCKLE_APPROVAL_WEBHOOK` names, for a person away from the machine. A
+call waits 15 seconds by default (`approvalWaitMs`) before handing the agent a token to retry.
 
 ```bash
 buckle approvals --watch
@@ -186,9 +186,9 @@ For developers:
 | `packages/protocol/` | `@5straps/protocol` | The wire schemas Buckle speaks |
 | `packages/runtime/` | `@5straps/runtime` | Runtime primitives Buckle is built on |
 
-Settings are documented in [`.env.example`](https://github.com/wuiyang/5straps-buckle/blob/main/.env.example).
+Settings are in [`.env.example`](https://github.com/wuiyang/5straps-buckle/blob/main/.env.example).
 To work on Buckle, see [CONTRIBUTING.md](https://github.com/wuiyang/5straps-buckle/blob/main/CONTRIBUTING.md).
-Changes are listed in [CHANGELOG.md](https://github.com/wuiyang/5straps-buckle/blob/main/CHANGELOG.md).
+Changes are in [CHANGELOG.md](https://github.com/wuiyang/5straps-buckle/blob/main/CHANGELOG.md).
 
 ## Security
 

@@ -16,7 +16,7 @@ buckle init
 The first run sets this machine's node up, then serves the current directory as a
 [workspace](workspaces.md). It writes the node's settings to one file, `buckle.env`, in the
 state directory: `~/.5straps/buckle`, or the absolute path in `BUCKLE_STATE_DIR`. On Linux and
-macOS it creates that directory with mode 700 and the file with mode 600. It never writes into
+macOS the directory gets mode 700 and the file 600. It never writes into
 the project. `--out <file>`, or `BUCKLE_ENV_FILE`, puts the file elsewhere; then name that file
 with `BUCKLE_ENV_FILE` whenever you start Buckle; `buckle mcp` needs it in the state
 directory. A node set up already keeps its file unless you pass `--force`, and `buckle init` in
@@ -81,9 +81,8 @@ buckle call fs_read --json '{"path":"README.md"}'
 buckle shell exec -- pnpm test
 ```
 
-A tool named `group_verb` runs as `buckle group verb`: `fs_read_batch` is `buckle fs read-batch`
-and `script_run` is `buckle script run`. The command prints the result as JSON and exits 0, exits
-3 when the call needs approval, and exits 1 on an error.
+A tool named `group_verb` runs as `buckle group verb`: `fs_read_batch` is `buckle fs read-batch`.
+It prints the result as JSON and exits 0, 3 when the call needs approval, or 1 on an error.
 
 ### MCP over stdio
 
@@ -114,7 +113,8 @@ buckle serve
 ```
 
 It listens on `127.0.0.1:4320`, or `BUCKLE_HOST` and `BUCKLE_PORT`. There is no TLS; put a
-proxy in front before exposing it. Every route but `/health` and
+proxy in front before exposing it. `buckle service install --now` keeps it running at every login
+([Running Buckle as a service](service.md)). Every route but `/health` and
 `/health/ready` wants an agent token, and serves that token's workspace:
 
 | Route | What it does |
@@ -163,7 +163,7 @@ At a terminal, the same command shows the whole action and asks in place:
   1) allow once  2) allow this session  3) always allow  n) deny >
 ```
 
-Enter, or anything not on offer, denies. Choose `2` and the write goes ahead, and later writes
-in that directory or below it run without asking in the same session. Every CLI call shares one
+Enter, or anything not on offer, denies. Choose `2` and the write goes ahead, as do later writes
+in that directory or below in the same session. Every CLI call shares one
 session, so for the CLI that lasts until `buckle grants revoke <id>`. [Approvals](approvals.md)
 covers every question Buckle asks and every way to answer one.

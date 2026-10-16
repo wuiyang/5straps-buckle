@@ -83,7 +83,8 @@ npm i -g @5straps/buckle@latest
 buckle --version
 ```
 
-Then restart any running `buckle serve`, and any MCP client that started `buckle mcp`. Grants,
+Then restart any running `buckle serve` (`buckle service restart` where a service runs it), and
+any MCP client that started `buckle mcp`. Grants,
 policies, and the audit log carry over: the calls of a 0.1 node's folder are its workspace's log,
 which `buckle log --workspace <name>` reads. The first command after an upgrade from 0.1 moves the
 node onto workspaces once, and an older Buckle then fails closed;
@@ -95,12 +96,14 @@ node onto workspaces once, and an older Buckle then fails closed;
 npm uninstall -g @5straps/buckle
 ```
 
-This removes the program, not its state. Buckle keeps everything under `~/.5straps`: the state
+Run `buckle service uninstall` first where a service runs the node, or its definition keeps naming
+a program that is gone. This removes the program, not its state. Buckle keeps everything under `~/.5straps`: the state
 directory `~/.5straps/buckle`, settings-file locks in `~/.5straps/locks`, and the device key of
 `buckle client` in `~/.5straps/client`. Deleting `~/.5straps/buckle` deletes the audit logs, so
 copy `actions.jsonl`, which holds the node's own commands, and each `workspaces/<id>/actions.jsonl`,
 which holds that workspace's calls, first.
 
-What Buckle keeps in its state directory, file by file, is on [the next page](install-02.md).
+What Buckle keeps in its state directory, file by file, is on [the next page](install-02.md). To
+keep the node running at every login, with no terminal open, see [Running Buckle as a service](service.md).
 
 Next: [First run](first-run.md).

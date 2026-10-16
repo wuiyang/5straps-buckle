@@ -111,14 +111,15 @@ Still judged in every mode:
 
 No longer judged in those modes: where a page goes after it loads, and what it requests. Every
 login kept in that profile folder or browser is within the agent's reach, so it should hold only
-the logins the agent's work needs.
+those the agent's work needs.
 
 A profile folder or an attached Chrome belongs to one workspace at a time: the one naming it as
 its own setting, else the first online workspace offering the browser that takes the node's.
 Another naming it as its own is refused, and a browser call elsewhere is refused, naming the holder. Every agent session of
-that workspace, in every Buckle process, shares the one browser on it, with its tabs and logins;
+that workspace, in every Buckle process, shares its one browser, tabs and logins included;
 `close` from any session, or the idle timeout, ends it for all. Buckle tells its processes apart
-by process id alone, so after a node settings change restart every one.
+by process id alone, so after a node settings change restart each (`buckle service restart` for
+the service).
 
 ## Checking the mode
 
