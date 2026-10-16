@@ -16,8 +16,10 @@ Requests to private, loopback, link-local, and carrier-grade-NAT addresses are r
 default. That covers a public hostname that *resolves* into one, and a public URL that
 *redirects* into one. Every redirect hop is re-resolved and re-checked.
 
-Reaching a private address on purpose (a dev server, a Tailscale host) needs approval, and
-the grant is per host and port.
+Without an approved list, reaching a private address on purpose (a dev server, a Tailscale
+host) needs approval, and the grant is per host and port. With a list, only what it names is
+reached, and a private address only through an entry naming its host exactly; a host a wildcard
+covers is refused where it resolves into one.
 
 ## Responses
 

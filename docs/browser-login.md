@@ -30,9 +30,9 @@ with, so Buckle refuses one set beside a profile, arguments, or a window, in eit
 the settings.
 
 The profile folder is judged by the rule that judges `BUCKLE_AGENT_BROWSER_COMMAND`: Buckle does
-not load from where an agent can write. A folder inside or around a workspace, a scratch root, or
-the node's state directory, or one reached through a link there, is refused, and so is one that
-does not exist yet. A path an argument names, such as `--load-extension=<folder>`, is judged
+not load from where an agent can write. A folder inside or around a workspace, a scratch root, a
+read-write mount's source, or the node's state directory, or one reached through a link there, is
+refused, and so is one that does not exist yet. A path an argument names, such as `--load-extension=<folder>`, is judged
 the same way. The browser pack is then withheld, its reason naming the setting, never the path.
 
 For example:

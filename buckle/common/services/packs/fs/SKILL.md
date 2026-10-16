@@ -9,10 +9,10 @@ Reads are free inside the workspace. Anything outside it, and every first write 
 directory, returns `approval_required`. Relay the question to the person driving you and
 retry once they approve.
 
-Where the node names its workspace `/workspace`, or another virtual root, that root and the
-scratch directories beside it are all there is. A path outside them is refused rather than
-asked, symlinks followed, so there is nothing to relay and nothing to retry: name the file
-under the root instead.
+Where the node names its workspace `/workspace`, or another virtual root, that root, each mount
+the manifest names at its own path, and the scratch directories beside it are all there is. A
+path outside them is refused rather than asked, symlinks followed, so there is nothing to relay
+and nothing to retry: name the file under the root or a mount instead.
 
 ## Reading
 

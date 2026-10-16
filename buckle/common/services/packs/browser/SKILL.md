@@ -32,33 +32,33 @@ The owner installs agent-browser and runs `agent-browser install` outside the ag
 The browser tool cannot install browsers, and no call can attach a browser, choose a profile, or
 import saved state.
 
-The browser runs headless unless the node sets `BUCKLE_BROWSER_HEADED=true`, and it is held by a
+The browser runs headless unless the owner turns on `browser.headed` for this workspace or sets the
+node's `BUCKLE_BROWSER_HEADED`, and it is held by a
 background daemon that outlives each call, so a later command reuses the browser already running.
 The first call in a mode launches that daemon and the browser, which can take long enough for your
 client to time out: send the same call again, and it reuses the browser already launched.
-After the owner changes a setting and restarts every Buckle process on the node, the next call
-starts the browser under the new setting.
+A change to this workspace's browser settings applies from the next call, which starts the browser
+under the new setting; a change to the node's `BUCKLE_BROWSER_*` defaults does so once the owner
+restarts every Buckle process on the node.
 
 ## What the browser may not reach
 
 Navigation is judged like any other network access. `file://` and other non-HTTP schemes are
-refused, so the browser cannot be used to read local files around the path rules. A private or
-loopback address asks first: relay the `buckle approve <token>` line to the person, who can also
+refused, so the browser cannot be used to read local files around the path rules. Without an
+approved list, a private or loopback address asks first: relay the `buckle approve <token>` line to the person, who can also
 answer in `buckle approvals --watch` on the Buckle machine, then retry. A page named without a scheme is opened and judged as
 `https://<page>`, and `localhost:3000` is host `localhost` on port 3000. Most dev servers speak
 plain HTTP, so write `http://localhost:3000` for one. `open` takes exactly one page. Only the page
-a command names is judged by Buckle's rules, down to its port and path. When an approved list is
-set (the node's or the workspace's), Buckle also starts the browser with the hosts both lists
-allow as agent-browser's `--allowed-domains`, so clicks, redirects, and page requests to other
+a command names is judged by Buckle's rules, down to its port and path. When the workspace has an
+approved list (its own, else the node's), Buckle also starts the browser with that list's hosts as
+agent-browser's `--allowed-domains`, so clicks, redirects, and page requests to other
 hosts are blocked inside the browser. That holds for a fresh browser only: agent-browser refuses
 the list with a profile folder or an attached browser. There Buckle still judges the page each
 command names, every file path, and every flag; only where a page goes after it loads is no longer
 held to the list, and every login in that browser is within reach. Use only the logins the task
 needs. The containment is by host: for an entry such as `localhost:3000` or `https://app.example.com/admin`,
 the port and path hold for the page a command names, but inside the page that host is reachable
-on any port and path. When the node and
-workspace lists share no host and port, the browser does not start, and the refusal names the
-list to change. When the allowed hosts change, the next call relaunches a fresh browser, which
+on any port and path. When the allowed hosts change, the next call relaunches a fresh browser, which
 resets open tabs and cookies, and its result carries a `notice` saying so. Without an approved
 list, clicks and redirects are not judged.
 
