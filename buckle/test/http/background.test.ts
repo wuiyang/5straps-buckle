@@ -41,7 +41,7 @@ function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch { return false }
 }
 
-function logLines(node: Node): Array<{ level: string; message: string; fields?: Record<string, unknown> }> {
+function logLines(node: Node): Array<{ level: string; message: string; fields?: Record<string, unknown>; error?: { message: string } }> {
   return readFileSync(serviceLogPath(node.state), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { level: string; message: string })
 }
 
@@ -70,6 +70,11 @@ describe('buckle serve --background', () => {
     const second = buckle(node, ['serve', '--background'])
     expect(second.status).toBe(1)
     expect(second.stderr).toBe(`Buckle is already running in service mode (pid ${pid}), so buckle serve --background starts nothing. Answer its approvals here with: buckle approvals --watch --all\n`)
+    // A definition's own serve beside it exits 2, which the systemd unit does not restart on (RestartPreventExitStatus).
+    const unit = buckle(node, ['serve', '--service', 'systemd', '--state-dir', node.state])
+    expect(unit.status).toBe(2)
+    expect(logLines(node)).toContainEqual(expect.objectContaining({ level: 'fatal', message: 'Buckle failed to start', error: expect.objectContaining({ message: 'Buckle is already running in service mode' }) }))
+    expect(alive(pid)).toBe(true)
 
     await requestStop(node.state, pid)
     await vi.waitFor(() => expect(alive(pid)).toBe(false), { timeout: 20_000, interval: 100 })

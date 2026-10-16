@@ -51,6 +51,12 @@ export interface ServiceManager {
   state(): Promise<ServiceState>
 }
 
+/**
+ * The exit code of a serve a definition started that found another node already serving its state directory: a
+ * definition does not restart it on that code (systemd's RestartPreventExitStatus), as starting again changes nothing.
+ */
+export const SERVE_REFUSED_EXIT = 2
+
 export class ServiceManagerError extends Error {
   override readonly name = 'ServiceManagerError'
 }

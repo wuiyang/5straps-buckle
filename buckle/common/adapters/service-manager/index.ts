@@ -1,6 +1,7 @@
 import type { NodeLocation } from '../../runtime/environment.js'
 import type { ProcessRunner } from '../../types/ports/process-runner.js'
 import type { ServiceManager } from '../../types/ports/service-manager.js'
+import { createSystemdManager } from './systemd.js'
 
 /** What a service manager adapter is built from: the platform, the process environment, a runner, and the node's location. */
 export interface ServiceManagerContext {
@@ -12,6 +13,7 @@ export interface ServiceManagerContext {
 }
 
 /** The service manager Buckle drives on this platform; null where it drives none. */
-export function serviceManagerFor(_context: ServiceManagerContext): ServiceManager | null {
+export function serviceManagerFor(context: ServiceManagerContext): ServiceManager | null {
+  if (context.platform === 'linux') return createSystemdManager({ environment: context.environment, run: context.run })
   return null
 }
