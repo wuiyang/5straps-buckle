@@ -17,6 +17,7 @@ import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../wor
 import { createAuditHealth } from '../audit/audit-health.js'
 import { createExecutionBudget } from '../invocation/executions.js'
 import { unmetPackPrerequisite } from '../packs/index.js'
+import { cdpEndpointKey, profileFolderKey } from '../packs/browser/mode.js'
 import type { ActionLog } from '../../types/ports/action-log.js'
 import { activeElsewhere, activeWorkDirectory } from './active-work.js'
 import { migrateNode, type AskName } from './migration.js'
@@ -610,10 +611,15 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
   }
 
   /** What a workspace's browser in force is keyed by (an attached Chrome's endpoint, else its profile folder), and whether the setting is its own. */
+  /**
+   * The one key of the browser a workspace's settings reach, used by the set-time refusal and the per-call holder check
+   * alike, so another spelling of one Chrome or one folder is the same key (cdpEndpointKey, profileFolderKey). It is
+   * never shown: a message names the holder alone.
+   */
   function browserKeyOf(settings: WorkspaceSettings): { key: string | null; own: boolean } {
     const { browser, sources } = resolveSettings(settings, node.workspaceDefaults)
-    if (browser.cdp) return { key: `cdp:${browser.cdp}`, own: sources['browser.cdp'] === 'workspace' }
-    if (browser.profile) return { key: `profile:${comparablePath(browser.profile, ignoresCase(platform))}`, own: sources['browser.profile'] === 'workspace' }
+    if (browser.cdp) return { key: `cdp:${cdpEndpointKey(browser.cdp)}`, own: sources['browser.cdp'] === 'workspace' }
+    if (browser.profile) return { key: `profile:${profileFolderKey(browser.profile, platform, input.storedPath)}`, own: sources['browser.profile'] === 'workspace' }
     return { key: null, own: false }
   }
 

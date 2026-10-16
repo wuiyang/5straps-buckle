@@ -1,10 +1,11 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig, unreadWorkspaceDefaults, type NodeConfig } from '../common/runtime/config.js'
 import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
@@ -103,7 +104,57 @@ describe('a profile folder', () => {
   })
 })
 
+// The one-owner rule keys the Chrome or folder the pack really reaches, not the setting's spelling.
+describe('another spelling of a profile folder', { timeout: 20_000 }, () => {
+  it('through a link, set with the command line, is refused naming the holder', async () => {
+    const { root, config, manager } = await node()
+    symlinkSync(join(root, 'profile'), join(root, 'profile-link'))
+    expect((await set(config, 'alpha', 'browser.profile', join(root, 'profile'))).exitCode).toBe(0)
+    const refused = await set(config, 'beta', 'browser.profile', join(root, 'profile-link'))
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('That profile folder belongs to workspace alpha')
+    expect(refused.err).not.toContain(root)
+    await manager.close()
+  })
+
+  it('by a hand edit with a trailing slash, or the node\'s through a link, is refused at the call, naming the holder', async () => {
+    const root = scratch()
+    mkdirSync(join(root, 'real-profile'))
+    symlinkSync(join(root, 'real-profile'), join(root, 'profile-link'))
+    const { config, manager, calls } = await node({ BUCKLE_BROWSER_PROFILE: join(root, 'profile-link') })
+    expect((await set(config, 'alpha', 'browser.profile', join(root, 'real-profile'))).exitCode).toBe(0)
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'ok' })
+    // beta takes the node's folder, the same one through a link.
+    expect(await open(manager, 'beta')).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('belongs to workspace alpha') } })
+    const file = settingsPath(config.stateDirectory, idOf(manager, 'beta'))
+    const stored = JSON.parse(readFileSync(file, 'utf8')) as { browser?: Record<string, unknown> }
+    writeFileSync(file, JSON.stringify({ ...stored, browser: { ...stored.browser, profile: `${join(root, 'real-profile')}/` } }))
+    expect(await open(manager, 'beta')).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('belongs to workspace alpha') } })
+    expect(calls().filter(call => call[0] === 'snapshot')).toHaveLength(1)
+    await manager.close()
+  })
+})
+
 describe('an attached Chrome', () => {
+  it.each(['http://127.0.0.1:9222', 'http://localhost:9222/', 'ws://127.0.0.1:9222/devtools/browser/x', 'HTTP://127.0.0.1:9222', 'http://[::1]:9222', 'ws://user:secret@localhost:9222/devtools/browser/y?token=t'])('named %s is the one at port 9222 another workspace holds, and is refused naming only the holder', { timeout: 20_000 }, async (spelling) => {
+    const { config, manager } = await node()
+    expect((await set(config, 'alpha', 'browser.cdp', '9222')).exitCode).toBe(0)
+    const refused = await set(config, 'beta', 'browser.cdp', spelling)
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('That Chrome belongs to workspace alpha')
+    for (const part of ['9222', 'secret', 'token']) expect(refused.err).not.toContain(part)
+    await manager.close()
+  })
+
+  it('is told apart by host and port alone', async () => {
+    const { cdpEndpointKey } = await import('../common/services/packs/browser/mode.js')
+    expect(cdpEndpointKey('9222')).toBe('127.0.0.1:9222')
+    expect(cdpEndpointKey('https://Chrome.Example.test/devtools')).toBe('chrome.example.test:9222')
+    expect(cdpEndpointKey('wss://chrome.example.test')).toBe('chrome.example.test:443')
+    expect(cdpEndpointKey('ws://chrome.example.test/')).toBe('chrome.example.test:80')
+    expect(cdpEndpointKey('http://127.0.0.1:9333')).not.toBe(cdpEndpointKey('9222'))
+  })
+
   it('belongs to one workspace at a time, as a profile folder does', async () => {
     const { config, manager } = await node()
     expect((await set(config, 'alpha', 'browser.cdp', '9222')).exitCode).toBe(0)

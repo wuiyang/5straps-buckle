@@ -51,7 +51,8 @@ workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its b
 ## The browser
 
 - A profile folder or an attached Chrome serves one workspace at a time, judged at each
-  `browser_command`. A browser another workspace started on it before the change keeps running
+  `browser_command` by the folder it really is and the Chrome's host and port. Two names of one
+  machine, such as a DNS name and its address, count as two Chromes: Buckle does not resolve them. A browser another workspace started on it before the change keeps running
   until its `close` or its idle timeout.
 - The setup face's `/workspaces/<name>/setup/status` still names the node's `BUCKLE_BROWSER_*`
   setting in `browser.setting`, whether the workspace's own setting or the node's chose the mode,

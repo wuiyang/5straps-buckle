@@ -3,7 +3,7 @@ import { statSync } from 'node:fs'
 import { posix, win32 } from 'node:path'
 import { ARGS_UNTRUSTED, browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
 import { placesOnTheWay, type StoredPath, type UntrustedRoots } from '../../../domain/executable.js'
-import { ignoresCase, isInsideComparable, typedPath } from '../../../domain/paths.js'
+import { comparablePath, ignoresCase, isInsideComparable, typedPath } from '../../../domain/paths.js'
 
 /**
  * Which browser `browser_command` drives, chosen by the owner's settings alone: a fresh one for each session (the
@@ -66,6 +66,42 @@ function settingForms(mode: BrowserMode, setting: string, platform: NodeJS.Platf
   const userinfo = url.username ? `${url.username}${url.password ? `:${url.password}` : ''}@` : ''
   const rest = `${url.pathname === '/' ? '' : url.pathname}${url.search}`
   return [endpoint, url.href, host, userinfo, rest, url.search].filter(form => form.length > 1).map(form => [form, setting])
+}
+
+/** The host names of this machine's own loopback, which reach one Chrome whichever is typed. */
+const LOOPBACK_NAMES = new Set(['localhost', '127.0.0.1', '::1'])
+
+/**
+ * Which Chrome an attached endpoint reaches, as `host:port`, for the one-owner rule (Q10): a bare port is 127.0.0.1 and
+ * that port; the loopback's names are one host; any other host is compared in lower case; the port is the one named,
+ * else the one agent-browser reaches (9222 for an http value naming a path and no port, as settingForms reads it, else
+ * the scheme's own). The scheme, the path, the query, and any userinfo are dropped, so no token reaches the key. A DNS
+ * name and an address of one machine stay two keys: names are not resolved.
+ */
+export function cdpEndpointKey(endpoint: string): string {
+  const value = endpoint.trim()
+  if (/^\d+$/.test(value)) return `127.0.0.1:${Number(value)}`
+  let url: URL
+  try { url = new URL(value) } catch { return value.toLowerCase() }
+  const name = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const host = LOOPBACK_NAMES.has(name) ? '127.0.0.1' : name
+  const scheme = url.protocol.toLowerCase()
+  const port = url.port || (scheme.startsWith('http') && url.pathname !== '/' ? '9222' : scheme === 'https:' || scheme === 'wss:' ? '443' : '80')
+  return `${host}:${port}`
+}
+
+/**
+ * Which folder a profile setting hands on, for the one-owner rule (Q10): where it really lands (judgedFolder), else the
+ * folder as typed while it is not there yet, in the case the volume compares.
+ */
+export function profileFolderKey(profile: string, platform: NodeJS.Platform, stored?: StoredPath): string {
+  const landing = judgedFolder(profile, [], platform, stored)
+  let folder: string
+  if (typeof landing === 'string') folder = landing
+  else {
+    try { folder = typedPath(profile, platform) } catch { folder = profile }
+  }
+  return comparablePath(folder, ignoresCase(platform))
 }
 
 /**
