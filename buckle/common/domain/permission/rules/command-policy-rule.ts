@@ -86,17 +86,23 @@ const DAEMON_RELOAD = /(?:^|[\s'"])daemon-reload(?=$|[\s'"])/
 const USER_MANAGER = /(?:^|[\s'"])--user(?=$|[\s'"])/
 /** What ends one statement of a command line, so a target in the next is not read as this program's. */
 const STATEMENT_END = /[;&|\n`()]/
+/**
+ * A command substitution with no parenthesis or backquote inside, such as the `$(id -u)` of `gui/$(id -u)/...`: read
+ * also as one word, so it does not cut the statement around it in two.
+ */
+const SIMPLE_SUBSTITUTION = /\$\([^()`]*\)|`[^()`]*`/g
 
 /**
  * Whether the line runs `systemctl`, `loginctl`, `launchctl`, or `schtasks.exe` on Buckle's own unit, agent, or task, or
  * reloads the user manager (fix brief 6, item 8): a tool that could would stop the node, or start a rewritten one,
  * outside its approvals.
- * Read statement by statement, each with patterns that hold no nested repetition, so in linear time. A speed bump, as
- * the name match above is: an unsandboxed shell reaches the service manager by other means (known-limits-05).
+ * Read statement by statement, as written and with each simple command substitution read as a word, each with
+ * patterns that hold no nested repetition, so in linear time. A speed bump, as the name match above is: an unsandboxed
+ * shell reaches the service manager by other means (known-limits-05).
  */
 export function administersBuckleService(line: string): boolean {
-  return line.split(STATEMENT_END).some(statement => SERVICE_PROGRAM.test(statement)
-    && (SERVICE_TARGET.test(statement) || (DAEMON_RELOAD.test(statement) && USER_MANAGER.test(statement))))
+  return [line, line.replace(SIMPLE_SUBSTITUTION, 'x')].some(text => text.split(STATEMENT_END).some(statement => SERVICE_PROGRAM.test(statement)
+    && (SERVICE_TARGET.test(statement) || (DAEMON_RELOAD.test(statement) && USER_MANAGER.test(statement)))))
 }
 
 /**

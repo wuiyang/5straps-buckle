@@ -10,7 +10,7 @@ import { serviceManagerFor } from '../common/adapters/service-manager/index.js'
 import { createLaunchdManager, LAUNCHCTL } from '../common/adapters/service-manager/launchd.js'
 import { launchdAgentPath, launchdGuardedPaths, launchdLogPath, readAgent, renderAgent } from '../common/domain/launchd-agent.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
-import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
+import { administersBuckleService, createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
 import { compilePolicy } from '../common/domain/policy.js'
 import { protectedStateRoots } from '../common/runtime/config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -18,6 +18,7 @@ import { serviceInstalled } from '../common/services/node-service/installed.js'
 import { holdServe, runningNode, serviceDirectory } from '../common/services/node-service/serve-record.js'
 import type { ProcessRequest, ProcessRunner } from '../common/types/ports/process-runner.js'
 import { ServiceManagerError, type ServiceManager } from '../common/types/ports/service-manager.js'
+import { leastProcessorTime, PROCESSOR_TIME_ROW_TIMEOUT } from './support/processor-time.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // D85 Q4, owner ruling of 2026-10-17 ("macOS find equivalent of Linux"): on macOS, a launchd agent, the counterpart of
@@ -507,6 +508,32 @@ describe('a shell command on Buckle\'s own launchd agent', () => {
     const outcome = evaluate(command, args)
     expect(outcome.kind === 'deny' ? outcome.denial.reason : '').toBe('A tool cannot administer the Buckle that runs it')
   })
+
+  // gui/$(id -u)/<label> is how the launchctl man page and most guides name a service in the login session; the
+  // substitution's parentheses cut the line into statements, which left the label in one apart from launchctl.
+  it.each([
+    ['bash', ['-c', 'launchctl kickstart -k gui/$(id -u)/com.5straps.buckle']],
+    ['bash', ['-c', 'cd /tmp && launchctl bootout "gui/$(id -u)/com.5straps.buckle"']],
+    ['bash', ['-c', 'launchctl bootout gui/`id -u`/com.5straps.buckle']],
+    ['bash', ['-c', 'systemctl --user stop $(echo) buckle.service']],
+  ] as Array<[string, string[]]>)('refuses %s %j, a command substitution inside the line', (command, args) => {
+    const outcome = evaluate(command, args)
+    expect(outcome.kind === 'deny' ? outcome.denial.reason : '').toBe('A tool cannot administer the Buckle that runs it')
+  })
+
+  it.each([
+    ['bash', ['-c', 'echo $(launchctl list) com.5straps.buckle']],
+    ['bash', ['-c', 'launchctl list; echo $(id -u) com.5straps.buckle']],
+  ] as Array<[string, string[]]>)('leaves %s %j alone, where no launchctl statement names the agent', (command, args) => {
+    expect(evaluate(command, args).kind).not.toBe('deny')
+  })
+
+  // About 100 KB, the most one shell_exec argument holds, of substitutions that never close.
+  it('reads a long line of substitutions in well under a second', () => {
+    const { milliseconds, result } = leastProcessorTime(() => administersBuckleService(`launchctl bootout gui/$(id -u)/com.5straps.buckle${' $(id -u'.repeat(7_000)}${' `id'.repeat(7_001)}`))
+    expect(milliseconds).toBeLessThan(250)
+    expect(result).toBe(true)
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   it.each([
     ['launchctl', ['list']],
