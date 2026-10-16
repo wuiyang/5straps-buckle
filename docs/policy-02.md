@@ -60,6 +60,8 @@ stay ordinary, such as `python3 --version`, `python3 -VV`, `perl -V`, `ruby -v`,
 Static grading of such code (safe, warn, danger, unknown) comes after the first release. The
 package runners `npx`, `pnpx`, and `bunx` stay ordinary commands for now, judged by their own words.
 
-Each workspace's list is its own, empty by default. A node moving from 0.1 copies its
-`BUCKLE_ALLOWED_INTERPRETERS` into each workspace's list
-([Moving a node from 0.1](workspaces-04.md)).
+A workspace's list is its own where it has one, used alone; else it is the node's
+`BUCKLE_ALLOWED_INTERPRETERS` (`buckle settings set allowed-interpreters`), which is empty by
+default. Removing a workspace's last entry gives it the node's list again ([Node
+defaults](workspaces-03.md#the-policy-lists)). Moving a node from 0.1 copies no list into any
+workspace ([the move](workspaces-04.md)).
