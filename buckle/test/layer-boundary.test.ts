@@ -37,7 +37,8 @@ function bundledSources(): string[] {
   return [...layers, join(PACKAGE_ROOT, 'server', 'entry.ts'), join(PACKAGE_ROOT, 'server', 'error.ts')]
 }
 
-describe('the layer boundary', () => {
+// The scans read the source tree synchronously, and under CI they run beside the other suites, so each gets a minute.
+describe('the layer boundary', { timeout: 60_000 }, () => {
   it('reads dynamic imports as value imports', () => {
     const found = importsIn("const common = await import('../../../../common/runtime/services.js')\nimport type { X } from './x.js'", 'layers/common/server/routes/probe.ts')
     expect(found).toEqual(expect.arrayContaining([
