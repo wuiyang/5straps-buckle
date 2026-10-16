@@ -24,14 +24,10 @@ export interface ServiceDefinition {
 export interface InstalledService {
   node: string | null
   main: string | null
-  stateDirectory: string | null
+  /** Whether it serves this node's state directory; null where it names none Buckle can read. */
+  thisNode: boolean | null
   /** Whether it starts at login. */
   enabled: boolean
-}
-
-/** What the service manager says of the service now. */
-export interface ServiceState {
-  active: boolean
 }
 
 /**
@@ -57,7 +53,6 @@ export interface ServiceManager {
   stop?(): Promise<void>
   /** Restarts it in one step, where the manager can; otherwise a stop, then start. */
   restart?(): Promise<void>
-  state(): Promise<ServiceState>
 }
 
 /**

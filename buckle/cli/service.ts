@@ -2,8 +2,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
 import { parseArgs } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
-import { ignoresCase, isInsideComparable } from '../common/domain/paths.js'
-import { actionsPath, realPathOf } from '../common/runtime/config.js'
+import { actionsPath } from '../common/runtime/config.js'
 import { defaultEnvironmentFile, nodeLocation } from '../common/runtime/environment.js'
 import { addressOf } from '../common/services/node-service/attach.js'
 import { requestStop, runningNode, serviceLogPath, waitForStop, type RunningNode, type ServeRecord } from '../common/services/node-service/serve-record.js'
@@ -134,7 +133,7 @@ async function install(context: ServiceContext, now: boolean): Promise<CliResult
   }
   if (!existsSync(context.input.mainScript)) return fail(context.err, 'A service runs the built Buckle, and this copy has no dist/main.js: build it first with pnpm build.')
   const installed = await manager.installed()
-  const refusal = installed === null ? null : otherNode(installed, location, context.input.platform)
+  const refusal = installed === null ? null : otherNode(installed)
   if (refusal !== null) return fail(context.err, refusal)
   const running = await runningNode(location.stateDirectory)
   if (now && running?.record?.manager === 'background') return fail(context.err, `${inBackground(running)}; stop it first with buckle service stop, then install again.`)
@@ -165,15 +164,10 @@ function definitionFor(context: ServiceContext): ServiceDefinition {
  * One service per machine (Phase 3, item 5): a definition for another state directory, or one Buckle cannot read,
  * refuses an install, naming neither path.
  */
-function otherNode(installed: InstalledService, location: NodeLocation, platform: NodeJS.Platform): string | null {
-  if (installed.stateDirectory === null) return 'A Buckle service is installed whose definition does not name its state directory, and this machine runs one service. Remove it with buckle service uninstall, then install again.'
-  if (sameDirectory(installed.stateDirectory, location.stateDirectory, platform)) return null
+function otherNode(installed: InstalledService): string | null {
+  if (installed.thisNode === null) return 'A Buckle service is installed whose definition does not name its state directory, and this machine runs one service. Remove it with buckle service uninstall, then install again.'
+  if (installed.thisNode) return null
   return 'A Buckle service for another state directory is installed, and this machine runs one service. Remove it with buckle service uninstall, then install this node\'s.'
-}
-
-function sameDirectory(left: string, right: string, platform: NodeJS.Platform): boolean {
-  const [one, other] = [realPathOf(left, platform), realPathOf(right, platform)]
-  return isInsideComparable(one, other, ignoresCase(platform), platform) && isInsideComparable(other, one, ignoresCase(platform), platform)
 }
 
 async function uninstall(context: ServiceContext): Promise<CliResult> {
@@ -302,7 +296,7 @@ async function status(context: ServiceContext, json: boolean): Promise<CliResult
   const report = {
     platform: context.input.platform,
     manager: manager?.kind ?? null,
-    definition: installed === null ? null : { label: manager!.label, enabled: installed.enabled, thisNode: otherNode(installed, location, context.input.platform) === null },
+    definition: installed === null ? null : { label: manager!.label, enabled: installed.enabled, thisNode: installed.thisNode === true },
     running: running === null ? null : { pid: running.record?.pid ?? null, startedBy: running.record?.manager ?? null, address: running.record === null ? null : addressOf(running.record), version: running.record?.version ?? null, startedAt: running.record?.startedAt ?? null },
   }
   if (json) {

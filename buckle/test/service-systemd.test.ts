@@ -97,7 +97,7 @@ exit 0
 }
 
 function manager(fake: FakeSystemd, environment: NodeJS.ProcessEnv = fake.environment) {
-  return createSystemdManager({ environment, run: runProcess, home: fake.root, cwd: fake.root })
+  return createSystemdManager({ environment, run: runProcess, location: { stateDirectory: join(fake.root, 'state'), environmentFile: null }, home: fake.root, cwd: fake.root })
 }
 
 describe.skipIf(process.platform === 'win32')('systemctl --user, imitated on PATH', () => {
@@ -119,15 +119,14 @@ describe.skipIf(process.platform === 'win32')('systemctl --user, imitated on PAT
     const systemd = manager(fake)
     expect(await systemd.installed()).toBeNull()
     await systemd.install({ ...DEFINITION, stateDirectory: join(fake.root, 'state') }, { now: false })
-    expect(await systemd.installed()).toEqual({ node: DEFINITION.node, main: DEFINITION.main, stateDirectory: join(fake.root, 'state'), enabled: false })
+    expect(await systemd.installed()).toEqual({ node: DEFINITION.node, main: DEFINITION.main, thisNode: true, enabled: false })
     await systemd.start()
     await systemd.stop!()
     await systemd.restart!()
-    expect(await systemd.state()).toEqual({ active: true })
     await systemd.uninstall()
     expect(existsSync(join(fake.root, 'config', 'systemd', 'user', 'buckle.service'))).toBe(false)
     expect(fake.calls()).toEqual(['--user daemon-reload', '--user enable buckle.service', '--user is-enabled buckle.service', '--user start buckle.service', '--user stop buckle.service',
-      '--user restart buckle.service', '--user is-active buckle.service', '--user stop buckle.service', '--user disable buckle.service', '--user daemon-reload', '--user reset-failed buckle.service'])
+      '--user restart buckle.service', '--user stop buckle.service', '--user disable buckle.service', '--user daemon-reload', '--user reset-failed buckle.service'])
   })
 
   it('says no systemd user session answers without XDG_RUNTIME_DIR, without systemctl, or when the manager does not answer', async () => {
@@ -160,7 +159,7 @@ describe.skipIf(process.platform === 'win32')('buckle service on Linux, with sys
   async function run(fake: FakeSystemd, main: string, argv: string[]) {
     let out = ''
     let err = ''
-    const result = await serviceCommand({ argv, environment: fake.environment, platform: 'linux', cwd: fake.root, run: runProcess, mainScript: main, manager: () => createSystemdManager({ environment: fake.environment, run: runProcess, home: fake.root, cwd: fake.root }), out: text => { out += text }, err: text => { err += text } })
+    const result = await serviceCommand({ argv, environment: fake.environment, platform: 'linux', cwd: fake.root, run: runProcess, mainScript: main, manager: location => createSystemdManager({ environment: fake.environment, run: runProcess, location, home: fake.root, cwd: fake.root }), out: text => { out += text }, err: text => { err += text } })
     return { ...result, out, err }
   }
 

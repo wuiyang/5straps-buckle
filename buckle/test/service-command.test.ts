@@ -49,13 +49,12 @@ function fakeManager(state: string, options: { kind?: 'systemd' | 'task-schedule
     installed: async () => installed,
     install: async (definition: ServiceDefinition, flags: { now: boolean }) => {
       calls.push(['install', definition, flags])
-      installed = { node: definition.node, main: definition.main, stateDirectory: definition.stateDirectory, enabled: true }
+      installed = { node: definition.node, main: definition.main, thisNode: true, enabled: true }
       if (flags.now) await begin()
     },
     uninstall: async () => { calls.push(['uninstall']); installed = null },
     start: async () => { calls.push(['start']); await begin() },
     ...(options.signals === false ? {} : { stop: async () => { calls.push(['stop']); await running?.close() } }),
-    state: async () => ({ active: running !== null }),
   }
   return { manager, calls }
 }
@@ -136,8 +135,8 @@ describe('buckle service install', () => {
 
   it.each([
     ['the manager does not answer', { unavailable: 'No systemd user session answers here' }, 'No systemd user session answers here, so nothing was installed; buckle serve --background runs the node until it stops.\n'],
-    ['another state directory\'s definition is installed', { installed: { node: '/usr/bin/node', main: '/opt/buckle/dist/main.js', stateDirectory: '/home/other/.5straps/buckle', enabled: true } }, 'A Buckle service for another state directory is installed, and this machine runs one service. Remove it with buckle service uninstall, then install this node\'s.\n'],
-    ['a definition names no state directory', { installed: { node: null, main: null, stateDirectory: null, enabled: true } }, 'A Buckle service is installed whose definition does not name its state directory, and this machine runs one service. Remove it with buckle service uninstall, then install again.\n'],
+    ['another state directory\'s definition is installed', { installed: { node: '/usr/bin/node', main: '/opt/buckle/dist/main.js', thisNode: false, enabled: true } }, 'A Buckle service for another state directory is installed, and this machine runs one service. Remove it with buckle service uninstall, then install this node\'s.\n'],
+    ['a definition names no state directory', { installed: { node: null, main: null, thisNode: null, enabled: true } }, 'A Buckle service is installed whose definition does not name its state directory, and this machine runs one service. Remove it with buckle service uninstall, then install again.\n'],
   ])('refuses where %s, naming no path', async (_case, options, reason) => {
     const target = node()
     const { manager, calls } = fakeManager(target.state, options)
@@ -193,7 +192,7 @@ describe('buckle service start, stop, restart, and uninstall', () => {
 
   it('says to install again where the definition names a Node binary or main.js that is gone', async () => {
     const target = node()
-    const { manager, calls } = fakeManager(target.state, { installed: { node: join(target.root, 'nvm', 'v22', 'bin', 'node'), main: join(target.root, 'gone', 'main.js'), stateDirectory: target.state, enabled: true } })
+    const { manager, calls } = fakeManager(target.state, { installed: { node: join(target.root, 'nvm', 'v22', 'bin', 'node'), main: join(target.root, 'gone', 'main.js'), thisNode: true, enabled: true } })
     const reason = 'The Buckle service runs a Node binary and a Buckle main.js that is no longer there, as after Node is upgraded or moved; run buckle service install again.\n'
     expect((await service(target, ['start'], manager)).err).toBe(reason)
     expect((await service(target, ['restart'], manager)).err).toBe(reason)

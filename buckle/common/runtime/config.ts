@@ -516,6 +516,12 @@ export function realPathOf(path: string, platform: NodeJS.Platform = process.pla
   return nativePath(real, platform)
 }
 
+/** Whether two paths name one directory where each really is, compared as the platform's disks compare names. */
+export function sameDirectory(left: string, right: string, platform: NodeJS.Platform = process.platform): boolean {
+  const [one, other] = [realPathOf(left, platform), realPathOf(right, platform)]
+  return isInsideComparable(one, other, ignoresCase(platform), platform) && isInsideComparable(other, one, ignoresCase(platform), platform)
+}
+
 /**
  * A typed root as the disk names it (realPathOf), refused on Windows where it is a whole drive (`D:\`), as typed or
  * where it really is: everything on the drive would be the workspace or the scratch the agent writes without asking.

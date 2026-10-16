@@ -108,6 +108,21 @@ describe('buckle serve --background', () => {
     expect(audit).not.toContain('background-admin-fixture')
   }, 90_000)
 
+  // Phase 3, item 3: the Windows task's action is this start, naming where the node lives; it detaches the node and ends,
+  // and the node stops on its stop request, as Task Scheduler delivers no SIGTERM. Run here on Linux, imitating it.
+  it('starts the node as the Windows task\'s action does, from where the definition names, and stops it by its request', async () => {
+    const node = await prepareNode()
+    const { BUCKLE_STATE_DIR: _named, ...shell } = node.env
+    const run = spawnSync(process.execPath, [entry, 'serve', '--background', '--service', 'task-scheduler', '--state-dir', node.state], { encoding: 'utf8', env: shell, cwd: node.state, timeout: 60_000 })
+    expect(run.status).toBe(0)
+    const pid = Number(/\(pid (\d+)\)/.exec(run.stdout)![1])
+    started.push(pid)
+    expect(readRecord(node.state)).toMatchObject({ pid, manager: 'task-scheduler', port: node.port })
+    expect(buckle(node, ['service', 'status']).stdout).toContain(`Running    yes (pid ${pid}), started by Task Scheduler at `)
+    expect(buckle(node, ['service', 'stop']).stdout).toBe(`Stopped Buckle (pid ${pid}).\n`)
+    expect(alive(pid)).toBe(false)
+  }, 90_000)
+
   it('says a node that did not start failed, and its log says why', async () => {
     const node = await prepareNode('BUCKLE_SANDBOX=no-such-sandbox\n')
     const run = buckle(node, ['serve', '--background'])

@@ -4,8 +4,9 @@ import { isAbsolute, join } from 'pathe'
 import { buildChildEnvironment } from '../../domain/environment.js'
 import { findExecutable } from '../../domain/executable.js'
 import { homeDirectory } from '../../domain/paths.js'
+import { sameDirectory } from '../../runtime/config.js'
 import type { ProcessRunner } from '../../types/ports/process-runner.js'
-import { SERVE_REFUSED_EXIT, ServiceManagerError, type InstalledService, type ServiceDefinition, type ServiceManager } from '../../types/ports/service-manager.js'
+import { SERVE_REFUSED_EXIT, ServiceManagerError, type InstalledService, type NodeLocation, type ServiceDefinition, type ServiceManager } from '../../types/ports/service-manager.js'
 import { replaceFile } from '../json-file-store.js'
 
 /** The one Buckle unit a machine has (Phase 3, Q4): a systemd user unit, so it runs as the owner, at login. */
@@ -75,7 +76,7 @@ function quotedSetting(assignment: string): string {
 }
 
 /** What a unit's ExecStart runs, read back as renderUnit writes it; null fields where it does not say. */
-export function readUnit(text: string): Omit<InstalledService, 'enabled'> {
+export function readUnit(text: string): { node: string | null; main: string | null; stateDirectory: string | null } {
   const line = /^ExecStart=(.*)$/m.exec(text)?.[1]
   const words = line === undefined ? [] : execWords(line)
   const at = words.indexOf('--state-dir')
@@ -96,7 +97,7 @@ function execWords(line: string): string[] {
  * Linux's service manager (Phase 3, item 2): the systemd user manager, driven through `systemctl --user`, found on
  * PATH and started with no shell and an environment of the fixed list every child gets plus the session's address.
  */
-export function createSystemdManager(input: { environment: NodeJS.ProcessEnv; run: ProcessRunner; home?: string; cwd?: string }): ServiceManager {
+export function createSystemdManager(input: { environment: NodeJS.ProcessEnv; run: ProcessRunner; location: NodeLocation; home?: string; cwd?: string }): ServiceManager {
   const unitDirectory = systemdUnitDirectory(input.environment, input.home)
   const unit = join(unitDirectory, SYSTEMD_UNIT)
   const environment = buildChildEnvironment({ parent: input.environment, extra: Object.fromEntries(SESSION_VARIABLES.flatMap(name => input.environment[name] ? [[name, input.environment[name]!]] : [])), platform: 'linux' })
@@ -122,10 +123,11 @@ export function createSystemdManager(input: { environment: NodeJS.ProcessEnv; ru
       const answer = await systemctl(['show', '--property=Version'])
       return answer.exitCode === 0 ? null : 'No systemd user session answers here (systemctl --user did not answer)'
     },
-    async installed() {
+    async installed(): Promise<InstalledService | null> {
       if (!existsSync(unit)) return null
       const enabled = (await systemctl(['is-enabled', SYSTEMD_UNIT]).catch(() => ({ exitCode: 1 }))).exitCode === 0
-      return { ...readUnit(readFileSync(unit, 'utf8')), enabled }
+      const { node, main, stateDirectory } = readUnit(readFileSync(unit, 'utf8'))
+      return { node, main, thisNode: stateDirectory === null ? null : sameDirectory(stateDirectory, input.location.stateDirectory, 'linux'), enabled }
     },
     async install(definition, options) {
       const text = renderUnit(definition)
@@ -152,8 +154,5 @@ export function createSystemdManager(input: { environment: NodeJS.ProcessEnv; ru
     start: () => required(['start', SYSTEMD_UNIT]),
     stop: () => required(['stop', SYSTEMD_UNIT], STOPPING_MS),
     restart: () => required(['restart', SYSTEMD_UNIT], STOPPING_MS),
-    async state() {
-      return { active: (await systemctl(['is-active', SYSTEMD_UNIT])).exitCode === 0 }
-    },
   }
 }
