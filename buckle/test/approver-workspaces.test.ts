@@ -161,6 +161,26 @@ describe('an approver\'s command refused before any workspace answers it', () =>
   })
 })
 
+// Fix brief 4, finding 31: check-url refused before a workspace was chosen was recorded nowhere, and read as an unreadable
+// node. Its exit 1 means denied, so each refusal takes its bad-input code 2.
+describe('buckle check-url refused before a workspace is chosen', () => {
+  const attemptAndResult = [['attempt', 'started'], ['result', 'error']]
+  const logged = () => createFileActionLog(actionsPath(node)).read(40).filter(entry => entry.tool === 'cli_check-url').map(entry => [entry.event, entry.outcome])
+
+  it.each([
+    [['https://example.com'], 'No workspace holds the current directory. Name one with --workspace <name>'],
+    [['https://example.com', '--workspace', 'nosuch'], 'No workspace is named nosuch'],
+    [['https://example.com', '--dir', '../outside'], 'No workspace holds that directory'],
+    [['https://example.com', '--workspace'], '--workspace needs a value'],
+  ])('exits 2 with the plain reason, recorded under the node scope: %j', async (words, why) => {
+    const refused = await buckle(['check-url', ...words])
+    expect(refused.exitCode).toBe(2)
+    expect(refused.err).toContain(why)
+    expect(refused.err).not.toContain('Cannot read this node\'s policy or state')
+    expect(logged()).toEqual(attemptAndResult)
+  })
+})
+
 // Recheck of finding 31: three more refusals of an owner's command that the audit log kept nowhere. The node's log holds
 // each as an attempt and a failed result, as docs/audit-log.md says of every refusal.
 describe('an owner\'s command refused before it names a workspace, under the node scope', () => {

@@ -109,7 +109,8 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error'
 }
 
-function badInput(message: string): CliResult {
+/** A refusal before any verdict, such as no workspace named: the bad-input code, never 1, which would read as a denial. */
+export function badInput(message: string): CliResult {
   process.stderr.write(`${message}\n`)
   return { exitCode: CHECK_URL_BAD_INPUT }
 }

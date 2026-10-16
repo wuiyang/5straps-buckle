@@ -26,7 +26,7 @@ import { keysCommand } from './keys.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
 import { isStateBusy } from '../common/services/state-busy.js'
 import { watchApprovals } from './approvals-watch.js'
-import { CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
+import { badInput, CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
 import { workspaceRegistryCommand } from './workspace.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
@@ -103,7 +103,7 @@ async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; 
     let taken: ReturnType<typeof takeTarget>
     try { taken = takeTarget(input.rest) } catch (error) {
       // An owner's command the log keeps is refused before any workspace's log is known: the node's records it.
-      if (error instanceof TargetError) return AUDITED_COMMANDS.includes(command) ? nodeAudited({ workspaces, command }, () => fail(error.message)) : fail(error.message)
+      if (error instanceof TargetError) return AUDITED_COMMANDS.includes(command) ? nodeAudited({ workspaces, command }, () => refused(command, error.message)) : fail(error.message)
       throw error
     }
     // Q9 (Phase 1b item 4): an approver's command defaults to the workspace holding the current directory; --all widens to every online one.
@@ -120,6 +120,11 @@ async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; 
     }
     return runWorkspaceCommand({ ...input, workspaces, target: taken.target, rest: taken.argv })
   })
+}
+
+/** A refusal before a workspace answers: exit 1, except that check-url's 1 means denied, so its own refusals take its bad-input code. */
+function refused(command: string, message: string): CliResult {
+  return command === 'check-url' ? badInput(message) : fail(message)
 }
 
 /** The commands that answer asks: default to the workspace holding the current directory, or --all over every online one (Q9, Phase 1b item 4). */
@@ -155,10 +160,11 @@ async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config
     const id = workspaces.target({ ...input.target, cwd: input.cwd })
     runtime = (await workspaces.resolve(id, { setup: command === 'policy' })).runtime
   } catch (error) {
-    if (command === 'check-url') return checkUrlUnreadable(error)
+    // A node whose state cannot be read reports no verdict; a workspace that was not named, or is not served, is a refusal like any other (fix brief 4, finding 31).
+    if (command === 'check-url' && !(error instanceof WorkspaceError)) return checkUrlUnreadable(error)
     if (command === 'policy' && error instanceof StoredPolicyError) return repairStoredPolicy({ workspaces, target: input.target, cwd: input.cwd, argv: input.rest, failure: error })
     // An owner's command the log keeps is refused before any workspace's log is known: the node's records it (finding 31).
-    if (error instanceof WorkspaceError) return AUDITED_COMMANDS.includes(command) ? nodeAudited(input, () => fail(error.message)) : fail(error.message)
+    if (error instanceof WorkspaceError) return AUDITED_COMMANDS.includes(command) ? nodeAudited(input, () => refused(command, error.message)) : fail(error.message)
     throw error
   }
   return runOnWorkspace({ ...input, runtime })
