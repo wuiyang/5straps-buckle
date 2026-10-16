@@ -70,6 +70,30 @@ export function administersBuckle(line: string): boolean {
 }
 
 /**
+ * The service manager's programs, by basename, with `.exe` or not and in any case, as Windows reads them, each a word of
+ * its own: what starts, stops, or rewrites the unit or task that runs Buckle at login (fix brief 6, item 8).
+ */
+const SERVICE_PROGRAM = /(?:^|[\s/\\'"`(])(?:systemctl|loginctl|schtasks)(?:\.exe)?(?=$|[\s'"`)])/i
+/** Buckle's unit, as a word of its own (systemctl reads a bare `buckle` as `buckle.service`), or its task by name. */
+const SERVICE_TARGET = /(?:^|[\s'"=])buckle(?:\.service)?(?=$|[\s'"])|5straps[\\/]+buckle(?![\w.-])/i
+/** A reload of the user manager, which takes up a changed unit or drop-in. */
+const DAEMON_RELOAD = /(?:^|[\s'"])daemon-reload(?=$|[\s'"])/
+const USER_MANAGER = /(?:^|[\s'"])--user(?=$|[\s'"])/
+/** What ends one statement of a command line, so a target in the next is not read as this program's. */
+const STATEMENT_END = /[;&|\n`()]/
+
+/**
+ * Whether the line runs `systemctl`, `loginctl`, or `schtasks.exe` on Buckle's own unit or task, or reloads the user
+ * manager (fix brief 6, item 8): a tool that could would stop the node, or start a rewritten one, outside its approvals.
+ * Read statement by statement, each with patterns that hold no nested repetition, so in linear time. A speed bump, as
+ * the name match above is: an unsandboxed shell reaches the service manager by other means (known-limits-05).
+ */
+export function administersBuckleService(line: string): boolean {
+  return line.split(STATEMENT_END).some(statement => SERVICE_PROGRAM.test(statement)
+    && (SERVICE_TARGET.test(statement) || (DAEMON_RELOAD.test(statement) && USER_MANAGER.test(statement))))
+}
+
+/**
  * The owner's command globs, judged one shell word at a time on the parsed command line. Deny
  * wins, then an allow list, when one exists, admits only what it names. A refusal here is a
  * denial rather than a question: the owner already answered. The destructive-command gate still
@@ -102,7 +126,8 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       // Written only for a refusal, so a call the policy admits is not redacted on every check (slice 7b review W7B-1).
       const subject = () => shownCommand(effect.command, effect.args)
 
-      if (administersBuckle(words.join(' '))) return deny('command_policy', subject(), 'A tool cannot administer the Buckle that runs it')
+      const line = words.join(' ')
+      if (administersBuckle(line) || administersBuckleService(line)) return deny('command_policy', subject(), 'A tool cannot administer the Buckle that runs it')
 
       const denied = deniedBy(policy, forms)
       if (denied) return deny('command_policy', subject(), `Refused by the ${source} command policy: ${denied.source}`)

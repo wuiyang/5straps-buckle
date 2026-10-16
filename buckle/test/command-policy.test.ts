@@ -1880,6 +1880,41 @@ describe('what no pattern can change', () => {
     expect(result.kind).toBe(kind)
   }, PROCESSOR_TIME_ROW_TIMEOUT)
 
+  // Fix brief 6, item 8: the service manager reaches the unit or task that runs Buckle at login, past its approvals.
+  it.each([
+    ['systemctl', ['--user', 'stop', 'buckle.service']],
+    ['systemctl', ['--user', 'restart', 'buckle']],
+    ['/usr/bin/systemctl', ['--user', 'edit', 'buckle.service']],
+    ['systemctl', ['--user', 'disable', '--now', "'buckle.service'"]],
+    ['systemctl', ['--user', 'daemon-reload']],
+    ['bash', ['-c', 'cd /tmp && systemctl --user kill buckle.service']],
+    ['bash', ['-c', 'echo done\nsystemctl --user daemon-reload']],
+    ['loginctl', ['--user', 'buckle.service']],
+    ['schtasks.exe', ['/End', '/TN', '\\5straps\\Buckle']],
+    ['C:\\Windows\\System32\\SCHTASKS.EXE', ['/Change', '/TN', '\\5straps\\Buckle', '/DISABLE']],
+    ['schtasks', ['/Delete', '/TN', '5straps/Buckle', '/F']],
+  ] as Array<[string, string[]]>)('refuses %s %j, which reaches Buckle\'s own unit or task', (command, args) => {
+    expect(reasonOf(evaluate(command, args, { allow: ['*', 'bash -c *'] }))).toBe('A tool cannot administer the Buckle that runs it')
+  })
+
+  it.each([
+    ['systemctl', ['--user', 'status', 'nginx.service']],
+    ['systemctl', ['daemon-reload']],
+    ['systemctl', ['--user', 'restart', 'buckle-docs.service']],
+    ['bash', ['-c', 'systemctl --user list-units | grep buckle']],
+    ['schtasks.exe', ['/Query', '/TN', '\\5straps\\Buckle-docs']],
+    ['echo', ['buckle.service']],
+    ['loginctl', ['show-user', 'owner']],
+  ] as Array<[string, string[]]>)('leaves %s %j alone, which names no unit or task of Buckle\'s', (command, args) => {
+    expect(evaluate(command, args, { allow: ['*', 'bash -c *'] }).kind).not.toBe('deny')
+  })
+
+  it('reads a long service manager line in well under a second', () => {
+    const { milliseconds, result } = leastProcessorTime(() => evaluate('bash', ['-c', `systemctl${' --user'.repeat(15_000)} buckle`], { allow: ['bash -c *'] }))
+    expect(milliseconds).toBeLessThan(250)
+    expect(result.kind).toBe('deny')
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
+
   it('still lets a tool drive the node the ordinary way', () => {
     expect(evaluate('buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
     expect(evaluate('/usr/local/bin/buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')

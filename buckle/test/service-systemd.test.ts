@@ -122,6 +122,33 @@ describe.skipIf(process.platform === 'win32')('the unit that starts Buckle at lo
   })
 })
 
+// Fix brief 6, item 8: a shell command that reaches Buckle's unit or task through the service manager is refused as
+// `buckle service` would be, before anything runs, and the refusal is audited as every denial is.
+describe('a shell command on Buckle\'s own unit', () => {
+  it('is refused before it runs, and audited as a denial', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-unit-command-')))
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    // A systemctl of the test's own, found first on PATH, which marks that it ran: the host's is never reached.
+    const bin = join(root, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'systemctl'), `#!/bin/sh\ntouch '${join(root, 'ran')}'\n`, { mode: 0o755 })
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`)
+    const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell' }) })
+    try {
+      const refused = await runtime.invoke({ request: { requestId: 'unit-stop', tool: 'shell_exec', args: { command: 'systemctl', args: ['--user', 'stop', 'buckle.service'] }, approvalTokens: [] }, sessionId: 'unit' })
+      expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'A tool cannot administer the Buckle that runs it' } })
+      const audited = runtime.actions.read(20).filter(entry => entry.event === 'result')
+      expect(audited, JSON.stringify(audited)).toContainEqual(expect.objectContaining({ requestId: 'unit-stop', outcome: 'denied' }))
+      expect(existsSync(join(root, 'ran'))).toBe(false)
+    } finally {
+      vi.unstubAllEnvs()
+      await runtime.approvalService.close()
+      await runtime.history.close()
+    }
+  })
+})
+
 interface FakeSystemd { root: string; bin: string; calls(): string[]; environments(): string[]; environment: NodeJS.ProcessEnv }
 
 /** A systemctl on PATH that records its words and environment, and answers `show` and `is-*` from `answers`. */
