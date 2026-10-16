@@ -28,12 +28,12 @@ function builtinTools(): ToolCapability[] {
   const packs = [
     ...createBuiltinPacks({
       allowHostGit: true, allowHostLsp: true, enableShell: true, cwd: '/work/project', paths, hiddenPaths: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
-      runProcess, sandbox: createNoneSandbox(), writableRoots: ['/work/project'], allowedHosts: [],
+      runProcess, sandbox: createNoneSandbox(), writableRoots: ['/work/project'], 
       forge: { token: 'fixture-token', apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } },
       stateDirectory: '/state', agentBrowserCommand: 'agent-browser', browserStateDirectory: '/state/browser', browserHeaded: false, environmentValidator: 'validate', sandboxUnavailableReason: null,
     }),
     createFsPack({ paths, runProcess, ripgrep: { path: 'rg', argv0: 'rg', args: [] }, protectedRoots: [] }),
-    createWebPack({ braveSearchApiKey: 'fixture', allowedHosts: [], approved: null }),
+    createWebPack({ braveSearchApiKey: 'fixture', approved: null }),
   ]
   const byName = new Map(packs.flatMap(pack => pack.tools.map(tool => [tool.capability.name, tool.capability] as const)))
   return [...byName.values()].filter(tool => !CODE_TOOLS.includes(tool.name)).sort((left, right) => left.name.localeCompare(right.name))

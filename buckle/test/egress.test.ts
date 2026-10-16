@@ -5,7 +5,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { configFromEnvironment } from './support/workspace-config.js'
-import { matchingHostEntry } from '../common/domain/url-pattern.js'
+import { compileUrlPatterns, matchingHostEntry } from '../common/domain/url-pattern.js'
 import { guardedFetch } from '../common/services/packs/web/egress.js'
 
 /** Redirects to whatever the `to` query parameter says, so a hop chain can be exercised. */
@@ -43,6 +43,10 @@ describe('guardedFetch', () => {
   })
 
   const allowLocal = () => [`127.0.0.1:${port}`]
+  /** The workspace's URL list naming the test server's host exactly (Phase 2 item 5). */
+  const listLocal = () => compileUrlPatterns(allowLocal())
+  /** No list, and an approval covering the test server alone, as the rules answer it. */
+  const grantLocal = async (url: URL) => (url.hostname === '127.0.0.1' ? { kind: 'granted' as const } : { kind: 'allowed' as const })
 
   it('reaches an explicitly allowed private host', async () => {
     const response = await guardedFetch({
@@ -50,7 +54,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(), approved: null,
+      approved: listLocal(),
     })
     expect(await response.text()).toBe('arrived')
   })
@@ -61,7 +65,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: [], approved: null,
+      approved: null,
     })).rejects.toThrow(/loopback/)
   })
 
@@ -71,7 +75,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(), approved: null,
+      approved: null, judge: grantLocal,
     })).rejects.toThrow(/link-local/)
   })
 
@@ -81,7 +85,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(), approved: null,
+      approved: null, judge: grantLocal,
     })).rejects.toThrow(/private/)
   })
 
@@ -91,7 +95,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(), approved: null,
+      approved: listLocal(),
     })).rejects.toThrow(/non-HTTP scheme/)
   })
 
@@ -102,7 +106,7 @@ describe('guardedFetch', () => {
       method: 'GET',
       headers: {},
       signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(), approved: null,
+      approved: listLocal(),
     })).resolves.toBeDefined()
   })
 
@@ -110,7 +114,7 @@ describe('guardedFetch', () => {
     const response = await guardedFetch({
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
-      allowedHosts: [], approved: null,
+      approved: null,
       judge: async () => ({ kind: 'granted' }),
     })
     expect(await response.text()).toBe('arrived')
@@ -120,7 +124,7 @@ describe('guardedFetch', () => {
     await expect(guardedFetch({
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
-      allowedHosts: [], approved: null,
+      approved: null,
       judge: async () => ({ kind: 'refused', reason: '127.0.0.1 is in the loopback range' }),
     })).rejects.toThrow(/loopback/)
   })
@@ -129,42 +133,44 @@ describe('guardedFetch', () => {
     await expect(guardedFetch({
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
-      allowedHosts: [], approved: null,
+      approved: null,
       judge: async () => ({ kind: 'allowed' }),
     })).rejects.toThrow(/loopback/)
   })
 
-  it('lets BUCKLE_ALLOWED_HOSTS reach its host before the rules are consulted', async () => {
+  // Phase 2 item 5: one URL list per workspace, where an entry naming a host exactly clears its private address.
+  it('lets a list entry naming the host exactly reach its private address, with no rule consulted', async () => {
     const response = await guardedFetch({
       url: new URL(`http://127.0.0.1:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
-      allowedHosts: allowLocal(), approved: null,
+      approved: listLocal(),
       judge: async () => ({ kind: 'refused', reason: 'not consulted' }),
     })
     expect(await response.text()).toBe('arrived')
+    const prefixed = await guardedFetch({ url: new URL(`http://localhost:${port}/`), method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000), approved: compileUrlPatterns([`http://localhost:${port}`]) })
+    expect(await prefixed.text()).toBe('arrived')
   })
 
-  it('reads a BUCKLE_ALLOWED_HOSTS pattern with the approved list\'s grammar, apex included', async () => {
-    const response = await guardedFetch({
+  it('never lets a wildcard entry clear a private address: the host it covers is refused where it resolves into one', async () => {
+    await expect(guardedFetch({
       url: new URL(`http://localhost:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
-      allowedHosts: [`*.localhost:${port}`], approved: null,
-      judge: async () => ({ kind: 'refused', reason: 'not consulted' }),
-    })
-    expect(await response.text()).toBe('arrived')
+      approved: compileUrlPatterns([`*.localhost:${port}`]),
+      judge: async () => ({ kind: 'granted' }),
+    })).rejects.toThrow(/loopback/)
   })
 
-  it('holds each redirect hop to the pattern, and leaves a host it does not cover to the rules', async () => {
+  it('holds each redirect hop to the list, and refuses a host it does not cover', async () => {
     await expect(guardedFetch({
-      url: new URL(`http://localhost:${port}/?to=http://127.0.0.1:${port}/`),
+      url: new URL(`http://127.0.0.1:${port}/?to=http://localhost:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
-      allowedHosts: ['*.localhost'], approved: null,
+      approved: compileUrlPatterns([...allowLocal(), '*.localhost']),
     })).rejects.toThrow(/loopback/)
     await expect(guardedFetch({
       url: new URL(`http://localhost:${port}/`),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
-      allowedHosts: ['*.internal.test'], approved: null,
-    })).rejects.toThrow(/loopback/)
+      approved: compileUrlPatterns(['*.internal.test']),
+    })).rejects.toThrow(/is not on the workspace's approved list/)
   })
 })
 
@@ -173,20 +179,25 @@ describe('a * in a host', () => {
     await expect(guardedFetch({
       url: new URL('http://*.localhost/'),
       method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
-      allowedHosts: ['*.localhost'], approved: null, judge: async () => ({ kind: 'granted' }),
+      approved: compileUrlPatterns(['*.localhost']), judge: async () => ({ kind: 'granted' }),
     })).rejects.toThrow(/A host cannot contain \*/)
   })
 })
 
 describe('BUCKLE_ALLOWED_HOSTS at load', () => {
+  it('folds into the node\'s URL list, every workspace\'s where it has none of its own (Phase 2 item 5)', () => {
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-egress-')), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-egress-state-')), BUCKLE_NETWORK_ALLOW: 'api.example.test', BUCKLE_ALLOWED_HOSTS: 'db.internal, api.example.test' })
+    expect(config.policy.network.allow).toEqual(['api.example.test', 'db.internal'])
+  })
+
   it('accepts a pattern and refuses a malformed one, naming the variable', () => {
     const environment = (hosts: string) => ({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-egress-')), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-egress-state-')), BUCKLE_ALLOWED_HOSTS: hosts })
-    expect(configFromEnvironment(environment('db.internal, *.internal.test:8080')).allowedHosts).toEqual(['db.internal', '*.internal.test:8080'])
+    expect(configFromEnvironment(environment('db.internal, *.internal.test:8080')).policy.network.allow).toEqual(['db.internal', '*.internal.test:8080'])
     expect(() => configFromEnvironment(environment('*.*.test'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry: A wildcard stands only as the whole leftmost label/)
     expect(() => configFromEnvironment(environment('https://db.internal'))).toThrow(/names no scheme/)
-    expect(configFromEnvironment(environment('my_db, my_db:5432, *.compose_net')).allowedHosts).toEqual(['my_db', 'my_db:5432', '*.compose_net'])
+    expect(configFromEnvironment(environment('my_db, my_db:5432, *.compose_net')).policy.network.allow).toEqual(['my_db', 'my_db:5432', '*.compose_net'])
     expect(() => configFromEnvironment(environment('db.internal.'))).toThrow(/Invalid BUCKLE_ALLOWED_HOSTS entry/)
-    const v6 = configFromEnvironment(environment('::1:3000, [::1]:3000')).allowedHosts
+    const v6 = configFromEnvironment(environment('::1:3000, [::1]:3000')).policy.network.allow
     expect(v6).toEqual(['::1:3000', '[::1]:3000'])
     expect(matchingHostEntry(v6.slice(0, 1), new URL('http://[::1]:3000/'))).toBeFalsy()
     expect(matchingHostEntry(v6, new URL('http://[::1]:3000/'))).toBe('[::1]:3000')

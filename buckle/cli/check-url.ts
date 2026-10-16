@@ -28,7 +28,6 @@ Exits 0 approved, 1 denied, 3 asks, 4 not listed, 2 when no verdict could be rea
  */
 export async function checkUrlCommand(input: {
   argv: string[]
-  allowedHosts: string[]
   /** The workspace the command targets (D83 (4)), opened. */
   runtime: () => Promise<BuckleRuntime>
 }): Promise<CliResult> {
@@ -61,7 +60,6 @@ export async function checkUrlCommand(input: {
     url,
     ...runtime.policy.network(),
     workspaceList: runtime.policy.effective().network.allow,
-    allowedHosts: input.allowedHosts,
     approvals,
   })
   process.stdout.write(`${result.verdict}: ${url.href} (${result.because})\n`)

@@ -95,7 +95,8 @@ describe('no face exposes node settings', () => {
       '/v1/manifest': ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_SCRATCH_ROOTS'],
       [app.setup('status')]: ['BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT'],
       '/setup/workspaces': ['BUCKLE_WORKSPACE_ROOT'],
-      [app.setup('policy')]: ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_NETWORK_ALLOW'],
+      // BUCKLE_ALLOWED_HOSTS is the node's URL list too (Phase 2 item 5), so the policy view reports its entries beside BUCKLE_NETWORK_ALLOW's.
+      [app.setup('policy')]: ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_ALLOWED_HOSTS'],
     }
     // Each GET route without a parameter, and the workspace's own faces under /workspaces/<id>/ (D85, Q15).
     const paths = [...new Set(app.routes().filter(route => route.method === 'GET' && !/[:*]/.test(route.path.replace('/workspaces/:id/', ''))).map(route => route.path.replace('/workspaces/:id/', `/workspaces/${app.runtime.workspaceId}/`)))]

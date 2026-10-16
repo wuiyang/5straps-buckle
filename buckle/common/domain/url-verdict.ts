@@ -29,16 +29,15 @@ export function describeGrantScope(scope: GrantScope): string {
  * engine and the packs, so it cannot drift from what a call meets. The two lists are read only
  * to name the entries that matched.
  *
- * `BUCKLE_ALLOWED_HOSTS` is not read by the rule. `web_fetch` consults it after the rule, to reach
- * a listed host even where its name resolves to a private address, so it decides only what the
- * rule allowed and never answers the question the rule asks.
+ * One URL list per workspace (Phase 2 item 5), BUCKLE_ALLOWED_HOSTS among the node's entries: an
+ * entry naming a host exactly lets web_fetch reach it where its name resolves to a private address,
+ * where one a wildcard covers does not, which the verdict says.
  */
 export function judgeUrl(input: {
   url: URL
   rule: PermissionRule
   approved: UrlMatcher | null
   workspaceList: string[]
-  allowedHosts: string[]
   approvals: NetworkApproval[]
 }): UrlVerdict {
   const decision = input.rule.evaluate({
@@ -49,21 +48,20 @@ export function judgeUrl(input: {
       patternsFor: rule => rule === 'network_egress' ? input.approvals.filter(approval => approval.pattern).map(approval => approval.subject) : [],
     },
   })
-  const listedHost = matchingHostEntry(input.allowedHosts, input.url)
 
   if (!decision || decision.kind === 'deny') return { verdict: 'denied', because: `network_egress: ${decision?.reason ?? 'refused'}` }
-  if (decision.kind === 'ask') {
-    const note = listedHost ? `; BUCKLE_ALLOWED_HOSTS lists ${listedHost}, which answers no question` : ''
-    return { verdict: 'asks', because: `network_egress: ${decision.reason}${note}` }
-  }
+  if (decision.kind === 'ask') return { verdict: 'asks', because: `network_egress: ${decision.reason}` }
   if (decision.via) {
     const exact = decision.via.subject === hostSubject(input.url)
     const approval = input.approvals.find(entry => entry.subject === decision.via!.subject && Boolean(entry.pattern) === !exact)
     const covered = exact ? decision.via.subject : `pattern ${decision.via.subject}, which covers ${hostSubject(input.url)}`
     return { verdict: 'approved', because: `${approval?.label ?? 'approval'} for ${covered}` }
   }
-  if (input.approved) return { verdict: 'approved', because: `approved list entry ${input.workspaceList.find(pattern => compileUrlPatterns([pattern]).matches(input.url))}` }
-  if (listedHost) return { verdict: 'approved', because: `BUCKLE_ALLOWED_HOSTS entry ${listedHost}` }
+  if (input.approved) {
+    const entry = input.workspaceList.find(pattern => compileUrlPatterns([pattern]).matches(input.url))
+    const wildcard = input.approved.namesExactly(input.url) ? '' : '; a wildcard entry clears no private address, so web_fetch refuses this host where it resolves into a private range'
+    return { verdict: 'approved', because: `approved list entry ${entry}${wildcard}` }
+  }
   return { verdict: 'not listed', because: 'no approved list is set, so a public host is reached without asking; web_fetch still refuses one that resolves to a private address' }
 }
 

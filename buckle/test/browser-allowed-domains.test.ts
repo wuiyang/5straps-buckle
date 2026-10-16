@@ -86,7 +86,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
   const roots: string[] = []
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-  async function fixture(network: string[], closeDelayMs = 0, waitDelayMs = 0) {
+  async function fixture(network: string[], closeDelayMs = 0, waitDelayMs = 0, environment: Record<string, string> = {}) {
     const root = mkdtempSync(join(tmpdir(), 'buckle-allowed-domains-'))
     roots.push(root)
     mkdirSync(join(root, 'workspace'))
@@ -96,7 +96,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const slowWait = waitDelayMs > 0 ? `if (process.argv[2] === 'wait') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${waitDelayMs})\n` : ''
     writeFileSync(binary, `#!/usr/bin/env node\n${slowClose}require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\n${slowWait}process.stdout.write('{"success":true}')\n`)
     chmodSync(binary, 0o755)
-    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary, ...environment })
     const runtime = await createRuntime({ config })
     if (network.length) await runtime.policy.apply(policy(network))
     const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
@@ -121,6 +121,14 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const output = response.output
     return output !== null && typeof output === 'object' && !Array.isArray(output) && typeof output.notice === 'string' ? output.notice : null
   }
+
+  // Phase 2 item 5: one URL list per workspace, the node's BUCKLE_ALLOWED_HOSTS among its entries.
+  it('holds the browser to the node\'s BUCKLE_ALLOWED_HOSTS, the workspace\'s list where it has none of its own', async () => {
+    const { runtime, calls } = await fixture([], 0, 0, { BUCKLE_ALLOWED_HOSTS: 'app.example.test' })
+    expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
+    expect(flagOf(calls()[0])).toBe('app.example.test')
+    await runtime.closeSessions()
+  })
 
   it('closes the browsers it started when the node shuts down, and forgets their sessions (B19)', async () => {
     const { runtime, calls } = await fixture(['*.example.test'])

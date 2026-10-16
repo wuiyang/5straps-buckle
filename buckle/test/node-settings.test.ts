@@ -85,13 +85,14 @@ describe('buckle settings show', () => {
   })
 
   it('prints each allow-listed setting with its value and source, and every other key by name alone', async () => {
-    const result = await settings(['show'], { BUCKLE_ALLOWED_HOSTS: 'db.internal' })
+    const result = await settings(['show'], { BUCKLE_MOUNT_READ_ONLY: '/opt/tools', BUCKLE_ALLOWED_HOSTS: 'db.internal' })
 
     expect(result.exitCode).toBe(0)
     expect(result.out).toMatch(/name\s+BUCKLE_SERVER_NAME\s+Fixture node\s+environment file/)
     expect(result.out).toMatch(/experimental-admin-http\s+BUCKLE_EXPERIMENTAL_ADMIN_HTTP\s+false\s+environment file/)
-    expect(result.out).toMatch(/allowed-hosts\s+BUCKLE_ALLOWED_HOSTS\s+db.internal\s+process environment\n/)
-    expect(result.out).toMatch(/read-only-paths\s+BUCKLE_MOUNT_READ_ONLY\s+\(none\)\s+default/)
+    expect(result.out).toMatch(/read-only-paths\s+BUCKLE_MOUNT_READ_ONLY\s+\/opt\/tools\s+process environment\n/)
+    // Phase 2 item 5: the node's URL list now, a workspace default read from the file alone.
+    expect(result.out).toMatch(/allowed-hosts\s+BUCKLE_ALLOWED_HOSTS\s+\(none\)\s+default; this shell's value is not read\n/)
     // D85, Q3: a workspace default the file holds is listed among the defaults, with where it came from.
     expect(result.out).toContain('Workspace defaults, which a workspace\'s own settings replace (buckle workspace show); the command deny and destructive lists apply to every workspace:')
     expect(result.out.slice(result.out.indexOf('Workspace defaults'))).toMatch(/shell\s+BUCKLE_ALLOW_SHELL\s+true\s+environment file/)
@@ -176,7 +177,7 @@ describe('buckle settings set', () => {
 
   // Every workspace key a 0.1 node kept here is a node default now, listed with the others (D85, Q3).
   it('lists every workspace key a 0.1 node kept here among the workspace defaults, and removes each line', async () => {
-    const keys = ['BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP', 'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION']
+    const keys = ['BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP', 'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS']
     expect(NODE_SETTINGS.filter(setting => setting.workspace).map(setting => setting.key).sort()).toEqual([...keys].sort())
     const shown = await settings(['show'])
     const defaults = shown.out.slice(shown.out.indexOf('Workspace defaults'))
@@ -397,7 +398,7 @@ describe('the pack catalogue init and settings name', () => {
     const sandbox = { mode: 'none', supportsMount: false, wrap: (input: never) => input } as never
     return createBuiltinPacks({
       cwd: root, paths, runProcess, sandbox, writableRoots: [root], hiddenPaths: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
-      forge: { apiUrl: 'https://api.github.com', author: { name: 'a', email: 'a@b.c' } }, stateDirectory: state, allowedHosts: [],
+      forge: { apiUrl: 'https://api.github.com', author: { name: 'a', email: 'a@b.c' } }, stateDirectory: state, 
       agentBrowserCommand: 'agent-browser', browserStateDirectory: state, browserHeaded: false, enableShell: false,
       environmentValidator, sandboxUnavailableReason: null,
     }).map(pack => pack.id)

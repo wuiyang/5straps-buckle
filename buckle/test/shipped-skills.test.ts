@@ -29,7 +29,7 @@ function toolCommands(): Set<string> {
     runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
     sandbox: createNoneSandbox(),
     writableRoots: ['/work/project'],
-    allowedHosts: [],
+    
     // A token so the forge pack builds its tools (git commit, git push, pr open, pr read); the names exist whether or
     // not this host can run them.
     forge: { token: 'fixture-token', apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } },
@@ -47,7 +47,7 @@ function toolCommands(): Set<string> {
   const complete = [
     ...packs,
     createFsPack({ paths, runProcess, ripgrep: { path: 'rg', argv0: 'rg', args: [] }, protectedRoots: [] }),
-    createWebPack({ braveSearchApiKey: 'fixture', allowedHosts: [], approved: null }),
+    createWebPack({ braveSearchApiKey: 'fixture', approved: null }),
   ]
   const commands = new Set<string>()
   for (const pack of complete) {

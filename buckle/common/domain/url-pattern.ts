@@ -18,6 +18,11 @@ import { isIP, isIPv6 } from 'node:net'
 export interface UrlMatcher {
   readonly patterns: string[]
   matches(url: URL): boolean
+  /**
+   * Whether an entry naming the URL's host exactly (a host entry with no wildcard, or a URL prefix) covers it: such an
+   * entry clears a private address, as the owner named that host, where a wildcard never does (Phase 2 item 5).
+   */
+  namesExactly(url: URL): boolean
 }
 
 export class UrlPatternError extends Error {}
@@ -31,14 +36,16 @@ export function compileUrlPatterns(patterns: string[]): UrlMatcher {
   const compiled = patterns.map(compileOne)
   return {
     patterns,
-    matches: url => compiled.some(test => test(url)),
+    matches: url => compiled.some(entry => entry.test(url)),
+    namesExactly: url => compiled.some(entry => entry.exact && entry.test(url)),
   }
 }
 
-function compileOne(pattern: string): Compiled {
+function compileOne(pattern: string): { test: Compiled; exact: boolean } {
   const trimmed = pattern.trim()
-  if (/^https?:\/\//i.test(trimmed)) return compilePrefix(trimmed)
-  return compileHostPattern(trimmed).matches
+  if (/^https?:\/\//i.test(trimmed)) return { test: compilePrefix(trimmed), exact: true }
+  const host = compileHostPattern(trimmed)
+  return { test: host.matches, exact: !host.wildcard }
 }
 
 /** One host entry, compiled: `example.com`, `example.com:8443`, `*.example.com`, `[::1]:3000`. */

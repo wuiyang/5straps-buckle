@@ -29,9 +29,7 @@ const braveSchema = z.object({
 
 export interface WebPackOptions {
   braveSearchApiKey?: string
-  /** Hosts an operator pre-approved, so a private address can be reached on purpose. */
-  allowedHosts: string[]
-  /** The owner's approved list. When set, every hop of every fetch must be on it. */
+  /** The workspace's URL list (Phase 2 item 5). When set, every hop of every fetch must be on it. */
   approved: UrlMatcher | null
 }
 
@@ -51,7 +49,6 @@ export function createWebPack(options: WebPackOptions): Pack {
           headers: input.headers,
           body: input.body,
           signal: context.signal,
-          allowedHosts: options.allowedHosts,
           approved: options.approved,
           judge: context.judgeNetwork,
         })

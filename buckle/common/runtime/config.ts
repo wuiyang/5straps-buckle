@@ -66,7 +66,6 @@ export interface NodeConfig {
   historyRetentionDays: number
   isolationMaxBytes: number
   environmentValidator?: string
-  allowedHosts: string[]
   braveSearchApiKey?: string
   /**
    * The owner's forge credential. Absent withholds the forge pack, naming the variable, rather
@@ -218,7 +217,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     experimentalAdminHttp: environment.BUCKLE_EXPERIMENTAL_ADMIN_HTTP === 'true',
     isolationMaxBytes: parsePositiveInteger(environment.BUCKLE_ISOLATION_MAX_BYTES, 268_435_456),
     environmentValidator: environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined,
-    allowedHosts: parseAllowedHosts(environment.BUCKLE_ALLOWED_HOSTS),
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,
     forgeGithubToken: environment.BUCKLE_FORGE_GITHUB_TOKEN || undefined,
     forgeApiUrl: parseForgeApiUrl(environment.BUCKLE_FORGE_GITHUB_API_URL),
@@ -244,7 +242,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
 export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW',
   'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
-  'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION',
+  'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS',
 ])
 
 /** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read; all it sets, where the node has no file. */
@@ -361,6 +359,9 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
     refusedAs(key, () => compilePolicy({ ...emptyWorkspacePolicy(), commands: { allow: [...patterns], deny: [] } }))
   }
   refusedAs('BUCKLE_NETWORK_ALLOW', () => compilePolicy({ ...emptyWorkspacePolicy(), network: { allow: policy.network.allow } }))
+  // One URL list per workspace (Phase 2 item 5): BUCKLE_ALLOWED_HOSTS is the node's list too, an exact host of it
+  // clearing a private address as any exact entry does.
+  policy.network.allow = [...new Set([...policy.network.allow, ...parseAllowedHosts(environment.BUCKLE_ALLOWED_HOSTS)])]
   refusedAs('BUCKLE_WORKSPACE_MOUNT', () => compilePolicy({ ...emptyWorkspacePolicy(), mount: policy.mount }))
   const browser = parseBrowserSettings(environment, platform)
   const flag = (key: string, on: string): boolean | undefined => (environment[key] ? environment[key] === on : undefined)

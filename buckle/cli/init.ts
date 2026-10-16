@@ -102,7 +102,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
       : { folder: given ?? process.cwd(), mount: values.mount ?? '/workspace', name: values.name ?? null, allowedHosts: null }
     if (interactive) {
       choices = await askWorkspaceChoices(prompt)
-      if (writesNode) answers.allowedHosts = await askValid(prompt, 'Private-address hosts web_fetch may reach, e.g. db.internal,*.internal.test [none]: ', raw => nodeSettingValue('BUCKLE_ALLOWED_HOSTS', raw))
+      if (writesNode) answers.allowedHosts = await askValid(prompt, 'Hosts every workspace may reach, which turns its approved URL list on (other hosts are refused; a host named exactly may be private), e.g. db.internal [none]: ', raw => nodeSettingValue('BUCKLE_ALLOWED_HOSTS', raw))
     }
   } finally {
     prompt.close()
@@ -327,6 +327,8 @@ BUCKLE_ADMIN_TOKEN=${input.adminToken}
 # The state directory is where this file lives by default; move it with BUCKLE_STATE_DIR in the shell.
 # BUCKLE_STATE_DIR=
 BUCKLE_SANDBOX=auto
+# Hosts every workspace's approved URL list holds where it has none of its own: other hosts are refused, and a host
+# named exactly may resolve to a private address.
 ${input.allowedHosts ? `BUCKLE_ALLOWED_HOSTS=${input.allowedHosts}` : '# BUCKLE_ALLOWED_HOSTS=db.internal'}
 
 # Where this node reports what it did, and where a request waiting for a decision is announced.

@@ -252,7 +252,7 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
   if (command === 'skills') return printSkills(runtime, rest)
   if (command === 'approve') return reportWorkspaceErrors(() => approve({ config: input.config, runtime, argv: rest, confirm: input.confirm }))
   if (command === 'approvals') return reportWorkspaceErrors(() => approvals({ config: input.config, runtime, argv: rest }))
-  if (command === 'check-url') return checkUrlCommand({ argv: rest, allowedHosts: input.config.allowedHosts, runtime: async () => runtime })
+  if (command === 'check-url') return checkUrlCommand({ argv: rest, runtime: async () => runtime })
   if (command === 'grants') return grants(runtime, rest)
   if (command === 'workspaces') return shellWorkspacesCommand(runtime, rest)
   if (command === 'history') return historyCommand(runtime, rest)

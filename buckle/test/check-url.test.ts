@@ -66,18 +66,19 @@ describe('buckle check-url', () => {
     expect((await check(config, 'api.example.com')).exitCode).toBe(0)
   })
 
-  it('approves a host on BUCKLE_ALLOWED_HOSTS when no approved list is set', async () => {
-    const result = await check(node({ BUCKLE_ALLOWED_HOSTS: 'nas.internal' }), 'http://nas.internal/status')
-
+  // Phase 2 item 5: BUCKLE_ALLOWED_HOSTS is the node's URL list too, so its hosts are approved entries and the rest denied.
+  it('approves a host on BUCKLE_ALLOWED_HOSTS as an approved list entry, and denies one it leaves off', async () => {
+    const config = node({ BUCKLE_ALLOWED_HOSTS: 'nas.internal' })
+    const result = await check(config, 'http://nas.internal/status')
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('(BUCKLE_ALLOWED_HOSTS entry nas.internal)')
+    expect(result.stdout).toContain('(approved list entry nas.internal)')
+    expect((await check(config, 'https://example.com/')).exitCode).toBe(1)
   })
 
-  it('still asks about a private address on BUCKLE_ALLOWED_HOSTS, as web_fetch does, and says why', async () => {
+  it('approves a private address an exact entry names, as web_fetch reaches it', async () => {
     const result = await check(node({ BUCKLE_ALLOWED_HOSTS: '127.0.0.1:8080' }), '127.0.0.1:8080')
-
-    expect(result.exitCode).toBe(3)
-    expect(result.stdout).toMatch(/^asks: https:\/\/127\.0\.0\.1:8080\/ \(network_egress: 127\.0\.0\.1 is in the .* range; BUCKLE_ALLOWED_HOSTS lists 127\.0\.0\.1:8080, which answers no question\)/)
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toBe('approved: https://127.0.0.1:8080/ (approved list entry 127.0.0.1:8080)\n')
   })
 
   it('denies a private address the approved list leaves off', async () => {
@@ -177,7 +178,7 @@ describe('buckle check-url', () => {
   it('exits 2 when a registered workspace fails to open for any reason', async () => {
     const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     try {
-      const result = await checkUrlCommand({ argv: ['example.com'], allowedHosts: [], runtime: () => Promise.reject(new Error('disk unreadable')) })
+      const result = await checkUrlCommand({ argv: ['example.com'], runtime: () => Promise.reject(new Error('disk unreadable')) })
       expect(result.exitCode).toBe(2)
       expect(err).toHaveBeenCalledWith('Cannot open the workspace: disk unreadable\n')
     } finally {
@@ -224,11 +225,11 @@ describe('buckle check-url', () => {
     expect(await check(await withGrant(['example.com']), 'http://app.localhost:3000', '--workspace', 'child')).toMatchObject({ exitCode: 1, stdout: expect.stringContaining('approved list') })
   }, 30_000)
 
-  it('approves a host a BUCKLE_ALLOWED_HOSTS pattern covers, naming the entry', async () => {
+  it('approves a host a wildcard entry covers, naming the entry, and says it clears no private address', async () => {
     const config = node({ BUCKLE_ALLOWED_HOSTS: '*.internal.test' })
 
-    expect(await check(config, 'http://nas.lab.internal.test/status')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(BUCKLE_ALLOWED_HOSTS entry *.internal.test)') })
+    expect(await check(config, 'http://nas.lab.internal.test/status')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(approved list entry *.internal.test; a wildcard entry clears no private address, so web_fetch refuses this host where it resolves into a private range)') })
     expect(await check(config, 'http://internal.test/')).toMatchObject({ exitCode: 0 })
-    expect((await check(config, 'http://other.test/')).exitCode).toBe(4)
+    expect((await check(config, 'http://other.test/')).exitCode).toBe(1)
   })
 })

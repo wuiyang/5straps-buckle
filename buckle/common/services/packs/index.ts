@@ -47,7 +47,6 @@ export interface BuiltinPackOptions {
   forge: { token?: string; apiUrl: string; author: { name: string; email: string } }
   /** Buckle's own state directory, which holds the empty hooks directory every git call runs with. */
   stateDirectory: string
-  allowedHosts: string[]
   agentBrowserCommand: string
   /** Protected browser configuration and daemon identities for this workspace. */
   browserStateDirectory: string
@@ -126,7 +125,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const git = program('git')
   const packs: Pack[] = [
     createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: programOrNull(program('rg')), protectedRoots: options.hiddenPaths, environment }),
-    createWebPack({ braveSearchApiKey: options.braveSearchApiKey, allowedHosts: options.allowedHosts, approved: options.approvedUrls }),
+    createWebPack({ braveSearchApiKey: options.braveSearchApiKey, approved: options.approvedUrls }),
     createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
     createForgePack({
       paths: options.paths,
@@ -176,7 +175,8 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     ...(options.commandEnvironment ? { commandEnvironment: options.commandEnvironment } : {}),
     isolation: options.shellIsolation,
     filesystemPolicy: options.filesystemPolicy,
-    allowNetwork: options.shellNetwork === true && !options.approvedUrls && options.allowedHosts.length === 0,
+    // The shell's network is all or nothing, so a workspace with a URL list keeps its shell off the network.
+    allowNetwork: options.shellNetwork === true && !options.approvedUrls,
     untrusted,
     programSearch: { ...options.programSearch, shares },
   }))

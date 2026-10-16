@@ -300,7 +300,7 @@ function builtins(input: { table: (root: string) => Record<string, string> }) {
     runProcess: async request => { spawned.push(request); return { exitCode: 0, signal: null, stdout: request.args[0] === 'rev-parse' ? `${root}\n${root}\n${root}\n` : '', stderr: '', truncated: false, timedOut: false } },
     sandbox: createNoneSandbox(),
     writableRoots: [root],
-    allowedHosts: [],
+    
     forge: { apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } },
     stateDirectory: state,
     agentBrowserCommand: 'agent-browser',
@@ -395,7 +395,7 @@ describe('the browser pack on Windows, imitated, without an agent-browser it can
       const packs = createBuiltinPacks({
         cwd: root, paths: createPathView({ root, mount: null }), hiddenPaths: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
         runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
-        sandbox: createNoneSandbox(), writableRoots: [root], allowedHosts: [], stateDirectory: scratch(), agentBrowserCommand: 'agent-browser',
+        sandbox: createNoneSandbox(), writableRoots: [root], stateDirectory: scratch(), agentBrowserCommand: 'agent-browser',
         forge: { apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } }, browserStateDirectory: join(scratch(), 'browser'),
         browserHeaded: false, enableShell: false, sandboxUnavailableReason: null,
         // The scratch folders stand in for drives: each path resolves as named, as on a drive with no subst.

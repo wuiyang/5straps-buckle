@@ -32,7 +32,6 @@ export interface NodeSetting {
 export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_SERVER_NAME', alias: 'name', kind: 'name', fallback: 'Local Buckle' },
   { key: 'BUCKLE_MOUNT_READ_ONLY', alias: 'read-only-paths', kind: 'directory-list', fallback: '(none)' },
-  { key: 'BUCKLE_ALLOWED_HOSTS', alias: 'allowed-hosts', kind: 'host-list', fallback: '(none)' },
   // Owner decision D8: the admin HTTP layer is experimental, off until this is on (and an admin credential is set).
   { key: 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP', alias: 'experimental-admin-http', kind: 'boolean', fallback: 'false' },
   { key: 'BUCKLE_APPROVAL_TIMEOUT_MS', alias: 'approval-wait', kind: 'approval-wait', fallback: '15000', workspace: { key: 'approvalWaitMs', change: 'buckle workspace set approvalWaitMs <milliseconds>' } },
@@ -51,6 +50,8 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_COMMAND_ALLOW', alias: 'command-allow', kind: 'command-list', fallback: '(none: no allow list)', workspace: { key: 'policy.commands.allow', change: 'buckle policy allow-command <glob>' } },
   { key: 'BUCKLE_COMMAND_DENY', alias: 'command-deny', kind: 'command-list', fallback: '(none)', workspace: { key: 'policy.commands.deny', change: 'buckle policy deny-command <glob>, which adds to the node\'s' } },
   { key: 'BUCKLE_COMMAND_DESTRUCTIVE', alias: 'command-destructive', kind: 'command-list', fallback: '(none: the built-in floor alone)', workspace: { key: 'policy.commands.destructive', change: 'buckle policy destructive-command <glob>, which adds to the node\'s' } },
+  // Folded into the node's URL list (Phase 2 item 5): an exact host of it clears a private address, as any exact entry does.
+  { key: 'BUCKLE_ALLOWED_HOSTS', alias: 'allowed-hosts', kind: 'host-list', fallback: '(none)', workspace: { key: 'policy.network.allow', change: 'buckle policy allow-url <host>' } },
   { key: 'BUCKLE_NETWORK_ALLOW', alias: 'network-allow', kind: 'url-list', fallback: '(none: the default egress rules)', workspace: { key: 'policy.network.allow', change: 'buckle policy allow-url <host>' } },
   { key: 'BUCKLE_ALLOWED_INTERPRETERS', alias: 'allowed-interpreters', kind: 'interpreter-list', fallback: '(none: every interpreter runs unknown code)', workspace: { key: 'policy.commands.allowedInterpreters', change: 'buckle policy allow-interpreter <name>' } },
 ]

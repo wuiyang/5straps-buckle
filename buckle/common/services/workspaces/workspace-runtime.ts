@@ -326,7 +326,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       if (projection.hiddenPaths.some(path => isInside(path, request.cwd))) throw new WorkbenchError('Filesystem restrictions hide this terminal working directory', 403)
       const wrapped = sandbox.sandbox.wrap({ command: 'bash', args: ['--noprofile', '--norc', '-i'], cwd: request.cwd,
         workspaceRoot: request.root, writableRoots: [request.root], mount: { root: request.root, at: '/workspace' }, commandIsPid1: true,
-        allowNetwork: config.shellNetwork && !compiled.policy.network.allow.length && config.allowedHosts.length === 0,
+        allowNetwork: config.shellNetwork && !compiled.policy.network.allow.length,
         hiddenPaths: [...hidden.directories, ...projection.hiddenPaths], hiddenFiles: [...hidden.files, ...projection.hiddenFiles],
         mounts, readOnlyPaths: config.mountReadOnlyPaths, readOnlyWorkspacePaths: projection.readOnlyWorkspacePaths,
       })
@@ -656,7 +656,6 @@ async function buildPacks(input: {
     braveSearchApiKey: input.config.braveSearchApiKey,
     forge: { token: input.config.forgeGithubToken, apiUrl: input.config.forgeApiUrl, author: input.config.forgeGitAuthor },
     stateDirectory: input.config.stateDirectory,
-    allowedHosts: input.config.allowedHosts,
     agentBrowserCommand: input.config.agentBrowserCommand,
     browserStateDirectory: input.browserStateDirectory,
     maxTimeoutMs: input.config.maxTimeoutMs,
