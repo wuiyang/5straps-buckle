@@ -53,6 +53,20 @@ export function missingMountReason(target: string): string {
 }
 
 /**
+ * The workspace's own folder is checked at each use as a mount's source is (fix brief 6, item 2): one swapped for a
+ * link since it was registered, or gone, is refused, named by where it shows (`/workspace`) and never by its host path.
+ * In the real-path view, where it shows at no mount, it is named by no path at all.
+ */
+export function refuseChangedFolder(folder: string, shownAt: string | null): void {
+  const state = mountSourceState(folder)
+  if (state === 'present') return
+  const named = `The workspace's folder${shownAt === null ? '' : ` at ${shownAt}`}`
+  throw new ToolInputError(state === 'moved'
+    ? `${named} changed on disk since it was registered, so Buckle uses nothing there; the owner repairs it`
+    : `${named} is gone from disk, so Buckle uses nothing there; the owner restores it`, { code: 'PERMISSION_DENIED' })
+}
+
+/**
  * Mounts expose what they hold, credentials included, but cannot alias workspace restrictions or private node state:
  * each source is checked where it really lands at every use, and one that lands anywhere but where it was stored (a
  * folder swapped for a link since it was added) or is gone is refused, naming the target alone. Only the stored source

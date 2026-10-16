@@ -49,7 +49,17 @@ export interface InvokerOptions {
   executions: Executions
   grants: GrantStore
   history?: ChangeHistory
-  historyRoots?: string[]
+  /**
+   * The roots a write's checkpoint and the execution lock cover, read just before the call runs (checkpointRoots),
+   * which refuses where the workspace's folder changed on disk since it was registered.
+   */
+  historyRoots?: () => string[]
+  /**
+   * Refuses, by throwing, where the workspace's folder is gone or was swapped for a link since it was registered (fix
+   * brief 6, item 2): checked before a call is judged, and again after any approval, just before it runs, a script's
+   * calls included, as its mounts' sources are checked at each use.
+   */
+  checkFolder?: () => void
   actions: ActionLog
   reporter: Reporter
   paths: PathView
@@ -166,6 +176,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             gate = { response, asked: [], approvedBy: [], denial: { rule: 'tool_policy', subject: request.tool, reason: refusal } }
             return response
           }
+          options.checkFolder?.()
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
@@ -180,6 +191,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
           if (held.claim?.kind !== 'owner') throw new Error('A cleared call holds no execution claim')
           const owned = held.claim.execution
           await auditUses(gate.approvedBy)
+          // The folder may have changed while the call waited for its approval: nothing runs where it lands now.
+          options.checkFolder?.()
           const execute = () => {
             owned.started()
             ran = true
@@ -190,7 +203,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute, timeoutMs: prepared.timeoutMs, nesting, via })
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
-          const roots = [...options.historyRoots ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path); return nativePath(realpathSync(path)) })]
+          const roots = [...options.historyRoots?.() ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path); return nativePath(realpathSync(path)) })]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
           // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
           // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).

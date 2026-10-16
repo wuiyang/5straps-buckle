@@ -1,4 +1,4 @@
-import { mountSourceState, validateSandboxMounts } from '../../domain/sandbox-mounts.js'
+import { mountSourceState, refuseChangedFolder, validateSandboxMounts } from '../../domain/sandbox-mounts.js'
 import { protectedStateRoots } from '../../runtime/config.js'
 import { serviceInstalled } from '../node-service/installed.js'
 import { createWorkbenchManager } from '../workbench/manager.js'
@@ -567,7 +567,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         grants,
         actions,
         history,
-        historyRoots: checkpointRoots(config.cwd, settled.paths.mounts),
+        historyRoots: () => checkpointRoots(config.cwd, settled.paths.mounts, settled.paths.mount),
+        checkFolder: () => refuseChangedFolder(config.cwd, settled.paths.mount),
         reporter,
         paths: settled.paths,
         serverId: config.serverId,
@@ -837,14 +838,16 @@ function buildManifest(input: {
 }
 
 /**
- * The roots a call's checkpoint and the workspace's execution lock cover (Phase 2 item 2): the folder, and each writable
- * mount at its stored source. A mount whose source was swapped for a link since it was added is left out, so nothing is
- * snapshotted where the link lands, and so is one of the owner's whose source is gone: there is nothing to checkpoint,
- * and the folder above it is never taken in its place. A scratch root not made yet is covered from the nearest folder
- * that is, as it always was, since its first write may make it.
+ * The roots a call's checkpoint and the workspace's execution lock cover (Phase 2 item 2): the folder as it was stored,
+ * and each writable mount at its stored source. A folder swapped for a link since it was registered, or gone, is refused
+ * (fix brief 6, item 2), naming where it shows: history never follows the link. A mount whose source was swapped for a
+ * link since it was added is left out, so nothing is snapshotted where the link lands, and so is one of the owner's
+ * whose source is gone: there is nothing to checkpoint, and the folder above it is never taken in its place. A scratch
+ * root not made yet is covered from the nearest folder that is, as it always was, since its first write may make it.
  */
-export function checkpointRoots(folder: string, mounts: readonly ViewMount[]): string[] {
-  const roots = [nativePath(realpathSync(folder))]
+export function checkpointRoots(folder: string, mounts: readonly ViewMount[], shownAt: string | null = null): string[] {
+  refuseChangedFolder(folder, shownAt)
+  const roots = [nativePath(folder)]
   for (const mount of mounts) {
     if (mount.access !== 'rw') continue
     const state = mountSourceState(mount.source)

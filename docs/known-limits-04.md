@@ -17,8 +17,8 @@ workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its b
 - The sandbox's own `/etc/passwd` and `/etc/group` name the user and group the command runs as
   `agent`, and its `/etc/hosts` names `localhost` and `buckle` alone. A program that looks up another
   account, a group the owner belongs to, or a name the machine's hosts file holds, finds none.
-- A mount's source is checked where it lands at each shell call, then bound by its path: a swap
-  for a link in the moment between the two is not caught.
+- A mount's source, and the workspace's folder, are checked where they land at each shell call,
+  then bound by path: a swap for a link in the moment between the two is not caught.
 - Buckle hides credential files in the workspace's folder from shell commands, but not those
   inside a mount, and does not read a mount through for them: a mount shares what it holds.
 - Without a mount, the folder shows at its real path, and the node's `BUCKLE_MOUNTS` reach the

@@ -1,5 +1,5 @@
 import { existsSync, realpathSync, statSync } from 'node:fs'
-import { validateSandboxMounts } from '../../../domain/sandbox-mounts.js'
+import { refuseChangedFolder, validateSandboxMounts } from '../../../domain/sandbox-mounts.js'
 import { projectFilesystemSandbox } from '../../../domain/filesystem-policy.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import { relative, resolve } from 'pathe'
@@ -97,6 +97,10 @@ export function createShellPack(options: ShellPackOptions): Pack {
     tool: string
     context: ToolContext
   }): Promise<JsonValue> => {
+    // The folder is bound, or copied, at its stored path, which must still land on itself (fix brief 6, item 2): checked
+    // here, and again just before the copy and before each wrap, so nothing is bound or copied where a link lands.
+    const folderInPlace = () => refuseChangedFolder(options.paths.root, options.paths.mount)
+    folderInPlace()
     const mounts = validateSandboxMounts(options.mounts ?? [], { protectedRoots: options.hiddenPaths, workspaceRoots: options.writableRoots, workspaceTarget: options.paths.displayRoot })
     if (mounts.length && options.sandbox.mode !== 'bubblewrap') throw new ToolInputError('The workspace\'s mounts need bubblewrap', { code: 'PERMISSION_DENIED' })
     const sensitiveFiles = [...new Set(input.sensitiveFiles)].map(path => options.paths.resolve(path))
@@ -133,6 +137,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     const heldReadOnly = isolated ? [...mounts.filter(mount => !mount.readOnly).map(mount => mount.target), ...scratchMounts.map(mount => mount.target)] : []
     const run = (copyRoot?: string) => {
       const mapped = (path: string) => copyRoot ? resolve(copyRoot, relative(options.paths.root, path)) : path
+      if (!copyRoot) folderInPlace()
       const wrapped = options.sandbox.wrap({
         command,
         args: [...program?.args ?? [], ...input.args],
@@ -157,6 +162,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     }
     if (!options.isolation) return toJson(await run(), options.sandbox.mode)
     if (options.sandbox.mode !== 'bubblewrap') throw new ToolInputError('Isolated shell execution requires bubblewrap', { code: 'PERMISSION_DENIED' })
+    folderInPlace()
     const result = await runIsolatedShell({
       isolation: options.isolation, sourceRoot: options.paths.root, writableRoots: callWritable,
       excluded: [...hidden.directories, ...hidden.files, ...sensitiveFiles],

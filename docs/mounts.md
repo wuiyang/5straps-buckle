@@ -21,7 +21,8 @@ buckle workspace mount list                          # source:target:access, one
 A mount is read-write unless `:ro` or `--read-only` says otherwise. The source is stored as the
 disk names it, links followed; it must exist, as a folder or a file. A source gone since, or
 swapped for a link, is refused at each use, by its target, until the owner re-adds or removes
-the mount; history never covers where such a link lands. `mount list` prints the
+the mount; the folder itself is checked the same way at each call. History never covers where
+such a link lands. `mount list` prints the
 folder's own entry first, then each mount; `--json` prints the same as data. The folder's own
 entry cannot be removed here; `buckle workspace set mount <path>` moves it.
 
