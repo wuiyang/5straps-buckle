@@ -1,6 +1,6 @@
 import { useScopeSafe, type CliOutcome, type CliRequest, type CliWait } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw, type JsonValue } from '@5straps/protocol'
-import { callDigestOf, canonicalJson, challengeBytes, shownCallDigestOf, SIGNED_REQUEST_VERSION, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
+import { callDigestOf, canonicalJson, challengeBytes, shownCallDigestOf, SIGNED_REQUEST_VERSION, WORKSPACE_NAME_MAX, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { requestIdKey } from '../invocation/executions.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
@@ -381,13 +381,16 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
   }
 
-  // Each challenge signs either the whole inline call or the digest of every shared display field.
+  // Each challenge signs either the whole inline call or the digest of every shared display field. The workspace's name is
+  // read as it is signed, so a rename shows, and travels beside its id for a person's device to show (D85, Q15).
   function challengeOf(ask: PendingAsk, shapes: CallShapes): ApprovalChallenge | null {
     const { request, call } = ask
     if (!call?.complete) return null
     const { digest, callRef, inline } = shapes(request.tool, call)
+    const name = options.workspaceName
     return {
       v: SIGNED_REQUEST_VERSION, purpose: 'buckle-approval-challenge', node: options.serverId, workspace: options.workspaceId,
+      ...(name && name.length <= WORKSPACE_NAME_MAX ? { workspaceName: name } : {}),
       token: request.token, requestId: ask.requestId ?? null, sessionId: ask.sessionId, actor: ask.actor ?? null,
       tool: request.tool, rule: request.rule, subject: request.subject, reason: request.reason, offeredScopes: request.offeredScopes,
       arguments: inline ? call.arguments : null, cwd: inline ? call.cwd : null, callDigest: digest,

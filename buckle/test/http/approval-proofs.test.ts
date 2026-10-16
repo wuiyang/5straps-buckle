@@ -150,6 +150,8 @@ describe('an approval decision a person\'s key proves (B24)', () => {
       description: `Write 7 bytes to ${JSON.stringify(join(buckle.root, 'outside.md'))} in ${JSON.stringify(buckle.config.cwd)}`, effects: [`write ${join(buckle.root, 'outside.md')}`],
     })
     expect(verified?.challenge).not.toHaveProperty('truncated')
+    // Fix brief 4, finding 13: the name the person knows the workspace by, signed beside its id.
+    expect(verified?.challenge.workspaceName).toBe(buckle.runtime.workspaceName())
     // Signed once, the same challenge every time.
     expect((await challenges(buckle)).challenges).toEqual(listed.challenges)
 
@@ -247,6 +249,8 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     output.stdout = ''
     expect((await clientCommand(['approvals', url, '--workspace', 'workspace'], environment)).exitCode).toBe(0)
     expect(output.stdout).toContain(`${token}  fs_write asks write_scope`)
+    // Fix brief 4, finding 13: the device names the workspace as the person does, beside the id the decision binds.
+    expect(output.stdout).toContain(`  workspace: ${buckle.runtime.workspaceName()} (${buckle.runtime.workspaceId})\n`)
     output.stdout = ''
     expect((await clientCommand(['approve', url, '--workspace', 'workspace', token, '--deny'], environment)).exitCode).toBe(0)
     // The node it decides for, before anything is signed.
@@ -489,6 +493,18 @@ describe('a device verifies shared calls and asks the person before approving', 
   }
 
   const call: ShownApprovalCall = { tool: 'fs_write', arguments: { path: '/workspace/notes.md', content: 'WHOLE-SHARED-CONTENT' }, cwd: '/workspace', description: 'Write the complete contents', effects: ['write /workspace/notes.md'] }
+
+  it('names the workspace by its name beside its id on each ask sharing a call, and by its id alone from a node that sends no name', async () => {
+    const id = 'a9f9e5a2-52ac-5720-bc81-771fd12913c6'
+    const challenge = { ...shared(call), workspace: id, workspaceName: 'The site' }
+    const device = await fakeNodeDevice(challenge, [], { calls: { [challenge.callRef!]: call }, others: [{ ...challenge, token: 'second-token' }] })
+    expect((await clientCommand(['approvals', device.url, '--workspace', 'The site'], device.environment)).exitCode).toBe(0)
+    expect(device.output.stdout.split('\n').filter(line => line === `  workspace: The site (${id})`)).toHaveLength(2)
+
+    const older = await fakeNodeDevice({ ...shared(call), workspace: id }, [], { calls: { [challenge.callRef!]: call } })
+    expect((await clientCommand(['approvals', older.url, '--workspace', id], older.environment)).exitCode).toBe(0)
+    expect(older.output.stdout).toContain(`  workspace: ${id}\n`)
+  })
 
   it('shows a shared whole call once, keeps both asks visible, and confirms the complete action before signing one', async () => {
     const challenge = shared(call)

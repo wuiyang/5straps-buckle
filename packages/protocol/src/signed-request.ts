@@ -293,6 +293,9 @@ export function shownCallDigestOf(input: ShownApprovalCall): string {
   return bodyDigest(canonicalJson([input.tool, input.arguments, input.cwd, input.description, input.effects]))
 }
 
+/** The longest workspace name a challenge carries, as a node's registry holds names. */
+export const WORKSPACE_NAME_MAX = 120
+
 /**
  * What a pending ask is, as the node signs it (approval-proofs.md, Signed request): a person's client
  * verifies the node's signature, recomputes the call's digest from the arguments it carries, shows
@@ -304,6 +307,12 @@ export const ApprovalChallengeSchema = z.object({
   purpose: z.literal('buckle-approval-challenge'),
   node: z.string().min(1).max(200),
   workspace: z.string().min(1).max(64),
+  /**
+   * The workspace's name as the node holds it when it signs, which a person's device shows beside the id (the id is a
+   * UUID nobody reads). Optional and additive, the version unchanged: absent from a node built before it, where a
+   * device shows the id alone.
+   */
+  workspaceName: z.string().min(1).max(WORKSPACE_NAME_MAX).optional(),
   token: z.string().min(1).max(200),
   /** The call's requestId, hashed as the node joins re-sends on it. */
   requestId: z.string().min(1).max(200).nullable(),

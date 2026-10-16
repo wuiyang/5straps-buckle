@@ -59,6 +59,9 @@ model or later.
   cannot start (an unsupported platform, or too many open files), Buckle logs it once and falls
   back to the per-call check and the `buckle serve` poll, so a change is taken up at the next call
   or poll rather than at once.
+- A signed approval challenge carries the workspace's name beside its id since this release.
+  `buckle client` from an earlier release refuses such a challenge and lists nothing to decide on
+  that device, so update the client on each device with the node.
 - [Rings](rings.md), the separate 5straps control plane for agents, keeps its own copy of a
   node's workspace list; a workspace renamed, added, or removed here is not pushed to it, so Rings
   re-reads the list to see the change.

@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { callDigestOf, isSmallOrderPoint, SmallOrderKeyError, canonicalJson, challengeBytes, generateSigningKey, isSignedRequest, keyIdOf, publicKeyFrom, readChallenge, signChallenge, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, signingKeyFromPem, signRequest, verifySignedRequest, type ApprovalChallenge, type SignedRequestPurpose, type SignedRequestRefusal } from '../src/signed-request.js'
+import { callDigestOf, isSmallOrderPoint, SmallOrderKeyError, canonicalJson, challengeBytes, generateSigningKey, isSignedRequest, keyIdOf, publicKeyFrom, readChallenge, signChallenge, SIGNED_REQUEST_MAX_TTL_MS, SIGNED_REQUEST_SKEW_MS, signingKeyFromPem, signRequest, verifySignedRequest, WORKSPACE_NAME_MAX, type ApprovalChallenge, type SignedRequestPurpose, type SignedRequestRefusal } from '../src/signed-request.js'
 
 // Owner ruling H4 of 2026-09-28 and approval-proofs.md, Protocol gates: key substitution, altered
 // body, changed arguments, wrong target, replay, cross-purpose reuse, expiry and revocation.
@@ -138,6 +138,26 @@ describe('an approval challenge the node signs (B24)', () => {
     expect(readChallenge({ signed: signed.signed, nodeKey: publicKeyFrom(node.publicKey) })).toEqual({ challenge, digest: signed.digest })
     expect(signChallenge({ challenge, key: signingKeyFromPem(node.privateKeyPem).privateKey })).toEqual(signed)
     expect(challengeBytes(challenge).digest).toBe(signed.digest)
+  })
+
+  // Fix brief 4, finding 13: a device showed the workspace's UUID alone. The name is optional, so a node built before it
+  // signs what it always signed, and the protocol version stays 1.
+  it('carries the workspace\'s name beside its id where the node sends one, and reads one without it as before', () => {
+    const named: ApprovalChallenge = { ...challenge, workspace: 'a9f9e5a2-52ac-5720-bc81-771fd12913c6', workspaceName: 'The site' }
+    const signed = signChallenge({ challenge: named, key: signingKeyFromPem(node.privateKeyPem).privateKey })
+    expect(readChallenge({ signed: signed.signed, nodeKey: publicKeyFrom(node.publicKey) })).toEqual({ challenge: named, digest: signed.digest })
+    expect(named.v).toBe(1)
+    const unnamed = readChallenge({ signed: signChallenge({ challenge, key: signingKeyFromPem(node.privateKeyPem).privateKey }).signed, nodeKey: publicKeyFrom(node.publicKey) })
+    expect(unnamed?.challenge).not.toHaveProperty('workspaceName')
+    // A relay that renames the workspace breaks the node's signature.
+    const [, signature] = signed.signed.split('.')
+    const renamed = Buffer.from(JSON.stringify({ ...named, workspaceName: 'Another' })).toString('base64url')
+    expect(readChallenge({ signed: `${renamed}.${signature}`, nodeKey: publicKeyFrom(node.publicKey) })).toBeNull()
+  })
+
+  it('refuses an empty workspace name, or one longer than a registry holds', () => {
+    for (const workspaceName of ['', 'n'.repeat(WORKSPACE_NAME_MAX + 1)]) expect(() => challengeBytes({ ...challenge, workspaceName })).toThrow()
+    expect(() => challengeBytes({ ...challenge, workspaceName: 'n'.repeat(WORKSPACE_NAME_MAX) })).not.toThrow()
   })
 
   it('does not verify under another key, altered, or as a signed request of the same bytes', () => {

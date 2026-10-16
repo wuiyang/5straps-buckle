@@ -287,6 +287,14 @@ function describeUnsigned(item: UnsignedAsk): string {
   return `${item.token}  not signed by the node: ${reason}`
 }
 
+/**
+ * The workspace as the node signed it: its name beside its id, as the person typed the name and the decision binds the
+ * id; the id alone from a node built before challenges carried the name (D85, Q15; fix brief 4, finding 13).
+ */
+function shownWorkspace(challenge: ApprovalChallenge): string {
+  return challenge.workspaceName === undefined ? workspaceLabel(challenge.workspace) : `${printable(challenge.workspaceName)} (${printable(challenge.workspace)})`
+}
+
 /** The call digest recomputed from the arguments shown; a challenge without them shows no action to decide on. */
 function recomputes(challenge: ApprovalChallenge): boolean {
   return challenge.arguments !== null && challenge.callDigest === callDigestOf({ tool: challenge.tool, arguments: challenge.arguments })
@@ -304,9 +312,9 @@ function describeChallenge(item: VerifiedChallenge, shownWith?: string): string 
   const { challenge } = item
   return [
     `${printable(challenge.token)}  ${printable(challenge.tool)} asks ${printable(challenge.rule)}`,
-    ...(shownWith === undefined ? describeAction({ ...challenge, node: challenge.node, workspace: workspaceLabel(challenge.workspace), effects: challenge.effects ?? null }) : [
+    ...(shownWith === undefined ? describeAction({ ...challenge, node: challenge.node, workspace: shownWorkspace(challenge), effects: challenge.effects ?? null }) : [
       `  node:     ${printable(challenge.node)}`,
-      `  workspace: ${printable(challenge.workspace)}`,
+      `  workspace: ${shownWorkspace(challenge)}`,
       `  rule:     ${printable(challenge.rule)}`,
       `  subject:  ${printable(challenge.subject)}`,
       `  reason:   ${printable(challenge.reason)}`,
