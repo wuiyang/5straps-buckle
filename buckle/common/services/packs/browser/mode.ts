@@ -92,10 +92,15 @@ export function settingScrubber(mode: BrowserMode, platform: NodeJS.Platform = p
  * by its session name, so a session started under other settings, left by a stop that skipped the close step, is
  * never reused. Hashed, so the sessions store holds no endpoint or path.
  */
-export function modeFingerprint(mode: BrowserMode, settings: { launchArgs?: string; headed: boolean }): string {
+export function modeFingerprint(mode: BrowserMode, settings: { launchArgs?: string; headed: boolean; idleTimeoutMs?: number }): string {
   const target = mode.kind === 'attached' ? mode.endpoint : mode.kind === 'profile' ? mode.directory : ''
-  return createHash('sha256').update(JSON.stringify([mode.kind, target, settings.launchArgs ?? '', settings.headed])).digest('hex').slice(0, 16)
+  // The idle timeout is a daemon's too (Phase 2 item 6); left out at the default, so a session started before keeps its fingerprint.
+  const idle = settings.idleTimeoutMs === undefined || settings.idleTimeoutMs === DEFAULT_IDLE_TIMEOUT_MS ? [] : [settings.idleTimeoutMs]
+  return createHash('sha256').update(JSON.stringify([mode.kind, target, settings.launchArgs ?? '', settings.headed, ...idle])).digest('hex').slice(0, 16)
 }
+
+/** How long an idle browser daemon lives where the workspace names no time of its own: five minutes. */
+export const DEFAULT_IDLE_TIMEOUT_MS = 300_000
 
 /**
  * The one agent-browser session for a profile folder. Chrome opens a folder in one browser at a time, so every caller

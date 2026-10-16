@@ -10,9 +10,10 @@ import { compilePolicy, PolicyError } from '../../domain/policy.js'
 import { DEFAULT_APPROVAL_WAIT_MS, parseBrowserSettings, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { BUILTIN_PACKS } from '../packs/index.js'
+import { DEFAULT_IDLE_TIMEOUT_MS } from '../packs/browser/mode.js'
 
 /** The browser's idle timeout when a workspace names none, and its bounds (Q10 of the workspace-model brief): 60 s to 24 h. */
-export const DEFAULT_BROWSER_IDLE_MS = 300_000
+export const DEFAULT_BROWSER_IDLE_MS = DEFAULT_IDLE_TIMEOUT_MS
 export const BROWSER_IDLE_BOUNDS = Object.freeze({ min: 60_000, max: 86_400_000 })
 
 /** Where a workspace's folder shows to the agent when `buckle workspace init` makes it (D84 (3)). */
@@ -60,16 +61,20 @@ const PacksSchema = z.object({
 const BROWSER_KEYS: ReadonlyArray<[string, string]> = [['BUCKLE_BROWSER_CDP', 'browser.cdp'], ['BUCKLE_BROWSER_PROFILE', 'browser.profile'], ['BUCKLE_BROWSER_ARGS', 'browser.args'], ['BUCKLE_BROWSER_HEADED', 'browser.headed']]
 
 /**
- * Stored, from migration, and checked at each write (browserSettingsRefusal); the browser pack reads them per workspace
- * in the mount and browser phase (Q10), and `buckle workspace set` changes them from then; until then the node's own
- * browser settings drive it.
+ * Its shell (Phase 2 item 4): `network` lets a command reach the network while no approved list is set; `isolation` runs
+ * each command on a private copy of the folder.
  */
-/** Its shell (Phase 2 item 4): `network` lets a command reach the network while no approved list is set; `isolation` runs each on a private copy. */
 const ShellSchema = z.object({
   network: z.boolean().optional(),
   isolation: z.boolean().optional(),
 }).strict()
 
+/**
+ * The workspace's browser (Phase 2 item 6, Q10): checked at each write (browserSettingsRefusal), and read by its browser
+ * pack, each the workspace's own, else the node's (BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, and
+ * BUCKLE_BROWSER_HEADED), else Buckle's. A profile folder or an attached Chrome belongs to one workspace at a time
+ * (the workspace manager's browserHeldBy).
+ */
 const BrowserSchema = z.object({
   idleTimeoutMs: z.number().int().min(BROWSER_IDLE_BOUNDS.min).max(BROWSER_IDLE_BOUNDS.max).optional(),
   cdp: z.string().min(1).optional(),
@@ -432,9 +437,9 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 }
 
 /** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
-export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'env'> {
+export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'env'> {
   const resolved = resolveSettings(settings, node)
-  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, env: resolved.env }
+  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: resolved.browser, env: resolved.env }
 }
 
 /** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */

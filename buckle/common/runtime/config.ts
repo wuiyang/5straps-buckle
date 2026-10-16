@@ -77,14 +77,6 @@ export interface NodeConfig {
   /** The identity forge commits carry, without writing anything into the workspace's git config. */
   forgeGitAuthor: { name: string; email: string }
   agentBrowserCommand: string
-  /** Show the browser window. Headless by default, because a Buckle node usually has no display. */
-  browserHeaded: boolean
-  /** BUCKLE_BROWSER_CDP: the DevTools port or URL of the owner's own Chrome, which every browser command attaches to. */
-  browserCdp?: string
-  /** BUCKLE_BROWSER_PROFILE: a profile folder the browser keeps cookies and storage in across launches, as the disk names it. */
-  browserProfile?: string
-  /** BUCKLE_BROWSER_ARGS: Chromium arguments for a browser Buckle launches, as agent-browser's `--args` reads them. */
-  browserArgs?: string
   /** Where to announce a pending approval, so a person can be reached away from the machine. */
   approvalWebhook?: string
   /**
@@ -135,6 +127,16 @@ export interface BuckleConfig extends NodeConfig {
   shellNetwork: boolean
   /** Whether its shell runs on private copies of the folder (shell.isolation). */
   isolateShell: boolean
+  /**
+   * Its browser (Phase 2 item 6, Q10): the owner's own Chrome over its DevTools port (browser.cdp), a profile folder kept
+   * across launches (browser.profile, as the disk names it), Chromium arguments for a browser Buckle launches
+   * (browser.args), a visible window (browser.headed), and how long an idle browser lives (browser.idleTimeoutMs).
+   */
+  browserCdp?: string
+  browserProfile?: string
+  browserArgs?: string
+  browserHeaded: boolean
+  browserIdleTimeoutMs: number
   /** The node's own state directory, which holds the registry and every workspace's settings. */
   nodeStateDirectory?: string
   /** True for the workspace migration made of the node's own folder (D85, Q15): its face carries the node-wide readiness, and a node-level workbench grant opens here. */
@@ -223,8 +225,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     forgeGitAuthor: parseGitAuthor(environment.BUCKLE_FORGE_GIT_AUTHOR),
     // Empty reads as unset, as the validator's setting does, so `buckle init` and the node look up the same program.
     agentBrowserCommand: environment.BUCKLE_AGENT_BROWSER_COMMAND || 'agent-browser',
-    browserHeaded: environment.BUCKLE_BROWSER_HEADED === 'true',
-    ...parseBrowserSettings(environment, platform),
     approvalWebhook: environment.BUCKLE_APPROVAL_WEBHOOK || undefined,
     mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => typedPath(path, platform)),
     reportUrl: environment.BUCKLE_REPORT_URL || undefined,
@@ -243,6 +243,7 @@ export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW',
   'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
   'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS',
+  'BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED',
 ])
 
 /** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read; all it sets, where the node has no file. */
@@ -318,6 +319,8 @@ export interface WorkspaceScope {
   approvalWaitMs: number
   /** Whether its shell may reach the network, and runs on private copies (Phase 2 item 4). */
   shell: { network: boolean; isolation: boolean }
+  /** Its browser's mode, window, and idle timeout (Phase 2 item 6). */
+  browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
 }
@@ -434,14 +437,20 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
 
-export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'env'>): WorkspaceFields {
+export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'env'>): WorkspaceFields {
   return {
     policy: { ...scope.policy, mount: scope.mount },
     mounts: scope.mounts.map(mount => ({ ...mount })),
     shellNetwork: scope.shell.network,
     isolateShell: scope.shell.isolation,
+    // Each set, or unset, so a value the workspace takes away is gone from the next call's settings too.
+    browserCdp: scope.browser.cdp,
+    browserProfile: scope.browser.profile,
+    browserArgs: scope.browser.args,
+    browserHeaded: scope.browser.headed,
+    browserIdleTimeoutMs: scope.browser.idleTimeoutMs,
     enabledPacks: scope.packs.enabled === null ? undefined : [...scope.packs.enabled],
     enableShell: scope.packs.shell,
     allowCode: scope.packs.code,
@@ -654,7 +663,7 @@ function parseGitAuthor(value: string | undefined): { name: string; email: strin
  * and window, so BUCKLE_BROWSER_CDP is refused beside the settings that would choose them. A refusal names the
  * settings, never a value: a DevTools URL can carry a token, and a profile path is the owner's.
  */
-export function parseBrowserSettings(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): Pick<NodeConfig, 'browserCdp' | 'browserProfile' | 'browserArgs'> {
+export function parseBrowserSettings(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): { browserCdp?: string; browserProfile?: string; browserArgs?: string } {
   const browserCdp = parseBrowserCdp(environment.BUCKLE_BROWSER_CDP)
   const browserProfile = parseBrowserProfile(environment.BUCKLE_BROWSER_PROFILE, platform)
   const browserArgs = parseBrowserArgs(environment.BUCKLE_BROWSER_ARGS, platform)

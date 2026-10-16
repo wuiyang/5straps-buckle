@@ -64,16 +64,17 @@ describe('a write to workspace.json from another process', () => {
     expect(await read()).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
   })
 
-  // Left from the fix round that fenced the browser pack (H13): the stored browser block, which no pack reads yet, still
-  // counted as a change to the tools, so a hand edit of it rebuilt every other pack once the workspace was idle.
-  it('leaves every pack as it is through a hand edit of the stored browser block, which no pack reads yet', async () => {
+  // Phase 2 item 6: the browser pack reads the workspace's browser settings, which swap in at the next call as a policy
+  // list does, with no wait for work: they are no part of the sandbox layout.
+  it('takes a change to the browser settings up at the next call, with no wait for work', async () => {
     await read()
-    const { runtime } = await serving.resolve(site)
+    const { runtime, config } = await serving.resolve(site)
     const registry = runtime.registry()
     await owner.updateSettings(site, settings => ({ ...settings, browser: { ...settings.browser, idleTimeoutMs: 120_000 } }))
 
     expect(await read()).toMatchObject({ outcome: 'ok' })
-    expect(runtime.registry()).toBe(registry)
+    expect(config.browserIdleTimeoutMs).toBe(120_000)
+    expect(runtime.registry()).not.toBe(registry)
   })
 
   it('applies the approval wait and the variables at the next call', async () => {

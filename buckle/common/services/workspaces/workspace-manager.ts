@@ -389,8 +389,26 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         const next = change(current)
         const unmet = (next.packs.enabled ?? []).flatMap((pack) => { const reason = unmetPackPrerequisite(pack, node); return reason ? [`${pack} (${reason})`] : [] })
         if (unmet.length > 0) throw new WorkspaceError(`This node cannot build pack ${unmet.join(', ')}; set the prerequisite first, or leave the pack out`)
+        // Q10: a profile folder or an attached Chrome another workspace names as its own belongs to that one.
+        const claimed = ownBrowserKey(next)
+        const holder = claimed === null ? undefined : store.read().workspaces.find(other => other.id !== id && ownBrowserKey(readable(other.id)) === claimed)
+        if (holder) throw new WorkspaceError(`${claimed!.startsWith('cdp:') ? 'That Chrome' : 'That profile folder'} belongs to workspace ${holder.name}, and serves one workspace at a time: unset it there first`, 409)
         return next
       }, expectedRevision)
+    },
+
+    /**
+     * The name of the workspace that holds `id`'s profile folder or attached Chrome, where that is another one (Q10:
+     * one workspace at a time), else null: a workspace naming it as its own setting first, then one taking the node's,
+     * each in the registry's order, among the online workspaces. Read at each browser call, so a change shows at once.
+     */
+    browserHeldBy(id: string): string | null {
+      const online = store.read().workspaces.filter(workspace => workspace.online)
+      const keyed = online.map(workspace => ({ workspace, ...browserKeyOf(readable(workspace.id)) }))
+      const mine = keyed.find(entry => entry.workspace.id === id)
+      if (!mine?.key) return null
+      const holder = keyed.find(entry => entry.key === mine.key && entry.own) ?? keyed.find(entry => entry.key === mine.key)
+      return holder && holder.workspace.id !== id ? holder.workspace.name : null
     },
 
     /**
@@ -463,7 +481,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
           // `reportUrl`, `reportToken` and `approvalWebhook` come with the node's settings on purpose: every action a
           // workspace reports carries its own workspaceId, and a notification names the workspace that answers it.
           const config = workspaceConfig(node, { id, name: workspace.name, nodeFolder: workspace.nodeFolder === true, dir, ...scopeOf(settings, node.workspaceDefaults) })
-          const opening: Promise<ManagedWorkspace> = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), ...(input.interaction ? { interaction: input.interaction } : {}) })
+          const opening: Promise<ManagedWorkspace> = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), browserHeldBy: () => manager.browserHeldBy(id), ...(input.interaction ? { interaction: input.interaction } : {}) })
             .then((runtime) => {
               const managed = { config, runtime }
               registrations.set(managed, { dir: workspace.dir, createdAt: workspace.createdAt })
@@ -581,6 +599,28 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     if (activeElsewhere({ directory: activeWorkDirectory(node.stateDirectory, id) })) return true
     const opened = await openedRuntime(id)
     return opened !== null && await earlierHasWork(opened.runtime)
+  }
+
+  /** A workspace's settings, or the defaults where they will not read, which hold no browser of their own. */
+  function readable(id: string): WorkspaceSettings {
+    try { return settingsOf(id).read() } catch (error) {
+      if (error instanceof WorkspaceSettingsError) return defaultSettings()
+      throw error
+    }
+  }
+
+  /** What a workspace's browser in force is keyed by (an attached Chrome's endpoint, else its profile folder), and whether the setting is its own. */
+  function browserKeyOf(settings: WorkspaceSettings): { key: string | null; own: boolean } {
+    const { browser, sources } = resolveSettings(settings, node.workspaceDefaults)
+    if (browser.cdp) return { key: `cdp:${browser.cdp}`, own: sources['browser.cdp'] === 'workspace' }
+    if (browser.profile) return { key: `profile:${comparablePath(browser.profile, ignoresCase(platform))}`, own: sources['browser.profile'] === 'workspace' }
+    return { key: null, own: false }
+  }
+
+  /** The key of the browser a workspace names as its own setting, or null where its browser is the node's or fresh. */
+  function ownBrowserKey(settings: WorkspaceSettings): string | null {
+    const keyed = browserKeyOf(settings)
+    return keyed.own ? keyed.key : null
   }
 
   /** Every removed workspace whose records are kept and that no current registration holds, from its marker. */

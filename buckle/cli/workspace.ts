@@ -194,6 +194,12 @@ function show(context: Context): CliResult {
     ['packs.enabled', inForce.packs.enabled?.join(', ') ?? '(every built-in pack, and plugins)', inForce.sources['packs.enabled']!],
     ...(['shell', 'code', 'hostGit', 'hostLsp'] as const).map((pack): [string, string, SettingSource] => [`packs.${pack}`, onOff(inForce.packs[pack]), inForce.sources[`packs.${pack}`]!]),
     ...(['network', 'isolation'] as const).map((key): [string, string, SettingSource] => [`shell.${key}`, onOff(inForce.shell[key]), inForce.sources[`shell.${key}`]!]),
+    ['browser.idleTimeoutMs', String(inForce.browser.idleTimeoutMs), inForce.sources['browser.idleTimeoutMs']!],
+    // The owner's terminal: the profile folder and the endpoint show, as buckle workspace show prints the file whole.
+    ['browser.cdp', inForce.browser.cdp ?? '(none)', inForce.sources['browser.cdp']!],
+    ['browser.profile', inForce.browser.profile ?? '(none: a fresh browser)', inForce.sources['browser.profile']!],
+    ['browser.args', inForce.browser.args ?? '(none)', inForce.sources['browser.args']!],
+    ['browser.headed', onOff(inForce.browser.headed), inForce.sources['browser.headed']!],
     ...Object.entries(inForce.env).map(([name, value]): [string, string, SettingSource] => [`env.${name}`, value, settings.env[name] !== undefined ? 'workspace' : 'node']),
   ]
   process.stdout.write(`Workspace ${workspace.name} (id ${workspace.id}), ${workspace.online ? 'online' : 'offline'}, ${workspace.tokens} agent token${workspace.tokens === 1 ? '' : 's'}
@@ -308,15 +314,9 @@ async function unset(context: Context): Promise<CliResult> {
   return { exitCode: 0, detail: `unset ${workspace.name} ${key}` }
 }
 
-/**
- * The key `set` and `unset` change, or why none is. The browser block of workspace.json is stored, from migration, but
- * the browser runs on the node's own settings until it reads each workspace's (the workspace-model brief, Phase 2
- * item 6), so no command writes a value that would not take effect. A node setting is refused, naming the command that
- * changes it (D85, Q3).
- */
+/** The key `set` and `unset` change, or why none is. A node setting is refused, naming the command that changes it (D85, Q3). */
 function settingKey(key: string): SettingKey | string {
   if (key === 'mounts') return 'mounts change with buckle workspace mount add <local>:<sandbox>[:ro] and buckle workspace mount remove <sandbox>'
-  if (key.startsWith('browser.')) return `${key} does not take effect yet: the browser runs on the node's BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, and BUCKLE_BROWSER_HEADED until it reads each workspace's own, so buckle workspace set leaves it alone`
   return SETTING_KEYS.find(item => item.key === key) ?? nodeSettingRefusal(key) ?? `${key} is no workspace setting; buckle workspace show lists them`
 }
 

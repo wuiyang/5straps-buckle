@@ -288,15 +288,23 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     }
   }, 20000)
 
-  it('keeps the browser through a hand edit of the stored browser block, which no pack reads yet', async () => {
+  // Phase 2 item 6 (Q10): the idle timeout is the workspace's, passed to agent-browser, and a daemon keeps the one it was
+  // started with, so a session started under another is closed and a new one named.
+  it('starts the browser with the workspace\'s idle timeout, and relaunches a session started under another', async () => {
     const { runtime, calls, config } = await fixture(['*.example.test'])
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
+    const idleOf = (call: string[] | undefined) => call?.[call.indexOf('--idle-timeout') + 1]
+    expect(idleOf(calls()[0])).toBe('300000')
+    const first = sessionOf(calls()[0])
 
     await openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory!, config.workspaceId) }).update(settings => ({ ...settings, browser: { ...settings.browser, idleTimeoutMs: 120_000 } }))
     await runtime.takeUpSettings()
 
-    expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBeNull()
-    expect(calls().map(call => call[0])).toEqual(['open', 'snapshot'])
+    expect(await browse(runtime, { command: 'snapshot', args: [] })).toMatchObject({ outcome: 'ok' })
+    const snapshot = calls().find(call => call[0] === 'snapshot')
+    expect(idleOf(snapshot)).toBe('120000')
+    expect(sessionOf(snapshot)).not.toBe(first)
+    expect(calls().some(call => call[0] === 'close' && call.includes(first!))).toBe(true)
     await runtime.closeSessions()
   }, 20000)
 

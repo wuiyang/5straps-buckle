@@ -1,7 +1,9 @@
 import { MountPathSchema } from '@5straps/protocol'
 import { parseApprovalTimeout } from '../common/runtime/config.js'
 import { BUILTIN_PACKS } from '../common/services/packs/index.js'
-import { BUILT_IN_SETTINGS, withMount, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { isAbsolute } from 'node:path'
+import { typedPath } from '../common/domain/paths.js'
+import { BROWSER_IDLE_BOUNDS, BUILT_IN_SETTINGS, withMount, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 
 /**
  * A setting `buckle workspace set` and `unset` change, by its path in workspace.json. `set` gives the workspace a value
@@ -49,6 +51,33 @@ function withoutShell(settings: WorkspaceSettings, name: 'network' | 'isolation'
   return { ...settings, shell }
 }
 
+type BrowserKey = 'idleTimeoutMs' | 'cdp' | 'profile' | 'args' | 'headed'
+
+/** The browser block with `name` taken out: unset, so the node's value stands for it. */
+function withoutBrowser(settings: WorkspaceSettings, name: BrowserKey): WorkspaceSettings {
+  const { [name]: _dropped, ...browser } = settings.browser
+  return { ...settings, browser }
+}
+
+/**
+ * A browser setting (Phase 2 item 6, Q10), over the node's own (BUCKLE_BROWSER_CDP and its kin): each value is checked
+ * with the rest before anything is written (browserSettingsRefusal), naming the key and never the value, and a profile
+ * folder or an attached Chrome another workspace names as its own is refused, naming that workspace.
+ */
+const browser = (name: BrowserKey, takes: string, read: (raw: string) => WorkspaceSettings['browser'][BrowserKey]): SettingKey => ({
+  key: `browser.${name}`,
+  takes,
+  set: (settings, raw) => ({ ...settings, browser: { ...settings.browser, [name]: read(raw) } }),
+  unset: settings => withoutBrowser(settings, name),
+})
+
+/** Milliseconds an idle browser lives (Q10): a minute to a day, and never 0, which would keep it for good. */
+function idleTimeout(raw: string): number {
+  const value = /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN
+  if (!Number.isSafeInteger(value) || value < BROWSER_IDLE_BOUNDS.min || value > BROWSER_IDLE_BOUNDS.max) throw new SettingValueError(`browser.idleTimeoutMs is milliseconds, ${BROWSER_IDLE_BOUNDS.min} (a minute) to ${BROWSER_IDLE_BOUNDS.max} (a day); 0 is refused, as an idle browser always ends`)
+  return value
+}
+
 /** A shell setting (Phase 2 item 4), on or off, over the node's BUCKLE_SHELL_NETWORK or BUCKLE_SHELL_ISOLATION. */
 const shell = (name: 'network' | 'isolation', what: string): SettingKey => ({
   key: `shell.${name}`,
@@ -77,6 +106,11 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   pack('shell'), pack('code'), pack('hostGit'), pack('hostLsp'),
   shell('network', 'whether shell commands may reach the network while no approved URL list is set'),
   shell('isolation', 'whether each shell command runs on a private copy of the folder, published once it ends'),
+  browser('idleTimeoutMs', `milliseconds an idle browser lives, ${BROWSER_IDLE_BOUNDS.min} to ${BROWSER_IDLE_BOUNDS.max} (Buckle's ${BUILT_IN_SETTINGS.browser.idleTimeoutMs})`, idleTimeout),
+  browser('cdp', 'the DevTools port or URL of the owner\'s own Chrome to attach to (the node\'s BUCKLE_BROWSER_CDP, else none)', raw => raw.trim()),
+  browser('profile', 'an absolute path to a profile folder kept across launches (the node\'s BUCKLE_BROWSER_PROFILE, else a fresh browser)', raw => (isAbsolute(raw.trim()) ? typedPath(raw.trim()) : raw.trim())),
+  browser('args', 'Chromium arguments for a browser Buckle launches (the node\'s BUCKLE_BROWSER_ARGS, else none)', raw => raw.trim()),
+  browser('headed', 'on or off: a visible window (the node\'s BUCKLE_BROWSER_HEADED, else off)', raw => onOff('browser.headed', raw)),
   {
     key: 'mount',
     takes: 'where the agent sees the folder, such as /workspace (the node\'s, else its real path)',

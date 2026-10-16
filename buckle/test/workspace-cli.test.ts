@@ -846,9 +846,12 @@ describe('buckle workspace set and unset', () => {
     [['packs.shell', 'maybe'], 'packs.shell is on or off'],
     [['packs.enabled', 'fs,rocket'], 'Unknown pack rocket'],
     [['approvalWaitMs', 'soon'], 'approvalWaitMs is milliseconds'],
-    // Phase 2 item 6 reads the browser block per workspace; until then nothing writes a value that would not apply.
-    [['browser.idleTimeoutMs', '600000'], 'browser.idleTimeoutMs does not take effect yet: the browser runs on the node\'s BUCKLE_BROWSER_CDP'],
-    [['browser.headed', 'on'], 'browser.headed does not take effect yet'],
+    // Phase 2 item 6: the browser's settings are the workspace's, each checked before anything is written.
+    [['browser.idleTimeoutMs', '0'], 'browser.idleTimeoutMs is milliseconds, 60000 (a minute) to 86400000 (a day); 0 is refused'],
+    [['browser.idleTimeoutMs', '86400001'], 'browser.idleTimeoutMs is milliseconds'],
+    [['browser.headed', 'maybe'], 'browser.headed is on or off'],
+    [['browser.profile', 'profiles/mine'], 'browser.profile must be an absolute path'],
+    [['browser.cdp', 'chrome'], 'Invalid browser.cdp'],
     [['mounts', '/elsewhere'], 'mounts change with buckle workspace mount add <local>:<sandbox>[:ro]'],
     [['mount', 'elsewhere'], 'mount is an absolute path with plain segments'],
     // D85, Q3: a node setting is the node's, named with the command or file that changes it.

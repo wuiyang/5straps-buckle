@@ -59,6 +59,10 @@ export interface BuiltinPackOptions {
   browserProfile?: string
   /** BUCKLE_BROWSER_ARGS: Chromium arguments for a browser Buckle launches. */
   browserArgs?: string
+  /** browser.idleTimeoutMs: how long an idle browser lives; five minutes when absent. */
+  browserIdleTimeoutMs?: number
+  /** Which other workspace holds the profile folder or the attached Chrome, read at each browser call (Q10). */
+  browserHeldBy?: () => string | null
   allowHostGit?: boolean
   allowHostLsp?: boolean
   enableShell: boolean
@@ -159,6 +163,8 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       approvedLists: options.approvedLists,
       protectedRoots: options.hiddenPaths,
       ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
+      ...(options.browserIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.browserIdleTimeoutMs }),
+      ...(options.browserHeldBy ? { heldBy: options.browserHeldBy } : {}),
     }),
   ]
 

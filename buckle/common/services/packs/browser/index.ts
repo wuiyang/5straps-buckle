@@ -15,7 +15,7 @@ import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
-import { containmentWarning, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
+import { containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
 
 const PACK_ID = 'browser'
@@ -31,8 +31,6 @@ const SESSION_REFUSAL = 'Buckle\'s browser cannot attach, restore, or override s
 /** The sessions store's key for the one session every caller shares on a profile folder. */
 const SHARED_PROFILE_KEY = JSON.stringify(['profile'])
 
-/** How long an idle daemon lives. It closes a browser Buckle launched, and only disconnects from an attached one. */
-const IDLE_TIMEOUT_MS = '300000'
 
 /**
  * Fixed text, so the agent reads the same sentence whichever browser was reset. Only a fresh browser is passed
@@ -86,6 +84,16 @@ export interface BrowserPackOptions {
   protectedRoots?: readonly string[]
   /** The longest a call may run; a transfer directory twice as old is left from a stopped node. */
   maxTimeoutMs?: number
+  /**
+   * How long an idle daemon lives (browser.idleTimeoutMs, Q10): it closes a browser Buckle launched, and only disconnects
+   * from an attached one. Five minutes when absent.
+   */
+  idleTimeoutMs?: number
+  /**
+   * The name of another workspace the profile folder or attached Chrome belongs to, read at each call (Q10: one
+   * workspace at a time), or null where it is this workspace's; never asked where absent.
+   */
+  heldBy?: () => string | null
 }
 
 /** The node's own default for the longest call, when the pack is built without one. */
@@ -125,7 +133,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const mode: BrowserMode | null = 'mode' in choice ? choice.mode : null
   // agent-browser's output names the endpoint or the profile folder when it cannot reach or open them.
   const scrub = settingScrubber(mode ?? FRESH_BROWSER)
-  const fingerprint = modeFingerprint(mode ?? FRESH_BROWSER, { launchArgs: options.launchArgs, headed: options.headed })
+  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+  const fingerprint = modeFingerprint(mode ?? FRESH_BROWSER, { launchArgs: options.launchArgs, headed: options.headed, idleTimeoutMs })
   // agent-browser refuses --allowed-domains with a profile or an attached browser, so only a fresh one is passed the list.
   const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
   const unavailableReason = options.agentBrowser.path !== null ? ('refusal' in choice ? choice.refusal : null) : browserUnavailable(options.agentBrowserCommand, options.agentBrowser)
@@ -162,6 +171,9 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
         run: async (input, context): Promise<JsonValue> => {
           const running = browserMode(mode)
           assertRunnable(input)
+          // Q10: a profile folder or an attached Chrome serves one workspace at a time; read now, so a change is seen at once.
+          const holder = running.kind === 'fresh' ? null : options.heldBy?.() ?? null
+          if (holder !== null) throw new ToolExecutionError(heldRefusal(running, holder), { code: 'BROWSER_COMMAND_FAILED' })
           const refused = refusedFlag(input.args)
           if (refused) throw new ToolInputError(flagRefusal(refused))
 
@@ -214,7 +226,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               const closed = await closeSession(options, replaced, AbortSignal.timeout(CLOSE_TIMEOUT_MS))
               if (!closed) logger.warn('A browser session from other settings did not close; its idle timeout ends it')
             }
-            args.push('--config', configFile, '--session', session, ...modeArguments(running, { flag, headed: options.headed && !input.args.includes('--headed'), launchArgs: options.launchArgs }))
+            args.push('--config', configFile, '--session', session, ...modeArguments(running, { flag, headed: options.headed && !input.args.includes('--headed'), launchArgs: options.launchArgs, idleTimeoutMs }))
             if (flag !== null && 'loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
 
             writeFileSync(configFile, '{}\n', { mode: 0o600 })
@@ -280,14 +292,20 @@ function browserMode(mode: BrowserMode | null): BrowserMode {
  * attached browser takes --cdp alone: it keeps the profile, arguments, and window its owner started it with, and
  * agent-browser's close and idle shutdown only disconnect from it.
  */
-function modeArguments(mode: BrowserMode, input: { flag: string | null; headed: boolean; launchArgs: string | undefined }): string[] {
-  const args = ['--idle-timeout', IDLE_TIMEOUT_MS]
+function modeArguments(mode: BrowserMode, input: { flag: string | null; headed: boolean; launchArgs: string | undefined; idleTimeoutMs: number }): string[] {
+  const args = ['--idle-timeout', String(input.idleTimeoutMs)]
   if (mode.kind === 'attached') return [...args, '--cdp', mode.endpoint]
   if (mode.kind === 'profile') args.push('--profile', mode.directory)
   if (input.flag !== null) args.push('--allowed-domains', input.flag)
   if (input.launchArgs) args.push('--args', input.launchArgs)
   if (input.headed) args.push('--headed')
   return args
+}
+
+/** Why a call is refused while another workspace holds the profile folder or the attached Chrome: names that workspace, never the setting's value. */
+function heldRefusal(mode: BrowserMode, holder: string): string {
+  const what = mode.kind === 'attached' ? 'The owner\'s Chrome this browser attaches to' : 'The profile folder this browser keeps its logins in'
+  return `${what} belongs to workspace ${holder}, and serves one workspace at a time; the owner chooses which with buckle workspace set browser.profile or browser.cdp`
 }
 
 /** The agent-browser spawned; a pack without one is withheld, so no call reaches here. */

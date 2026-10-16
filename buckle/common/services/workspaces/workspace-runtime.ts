@@ -187,6 +187,8 @@ interface RuntimeInput {
   serving?: () => boolean
   /** Every root the node knows, where no program run here may come from (NodeRoots); this workspace's own alone when absent. */
   nodeRoots?: NodeRoots
+  /** The name of another workspace holding this one's profile folder or attached Chrome, read at each browser call (Q10). */
+  browserHeldBy?: () => string | null
 }
 
 /** The settings watcher's debounce (Q2): a change is taken up this long after the last write, within the 100 to 250 ms the brief allows. */
@@ -291,7 +293,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // What a code mode script reaches: this workspace's manifest as it stands at each call, after tool policy (owner
   // decision D82, point 3), and never another workspace's (BUCKLE-D07: a token opens one workspace).
   const manifestTools = (): ToolCapability[] => registry.capabilities().filter(tool => toolDenial(tool.name) === null)
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools })
+  const browserHeldBy = input.browserHeldBy
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy })
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
@@ -504,7 +507,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     // none of them to be open. A process holding no workbenches (another runs them) has none to wait for or stop.
     if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && await workbenches.hasActiveWork())) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowed })
-    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools }) : null
+    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy }) : null
     const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
     if (policyMoved) await workbenches.policyChanged()
     Object.assign(config, fields)
@@ -639,6 +642,7 @@ async function buildPacks(input: {
   history: ChangeHistory
   untrusted: () => UntrustedRoots
   reachableTools: () => ToolCapability[]
+  browserHeldBy?: (() => string | null) | undefined
 }): Promise<Pack[]> {
   const builtin = createBuiltinPacks({
     cwd: input.config.cwd,
@@ -663,6 +667,8 @@ async function buildPacks(input: {
     browserCdp: input.config.browserCdp,
     browserProfile: input.config.browserProfile,
     browserArgs: input.config.browserArgs,
+    browserIdleTimeoutMs: input.config.browserIdleTimeoutMs,
+    ...(input.browserHeldBy ? { browserHeldBy: input.browserHeldBy } : {}),
     enableShell: input.config.enableShell,
     allowCode: input.config.allowCode,
     reachableTools: input.reachableTools,
@@ -695,36 +701,36 @@ function policyHash(compiled: CompiledPolicy): string {
 
 /**
  * What reshapes a workspace's tools (fix brief 1, D), as in force: the packs offered, where the folder shows, the mount
- * table, and the shell's network and isolation (Q2: the sandbox layout changes only when no work is active). A change to any rebuilds the packs once no work is active, and refuses calls with a 409 until then. The stored browser block
- * is not among them: no pack reads it yet, so a hand edit of it changes no tool (browserInputs names what the browser
- * pack is handed, the node's settings until a later release reads each workspace's own).
+ * table, and the shell's network and isolation (Q2: the sandbox layout changes only when no work is active). A change to
+ * any rebuilds the packs once no work is active, and refuses calls with a 409 until then. The browser settings are no
+ * layout: they swap in (swapInputs).
  */
 function reshapeInputs(settings: ResolvedSettings): string {
   return JSON.stringify([settings.packs, settings.mount, settings.mounts, settings.shell])
 }
 
 /**
- * What the packs hold a copy of without reshaping: the policy lists and the variables. A change to either rebuilds the
- * packs for the next call with no wait, as the approval wait swaps in, and a call already running keeps its own.
+ * What the packs hold a copy of without reshaping: the policy lists, the variables, and the browser settings. A change to
+ * any rebuilds the packs for the next call with no wait, as the approval wait swaps in, and a call already running keeps
+ * its own; the browser pack is carried over unless what it is handed changed (browserInputs).
  */
 function swapInputs(settings: ResolvedSettings): string {
-  return JSON.stringify([settings.policy, settings.env])
+  return JSON.stringify([settings.policy, settings.env, settings.browser])
 }
 
 const BROWSER_PACK = 'browser'
 
 /**
  * What the browser pack alone is handed (fix brief 2, R2, and its recheck): the allowed domains its approved list
- * comes to as agent-browser reads them, the mode and window settings it launches under (the node's, until a later
- * release reads each workspace's own), and the mounts its paths resolve against. Not the stored list, nor the stored
- * browser block, which the pack does not read: a rebuild for anything else, the variables, or a list changed in
- * order, port, or path only, carries the pack over with the browsers it runs, so an agent's tabs and cookies survive it.
+ * comes to as agent-browser reads them, the workspace's mode, window, and idle timeout it launches under, and the
+ * mounts its paths resolve against. Not the stored list: a rebuild for anything else, the variables, or a list changed
+ * in order, port, or path only, carries the pack over with the browsers it runs, so an agent's tabs and cookies survive it.
  */
 function browserInputs(input: { config: BuckleConfig; compiled: CompiledPolicy; mounts: [ResolvedSettings['mount'], ResolvedSettings['mounts']] }): string {
   const { config } = input
   const mode: BrowserMode = config.browserCdp ? { kind: 'attached', endpoint: config.browserCdp } : config.browserProfile ? { kind: 'profile', directory: config.browserProfile } : FRESH_BROWSER
   const domains = browserAllowedDomains(input.compiled.network ? [{ name: 'workspace', entries: input.compiled.network.patterns }] : [])
-  return JSON.stringify([allowedDomainsKey(domains), modeFingerprint(mode, { ...(config.browserArgs === undefined ? {} : { launchArgs: config.browserArgs }), headed: config.browserHeaded }), input.mounts])
+  return JSON.stringify([allowedDomainsKey(domains), modeFingerprint(mode, { ...(config.browserArgs === undefined ? {} : { launchArgs: config.browserArgs }), headed: config.browserHeaded, idleTimeoutMs: config.browserIdleTimeoutMs }), input.mounts])
 }
 
 /**
@@ -747,7 +753,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
   return WorkspaceSettingsSchema.parse({
     ...withMount(withPolicy(WorkspaceSettingsSchema.parse({ version: 1 }), config.policy), config.policy.mount),
     packs: { enabled: config.enabledPacks ?? null, shell: config.enableShell, code: config.allowCode, hostGit: config.allowHostGit, hostLsp: config.allowHostLsp },
-    browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded },
+    browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded, idleTimeoutMs: config.browserIdleTimeoutMs },
     approvalWaitMs: config.approvalTimeoutMs ?? 0,
     shell: { network: config.shellNetwork, isolation: config.isolateShell },
     env: config.commandEnvironment,
