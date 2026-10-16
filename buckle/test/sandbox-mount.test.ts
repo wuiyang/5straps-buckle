@@ -33,8 +33,9 @@ describe('bubblewrap without a mount', () => {
     const { args } = sandbox.wrap(command())
     expect(pairs(args, '--ro-bind')).not.toContainEqual(['/', '/'])
     expect(pairs(args, '--ro-bind')).toContainEqual(['/work/project', '/work/project'])
-    expect(args).toContain('--tmpfs')
-    expect(pairs(args, '--tmpfs')).toContainEqual([STATE, '--chdir'])
+    // The state directory lies in nothing bound, so it is not there to hide, and no folder of the owner's holds a mask.
+    expect(pairs(args, '--tmpfs').map(([path]) => path)).toEqual(['/', '/tmp'])
+    expect(sandbox.wrap(command({ readOnlyPaths: ['/home/me'] })).args.join(' ')).toContain(`--tmpfs ${STATE}`)
     expect(args.slice(-4)).toEqual(['/work/project/apps/web', '--', 'pnpm', 'build'])
   })
 })

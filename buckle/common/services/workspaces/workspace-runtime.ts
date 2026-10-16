@@ -218,6 +218,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   const sandbox = resolveSandbox({
     requested: config.sandboxMode,
     acknowledgedUnsandboxed: config.acknowledgedUnsandboxed,
+    identityDirectory: join(config.stateDirectory, 'sandbox-etc'),
     ...untrusted(),
   })
 
@@ -329,7 +330,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         hiddenPaths: [...hidden.directories, ...projection.hiddenPaths], hiddenFiles: [...hidden.files, ...projection.hiddenFiles],
         mounts, readOnlyPaths: config.mountReadOnlyPaths, readOnlyWorkspacePaths: projection.readOnlyWorkspacePaths,
       })
-      const environment = Object.fromEntries(Object.entries(buildChildEnvironment({ parent: process.env, extra: { TERM: 'xterm-256color' } })).filter((entry): entry is [string, string] => entry[1] !== undefined))
+      // The variables a shell command gets (Q11), and a terminal's TERM.
+      const environment = Object.fromEntries(Object.entries(buildChildEnvironment({ parent: process.env, extra: { ...sandbox.sandbox.environment?.(config.mountReadOnlyPaths), TERM: 'xterm-256color' } })).filter((entry): entry is [string, string] => entry[1] !== undefined))
       return { ...wrapped, cwd: request.cwd, environment, cols: request.cols, rows: request.rows }
     },
   })

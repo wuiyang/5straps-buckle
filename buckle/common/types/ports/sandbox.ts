@@ -35,4 +35,9 @@ export interface Sandbox {
   readonly supportsMount: boolean
   /** Rewrites a command so the platform sandbox wraps it. */
   wrap(command: SandboxCommand): { command: string; args: string[] }
+  /**
+   * The variables Buckle sets for every command it wraps (Q11): PATH, USER, LOGNAME, SHELL, and TMPDIR, never the
+   * node's own; `readOnlyPaths` are the toolchains bound for it. Absent where the sandbox shows the host's own tree.
+   */
+  environment?(readOnlyPaths: readonly string[]): Record<string, string>
 }

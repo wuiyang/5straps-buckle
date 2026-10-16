@@ -147,7 +147,8 @@ export function createShellPack(options: ShellPackOptions): Pack {
       })
       return options.runProcess({
         command: wrapped.command, argv0: program?.argv0, args: wrapped.args, cwd: mapped(cwd), timeoutMs: input.timeoutMs,
-        environment: buildChildEnvironment({ parent: process.env, extra: { ...options.commandEnvironment, ...input.env } }), signal: input.signal,
+        // Buckle's own PATH, user, shell, and TMPDIR for the sandbox (Q11), then the workspace's variables, then the call's.
+        environment: buildChildEnvironment({ parent: process.env, extra: { ...options.sandbox.environment?.(options.readOnlyPaths), ...options.commandEnvironment, ...input.env } }), signal: input.signal,
       })
     }
     if (!options.isolation) return toJson(await run(), options.sandbox.mode)

@@ -25,6 +25,8 @@ export interface SandboxResolution {
 export function resolveSandbox(input: {
   requested: SandboxMode | 'auto'
   acknowledgedUnsandboxed: boolean
+  /** Where the bubblewrap sandbox writes its own account files (createBubblewrapSandbox); none binds neither. */
+  identityDirectory?: string
 } & UntrustedRoots & ProgramSearch): SandboxResolution {
   const platform = input.platform ?? process.platform
   const search = { ...input, platform }
@@ -32,7 +34,7 @@ export function resolveSandbox(input: {
 
   if (detected === 'bubblewrap') {
     const bwrap = resolveProgram('bwrap', search)
-    if (bwrap.path !== null) return { sandbox: createBubblewrapSandbox(bwrap.path), unavailableReason: null }
+    if (bwrap.path !== null) return { sandbox: createBubblewrapSandbox(bwrap.path, input.identityDirectory === undefined ? {} : { identityDirectory: input.identityDirectory }), unavailableReason: null }
     if (bwrap.untrusted) return withheld(bwrap.reason)
     if (input.requested !== 'auto') {
       return unavailable('BUCKLE_SANDBOX=bubblewrap was requested but bwrap is not installed')
