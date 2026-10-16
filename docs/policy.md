@@ -103,8 +103,9 @@ buckle policy remove 'pnpm {build,test} *'
 buckle policy clear         # empties every list, keeping the mount
 ```
 
-`buckle policy` exits 0 when done, 1 on a refused change, and 2 on a conflict: work in progress,
-such as a shell copy awaiting review, or an imported file naming the dangerously-allow switch.
+`buckle policy` exits 0 when done, 1 on a refused change, and 2 on a conflict: an open workbench,
+active work such as a shell copy awaiting review for a mount, or an imported file naming the
+dangerously-allow switch. A list changes while a shell copy awaits review.
 
 A running `buckle serve` or `buckle mcp` takes a change up at the workspace's next call
 ([When a change applies](workspaces-02.md#when-a-change-applies)), and reads the

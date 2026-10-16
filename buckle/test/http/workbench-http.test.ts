@@ -32,7 +32,7 @@ it('requires setup provisioning and a separate workbench grant for editor operat
   const revision = (await policy.json() as { revision: string }).revision
   const replacement = await f.request(f.buckle.setup('policy'), f.config.adminToken, { expectedRevision: revision, version: 1, commands: { allow: [], deny: [] }, network: { allow: [] }, mount: null, updatedAt: null }, 'PUT')
   expect(replacement.status).toBe(409)
-  expect(await replacement.text()).toContain('Resolve active work')
+  expect(await replacement.text()).toContain('Close the open workbenches')
   await f.request(path + '/discard', grant.token, { actorId: 'user-alice' })
 })
 

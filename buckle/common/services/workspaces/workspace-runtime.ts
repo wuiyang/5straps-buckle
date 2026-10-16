@@ -82,8 +82,11 @@ const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds
 /** Said where a change read but would not apply: the call is refused, never answered under the old settings (fix brief 4, finding 1). No path. */
 const SETTINGS_RETRY = 'This workspace\'s settings changed and could not be taken up yet; retry the call, and if it keeps failing, the owner\'s log says why'
 
-/** Said where the owner's policy write meets work in progress, wherever it runs. */
+/** Said where the owner's mount change meets work in progress, wherever it runs: a mount reshapes the tools. */
 const POLICY_WAITS = 'Resolve active work and staged changes before changing workspace policy'
+
+/** Said where a policy write meets an open workbench: taking the new policy up would stop its terminals. */
+const POLICY_WAITS_FOR_WORKBENCH = 'Close the open workbenches of this workspace before changing its policy'
 
 /**
  * The workspace's policy as the runtime holds it: its own lists, in its workspace.json, which `buckle policy` and the
@@ -363,7 +366,6 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       network: () => ({ rule: networkEgressRule(compiled), approved: compiled.network }),
       revision: () => policyRevision(storedPolicy(settingsFile.read())),
       async apply(policy, expectedRevision) {
-        refuseWhileWorking()
         compilePolicy(policy)
         await writePolicy(current => ({ ...policy, mount: current.mount, updatedAt: new Date().toISOString() }), expectedRevision)
         await runtime.reload()
@@ -377,7 +379,6 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         return compiled.policy
       },
       async clear(expectedRevision) {
-        refuseWhileWorking()
         await writePolicy(current => ({ ...emptyWorkspacePolicy(), mount: current.mount, updatedAt: new Date().toISOString() }), expectedRevision)
         await runtime.reload()
         return compiled.policy
@@ -590,15 +591,22 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   }
 
   /**
-   * The owner's policy write meets work in progress wherever it runs, read without taking the workbenches up: an open
+   * The owner's mount change meets work in progress wherever it runs, read without taking the workbenches up: an open
    * workbench another process holds still counts, a closed one does not (fix brief 3, H8; fix brief 4, finding 1).
    */
   function refuseWhileWorking(): void {
     if (runtime.inspectActiveWork()) throw new PolicyConflictError(POLICY_WAITS)
   }
 
-  /** The policy write path: through workspace.json, refused when the policy changed since `expectedRevision`. */
+  /**
+   * The policy write path: through workspace.json, refused when the policy changed since `expectedRevision`. A list
+   * swaps in at the next call, so a shell result awaiting review, a call running, and a lock another process holds are
+   * no reason to wait (fix brief 3, H14). Every write stamps the policy's updatedAt, which the compiled policy carries,
+   * so it moves the compiled policy and stops the terminals of an open workbench; only that waits (fix brief 4,
+   * finding 27).
+   */
   async function writePolicy(change: (current: WorkspacePolicy) => WorkspacePolicy, expectedRevision?: string): Promise<void> {
+    if (workbenches.inspectActive()) throw new PolicyConflictError(POLICY_WAITS_FOR_WORKBENCH)
     await settingsFile.update((current) => {
       const policy = storedPolicy(current)
       if (expectedRevision !== undefined && policyRevision(policy) !== expectedRevision) throw new PolicyConflictError('Workspace policy changed; reload before saving')
