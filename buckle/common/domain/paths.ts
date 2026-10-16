@@ -8,6 +8,8 @@ import { ToolInputError } from './tool.js'
  * isAbsolute takes `c:/x`, a folder named `c:` on Linux, for a drive, which put `<ws>/c:/x` outside its workspace.
  */
 export function isInside(directory: string, candidate: string, platform: NodeJS.Platform = process.platform): boolean {
+  // On Windows a share is a root of its own, which pathe's resolve would read as a folder on the current drive.
+  if (platform === 'win32' && (shareRoot(directory) !== null || shareRoot(candidate) !== null)) return insideOnShare(directory, candidate)
   const from = resolvePath(directory)
   const to = resolvePath(candidate)
   if (pathRoot(from, platform) !== pathRoot(to, platform)) return false
@@ -28,11 +30,63 @@ export function isInsideAny(directories: string[], candidate: string, platform?:
  * lands on a drive (refuseDrive). On Windows nothing is trimmed, and a path that holds a name ending in a dot or a space
  * once `.` and `..` are folded is refused (TRIMMED_NAME).
  */
-export function nativePath(path: string, platform: NodeJS.Platform = process.platform): string {
+export function nativePath(path: string, platform: NodeJS.Platform = process.platform, shares: readonly string[] = []): string {
+  if (platform === 'win32' && shares.length > 0 && SHARE_FORM.test(path)) return onShare(path, shares)
   const named = forwardSlashes(path, platform)
   const folded = refuseDrive(onDrive([platform === 'win32' ? named : named.replace(/^\/{2,}/, '/')], first => normalize(first)), path, platform)
   if (platform === 'win32' && holdsTrimmedName(folded)) throw unsupported(path, TRIMMED_NAME)
   return folded
+}
+
+/**
+ * A Windows share, `\\server\share`, with either separator, and never a device path (`\\?\`, `\\.\`), whose
+ * first name is `?` or `.`: those stay refused wherever they appear (Q8 of the workspace-model brief).
+ */
+const SHARE_FORM = /^[\\/]{2}(?![?.][\\/])[^\\/:*?"<>|]+[\\/][^\\/:*?"<>|]+(?:[\\/]|$)/
+
+/**
+ * The share a path in pathe's form lies on, `//server/share`, or null where it lies on none. A device path is no share.
+ */
+export function shareRoot(path: string): string | null {
+  return /^\/\/(?![?.]\/)[^/]+\/[^/]+/.exec(path)?.[0] ?? null
+}
+
+/** The share a Windows path as typed lies on, as the one share it may name; none for any other path, a device path among them. */
+export function typedShare(path: string): string[] {
+  if (!SHARE_FORM.test(path)) return []
+  const root = shareRoot(path.replaceAll('\\', '/'))
+  return root === null ? [] : [root]
+}
+
+/** Why a path on a network share is refused where no mount of the workspace holds it. */
+const NETWORK_SHARE = 'is on a network share or is a device path, which Buckle does not use on Windows'
+
+/**
+ * A path on a Windows share, in pathe's form (`//server/share/rest`), accepted where one of `shares`, the sources of the
+ * workspace's mounts that lie on a share, holds it (D84 (1), Q8): the rest folded beneath the share, which a `..` never
+ * climbs past, and refused, as every other share path is, where none does. A name ending in a dot or a space is
+ * refused, as on a drive (TRIMMED_NAME).
+ */
+function onShare(path: string, shares: readonly string[]): string {
+  const named = path.replaceAll('\\', '/')
+  const root = shareRoot(named)
+  if (root === null) throw unsupported(path, NETWORK_SHARE)
+  const rest = named.slice(root.length)
+  if (rest.includes(':')) throw unsupported(path, 'holds a colon, which Windows reads as a file stream')
+  // Folded beneath the share as Windows folds it: a `..` at the share stays there.
+  const below = normalize(`/${rest.replace(/^\/+/, '')}`)
+  const folded = below === '/' ? root : `${root}${below.replace(/\/$/, '')}`
+  if (holdsTrimmedName(folded.slice(2))) throw unsupported(path, TRIMMED_NAME)
+  if (!shares.some(share => insideOnShare(comparablePath(share, true), comparablePath(folded, true)))) throw unsupported(path, NETWORK_SHARE)
+  return folded
+}
+
+/** isInside where either path is on a share: both on the same one, compared as written, and the rest as folders are. */
+function insideOnShare(directory: string, candidate: string): boolean {
+  const [from, to] = [shareRoot(directory), shareRoot(candidate)]
+  if (from === null || to === null || from !== to) return false
+  const fromDirectory = relative(`/${directory.slice(from.length)}`, `/${candidate.slice(to.length)}`)
+  return fromDirectory !== '..' && !fromDirectory.startsWith('../')
 }
 
 /**
@@ -168,7 +222,7 @@ function unsupported(path: string, reason: string): ToolInputError {
  */
 function unsupportedPath(path: string, platform: NodeJS.Platform): string | null {
   if (platform === 'win32') {
-    if (/^[\\/]{2}/.test(path)) return 'is on a network share or is a device path, which Buckle does not use on Windows'
+    if (/^[\\/]{2}/.test(path)) return NETWORK_SHARE
     return path.replace(DRIVE_FIRST, '').includes(':') ? 'holds a colon that is not a drive letter\'s, which Windows reads as a file stream or a drive\'s working directory' : null
   }
   if (path.includes('\\')) return 'holds a backslash, which Buckle reads as a separator'

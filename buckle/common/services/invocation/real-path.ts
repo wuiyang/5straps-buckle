@@ -19,11 +19,19 @@ const MAX_LINKS = 40
  * Each name is appended as text (childPath), so on Linux and macOS a link to `/c:` is walked to the
  * folder `c:` at the root, and a landing there is refused (refuseDrive), as pathe would read it as a drive.
  */
-export function resolveTarget(absolutePath: string): string {
-  return refuseDrive(whereItLands(absolutePath), absolutePath)
+export function resolveTarget(absolutePath: string, landing: LandingRead = {}): string {
+  return refuseDrive(whereItLands(absolutePath, landing), absolutePath)
 }
 
-function whereItLands(absolutePath: string): string {
+/**
+ * How a landing is read: `shares`, on Windows the sources of the workspace's mounts on a network share, where a path on
+ * a share may land (D84 (1)); none elsewhere, so a share stays refused. `platform`: the host's unless a test imitates
+ * another.
+ */
+export interface LandingRead { shares?: readonly string[]; platform?: NodeJS.Platform }
+
+function whereItLands(absolutePath: string, landing: LandingRead): string {
+  const read = (path: string) => nativePath(path, landing.platform, landing.shares)
   let real: string
   try {
     // The C library's realpath, as the kernel resolves: Node's own folds a link target's `..` as text.
@@ -33,15 +41,15 @@ function whereItLands(absolutePath: string): string {
     if (!isMissingPathError(error)) throw error
     const root = pathRoot(absolutePath)
     if (root === '') throw new ToolInputError(`${absolutePath} is not an absolute path, so where it lands cannot be checked`)
-    const landing = walk(root, absolutePath.slice(root.length).split('/'), { links: 0 })
-    return landing.kind === 'directory' ? diskCase(landing.path) : landing.path
+    const walked = walk(root, absolutePath.slice(root.length).split('/'), { links: 0 }, read)
+    return walked.kind === 'directory' ? diskCase(walked.path, read) : walked.path
   }
-  return nativePath(real)
+  return read(real)
 }
 
 /** The same resolution for callers that await; kept async so a later non-blocking lookup changes no caller. */
-export async function realPathOrPlanned(absolutePath: string): Promise<string> {
-  return resolveTarget(absolutePath)
+export async function realPathOrPlanned(absolutePath: string, landing: LandingRead = {}): Promise<string> {
+  return resolveTarget(absolutePath, landing)
 }
 
 /**
@@ -50,7 +58,7 @@ export async function realPathOrPlanned(absolutePath: string): Promise<string> {
  */
 interface Landing { path: string; kind: 'directory' | 'other' | 'missing' }
 
-function walk(start: string, parts: string[], budget: { links: number }): Landing {
+function walk(start: string, parts: string[], budget: { links: number }, read: (path: string) => string): Landing {
   let current = start
   for (const [index, part] of parts.entries()) {
     if (part === '' || part === '.') continue
@@ -62,18 +70,18 @@ function walk(start: string, parts: string[], budget: { links: number }): Landin
       info = lstatSync(next)
     } catch (error) {
       if (!isMissingPathError(error)) throw error
-      return { path: planned(childPath(diskCase(current), part), rest), kind: 'missing' }
+      return { path: planned(childPath(diskCase(current, read), part), rest), kind: 'missing' }
     }
     if (info.isSymbolicLink()) {
       if (++budget.links > MAX_LINKS) throw tooManyLinks(next)
       // Windows answers with backslashes; nothing is folded, so a `..` still climbs from where the link lands.
       const target = withForwardSlashes(readlinkSync(next))
       const root = pathRoot(target)
-      const landing = walk(root === '' ? current : root, target.slice(root.length).split('/'), budget)
+      const landing = walk(root === '' ? current : root, target.slice(root.length).split('/'), budget, read)
       if (landing.kind === 'directory') { current = landing.path; continue }
       return beyond(landing, rest)
     }
-    if (!info.isDirectory()) return beyond({ path: diskCase(next), kind: 'other' }, rest)
+    if (!info.isDirectory()) return beyond({ path: diskCase(next, read), kind: 'other' }, rest)
     current = next
   }
   return { path: current, kind: 'directory' }
@@ -106,10 +114,10 @@ function planned(missing: string, rest: string[]): string {
  * A link-free existing path as the disk names it (on macOS, in the case it stores); the text as it is
  * when the path went away meanwhile, which the pinned open then refuses or creates as judged.
  */
-function diskCase(path: string): string {
+function diskCase(path: string, read: (path: string) => string): string {
   let real: string
   try { real = realpathSync.native(path) } catch { return path }
-  return nativePath(real)
+  return read(real)
 }
 
 function tooManyLinks(path: string): ToolInputError {

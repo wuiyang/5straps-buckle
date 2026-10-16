@@ -98,15 +98,16 @@ export type HostEnvironment = (extra?: Record<string, string>) => NodeJS.Process
 /**
  * buildChildEnvironment for a program Buckle itself runs on the host (git, rg, ps, a language server, agent-browser,
  * the environment validator), whose PATH keeps only the entries outside every root an agent can write
- * (trustedSearchPath), read at each spawn. The shell keeps the agent's PATH: in the sandbox it runs the agent's own
+ * (trustedSearchPath), read at each spawn; on Windows an entry on a network share stays only where `shares`, the
+ * sources of the workspace's mounts on a share, holds it. The shell keeps the agent's PATH: in the sandbox it runs the agent's own
  * commands, and unsandboxed it is no isolation by design. `platform`: the host's unless a test imitates another.
  */
-export function hostEnvironment(untrusted: () => UntrustedRoots, platform: NodeJS.Platform = process.platform): HostEnvironment {
+export function hostEnvironment(untrusted: () => UntrustedRoots, platform: NodeJS.Platform = process.platform, shares: readonly string[] = []): HostEnvironment {
   return (extra = {}) => {
     const environment = buildChildEnvironment({ parent: process.env, extra: {}, platform })
     // On Windows PATH is usually spelled `Path`: the entry judged is the one the child would read, whatever its spelling.
     const key = environmentKey(environment, 'PATH', platform) ?? 'PATH'
-    const searchPath = trustedSearchPath(environment[key], untrusted(), platform)
+    const searchPath = trustedSearchPath(environment[key], untrusted(), platform, undefined, shares)
     if (searchPath) environment[key] = searchPath
     else delete environment[key]
     return withExtra(environment, extra, platform)

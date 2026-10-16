@@ -118,9 +118,11 @@ export function unmetPackPrerequisite(id: string, options: Pick<BuiltinPackOptio
 export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   // Each program a pack runs is resolved once, here, and spawned by that path; one found where an agent writes is refused.
   const untrusted = options.untrusted ?? (() => ownRoots(options.paths))
-  const program = (name: string): ResolvedProgram => resolveProgram(name, { ...untrusted(), ...options.programSearch })
+  // On Windows a program on a network share runs only where a mount of this workspace holds it (D84 (1)).
+  const shares = options.programSearch?.shares ?? options.paths.shares
+  const program = (name: string): ResolvedProgram => resolveProgram(name, { ...untrusted(), ...options.programSearch, shares })
   // And each runs with a PATH that leads to no program an agent wrote, as a script it runs looks its interpreter up there.
-  const environment = hostEnvironment(untrusted, options.programSearch?.platform)
+  const environment = hostEnvironment(untrusted, options.programSearch?.platform, shares)
   const git = program('git')
   const packs: Pack[] = [
     createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: programOrNull(program('rg')), protectedRoots: options.hiddenPaths, environment }),
@@ -176,7 +178,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     filesystemPolicy: options.filesystemPolicy,
     allowNetwork: options.shellNetwork === true && !options.approvedUrls && options.allowedHosts.length === 0,
     untrusted,
-    ...(options.programSearch ? { programSearch: options.programSearch } : {}),
+    programSearch: { ...options.programSearch, shares },
   }))
 
   // Built whether or not it may run, so `buckle manifest` explains a withheld one. Never withheld for want of an
@@ -192,7 +194,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const validator = options.environmentValidator
   if (validator !== undefined && unmetPackPrerequisite('environment', options) === null) {
     // Named by its setting in a refusal the agent reads, never by its path, which may lie outside the workspace.
-    const resolved = resolveProgram(validator, { ...untrusted(), ...options.programSearch, shownAs: 'The validator BUCKLE_ENV_VALIDATOR_COMMAND names' })
+    const resolved = resolveProgram(validator, { ...untrusted(), ...options.programSearch, shares, shownAs: 'The validator BUCKLE_ENV_VALIDATOR_COMMAND names' })
     packs.push(createEnvironmentPack({ command: validator, validator: resolved, cwd: options.cwd, runProcess: options.runProcess, environment }))
   }
   if (!options.allowHostGit) for (const pack of packs) {

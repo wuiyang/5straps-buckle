@@ -10,7 +10,7 @@ import { resolveTarget } from '../invocation/real-path.js'
  * run outside the invoker) the landing is returned unchecked.
  */
 export function judgedPath(input: { named: string; kind: 'read' | 'write'; paths: PathView; context: Pick<ToolContext, 'authorizeReadTarget' | 'authorizeWrite'> }): string {
-  const target = resolveTarget(input.paths.resolve(input.named))
+  const target = resolveTarget(input.paths.resolve(input.named), { shares: input.paths.shares })
   const authorize = input.kind === 'read' ? input.context.authorizeReadTarget : input.context.authorizeWrite
   if (authorize && !authorize(target)) throw new ToolInputError(`${input.named} now resolves to a place its permission check did not see; send the call again`, { code: 'PERMISSION_DENIED' })
   return target

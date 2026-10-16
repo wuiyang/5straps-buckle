@@ -1,6 +1,6 @@
 import { posix, relative } from 'pathe'
 import type { MountAccess, TableMount } from './mount-table.js'
-import { isInside, isInsideAny, nativePath, refuseDrive, resolvePath } from './paths.js'
+import { isInside, isInsideAny, nativePath, refuseDrive, resolvePath, shareRoot } from './paths.js'
 import { ToolInputError } from './tool.js'
 
 /** What a real path outside the workspace is called, so a mount never shows one through. */
@@ -35,6 +35,11 @@ export interface PathView {
   readonly scratchRoots: string[]
   /** Every real place the agent may name: the root and each mount's source. */
   readonly reachableRoots: string[]
+  /**
+   * On Windows, the sources of mounts that lie on a network share (D84 (1), Q8): a path on a share is read only where
+   * one of these holds it (nativePath), and refused everywhere else, as in 0.1.5. Empty elsewhere.
+   */
+  readonly shares: string[]
   /** The virtual root, when the owner mounted the workspace. */
   readonly mount: string | null
   /** The workspace as the agent names it. */
@@ -71,9 +76,13 @@ export function createPathView(input: { root: string; mount: string | null; moun
   const mount = input.mount
   const table: TableMount[] = [...input.mounts ?? [], ...(input.scratchRoots ?? []).map((path): TableMount => ({ source: path, target: path, access: 'rw', scratch: true }))]
   // Unmounted, a scratch root is named by its real path and reached; the owner's other mounts have no name in a real view.
+  const onShares = input.platform === 'win32' || (input.platform === undefined && process.platform === 'win32')
+  // A source on a share is kept as stored: pathe's resolve would read `//server/share` as a folder on the current drive.
+  const sourceOf = (path: string) => (onShares && shareRoot(path) !== null ? path : resolvePath(path))
   const mounts: ViewMount[] = table
     .filter(entry => mount !== null || entry.scratch)
-    .map(entry => ({ source: resolvePath(entry.source), target: entry.scratch ? resolvePath(entry.source) : entry.target, access: entry.access, scratch: entry.scratch === true }))
+    .map(entry => ({ source: sourceOf(entry.source), target: entry.scratch ? sourceOf(entry.source) : entry.target, access: entry.access, scratch: entry.scratch === true }))
+  const shares = onShares ? mounts.map(entry => entry.source).filter(source => shareRoot(source) !== null) : []
   const named = mounts.filter(entry => !entry.scratch)
   const scratchRoots = mounts.filter(entry => entry.scratch).map(entry => entry.source)
   const reachable = [root, ...mounts.map(entry => entry.source)]
@@ -88,13 +97,16 @@ export function createPathView(input: { root: string; mount: string | null; moun
 
   const toVirtual = (real: string): string => {
     if (!mount) return real
-    const fromRoot = relative(root, real)
-    if (fromRoot === '') return mount
-    if (!fromRoot.startsWith('..')) return `${mount}/${fromRoot}`
+    if (isInside(root, real, input.platform)) {
+      const fromRoot = relative(root, real)
+      return fromRoot === '' ? mount : `${mount}/${fromRoot}`
+    }
     const holder = mountOf(real)
     if (!holder) return OUTSIDE_PATH
     if (holder.scratch) return real
-    const below = relative(holder.source, real)
+    // On a share, the rest is the path's own text after the source, as mountOf found it there: pathe's relative would
+    // read both as folders on the current drive.
+    const below = shares.includes(holder.source) ? real.slice(holder.source.length).replace(/^\/+/, '') : relative(holder.source, real)
     return below === '' ? holder.target : `${holder.target}/${below}`
   }
 
@@ -107,12 +119,15 @@ export function createPathView(input: { root: string; mount: string | null; moun
     if (mount) {
       for (const entry of named) {
         const below = beneath(entry.target, typed)
-        if (below !== null) return below === '' ? entry.source : resolvePath(entry.source, posix.normalize(below))
+        if (below === null) continue
+        if (below === '') return entry.source
+        return shareRoot(entry.source) !== null && shares.includes(entry.source) ? `${entry.source}/${posix.normalize(below)}` : resolvePath(entry.source, posix.normalize(below))
       }
       const underFolder = beneath(mount, typed)
       if (underFolder !== null) return resolvePath(root, underFolder)
     }
-    return resolvePath(root, typed)
+    // A path on a share the view reaches is real as typed (nativePath folded it beneath its share).
+    return shares.length > 0 && shareRoot(typed) !== null ? typed : resolvePath(root, typed)
   }
 
   return {
@@ -120,20 +135,21 @@ export function createPathView(input: { root: string; mount: string | null; moun
     mounts,
     scratchRoots,
     reachableRoots: reachable,
+    shares,
     mount,
     displayRoot: mount ?? root,
     displayRoots,
 
     resolve(path) {
-      const real = refuseDrive(realOf(nativePath(path, input.platform)), path, input.platform)
+      const real = refuseDrive(realOf(nativePath(path, input.platform, shares)), path, input.platform)
       if (!mount || isInsideAny(reachable, real, input.platform)) return real
       throw new ToolInputError(outsideMountReason({ named: path, displayRoots }), { code: 'PERMISSION_DENIED' })
     },
 
     display(real) {
+      if (!isInside(root, real, input.platform)) return toVirtual(real)
       const fromRoot = relative(root, real)
-      if (fromRoot === '') return '.'
-      return fromRoot.startsWith('..') ? toVirtual(real) : fromRoot
+      return fromRoot === '' ? '.' : fromRoot
     },
 
     toVirtual,

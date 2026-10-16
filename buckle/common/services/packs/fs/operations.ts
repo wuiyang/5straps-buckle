@@ -132,7 +132,7 @@ export async function patchFile(
  * path that resolves anywhere else now (a link swapped in while the call waited) is refused.
  */
 function judgedTarget(path: string, operation: 'read' | 'write', context: FsContext): string {
-  const target = resolveTarget(path)
+  const target = resolveTarget(path, { shares: context.paths.shares })
   const authorize = operation === 'read' ? context.authorizeReadTarget : context.authorizeWrite
   if (authorize && !authorize(target)) {
     throw new ToolInputError(`${context.paths.display(path)} now resolves to a place its permission check did not see; send the call again`, { code: 'PERMISSION_DENIED' })

@@ -124,7 +124,7 @@ export function registeredRoots(stateDirectory: string, workspaces: readonly Pic
 }
 
 /** The node's workspaces (D83): migrates a node set up before the workspace model first (migrateNode), then serves the registry. */
-export async function openWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots; askName?: AskName }): Promise<WorkspaceManager> {
+export async function openWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots; askName?: AskName; storedPath?: (path: string) => string }): Promise<WorkspaceManager> {
   assertNodeDefaults(input.config.workspaceDefaults)
   for (const notice of await migrateNode({ node: input.config, ...(input.platform ? { platform: input.platform } : {}), ...(input.askName ? { askName: input.askName } : {}) })) logger.warn(notice)
   const manager = createWorkspaceManager(input)
@@ -132,7 +132,7 @@ export async function openWorkspaceManager(input: { config: NodeConfig; interact
   return manager
 }
 
-function createWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots }) {
+function createWorkspaceManager(input: { config: NodeConfig; interaction?: InteractionSource; platform?: NodeJS.Platform; nodeRoots?: NodeRoots; storedPath?: (path: string) => string }) {
   const node = input.config
   const platform = input.platform ?? process.platform
   const stateRoot = nativePath(realpathSync.native(node.stateDirectory))
@@ -402,7 +402,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
      */
     async addMount(id: string, mount: OwnerMount): Promise<OwnerMount> {
       const workspace = requireStored(store.read(), id)
-      const source = canonicalMountSource(resolve(mount.source), platform)
+      const source = canonicalMountSource(mount.source, platform, input.storedPath)
       const meets = (other: string) => overlaps(other, source, platform)
       if ([stateRoot, ...protectedStateRoots(node)].some(meets)) throw new WorkspaceError('A mount\'s source must not hold, or sit inside, Buckle\'s state', 409)
       if (meets(workspace.dir)) throw new WorkspaceError('A mount\'s source must not hold, or sit inside, the workspace\'s own folder, which shows at its own target', 409)

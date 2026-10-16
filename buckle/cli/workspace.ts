@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
+import { isAbsolute } from 'node:path'
 import { resolve } from 'pathe'
 import { ZodError } from 'zod'
 import type { NodeConfig } from '../common/runtime/config.js'
@@ -351,7 +352,8 @@ async function mount(context: Context): Promise<CliResult> {
     if (positionals.length !== 1 || values.json) return fail(MOUNT_USAGE)
     const spec = parseMountSpec(positionals[0]!, values['read-only'] === true)
     if (!spec) return fail(`${positionals[0]} names no mount: write it as <local>:<sandbox>, such as ./data:/data, with :ro to share it read-only`)
-    const added = await context.workspaces.addMount(workspace.id, { ...spec, source: resolve(context.cwd, spec.source) })
+    // A relative source is the current directory's; an absolute one is passed as typed, so a Windows share keeps its form.
+    const added = await context.workspaces.addMount(workspace.id, { ...spec, source: isAbsolute(spec.source) ? spec.source : resolve(context.cwd, spec.source) })
     process.stdout.write(`Workspace ${workspace.name}: ${added.target} shows ${added.source}, ${added.access === 'rw' ? 'read-write' : 'read-only'}. It applies once the workspace has no active work.
 `)
     return { exitCode: 0, detail: `mount add ${workspace.name} ${formatMount(added)}` }

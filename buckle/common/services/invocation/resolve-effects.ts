@@ -20,7 +20,7 @@ async function resolveOne(effect: ToolEffect, paths: PathView): Promise<Resolved
   if (effect.kind === 'read_path' || effect.kind === 'write_path') {
     // A host path the tool settled is judged as resolveHostRead judges one, never through the agent's view.
     const named = effect.kind === 'write_path' && effect.host ? effect.path : paths.resolve(effect.path)
-    const path = await realPathOrPlanned(named)
+    const path = await realPathOrPlanned(named, { shares: paths.shares })
     return { kind: effect.kind, path, directory: await containingDirectory(path) }
   }
   if (effect.kind === 'network') {
@@ -38,8 +38,8 @@ async function resolveOne(effect: ToolEffect, paths: PathView): Promise<Resolved
  * file, a shell's credential file), judged where it lands now. Never read through the agent's view:
  * the path is already the host's, and a mount would take it for one of its own names.
  */
-export async function resolveHostRead(path: string): Promise<ResolvedEffect> {
-  const target = await realPathOrPlanned(path)
+export async function resolveHostRead(path: string, shares: readonly string[] = []): Promise<ResolvedEffect> {
+  const target = await realPathOrPlanned(path, { shares })
   return { kind: 'read_path', path: target, directory: await containingDirectory(target) }
 }
 

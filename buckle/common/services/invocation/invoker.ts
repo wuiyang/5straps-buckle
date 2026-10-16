@@ -661,7 +661,7 @@ async function executeWithTimeout(input: {
         if (!isAbsolute(path)) return false
         // A path its resolution refuses, such as a link onto a root folder named like a drive, is unreachable: it is
         // hidden as any other unreachable entry is, never a failure of the whole listing or search it is in.
-        const effect = await resolveHostRead(path).catch((error: unknown) => { if (error instanceof ToolInputError) return null; throw error })
+        const effect = await resolveHostRead(path, input.options.paths.shares).catch((error: unknown) => { if (error instanceof ToolInputError) return null; throw error })
         if (effect === null) return false
         const outcome = input.options.permissions.evaluate({
           tool: input.request.tool, effects: [effect],

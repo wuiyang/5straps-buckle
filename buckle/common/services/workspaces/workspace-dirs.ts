@@ -1,7 +1,7 @@
 import { realpathSync, statSync } from 'node:fs'
 import { dirname } from 'pathe'
 import type { NodeConfig } from '../../runtime/config.js'
-import { ignoresCase, isDriveRoot, isInsideComparable, nativePath, WHOLE_DRIVE } from '../../domain/paths.js'
+import { ignoresCase, isDriveRoot, isInsideComparable, nativePath, shareRoot, typedShare, WHOLE_DRIVE } from '../../domain/paths.js'
 import { WorkspaceError } from './registry.js'
 
 /**
@@ -39,21 +39,28 @@ export function exposedRoots(node: Pick<NodeConfig, 'mountReadOnlyPaths' | 'work
 
 /**
  * A mount's source as the disk names it (Phase 2 item 1): links followed, in the case the disk stores, an existing
- * folder or file. Refused where it is a whole drive, or will not read as the system names it. `typed` is absolute.
+ * folder or file. On Windows a share is taken as a source, and a mapped drive is stored as the share it points to, as
+ * the system resolves it (Q8): a node started at login by another logon does not see the letter. A device path
+ * (`\\?\`, `\\.\`) is refused, as typed or as the system answers, and so is a whole drive. `typed` is absolute;
+ * `stored` stands for the system's resolution where a test imitates Windows.
  */
-export function canonicalMountSource(typed: string, platform: NodeJS.Platform): string {
+export function canonicalMountSource(typed: string, platform: NodeJS.Platform, stored: (path: string) => string = path => realpathSync.native(path)): string {
+  const sharesOf = (path: string) => (platform === 'win32' ? typedShare(path) : [])
+  try { nativePath(typed, platform, sharesOf(typed)) } catch (error) { throw new WorkspaceError(error instanceof Error ? error.message : String(error)) }
   refuseWholeDrive(typed, platform)
   let canonical: string
-  try {
-    canonical = realpathSync.native(typed)
-    const info = statSync(canonical)
-    if (!info.isDirectory() && !info.isFile()) throw new Error('Not a folder or file')
-  } catch { throw new WorkspaceError('A mount\'s source must be an existing folder or file') }
+  try { canonical = stored(typed) } catch { throw new WorkspaceError(MISSING_SOURCE) }
   let named: string
-  try { named = nativePath(canonical, platform) } catch (error) { throw new WorkspaceError(error instanceof Error ? error.message : String(error)) }
-  if (isDriveRoot(named, platform)) throw new WorkspaceError(`A mount's source ${named}: ${WHOLE_DRIVE}`)
+  try { named = nativePath(canonical, platform, sharesOf(canonical)) } catch (error) { throw new WorkspaceError(error instanceof Error ? error.message : String(error)) }
+  if (isDriveRoot(named, platform) || shareRoot(named) === named) throw new WorkspaceError(`A mount's source ${named}: ${WHOLE_DRIVE}`)
+  try {
+    const info = statSync(named)
+    if (!info.isDirectory() && !info.isFile()) throw new Error('Not a folder or file')
+  } catch { throw new WorkspaceError(MISSING_SOURCE) }
   return named
 }
+
+const MISSING_SOURCE = 'A mount\'s source must be an existing folder or file'
 
 export function assertNoHostExposure(root: string, exposed: readonly string[], platform: NodeJS.Platform): void {
   if (exposed.some(path => overlaps(path, root, platform))) {
