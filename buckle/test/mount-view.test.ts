@@ -259,4 +259,42 @@ describe.runIf(spawnSync('git', ['--version']).status === 0)('the git tools in a
     expect(existsSync(copies) ? readdirSync(copies) : []).toEqual([])
     await manager.close()
   }, 30_000)
+
+  // Fix brief 6, item 5 (finding 20 of recheck 4): git_push declared only a read of its repository, then moved the
+  // remote-tracking ref and, with setUpstream, wrote two branch settings into it. In a read-only mount it now writes
+  // nothing there, and its result says what it left.
+  it('push from it to a destination the session may write, moving no ref and setting no upstream there, and say so', async () => {
+    const root = scratch()
+    const docs = join(root, 'docs')
+    const site = join(root, 'site')
+    mkdirSync(docs)
+    mkdirSync(site)
+    const origin = join(site, 'origin.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', origin])
+    const git = (...args: string[]) => execFileSync('git', ['-C', docs, '-c', 'user.name=t', '-c', 'user.email=t@e.com', ...args], { encoding: 'utf8' })
+    git('init', '-q', '-b', 'main')
+    git('commit', '-q', '--allow-empty', '-m', 'first')
+    git('remote', 'add', 'origin', origin)
+    const before = gitDirectoryState(join(docs, '.git'))
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs,git,forge', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_FORGE_GITHUB_TOKEN: 'ghp-mount-view-fixture', BUCKLE_FORGE_GITHUB_API_URL: 'https://api.github.com' }))
+    await registerWorkspace(manager, { id: 'site', dir: site })
+    await manager.updateSettings(idOf(manager, 'site'), settings => withOwnerMounts(settings, [{ source: docs, target: '/docs', access: 'ro' }], '/workspace'))
+    const { runtime } = await byName(manager, 'site')
+    await runtime.grants.grant({ sessionId: 'site', rule: 'write_scope', subject: realpathSync(origin), scope: 'session' })
+    const pushed = await runtime.invoke({ request: { requestId: 'push', tool: 'git_push', args: { repo: '/docs', branch: 'main', setUpstream: true }, approvalTokens: [] }, sessionId: 'site' })
+    expect(pushed).toMatchObject({ outcome: 'ok', output: { branch: 'main' } })
+    expect(execFileSync('git', ['-C', origin, 'rev-parse', 'refs/heads/main'], { encoding: 'utf8' }).trim()).toBe(git('rev-parse', 'HEAD').trim())
+    expect(gitDirectoryState(join(docs, '.git'))).toEqual(before)
+    expect(pushed).toMatchObject({ output: { note: 'The repository is in a mount the owner shares read-only, so git_push moved no remote-tracking ref and set no upstream in it' } })
+    await manager.close()
+  }, 30_000)
 })
+
+/** Every entry under a git directory: its path, its bytes where it is a file, and its time, so any write shows. */
+function gitDirectoryState(directory: string): Array<[string, string, number]> {
+  return ['.', ...readdirSync(directory, { recursive: true }).map(String).sort()].map((name) => {
+    const path = join(directory, name)
+    const stats = statSync(path)
+    return [name, stats.isFile() ? readFileSync(path).toString('base64') : 'directory', stats.mtimeMs]
+  })
+}

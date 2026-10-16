@@ -45,7 +45,8 @@ git's own message, so read it rather than retrying.
 
 `git_push` pushes one branch to `origin`. `force: true` is always refused: rewriting a published
 branch is a `shell_exec` decision the destructive-command gate asks about. Only the configured
-forge host is pushed to.
+forge host is pushed to. From a repository in a mount the owner shares read-only, the push is made
+but no remote-tracking ref or upstream is written there, and the result's `note` says so.
 
 `pr_open` needs the head branch pushed first. `pr_read` returns state, head and base, and adds
 the diff, the changed files or the comments when you ask for them. The diff is capped at 512 KiB

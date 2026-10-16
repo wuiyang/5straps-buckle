@@ -73,10 +73,11 @@ install, the toolchains, then the system folders), `USER`, `LOGNAME`, `SHELL`, `
 
 The file tools read inside a mount without asking. A write into a read-only mount is refused,
 and the git tools read a repository there on a private copy of its index, so they write nothing
-in it; a write into a read-write one asks as a write to the workspace does, and its history and
-the workspace's write lock cover it. A mount shares what it holds: Buckle hides credential files in
-the workspace's folder from the shell, not those inside a mount, though the file tools still ask
-before reading one.
+in it; `git_push` from one moves no tracking ref and sets no upstream there. A write into a
+read-write one asks as a write to the workspace does, and its history and the workspace's write
+lock cover it. A mount shares what it holds: Buckle hides credential files in the workspace's
+folder from the shell, not those inside a mount, though the file tools still ask before reading
+one.
 
 [Shell isolation](sandbox-and-tools.md#shell-isolation) copies the workspace's folder alone. Under
 it, each read-write mount, and a scratch root outside the folder, is read-only to the command,

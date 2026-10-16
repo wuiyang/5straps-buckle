@@ -320,6 +320,11 @@ export function createForgePack(options: ForgePackOptions): Pack {
         const receiving: ReceivingGit = destination.kind === 'local' ? await guardedReceivePack({ repository: destination.path, context }) : { command: 'git-receive-pack', environment: {} }
         await gitOutput({ repository, args: ['push', `--receive-pack=${receiving.command}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), extra: receiving.environment, secrets: userinfoForms(destination), ...(receiving.refusedBy ? { refusedBy: receiving.refusedBy } : {}), context })
         const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
+        // A repository in a mount the owner shares read-only is written nothing, its refs and config included (fix brief
+        // 6, item 5): the push is made, and the result says what was left as it was.
+        if (paths.mountOf(repository)?.access === 'ro') {
+          return { branch, remote: destination.display, headSha, note: `The repository is in a mount the owner shares read-only, so git_push moved no remote-tracking ref${input.setUpstream ? ' and set no upstream' : ''} in it` }
+        }
         // A push to a URL moves no remote-tracking ref; origin named this destination at launch, so its ref follows.
         await gitOutput({ repository, args: ['update-ref', `refs/remotes/origin/${branch}`, headSha], context })
         if (input.setUpstream) {
